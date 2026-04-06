@@ -76,6 +76,24 @@ const VIEWS_COLORS: Record<string, string> = {
   '10K-50K': '#6b7280',
 };
 
+interface VideoRef {
+  url: string;
+  title: string;
+  channelTitle: string;
+  viewCount: number;
+  thumbnailUrl: string;
+  styleAnalysis: string | null;
+  loading: boolean;
+}
+
+interface RedditPost {
+  title: string;
+  score: number;
+  numComments: number;
+  url: string;
+  subreddit: string;
+}
+
 export default function IdeasPage() {
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('idea-generator'));
   const [niche, setNiche] = useState('');
@@ -90,6 +108,18 @@ export default function IdeasPage() {
   const [savedIds, setSavedIds] = useState<Set<number>>(new Set());
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
 
+  // Reference videos
+  const [refUrl, setRefUrl] = useState('');
+  const [refs, setRefs] = useState<VideoRef[]>([]);
+  const [showRefs, setShowRefs] = useState(false);
+
+  // Reddit research
+  const [showReddit, setShowReddit] = useState(false);
+  const [redditPosts, setRedditPosts] = useState<RedditPost[]>([]);
+  const [redditSummary, setRedditSummary] = useState('');
+  const [redditLoading, setRedditLoading] = useState(false);
+  const [redditSubs, setRedditSubs] = useState('');
+
   useEffect(() => {
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
@@ -97,16 +127,81 @@ export default function IdeasPage() {
     }).catch(() => {});
   }, []);
 
+  async function addReference() {
+    if (!refUrl.trim()) return;
+    const url = refUrl.trim();
+    setRefUrl('');
+    const placeholder: VideoRef = { url, title: 'Analyzing...', channelTitle: '', viewCount: 0, thumbnailUrl: '', styleAnalysis: null, loading: true };
+    setRefs(prev => [...prev, placeholder]);
+    const idx = refs.length;
+
+    try {
+      const res = await fetch('/api/youtube/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, modelId }),
+      });
+      if (!res.ok) throw new Error('Analysis failed');
+      const data = await res.json();
+      setRefs(prev => prev.map((r, i) => i === idx ? {
+        url,
+        title: data.metadata.title,
+        channelTitle: data.metadata.channelTitle,
+        viewCount: data.metadata.viewCount,
+        thumbnailUrl: data.metadata.thumbnailUrl,
+        styleAnalysis: data.styleAnalysis,
+        loading: false,
+      } : r));
+      toast.success(`Analyzed: ${data.metadata.title.slice(0, 40)}...`);
+    } catch {
+      setRefs(prev => prev.filter((_, i) => i !== idx));
+      toast.error('Failed to analyze video');
+    }
+  }
+
+  async function fetchReddit() {
+    if (!niche.trim()) { toast.error('Select a niche first'); return; }
+    setRedditLoading(true);
+    try {
+      const subs = redditSubs.split(',').map(s => s.trim()).filter(Boolean);
+      const res = await fetch('/api/research/reddit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ niche, subreddits: subs, limit: 20 }),
+      });
+      if (!res.ok) throw new Error('Reddit fetch failed');
+      const data = await res.json();
+      setRedditPosts(data.posts || []);
+      setRedditSummary(data.summary || '');
+      toast.success(`Found ${data.totalFound} Reddit discussions`);
+    } catch {
+      toast.error('Reddit research failed');
+    } finally {
+      setRedditLoading(false);
+    }
+  }
+
   async function generateIdeas() {
     if (!niche.trim()) { toast.error('Please select a niche'); return; }
     setGenerating(true);
     setIdeas([]);
     setSavedIds(new Set());
+
+    // Build reference context
+    const refContext = refs.filter(r => !r.loading && r.styleAnalysis).map(r =>
+      `**"${r.title}"** by ${r.channelTitle} (${r.viewCount.toLocaleString()} views)\nStyle: ${r.styleAnalysis}`
+    ).join('\n\n');
+
     try {
       const res = await fetch('/api/generate/ideas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ modelId, niche, count, audience, focus, videoType: videoType !== 'any' ? videoType : undefined }),
+        body: JSON.stringify({
+          modelId, niche, count, audience, focus,
+          videoType: videoType !== 'any' ? videoType : undefined,
+          referenceContext: refContext || undefined,
+          redditContext: redditSummary || undefined,
+        }),
       });
       if (!res.ok) {
         const err = await res.json();
@@ -263,6 +358,108 @@ export default function IdeasPage() {
             <input value={audience} onChange={e => setAudience(e.target.value)}
               placeholder="e.g. small business owners, beginners..."
               className="input-field" />
+          </div>
+
+          {/* Reference Videos */}
+          <div>
+            <button onClick={() => setShowRefs(!showRefs)}
+              className="flex items-center gap-2 text-sm font-medium w-full"
+              style={{ color: refs.length > 0 ? 'var(--accent-cyan-bright)' : 'var(--text-secondary)' }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                style={{ transform: showRefs ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s' }}>
+                <path d="M9 18l6-6-6-6" />
+              </svg>
+              🎬 Reference Videos {refs.length > 0 && <span className="badge badge-purple text-xs">{refs.length}</span>}
+            </button>
+            <AnimatePresence>
+              {showRefs && (
+                <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+                  className="overflow-hidden">
+                  <div className="mt-3 space-y-2">
+                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                      Paste YouTube URLs — AI will analyze their style and use it as inspiration
+                    </p>
+                    <div className="flex gap-2">
+                      <input value={refUrl} onChange={e => setRefUrl(e.target.value)}
+                        placeholder="https://youtube.com/watch?v=..."
+                        className="input-field flex-1" style={{ fontSize: 12, padding: '6px 10px' }}
+                        onKeyDown={e => e.key === 'Enter' && addReference()} />
+                      <button onClick={addReference} disabled={!refUrl.trim()} className="btn-primary text-xs px-3 py-1.5">
+                        Add
+                      </button>
+                    </div>
+                    {refs.map((ref, i) => (
+                      <div key={i} className="p-2 rounded-lg" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                        <div className="flex items-center gap-2">
+                          {ref.thumbnailUrl && <img src={ref.thumbnailUrl} alt="" className="w-16 h-9 rounded object-cover shrink-0" />}
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+                              {ref.loading ? 'Analyzing...' : ref.title}
+                            </p>
+                            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                              {ref.loading ? <span className="spinner inline-block" style={{ width: 10, height: 10 }} /> : `${ref.channelTitle} · ${ref.viewCount.toLocaleString()} views`}
+                            </p>
+                          </div>
+                          <button onClick={() => setRefs(prev => prev.filter((_, j) => j !== i))} className="text-xs shrink-0" style={{ color: '#ef4444' }}>×</button>
+                        </div>
+                        {ref.styleAnalysis && (
+                          <details className="mt-2">
+                            <summary className="text-xs cursor-pointer" style={{ color: 'var(--accent-cyan-bright)' }}>View style analysis</summary>
+                            <pre className="text-xs mt-1 whitespace-pre-wrap" style={{ color: 'var(--text-secondary)' }}>{ref.styleAnalysis}</pre>
+                          </details>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* Reddit Research */}
+          <div>
+            <button onClick={() => setShowReddit(!showReddit)}
+              className="flex items-center gap-2 text-sm font-medium w-full"
+              style={{ color: redditPosts.length > 0 ? '#ff4500' : 'var(--text-secondary)' }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                style={{ transform: showReddit ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s' }}>
+                <path d="M9 18l6-6-6-6" />
+              </svg>
+              🔍 Reddit Research {redditPosts.length > 0 && <span className="text-xs" style={{ color: '#ff4500' }}>({redditPosts.length} posts)</span>}
+            </button>
+            <AnimatePresence>
+              {showReddit && (
+                <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+                  className="overflow-hidden">
+                  <div className="mt-3 space-y-2">
+                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                      Scrape Reddit for trending discussions in your niche
+                    </p>
+                    <input value={redditSubs} onChange={e => setRedditSubs(e.target.value)}
+                      placeholder="Subreddits (optional, comma separated)"
+                      className="input-field" style={{ fontSize: 12, padding: '6px 10px' }} />
+                    <button onClick={fetchReddit} disabled={redditLoading || !niche.trim()}
+                      className="btn-secondary text-xs w-full justify-center" style={{ width: '100%', justifyContent: 'center' }}>
+                      {redditLoading ? <><div className="spinner" style={{ width: 12, height: 12 }} /> Scraping Reddit...</> : '🔍 Scrape Reddit for Ideas'}
+                    </button>
+                    {redditPosts.length > 0 && (
+                      <div className="max-h-48 overflow-y-auto space-y-1 rounded-lg p-2" style={{ background: 'var(--bg-secondary)' }}>
+                        {redditPosts.slice(0, 10).map((post, i) => (
+                          <a key={i} href={post.url} target="_blank" rel="noopener noreferrer"
+                            className="block p-2 rounded text-xs transition-colors hover:opacity-80"
+                            style={{ color: 'var(--text-secondary)' }}>
+                            <span style={{ color: '#ff4500' }}>r/{post.subreddit}</span>
+                            <span className="mx-1">·</span>
+                            <span>{post.title.slice(0, 80)}</span>
+                            <span className="ml-1" style={{ color: 'var(--text-muted)' }}>({post.score}↑ {post.numComments}💬)</span>
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
 
           <button onClick={generateIdeas} disabled={generating || !niche.trim()}

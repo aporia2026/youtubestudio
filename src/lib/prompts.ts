@@ -269,6 +269,8 @@ export function ideaGenerationPrompt({
   audience,
   existingTitles,
   focus,
+  referenceContext,
+  redditContext,
   videoType,
 }: {
   niche: string;
@@ -277,6 +279,8 @@ export function ideaGenerationPrompt({
   existingTitles?: string[];
   focus?: 'trending' | 'evergreen' | 'controversial' | 'beginner' | 'mixed';
   videoType?: string;
+  referenceContext?: string;
+  redditContext?: string;
 }): { system: string; user: string } {
   const videoTypeLabels: Record<string, string> = {
     'explainer': 'Explainer — break down complex topics into clear, digestible content',
@@ -305,6 +309,8 @@ export function ideaGenerationPrompt({
 **Target Audience:** ${audience || 'People interested in ' + niche}
 **Focus Type:** ${focus || 'mixed'} content${videoTypeInstruction}
 ${existingTitles?.length ? `**Already Done (avoid overlap):**\n${existingTitles.slice(0, 10).map(t => `- ${t}`).join('\n')}` : ''}
+${referenceContext ? `\n## Reference Videos (analyze their style and create ideas that match or improve on their approach):\n${referenceContext}` : ''}
+${redditContext ? `\n## Trending Reddit Discussions (use these as inspiration for what people are actively discussing and asking about):\n${redditContext}` : ''}
 
 For each idea, think:
 - What is someone SEARCHING for right now?

@@ -6,7 +6,7 @@ export const maxDuration = 120;
 
 export async function POST(req: NextRequest) {
   try {
-    const { modelId, niche, count, audience, focus, videoType, existingTitles } = await req.json();
+    const { modelId, niche, count, audience, focus, videoType, referenceContext, redditContext, existingTitles } = await req.json();
 
     if (!niche) {
       return NextResponse.json({ error: 'niche is required' }, { status: 400 });
@@ -21,6 +21,8 @@ export async function POST(req: NextRequest) {
       audience,
       focus,
       videoType,
+      referenceContext,
+      redditContext,
       existingTitles,
     });
 
