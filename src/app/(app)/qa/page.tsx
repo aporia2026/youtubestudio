@@ -145,7 +145,9 @@ export default function QAPage() {
             `Verdict: ${currentResult.verdict}`,
             currentResult.will_it_perform ? `Performance: ${currentResult.will_it_perform}` : '',
             currentResult.next_pass_focus ? `Key focus: ${currentResult.next_pass_focus}` : '',
-            ...(currentResult.critical_issues || []).map((issue: { severity: string; location: string; issue: string; fix: string }) =>
+            ...(currentResult.critical_issues || []).filter((_: unknown, i: number) =>
+              approvedFixes.has(`issue-${i}`)
+            ).map((issue: { severity: string; location: string; issue: string; fix: string }) =>
               `[${issue.severity}] ${issue.location}: ${issue.issue} → Fix: ${issue.fix}`
             ),
           ].filter(Boolean).join('\n'),
@@ -183,8 +185,22 @@ export default function QAPage() {
     }
     setRunning(true);
     try {
-      const previousFeedback = results.length > 0
-        ? `Score: ${results[results.length - 1].overall_score}/100. Verdict: ${results[results.length - 1].verdict}`
+      const lastResult = results.length > 0 ? results[results.length - 1] : null;
+      const previousFeedback = lastResult
+        ? [
+            `Previous Score: ${lastResult.overall_score}/100`,
+            `Verdict: ${lastResult.verdict}`,
+            lastResult.will_it_perform ? `Performance outlook: ${lastResult.will_it_perform}` : '',
+            lastResult.next_pass_focus ? `Focus area: ${lastResult.next_pass_focus}` : '',
+            '\nPrevious Issues:',
+            ...(lastResult.critical_issues || []).map((issue: { severity: string; location: string; issue: string }) =>
+              `- [${issue.severity}] ${issue.location}: ${issue.issue}`
+            ),
+            '\nPrevious Category Scores:',
+            ...Object.entries(lastResult.categories || {}).map(([key, cat]) =>
+              `- ${key}: ${(cat as { score: number }).score}/100`
+            ),
+          ].filter(Boolean).join('\n')
         : undefined;
 
       const res = await fetch('/api/qa/analyze', {
@@ -692,7 +708,13 @@ export default function QAPage() {
                           <div className="flex gap-2">
                             <button onClick={() => { navigator.clipboard.writeText(fixedScript); toast.success('Copied!'); }}
                               className="btn-secondary text-xs px-3 py-1.5">Copy</button>
-                            <button onClick={() => { setScript(fixedScript); toast.success('Script updated — run another QA pass!'); }}
+                            <button onClick={() => {
+                              setScript(fixedScript);
+                              setFixedScript('');
+                              setApprovedFixes(new Set());
+                              setActiveTab('scores');
+                              toast.success('Script updated — run another QA pass to see the improvement!');
+                            }}
                               className="btn-primary text-xs px-3 py-1.5">Use as New Script</button>
                           </div>
                         </div>

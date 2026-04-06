@@ -22,6 +22,40 @@ export function scriptGenerationPrompt({
   const wordsPerMinute = 140;
   const targetWords = targetDurationMinutes * wordsPerMinute;
 
+  const styleInstructions: Record<string, string> = {
+    'Story-driven': `\n**STYLE-SPECIFIC: STORY-DRIVEN**
+- Structure this as a narrative with characters, conflict, and resolution
+- Use chronological or dramatic story structure, not listicle format
+- Build emotional investment in the characters/situation before the payoff
+- Create suspense — withhold key information until the perfect moment`,
+    'Tutorial': `\n**STYLE-SPECIFIC: TUTORIAL**
+- Structure as clear, numbered steps the viewer can follow along
+- Each step must be actionable and specific — no vague advice
+- Anticipate where viewers will get stuck and address it proactively
+- Include "checkpoint" moments: "If you've done this correctly, you should see..."`,
+    'Comparison': `\n**STYLE-SPECIFIC: COMPARISON**
+- Present both sides fairly before revealing your verdict
+- Use specific criteria/metrics to compare, not just feelings
+- Include a clear winner or recommendation at the end
+- Address "it depends" scenarios with specific use cases`,
+    'Opinion / Commentary': `\n**STYLE-SPECIFIC: OPINION/COMMENTARY**
+- Lead with your strongest, most controversial take
+- Back every opinion with specific evidence or experience
+- Acknowledge the strongest counter-argument, then dismantle it
+- End with a call to discussion, not just agreement`,
+    'Top 10 List': `\n**STYLE-SPECIFIC: TOP 10 LIST**
+- Build ascending energy — save the most impactful for last
+- Each entry needs its own mini-hook and surprising angle
+- Add brief personal takes between entries to keep it from feeling robotic
+- Include at least one unexpected/controversial pick`,
+    'Documentary': `\n**STYLE-SPECIFIC: DOCUMENTARY**
+- Use investigative tone — reveal information as if uncovering it in real time
+- Include multiple perspectives and sources
+- Build a larger thesis that connects individual facts
+- End with implications for the viewer's own life`,
+  };
+  const styleNote = styleInstructions[style || ''] || '';
+
   return {
     system: `You are the world's top YouTube scriptwriter. You've written scripts for 50M+ subscriber channels. Every script you produce is IMMEDIATELY publish-ready — no QA pass needed.
 
@@ -75,6 +109,7 @@ You specialize in the "${niche}" niche. Your scripts consistently score 85+ on b
 **Target Audience:** ${targetAudience || 'General audience interested in ' + niche}
 ${additionalContext ? `**Additional Context:** ${additionalContext}` : ''}
 ${referenceContext ? `\n## Reference Videos (match and adapt their proven style, tone, and structure):\n${referenceContext}` : ''}
+${styleNote}
 
 ## Structure (follow precisely):
 
@@ -130,8 +165,9 @@ CRITICAL QA CRITERIA YOU MUST ALWAYS CHECK:
 1. **AI Detection Test**: Does this script sound like a human wrote it, or does it reek of AI?
    Look for: generic openers ("In today's world...", "Have you ever wondered..."),
    robotic transitions ("Furthermore", "In conclusion", "It's worth noting that"),
+   AI buzzwords ("navigate", "landscape", "realm", "crucial", "vital", "game-changer", "buckle up", "without further ado", "Let's dive in"),
    overly formal language for YouTube, repetitive sentence structures, lack of personality.
-   Flag every AI-sounding phrase specifically.
+   Flag every AI-sounding phrase specifically — quote the exact phrase from the script.
 
 2. **Natural Speaking Rhythm**: Read every sentence aloud mentally. Does it FLOW naturally when spoken?
    Identify sentences that are too long, awkward to speak, or sound like written text.
