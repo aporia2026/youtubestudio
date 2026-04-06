@@ -63,6 +63,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
+    if (provider === 'blob') {
+      if (!process.env.BLOB_READ_WRITE_TOKEN) return NextResponse.json({ ok: false, error: 'BLOB_READ_WRITE_TOKEN not set' });
+      const { list } = await import('@vercel/blob');
+      await list({ limit: 1 });
+      return NextResponse.json({ ok: true });
+    }
+
     return NextResponse.json({ ok: false, error: `Unknown provider: ${provider}` });
   } catch (err: unknown) {
     return NextResponse.json({

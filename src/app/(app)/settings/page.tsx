@@ -53,7 +53,8 @@ export default function SettingsPage() {
       });
       const data = await res.json();
       if (data.ok) {
-        setTestResults(prev => ({ ...prev, [provider]: { status: 'success', message: data.credits ? `Credits: ${JSON.stringify(data.credits)}` : data.model ? `Model: ${data.model}` : 'Connected' } }));
+        const creditMsg = data.credits?.data ? `${Number(data.credits.data).toLocaleString()} credits remaining` : null;
+        setTestResults(prev => ({ ...prev, [provider]: { status: 'success', message: creditMsg || (data.model ? `Model: ${data.model}` : 'Connected') } }));
         toast.success(`${provider} connection successful`);
       } else {
         setTestResults(prev => ({ ...prev, [provider]: { status: 'error', message: data.error } }));
