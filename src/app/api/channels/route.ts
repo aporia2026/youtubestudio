@@ -12,7 +12,7 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const { url, niche } = await req.json();
+  const { url, niche, accountLabel, accountEmail, accountColor, notes } = await req.json();
   if (!url) return NextResponse.json({ error: 'url required' }, { status: 400 });
 
   try {
@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
 
     const name = channelData?.title || url;
     const result = await sql`
-      INSERT INTO channels (channel_id, name, handle, description, subscriber_count, video_count, niche, thumbnail_url)
+      INSERT INTO channels (channel_id, name, handle, description, subscriber_count, video_count, niche, thumbnail_url, account_label, account_email, account_color, notes)
       VALUES (
         ${channelData?.id || null},
         ${name},
@@ -30,13 +30,21 @@ export async function POST(req: NextRequest) {
         ${channelData?.subscriberCount || 0},
         ${channelData?.videoCount || 0},
         ${niche || null},
-        ${channelData?.thumbnailUrl || null}
+        ${channelData?.thumbnailUrl || null},
+        ${accountLabel || null},
+        ${accountEmail || null},
+        ${accountColor || '#7c3aed'},
+        ${notes || null}
       )
       ON CONFLICT (channel_id) DO UPDATE SET
         name = EXCLUDED.name,
         subscriber_count = EXCLUDED.subscriber_count,
         video_count = EXCLUDED.video_count,
-        thumbnail_url = EXCLUDED.thumbnail_url
+        thumbnail_url = EXCLUDED.thumbnail_url,
+        account_label = COALESCE(EXCLUDED.account_label, channels.account_label),
+        account_email = COALESCE(EXCLUDED.account_email, channels.account_email),
+        account_color = COALESCE(EXCLUDED.account_color, channels.account_color),
+        notes = COALESCE(EXCLUDED.notes, channels.notes)
       RETURNING *
     `;
 

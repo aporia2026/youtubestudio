@@ -120,9 +120,19 @@ export async function initDatabase() {
       thumbnail_url TEXT,
       last_synced_at TIMESTAMPTZ,
       api_credentials JSONB DEFAULT '{}',
+      account_label TEXT,
+      account_email TEXT,
+      account_color TEXT DEFAULT '#7c3aed',
+      notes TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `;
+
+  // Add columns for existing databases (safe to run multiple times)
+  try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS account_label TEXT`; } catch {}
+  try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS account_email TEXT`; } catch {}
+  try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS account_color TEXT DEFAULT '#7c3aed'`; } catch {}
+  try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS notes TEXT`; } catch {}
 
   // Niches table (for flexible niche management)
   await sql`
