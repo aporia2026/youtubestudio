@@ -36,6 +36,10 @@ interface VideoIdea {
   thumbnail_concept: string;
   tags: string[];
   competitor_gap: string;
+  inspiration_sources?: {
+    from_reference_videos?: string;
+    from_reddit?: string;
+  };
   is_saved?: boolean;
 }
 
@@ -723,6 +727,28 @@ export default function IdeasPage() {
                                   <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>{idea.thumbnail_concept}</p>
                                 </div>
                               </div>
+
+                              {/* Inspiration Sources */}
+                              {idea.inspiration_sources && (idea.inspiration_sources.from_reference_videos || idea.inspiration_sources.from_reddit) && (
+                                <div className="p-3 rounded-lg space-y-2"
+                                  style={{ background: 'rgba(6,182,212,0.06)', border: '1px solid rgba(6,182,212,0.15)' }}>
+                                  <h4 className="text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5" style={{ color: 'var(--accent-cyan-bright)' }}>
+                                    🔗 Inspiration Sources
+                                  </h4>
+                                  {idea.inspiration_sources.from_reference_videos && (
+                                    <div>
+                                      <span className="text-xs font-semibold" style={{ color: 'var(--accent-purple-bright)' }}>From Reference Videos: </span>
+                                      <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{idea.inspiration_sources.from_reference_videos}</span>
+                                    </div>
+                                  )}
+                                  {idea.inspiration_sources.from_reddit && (
+                                    <div>
+                                      <span className="text-xs font-semibold" style={{ color: '#ff4500' }}>From Reddit: </span>
+                                      <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{idea.inspiration_sources.from_reddit}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                               {idea.tags?.length > 0 && (
                                 <div className="flex flex-wrap gap-2">
                                   {idea.tags.map((tag, t) => (

@@ -420,12 +420,16 @@ For each idea, think:
       "best_time_to_publish": "<strategic timing recommendation>",
       "thumbnail_concept": "<visual thumbnail description>",
       "tags": ["<tag1>", "<tag2>", "<tag3>", "<tag4>", "<tag5>"],
-      "competitor_gap": "<why this hasn't been done well yet — what existing videos are missing>"
+      "competitor_gap": "<why this hasn't been done well yet — what existing videos are missing>"${referenceContext || redditContext ? `,
+      "inspiration_sources": {
+        ${referenceContext ? `"from_reference_videos": "<explain specifically what you took from the reference videos — which style elements, structure, angle, or topic approach was inspired by which reference video and why>"` : ''}${referenceContext && redditContext ? ',' : ''}
+        ${redditContext ? `"from_reddit": "<explain specifically which Reddit discussions inspired this idea — what questions, debates, or pain points from Reddit shaped this idea and how>"` : ''}
+      }` : ''}
     }
   ]
 }
 \`\`\`
-
+${referenceContext || redditContext ? `\nIMPORTANT: For each idea, the "inspiration_sources" field MUST explain specifically what was taken from reference videos and/or Reddit. Be concrete — name the specific video or Reddit post that influenced the idea and explain HOW it influenced the angle, topic, or approach. Don't be vague.` : ''}
 Return ONLY valid JSON. Generate ideas that are genuinely different from each other in format, angle, and audience segment.`,
   };
 }
