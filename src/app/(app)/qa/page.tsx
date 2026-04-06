@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
+import { ExportScript } from '@/components/ui/ExportScript';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { ScoreRing } from '@/components/ui/ScoreRing';
 import { saveDraft, getActiveDraft } from '@/lib/drafts';
@@ -758,7 +759,10 @@ export default function QAPage() {
                             📝 Back to Script Generator
                           </button>
                         </div>
-                        <SaveAsProject script={fixedScript} niche={niche} topic="" variant="secondary" className="w-full" />
+                        <div className="flex gap-2">
+                          <SaveAsProject script={fixedScript} niche={niche} topic="" variant="secondary" className="flex-1" />
+                          <ExportScript title={niche} script={fixedScript} niche={niche} />
+                        </div>
                       </div>
                     )}
                   </motion.div>
