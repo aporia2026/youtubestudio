@@ -30,10 +30,10 @@ export function ExportScript({ title, script, niche, duration, className = '' }:
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute bottom-full mb-2 right-0 z-50 rounded-lg overflow-hidden"
+          <div className="absolute top-full mt-2 right-0 z-50 rounded-lg overflow-hidden"
             style={{ background: 'var(--bg-card)', border: '1px solid var(--border-bright)', boxShadow: '0 10px 30px rgba(0,0,0,0.4)', minWidth: 200 }}>
             <button
-              onClick={() => { exportAsPDF(opts); setOpen(false); toast.success('PDF downloaded'); }}
+              onClick={async () => { try { await exportAsPDF(opts); toast.success('PDF downloaded'); } catch { toast.error('PDF export failed'); } setOpen(false); }}
               className="w-full text-left px-4 py-3 text-sm transition-colors flex items-center gap-2"
               style={{ color: 'var(--text-primary)' }}
               onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-card-hover)')}

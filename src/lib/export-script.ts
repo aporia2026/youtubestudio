@@ -1,8 +1,6 @@
 // Generate a clean PDF/text document of the script for video editors
 // Contains ONLY the spoken narration + timing — no visual cues, no design notes
 
-import { cleanScriptForVoiceover } from './voiceover-presets';
-
 export interface ExportOptions {
   title: string;
   script: string;
@@ -53,7 +51,7 @@ export function exportAsText(opts: ExportOptions): void {
     '',
     `${'═'.repeat(60)}`,
     `END OF SCRIPT`,
-  ].filter(Boolean).join('\n');
+  ].join('\n');
 
   downloadFile(content, `${sanitizeFilename(opts.title)}-script.txt`, 'text/plain');
 }
@@ -70,11 +68,15 @@ export async function exportAsPDF(opts: ExportOptions): Promise<void> {
   const contentWidth = pageWidth - margin * 2;
   let y = margin;
 
-  // Header
+  // Header — wrap long titles
   doc.setFontSize(18);
   doc.setFont('helvetica', 'bold');
-  doc.text(opts.title, margin, y);
-  y += 10;
+  const titleLines = doc.splitTextToSize(opts.title, contentWidth);
+  for (const tl of titleLines) {
+    doc.text(tl, margin, y);
+    y += 8;
+  }
+  y += 2;
 
   // Meta
   doc.setFontSize(10);
@@ -134,7 +136,8 @@ export async function exportAsPDF(opts: ExportOptions): Promise<void> {
 }
 
 function sanitizeFilename(name: string): string {
-  return name.replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '-').slice(0, 60).toLowerCase();
+  const cleaned = name.replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, '-').slice(0, 60).toLowerCase();
+  return cleaned || 'script';
 }
 
 function downloadFile(content: string, filename: string, mimeType: string): void {
