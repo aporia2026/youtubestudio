@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
 import { ELEVENLABS_MODELS } from '@/lib/elevenlabs';
+import { cleanScriptForVoiceover } from '@/lib/voiceover-presets';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
 import { getVoiceoverHistory, deleteVoiceoverEntry, type VoiceoverHistoryEntry } from '@/lib/history';
@@ -66,7 +67,7 @@ function VoiceoverStudio() {
       if (prefill) {
         localStorage.removeItem('voiceover_prefill');
         const data = JSON.parse(prefill);
-        if (data.script) setText(data.script);
+        if (data.script) setText(cleanScriptForVoiceover(data.script));
       }
     } catch {}
 

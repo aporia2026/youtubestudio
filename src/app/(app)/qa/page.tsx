@@ -147,11 +147,20 @@ export default function QAPage() {
             `Verdict: ${currentResult.verdict}`,
             currentResult.will_it_perform ? `Performance: ${currentResult.will_it_perform}` : '',
             currentResult.next_pass_focus ? `Key focus: ${currentResult.next_pass_focus}` : '',
+            '\nWeakest Categories:',
+            ...Object.entries(currentResult.categories || {})
+              .filter(([, cat]) => (cat as { score: number }).score < 70)
+              .map(([key, cat]) => {
+                const c = cat as { score: number; assessment?: string; fix?: string };
+                return `- ${key}: ${c.score}/100 — ${c.assessment || ''}${c.fix ? ` → Fix: ${c.fix}` : ''}`;
+              }),
+            '\nApproved Issues to Fix:',
             ...(currentResult.critical_issues || []).filter((_: unknown, i: number) =>
               approvedFixes.has(`issue-${i}`)
             ).map((issue: { severity: string; location: string; issue: string; fix: string }) =>
               `[${issue.severity}] ${issue.location}: ${issue.issue} → Fix: ${issue.fix}`
             ),
+            ...(currentResult.strengths?.length ? [`\nStrengths to Preserve: ${currentResult.strengths.join(', ')}`] : []),
           ].filter(Boolean).join('\n'),
           approvedFixes: fixes,
         }),
@@ -198,10 +207,11 @@ export default function QAPage() {
             ...(lastResult.critical_issues || []).map((issue: { severity: string; location: string; issue: string }) =>
               `- [${issue.severity}] ${issue.location}: ${issue.issue}`
             ),
-            '\nPrevious Category Scores:',
-            ...Object.entries(lastResult.categories || {}).map(([key, cat]) =>
-              `- ${key}: ${(cat as { score: number }).score}/100`
-            ),
+            '\nPrevious Category Details:',
+            ...Object.entries(lastResult.categories || {}).map(([key, cat]) => {
+              const c = cat as { score: number; assessment?: string; fix?: string };
+              return `- ${key}: ${c.score}/100 — ${c.assessment || ''}${c.fix ? ` (Fix: ${c.fix})` : ''}`;
+            }),
           ].filter(Boolean).join('\n')
         : undefined;
 
@@ -738,7 +748,11 @@ export default function QAPage() {
                             🎙️ Generate Voiceover
                           </button>
                           <button onClick={() => {
-                            localStorage.setItem('generator_prefill', JSON.stringify({ topic: '', niche, context: '', script: fixedScript }));
+                            localStorage.setItem('generator_prefill', JSON.stringify({
+                              topic: niche,
+                              niche,
+                              context: `Post-QA fixed script (score: ${currentResult?.overall_score}/100):\n${fixedScript.slice(0, 3000)}`,
+                            }));
                             window.location.href = '/generator?from=qa';
                           }} className="btn-secondary text-sm flex-1 justify-center" style={{ justifyContent: 'center' }}>
                             📝 Back to Script Generator

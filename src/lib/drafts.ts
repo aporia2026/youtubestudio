@@ -98,7 +98,12 @@ export function saveDraft(draft: Partial<WorkflowDraft> & { title: string; niche
   } catch {
     // Quota — prune oldest
     drafts.length = Math.floor(drafts.length / 2);
-    try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts)); } catch {}
+    try {
+      localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+    } catch {
+      // Last resort — only save the current draft
+      try { localStorage.setItem(DRAFTS_KEY, JSON.stringify([full])); } catch {}
+    }
   }
 
   setActiveDraftId(full.id);

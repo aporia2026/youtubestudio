@@ -40,8 +40,7 @@ export default function GeneratorPage() {
   const [context, setContext] = useState('');
   const [generating, setGenerating] = useState(false);
   const [script, setScript] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [projectTitle, setProjectTitle] = useState('');
+  // saving/projectTitle removed — handled by SaveAsProject component
   const [showSave, setShowSave] = useState(false);
   const scriptRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -56,13 +55,24 @@ export default function GeneratorPage() {
   const [draftId, setDraftId] = useState<string | null>(() => getActiveDraft()?.id || null);
 
   function resumeDraft(draft: WorkflowDraft) {
+    // Abort any in-progress generation
+    if (generating) {
+      abortRef.current?.abort();
+      setGenerating(false);
+    }
     if (draft.topic) setTopic(draft.topic);
     if (draft.niche) setNiche(draft.niche);
     if (draft.tone) setTone(draft.tone);
     if (draft.style) setStyle(draft.style);
     if (draft.duration) setDuration(draft.duration);
     if (draft.modelId && getModelById(draft.modelId)) setModelId(draft.modelId);
-    if (draft.script) { setScript(draft.script); setShowSave(true); }
+    if (draft.script) {
+      setScript(draft.script);
+      setShowSave(true);
+      if (draft.script.includes('[... truncated in draft ...]')) {
+        toast.warning('This draft\'s script was truncated for storage. You may need to regenerate.');
+      }
+    }
     setDraftId(draft.id);
     toast.success('Draft resumed');
   }
@@ -209,25 +219,6 @@ export default function GeneratorPage() {
       toast.error(err instanceof Error ? err.message : 'Generation failed');
     } finally {
       setGenerating(false);
-    }
-  }
-
-  async function saveScript() {
-    if (!script || !projectTitle.trim()) { toast.error('Enter a project title'); return; }
-    setSaving(true);
-    try {
-      const res = await fetch('/api/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: projectTitle, niche, topic, script, modelId }),
-      });
-      if (!res.ok) throw new Error('Save failed');
-      toast.success('Project saved!');
-      setShowSave(false);
-    } catch {
-      toast.error('Failed to save');
-    } finally {
-      setSaving(false);
     }
   }
 

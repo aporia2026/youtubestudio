@@ -38,7 +38,8 @@ export function SaveAsProject({ script, niche, topic, modelId, onSaved, classNam
       const data = await res.json();
       toast.success('Project saved!');
       setOpen(false);
-      onSaved?.(data.project?.id);
+      const id = data.project?.id || data.id;
+      if (id) onSaved?.(id);
     } catch {
       toast.error('Failed to save project');
     } finally {

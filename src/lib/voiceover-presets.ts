@@ -85,6 +85,8 @@ export function cleanScriptForVoiceover(text: string): string {
     .replace(/^\s*\*{0,2}\[VISUAL CUE:[^\]]*\]\*{0,2}\s*$/gm, '')
     // Remove inline visual cues that aren't on their own line
     .replace(/\*{0,2}\[VISUAL CUE:[^\]]*\]\*{0,2}/g, '')
+    // Remove other common cue variants (B-ROLL, CUT TO, ON SCREEN, GRAPHIC, etc.)
+    .replace(/\*{0,2}\[(?:B-ROLL|CUT TO|ON SCREEN|GRAPHIC|FOOTAGE|SHOT|TRANSITION|MUSIC|SFX|SOUND)[^\]]*\]\*{0,2}/gi, '')
     // Remove pause markers (replace with a brief ellipsis for natural pacing)
     .replace(/\*{0,2}\[PAUSE\]\*{0,2}/g, '...')
     // Remove section headers (## Section Name)
