@@ -4,7 +4,13 @@ import { fetchChannelData } from '@/lib/youtube';
 
 export async function GET() {
   try {
-    const result = await sql`SELECT * FROM channels ORDER BY created_at DESC`;
+    const result = await sql`
+      SELECT id, channel_id, name, handle, description, subscriber_count, video_count,
+             niche, thumbnail_url, last_synced_at, account_label, account_email, account_color, notes,
+             CASE WHEN api_credentials IS NOT NULL AND api_credentials != '{}' THEN true ELSE false END as has_api_key,
+             created_at
+      FROM channels ORDER BY created_at DESC
+    `;
     return NextResponse.json({ channels: result.rows });
   } catch {
     return NextResponse.json({ channels: [] });

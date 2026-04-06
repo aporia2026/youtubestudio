@@ -112,19 +112,15 @@ export default function GeneratorPage() {
   }
 
   useEffect(() => {
-    fetch('/api/niches').then(r => r.json()).then(data => {
-      setNiches(data.niches || []);
-      if (data.niches?.length) setNiche(data.niches[0].name);
-    }).catch(() => {});
-
-    // Check for prefill data from Idea Generator
+    // Read prefill FIRST (before async fetch can overwrite)
+    let prefillNiche: string | null = null;
     try {
       const prefill = localStorage.getItem('generator_prefill');
       if (prefill) {
         localStorage.removeItem('generator_prefill');
         const data = JSON.parse(prefill);
         if (data.topic) setTopic(data.topic);
-        if (data.niche) setNiche(data.niche);
+        if (data.niche) { setNiche(data.niche); prefillNiche = data.niche; }
         if (data.audience) setAudience(data.audience);
         if (data.context) setContext(data.context);
         if (data.style && STYLES.includes(data.style)) setStyle(data.style);
@@ -134,6 +130,12 @@ export default function GeneratorPage() {
         }
       }
     } catch {}
+
+    fetch('/api/niches').then(r => r.json()).then(data => {
+      setNiches(data.niches || []);
+      // Only set default niche if no prefill was applied
+      if (!prefillNiche && data.niches?.length) setNiche(data.niches[0].name);
+    }).catch(() => {});
   }, []);
 
   async function generateScript() {
@@ -529,7 +531,7 @@ export default function GeneratorPage() {
                 </div>
                 <div className="flex gap-2 mt-3">
                   <button
-                    onClick={() => { window.location.href = `/qa?script=${encodeURIComponent(script.slice(0, 100))}`; }}
+                    onClick={() => { localStorage.setItem('qa_prefill', JSON.stringify({ script, niche })); window.location.href = '/qa?from=generator'; }}
                     className="btn-secondary text-xs px-3 py-1.5"
                   >
                     🔬 Send to QA Engine

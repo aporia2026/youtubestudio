@@ -89,8 +89,9 @@ export function saveScript(entry: Omit<ScriptHistoryEntry, 'id' | 'timestamp'>):
 }
 
 export function deleteScriptEntry(id: string): void {
+  if (typeof window === 'undefined') return;
   const history = getScriptHistory().filter(e => e.id !== id);
-  localStorage.setItem(SCRIPT_KEY, JSON.stringify(history));
+  safeSave(SCRIPT_KEY, JSON.stringify(history));
 }
 
 export function clearScriptHistory(): void {
@@ -116,8 +117,9 @@ export function saveIdeas(entry: Omit<IdeasHistoryEntry, 'id' | 'timestamp'>): I
 }
 
 export function deleteIdeasEntry(id: string): void {
+  if (typeof window === 'undefined') return;
   const history = getIdeasHistory().filter(e => e.id !== id);
-  localStorage.setItem(IDEAS_KEY, JSON.stringify(history));
+  safeSave(IDEAS_KEY, JSON.stringify(history));
 }
 
 export function clearIdeasHistory(): void {
@@ -143,8 +145,9 @@ export function saveVoiceover(entry: Omit<VoiceoverHistoryEntry, 'id' | 'timesta
 }
 
 export function deleteVoiceoverEntry(id: string): void {
+  if (typeof window === 'undefined') return;
   const history = getVoiceoverHistory().filter(e => e.id !== id);
-  localStorage.setItem(VOICEOVER_KEY, JSON.stringify(history));
+  safeSave(VOICEOVER_KEY, JSON.stringify(history));
 }
 
 // --- Search ---

@@ -176,7 +176,7 @@ export function ScriptVoiceoverPanel({ script, tone, style, targetDuration, proj
         voiceName: selectedVoiceData?.name || 'Unknown',
         voiceId: selectedVoice,
         modelId: preset.model_id,
-        textPreview: cleanedScript.slice(0, 200),
+        textPreview: cleanedScript.slice(0, 2000),
         charCount: cleanedScript.length,
         audioUrl: data.url,
         tone, style,

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
@@ -86,6 +86,19 @@ export default function QAPage() {
   const [applyingFixes, setApplyingFixes] = useState(false);
   const [fixedScript, setFixedScript] = useState('');
   const fixedScriptRef = useRef<HTMLDivElement>(null);
+
+  // Load prefill from Script Generator
+  useEffect(() => {
+    try {
+      const prefill = localStorage.getItem('qa_prefill');
+      if (prefill) {
+        localStorage.removeItem('qa_prefill');
+        const data = JSON.parse(prefill);
+        if (data.script) setScript(data.script);
+        if (data.niche) setNiche(data.niche);
+      }
+    } catch {}
+  }, []);
 
   function toggleFix(key: string) {
     setApprovedFixes(prev => {
@@ -201,6 +214,9 @@ export default function QAPage() {
     setResults([]);
     setPassNumber(1);
     setActiveResult(0);
+    setApprovedFixes(new Set());
+    setFixedScript('');
+    setActiveTab('scores');
   }
 
   const currentResult = results[activeResult];
@@ -329,7 +345,7 @@ export default function QAPage() {
                 {results.map((r, i) => (
                   <button
                     key={i}
-                    onClick={() => setActiveResult(i)}
+                    onClick={() => { setActiveResult(i); setApprovedFixes(new Set()); setFixedScript(''); }}
                     className="w-full flex items-center gap-3 p-3 rounded-lg text-left transition-all"
                     style={{
                       background: activeResult === i ? 'rgba(124,58,237,0.1)' : 'var(--bg-secondary)',

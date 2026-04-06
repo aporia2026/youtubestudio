@@ -19,6 +19,7 @@ interface Channel {
   account_email: string | null;
   account_color: string | null;
   notes: string | null;
+  has_api_key: boolean;
 }
 
 const ACCOUNT_COLORS = [
@@ -52,9 +53,13 @@ export default function ChannelPage() {
   }, []);
 
   async function checkApiKey() {
-    const res = await fetch('/api/channel/status');
-    const data = await res.json();
-    setHasApiKey(data.hasApiKey);
+    try {
+      const res = await fetch('/api/channel/status');
+      if (res.ok) {
+        const data = await res.json();
+        setHasApiKey(data.hasApiKey);
+      }
+    } catch {}
   }
 
   async function fetchChannels() {
@@ -93,19 +98,21 @@ export default function ChannelPage() {
   async function syncChannel(channelId: string) {
     setSyncing(channelId);
     try {
-      await fetch(`/api/channels/${channelId}/sync`, { method: 'POST' });
+      const res = await fetch(`/api/channels/${channelId}/sync`, { method: 'POST' });
+      if (!res.ok) { const e = await res.json().catch(() => ({ error: 'Sync failed' })); throw new Error(e.error); }
       toast.success('Channel synced!');
       fetchChannels();
-    } catch { toast.error('Sync failed'); }
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Sync failed'); }
     finally { setSyncing(null); }
   }
 
   async function analyzeChannel(channelId: string) {
     toast.info('Analyzing channel... This may take a moment.');
     try {
-      await fetch(`/api/channels/${channelId}/analyze`, { method: 'POST' });
+      const res = await fetch(`/api/channels/${channelId}/analyze`, { method: 'POST' });
+      if (!res.ok) { const e = await res.json().catch(() => ({ error: 'Analysis failed' })); throw new Error(e.error); }
       toast.success('Analysis complete!');
-    } catch { toast.error('Analysis failed'); }
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Analysis failed'); }
   }
 
   async function deleteChannel(channelId: string) {
@@ -326,7 +333,7 @@ export default function ChannelPage() {
                         <div className="flex gap-2 shrink-0">
                           <button
                             onClick={() => syncChannel(channel.id)}
-                            disabled={syncing === channel.id || (!hasApiKey && !channel.account_color)}
+                            disabled={syncing === channel.id || (!hasApiKey && !channel.has_api_key)}
                             className="btn-secondary text-sm"
                           >
                             {syncing === channel.id ? <div className="spinner" style={{ width: 14, height: 14 }} /> : '🔄 Sync'}
