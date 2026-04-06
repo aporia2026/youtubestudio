@@ -114,11 +114,8 @@ export default function IdeasPage() {
   const [refs, setRefs] = useState<VideoRef[]>([]);
   const [showRefs, setShowRefs] = useState(false);
 
-  // Reddit research
-  const [showReddit, setShowReddit] = useState(false);
-  const [redditPosts, setRedditPosts] = useState<RedditPost[]>([]);
-  const [redditSummary, setRedditSummary] = useState('');
-  const [redditLoading, setRedditLoading] = useState(false);
+  // Reddit research — toggle to include in generation
+  const [useReddit, setUseReddit] = useState(false);
   const [redditSubs, setRedditSubs] = useState('');
 
   useEffect(() => {
@@ -166,28 +163,6 @@ export default function IdeasPage() {
     }
   }
 
-  async function fetchReddit() {
-    if (!niche.trim()) { toast.error('Select a niche first'); return; }
-    setRedditLoading(true);
-    try {
-      const subs = redditSubs.split(',').map(s => s.trim()).filter(Boolean);
-      const res = await fetch('/api/research/reddit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ niche, subreddits: subs, limit: 20 }),
-      });
-      if (!res.ok) throw new Error('Reddit fetch failed');
-      const data = await res.json();
-      setRedditPosts(data.posts || []);
-      setRedditSummary(data.summary || '');
-      toast.success(`Found ${data.totalFound} Reddit discussions`);
-    } catch {
-      toast.error('Reddit research failed');
-    } finally {
-      setRedditLoading(false);
-    }
-  }
-
   async function generateIdeas() {
     if (!niche.trim()) { toast.error('Please select a niche'); return; }
     setGenerating(true);
@@ -200,6 +175,25 @@ export default function IdeasPage() {
     ).join('\n\n');
     if (refContext.length > 4000) refContext = refContext.slice(0, 4000) + '\n\n[... truncated ...]';
 
+    // Fetch Reddit data inline if toggle is on
+    let redditContext: string | undefined;
+    if (useReddit) {
+      try {
+        const subs = redditSubs.split(',').map(s => s.trim()).filter(Boolean);
+        const redditRes = await fetch('/api/research/reddit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ niche, subreddits: subs, limit: 20 }),
+        });
+        if (redditRes.ok) {
+          const data = await redditRes.json();
+          redditContext = data.summary || undefined;
+        }
+      } catch {
+        // Reddit fetch failed — continue without it
+      }
+    }
+
     try {
       const res = await fetch('/api/generate/ideas', {
         method: 'POST',
@@ -208,7 +202,7 @@ export default function IdeasPage() {
           modelId, niche, count, audience, focus,
           videoType: videoType !== 'any' ? videoType : undefined,
           referenceContext: refContext || undefined,
-          redditContext: redditSummary || undefined,
+          redditContext,
         }),
       });
       if (!res.ok) {
@@ -424,50 +418,30 @@ export default function IdeasPage() {
             </AnimatePresence>
           </div>
 
-          {/* Reddit Research */}
-          <div>
-            <button onClick={() => setShowReddit(!showReddit)}
-              className="flex items-center gap-2 text-sm font-medium w-full"
-              style={{ color: redditPosts.length > 0 ? '#ff4500' : 'var(--text-secondary)' }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                style={{ transform: showReddit ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s' }}>
-                <path d="M9 18l6-6-6-6" />
-              </svg>
-              🔍 Reddit Research {redditPosts.length > 0 && <span className="text-xs" style={{ color: '#ff4500' }}>({redditPosts.length} posts)</span>}
-            </button>
-            <AnimatePresence>
-              {showReddit && (
-                <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
-                  className="overflow-hidden">
-                  <div className="mt-3 space-y-2">
-                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                      Scrape Reddit for trending discussions in your niche
-                    </p>
-                    <input value={redditSubs} onChange={e => setRedditSubs(e.target.value)}
-                      placeholder="Subreddits (optional, comma separated)"
-                      className="input-field" style={{ fontSize: 12, padding: '6px 10px' }} />
-                    <button onClick={fetchReddit} disabled={redditLoading || !niche.trim()}
-                      className="btn-secondary text-xs w-full justify-center" style={{ width: '100%', justifyContent: 'center' }}>
-                      {redditLoading ? <><div className="spinner" style={{ width: 12, height: 12 }} /> Scraping Reddit...</> : '🔍 Scrape Reddit for Ideas'}
-                    </button>
-                    {redditPosts.length > 0 && (
-                      <div className="max-h-48 overflow-y-auto space-y-1 rounded-lg p-2" style={{ background: 'var(--bg-secondary)' }}>
-                        {redditPosts.slice(0, 10).map((post, i) => (
-                          <a key={i} href={post.url} target="_blank" rel="noopener noreferrer"
-                            className="block p-2 rounded text-xs transition-colors hover:opacity-80"
-                            style={{ color: 'var(--text-secondary)' }}>
-                            <span style={{ color: '#ff4500' }}>r/{post.subreddit}</span>
-                            <span className="mx-1">·</span>
-                            <span>{post.title.slice(0, 80)}</span>
-                            <span className="ml-1" style={{ color: 'var(--text-muted)' }}>({post.score}↑ {post.numComments}💬)</span>
-                          </a>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+          {/* Reddit toggle */}
+          <div className="p-3 rounded-lg" style={{ background: useReddit ? 'rgba(255,69,0,0.08)' : 'var(--bg-secondary)', border: `1px solid ${useReddit ? 'rgba(255,69,0,0.25)' : 'var(--border)'}`, transition: 'all 0.2s' }}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-sm">🔍</span>
+                <div>
+                  <p className="text-sm font-medium" style={{ color: useReddit ? 'var(--text-primary)' : 'var(--text-secondary)' }}>Include Reddit</p>
+                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Scrape trending discussions for inspiration</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setUseReddit(!useReddit)}
+                className="relative w-10 h-5 rounded-full transition-all shrink-0"
+                style={{ background: useReddit ? '#ff4500' : 'var(--bg-card)' }}
+              >
+                <span className="absolute top-0.5 w-4 h-4 bg-white rounded-full transition-all"
+                  style={{ left: useReddit ? 22 : 2 }} />
+              </button>
+            </div>
+            {useReddit && (
+              <input value={redditSubs} onChange={e => setRedditSubs(e.target.value)}
+                placeholder="Subreddits (optional, e.g. cybersecurity, netsec)"
+                className="input-field mt-3" style={{ fontSize: 12, padding: '6px 10px' }} />
+            )}
           </div>
 
           <button onClick={generateIdeas} disabled={generating || !niche.trim()}
