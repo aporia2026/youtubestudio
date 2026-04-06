@@ -12,6 +12,17 @@ const TONES = ['Engaging & Friendly', 'Authoritative & Expert', 'Conversational'
 const STYLES = ['Explainer', 'Story-driven', 'Tutorial', 'Comparison', 'Opinion / Commentary', 'Top 10 List', 'Documentary'];
 const DURATIONS = [3, 5, 7, 10, 12, 15, 20];
 
+interface VideoRef {
+  id: string;
+  url: string;
+  title: string;
+  channelTitle: string;
+  viewCount: number;
+  thumbnailUrl: string;
+  styleAnalysis: string | null;
+  loading: boolean;
+}
+
 export default function GeneratorPage() {
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('script-generator'));
   const [topic, setTopic] = useState('');
@@ -30,6 +41,46 @@ export default function GeneratorPage() {
   const scriptRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  // Reference videos
+  const [refUrl, setRefUrl] = useState('');
+  const [refs, setRefs] = useState<VideoRef[]>([]);
+  const [showRefs, setShowRefs] = useState(false);
+
+  async function addReference() {
+    if (!refUrl.trim()) return;
+    const url = refUrl.trim();
+    if (!/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)/.test(url)) {
+      toast.error('Please enter a valid YouTube URL');
+      return;
+    }
+    setRefUrl('');
+    const refId = `ref-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    setRefs(prev => [...prev, { id: refId, url, title: 'Analyzing...', channelTitle: '', viewCount: 0, thumbnailUrl: '', styleAnalysis: null, loading: true }]);
+
+    try {
+      const res = await fetch('/api/youtube/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, modelId }),
+      });
+      if (!res.ok) throw new Error('Analysis failed');
+      const data = await res.json();
+      setRefs(prev => prev.map(r => r.id === refId ? {
+        id: refId, url,
+        title: data.metadata.title,
+        channelTitle: data.metadata.channelTitle,
+        viewCount: data.metadata.viewCount,
+        thumbnailUrl: data.metadata.thumbnailUrl,
+        styleAnalysis: data.styleAnalysis,
+        loading: false,
+      } : r));
+      toast.success(`Analyzed: ${data.metadata.title.slice(0, 40)}...`);
+    } catch {
+      setRefs(prev => prev.filter(r => r.id !== refId));
+      toast.error('Failed to analyze video');
+    }
+  }
+
   useEffect(() => {
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
@@ -46,11 +97,17 @@ export default function GeneratorPage() {
     setShowSave(false);
     abortRef.current = new AbortController();
 
+    // Build reference context
+    let refContext = refs.filter(r => !r.loading && r.styleAnalysis).map(r =>
+      `**"${r.title}"** by ${r.channelTitle} (${r.viewCount.toLocaleString()} views)\nStyle: ${r.styleAnalysis}`
+    ).join('\n\n');
+    if (refContext.length > 4000) refContext = refContext.slice(0, 4000) + '\n\n[... truncated ...]';
+
     try {
       const res = await fetch('/api/generate/script', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ modelId, topic, niche, duration, tone, style, audience, context }),
+        body: JSON.stringify({ modelId, topic, niche, duration, tone, style, audience, context, referenceContext: refContext || undefined }),
         signal: abortRef.current.signal,
       });
 
@@ -227,6 +284,60 @@ export default function GeneratorPage() {
                 className="input-field"
                 style={{ minHeight: 80 }}
               />
+            </div>
+
+            {/* Reference Videos */}
+            <div>
+              <button onClick={() => setShowRefs(!showRefs)}
+                className="flex items-center gap-2 text-sm font-medium w-full"
+                style={{ color: refs.length > 0 ? 'var(--accent-cyan-bright)' : 'var(--text-secondary)' }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                  style={{ transform: showRefs ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s' }}>
+                  <path d="M9 18l6-6-6-6" />
+                </svg>
+                🎬 Reference Videos {refs.length > 0 && <span className="badge badge-purple text-xs">{refs.length}</span>}
+              </button>
+              <AnimatePresence>
+                {showRefs && (
+                  <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+                    className="overflow-hidden">
+                    <div className="mt-3 space-y-2">
+                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                        Add YouTube videos — AI analyzes their style and matches your script to it
+                      </p>
+                      <div className="flex gap-2">
+                        <input value={refUrl} onChange={e => setRefUrl(e.target.value)}
+                          placeholder="https://youtube.com/watch?v=..."
+                          className="input-field flex-1" style={{ fontSize: 12, padding: '6px 10px' }}
+                          onKeyDown={e => e.key === 'Enter' && addReference()} />
+                        <button onClick={addReference} disabled={!refUrl.trim()} className="btn-primary text-xs px-3 py-1.5">Add</button>
+                      </div>
+                      {refs.map(ref => (
+                        <div key={ref.id} className="p-2 rounded-lg" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                          <div className="flex items-center gap-2">
+                            {ref.thumbnailUrl && <img src={ref.thumbnailUrl} alt="" width={64} height={36} className="w-16 h-9 rounded object-cover shrink-0" />}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+                                {ref.loading ? 'Analyzing...' : ref.title}
+                              </p>
+                              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                                {ref.loading ? <span className="spinner inline-block" style={{ width: 10, height: 10 }} /> : `${ref.channelTitle} · ${ref.viewCount.toLocaleString()} views`}
+                              </p>
+                            </div>
+                            <button onClick={() => setRefs(prev => prev.filter(r => r.id !== ref.id))} className="text-xs shrink-0" style={{ color: '#ef4444' }}>×</button>
+                          </div>
+                          {ref.styleAnalysis && (
+                            <details className="mt-2">
+                              <summary className="text-xs cursor-pointer" style={{ color: 'var(--accent-cyan-bright)' }}>View style analysis</summary>
+                              <pre className="text-xs mt-1 whitespace-pre-wrap" style={{ color: 'var(--text-secondary)' }}>{ref.styleAnalysis}</pre>
+                            </details>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
 
             <button

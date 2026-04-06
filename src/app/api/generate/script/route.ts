@@ -6,7 +6,7 @@ export const maxDuration = 120;
 
 export async function POST(req: NextRequest) {
   try {
-    const { modelId, topic, niche, duration, tone, style, audience, context } = await req.json();
+    const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext } = await req.json();
 
     if (!topic || !niche) {
       return NextResponse.json({ error: 'topic and niche are required' }, { status: 400 });
@@ -23,6 +23,7 @@ export async function POST(req: NextRequest) {
       style,
       targetAudience: audience,
       additionalContext: context,
+      referenceContext,
     });
 
     // Stream response

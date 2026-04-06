@@ -8,6 +8,7 @@ export function scriptGenerationPrompt({
   tone,
   style,
   additionalContext,
+  referenceContext,
 }: {
   topic: string;
   niche: string;
@@ -16,6 +17,7 @@ export function scriptGenerationPrompt({
   tone?: string;
   style?: string;
   additionalContext?: string;
+  referenceContext?: string;
 }): { system: string; user: string } {
   const wordsPerMinute = 140;
   const targetWords = targetDurationMinutes * wordsPerMinute;
@@ -50,6 +52,7 @@ CRITICAL AUTHENTICITY RULES — NEVER VIOLATE:
 **Style:** ${style || 'Educational explainer'}
 **Target Audience:** ${targetAudience || 'General audience interested in ' + niche}
 ${additionalContext ? `**Additional Context:** ${additionalContext}` : ''}
+${referenceContext ? `\n## Reference Videos (match and adapt their proven style, tone, and structure):\n${referenceContext}` : ''}
 
 ## Script Requirements:
 
