@@ -89,8 +89,8 @@ export async function fetchYouTubeVideoData(url: string): Promise<YouTubeVideoDa
   }
 }
 
-export async function fetchChannelData(channelIdOrUrl: string): Promise<YouTubeChannelData | null> {
-  const apiKey = process.env.YOUTUBE_API_KEY;
+export async function fetchChannelData(channelIdOrUrl: string, overrideApiKey?: string): Promise<YouTubeChannelData | null> {
+  const apiKey = overrideApiKey || process.env.YOUTUBE_API_KEY;
   if (!apiKey) return null;
 
   let channelId = channelIdOrUrl;
@@ -136,8 +136,8 @@ export async function fetchChannelData(channelIdOrUrl: string): Promise<YouTubeC
   }
 }
 
-export async function fetchChannelVideos(channelId: string, maxResults = 50): Promise<YouTubeVideoData[]> {
-  const apiKey = process.env.YOUTUBE_API_KEY;
+export async function fetchChannelVideos(channelId: string, maxResults = 50, overrideApiKey?: string): Promise<YouTubeVideoData[]> {
+  const apiKey = overrideApiKey || process.env.YOUTUBE_API_KEY;
   if (!apiKey) return [];
 
   try {

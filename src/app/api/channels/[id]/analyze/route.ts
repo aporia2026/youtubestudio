@@ -22,8 +22,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       });
     }
 
-    // Fetch recent videos
-    const videos = await fetchChannelVideos(channel.channel_id, 30);
+    // Fetch recent videos (use per-channel API key if available)
+    const channelApiKey = channel.api_credentials?.youtube_api_key;
+    const videos = await fetchChannelVideos(channel.channel_id, 30, channelApiKey || undefined);
     if (!videos.length) {
       return NextResponse.json({ analysis: 'No videos found for analysis.' });
     }

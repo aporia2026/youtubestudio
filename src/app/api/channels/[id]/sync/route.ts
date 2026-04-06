@@ -11,7 +11,9 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     const channel = ch.rows[0];
     if (!channel.channel_id) return NextResponse.json({ error: 'No YouTube channel ID — add YouTube API key first' }, { status: 400 });
 
-    const data = await fetchChannelData(channel.channel_id);
+    // Use per-channel API key if available, otherwise fall back to global
+    const channelApiKey = channel.api_credentials?.youtube_api_key;
+    const data = await fetchChannelData(channel.channel_id, channelApiKey || undefined);
     if (!data) return NextResponse.json({ error: 'Failed to fetch channel data' }, { status: 500 });
 
     await sql`

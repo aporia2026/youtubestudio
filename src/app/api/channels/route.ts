@@ -12,16 +12,17 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const { url, niche, accountLabel, accountEmail, accountColor, notes } = await req.json();
+  const { url, niche, accountLabel, accountEmail, accountColor, accountApiKey, notes } = await req.json();
   if (!url) return NextResponse.json({ error: 'url required' }, { status: 400 });
 
   try {
-    // Try to fetch channel data from YouTube API
-    const channelData = await fetchChannelData(url);
+    // Try to fetch channel data from YouTube API (use per-account key if provided)
+    const channelData = await fetchChannelData(url, accountApiKey || undefined);
 
     const name = channelData?.title || url;
+    const credentials = accountApiKey ? JSON.stringify({ youtube_api_key: accountApiKey }) : '{}';
     const result = await sql`
-      INSERT INTO channels (channel_id, name, handle, description, subscriber_count, video_count, niche, thumbnail_url, account_label, account_email, account_color, notes)
+      INSERT INTO channels (channel_id, name, handle, description, subscriber_count, video_count, niche, thumbnail_url, account_label, account_email, account_color, notes, api_credentials)
       VALUES (
         ${channelData?.id || null},
         ${name},
@@ -34,7 +35,8 @@ export async function POST(req: NextRequest) {
         ${accountLabel || null},
         ${accountEmail || null},
         ${accountColor || '#7c3aed'},
-        ${notes || null}
+        ${notes || null},
+        ${credentials}
       )
       ON CONFLICT (channel_id) DO UPDATE SET
         name = EXCLUDED.name,

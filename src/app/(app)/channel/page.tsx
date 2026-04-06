@@ -41,6 +41,7 @@ export default function ChannelPage() {
   const [accountLabel, setAccountLabel] = useState('');
   const [accountEmail, setAccountEmail] = useState('');
   const [accountColor, setAccountColor] = useState('#7c3aed');
+  const [accountApiKey, setAccountApiKey] = useState('');
   const [syncing, setSyncing] = useState<string | null>(null);
   const [hasApiKey, setHasApiKey] = useState(false);
   const [filterAccount, setFilterAccount] = useState<string | null>(null);
@@ -77,6 +78,7 @@ export default function ChannelPage() {
           accountLabel: accountLabel || undefined,
           accountEmail: accountEmail || undefined,
           accountColor,
+          accountApiKey: accountApiKey || undefined,
         }),
       });
       if (!res.ok) { const e = await res.json(); throw new Error(e.error); }
@@ -177,7 +179,7 @@ export default function ChannelPage() {
               />
             </div>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
               <label className="text-xs font-medium mb-1 block" style={{ color: 'var(--text-muted)' }}>Account Name</label>
               <input
@@ -193,6 +195,20 @@ export default function ChannelPage() {
                 value={accountEmail}
                 onChange={e => setAccountEmail(e.target.value)}
                 placeholder="email@example.com"
+                className="input-field"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium mb-1 block" style={{ color: 'var(--text-muted)' }}>
+                YouTube API Key <span style={{ color: 'var(--text-muted)' }}>(optional — overrides global key)</span>
+              </label>
+              <input
+                type="password"
+                value={accountApiKey}
+                onChange={e => setAccountApiKey(e.target.value)}
+                placeholder="AIza... (uses global key if empty)"
                 className="input-field"
               />
             </div>
