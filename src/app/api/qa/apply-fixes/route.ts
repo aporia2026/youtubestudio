@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateTextStream } from '@/lib/ai';
+import { generateTextStream, getDefaultModel } from '@/lib/ai';
 import { applyFixesPrompt } from '@/lib/prompts';
 
 export const maxDuration = 120;
@@ -23,11 +23,11 @@ export async function POST(req: NextRequest) {
       async start(controller) {
         try {
           for await (const chunk of generateTextStream({
-            modelId: modelId || 'claude-opus-4-6',
+            modelId: modelId || getDefaultModel().id,
             prompt: user,
             systemPrompt: system,
-            maxTokens: 8000,
-            temperature: 0.7,
+            maxTokens: 10000,
+            temperature: 0.8,
           })) {
             controller.enqueue(encoder.encode(chunk));
           }

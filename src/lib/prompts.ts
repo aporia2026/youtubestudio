@@ -131,7 +131,14 @@ Your analysis must always be actionable — for every problem you find, provide 
 
     user: `Perform a ${aggressiveness.toUpperCase()} QA review of this YouTube script. This is Pass #${passNumber}.
 
-${previousFeedback ? `## Previous QA Feedback (Pass ${passNumber - 1}):\n${previousFeedback}\n\nFocus on whether those issues were fixed, and find NEW problems.\n\n---\n` : ''}
+${previousFeedback ? `## Previous QA Feedback (Pass ${passNumber - 1}):\n${previousFeedback}\n\nIMPORTANT SCORING RULES FOR FOLLOW-UP PASSES:
+- If previous issues were FIXED, the score for those categories MUST increase significantly (at least +15-25 points per fixed category)
+- Only deduct points for genuinely NEW problems, not re-stating things that were already addressed
+- Give credit where it's due — if the hook was rewritten and is now strong, score it high even in Nuclear mode
+- The overall score should reflect the CURRENT quality of the script, not carry over penalties from previous passes
+- A script that has been through fixes should realistically score 15-25+ points higher than the previous pass unless the fixes were poorly applied
+
+Focus on whether those issues were fixed (give full credit if yes), and find NEW problems.\n\n---\n` : ''}
 
 ## Script to Review:
 \`\`\`
@@ -240,26 +247,31 @@ export function applyFixesPrompt({
   approvedFixes: string[];
 }): { system: string; user: string } {
   return {
-    system: `You are an elite YouTube scriptwriter. You receive a script + QA feedback and specific approved fixes to apply.
-Your job: rewrite the script implementing ONLY the approved fixes while preserving everything else.
+    system: `You are an elite YouTube scriptwriter performing a COMPREHENSIVE rewrite based on QA feedback.
+
+YOUR MISSION: Produce a dramatically improved version of the script. Not a patch job — a proper rewrite that addresses every approved fix AND elevates the overall quality.
 
 CRITICAL RULES:
-1. Apply ONLY the listed approved fixes — don't change anything else
-2. The rewritten script must sound completely human — conversational, natural, no AI tells
-3. Maintain the original structure and intent — only improve what's specified
-4. Return ONLY the complete rewritten script — no commentary, no headers, just the script`,
+1. Apply every approved fix thoroughly — don't just tweak a word, rewrite the entire surrounding paragraph to make the fix feel natural and integrated
+2. While applying fixes, also improve adjacent sentences for flow, pacing, and impact
+3. The output must sound 100% human — conversational, punchy, natural spoken rhythm
+4. Maintain the original topic, structure, and key points — but make every sentence BETTER
+5. If a fix says "improve the hook" — don't just edit the hook, make it genuinely gripping
+6. If a fix says "better pacing" — actually restructure the section for energy and momentum
+7. Return ONLY the complete rewritten script — no commentary, no headers, just the script
+8. The rewritten script should score AT LEAST 15-20 points higher than the original on a QA review`,
 
-    user: `Apply the following approved fixes to this script.
+    user: `Rewrite this script applying ALL the approved fixes. Don't just patch — produce a significantly better version.
 
 ## Original Script:
 \`\`\`
 ${script}
 \`\`\`
 
-## QA Analysis Summary:
+## QA Analysis (understand what's weak):
 ${qaFeedback}
 
-## Approved Fixes to Apply:
+## Approved Fixes (apply ALL of these):
 ${approvedFixes.map((fix, i) => `${i + 1}. ${fix}`).join('\n')}
 
 Return the complete rewritten script with these fixes applied. Nothing else — just the script.`,

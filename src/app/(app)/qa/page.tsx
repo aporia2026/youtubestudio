@@ -140,7 +140,15 @@ export default function QAPage() {
         body: JSON.stringify({
           modelId,
           script,
-          qaFeedback: `Score: ${currentResult.overall_score}/100. Verdict: ${currentResult.verdict}`,
+          qaFeedback: [
+            `Score: ${currentResult.overall_score}/100`,
+            `Verdict: ${currentResult.verdict}`,
+            currentResult.will_it_perform ? `Performance: ${currentResult.will_it_perform}` : '',
+            currentResult.next_pass_focus ? `Key focus: ${currentResult.next_pass_focus}` : '',
+            ...(currentResult.critical_issues || []).map((issue: { severity: string; location: string; issue: string; fix: string }) =>
+              `[${issue.severity}] ${issue.location}: ${issue.issue} → Fix: ${issue.fix}`
+            ),
+          ].filter(Boolean).join('\n'),
           approvedFixes: fixes,
         }),
       });
