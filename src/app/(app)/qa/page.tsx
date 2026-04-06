@@ -421,10 +421,10 @@ export default function QAPage() {
               <div className="flex gap-2 flex-wrap">
                 {([
                   { id: 'scores' as const, label: 'Category Scores' },
-                  { id: 'issues' as const, label: `Issues (${currentResult.critical_issues?.length || 0})` },
-                  { id: 'rewrites' as const, label: `Rewrites (${currentResult.rewrite_suggestions?.length || 0})` },
+                  { id: 'issues' as const, label: `☑ Issues (${currentResult.critical_issues?.length || 0})` },
+                  { id: 'rewrites' as const, label: `☑ Rewrites (${currentResult.rewrite_suggestions?.length || 0})` },
                   { id: 'suggestions' as const, label: 'Titles & Thumbnails' },
-                  { id: 'apply' as const, label: `✨ Apply Fixes ${approvedFixes.size > 0 ? `(${approvedFixes.size} selected)` : ''}` },
+                  { id: 'apply' as const, label: approvedFixes.size > 0 ? `✨ Apply ${approvedFixes.size} Fix${approvedFixes.size > 1 ? 'es' : ''}` : '✨ Apply Fixes' },
                 ] as const).map(tab => (
                   <button
                     key={tab.id}
@@ -619,16 +619,35 @@ export default function QAPage() {
                 {/* Apply Fixes tab */}
                 {activeTab === 'apply' && (
                   <motion.div key="apply" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
-                    {!fixedScript && !applyingFixes && (
-                      <div className="glass rounded-xl p-12 text-center" style={{ color: 'var(--text-muted)' }}>
+                    {!fixedScript && !applyingFixes && approvedFixes.size === 0 && (
+                      <div className="glass rounded-xl p-8 text-center">
                         <div className="text-5xl mb-4">✨</div>
-                        <p className="text-sm mb-2">Select fixes from the Issues or Rewrites tabs, then click Apply</p>
-                        <p className="text-xs opacity-60">The AI will apply only your approved changes and return a clean script</p>
-                        {approvedFixes.size > 0 && (
-                          <button onClick={applyFixes} className="btn-primary mt-4 mx-auto">
-                            Apply {approvedFixes.size} Fix{approvedFixes.size > 1 ? 'es' : ''}
+                        <p className="text-sm font-medium mb-3" style={{ color: 'var(--text-primary)' }}>How to fix your script</p>
+                        <p className="text-sm mb-5" style={{ color: 'var(--text-secondary)' }}>
+                          Go to the <strong>Issues</strong> or <strong>Rewrites</strong> tabs, check the fixes you want to apply, then come back here.
+                        </p>
+                        <div className="flex gap-3 justify-center">
+                          <button onClick={() => setActiveTab('issues')} className="btn-primary text-sm">
+                            Go to Issues ({currentResult?.critical_issues?.length || 0})
                           </button>
-                        )}
+                          <button onClick={() => setActiveTab('rewrites')} className="btn-secondary text-sm">
+                            Go to Rewrites ({currentResult?.rewrite_suggestions?.length || 0})
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {!fixedScript && !applyingFixes && approvedFixes.size > 0 && (
+                      <div className="glass rounded-xl p-8 text-center">
+                        <div className="text-5xl mb-4">✅</div>
+                        <p className="text-sm font-medium mb-2" style={{ color: 'var(--text-primary)' }}>
+                          {approvedFixes.size} fix{approvedFixes.size > 1 ? 'es' : ''} selected
+                        </p>
+                        <p className="text-sm mb-5" style={{ color: 'var(--text-secondary)' }}>
+                          The AI will rewrite your script applying only these approved changes.
+                        </p>
+                        <button onClick={applyFixes} className="btn-primary mx-auto text-base px-8 py-3">
+                          ✨ Apply {approvedFixes.size} Fix{approvedFixes.size > 1 ? 'es' : ''} and Rewrite Script
+                        </button>
                       </div>
                     )}
                     {applyingFixes && (
