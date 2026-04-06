@@ -1,0 +1,381 @@
+'use client';
+
+import { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { toast } from 'sonner';
+import { ModelSelector } from '@/components/ui/ModelSelector';
+import { countWords, estimateDuration, formatDuration } from '@/lib/utils';
+
+const TONES = ['Engaging & Friendly', 'Authoritative & Expert', 'Conversational', 'Dramatic & Urgent', 'Humorous & Relaxed', 'Educational & Clear'];
+const STYLES = ['Explainer', 'Story-driven', 'Tutorial', 'Comparison', 'Opinion / Commentary', 'Top 10 List', 'Documentary'];
+const DURATIONS = [3, 5, 7, 10, 12, 15, 20];
+
+export default function GeneratorPage() {
+  const [modelId, setModelId] = useState('claude-opus-4-6');
+  const [topic, setTopic] = useState('');
+  const [niche, setNiche] = useState('');
+  const [niches, setNiches] = useState<{ id: string; name: string }[]>([]);
+  const [duration, setDuration] = useState(7);
+  const [tone, setTone] = useState(TONES[0]);
+  const [style, setStyle] = useState(STYLES[0]);
+  const [audience, setAudience] = useState('');
+  const [context, setContext] = useState('');
+  const [generating, setGenerating] = useState(false);
+  const [script, setScript] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [projectTitle, setProjectTitle] = useState('');
+  const [showSave, setShowSave] = useState(false);
+  const scriptRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    fetch('/api/niches').then(r => r.json()).then(data => {
+      setNiches(data.niches || []);
+      if (data.niches?.length) setNiche(data.niches[0].name);
+    }).catch(() => {});
+  }, []);
+
+  async function generateScript() {
+    if (!topic.trim()) { toast.error('Please enter a topic'); return; }
+    if (!niche.trim()) { toast.error('Please select a niche'); return; }
+
+    setGenerating(true);
+    setScript('');
+    setShowSave(false);
+    abortRef.current = new AbortController();
+
+    try {
+      const res = await fetch('/api/generate/script', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelId, topic, niche, duration, tone, style, audience, context }),
+        signal: abortRef.current.signal,
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Generation failed');
+      }
+
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      if (!reader) throw new Error('No response stream');
+
+      let full = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        full += chunk;
+        setScript(full);
+        scriptRef.current?.scrollTo({ top: scriptRef.current.scrollHeight, behavior: 'smooth' });
+      }
+
+      setShowSave(true);
+      toast.success('Script generated!');
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') return;
+      toast.error(err instanceof Error ? err.message : 'Generation failed');
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function saveScript() {
+    if (!script || !projectTitle.trim()) { toast.error('Enter a project title'); return; }
+    setSaving(true);
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: projectTitle, niche, topic, script, modelId }),
+      });
+      if (!res.ok) throw new Error('Save failed');
+      toast.success('Project saved!');
+      setShowSave(false);
+    } catch {
+      toast.error('Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const wordCount = countWords(script);
+  const estSeconds = estimateDuration(wordCount);
+
+  return (
+    <div className="p-8 max-w-6xl mx-auto">
+      {/* Header */}
+      <div className="mb-8">
+        <div className="flex items-center gap-3 mb-2">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center"
+            style={{ background: 'linear-gradient(135deg, rgba(124,58,237,0.3), rgba(6,182,212,0.2))', border: '1px solid rgba(124,58,237,0.3)' }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: 'var(--accent-purple-bright)' }}>
+              <path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" />
+            </svg>
+          </div>
+          <span className="badge badge-purple">AI Script Generator</span>
+        </div>
+        <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>Script Generator</h1>
+        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
+          Generate complete, publish-ready YouTube scripts with real-time AI streaming
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-6">
+        {/* LEFT PANEL - Controls */}
+        <div className="space-y-4">
+          <div className="glass rounded-xl p-6 space-y-5">
+            <h2 className="text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+              Script Parameters
+            </h2>
+
+            {/* Model */}
+            <ModelSelector value={modelId} onChange={setModelId} />
+
+            {/* Niche */}
+            <div>
+              <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Niche</label>
+              <select
+                value={niche}
+                onChange={e => setNiche(e.target.value)}
+                className="input-field"
+                style={{ appearance: 'none' }}
+              >
+                {niches.map(n => <option key={n.id} value={n.name}>{n.name}</option>)}
+                <option value="custom">Custom...</option>
+              </select>
+            </div>
+
+            {/* Topic */}
+            <div>
+              <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
+                Topic / Title *
+              </label>
+              <input
+                value={topic}
+                onChange={e => setTopic(e.target.value)}
+                placeholder="e.g. How antivirus software actually works in 2024"
+                className="input-field"
+              />
+            </div>
+
+            {/* Duration */}
+            <div>
+              <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
+                Target Duration: <span style={{ color: 'var(--accent-purple-bright)' }}>{duration} minutes</span>
+              </label>
+              <div className="flex gap-2 flex-wrap">
+                {DURATIONS.map(d => (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => setDuration(d)}
+                    className="px-3 py-1.5 rounded-lg text-sm font-medium transition-all"
+                    style={{
+                      background: duration === d ? 'rgba(124,58,237,0.25)' : 'var(--bg-secondary)',
+                      border: `1px solid ${duration === d ? 'var(--accent-purple)' : 'var(--border)'}`,
+                      color: duration === d ? 'var(--accent-purple-bright)' : 'var(--text-secondary)',
+                    }}
+                  >
+                    {d}m
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Tone */}
+            <div>
+              <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Tone</label>
+              <select value={tone} onChange={e => setTone(e.target.value)} className="input-field" style={{ appearance: 'none' }}>
+                {TONES.map(t => <option key={t}>{t}</option>)}
+              </select>
+            </div>
+
+            {/* Style */}
+            <div>
+              <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Content Style</label>
+              <select value={style} onChange={e => setStyle(e.target.value)} className="input-field" style={{ appearance: 'none' }}>
+                {STYLES.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </div>
+
+            {/* Audience */}
+            <div>
+              <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
+                Target Audience <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
+              </label>
+              <input
+                value={audience}
+                onChange={e => setAudience(e.target.value)}
+                placeholder="e.g. Small business owners, beginners..."
+                className="input-field"
+              />
+            </div>
+
+            {/* Additional context */}
+            <div>
+              <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
+                Additional Context <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
+              </label>
+              <textarea
+                value={context}
+                onChange={e => setContext(e.target.value)}
+                placeholder="Key points to include, competitors to mention, specific angle..."
+                className="input-field"
+                style={{ minHeight: 80 }}
+              />
+            </div>
+
+            <button
+              onClick={generating ? () => abortRef.current?.abort() : generateScript}
+              disabled={!topic.trim() || !niche.trim()}
+              className={generating ? 'btn-danger w-full justify-center' : 'btn-primary w-full justify-center'}
+              style={{ width: '100%', justifyContent: 'center' }}
+            >
+              {generating ? (
+                <>
+                  <div className="spinner" style={{ width: 16, height: 16 }} />
+                  Stop Generation
+                </>
+              ) : (
+                <>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                  </svg>
+                  Generate Script
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Stats */}
+          {script && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="glass rounded-xl p-4"
+            >
+              <div className="grid grid-cols-3 gap-3 text-center">
+                <div>
+                  <div className="text-lg font-bold" style={{ color: 'var(--accent-purple-bright)' }}>{wordCount.toLocaleString()}</div>
+                  <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Words</div>
+                </div>
+                <div>
+                  <div className="text-lg font-bold" style={{ color: 'var(--accent-cyan-bright)' }}>{formatDuration(estSeconds)}</div>
+                  <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Est. Duration</div>
+                </div>
+                <div>
+                  <div className="text-lg font-bold" style={{ color: 'var(--accent-green)' }}>{Math.ceil(wordCount / 300)}</div>
+                  <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Sections</div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </div>
+
+        {/* RIGHT PANEL - Output */}
+        <div className="space-y-4">
+          <div className="glass rounded-xl" style={{ minHeight: 600 }}>
+            {/* Output header */}
+            <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Generated Script</span>
+                {generating && (
+                  <span className="badge badge-purple text-xs flex items-center gap-1">
+                    <div className="spinner" style={{ width: 10, height: 10 }} />
+                    Streaming...
+                  </span>
+                )}
+              </div>
+              {script && (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(script); toast.success('Copied!'); }}
+                    className="btn-secondary px-3 py-1.5 text-xs"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                    Copy
+                  </button>
+                  <button
+                    onClick={() => { const a = document.createElement('a'); a.href = 'data:text/plain;charset=utf-8,' + encodeURIComponent(script); a.download = `${topic.slice(0, 30)}.txt`; a.click(); }}
+                    className="btn-secondary px-3 py-1.5 text-xs"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
+                    </svg>
+                    Export
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Script output */}
+            <div
+              ref={scriptRef}
+              className="p-6 overflow-y-auto"
+              style={{ height: 520 }}
+            >
+              {!script && !generating && (
+                <div className="h-full flex flex-col items-center justify-center" style={{ color: 'var(--text-muted)' }}>
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" className="mb-4 opacity-30">
+                    <path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" />
+                  </svg>
+                  <p className="text-sm">Configure parameters and click Generate</p>
+                </div>
+              )}
+              {(script || generating) && (
+                <pre
+                  className={`whitespace-pre-wrap font-sans text-sm leading-relaxed ${generating && !script ? 'cursor-blink' : ''}`}
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  {script}
+                  {generating && <span className="inline-block w-0.5 h-4 ml-0.5 align-middle animate-pulse" style={{ background: 'var(--accent-purple-bright)' }} />}
+                </pre>
+              )}
+            </div>
+          </div>
+
+          {/* Save to project */}
+          <AnimatePresence>
+            {showSave && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="glass rounded-xl p-5"
+                style={{ border: '1px solid rgba(124,58,237,0.3)' }}
+              >
+                <h3 className="text-sm font-semibold mb-3" style={{ color: 'var(--text-primary)' }}>
+                  Save as Project
+                </h3>
+                <div className="flex gap-3">
+                  <input
+                    value={projectTitle}
+                    onChange={e => setProjectTitle(e.target.value)}
+                    placeholder="Project title..."
+                    className="input-field flex-1"
+                    onKeyDown={e => e.key === 'Enter' && saveScript()}
+                  />
+                  <button onClick={saveScript} disabled={saving || !projectTitle.trim()} className="btn-primary">
+                    {saving ? <div className="spinner" style={{ width: 16, height: 16 }} /> : 'Save'}
+                  </button>
+                </div>
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={() => { window.location.href = `/qa?script=${encodeURIComponent(script.slice(0, 100))}`; }}
+                    className="btn-secondary text-xs px-3 py-1.5"
+                  >
+                    🔬 Send to QA Engine
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </div>
+    </div>
+  );
+}

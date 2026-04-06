@@ -1,0 +1,13 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "installCommand": "npm install",
+  "functions": {
+    "src/app/api/generate/script/route.ts": { "maxDuration": 120 },
+    "src/app/api/qa/analyze/route.ts": { "maxDuration": 120 },
+    "src/app/api/generate/ideas/route.ts": { "maxDuration": 120 },
+    "src/app/api/elevenlabs/generate/route.ts": { "maxDuration": 120 },
+    "src/app/api/upload/route.ts": { "maxDuration": 60 }
+  }
+}
