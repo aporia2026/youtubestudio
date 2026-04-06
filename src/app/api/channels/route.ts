@@ -46,7 +46,8 @@ export async function POST(req: NextRequest) {
         account_label = COALESCE(EXCLUDED.account_label, channels.account_label),
         account_email = COALESCE(EXCLUDED.account_email, channels.account_email),
         account_color = COALESCE(EXCLUDED.account_color, channels.account_color),
-        notes = COALESCE(EXCLUDED.notes, channels.notes)
+        notes = COALESCE(EXCLUDED.notes, channels.notes),
+        api_credentials = CASE WHEN EXCLUDED.api_credentials != '{}' THEN EXCLUDED.api_credentials ELSE channels.api_credentials END
       RETURNING *
     `;
 

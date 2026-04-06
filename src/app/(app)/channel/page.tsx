@@ -83,7 +83,7 @@ export default function ChannelPage() {
       });
       if (!res.ok) { const e = await res.json(); throw new Error(e.error); }
       toast.success('Channel added!');
-      setChannelUrl(''); setChannelNiche('');
+      setChannelUrl(''); setChannelNiche(''); setAccountLabel(''); setAccountEmail(''); setAccountApiKey('');
       fetchChannels();
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Failed to add channel');
@@ -103,11 +103,18 @@ export default function ChannelPage() {
   async function analyzeChannel(channelId: string) {
     toast.info('Analyzing channel... This may take a moment.');
     try {
-      const res = await fetch(`/api/channels/${channelId}/analyze`, { method: 'POST' });
-      const data = await res.json();
-      // Show analysis in a modal or navigate
+      await fetch(`/api/channels/${channelId}/analyze`, { method: 'POST' });
       toast.success('Analysis complete!');
     } catch { toast.error('Analysis failed'); }
+  }
+
+  async function deleteChannel(channelId: string) {
+    if (!confirm('Remove this channel?')) return;
+    try {
+      await fetch(`/api/channels/${channelId}`, { method: 'DELETE' });
+      setChannels(prev => prev.filter(c => c.id !== channelId));
+      toast.success('Channel removed');
+    } catch { toast.error('Failed to remove channel'); }
   }
 
   return (
@@ -127,33 +134,24 @@ export default function ChannelPage() {
       </div>
 
       {/* API Key Status */}
-      <div className="glass rounded-xl p-5 mb-6" style={{
-        border: `1px solid ${hasApiKey ? 'rgba(16,185,129,0.3)' : 'rgba(245,158,11,0.3)'}`,
-        background: hasApiKey ? 'rgba(16,185,129,0.05)' : 'rgba(245,158,11,0.05)',
-      }}>
-        <div className="flex items-start gap-4">
-          <span className="text-2xl">{hasApiKey ? '✅' : '⚠️'}</span>
-          <div className="flex-1">
-            <h3 className="font-semibold text-sm mb-1" style={{ color: 'var(--text-primary)' }}>
-              YouTube Data API {hasApiKey ? 'Connected' : 'Not Configured'}
-            </h3>
-            {hasApiKey ? (
-              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                YouTube API is configured. You can add and sync channels.
+      {!hasApiKey && (
+        <div className="glass rounded-xl p-5 mb-6" style={{
+          border: '1px solid rgba(245,158,11,0.3)',
+          background: 'rgba(245,158,11,0.05)',
+        }}>
+          <div className="flex items-start gap-4">
+            <span className="text-2xl">⚠️</span>
+            <div className="flex-1">
+              <h3 className="font-semibold text-sm mb-1" style={{ color: 'var(--text-primary)' }}>
+                No Global YouTube API Key
+              </h3>
+              <p className="text-sm mb-2" style={{ color: 'var(--text-secondary)' }}>
+                Set <code className="px-1 py-0.5 rounded" style={{ background: 'var(--bg-secondary)' }}>YOUTUBE_API_KEY</code> in Vercel for a default key, or add a per-channel key below.
               </p>
-            ) : (
-              <div>
-                <p className="text-sm mb-2" style={{ color: 'var(--text-secondary)' }}>
-                  Add your YouTube Data API key to enable channel scraping and analysis.
-                </p>
-                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                  Set <code className="px-1 py-0.5 rounded" style={{ background: 'var(--bg-secondary)' }}>YOUTUBE_API_KEY</code> in your Vercel environment variables.
-                </p>
-              </div>
-            )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Add Channel */}
       <div className="glass rounded-xl p-5 mb-6">
@@ -328,17 +326,24 @@ export default function ChannelPage() {
                         <div className="flex gap-2 shrink-0">
                           <button
                             onClick={() => syncChannel(channel.id)}
-                            disabled={syncing === channel.id || !hasApiKey}
+                            disabled={syncing === channel.id || (!hasApiKey && !channel.account_color)}
                             className="btn-secondary text-sm"
                           >
                             {syncing === channel.id ? <div className="spinner" style={{ width: 14, height: 14 }} /> : '🔄 Sync'}
                           </button>
                           <button
                             onClick={() => analyzeChannel(channel.id)}
-                            disabled={!hasApiKey}
                             className="btn-primary text-sm"
                           >
                             📊 Analyze
+                          </button>
+                          <button
+                            onClick={() => deleteChannel(channel.id)}
+                            className="p-2 rounded-lg text-xs transition-all"
+                            style={{ color: '#ef4444', background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+                            title="Remove channel"
+                          >
+                            ✕
                           </button>
                         </div>
                       </div>

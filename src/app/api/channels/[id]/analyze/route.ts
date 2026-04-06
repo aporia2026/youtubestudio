@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
-import { generateText } from '@/lib/ai';
+import { generateText, getDefaultModel } from '@/lib/ai';
 import { channelAnalysisPrompt } from '@/lib/prompts';
 import { fetchChannelVideos } from '@/lib/youtube';
 
@@ -23,7 +23,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     // Fetch recent videos (use per-channel API key if available)
-    const channelApiKey = channel.api_credentials?.youtube_api_key;
+    const creds = typeof channel.api_credentials === 'string' ? JSON.parse(channel.api_credentials) : channel.api_credentials;
+    const channelApiKey = creds?.youtube_api_key;
     const videos = await fetchChannelVideos(channel.channel_id, 30, channelApiKey || undefined);
     if (!videos.length) {
       return NextResponse.json({ analysis: 'No videos found for analysis.' });
@@ -41,7 +42,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     });
 
     const analysis = await generateText({
-      modelId: modelId || 'claude-opus-4-6',
+      modelId: modelId || getDefaultModel().id,
       prompt: user,
       systemPrompt: system,
       maxTokens: 3000,
