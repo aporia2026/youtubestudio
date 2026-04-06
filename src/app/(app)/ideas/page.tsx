@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
-import { getFeatureDefaultModelId } from '@/lib/ai-models';
+import { getFeatureDefaultModelId, getModelById } from '@/lib/ai-models';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { getIdeasHistory, saveIdeas, deleteIdeasEntry, clearIdeasHistory, type IdeasHistoryEntry } from '@/lib/history';
 
@@ -129,9 +129,25 @@ export default function IdeasPage() {
     setNiche(entry.niche);
     setFocus(entry.focus);
     setVideoType(entry.videoType || 'any');
-    setModelId(entry.modelId);
+    if (getModelById(entry.modelId)) setModelId(entry.modelId);
     setCount(entry.count);
-    setIdeas(entry.ideas as VideoIdea[]);
+    // Fill missing fields with defaults so the UI doesn't break
+    setIdeas(entry.ideas.map(i => ({
+      title: i.title || '',
+      hook: i.hook || '',
+      description: '',
+      why_it_will_perform: '',
+      search_intent: '',
+      target_audience_segment: '',
+      estimated_difficulty: '',
+      content_type: i.content_type || '',
+      trend_status: i.trend_status || 'evergreen',
+      estimated_views_potential: i.estimated_views_potential || '',
+      thumbnail_concept: '',
+      tags: [],
+      competitor_gap: '',
+    })));
+    toast.success('Ideas restored from history');
   }
 
   function handleDeleteIdeas(id: string) {

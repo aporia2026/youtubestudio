@@ -6,6 +6,8 @@ import { toast } from 'sonner';
 import { useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
 import { ELEVENLABS_MODELS } from '@/lib/elevenlabs';
+import { HistoryPanel } from '@/components/ui/HistoryPanel';
+import { getVoiceoverHistory, deleteVoiceoverEntry, type VoiceoverHistoryEntry } from '@/lib/history';
 
 interface ElevenVoice {
   voice_id: string;
@@ -44,6 +46,17 @@ function VoiceoverStudio() {
   const [previewPlaying, setPreviewPlaying] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const previewRef = useRef<HTMLAudioElement>(null);
+
+  // History
+  const [voHistoryItems, setVoHistoryItems] = useState<VoiceoverHistoryEntry[]>(() => getVoiceoverHistory());
+
+  function restoreVoiceover(id: string) {
+    const entry = voHistoryItems.find(e => e.id === id);
+    if (!entry) return;
+    setAudioUrl(entry.audioUrl);
+    setText(entry.textPreview);
+    toast.success('Voiceover restored from history');
+  }
 
   useEffect(() => {
     const saved = localStorage.getItem('elevenlabs_api_key');
@@ -432,6 +445,22 @@ function VoiceoverStudio() {
       )}
 
       <audio ref={previewRef} className="hidden" />
+
+      <HistoryPanel
+        title="Voiceover History"
+        icon="🎙️"
+        accentColor="#ec4899"
+        items={voHistoryItems.map(e => ({
+          id: e.id,
+          timestamp: e.timestamp,
+          label: e.voiceName,
+          sublabel: `${e.charCount.toLocaleString()} chars · ${e.tone} · ${e.style}`,
+          preview: e.textPreview,
+        }))}
+        onRestore={restoreVoiceover}
+        onDelete={(id) => { deleteVoiceoverEntry(id); setVoHistoryItems(getVoiceoverHistory()); }}
+        onClearAll={() => { localStorage.removeItem('voiceover_history'); setVoHistoryItems([]); }}
+      />
     </div>
   );
 }

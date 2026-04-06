@@ -33,7 +33,7 @@ function timeAgo(ts: number): string {
   return new Date(ts).toLocaleDateString();
 }
 
-export function HistoryPanel({ title, icon, items, onRestore, onDelete, onClearAll, accentColor = 'var(--accent-purple)' }: HistoryPanelProps) {
+export function HistoryPanel({ title, icon, items, onRestore, onDelete, onClearAll, accentColor = '#7c3aed' }: HistoryPanelProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
 

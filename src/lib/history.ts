@@ -40,10 +40,31 @@ export interface VoiceoverHistoryEntry {
 const SCRIPT_KEY = 'script_history';
 const IDEAS_KEY = 'ideas_history';
 const VOICEOVER_KEY = 'voiceover_history';
-const MAX_ENTRIES = 100;
+const MAX_SCRIPT_ENTRIES = 50;
+const MAX_IDEAS_ENTRIES = 100;
+const MAX_VOICEOVER_ENTRIES = 100;
+const MAX_SCRIPT_LENGTH = 15000; // truncate very long scripts in history
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function safeSave(key: string, data: string): boolean {
+  try {
+    localStorage.setItem(key, data);
+    return true;
+  } catch {
+    // Quota exceeded — remove oldest entries and retry
+    try {
+      const parsed = JSON.parse(data);
+      if (Array.isArray(parsed) && parsed.length > 5) {
+        parsed.length = Math.floor(parsed.length / 2);
+        localStorage.setItem(key, JSON.stringify(parsed));
+        return true;
+      }
+    } catch {}
+    return false;
+  }
 }
 
 // --- Scripts ---
@@ -56,11 +77,14 @@ export function getScriptHistory(): ScriptHistoryEntry[] {
 }
 
 export function saveScript(entry: Omit<ScriptHistoryEntry, 'id' | 'timestamp'>): ScriptHistoryEntry {
-  const full: ScriptHistoryEntry = { ...entry, id: generateId(), timestamp: Date.now() };
+  const scriptText = entry.script.length > MAX_SCRIPT_LENGTH
+    ? entry.script.slice(0, MAX_SCRIPT_LENGTH) + '\n\n[... truncated in history ...]'
+    : entry.script;
+  const full: ScriptHistoryEntry = { ...entry, script: scriptText, id: generateId(), timestamp: Date.now() };
   const history = getScriptHistory();
   history.unshift(full);
-  if (history.length > MAX_ENTRIES) history.length = MAX_ENTRIES;
-  localStorage.setItem(SCRIPT_KEY, JSON.stringify(history));
+  if (history.length > MAX_SCRIPT_ENTRIES) history.length = MAX_SCRIPT_ENTRIES;
+  safeSave(SCRIPT_KEY, JSON.stringify(history));
   return full;
 }
 
@@ -86,8 +110,8 @@ export function saveIdeas(entry: Omit<IdeasHistoryEntry, 'id' | 'timestamp'>): I
   const full: IdeasHistoryEntry = { ...entry, id: generateId(), timestamp: Date.now() };
   const history = getIdeasHistory();
   history.unshift(full);
-  if (history.length > MAX_ENTRIES) history.length = MAX_ENTRIES;
-  localStorage.setItem(IDEAS_KEY, JSON.stringify(history));
+  if (history.length > MAX_IDEAS_ENTRIES) history.length = MAX_IDEAS_ENTRIES;
+  safeSave(IDEAS_KEY, JSON.stringify(history));
   return full;
 }
 
@@ -113,8 +137,8 @@ export function saveVoiceover(entry: Omit<VoiceoverHistoryEntry, 'id' | 'timesta
   const full: VoiceoverHistoryEntry = { ...entry, id: generateId(), timestamp: Date.now() };
   const history = getVoiceoverHistory();
   history.unshift(full);
-  if (history.length > MAX_ENTRIES) history.length = MAX_ENTRIES;
-  localStorage.setItem(VOICEOVER_KEY, JSON.stringify(history));
+  if (history.length > MAX_VOICEOVER_ENTRIES) history.length = MAX_VOICEOVER_ENTRIES;
+  safeSave(VOICEOVER_KEY, JSON.stringify(history));
   return full;
 }
 
@@ -130,9 +154,9 @@ export function searchScripts(query: string): ScriptHistoryEntry[] {
   return getScriptHistory().filter(e =>
     e.topic.toLowerCase().includes(q) ||
     e.niche.toLowerCase().includes(q) ||
-    e.script.toLowerCase().includes(q) ||
     e.tone.toLowerCase().includes(q) ||
-    e.style.toLowerCase().includes(q)
+    e.style.toLowerCase().includes(q) ||
+    e.script.slice(0, 500).toLowerCase().includes(q) // only search beginning, not full body
   );
 }
 

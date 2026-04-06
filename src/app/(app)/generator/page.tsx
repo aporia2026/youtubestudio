@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { ScriptVoiceoverPanel } from '@/components/ui/ScriptVoiceoverPanel';
-import { getFeatureDefaultModelId } from '@/lib/ai-models';
+import { getFeatureDefaultModelId, getModelById } from '@/lib/ai-models';
 import { countWords, estimateDuration, formatDuration } from '@/lib/utils';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { getScriptHistory, saveScript as saveScriptToHistory, deleteScriptEntry, clearScriptHistory, type ScriptHistoryEntry } from '@/lib/history';
@@ -59,9 +59,11 @@ export default function GeneratorPage() {
     setTone(entry.tone);
     setStyle(entry.style);
     setDuration(entry.duration);
-    setModelId(entry.modelId);
+    // Only restore model if it still exists
+    if (getModelById(entry.modelId)) setModelId(entry.modelId);
     setScript(entry.script);
     setShowSave(true);
+    toast.success('Script restored from history');
   }
 
   function handleDeleteScript(id: string) {
