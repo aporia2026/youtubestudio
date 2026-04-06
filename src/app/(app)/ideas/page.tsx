@@ -77,6 +77,7 @@ const VIEWS_COLORS: Record<string, string> = {
 };
 
 interface VideoRef {
+  id: string; // unique ID for stable updates
   url: string;
   title: string;
   channelTitle: string;
@@ -130,10 +131,15 @@ export default function IdeasPage() {
   async function addReference() {
     if (!refUrl.trim()) return;
     const url = refUrl.trim();
+    // Basic YouTube URL validation
+    if (!/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)/.test(url)) {
+      toast.error('Please enter a valid YouTube URL');
+      return;
+    }
     setRefUrl('');
-    const placeholder: VideoRef = { url, title: 'Analyzing...', channelTitle: '', viewCount: 0, thumbnailUrl: '', styleAnalysis: null, loading: true };
+    const refId = `ref-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const placeholder: VideoRef = { id: refId, url, title: 'Analyzing...', channelTitle: '', viewCount: 0, thumbnailUrl: '', styleAnalysis: null, loading: true };
     setRefs(prev => [...prev, placeholder]);
-    const idx = refs.length;
 
     try {
       const res = await fetch('/api/youtube/analyze', {
@@ -143,7 +149,8 @@ export default function IdeasPage() {
       });
       if (!res.ok) throw new Error('Analysis failed');
       const data = await res.json();
-      setRefs(prev => prev.map((r, i) => i === idx ? {
+      setRefs(prev => prev.map(r => r.id === refId ? {
+        id: refId,
         url,
         title: data.metadata.title,
         channelTitle: data.metadata.channelTitle,
@@ -154,7 +161,7 @@ export default function IdeasPage() {
       } : r));
       toast.success(`Analyzed: ${data.metadata.title.slice(0, 40)}...`);
     } catch {
-      setRefs(prev => prev.filter((_, i) => i !== idx));
+      setRefs(prev => prev.filter(r => r.id !== refId));
       toast.error('Failed to analyze video');
     }
   }
@@ -187,10 +194,11 @@ export default function IdeasPage() {
     setIdeas([]);
     setSavedIds(new Set());
 
-    // Build reference context
-    const refContext = refs.filter(r => !r.loading && r.styleAnalysis).map(r =>
+    // Build reference context (cap at ~4000 chars to avoid blowing token limits)
+    let refContext = refs.filter(r => !r.loading && r.styleAnalysis).map(r =>
       `**"${r.title}"** by ${r.channelTitle} (${r.viewCount.toLocaleString()} views)\nStyle: ${r.styleAnalysis}`
     ).join('\n\n');
+    if (refContext.length > 4000) refContext = refContext.slice(0, 4000) + '\n\n[... truncated ...]';
 
     try {
       const res = await fetch('/api/generate/ideas', {
@@ -388,10 +396,10 @@ export default function IdeasPage() {
                         Add
                       </button>
                     </div>
-                    {refs.map((ref, i) => (
-                      <div key={i} className="p-2 rounded-lg" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                    {refs.map(ref => (
+                      <div key={ref.id} className="p-2 rounded-lg" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
                         <div className="flex items-center gap-2">
-                          {ref.thumbnailUrl && <img src={ref.thumbnailUrl} alt="" className="w-16 h-9 rounded object-cover shrink-0" />}
+                          {ref.thumbnailUrl && <img src={ref.thumbnailUrl} alt="" width={64} height={36} className="w-16 h-9 rounded object-cover shrink-0" />}
                           <div className="flex-1 min-w-0">
                             <p className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>
                               {ref.loading ? 'Analyzing...' : ref.title}
@@ -400,7 +408,7 @@ export default function IdeasPage() {
                               {ref.loading ? <span className="spinner inline-block" style={{ width: 10, height: 10 }} /> : `${ref.channelTitle} · ${ref.viewCount.toLocaleString()} views`}
                             </p>
                           </div>
-                          <button onClick={() => setRefs(prev => prev.filter((_, j) => j !== i))} className="text-xs shrink-0" style={{ color: '#ef4444' }}>×</button>
+                          <button onClick={() => setRefs(prev => prev.filter(r => r.id !== ref.id))} className="text-xs shrink-0" style={{ color: '#ef4444' }}>×</button>
                         </div>
                         {ref.styleAnalysis && (
                           <details className="mt-2">

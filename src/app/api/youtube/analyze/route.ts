@@ -72,6 +72,10 @@ Provide a concise style analysis in this exact format:
       transcriptWordCount: transcript?.wordCount || 0,
       transcriptDuration: transcript?.durationSeconds || 0,
       styleAnalysis,
+      warnings: [
+        ...(!transcript ? ['Transcript not available — captions may be disabled for this video'] : []),
+        ...(transcript && !modelId ? ['No AI model selected — style analysis skipped'] : []),
+      ].filter(Boolean),
     });
   } catch (err: unknown) {
     console.error('Video analyze error:', err);

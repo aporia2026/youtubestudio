@@ -12,6 +12,17 @@ interface RedditPost {
   created: number;
 }
 
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/g, "'")
+    .replace(/&#x2F;/g, '/');
+}
+
 /**
  * Scrapes Reddit's public JSON API for trending posts in a niche.
  * No API key required — uses Reddit's public .json endpoints.
@@ -33,6 +44,9 @@ export async function POST(req: NextRequest) {
       const searchRes = await fetch(searchUrl, {
         headers: { 'User-Agent': 'YTStudio/1.0' },
       });
+      if (searchRes.status === 429) {
+        return NextResponse.json({ error: 'Reddit rate limit — please wait a minute and try again' }, { status: 429 });
+      }
       if (searchRes.ok) {
         const data = await searchRes.json();
         const posts = data?.data?.children || [];
@@ -40,7 +54,7 @@ export async function POST(req: NextRequest) {
           const d = post.data;
           if (d.over_18) continue;
           results.push({
-            title: d.title,
+            title: decodeHtmlEntities(d.title),
             score: d.score,
             numComments: d.num_comments,
             url: `https://reddit.com${d.permalink}`,
@@ -69,7 +83,7 @@ export async function POST(req: NextRequest) {
               const d = post.data;
               if (d.over_18 || d.stickied) continue;
               results.push({
-                title: d.title,
+                title: decodeHtmlEntities(d.title),
                 score: d.score,
                 numComments: d.num_comments,
                 url: `https://reddit.com${d.permalink}`,
