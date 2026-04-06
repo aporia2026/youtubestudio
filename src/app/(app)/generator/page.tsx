@@ -4,6 +4,8 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
+import { ScriptVoiceoverPanel } from '@/components/ui/ScriptVoiceoverPanel';
+import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { countWords, estimateDuration, formatDuration } from '@/lib/utils';
 
 const TONES = ['Engaging & Friendly', 'Authoritative & Expert', 'Conversational', 'Dramatic & Urgent', 'Humorous & Relaxed', 'Educational & Clear'];
@@ -11,7 +13,7 @@ const STYLES = ['Explainer', 'Story-driven', 'Tutorial', 'Comparison', 'Opinion 
 const DURATIONS = [3, 5, 7, 10, 12, 15, 20];
 
 export default function GeneratorPage() {
-  const [modelId, setModelId] = useState('claude-opus-4-6');
+  const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('script-generator'));
   const [topic, setTopic] = useState('');
   const [niche, setNiche] = useState('');
   const [niches, setNiches] = useState<{ id: string; name: string }[]>([]);
@@ -374,6 +376,16 @@ export default function GeneratorPage() {
               </motion.div>
             )}
           </AnimatePresence>
+
+          {/* Voiceover panel — appears after script is generated */}
+          {script && !generating && (
+            <ScriptVoiceoverPanel
+              script={script}
+              tone={tone}
+              style={style}
+              targetDuration={duration}
+            />
+          )}
         </div>
       </div>
     </div>

@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
+import { AI_MODELS, APP_FEATURES, type AppFeature } from '@/lib/ai-models';
+import { ModelSelector } from '@/components/ui/ModelSelector';
 
 interface Niche {
   id: string;
@@ -18,10 +20,20 @@ export default function SettingsPage() {
   const [newNicheDesc, setNewNicheDesc] = useState('');
   const [newNicheKeywords, setNewNicheKeywords] = useState('');
   const [addingNiche, setAddingNiche] = useState(false);
-  const [activeSection, setActiveSection] = useState<'niches' | 'api' | 'about'>('niches');
+  const [activeSection, setActiveSection] = useState<'niches' | 'api' | 'models' | 'about'>('niches');
+  const [featureModels, setFeatureModels] = useState<Record<AppFeature, string>>({
+    'script-generator': AI_MODELS[0].id,
+    'qa-engine': AI_MODELS[0].id,
+    'idea-generator': AI_MODELS[0].id,
+  });
 
   useEffect(() => {
     fetch('/api/niches').then(r => r.json()).then(data => setNiches(data.niches || []));
+    // Load saved feature model defaults from localStorage
+    try {
+      const saved = localStorage.getItem('feature_model_defaults');
+      if (saved) setFeatureModels(prev => ({ ...prev, ...JSON.parse(saved) }));
+    } catch {}
   }, []);
 
   async function addNiche() {
@@ -68,9 +80,17 @@ export default function SettingsPage() {
     } catch { toast.error('Failed to initialize database'); }
   }
 
+  function updateFeatureModel(feature: AppFeature, modelId: string) {
+    const updated = { ...featureModels, [feature]: modelId };
+    setFeatureModels(updated);
+    localStorage.setItem('feature_model_defaults', JSON.stringify(updated));
+    toast.success('Default model updated');
+  }
+
   const SECTIONS = [
     { id: 'niches' as const, label: '🎯 Niches' },
     { id: 'api' as const, label: '🔑 API Keys' },
+    { id: 'models' as const, label: '🤖 Model Defaults' },
     { id: 'about' as const, label: 'ℹ️ About' },
   ];
 
@@ -161,6 +181,7 @@ export default function SettingsPage() {
                   { name: 'Anthropic (Claude)', env: 'ANTHROPIC_API_KEY', required: 'For script generation & QA' },
                   { name: 'OpenAI (GPT)', env: 'OPENAI_API_KEY', required: 'Optional - for GPT models' },
                   { name: 'Google AI (Gemini)', env: 'GOOGLE_AI_API_KEY', required: 'Optional - for Gemini models' },
+                  { name: 'Kie.ai', env: 'KIE_API_KEY', required: 'For Kie.ai models (Gemini, Claude, GPT at lower cost)' },
                   { name: 'ElevenLabs', env: 'Client-side (browser)', required: 'Enter in Voiceover Studio' },
                   { name: 'YouTube Data API', env: 'YOUTUBE_API_KEY', required: 'For channel integration' },
                 ].map(api => (
@@ -175,6 +196,32 @@ export default function SettingsPage() {
                     </code>
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'models' && (
+            <div className="space-y-4">
+              <div className="glass rounded-xl p-5">
+                <h2 className="text-sm font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>Default Model per Feature</h2>
+                <p className="text-sm mb-5" style={{ color: 'var(--text-secondary)' }}>
+                  Choose which AI model each feature uses by default. You can still override per-session.
+                </p>
+                <div className="space-y-6">
+                  {APP_FEATURES.map(feature => (
+                    <div key={feature.id}>
+                      <div className="mb-2">
+                        <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{feature.label}</p>
+                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{feature.description}</p>
+                      </div>
+                      <ModelSelector
+                        value={featureModels[feature.id]}
+                        onChange={(id) => updateFeatureModel(feature.id, id)}
+                        label=""
+                      />
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           )}

@@ -8,12 +8,14 @@ const PROVIDER_COLORS: Record<AIProvider, string> = {
   anthropic: '#7c3aed',
   openai: '#10b981',
   google: '#3b82f6',
+  kie: '#f59e0b',
 };
 
 const PROVIDER_LABELS: Record<AIProvider, string> = {
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   google: 'Google',
+  kie: 'Kie.ai',
 };
 
 const TIER_LABELS = {
@@ -83,11 +85,12 @@ export function ModelSelector({ value, onChange, label = 'AI Model' }: ModelSele
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -8, scale: 0.97 }}
               transition={{ duration: 0.15 }}
-              className="absolute top-full mt-2 left-0 right-0 rounded-xl overflow-hidden z-50"
+              className="absolute top-full mt-2 left-0 right-0 rounded-xl overflow-hidden overflow-y-auto z-50"
               style={{
                 background: 'var(--bg-card)',
                 border: '1px solid var(--border-bright)',
                 boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+                maxHeight: '60vh',
               }}
             >
               {(Object.keys(byProvider) as AIProvider[]).map(provider => (

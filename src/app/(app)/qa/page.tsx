@@ -4,6 +4,7 @@ import { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
+import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { ScoreRing } from '@/components/ui/ScoreRing';
 import { scoreLabel } from '@/lib/utils';
 
@@ -72,7 +73,7 @@ const CATEGORY_LABELS: Record<string, { label: string; emoji: string }> = {
 };
 
 export default function QAPage() {
-  const [modelId, setModelId] = useState('claude-opus-4-6');
+  const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('qa-engine'));
   const [script, setScript] = useState('');
   const [niche, setNiche] = useState('Cybersecurity & Antivirus');
   const [aggressiveness, setAggressiveness] = useState<Aggressiveness>('brutal');

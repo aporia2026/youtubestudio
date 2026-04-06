@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
+import { getFeatureDefaultModelId } from '@/lib/ai-models';
 
 interface PerformanceBreakdown {
   search_volume?: string;
@@ -59,7 +60,7 @@ const VIEWS_COLORS: Record<string, string> = {
 };
 
 export default function IdeasPage() {
-  const [modelId, setModelId] = useState('claude-opus-4-6');
+  const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('idea-generator'));
   const [niche, setNiche] = useState('');
   const [niches, setNiches] = useState<{ id: string; name: string }[]>([]);
   const [count, setCount] = useState(10);

@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { useParams } from 'next/navigation';
 import { formatBytes, countWords, estimateDuration, formatDuration } from '@/lib/utils';
+import { ScriptVoiceoverPanel } from '@/components/ui/ScriptVoiceoverPanel';
 import Link from 'next/link';
 
 type TabId = 'script' | 'voiceover' | 'media' | 'references';
@@ -356,9 +357,19 @@ export default function ProjectDetailPage() {
                 </div>
               </div>
             </div>
-            <div className="mt-3 p-3 rounded-lg" style={{ background: 'rgba(124,58,237,0.08)', border: '1px solid rgba(124,58,237,0.2)' }}>
+            {/* Inline AI voiceover generation from script */}
+            {activeScript?.content && (
+              <ScriptVoiceoverPanel
+                script={activeScript.content}
+                tone="Engaging & Friendly"
+                style="Explainer"
+                targetDuration={Math.max(1, Math.round(estimateDuration(countWords(activeScript.content)) / 60))}
+                projectId={id}
+              />
+            )}
+            <div className="p-3 rounded-lg" style={{ background: 'rgba(124,58,237,0.08)', border: '1px solid rgba(124,58,237,0.2)' }}>
               <p className="text-xs" style={{ color: 'var(--accent-purple-bright)' }}>
-                💡 Use the <strong>Voiceover Studio</strong> to generate AI voiceovers with ElevenLabs Pro
+                💡 Need more control? Open the full <strong>Voiceover Studio</strong> for advanced options
               </p>
               <Link href={`/voiceover?projectId=${id}`}>
                 <button className="mt-2 text-xs btn-primary py-1.5 px-3">Open Voiceover Studio</button>
