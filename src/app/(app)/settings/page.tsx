@@ -14,6 +14,9 @@ interface Niche {
   is_active: boolean;
 }
 
+type KeyStatus = Record<string, boolean>;
+type TestResult = { status: 'idle' | 'testing' | 'success' | 'error'; message?: string };
+
 export default function SettingsPage() {
   const [niches, setNiches] = useState<Niche[]>([]);
   const [newNiche, setNewNiche] = useState('');
@@ -26,10 +29,44 @@ export default function SettingsPage() {
     'qa-engine': AI_MODELS[0].id,
     'idea-generator': AI_MODELS[0].id,
   });
+  const [keyStatus, setKeyStatus] = useState<KeyStatus>({});
+  const [keyStatusLoading, setKeyStatusLoading] = useState(true);
+  const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
+  const [dbInitializing, setDbInitializing] = useState(false);
+
+  async function loadKeyStatus() {
+    setKeyStatusLoading(true);
+    try {
+      const res = await fetch('/api/settings/key-status');
+      if (res.ok) setKeyStatus(await res.json());
+    } catch {}
+    setKeyStatusLoading(false);
+  }
+
+  async function testConnection(provider: string) {
+    setTestResults(prev => ({ ...prev, [provider]: { status: 'testing' } }));
+    try {
+      const res = await fetch('/api/settings/test-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setTestResults(prev => ({ ...prev, [provider]: { status: 'success', message: data.credits ? `Credits: ${JSON.stringify(data.credits)}` : data.model ? `Model: ${data.model}` : 'Connected' } }));
+        toast.success(`${provider} connection successful`);
+      } else {
+        setTestResults(prev => ({ ...prev, [provider]: { status: 'error', message: data.error } }));
+        toast.error(data.error);
+      }
+    } catch (err: unknown) {
+      setTestResults(prev => ({ ...prev, [provider]: { status: 'error', message: err instanceof Error ? err.message : 'Failed' } }));
+    }
+  }
 
   useEffect(() => {
     fetch('/api/niches').then(r => r.json()).then(data => setNiches(data.niches || []));
-    // Load saved feature model defaults from localStorage
+    loadKeyStatus();
     try {
       const saved = localStorage.getItem('feature_model_defaults');
       if (saved) setFeatureModels(prev => ({ ...prev, ...JSON.parse(saved) }));
@@ -71,13 +108,6 @@ export default function SettingsPage() {
     await fetch(`/api/niches/${id}`, { method: 'DELETE' });
     setNiches(n => n.filter(ni => ni.id !== id));
     toast.success('Niche removed');
-  }
-
-  async function initDB() {
-    try {
-      await fetch('/api/db/init', { method: 'POST' });
-      toast.success('Database initialized!');
-    } catch { toast.error('Failed to initialize database'); }
   }
 
   function updateFeatureModel(feature: AppFeature, modelId: string) {
@@ -170,32 +200,158 @@ export default function SettingsPage() {
 
           {activeSection === 'api' && (
             <div className="space-y-4">
+              {/* Infrastructure */}
               <div className="glass rounded-xl p-5">
-                <h2 className="text-sm font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>API Keys Configuration</h2>
-                <p className="text-sm mb-5" style={{ color: 'var(--text-secondary)' }}>
-                  API keys are configured via environment variables in your Vercel project settings.
-                  Never enter keys directly in the UI for security.
-                </p>
+                <h2 className="text-sm font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>Infrastructure</h2>
+                <div className="space-y-2 mb-4">
+                  {[
+                    { key: 'postgres', name: 'Database (Postgres)', desc: 'Required — stores all project data', env: 'POSTGRES_URL' },
+                    { key: 'blob', name: 'File Storage (Vercel Blob)', desc: 'Required — stores voiceovers and media', env: 'BLOB_READ_WRITE_TOKEN' },
+                  ].map(svc => {
+                    const configured = keyStatus[svc.key];
+                    const test = testResults[svc.key];
+                    return (
+                      <div key={svc.key} className="flex items-center gap-3 p-3 rounded-lg"
+                        style={{ background: 'var(--bg-secondary)', border: `1px solid ${configured ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}` }}>
+                        <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: keyStatusLoading ? 'var(--text-muted)' : configured ? '#10b981' : '#ef4444' }} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{svc.name}</p>
+                          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                            {test?.status === 'success' ? test.message : test?.status === 'error' ? test.message : svc.desc}
+                          </p>
+                        </div>
+                        <code className="text-xs px-2 py-1 rounded hidden sm:block" style={{ background: 'var(--bg-card)', color: 'var(--accent-cyan-bright)' }}>
+                          {svc.env}
+                        </code>
+                        <button
+                          onClick={() => testConnection(svc.key)}
+                          disabled={!configured || test?.status === 'testing'}
+                          className="btn-secondary text-xs px-3 py-1.5 shrink-0"
+                          style={{ opacity: configured ? 1 : 0.4 }}
+                        >
+                          {test?.status === 'testing' ? <div className="spinner" style={{ width: 12, height: 12 }} /> : test?.status === 'success' ? '✓' : test?.status === 'error' ? '✗ Retry' : 'Test'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+                <button
+                  onClick={async () => {
+                    setDbInitializing(true);
+                    try {
+                      const res = await fetch('/api/db/init', { method: 'POST' });
+                      if (res.ok) toast.success('Database tables initialized!');
+                      else toast.error('Database init failed — is POSTGRES_URL configured?');
+                    } catch { toast.error('Database init failed'); }
+                    setDbInitializing(false);
+                  }}
+                  disabled={dbInitializing}
+                  className="btn-primary text-sm w-full justify-center"
+                  style={{ width: '100%', justifyContent: 'center' }}
+                >
+                  {dbInitializing ? <><div className="spinner" style={{ width: 14, height: 14 }} /> Initializing...</> : '🗄️ Initialize Database Tables'}
+                </button>
+              </div>
 
-                {[
-                  { name: 'Anthropic (Claude)', env: 'ANTHROPIC_API_KEY', required: 'For script generation & QA' },
-                  { name: 'OpenAI (GPT)', env: 'OPENAI_API_KEY', required: 'Optional - for GPT models' },
-                  { name: 'Google AI (Gemini)', env: 'GOOGLE_AI_API_KEY', required: 'Optional - for Gemini models' },
-                  { name: 'Kie.ai', env: 'KIE_API_KEY', required: 'For Kie.ai models (Gemini, Claude, GPT at lower cost)' },
-                  { name: 'ElevenLabs', env: 'Client-side (browser)', required: 'Enter in Voiceover Studio' },
-                  { name: 'YouTube Data API', env: 'YOUTUBE_API_KEY', required: 'For channel integration' },
-                ].map(api => (
-                  <div key={api.name} className="flex items-center gap-3 p-3 rounded-lg mb-2"
+              {/* AI Providers */}
+              <div className="glass rounded-xl p-5">
+                <h2 className="text-sm font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>AI Providers</h2>
+                <div className="space-y-2">
+                  {[
+                    { key: 'anthropic', name: 'Anthropic (Claude)', desc: 'For script generation & QA', env: 'ANTHROPIC_API_KEY' },
+                    { key: 'openai', name: 'OpenAI (GPT)', desc: 'Optional — for GPT models', env: 'OPENAI_API_KEY' },
+                    { key: 'google', name: 'Google AI (Gemini)', desc: 'Optional — for Gemini models', env: 'GOOGLE_AI_API_KEY' },
+                    { key: 'kie', name: 'Kie.ai', desc: 'Gemini, Claude, GPT at lower cost', env: 'KIE_API_KEY' },
+                  ].map(provider => {
+                    const configured = keyStatus[provider.key];
+                    const test = testResults[provider.key];
+                    return (
+                      <div key={provider.key} className="flex items-center gap-3 p-3 rounded-lg"
+                        style={{ background: 'var(--bg-secondary)', border: `1px solid ${configured ? 'rgba(16,185,129,0.3)' : 'var(--border)'}` }}>
+                        <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: keyStatusLoading ? 'var(--text-muted)' : configured ? '#10b981' : '#6b7280' }} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{provider.name}</p>
+                          <p className="text-xs" style={{ color: test?.status === 'success' ? '#10b981' : test?.status === 'error' ? '#ef4444' : 'var(--text-muted)' }}>
+                            {test?.status === 'success' ? test.message : test?.status === 'error' ? test.message : configured ? 'Configured' : provider.desc}
+                          </p>
+                        </div>
+                        <code className="text-xs px-2 py-1 rounded hidden sm:block" style={{ background: 'var(--bg-card)', color: 'var(--accent-cyan-bright)' }}>
+                          {provider.env}
+                        </code>
+                        {configured ? (
+                          <button
+                            onClick={() => testConnection(provider.key)}
+                            disabled={test?.status === 'testing'}
+                            className="btn-secondary text-xs px-3 py-1.5 shrink-0"
+                          >
+                            {test?.status === 'testing' ? <div className="spinner" style={{ width: 12, height: 12 }} /> : test?.status === 'success' ? '✓ Connected' : test?.status === 'error' ? '✗ Retry' : 'Test Connection'}
+                          </button>
+                        ) : (
+                          <span className="text-xs px-3 py-1.5 rounded-lg shrink-0" style={{ background: 'rgba(107,114,128,0.15)', color: 'var(--text-muted)' }}>
+                            Not set
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Other Services */}
+              <div className="glass rounded-xl p-5">
+                <h2 className="text-sm font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>Other Services</h2>
+                <div className="space-y-2">
+                  {/* ElevenLabs */}
+                  <div className="flex items-center gap-3 p-3 rounded-lg"
                     style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                    <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: '#f59e0b' }} />
                     <div className="flex-1">
-                      <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{api.name}</p>
-                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{api.required}</p>
+                      <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>ElevenLabs (Voiceover)</p>
+                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>API key entered in browser — stored locally</p>
                     </div>
-                    <code className="text-xs px-2 py-1 rounded" style={{ background: 'var(--bg-card)', color: 'var(--accent-cyan-bright)' }}>
-                      {api.env}
-                    </code>
+                    <a href="/voiceover" className="btn-secondary text-xs px-3 py-1.5 shrink-0">
+                      Open Voiceover Studio
+                    </a>
                   </div>
-                ))}
+                  {/* YouTube */}
+                  {(() => {
+                    const configured = keyStatus['youtube'];
+                    const test = testResults['youtube'];
+                    return (
+                      <div className="flex items-center gap-3 p-3 rounded-lg"
+                        style={{ background: 'var(--bg-secondary)', border: `1px solid ${configured ? 'rgba(16,185,129,0.3)' : 'var(--border)'}` }}>
+                        <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: keyStatusLoading ? 'var(--text-muted)' : configured ? '#10b981' : '#6b7280' }} />
+                        <div className="flex-1">
+                          <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>YouTube Data API</p>
+                          <p className="text-xs" style={{ color: test?.status === 'success' ? '#10b981' : test?.status === 'error' ? '#ef4444' : 'var(--text-muted)' }}>
+                            {test?.status === 'success' ? 'Connected' : test?.status === 'error' ? test.message : configured ? 'Configured' : 'For channel integration'}
+                          </p>
+                        </div>
+                        <code className="text-xs px-2 py-1 rounded hidden sm:block" style={{ background: 'var(--bg-card)', color: 'var(--accent-cyan-bright)' }}>
+                          YOUTUBE_API_KEY
+                        </code>
+                        {configured ? (
+                          <button onClick={() => testConnection('youtube')} disabled={test?.status === 'testing'} className="btn-secondary text-xs px-3 py-1.5 shrink-0">
+                            {test?.status === 'testing' ? <div className="spinner" style={{ width: 12, height: 12 }} /> : test?.status === 'success' ? '✓' : 'Test'}
+                          </button>
+                        ) : (
+                          <span className="text-xs px-3 py-1.5 rounded-lg shrink-0" style={{ background: 'rgba(107,114,128,0.15)', color: 'var(--text-muted)' }}>
+                            Not set
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              {/* Help text */}
+              <div className="p-4 rounded-lg" style={{ background: 'rgba(124,58,237,0.08)', border: '1px solid rgba(124,58,237,0.2)' }}>
+                <p className="text-xs font-semibold mb-1" style={{ color: 'var(--accent-purple-bright)' }}>How to add API keys</p>
+                <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  Go to your Vercel Dashboard → Project Settings → Environment Variables. Add each key and redeploy.
+                  Or run <code style={{ color: 'var(--accent-cyan-bright)' }}>vercel env add KEY_NAME production</code> in your terminal.
+                </p>
               </div>
             </div>
           )}
@@ -238,9 +394,9 @@ export default function SettingsPage() {
                   <p className="text-xs font-semibold mb-1" style={{ color: 'var(--text-muted)' }}>Stack</p>
                   <p className="text-sm" style={{ color: 'var(--text-primary)' }}>Next.js 14 · Vercel Postgres · Vercel Blob · ElevenLabs</p>
                 </div>
-                <button onClick={initDB} className="btn-secondary text-sm">
-                  🗄️ Initialize / Reset Database Tables
-                </button>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  Database and infrastructure can be managed in the API Keys tab.
+                </p>
               </div>
             </div>
           )}
