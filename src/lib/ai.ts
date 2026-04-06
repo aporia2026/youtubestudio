@@ -229,7 +229,8 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
 
   if (model.provider === 'google') {
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
-    const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY || '');
+    if (!process.env.GOOGLE_AI_API_KEY) throw new Error('GOOGLE_AI_API_KEY environment variable is not configured');
+    const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
     const gemini = genAI.getGenerativeModel({ model: model.id });
     const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
     const result = await gemini.generateContent(fullPrompt);
@@ -244,7 +245,7 @@ export async function* generateTextStream(opts: GenerateOptions): AsyncGenerator
   const model = getModelById(opts.modelId);
   if (!model) throw new Error(`Unknown model: ${opts.modelId}`);
 
-  const { prompt, systemPrompt, maxTokens = 4000 } = opts;
+  const { prompt, systemPrompt, maxTokens = 4000, temperature = 0.7 } = opts;
 
   if (model.provider === 'kie') {
     yield* kieStreamText(opts.modelId, prompt, systemPrompt, maxTokens);
@@ -278,6 +279,7 @@ export async function* generateTextStream(opts: GenerateOptions): AsyncGenerator
       model: model.id,
       messages: msgs,
       max_tokens: maxTokens,
+      temperature,
       stream: true,
     });
     for await (const chunk of stream) {
@@ -289,7 +291,8 @@ export async function* generateTextStream(opts: GenerateOptions): AsyncGenerator
 
   if (model.provider === 'google') {
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
-    const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY || '');
+    if (!process.env.GOOGLE_AI_API_KEY) throw new Error('GOOGLE_AI_API_KEY environment variable is not configured');
+    const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
     const gemini = genAI.getGenerativeModel({ model: model.id });
     const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
     const result = await gemini.generateContentStream(fullPrompt);

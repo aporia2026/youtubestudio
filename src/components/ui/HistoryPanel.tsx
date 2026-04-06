@@ -83,9 +83,8 @@ export function HistoryPanel({ title, icon, items, onRestore, onDelete, onClearA
               animate={{ x: 0 }}
               exit={{ x: '100%' }}
               transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-              className="fixed right-0 top-0 bottom-0 z-50 flex flex-col"
+              className="fixed right-0 top-0 bottom-0 z-50 flex flex-col w-[380px] max-w-[90vw]"
               style={{
-                width: 380,
                 background: 'var(--bg-primary)',
                 borderLeft: '1px solid var(--border)',
                 boxShadow: '-10px 0 40px rgba(0,0,0,0.3)',
@@ -161,7 +160,7 @@ export function HistoryPanel({ title, icon, items, onRestore, onDelete, onClearA
                             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{timeAgo(item.timestamp)}</span>
                             <button
                               onClick={e => { e.stopPropagation(); onDelete(item.id); }}
-                              className="text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                              className="text-xs opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
                               style={{ color: '#ef4444' }}
                             >
                               Delete

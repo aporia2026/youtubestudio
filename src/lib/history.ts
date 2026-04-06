@@ -46,7 +46,7 @@ const MAX_VOICEOVER_ENTRIES = 100;
 const MAX_SCRIPT_LENGTH = 15000; // truncate very long scripts in history
 
 function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
 }
 
 function safeSave(key: string, data: string): boolean {
@@ -167,9 +167,9 @@ export function searchIdeas(query: string): IdeasHistoryEntry[] {
   const q = query.toLowerCase();
   return getIdeasHistory().filter(e =>
     e.niche.toLowerCase().includes(q) ||
-    e.ideas.some(i =>
-      String(i.title || '').toLowerCase().includes(q) ||
-      String(i.hook || '').toLowerCase().includes(q)
+    (e.ideas || []).filter(Boolean).some(i =>
+      String(i?.title || '').toLowerCase().includes(q) ||
+      String(i?.hook || '').toLowerCase().includes(q)
     )
   );
 }

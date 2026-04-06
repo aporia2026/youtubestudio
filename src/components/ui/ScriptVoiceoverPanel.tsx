@@ -428,34 +428,36 @@ export function ScriptVoiceoverPanel({ script, tone, style, targetDuration, proj
           </AnimatePresence>
         </div>
 
-        {/* Mode selector */}
-        <div>
-          <label className="text-xs font-medium mb-2 block" style={{ color: 'var(--text-secondary)' }}>Generation Mode</label>
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={() => setMode('full')}
-              className="p-3 rounded-lg text-left transition-all"
-              style={{
-                background: mode === 'full' ? 'rgba(124,58,237,0.15)' : 'var(--bg-secondary)',
-                border: `1px solid ${mode === 'full' ? 'rgba(124,58,237,0.4)' : 'var(--border)'}`,
-              }}
-            >
-              <div className="text-xs font-semibold" style={{ color: mode === 'full' ? 'var(--accent-purple-bright)' : 'var(--text-primary)' }}>Full Script</div>
-              <div className="text-xs" style={{ color: 'var(--text-muted)' }}>One continuous voiceover</div>
-            </button>
-            <button
-              onClick={() => setMode('sections')}
-              className="p-3 rounded-lg text-left transition-all"
-              style={{
-                background: mode === 'sections' ? 'rgba(124,58,237,0.15)' : 'var(--bg-secondary)',
-                border: `1px solid ${mode === 'sections' ? 'rgba(124,58,237,0.4)' : 'var(--border)'}`,
-              }}
-            >
-              <div className="text-xs font-semibold" style={{ color: mode === 'sections' ? 'var(--accent-purple-bright)' : 'var(--text-primary)' }}>By Section</div>
-              <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{sections.length} sections — generate individually</div>
-            </button>
+        {/* Mode selector — only show if script has multiple sections */}
+        {sections.length > 1 && (
+          <div>
+            <label className="text-xs font-medium mb-2 block" style={{ color: 'var(--text-secondary)' }}>Generation Mode</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => setMode('full')}
+                className="p-3 rounded-lg text-left transition-all"
+                style={{
+                  background: mode === 'full' ? 'rgba(124,58,237,0.15)' : 'var(--bg-secondary)',
+                  border: `1px solid ${mode === 'full' ? 'rgba(124,58,237,0.4)' : 'var(--border)'}`,
+                }}
+              >
+                <div className="text-xs font-semibold" style={{ color: mode === 'full' ? 'var(--accent-purple-bright)' : 'var(--text-primary)' }}>Full Script</div>
+                <div className="text-xs" style={{ color: 'var(--text-muted)' }}>One continuous voiceover</div>
+              </button>
+              <button
+                onClick={() => setMode('sections')}
+                className="p-3 rounded-lg text-left transition-all"
+                style={{
+                  background: mode === 'sections' ? 'rgba(124,58,237,0.15)' : 'var(--bg-secondary)',
+                  border: `1px solid ${mode === 'sections' ? 'rgba(124,58,237,0.4)' : 'var(--border)'}`,
+                }}
+              >
+                <div className="text-xs font-semibold" style={{ color: mode === 'sections' ? 'var(--accent-purple-bright)' : 'var(--text-primary)' }}>By Section</div>
+                <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{sections.length} sections — generate individually</div>
+              </button>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* ElevenLabs model */}
         <div>

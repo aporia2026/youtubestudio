@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
     try {
       const searchUrl = `https://www.reddit.com/search.json?q=${encodeURIComponent(niche)}&sort=relevance&t=month&limit=${limit}`;
       const searchRes = await fetch(searchUrl, {
-        headers: { 'User-Agent': 'YTStudio/1.0' },
+        headers: { 'User-Agent': 'web:YTStudio:v1.0 (content research tool)' },
       });
       if (searchRes.status === 429) {
         return NextResponse.json({ error: 'Reddit rate limit — please wait a minute and try again' }, { status: 429 });
@@ -74,8 +74,9 @@ export async function POST(req: NextRequest) {
         try {
           const subUrl = `https://www.reddit.com/r/${encodeURIComponent(sub)}/hot.json?limit=10`;
           const subRes = await fetch(subUrl, {
-            headers: { 'User-Agent': 'YTStudio/1.0' },
+            headers: { 'User-Agent': 'web:YTStudio:v1.0 (content research tool)' },
           });
+          if (subRes.status === 429) continue; // rate limited, skip this subreddit
           if (subRes.ok) {
             const data = await subRes.json();
             const posts = data?.data?.children || [];

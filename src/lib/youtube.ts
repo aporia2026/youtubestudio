@@ -38,8 +38,8 @@ function extractVideoId(url: string): string | null {
   return null;
 }
 
-export async function fetchYouTubeVideoData(url: string): Promise<YouTubeVideoData | null> {
-  const apiKey = process.env.YOUTUBE_API_KEY;
+export async function fetchYouTubeVideoData(url: string, overrideApiKey?: string): Promise<YouTubeVideoData | null> {
+  const apiKey = overrideApiKey || process.env.YOUTUBE_API_KEY;
   if (!apiKey) {
     // Return mock data structure when no API key
     const videoId = extractVideoId(url);
@@ -95,18 +95,27 @@ export async function fetchChannelData(channelIdOrUrl: string, overrideApiKey?: 
 
   let channelId = channelIdOrUrl;
 
-  // Handle @handle format
+  // Handle @handle format — use forHandle for exact match
   if (channelIdOrUrl.includes('@') || channelIdOrUrl.includes('youtube.com')) {
     const handleMatch = channelIdOrUrl.match(/@([^/&?]+)/);
     if (handleMatch) {
-      // Search by handle
       try {
-        const searchRes = await fetch(
-          `https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&q=${handleMatch[1]}&key=${apiKey}`
+        const handleRes = await fetch(
+          `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&forHandle=@${handleMatch[1]}&key=${apiKey}`
         );
-        const searchData = await searchRes.json();
-        if (searchData.items?.length) {
-          channelId = searchData.items[0].snippet.channelId;
+        const handleData = await handleRes.json();
+        if (handleData.items?.length) {
+          const item = handleData.items[0];
+          return {
+            id: item.id,
+            title: item.snippet.title,
+            description: item.snippet.description,
+            subscriberCount: parseInt(item.statistics.subscriberCount || '0'),
+            videoCount: parseInt(item.statistics.videoCount || '0'),
+            viewCount: parseInt(item.statistics.viewCount || '0'),
+            thumbnailUrl: item.snippet.thumbnails?.high?.url || '',
+            customUrl: item.snippet.customUrl || '',
+          };
         }
       } catch { return null; }
     }

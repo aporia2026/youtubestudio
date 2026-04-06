@@ -193,7 +193,7 @@ export default function QAPage() {
       });
 
       if (!res.ok) {
-        const err = await res.json();
+        const err = await res.json().catch(() => ({ error: 'Server error' }));
         throw new Error(err.error || 'QA failed');
       }
 

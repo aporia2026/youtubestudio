@@ -25,6 +25,14 @@ export async function POST(req: NextRequest) {
     // Try to fetch channel data from YouTube API (use per-account key if provided)
     const channelData = await fetchChannelData(url, accountApiKey || undefined);
 
+    // Prevent duplicates when no channel_id is available
+    if (!channelData?.id) {
+      const existing = await sql`SELECT id FROM channels WHERE name = ${url} LIMIT 1`;
+      if (existing.rows.length > 0) {
+        return NextResponse.json({ error: 'This channel was already added. Configure a YouTube API key to fetch proper channel data.' }, { status: 409 });
+      }
+    }
+
     const name = channelData?.title || url;
     const credentials = accountApiKey ? JSON.stringify({ youtube_api_key: accountApiKey }) : '{}';
     const result = await sql`

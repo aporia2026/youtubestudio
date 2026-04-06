@@ -70,7 +70,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
-    return NextResponse.json({ ok: false, error: `Unknown provider: ${provider}` });
+    return NextResponse.json({ ok: false, error: `Unknown provider: ${provider}` }, { status: 400 });
   } catch (err: unknown) {
     return NextResponse.json({
       ok: false,
