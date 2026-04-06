@@ -45,6 +45,23 @@ const FOCUS_OPTIONS = [
   { id: 'controversial', label: 'Controversial', emoji: '⚡' },
 ];
 
+const VIDEO_TYPES = [
+  { id: 'any', label: 'Any Type', emoji: '🎲', desc: 'Let AI pick the best format' },
+  { id: 'explainer', label: 'Explainer', emoji: '🧠', desc: 'Break down complex topics clearly' },
+  { id: 'story', label: 'Story / Narrative', emoji: '📖', desc: 'Story-driven with a beginning, middle, end' },
+  { id: 'tutorial', label: 'Tutorial / How-To', emoji: '🛠️', desc: 'Step-by-step instructional content' },
+  { id: 'listicle', label: 'Top 10 / Listicle', emoji: '📋', desc: 'Ranked lists, countdowns, compilations' },
+  { id: 'comparison', label: 'Comparison / Versus', emoji: '⚔️', desc: 'A vs B, product showdowns, debates' },
+  { id: 'reaction', label: 'Reaction / Commentary', emoji: '🎤', desc: 'React to news, trends, or other content' },
+  { id: 'case-study', label: 'Case Study / Deep Dive', emoji: '🔬', desc: 'In-depth analysis of a real example' },
+  { id: 'myth-busting', label: 'Myth Busting', emoji: '💥', desc: 'Debunk misconceptions and bad advice' },
+  { id: 'challenge', label: 'Challenge / Experiment', emoji: '🧪', desc: 'Try something and document the results' },
+  { id: 'interview', label: 'Interview / Q&A', emoji: '🎙️', desc: 'Expert interviews or audience Q&A' },
+  { id: 'behind-scenes', label: 'Behind the Scenes', emoji: '🎬', desc: 'Process reveals, day-in-the-life' },
+  { id: 'news-update', label: 'News / Breaking Update', emoji: '📰', desc: 'Timely coverage of industry news' },
+  { id: 'opinion', label: 'Hot Take / Opinion', emoji: '🔥', desc: 'Bold, opinionated take on a topic' },
+];
+
 const TREND_BADGES: Record<string, { color: string; bg: string }> = {
   trending: { color: '#ef4444', bg: 'rgba(239,68,68,0.1)' },
   rising: { color: '#f59e0b', bg: 'rgba(245,158,11,0.1)' },
@@ -66,6 +83,8 @@ export default function IdeasPage() {
   const [count, setCount] = useState(10);
   const [audience, setAudience] = useState('');
   const [focus, setFocus] = useState('mixed');
+  const [videoType, setVideoType] = useState('any');
+  const [showAllTypes, setShowAllTypes] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [ideas, setIdeas] = useState<VideoIdea[]>([]);
   const [savedIds, setSavedIds] = useState<Set<number>>(new Set());
@@ -87,7 +106,7 @@ export default function IdeasPage() {
       const res = await fetch('/api/generate/ideas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ modelId, niche, count, audience, focus }),
+        body: JSON.stringify({ modelId, niche, count, audience, focus, videoType: videoType !== 'any' ? videoType : undefined }),
       });
       if (!res.ok) {
         const err = await res.json();
@@ -195,6 +214,45 @@ export default function IdeasPage() {
                   )}
                 </button>
               ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Video Type</label>
+            <div className="space-y-1">
+              {(showAllTypes ? VIDEO_TYPES : VIDEO_TYPES.slice(0, 6)).map(vt => (
+                <button key={vt.id} type="button" onClick={() => setVideoType(vt.id)}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-all"
+                  style={{
+                    background: videoType === vt.id ? 'rgba(6,182,212,0.15)' : 'transparent',
+                    color: videoType === vt.id ? 'var(--text-primary)' : 'var(--text-secondary)',
+                  }}>
+                  <span className="text-sm">{vt.emoji}</span>
+                  <div className="flex-1 min-w-0">
+                    <span className="text-sm">{vt.label}</span>
+                    {videoType === vt.id && (
+                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{vt.desc}</p>
+                    )}
+                  </div>
+                  {videoType === vt.id && (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent-cyan-bright)" strokeWidth="2.5" className="shrink-0">
+                      <path d="M20 6L9 17l-5-5" />
+                    </svg>
+                  )}
+                </button>
+              ))}
+              {!showAllTypes && (
+                <button onClick={() => setShowAllTypes(true)} className="w-full text-xs py-1.5 rounded-lg transition-all"
+                  style={{ color: 'var(--accent-cyan-bright)' }}>
+                  Show {VIDEO_TYPES.length - 6} more types...
+                </button>
+              )}
+              {showAllTypes && (
+                <button onClick={() => setShowAllTypes(false)} className="w-full text-xs py-1.5 rounded-lg transition-all"
+                  style={{ color: 'var(--text-muted)' }}>
+                  Show less
+                </button>
+              )}
             </div>
           </div>
 

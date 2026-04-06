@@ -269,20 +269,41 @@ export function ideaGenerationPrompt({
   audience,
   existingTitles,
   focus,
+  videoType,
 }: {
   niche: string;
   count: number;
   audience?: string;
   existingTitles?: string[];
   focus?: 'trending' | 'evergreen' | 'controversial' | 'beginner' | 'mixed';
+  videoType?: string;
 }): { system: string; user: string } {
+  const videoTypeLabels: Record<string, string> = {
+    'explainer': 'Explainer — break down complex topics into clear, digestible content',
+    'story': 'Story / Narrative — story-driven with a compelling beginning, middle, and end',
+    'tutorial': 'Tutorial / How-To — step-by-step instructional content viewers can follow along',
+    'listicle': 'Top 10 / Listicle — ranked lists, countdowns, or compilations',
+    'comparison': 'Comparison / Versus — A vs B, product showdowns, or head-to-head debates',
+    'reaction': 'Reaction / Commentary — react to news, trends, or other content with personality',
+    'case-study': 'Case Study / Deep Dive — in-depth analysis of a specific real-world example',
+    'myth-busting': 'Myth Busting — debunk common misconceptions and bad advice',
+    'challenge': 'Challenge / Experiment — try something and document the results',
+    'interview': 'Interview / Q&A — expert conversations or audience Q&A format',
+    'behind-scenes': 'Behind the Scenes — process reveals, day-in-the-life, or making-of content',
+    'news-update': 'News / Breaking Update — timely coverage of industry news and developments',
+    'opinion': 'Hot Take / Opinion — bold, opinionated take on a polarizing topic',
+  };
+  const videoTypeInstruction = videoType && videoTypeLabels[videoType]
+    ? `\n**Video Type:** ALL ideas MUST be formatted as: ${videoTypeLabels[videoType]}. Every idea should fit this format specifically.`
+    : '';
+
   return {
     system: `You are a viral YouTube content strategist with deep expertise in the "${niche}" niche. You have an uncanny ability to predict which video ideas will explode in views. You understand search intent, trending topics, audience psychology, and the YouTube algorithm intimately.`,
 
     user: `Generate ${count} high-potential YouTube video ideas for the "${niche}" niche.
 
 **Target Audience:** ${audience || 'People interested in ' + niche}
-**Focus Type:** ${focus || 'mixed'} content
+**Focus Type:** ${focus || 'mixed'} content${videoTypeInstruction}
 ${existingTitles?.length ? `**Already Done (avoid overlap):**\n${existingTitles.slice(0, 10).map(t => `- ${t}`).join('\n')}` : ''}
 
 For each idea, think:
