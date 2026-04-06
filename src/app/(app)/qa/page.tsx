@@ -723,6 +723,20 @@ export default function QAPage() {
                             {fixedScript}
                           </pre>
                         </div>
+                        <div className="px-5 py-3 flex gap-2" style={{ borderTop: '1px solid var(--border)' }}>
+                          <button onClick={() => {
+                            localStorage.setItem('voiceover_prefill', JSON.stringify({ script: fixedScript, niche }));
+                            window.location.href = '/voiceover?from=qa';
+                          }} className="btn-primary text-sm flex-1 justify-center" style={{ justifyContent: 'center' }}>
+                            🎙️ Generate Voiceover
+                          </button>
+                          <button onClick={() => {
+                            localStorage.setItem('generator_prefill', JSON.stringify({ topic: '', niche, context: '', script: fixedScript }));
+                            window.location.href = '/generator?from=qa';
+                          }} className="btn-secondary text-sm flex-1 justify-center" style={{ justifyContent: 'center' }}>
+                            📝 Back to Script Generator
+                          </button>
+                        </div>
                       </div>
                     )}
                   </motion.div>

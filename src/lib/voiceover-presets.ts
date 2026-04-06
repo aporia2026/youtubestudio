@@ -80,16 +80,21 @@ export function splitScriptSections(script: string): { name: string; content: st
 /** Strip visual cues, pauses, and markdown from script for clean voiceover text */
 export function cleanScriptForVoiceover(text: string): string {
   return text
-    // Remove visual cue markers
-    .replace(/\[VISUAL CUE:[^\]]*\]/g, '')
-    // Remove pause markers (replace with a brief comma-like space)
-    .replace(/\[PAUSE\]/g, '...')
-    // Remove section headers
+    // Remove visual cue lines — handles all variations:
+    // [VISUAL CUE: ...], **[VISUAL CUE: ...]**, entire lines containing them
+    .replace(/^\s*\*{0,2}\[VISUAL CUE:[^\]]*\]\*{0,2}\s*$/gm, '')
+    // Remove inline visual cues that aren't on their own line
+    .replace(/\*{0,2}\[VISUAL CUE:[^\]]*\]\*{0,2}/g, '')
+    // Remove pause markers (replace with a brief ellipsis for natural pacing)
+    .replace(/\*{0,2}\[PAUSE\]\*{0,2}/g, '...')
+    // Remove section headers (## Section Name)
     .replace(/^##\s+.+$/gm, '')
     // Remove bold markdown
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     // Remove italic markdown
     .replace(/\*([^*]+)\*/g, '$1')
+    // Remove lines that are purely formatting/stage directions (anything in square brackets)
+    .replace(/^\s*\[.*\]\s*$/gm, '')
     // Clean up excess whitespace
     .replace(/\n{3,}/g, '\n\n')
     .trim();

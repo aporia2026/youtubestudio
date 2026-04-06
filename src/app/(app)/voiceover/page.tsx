@@ -59,6 +59,16 @@ function VoiceoverStudio() {
   }
 
   useEffect(() => {
+    // Check for prefill from QA page
+    try {
+      const prefill = localStorage.getItem('voiceover_prefill');
+      if (prefill) {
+        localStorage.removeItem('voiceover_prefill');
+        const data = JSON.parse(prefill);
+        if (data.script) setText(data.script);
+      }
+    } catch {}
+
     const saved = localStorage.getItem('elevenlabs_api_key');
     if (saved) { setApiKey(saved); loadVoices(saved); }
   }, []);
