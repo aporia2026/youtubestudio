@@ -7,6 +7,8 @@ import { ModelSelector } from '@/components/ui/ModelSelector';
 import { ScriptVoiceoverPanel } from '@/components/ui/ScriptVoiceoverPanel';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { countWords, estimateDuration, formatDuration } from '@/lib/utils';
+import { HistoryPanel } from '@/components/ui/HistoryPanel';
+import { getScriptHistory, saveScript as saveScriptToHistory, deleteScriptEntry, clearScriptHistory, type ScriptHistoryEntry } from '@/lib/history';
 
 const TONES = ['Engaging & Friendly', 'Authoritative & Expert', 'Conversational', 'Dramatic & Urgent', 'Humorous & Relaxed', 'Educational & Clear'];
 const STYLES = ['Explainer', 'Story-driven', 'Tutorial', 'Comparison', 'Opinion / Commentary', 'Top 10 List', 'Documentary'];
@@ -45,6 +47,32 @@ export default function GeneratorPage() {
   const [refUrl, setRefUrl] = useState('');
   const [refs, setRefs] = useState<VideoRef[]>([]);
   const [showRefs, setShowRefs] = useState(false);
+
+  // History
+  const [historyItems, setHistoryItems] = useState<ScriptHistoryEntry[]>(() => getScriptHistory());
+
+  function restoreScript(id: string) {
+    const entry = historyItems.find(e => e.id === id);
+    if (!entry) return;
+    setTopic(entry.topic);
+    setNiche(entry.niche);
+    setTone(entry.tone);
+    setStyle(entry.style);
+    setDuration(entry.duration);
+    setModelId(entry.modelId);
+    setScript(entry.script);
+    setShowSave(true);
+  }
+
+  function handleDeleteScript(id: string) {
+    deleteScriptEntry(id);
+    setHistoryItems(getScriptHistory());
+  }
+
+  function handleClearScripts() {
+    clearScriptHistory();
+    setHistoryItems([]);
+  }
 
   async function addReference() {
     if (!refUrl.trim()) return;
@@ -131,6 +159,9 @@ export default function GeneratorPage() {
       }
 
       setShowSave(true);
+      // Auto-save to history
+      saveScriptToHistory({ topic, niche, tone, style, duration, modelId, script: full, wordCount: countWords(full) });
+      setHistoryItems(getScriptHistory());
       toast.success('Script generated!');
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') return;
@@ -499,6 +530,22 @@ export default function GeneratorPage() {
           )}
         </div>
       </div>
+
+      {/* History panel */}
+      <HistoryPanel
+        title="Script History"
+        icon="📝"
+        items={historyItems.map(e => ({
+          id: e.id,
+          timestamp: e.timestamp,
+          label: e.topic,
+          sublabel: `${e.niche} · ${e.tone} · ${e.duration}min · ${e.wordCount} words`,
+          preview: e.script.slice(0, 150),
+        }))}
+        onRestore={restoreScript}
+        onDelete={handleDeleteScript}
+        onClearAll={handleClearScripts}
+      />
     </div>
   );
 }

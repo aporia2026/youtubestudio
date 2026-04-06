@@ -5,6 +5,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
+import { HistoryPanel } from '@/components/ui/HistoryPanel';
+import { getIdeasHistory, saveIdeas, deleteIdeasEntry, clearIdeasHistory, type IdeasHistoryEntry } from '@/lib/history';
 
 interface PerformanceBreakdown {
   search_volume?: string;
@@ -118,6 +120,30 @@ export default function IdeasPage() {
   const [useReddit, setUseReddit] = useState(false);
   const [redditSubs, setRedditSubs] = useState('');
 
+  // History
+  const [ideasHistoryItems, setIdeasHistoryItems] = useState<IdeasHistoryEntry[]>(() => getIdeasHistory());
+
+  function restoreIdeas(id: string) {
+    const entry = ideasHistoryItems.find(e => e.id === id);
+    if (!entry) return;
+    setNiche(entry.niche);
+    setFocus(entry.focus);
+    setVideoType(entry.videoType || 'any');
+    setModelId(entry.modelId);
+    setCount(entry.count);
+    setIdeas(entry.ideas as VideoIdea[]);
+  }
+
+  function handleDeleteIdeas(id: string) {
+    deleteIdeasEntry(id);
+    setIdeasHistoryItems(getIdeasHistory());
+  }
+
+  function handleClearIdeas() {
+    clearIdeasHistory();
+    setIdeasHistoryItems([]);
+  }
+
   useEffect(() => {
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
@@ -210,8 +236,20 @@ export default function IdeasPage() {
         throw new Error(err.error || 'Generation failed');
       }
       const data = await res.json();
-      setIdeas(data.ideas || []);
-      toast.success(`Generated ${data.ideas?.length || 0} video ideas!`);
+      const generatedIdeas = data.ideas || [];
+      setIdeas(generatedIdeas);
+      // Auto-save to history
+      if (generatedIdeas.length > 0) {
+        saveIdeas({
+          niche, focus, videoType, modelId, count,
+          ideas: generatedIdeas.map((i: VideoIdea) => ({
+            title: i.title, hook: i.hook, content_type: i.content_type,
+            estimated_views_potential: i.estimated_views_potential, trend_status: i.trend_status,
+          })),
+        });
+        setIdeasHistoryItems(getIdeasHistory());
+      }
+      toast.success(`Generated ${generatedIdeas.length} video ideas!`);
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Generation failed');
     } finally {
@@ -686,6 +724,23 @@ export default function IdeasPage() {
           )}
         </div>
       </div>
+
+      {/* History panel */}
+      <HistoryPanel
+        title="Ideas History"
+        icon="💡"
+        accentColor="#10b981"
+        items={ideasHistoryItems.map(e => ({
+          id: e.id,
+          timestamp: e.timestamp,
+          label: `${e.niche} — ${e.ideas.length} ideas`,
+          sublabel: `${e.focus} · ${e.videoType || 'any'} · ${e.count} requested`,
+          preview: e.ideas.slice(0, 3).map(i => i.title).join(' | '),
+        }))}
+        onRestore={restoreIdeas}
+        onDelete={handleDeleteIdeas}
+        onClearAll={handleClearIdeas}
+      />
     </div>
   );
 }

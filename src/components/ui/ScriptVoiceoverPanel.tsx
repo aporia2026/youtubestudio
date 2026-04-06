@@ -11,6 +11,7 @@ import {
   type VoicePreset,
 } from '@/lib/voiceover-presets';
 import { countWords, estimateDuration, formatDuration } from '@/lib/utils';
+import { saveVoiceover } from '@/lib/history';
 
 interface ElevenVoice {
   voice_id: string;
@@ -170,6 +171,16 @@ export function ScriptVoiceoverPanel({ script, tone, style, targetDuration, proj
       }
       const data = await res.json();
       setAudioUrl(data.url);
+      // Auto-save to history
+      saveVoiceover({
+        voiceName: selectedVoiceData?.name || 'Unknown',
+        voiceId: selectedVoice,
+        modelId: preset.model_id,
+        textPreview: cleanedScript.slice(0, 200),
+        charCount: cleanedScript.length,
+        audioUrl: data.url,
+        tone, style,
+      });
       toast.success('Voiceover generated!');
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Voiceover generation failed');
