@@ -7,6 +7,7 @@ import { useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
 import { ELEVENLABS_MODELS } from '@/lib/elevenlabs';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
+import { SaveAsProject } from '@/components/ui/SaveAsProject';
 import { getVoiceoverHistory, deleteVoiceoverEntry, type VoiceoverHistoryEntry } from '@/lib/history';
 
 interface ElevenVoice {
@@ -444,9 +445,16 @@ function VoiceoverStudio() {
                       </span>
                     )}
                   </div>
-                  <button onClick={generateVoiceover} className="mt-2 btn-secondary w-full text-sm justify-center" style={{ justifyContent: 'center' }}>
-                    🔄 Regenerate
-                  </button>
+                  <div className="flex gap-2 mt-2">
+                    <button onClick={generateVoiceover} className="btn-secondary flex-1 text-sm justify-center" style={{ justifyContent: 'center' }}>
+                      🔄 Regenerate
+                    </button>
+                  </div>
+                  {!projectId && (
+                    <div className="mt-2">
+                      <SaveAsProject script={text} niche="" topic="" variant="secondary" className="w-full" label="Save as New Project" />
+                    </div>
+                  )}
                 </motion.div>
               )}
             </AnimatePresence>

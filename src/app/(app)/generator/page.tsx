@@ -8,7 +8,10 @@ import { ScriptVoiceoverPanel } from '@/components/ui/ScriptVoiceoverPanel';
 import { getFeatureDefaultModelId, getModelById } from '@/lib/ai-models';
 import { countWords, estimateDuration, formatDuration } from '@/lib/utils';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
+import { SaveAsProject } from '@/components/ui/SaveAsProject';
+import { DraftsBanner } from '@/components/ui/DraftsBanner';
 import { getScriptHistory, saveScript as saveScriptToHistory, deleteScriptEntry, clearScriptHistory, type ScriptHistoryEntry } from '@/lib/history';
+import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
 
 const TONES = ['Engaging & Friendly', 'Authoritative & Expert', 'Conversational', 'Dramatic & Urgent', 'Humorous & Relaxed', 'Educational & Clear'];
 const STYLES = ['Explainer', 'Story-driven', 'Tutorial', 'Comparison', 'Opinion / Commentary', 'Top 10 List', 'Documentary'];
@@ -48,8 +51,21 @@ export default function GeneratorPage() {
   const [refs, setRefs] = useState<VideoRef[]>([]);
   const [showRefs, setShowRefs] = useState(false);
 
-  // History
+  // History & drafts
   const [historyItems, setHistoryItems] = useState<ScriptHistoryEntry[]>(() => getScriptHistory());
+  const [draftId, setDraftId] = useState<string | null>(() => getActiveDraft()?.id || null);
+
+  function resumeDraft(draft: WorkflowDraft) {
+    if (draft.topic) setTopic(draft.topic);
+    if (draft.niche) setNiche(draft.niche);
+    if (draft.tone) setTone(draft.tone);
+    if (draft.style) setStyle(draft.style);
+    if (draft.duration) setDuration(draft.duration);
+    if (draft.modelId && getModelById(draft.modelId)) setModelId(draft.modelId);
+    if (draft.script) { setScript(draft.script); setShowSave(true); }
+    setDraftId(draft.id);
+    toast.success('Draft resumed');
+  }
 
   function restoreScript(id: string) {
     const entry = historyItems.find(e => e.id === id);
@@ -184,6 +200,9 @@ export default function GeneratorPage() {
       // Auto-save to history
       saveScriptToHistory({ topic, niche, tone, style, duration, modelId, script: full, wordCount: countWords(full) });
       setHistoryItems(getScriptHistory());
+      // Auto-save draft
+      const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: full, wordCount: countWords(full) });
+      setDraftId(draft.id);
       toast.success('Script generated!');
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') return;
@@ -237,6 +256,7 @@ export default function GeneratorPage() {
       <div className="grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-6">
         {/* LEFT PANEL - Controls */}
         <div className="space-y-4">
+          <DraftsBanner currentStep="script" onResume={resumeDraft} />
           <div className="glass rounded-xl p-6 space-y-5">
             <h2 className="text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
               Script Parameters
@@ -504,37 +524,41 @@ export default function GeneratorPage() {
             </div>
           </div>
 
-          {/* Save to project */}
+          {/* Actions after script generation */}
           <AnimatePresence>
             {showSave && (
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
-                className="glass rounded-xl p-5"
-                style={{ border: '1px solid rgba(124,58,237,0.3)' }}
+                className="space-y-3"
               >
-                <h3 className="text-sm font-semibold mb-3" style={{ color: 'var(--text-primary)' }}>
-                  Save as Project
-                </h3>
-                <div className="flex gap-3">
-                  <input
-                    value={projectTitle}
-                    onChange={e => setProjectTitle(e.target.value)}
-                    placeholder="Project title..."
-                    className="input-field flex-1"
-                    onKeyDown={e => e.key === 'Enter' && saveScript()}
-                  />
-                  <button onClick={saveScript} disabled={saving || !projectTitle.trim()} className="btn-primary">
-                    {saving ? <div className="spinner" style={{ width: 16, height: 16 }} /> : 'Save'}
-                  </button>
-                </div>
-                <div className="flex gap-2 mt-3">
+                {/* Save as Project */}
+                <SaveAsProject script={script} niche={niche} topic={topic} modelId={modelId} />
+
+                {/* Next steps */}
+                <div className="flex gap-2">
                   <button
-                    onClick={() => { localStorage.setItem('qa_prefill', JSON.stringify({ script, niche })); window.location.href = '/qa?from=generator'; }}
-                    className="btn-secondary text-xs px-3 py-1.5"
+                    onClick={() => {
+                      // Update draft to QA step
+                      if (draftId) saveDraft({ id: draftId, title: topic, niche, step: 'qa', topic, tone, style, duration, modelId, script, wordCount: countWords(script) });
+                      localStorage.setItem('qa_prefill', JSON.stringify({ script, niche }));
+                      window.location.href = '/qa?from=generator';
+                    }}
+                    className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center"
+                    style={{ justifyContent: 'center' }}
                   >
                     🔬 Send to QA Engine
+                  </button>
+                  <button
+                    onClick={() => {
+                      localStorage.setItem('voiceover_prefill', JSON.stringify({ script, niche }));
+                      window.location.href = '/voiceover?from=generator';
+                    }}
+                    className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center"
+                    style={{ justifyContent: 'center' }}
+                  >
+                    🎙️ Generate Voiceover
                   </button>
                 </div>
               </motion.div>

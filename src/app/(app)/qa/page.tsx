@@ -4,8 +4,10 @@ import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
+import { SaveAsProject } from '@/components/ui/SaveAsProject';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { ScoreRing } from '@/components/ui/ScoreRing';
+import { saveDraft, getActiveDraft } from '@/lib/drafts';
 import { scoreLabel } from '@/lib/utils';
 
 type Aggressiveness = 'standard' | 'brutal' | 'nuclear';
@@ -226,6 +228,11 @@ export default function QAPage() {
       setResults(newResults);
       setActiveResult(newResults.length - 1);
       setPassNumber(p => p + 1);
+      // Auto-save draft
+      const activeDraft = getActiveDraft();
+      if (activeDraft) {
+        saveDraft({ ...activeDraft, step: 'qa', qaScore: data.result.overall_score, qaVerdict: data.result.verdict });
+      }
       toast.success(`QA Pass ${passNumber} complete! Score: ${data.result.overall_score}/100`);
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'QA analysis failed');
@@ -737,6 +744,7 @@ export default function QAPage() {
                             📝 Back to Script Generator
                           </button>
                         </div>
+                        <SaveAsProject script={fixedScript} niche={niche} topic="" variant="secondary" className="w-full" />
                       </div>
                     )}
                   </motion.div>
