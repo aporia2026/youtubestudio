@@ -21,7 +21,7 @@ export interface IdeasHistoryEntry {
   videoType: string;
   modelId: string;
   count: number;
-  ideas: Array<{ title: string; hook: string; content_type: string; estimated_views_potential: string; trend_status: string }>;
+  ideas: Array<Record<string, unknown>>;
 }
 
 export interface VoiceoverHistoryEntry {
@@ -165,8 +165,8 @@ export function searchIdeas(query: string): IdeasHistoryEntry[] {
   return getIdeasHistory().filter(e =>
     e.niche.toLowerCase().includes(q) ||
     e.ideas.some(i =>
-      i.title.toLowerCase().includes(q) ||
-      i.hook.toLowerCase().includes(q)
+      String(i.title || '').toLowerCase().includes(q) ||
+      String(i.hook || '').toLowerCase().includes(q)
     )
   );
 }

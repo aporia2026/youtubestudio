@@ -131,22 +131,7 @@ export default function IdeasPage() {
     setVideoType(entry.videoType || 'any');
     if (getModelById(entry.modelId)) setModelId(entry.modelId);
     setCount(entry.count);
-    // Fill missing fields with defaults so the UI doesn't break
-    setIdeas(entry.ideas.map(i => ({
-      title: i.title || '',
-      hook: i.hook || '',
-      description: '',
-      why_it_will_perform: '',
-      search_intent: '',
-      target_audience_segment: '',
-      estimated_difficulty: '',
-      content_type: i.content_type || '',
-      trend_status: i.trend_status || 'evergreen',
-      estimated_views_potential: i.estimated_views_potential || '',
-      thumbnail_concept: '',
-      tags: [],
-      competitor_gap: '',
-    })));
+    setIdeas(entry.ideas as unknown as VideoIdea[]);
     toast.success('Ideas restored from history');
   }
 
@@ -254,14 +239,11 @@ export default function IdeasPage() {
       const data = await res.json();
       const generatedIdeas = data.ideas || [];
       setIdeas(generatedIdeas);
-      // Auto-save to history
+      // Auto-save to history (full idea data)
       if (generatedIdeas.length > 0) {
         saveIdeas({
           niche, focus, videoType, modelId, count,
-          ideas: generatedIdeas.map((i: VideoIdea) => ({
-            title: i.title, hook: i.hook, content_type: i.content_type,
-            estimated_views_potential: i.estimated_views_potential, trend_status: i.trend_status,
-          })),
+          ideas: generatedIdeas,
         });
         setIdeasHistoryItems(getIdeasHistory());
       }
@@ -751,7 +733,7 @@ export default function IdeasPage() {
           timestamp: e.timestamp,
           label: `${e.niche} — ${e.ideas.length} ideas`,
           sublabel: `${e.focus} · ${e.videoType || 'any'} · ${e.count} requested`,
-          preview: e.ideas.slice(0, 3).map(i => i.title).join(' | '),
+          preview: e.ideas.slice(0, 3).map(i => (i as Record<string, string>).title || '').join(' | '),
         }))}
         onRestore={restoreIdeas}
         onDelete={handleDeleteIdeas}
