@@ -270,9 +270,38 @@ export default function IdeasPage() {
     }
   }
 
-  async function sendToGenerator(idea: VideoIdea) {
-    const params = new URLSearchParams({ topic: idea.title });
-    window.location.href = `/generator?${params.toString()}`;
+  function sendToGenerator(idea: VideoIdea) {
+    // Store full context in localStorage for the generator to pick up
+    const payload: Record<string, unknown> = {
+      topic: idea.title,
+      niche,
+      audience: idea.target_audience_segment || audience || '',
+      context: [
+        idea.description && `Description: ${idea.description}`,
+        idea.why_it_will_perform && `Why it will perform: ${idea.why_it_will_perform}`,
+        idea.search_intent && `Search intent: ${idea.search_intent}`,
+        idea.competitor_gap && `Competitor gap: ${idea.competitor_gap}`,
+        idea.hook && `Hook: ${idea.hook}`,
+        idea.thumbnail_concept && `Thumbnail concept: ${idea.thumbnail_concept}`,
+      ].filter(Boolean).join('\n'),
+      style: idea.content_type === 'explainer' ? 'Explainer'
+        : idea.content_type === 'tutorial' ? 'Tutorial'
+        : idea.content_type === 'comparison' ? 'Comparison'
+        : idea.content_type === 'story' ? 'Story-driven'
+        : idea.content_type === 'opinion' ? 'Opinion / Commentary'
+        : idea.content_type === 'list' ? 'Top 10 List'
+        : undefined,
+    };
+    // Pass references if any
+    if (refs.length > 0) {
+      payload.refs = refs.filter(r => !r.loading).map(r => ({
+        id: r.id, url: r.url, title: r.title, channelTitle: r.channelTitle,
+        viewCount: r.viewCount, thumbnailUrl: r.thumbnailUrl, styleAnalysis: r.styleAnalysis,
+        loading: false,
+      }));
+    }
+    localStorage.setItem('generator_prefill', JSON.stringify(payload));
+    window.location.href = '/generator?from=ideas';
   }
 
   return (

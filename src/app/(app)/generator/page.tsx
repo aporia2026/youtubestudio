@@ -116,6 +116,24 @@ export default function GeneratorPage() {
       setNiches(data.niches || []);
       if (data.niches?.length) setNiche(data.niches[0].name);
     }).catch(() => {});
+
+    // Check for prefill data from Idea Generator
+    try {
+      const prefill = localStorage.getItem('generator_prefill');
+      if (prefill) {
+        localStorage.removeItem('generator_prefill');
+        const data = JSON.parse(prefill);
+        if (data.topic) setTopic(data.topic);
+        if (data.niche) setNiche(data.niche);
+        if (data.audience) setAudience(data.audience);
+        if (data.context) setContext(data.context);
+        if (data.style && STYLES.includes(data.style)) setStyle(data.style);
+        if (data.refs && Array.isArray(data.refs)) {
+          setRefs(data.refs);
+          setShowRefs(true);
+        }
+      }
+    } catch {}
   }, []);
 
   async function generateScript() {
