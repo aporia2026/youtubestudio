@@ -784,15 +784,18 @@ export default function IdeasPage() {
                               </div>
 
                               {/* Inspiration Sources — with detailed attribution */}
-                              {idea.inspiration_sources && (idea.inspiration_sources.from_reference_videos || idea.inspiration_sources.from_reddit) && (
+                              {idea.inspiration_sources && (
+                                (Array.isArray(idea.inspiration_sources.from_reference_videos) ? idea.inspiration_sources.from_reference_videos.length > 0 : !!idea.inspiration_sources.from_reference_videos) ||
+                                (Array.isArray(idea.inspiration_sources.from_reddit) ? idea.inspiration_sources.from_reddit.length > 0 : !!idea.inspiration_sources.from_reddit)
+                              ) && (
                                 <div className="p-3 rounded-lg space-y-2"
                                   style={{ background: 'rgba(6,182,212,0.06)', border: '1px solid rgba(6,182,212,0.15)' }}>
                                   <h4 className="text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5" style={{ color: 'var(--accent-cyan-bright)' }}>
                                     🔗 Inspiration Sources & Attribution
                                   </h4>
-                                  {idea.inspiration_sources.from_reference_videos && (
+                                  {idea.inspiration_sources.from_reference_videos && (Array.isArray(idea.inspiration_sources.from_reference_videos) ? idea.inspiration_sources.from_reference_videos.length > 0 : true) && (
                                     <div className="space-y-1.5">
-                                      {/* Handle new array format */}
+                                      <p className="text-xs font-semibold mb-1" style={{ color: 'var(--accent-purple-bright)' }}>From Reference Videos:</p>
                                       {Array.isArray(idea.inspiration_sources.from_reference_videos) ? (
                                         (idea.inspiration_sources.from_reference_videos as unknown as Array<{ video_title?: string; techniques_borrowed?: string; how_adapted?: string }>).map((src, si) => (
                                           <div key={si} className="p-2 rounded" style={{ background: 'rgba(124,58,237,0.08)', border: '1px solid rgba(124,58,237,0.12)' }}>
@@ -822,8 +825,9 @@ export default function IdeasPage() {
                                       )}
                                     </div>
                                   )}
-                                  {idea.inspiration_sources.from_reddit && (
+                                  {idea.inspiration_sources.from_reddit && (Array.isArray(idea.inspiration_sources.from_reddit) ? idea.inspiration_sources.from_reddit.length > 0 : true) && (
                                     <div className="space-y-1.5">
+                                      <p className="text-xs font-semibold mb-1" style={{ color: '#ff4500' }}>From Reddit:</p>
                                       {Array.isArray(idea.inspiration_sources.from_reddit) ? (
                                         (idea.inspiration_sources.from_reddit as Array<{ post_title?: string; post_url?: string; subreddit?: string; what_was_taken?: string; how_adapted?: string }>).map((src, si) => (
                                           <div key={si} className="p-2 rounded" style={{ background: 'rgba(255,69,0,0.06)', border: '1px solid rgba(255,69,0,0.12)' }}>

@@ -453,22 +453,22 @@ For each idea, think:
       "tags": ["<tag1>", "<tag2>", "<tag3>", "<tag4>", "<tag5>"],
       "competitor_gap": "<why this hasn't been done well yet — what existing videos are missing>"${referenceContext || redditContext ? `,
       "inspiration_sources": {
-        ${referenceContext ? `"from_reference_videos": [
+        "from_reference_videos": ${referenceContext ? `[
           {
             "video_title": "<exact title of the reference video>",
-            "techniques_borrowed": "<list specific techniques taken: hook style, structure format, pacing pattern, engagement mechanic, thumbnail approach, storytelling device>",
-            "how_adapted": "<how you adapted those techniques for this new idea — what changed and why>"
+            "techniques_borrowed": "<specific techniques: hook style, structure, pacing, engagement, storytelling>",
+            "how_adapted": "<how you adapted those techniques for this idea>"
           }
-        ]` : ''}${referenceContext && redditContext ? ',' : ''}
-        ${redditContext ? `"from_reddit": [
+        ]` : `[]`},
+        "from_reddit": ${redditContext ? `[
           {
-            "post_title": "<exact title of the Reddit post>",
-            "post_url": "<the URL of the Reddit post>",
+            "post_title": "<EXACT title of the Reddit post — copy from the data above>",
+            "post_url": "<EXACT URL of the Reddit post — copy from the data above>",
             "subreddit": "<r/subreddit name>",
-            "what_was_taken": "<specific question, pain point, debate, or insight from the post or its comments that inspired this idea>",
-            "how_adapted": "<how you turned that Reddit discussion into a video concept>"
+            "what_was_taken": "<the specific question, pain point, or insight from the post or its top comments>",
+            "how_adapted": "<how that discussion became this video idea>"
           }
-        ]` : ''}
+        ]` : `[]`}
       }` : ''}
     }
   ]
@@ -481,7 +481,8 @@ The "inspiration_sources" field is MANDATORY for EVERY idea. Do NOT skip it. Do 
 ${referenceContext ? `- "from_reference_videos" MUST be a non-empty ARRAY for EVERY idea. Each object must name the EXACT reference video title, list SPECIFIC techniques borrowed (hook style, structure, pacing, thumbnail concept, engagement mechanics, storytelling devices), and explain HOW you adapted them. Even if the connection is indirect, explain what the reference taught you about the niche/audience.` : ''}
 ${redditContext ? `- "from_reddit" MUST be a non-empty ARRAY for EVERY idea. Each object MUST include the EXACT post title, the post URL (copy it from the data above), the subreddit name, what specific insight/question/pain point was taken, and how you turned it into this video idea. EVERY idea must trace back to at least one Reddit post. If a Reddit discussion revealed a pain point, question, or debate — that IS the inspiration. Include the URL so the user can click and read the original discussion.` : ''}
 
-FAILURE TO INCLUDE DETAILED inspiration_sources FOR EVERY IDEA IS UNACCEPTABLE. This is the most important part of the output.` : ''}
+FAILURE TO INCLUDE DETAILED inspiration_sources FOR EVERY IDEA IS UNACCEPTABLE. This is the most important part of the output.
+${redditContext ? `\nREDDIT IS CRITICAL: You were given real Reddit posts with URLs above. For EACH idea, you MUST include at least one "from_reddit" entry with the actual post_title and post_url copied from the Reddit data. The user specifically enabled Reddit research to see how Reddit discussions influenced each idea. If you skip from_reddit, the output is considered FAILED.` : ''}` : ''}
 Return ONLY valid JSON. Generate ideas that are genuinely different from each other in format, angle, and audience segment.`,
   };
 }
