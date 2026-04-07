@@ -160,7 +160,6 @@ export default function IdeasPage() {
   async function addReference() {
     if (!refUrl.trim()) return;
     const url = refUrl.trim();
-    // Basic YouTube URL validation
     if (refs.length >= 5) { toast.error('Maximum 5 reference videos allowed'); return; }
     if (!/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)/.test(url)) {
       toast.error('Please enter a valid YouTube URL');
@@ -168,34 +167,35 @@ export default function IdeasPage() {
     }
     setRefUrl('');
     const refId = `ref-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const placeholder: VideoRef = { id: refId, url, title: 'Deep analyzing...', channelTitle: '', viewCount: 0, thumbnailUrl: '', styleAnalysis: null, analysis: null, loading: true };
-    setRefs(prev => [...prev, placeholder]);
+    setRefs(prev => [...prev, { id: refId, url, title: 'Loading...', channelTitle: '', viewCount: 0, thumbnailUrl: '', styleAnalysis: null, analysis: null, loading: true }]);
 
     try {
+      // Only fetch metadata — NO deep AI analysis yet (that happens at generate time)
       const res = await fetch('/api/youtube/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, modelId }),
+        body: JSON.stringify({ url }),  // no modelId → skips AI analysis
       });
-      if (!res.ok) throw new Error('Analysis failed');
+      if (!res.ok) throw new Error('Failed to fetch video data');
       const data = await res.json();
       setRefs(prev => prev.map(r => r.id === refId ? {
-        id: refId,
-        url,
+        id: refId, url,
         title: data.metadata.title,
         channelTitle: data.metadata.channelTitle,
         viewCount: data.metadata.viewCount,
         thumbnailUrl: data.metadata.thumbnailUrl,
-        styleAnalysis: data.styleAnalysis,
-        analysis: data.analysis || null,
+        styleAnalysis: null,
+        analysis: null,
         loading: false,
       } : r));
-      toast.success(`Deep analysis complete: ${data.metadata.title.slice(0, 40)}...`);
+      toast.success(`Added: ${data.metadata.title.slice(0, 50)}`);
     } catch {
       setRefs(prev => prev.filter(r => r.id !== refId));
-      toast.error('Failed to analyze video');
+      toast.error('Failed to load video');
     }
   }
+
+  const [genStep, setGenStep] = useState('');
 
   async function generateIdeas() {
     if (!niche.trim()) { toast.error('Please select a niche'); return; }
@@ -203,31 +203,62 @@ export default function IdeasPage() {
     setIdeas([]);
     setSavedIds(new Set());
 
-    // Build rich reference context from deep analysis
-    const refContext = refs.filter(r => !r.loading && r.styleAnalysis).map((r, idx) =>
-      `### REFERENCE VIDEO ${idx + 1}: "${r.title}" by ${r.channelTitle} (${r.viewCount.toLocaleString()} views)\n${r.styleAnalysis}`
-    ).join('\n\n---\n\n');
-
-    // Fetch Reddit data inline if toggle is on
+    const activeRefs = refs.filter(r => !r.loading);
+    let refContext = '';
     let redditContext: string | undefined;
-    if (useReddit) {
-      try {
-        const subs = redditSubs.split(',').map(s => s.trim()).filter(Boolean);
-        const redditRes = await fetch('/api/research/reddit', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ niche, subreddits: subs, limit: 20 }),
-        });
-        if (redditRes.ok) {
-          const data = await redditRes.json();
-          redditContext = data.summary || undefined;
-        }
-      } catch {
-        // Reddit fetch failed — continue without it
-      }
-    }
 
     try {
+      // STEP 1: Deep-analyze reference videos (if any)
+      if (activeRefs.length > 0) {
+        setGenStep(`Analyzing ${activeRefs.length} reference video${activeRefs.length > 1 ? 's' : ''} (visuals, transcript, pacing)...`);
+        const analyses = await Promise.all(
+          activeRefs.map(async (ref, idx) => {
+            setGenStep(`Analyzing video ${idx + 1}/${activeRefs.length}: "${ref.title.slice(0, 40)}..."`);
+            try {
+              const res = await fetch('/api/youtube/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: ref.url, modelId }),
+              });
+              if (!res.ok) return null;
+              const data = await res.json();
+              // Update the ref with analysis results for display
+              setRefs(prev => prev.map(r => r.id === ref.id ? {
+                ...r,
+                styleAnalysis: data.styleAnalysis,
+                analysis: data.analysis || null,
+              } : r));
+              return { title: ref.title, channelTitle: ref.channelTitle, viewCount: ref.viewCount, styleAnalysis: data.styleAnalysis };
+            } catch { return null; }
+          }),
+        );
+
+        refContext = analyses.filter(Boolean).map((a, idx) =>
+          `### REFERENCE VIDEO ${idx + 1}: "${a!.title}" by ${a!.channelTitle} (${a!.viewCount.toLocaleString()} views)\n${a!.styleAnalysis}`
+        ).join('\n\n---\n\n');
+      }
+
+      // STEP 2: Scrape Reddit (if enabled)
+      if (useReddit) {
+        setGenStep('Scraping Reddit discussions and top comments...');
+        try {
+          const subs = redditSubs.split(',').map(s => s.trim()).filter(Boolean);
+          const redditRes = await fetch('/api/research/reddit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ niche, subreddits: subs, limit: 20 }),
+          });
+          if (redditRes.ok) {
+            const data = await redditRes.json();
+            redditContext = data.summary || undefined;
+          }
+        } catch {
+          // Reddit fetch failed — continue without it
+        }
+      }
+
+      // STEP 3: Generate ideas with all context
+      setGenStep('Generating ideas from all sources...');
       const res = await fetch('/api/generate/ideas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -245,12 +276,8 @@ export default function IdeasPage() {
       const data = await res.json();
       const generatedIdeas = data.ideas || [];
       setIdeas(generatedIdeas);
-      // Auto-save to history (full idea data)
       if (generatedIdeas.length > 0) {
-        saveIdeas({
-          niche, focus, videoType, modelId, count,
-          ideas: generatedIdeas,
-        });
+        saveIdeas({ niche, focus, videoType, modelId, count, ideas: generatedIdeas });
         setIdeasHistoryItems(getIdeasHistory());
       }
       toast.success(`Generated ${generatedIdeas.length} video ideas!`);
@@ -258,6 +285,7 @@ export default function IdeasPage() {
       toast.error(err instanceof Error ? err.message : 'Generation failed');
     } finally {
       setGenerating(false);
+      setGenStep('');
     }
   }
 
@@ -450,7 +478,7 @@ export default function IdeasPage() {
                   className="overflow-hidden">
                   <div className="mt-3 space-y-2">
                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                      Add YouTube videos — AI performs deep forensic analysis of visuals, transcript, pacing, and engagement
+                      Add YouTube videos as references — deep analysis runs when you click Generate
                     </p>
                     <div className="flex gap-2">
                       <input value={refUrl} onChange={e => setRefUrl(e.target.value)}
@@ -467,15 +495,24 @@ export default function IdeasPage() {
                           {ref.thumbnailUrl && <img src={ref.thumbnailUrl} alt="" width={64} height={36} className="w-16 h-9 rounded object-cover shrink-0" />}
                           <div className="flex-1 min-w-0">
                             <p className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>
-                              {ref.loading ? 'Deep analyzing video...' : ref.title}
+                              {ref.loading ? 'Loading...' : ref.title}
                             </p>
                             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
                               {ref.loading ? (
                                 <span className="flex items-center gap-1">
                                   <span className="spinner inline-block" style={{ width: 10, height: 10 }} />
-                                  Analyzing visuals, transcript, pacing, structure...
+                                  Fetching video info...
                                 </span>
-                              ) : `${ref.channelTitle} · ${ref.viewCount.toLocaleString()} views`}
+                              ) : (
+                                <>
+                                  {ref.channelTitle} · {ref.viewCount.toLocaleString()} views
+                                  {ref.styleAnalysis ? (
+                                    <span className="ml-1 badge badge-green text-[9px]">Analyzed</span>
+                                  ) : (
+                                    <span className="ml-1 badge badge-purple text-[9px]">Will analyze on generate</span>
+                                  )}
+                                </>
+                              )}
                             </p>
                           </div>
                           <button onClick={() => setRefs(prev => prev.filter(r => r.id !== ref.id))} className="text-xs shrink-0" style={{ color: '#ef4444' }}>×</button>
@@ -529,11 +566,16 @@ export default function IdeasPage() {
           <button onClick={generateIdeas} disabled={generating || !niche.trim()}
             className="btn-primary w-full justify-center" style={{ width: '100%', justifyContent: 'center' }}>
             {generating ? (
-              <><div className="spinner" style={{ width: 16, height: 16 }} />Generating Ideas...</>
+              <><div className="spinner" style={{ width: 16, height: 16 }} />Generating...</>
             ) : (
               <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" /></svg>Generate {count} Ideas</>
             )}
           </button>
+          {generating && genStep && (
+            <p className="text-xs text-center mt-2 animate-pulse" style={{ color: 'var(--accent-cyan-bright)' }}>
+              {genStep}
+            </p>
+          )}
         </div>
 
         {/* Ideas grid */}
