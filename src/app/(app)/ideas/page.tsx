@@ -788,7 +788,7 @@ export default function IdeasPage() {
                                 <div className="p-3 rounded-lg space-y-2"
                                   style={{ background: 'rgba(6,182,212,0.06)', border: '1px solid rgba(6,182,212,0.15)' }}>
                                   <h4 className="text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5" style={{ color: 'var(--accent-cyan-bright)' }}>
-                                    🔗 Techniques Borrowed From References
+                                    🔗 Inspiration Sources & Attribution
                                   </h4>
                                   {idea.inspiration_sources.from_reference_videos && (
                                     <div className="space-y-1.5">

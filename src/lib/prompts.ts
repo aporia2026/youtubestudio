@@ -474,10 +474,14 @@ For each idea, think:
   ]
 }
 \`\`\`
-${referenceContext || redditContext ? `\nCRITICAL ATTRIBUTION REQUIREMENT: For each idea, the "inspiration_sources" field MUST contain detailed attribution:
-${referenceContext ? `- "from_reference_videos" must be an ARRAY of objects, each naming the EXACT reference video title, listing the SPECIFIC techniques borrowed (hook style, structure, pacing, thumbnail concept, engagement mechanics, storytelling devices), and explaining HOW you adapted them. Every technique you use from a reference video must be explicitly called out.` : ''}
-${redditContext ? `- "from_reddit" must be an ARRAY of objects, each with the EXACT post title, post URL, subreddit, what specific insight was taken (a question, pain point, debate, or comment), and how you adapted it into a video idea. Include the actual post URL so the user can verify. Every Reddit-inspired idea must trace back to a specific post.` : ''}
-Do NOT be vague. Do NOT say "inspired by the reference videos" without specifics. Name exact techniques, exact moments, exact elements.` : ''}
+${referenceContext || redditContext ? `\nCRITICAL ATTRIBUTION REQUIREMENT — YOU MUST FOLLOW THIS:
+
+The "inspiration_sources" field is MANDATORY for EVERY idea. Do NOT skip it. Do NOT return an empty object.
+
+${referenceContext ? `- "from_reference_videos" MUST be a non-empty ARRAY for EVERY idea. Each object must name the EXACT reference video title, list SPECIFIC techniques borrowed (hook style, structure, pacing, thumbnail concept, engagement mechanics, storytelling devices), and explain HOW you adapted them. Even if the connection is indirect, explain what the reference taught you about the niche/audience.` : ''}
+${redditContext ? `- "from_reddit" MUST be a non-empty ARRAY for EVERY idea. Each object MUST include the EXACT post title, the post URL (copy it from the data above), the subreddit name, what specific insight/question/pain point was taken, and how you turned it into this video idea. EVERY idea must trace back to at least one Reddit post. If a Reddit discussion revealed a pain point, question, or debate — that IS the inspiration. Include the URL so the user can click and read the original discussion.` : ''}
+
+FAILURE TO INCLUDE DETAILED inspiration_sources FOR EVERY IDEA IS UNACCEPTABLE. This is the most important part of the output.` : ''}
 Return ONLY valid JSON. Generate ideas that are genuinely different from each other in format, angle, and audience segment.`,
   };
 }
