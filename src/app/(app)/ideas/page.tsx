@@ -338,6 +338,23 @@ export default function IdeasPage() {
     window.location.href = '/generator?from=ideas';
   }
 
+  function sendToSeo(idea: VideoIdea) {
+    localStorage.setItem('seo_prefill', JSON.stringify({
+      topic: idea.title,
+      niche,
+    }));
+    window.location.href = '/seo?from=ideas';
+  }
+
+  function sendToThumbnails(idea: VideoIdea) {
+    localStorage.setItem('thumbnails_prefill', JSON.stringify({
+      title: idea.title,
+      niche,
+      description: idea.description,
+    }));
+    window.location.href = '/thumbnails?from=ideas';
+  }
+
   return (
     <div className="p-8 max-w-7xl mx-auto">
       {/* Header */}
@@ -879,6 +896,12 @@ export default function IdeasPage() {
                                   <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
                                 </svg>
                                 Generate Script for This Idea
+                              </button>
+                              <button onClick={() => sendToSeo(idea)} className="btn-secondary text-xs px-3 py-1.5">
+                                🔍 Optimize SEO
+                              </button>
+                              <button onClick={() => sendToThumbnails(idea)} className="btn-secondary text-xs px-3 py-1.5">
+                                🎨 Generate Thumbnail
                               </button>
                             </div>
                           </motion.div>

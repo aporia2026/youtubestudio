@@ -6,7 +6,7 @@ export interface WorkflowDraft {
   title: string;           // derived from topic or idea title
   niche: string;
   updatedAt: number;
-  step: 'idea' | 'script' | 'qa' | 'voiceover' | 'done';
+  step: 'idea' | 'script' | 'qa' | 'seo' | 'thumbnails' | 'voiceover' | 'done';
 
   // Idea stage
   ideaTitle?: string;
@@ -25,6 +25,13 @@ export interface WorkflowDraft {
   qaScore?: number;
   qaVerdict?: string;
   fixedScript?: string;
+
+  // SEO stage
+  seoTitle?: string;
+  seoDescription?: string;
+
+  // Thumbnails stage
+  thumbnailConcept?: string;
 
   // Voiceover stage
   voiceoverUrl?: string;

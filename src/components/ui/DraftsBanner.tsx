@@ -8,7 +8,9 @@ const STEP_LABELS: Record<string, { label: string; color: string }> = {
   idea: { label: 'Idea', color: '#10b981' },
   script: { label: 'Script', color: '#7c3aed' },
   qa: { label: 'QA', color: '#f59e0b' },
-  voiceover: { label: 'Voiceover', color: '#ec4899' },
+  seo: { label: 'SEO', color: '#10b981' },
+  thumbnails: { label: 'Thumbnail', color: '#ec4899' },
+  voiceover: { label: 'Voiceover', color: '#06b6d4' },
   done: { label: 'Complete', color: '#10b981' },
 };
 
@@ -32,11 +34,21 @@ export function DraftsBanner({ currentStep, onResume }: DraftsBannerProps) {
   const [drafts, setDraftsState] = useState<WorkflowDraft[]>(() => getDrafts());
   const [showAll, setShowAll] = useState(false);
 
-  // Only show drafts relevant to the current page's step
-  const relevantDrafts = drafts.filter(d => d.step === currentStep ||
-    (currentStep === 'script' && d.step === 'qa') ||
-    (currentStep === 'qa' && d.step === 'script')
-  );
+  // Show drafts relevant to the current page + adjacent pipeline steps
+  const relevantDrafts = drafts.filter(d => {
+    if (d.step === currentStep) return true;
+    // Script page shows qa/seo drafts too (they came from scripts)
+    if (currentStep === 'script' && ['qa', 'seo'].includes(d.step)) return true;
+    // QA page shows script drafts
+    if (currentStep === 'qa' && d.step === 'script') return true;
+    // SEO page shows script/qa drafts (that have scripts)
+    if (currentStep === 'seo' && ['script', 'qa'].includes(d.step) && d.script) return true;
+    // Thumbnails page shows seo/script drafts (that have titles)
+    if (currentStep === 'thumbnails' && ['seo', 'script', 'qa'].includes(d.step)) return true;
+    // Voiceover shows script/qa drafts (that have scripts)
+    if (currentStep === 'voiceover' && ['script', 'qa'].includes(d.step) && d.script) return true;
+    return false;
+  });
 
   function handleDelete(id: string) {
     deleteDraft(id);
@@ -101,6 +113,8 @@ export function DraftsBanner({ currentStep, onResume }: DraftsBannerProps) {
                         {draft.niche} · {timeAgo(draft.updatedAt)}
                         {draft.qaScore ? ` · QA: ${draft.qaScore}/100` : ''}
                         {draft.wordCount ? ` · ${draft.wordCount} words` : ''}
+                        {draft.seoTitle ? ` · SEO done` : ''}
+                        {draft.thumbnailConcept ? ` · Thumbnail done` : ''}
                       </p>
                     </div>
                     <button

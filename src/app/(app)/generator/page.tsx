@@ -692,6 +692,24 @@ export default function GeneratorPage() {
                   >
                     🎙️ Generate Voiceover
                   </button>
+                  <button
+                    onClick={() => {
+                      localStorage.setItem('seo_prefill', JSON.stringify({ topic, niche, script }));
+                      window.location.href = '/seo?from=generator';
+                    }}
+                    className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
+                  >
+                    🔍 Optimize SEO
+                  </button>
+                  <button
+                    onClick={() => {
+                      localStorage.setItem('thumbnails_prefill', JSON.stringify({ title: topic, niche, description: script?.slice(0, 500) }));
+                      window.location.href = '/thumbnails?from=generator';
+                    }}
+                    className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
+                  >
+                    🎨 Generate Thumbnail
+                  </button>
                 </div>
               </motion.div>
             )}

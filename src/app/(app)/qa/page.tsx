@@ -759,6 +759,26 @@ export default function QAPage() {
                             📝 Back to Script Generator
                           </button>
                         </div>
+                        <div className="px-5 py-3 flex gap-2" style={{ borderTop: '1px solid var(--border)' }}>
+                          <button
+                            onClick={() => {
+                              localStorage.setItem('seo_prefill', JSON.stringify({ topic: niche, niche, script: fixedScript || script }));
+                              window.location.href = '/seo?from=qa';
+                            }}
+                            className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
+                          >
+                            🔍 Optimize SEO
+                          </button>
+                          <button
+                            onClick={() => {
+                              localStorage.setItem('thumbnails_prefill', JSON.stringify({ title: niche, niche, description: (fixedScript || script)?.slice(0, 500) }));
+                              window.location.href = '/thumbnails?from=qa';
+                            }}
+                            className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
+                          >
+                            🎨 Generate Thumbnail
+                          </button>
+                        </div>
                         <div className="flex gap-2">
                           <SaveAsProject script={fixedScript} niche={niche} topic="" variant="secondary" className="flex-1" />
                           <ExportScript title={niche} script={fixedScript} niche={niche} />

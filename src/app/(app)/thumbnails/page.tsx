@@ -5,6 +5,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
+import { HistoryPanel } from '@/components/ui/HistoryPanel';
+import { DraftsBanner } from '@/components/ui/DraftsBanner';
+import { getThumbnailHistory, saveThumbnailEntry, deleteThumbnailEntry, clearThumbnailHistory, type ThumbnailHistoryEntry } from '@/lib/history';
+import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
 
 const IMAGE_MODELS = [
   { value: 'grok-imagine-t2i', label: 'Grok Imagine (Text-to-Image)' },
@@ -96,6 +100,8 @@ export default function ThumbnailsPage() {
   const [showScript, setShowScript] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [result, setResult] = useState<GenerateResult | null>(null);
+  const [historyItems, setHistoryItems] = useState<ThumbnailHistoryEntry[]>(() => getThumbnailHistory());
+  const [draftId, setDraftId] = useState<string | null>(() => getActiveDraft()?.id || null);
 
   // Image generation
   const [imageGenEnabled, setImageGenEnabled] = useState(false);
@@ -112,6 +118,16 @@ export default function ThumbnailsPage() {
       setNiches(data.niches || []);
       if (data.niches?.length) setNiche(data.niches[0].name);
     }).catch(() => {});
+    try {
+      const prefill = localStorage.getItem('thumbnails_prefill');
+      if (prefill) {
+        localStorage.removeItem('thumbnails_prefill');
+        const data = JSON.parse(prefill);
+        if (data.title) setTitle(data.title);
+        if (data.niche) setNiche(data.niche);
+        if (data.description) setDescription(data.description);
+      }
+    } catch {}
   }, []);
 
   async function generateConcepts() {
@@ -128,6 +144,20 @@ export default function ThumbnailsPage() {
       if (!res.ok) throw new Error('Generation failed');
       const data = await res.json();
       setResult(data.result);
+      const concepts = (data.result as any).concepts || [];
+      const best = concepts.sort((a: any, b: any) => ((b.ctr_prediction?.score || b.ctr_score || 0) - (a.ctr_prediction?.score || a.ctr_score || 0)))[0];
+      saveThumbnailEntry({
+        title, niche, modelId,
+        conceptsCount: concepts.length,
+        bestConceptName: best?.concept_name || 'Untitled',
+        bestScore: best?.ctr_prediction?.score || best?.ctr_score || 0,
+      });
+      setHistoryItems(getThumbnailHistory());
+      const draft = saveDraft({
+        id: draftId || undefined, title, niche, step: 'thumbnails',
+        topic: title, modelId, thumbnailConcept: best?.concept_name,
+      });
+      setDraftId(draft.id);
       toast.success('Thumbnail concepts generated!');
     } catch {
       toast.error('Failed to generate concepts. Please try again.');
@@ -157,6 +187,14 @@ export default function ThumbnailsPage() {
     }
   }
 
+  function resumeDraft(draft: WorkflowDraft) {
+    if (draft.topic) setTitle(draft.topic);
+    if (draft.niche) setNiche(draft.niche);
+    if (draft.modelId) setModelId(draft.modelId);
+    setDraftId(draft.id);
+    toast.success('Draft resumed');
+  }
+
   function copyPrompt(prompt: string) {
     navigator.clipboard.writeText(prompt).then(() => toast.success('Prompt copied to clipboard'));
   }
@@ -177,6 +215,8 @@ export default function ThumbnailsPage() {
         <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>Thumbnail Concept Generator</h1>
         <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Generate click-optimized thumbnail concepts with CTR prediction scoring</p>
       </div>
+
+      <DraftsBanner currentStep="thumbnails" onResume={resumeDraft} />
 
       <div className="flex gap-6" style={{ alignItems: 'flex-start' }}>
         {/* LEFT PANEL */}
@@ -410,6 +450,20 @@ export default function ThumbnailsPage() {
               </motion.div>
             )}
 
+            {result && (
+              <div className="flex gap-2 mt-4">
+                <button
+                  onClick={() => {
+                    localStorage.setItem('voiceover_prefill', JSON.stringify({ script: description || title, niche }));
+                    window.location.href = '/voiceover?from=thumbnails';
+                  }}
+                  className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
+                >
+                  🎙️ Generate Voiceover
+                </button>
+              </div>
+            )}
+
             {!generating && !result && (
               <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                 className="glass p-12 text-center">
@@ -423,6 +477,23 @@ export default function ThumbnailsPage() {
           </AnimatePresence>
         </div>
       </div>
+
+      <HistoryPanel
+        title="Thumbnail History"
+        icon="🎨"
+        items={historyItems.map(e => ({
+          id: e.id,
+          timestamp: e.timestamp,
+          label: e.title,
+          sublabel: `${e.niche} · ${e.conceptsCount} concepts · Best: ${e.bestConceptName} (${e.bestScore}/100)`,
+        }))}
+        onRestore={(id) => {
+          const entry = historyItems.find(e => e.id === id);
+          if (entry) { setTitle(entry.title); setNiche(entry.niche); toast.success('Restored from history'); }
+        }}
+        onDelete={(id) => { deleteThumbnailEntry(id); setHistoryItems(getThumbnailHistory()); }}
+        onClearAll={() => { clearThumbnailHistory(); setHistoryItems([]); }}
+      />
     </div>
   );
 }

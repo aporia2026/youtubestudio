@@ -4,7 +4,11 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
+import { HistoryPanel } from '@/components/ui/HistoryPanel';
+import { DraftsBanner } from '@/components/ui/DraftsBanner';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
+import { getSeoHistory, saveSeoEntry, deleteSeoEntry, clearSeoHistory, type SeoHistoryEntry } from '@/lib/history';
+import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
 
 interface TitleBreakdownEntry {
   score: number;
@@ -65,12 +69,25 @@ export default function SeoPage() {
   const [result, setResult] = useState<SeoResult | null>(null);
   const [activeTab, setActiveTab] = useState<'titles' | 'description' | 'tags'>('titles');
   const [expandedTitle, setExpandedTitle] = useState<number | null>(null);
+  const [historyItems, setHistoryItems] = useState<SeoHistoryEntry[]>(() => getSeoHistory());
+  const [draftId, setDraftId] = useState<string | null>(() => getActiveDraft()?.id || null);
 
   useEffect(() => {
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
       if (data.niches?.length) setNiche(data.niches[0].name);
     }).catch(() => {});
+
+    try {
+      const prefill = localStorage.getItem('seo_prefill');
+      if (prefill) {
+        localStorage.removeItem('seo_prefill');
+        const data = JSON.parse(prefill);
+        if (data.topic) setTopic(data.topic);
+        if (data.niche) setNiche(data.niche);
+        if (data.script) setScript(data.script);
+      }
+    } catch {}
   }, []);
 
   async function handleGenerate() {
@@ -99,6 +116,24 @@ export default function SeoPage() {
       setResult(data.result);
       setActiveTab('titles');
       toast.success('SEO optimization complete!');
+      // Save to history
+      const titles = (data.result as any).titles || [];
+      const bestTitle = titles.sort((a: any, b: any) => (b.score || 0) - (a.score || 0))[0];
+      saveSeoEntry({
+        topic, niche, modelId,
+        titlesCount: titles.length,
+        bestTitle: bestTitle?.title || topic,
+        bestScore: bestTitle?.score || 0,
+        tagsCount: ((data.result as any).tags || []).length,
+      });
+      setHistoryItems(getSeoHistory());
+      // Save draft
+      const draft = saveDraft({
+        id: draftId || undefined, title: topic, niche, step: 'seo',
+        topic, modelId, seoTitle: bestTitle?.title,
+        seoDescription: (data.result as any).description?.above_fold,
+      });
+      setDraftId(draft.id);
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Something went wrong');
     } finally {
@@ -120,6 +155,14 @@ export default function SeoPage() {
     if (score >= 75) return 'rgba(16,185,129,0.15)';
     if (score >= 50) return 'rgba(245,158,11,0.15)';
     return 'rgba(239,68,68,0.15)';
+  }
+
+  function resumeDraft(draft: WorkflowDraft) {
+    if (draft.topic) setTopic(draft.topic);
+    if (draft.niche) setNiche(draft.niche);
+    if (draft.modelId) setModelId(draft.modelId);
+    setDraftId(draft.id);
+    toast.success('Draft resumed — click Generate to run SEO optimization');
   }
 
   const tagColors: Record<string, { badge: string; color: string }> = {
@@ -156,6 +199,8 @@ export default function SeoPage() {
           Generate high-ranking titles, descriptions, tags, and chapters optimized for YouTube search and discovery.
         </p>
       </div>
+
+      <DraftsBanner currentStep="seo" onResume={resumeDraft} />
 
       {/* Two-column layout */}
       <div className="grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-6">
@@ -533,11 +578,56 @@ export default function SeoPage() {
                     </div>
                   </div>
                 )}
+
+                {/* Workflow buttons */}
+                {result && (
+                  <div className="flex gap-2 mt-4">
+                    <button
+                      onClick={() => {
+                        const bestTitle = result.titles?.sort((a: any, b: any) => (b.score||0) - (a.score||0))[0];
+                        if (draftId) saveDraft({ id: draftId, title: topic, niche, step: 'thumbnails', topic, modelId, seoTitle: bestTitle?.title });
+                        localStorage.setItem('thumbnails_prefill', JSON.stringify({
+                          title: bestTitle?.title || topic, niche, description: result.description?.full_description?.slice(0, 500),
+                        }));
+                        window.location.href = '/thumbnails?from=seo';
+                      }}
+                      className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
+                    >
+                      🎨 Generate Thumbnail
+                    </button>
+                    <button
+                      onClick={() => {
+                        localStorage.setItem('voiceover_prefill', JSON.stringify({ script: result.description?.full_description, niche }));
+                        window.location.href = '/voiceover?from=seo';
+                      }}
+                      className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
+                    >
+                      🎙️ Generate Voiceover
+                    </button>
+                  </div>
+                )}
               </motion.div>
             ) : null}
           </AnimatePresence>
         </div>
       </div>
+
+      <HistoryPanel
+        title="SEO History"
+        icon="🔍"
+        items={historyItems.map(e => ({
+          id: e.id,
+          timestamp: e.timestamp,
+          label: e.bestTitle,
+          sublabel: `${e.niche} · ${e.titlesCount} titles · Best: ${e.bestScore}/100 · ${e.tagsCount} tags`,
+        }))}
+        onRestore={(id) => {
+          const entry = historyItems.find(e => e.id === id);
+          if (entry) { setTopic(entry.topic || entry.bestTitle); setNiche(entry.niche); toast.success('Restored from history'); }
+        }}
+        onDelete={(id) => { deleteSeoEntry(id); setHistoryItems(getSeoHistory()); }}
+        onClearAll={() => { clearSeoHistory(); setHistoryItems([]); }}
+      />
     </div>
   );
 }

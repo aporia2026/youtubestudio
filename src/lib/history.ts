@@ -37,12 +37,40 @@ export interface VoiceoverHistoryEntry {
   style: string;
 }
 
+export interface SeoHistoryEntry {
+  id: string;
+  timestamp: number;
+  topic: string;
+  niche: string;
+  modelId: string;
+  titlesCount: number;
+  bestTitle: string;
+  bestScore: number;
+  tagsCount: number;
+}
+
+export interface ThumbnailHistoryEntry {
+  id: string;
+  timestamp: number;
+  title: string;
+  niche: string;
+  modelId: string;
+  conceptsCount: number;
+  bestConceptName: string;
+  bestScore: number;
+  generatedImageUrl?: string;
+}
+
 const SCRIPT_KEY = 'script_history';
 const IDEAS_KEY = 'ideas_history';
 const VOICEOVER_KEY = 'voiceover_history';
+const SEO_KEY = 'seo_history';
+const THUMBNAIL_KEY = 'thumbnail_history';
 const MAX_SCRIPT_ENTRIES = 50;
 const MAX_IDEAS_ENTRIES = 100;
 const MAX_VOICEOVER_ENTRIES = 100;
+const MAX_SEO_ENTRIES = 50;
+const MAX_THUMBNAIL_ENTRIES = 50;
 const MAX_SCRIPT_LENGTH = 15000; // truncate very long scripts in history
 
 function generateId(): string {
@@ -149,6 +177,52 @@ export function deleteVoiceoverEntry(id: string): void {
   const history = getVoiceoverHistory().filter(e => e.id !== id);
   safeSave(VOICEOVER_KEY, JSON.stringify(history));
 }
+
+// --- SEO ---
+
+export function getSeoHistory(): SeoHistoryEntry[] {
+  if (typeof window === 'undefined') return [];
+  try { return JSON.parse(localStorage.getItem(SEO_KEY) || '[]'); } catch { return []; }
+}
+
+export function saveSeoEntry(entry: Omit<SeoHistoryEntry, 'id' | 'timestamp'>): SeoHistoryEntry {
+  const full: SeoHistoryEntry = { ...entry, id: generateId(), timestamp: Date.now() };
+  const history = getSeoHistory();
+  history.unshift(full);
+  if (history.length > MAX_SEO_ENTRIES) history.length = MAX_SEO_ENTRIES;
+  safeSave(SEO_KEY, JSON.stringify(history));
+  return full;
+}
+
+export function deleteSeoEntry(id: string): void {
+  if (typeof window === 'undefined') return;
+  safeSave(SEO_KEY, JSON.stringify(getSeoHistory().filter(e => e.id !== id)));
+}
+
+export function clearSeoHistory(): void { localStorage.removeItem(SEO_KEY); }
+
+// --- Thumbnails ---
+
+export function getThumbnailHistory(): ThumbnailHistoryEntry[] {
+  if (typeof window === 'undefined') return [];
+  try { return JSON.parse(localStorage.getItem(THUMBNAIL_KEY) || '[]'); } catch { return []; }
+}
+
+export function saveThumbnailEntry(entry: Omit<ThumbnailHistoryEntry, 'id' | 'timestamp'>): ThumbnailHistoryEntry {
+  const full: ThumbnailHistoryEntry = { ...entry, id: generateId(), timestamp: Date.now() };
+  const history = getThumbnailHistory();
+  history.unshift(full);
+  if (history.length > MAX_THUMBNAIL_ENTRIES) history.length = MAX_THUMBNAIL_ENTRIES;
+  safeSave(THUMBNAIL_KEY, JSON.stringify(history));
+  return full;
+}
+
+export function deleteThumbnailEntry(id: string): void {
+  if (typeof window === 'undefined') return;
+  safeSave(THUMBNAIL_KEY, JSON.stringify(getThumbnailHistory().filter(e => e.id !== id)));
+}
+
+export function clearThumbnailHistory(): void { localStorage.removeItem(THUMBNAIL_KEY); }
 
 // --- Search ---
 
