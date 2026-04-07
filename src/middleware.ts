@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { jwtVerify } from 'jose';
 
-const SECRET = new TextEncoder().encode(
-  process.env.AUTH_SECRET || 'youtube-studio-secret-key-change-in-production'
-);
+let _secret: Uint8Array | null = null;
+function getSecret(): Uint8Array {
+  if (!_secret) {
+    const secret = process.env.AUTH_SECRET;
+    if (!secret) throw new Error('AUTH_SECRET environment variable is not set. Add it to your .env.local or Vercel project settings.');
+    _secret = new TextEncoder().encode(secret);
+  }
+  return _secret;
+}
 const COOKIE_NAME = 'yt_studio_session';
 
 const PUBLIC_PATHS = ['/login', '/api/auth'];
@@ -28,7 +34,7 @@ export async function middleware(req: NextRequest) {
   }
 
   try {
-    await jwtVerify(token, SECRET);
+    await jwtVerify(token, getSecret());
     return NextResponse.next();
   } catch {
     const response = NextResponse.redirect(new URL('/login', req.url));

@@ -1,12 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const result = await sql`SELECT * FROM video_ideas WHERE is_saved = true ORDER BY created_at DESC`;
-    return NextResponse.json({ ideas: result.rows });
+    const { searchParams } = new URL(req.url);
+    const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 100);
+    const offset = parseInt(searchParams.get('offset') || '0');
+
+    const result = await sql`SELECT * FROM video_ideas WHERE is_saved = true ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`;
+    const countResult = await sql`SELECT COUNT(*) as total FROM video_ideas WHERE is_saved = true`;
+    return NextResponse.json({ ideas: result.rows, total: parseInt(countResult.rows[0].total) });
   } catch {
-    return NextResponse.json({ ideas: [] });
+    return NextResponse.json({ ideas: [], total: 0 });
   }
 }
 

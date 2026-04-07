@@ -15,6 +15,8 @@ export interface GenerateOptions {
   systemPrompt?: string;
   maxTokens?: number;
   temperature?: number;
+  /** Optional image for multimodal analysis (e.g. video thumbnail) */
+  image?: { base64: string; mimeType: string };
 }
 
 // --- Kie.ai helpers ---
@@ -186,6 +188,33 @@ async function* kieStreamText(modelId: string, prompt: string, systemPrompt?: st
   }
 }
 
+// --- Shared multimodal helpers ---
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildAnthropicContent(prompt: string, image?: { base64: string; mimeType: string }): any {
+  if (!image) return prompt;
+  return [
+    { type: 'image' as const, source: { type: 'base64' as const, media_type: image.mimeType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp', data: image.base64 } },
+    { type: 'text' as const, text: prompt },
+  ];
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildOpenAIMessages(prompt: string, systemPrompt?: string, image?: { base64: string; mimeType: string }): any[] {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const msgs: any[] = [];
+  if (systemPrompt) msgs.push({ role: 'system', content: systemPrompt });
+  if (image) {
+    msgs.push({ role: 'user', content: [
+      { type: 'image_url', image_url: { url: `data:${image.mimeType};base64,${image.base64}` } },
+      { type: 'text', text: prompt },
+    ]});
+  } else {
+    msgs.push({ role: 'user', content: prompt });
+  }
+  return msgs;
+}
+
 // --- Main exports ---
 
 export async function generateText(opts: GenerateOptions): Promise<string> {
@@ -200,12 +229,15 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
 
   if (model.provider === 'anthropic') {
     const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY environment variable is not configured');
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const msgContent = buildAnthropicContent(prompt, opts.image);
     const response = await client.messages.create({
       model: model.id,
       max_tokens: maxTokens,
+      temperature,
       system: systemPrompt,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [{ role: 'user', content: msgContent }],
     });
     const block = response.content[0];
     if (block.type !== 'text') throw new Error('Unexpected response type');
@@ -214,10 +246,9 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
 
   if (model.provider === 'openai') {
     const OpenAI = (await import('openai')).default;
+    if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY environment variable is not configured');
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const msgs: { role: 'system' | 'user'; content: string }[] = [];
-    if (systemPrompt) msgs.push({ role: 'system', content: systemPrompt });
-    msgs.push({ role: 'user', content: prompt });
+    const msgs = buildOpenAIMessages(prompt, systemPrompt, opts.image);
     const response = await client.chat.completions.create({
       model: model.id,
       messages: msgs,
@@ -231,8 +262,15 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     if (!process.env.GOOGLE_AI_API_KEY) throw new Error('GOOGLE_AI_API_KEY environment variable is not configured');
     const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
-    const gemini = genAI.getGenerativeModel({ model: model.id });
+    const gemini = genAI.getGenerativeModel({ model: model.id, generationConfig: { temperature, maxOutputTokens: maxTokens } });
     const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
+    if (opts.image) {
+      const result = await gemini.generateContent([
+        fullPrompt,
+        { inlineData: { mimeType: opts.image.mimeType, data: opts.image.base64 } },
+      ]);
+      return result.response.text();
+    }
     const result = await gemini.generateContent(fullPrompt);
     return result.response.text();
   }
@@ -254,12 +292,15 @@ export async function* generateTextStream(opts: GenerateOptions): AsyncGenerator
 
   if (model.provider === 'anthropic') {
     const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY environment variable is not configured');
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const msgContent = buildAnthropicContent(prompt, opts.image);
     const stream = client.messages.stream({
       model: model.id,
       max_tokens: maxTokens,
+      temperature,
       system: systemPrompt,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [{ role: 'user', content: msgContent }],
     });
     for await (const event of stream) {
       if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
@@ -271,10 +312,9 @@ export async function* generateTextStream(opts: GenerateOptions): AsyncGenerator
 
   if (model.provider === 'openai') {
     const OpenAI = (await import('openai')).default;
+    if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY environment variable is not configured');
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const msgs: { role: 'system' | 'user'; content: string }[] = [];
-    if (systemPrompt) msgs.push({ role: 'system', content: systemPrompt });
-    msgs.push({ role: 'user', content: prompt });
+    const msgs = buildOpenAIMessages(prompt, systemPrompt, opts.image);
     const stream = await client.chat.completions.create({
       model: model.id,
       messages: msgs,
@@ -293,12 +333,23 @@ export async function* generateTextStream(opts: GenerateOptions): AsyncGenerator
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     if (!process.env.GOOGLE_AI_API_KEY) throw new Error('GOOGLE_AI_API_KEY environment variable is not configured');
     const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
-    const gemini = genAI.getGenerativeModel({ model: model.id });
+    const gemini = genAI.getGenerativeModel({ model: model.id, generationConfig: { temperature, maxOutputTokens: maxTokens } });
     const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
-    const result = await gemini.generateContentStream(fullPrompt);
-    for await (const chunk of result.stream) {
-      const text = chunk.text();
-      if (text) yield text;
+    if (opts.image) {
+      const result = await gemini.generateContentStream([
+        fullPrompt,
+        { inlineData: { mimeType: opts.image.mimeType, data: opts.image.base64 } },
+      ]);
+      for await (const chunk of result.stream) {
+        const text = chunk.text();
+        if (text) yield text;
+      }
+    } else {
+      const result = await gemini.generateContentStream(fullPrompt);
+      for await (const chunk of result.stream) {
+        const text = chunk.text();
+        if (text) yield text;
+      }
     }
     return;
   }

@@ -1,0 +1,428 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { toast } from 'sonner';
+import { ModelSelector } from '@/components/ui/ModelSelector';
+import { getFeatureDefaultModelId } from '@/lib/ai-models';
+
+const IMAGE_MODELS = [
+  { value: 'grok-imagine-t2i', label: 'Grok Imagine (Text-to-Image)' },
+  { value: 'flux2-pro-t2i', label: 'Flux2 Pro (Text-to-Image)' },
+  { value: 'flux2-flex-t2i', label: 'Flux2 Flex (Text-to-Image)' },
+  { value: 'nano-banana', label: 'NanoBanana (Text-to-Image)' },
+  { value: 'nano-banana-2', label: 'NanoBanana 2 (Text-to-Image)' },
+  { value: 'grok-imagine-i2i', label: 'Grok Imagine (Image-to-Image)' },
+  { value: 'flux2-pro-i2i', label: 'Flux2 Pro (Image-to-Image)' },
+  { value: 'flux2-flex-i2i', label: 'Flux2 Flex (Image-to-Image)' },
+  { value: 'pro-i2i', label: 'Pro (Image-to-Image)' },
+];
+
+interface CtrBreakdownEntry {
+  score: number;
+  reason: string;
+}
+
+interface ThumbnailConcept {
+  concept_name: string;
+  creative_direction: string;
+  emotional_trigger: string;
+  composition: { layout: string; focal_point: string; background: string; subject_position: string };
+  face_and_people: { included?: boolean; expression: string; positioning: string; eye_contact: string };
+  text_overlay: { text: string; font_style: string; position: string; color: string; effect: string };
+  color_palette: { primary: string; secondary: string; accent: string; psychology: string };
+  ctr_prediction: {
+    score: number;
+    breakdown: {
+      face_impact: CtrBreakdownEntry;
+      contrast_and_visibility: CtrBreakdownEntry;
+      text_readability: CtrBreakdownEntry;
+      emotional_pull: CtrBreakdownEntry;
+      title_synergy: CtrBreakdownEntry;
+      niche_fit: CtrBreakdownEntry;
+    };
+  };
+  why_it_works: string;
+  mobile_test: string;
+  image_generation_prompt: string;
+}
+
+interface GenerateResult {
+  concepts: ThumbnailConcept[];
+  niche_best_practices: string[];
+  common_mistakes_to_avoid: string[];
+  a_b_test_recommendation: string;
+}
+
+function ScoreRing({ score }: { score: number }) {
+  const color = score < 50 ? '#ef4444' : score < 70 ? '#eab308' : '#22c55e';
+  const circumference = 2 * Math.PI * 28;
+  const offset = circumference - (score / 100) * circumference;
+  return (
+    <div className="relative" style={{ width: 72, height: 72 }}>
+      <svg width="72" height="72" viewBox="0 0 72 72">
+        <circle cx="36" cy="36" r="28" fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="6" />
+        <circle cx="36" cy="36" r="28" fill="none" stroke={color} strokeWidth="6"
+          strokeDasharray={circumference} strokeDashoffset={offset}
+          strokeLinecap="round" transform="rotate(-90 36 36)" />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center">
+        <span className="text-sm font-bold" style={{ color }}>{score}</span>
+      </div>
+    </div>
+  );
+}
+
+function MiniBar({ label, value }: { label: string; value: number }) {
+  const color = value < 50 ? '#ef4444' : value < 70 ? '#eab308' : '#22c55e';
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="w-28 shrink-0" style={{ color: 'var(--text-secondary)' }}>{label}</span>
+      <div className="flex-1 h-2 rounded-full" style={{ background: 'rgba(255,255,255,0.1)' }}>
+        <div className="h-2 rounded-full transition-all" style={{ width: `${value}%`, background: color }} />
+      </div>
+      <span className="w-8 text-right font-mono" style={{ color: 'var(--text-muted)' }}>{value}</span>
+    </div>
+  );
+}
+
+export default function ThumbnailsPage() {
+  const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('script-generator'));
+  const [niche, setNiche] = useState('');
+  const [niches, setNiches] = useState<{ id: string; name: string }[]>([]);
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [script, setScript] = useState('');
+  const [showScript, setShowScript] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [result, setResult] = useState<GenerateResult | null>(null);
+
+  // Image generation
+  const [imageGenEnabled, setImageGenEnabled] = useState(false);
+  const [showImageSection, setShowImageSection] = useState(false);
+  const [imageModel, setImageModel] = useState(IMAGE_MODELS[0].value);
+  const [referenceImageUrl, setReferenceImageUrl] = useState('');
+  const [generatingImages, setGeneratingImages] = useState<Record<number, boolean>>({});
+  const [generatedImages, setGeneratedImages] = useState<Record<number, string>>({});
+
+  const isI2I = imageModel.endsWith('-i2i');
+
+  useEffect(() => {
+    fetch('/api/niches').then(r => r.json()).then(data => {
+      setNiches(data.niches || []);
+      if (data.niches?.length) setNiche(data.niches[0].name);
+    }).catch(() => {});
+  }, []);
+
+  async function generateConcepts() {
+    if (!title.trim()) { toast.error('Please enter a video title'); return; }
+    setGenerating(true);
+    setResult(null);
+    setGeneratedImages({});
+    try {
+      const res = await fetch('/api/thumbnails/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelId, title: title.trim(), niche, script: script.trim() || undefined, description: description.trim() || undefined }),
+      });
+      if (!res.ok) throw new Error('Generation failed');
+      const data = await res.json();
+      setResult(data.result);
+      toast.success('Thumbnail concepts generated!');
+    } catch {
+      toast.error('Failed to generate concepts. Please try again.');
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function generateImage(idx: number, prompt: string) {
+    setGeneratingImages(prev => ({ ...prev, [idx]: true }));
+    try {
+      const body: Record<string, string> = { model: imageModel, prompt };
+      if (isI2I && referenceImageUrl.trim()) body.referenceImageUrl = referenceImageUrl.trim();
+      const res = await fetch('/api/thumbnails/image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error('Image generation failed');
+      const data = await res.json();
+      setGeneratedImages(prev => ({ ...prev, [idx]: data.imageUrl }));
+      toast.success('Image generated!');
+    } catch {
+      toast.error('Image generation failed. The API may not be available yet.');
+    } finally {
+      setGeneratingImages(prev => ({ ...prev, [idx]: false }));
+    }
+  }
+
+  function copyPrompt(prompt: string) {
+    navigator.clipboard.writeText(prompt).then(() => toast.success('Prompt copied to clipboard'));
+  }
+
+  return (
+    <div className="p-8 max-w-6xl mx-auto">
+      {/* Header */}
+      <div className="mb-8">
+        <div className="flex items-center gap-3 mb-2">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center"
+            style={{ background: 'linear-gradient(135deg, rgba(236,72,153,0.3), rgba(124,58,237,0.2))', border: '1px solid rgba(236,72,153,0.3)' }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="rgba(236,72,153,0.9)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" />
+            </svg>
+          </div>
+          <span className="badge badge-pink">AI Thumbnails</span>
+        </div>
+        <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>Thumbnail Concept Generator</h1>
+        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Generate click-optimized thumbnail concepts with CTR prediction scoring</p>
+      </div>
+
+      <div className="flex gap-6" style={{ alignItems: 'flex-start' }}>
+        {/* LEFT PANEL */}
+        <div className="shrink-0" style={{ width: 380 }}>
+          <div className="glass p-5 space-y-4" style={{ borderColor: 'rgba(236,72,153,0.15)' }}>
+            <ModelSelector value={modelId} onChange={setModelId} label="AI Model" />
+
+            <div>
+              <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>Niche</label>
+              <select className="input-field w-full" value={niche} onChange={e => setNiche(e.target.value)}>
+                {niches.map(n => <option key={n.id} value={n.name}>{n.name}</option>)}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>Video Title *</label>
+              <input className="input-field w-full" placeholder="Enter your video title..." value={title} onChange={e => setTitle(e.target.value)} />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>Description (optional)</label>
+              <textarea className="input-field w-full" rows={2} placeholder="Brief video description..." value={description} onChange={e => setDescription(e.target.value)} />
+            </div>
+
+            <div>
+              <button className="flex items-center gap-2 text-xs font-medium cursor-pointer" style={{ color: 'var(--text-muted)' }}
+                onClick={() => setShowScript(!showScript)}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ transform: showScript ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}>
+                  <polyline points="9 18 15 12 9 6" />
+                </svg>
+                Script (optional)
+              </button>
+              {showScript && (
+                <textarea className="input-field w-full mt-2" rows={4} placeholder="Paste your script to improve concept relevance..." value={script} onChange={e => setScript(e.target.value)} />
+              )}
+            </div>
+
+            {/* Image Generation Section */}
+            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+              <button className="flex items-center gap-2 text-xs font-medium cursor-pointer w-full" style={{ color: 'var(--text-muted)' }}
+                onClick={() => setShowImageSection(!showImageSection)}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ transform: showImageSection ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}>
+                  <polyline points="9 18 15 12 9 6" />
+                </svg>
+                Image Generation
+              </button>
+              {showImageSection && (
+                <div className="mt-3 space-y-3">
+                  <label className="flex items-center gap-2 cursor-pointer text-xs" style={{ color: 'var(--text-secondary)' }}>
+                    <input type="checkbox" checked={imageGenEnabled} onChange={e => setImageGenEnabled(e.target.checked)}
+                      style={{ accentColor: 'var(--accent-pink)' }} />
+                    Enable image generation
+                  </label>
+                  {imageGenEnabled && (
+                    <>
+                      <div>
+                        <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>Image Model</label>
+                        <select className="input-field w-full text-sm" value={imageModel} onChange={e => setImageModel(e.target.value)}>
+                          {IMAGE_MODELS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                        </select>
+                      </div>
+                      {isI2I && (
+                        <div>
+                          <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>Reference Image URL</label>
+                          <input className="input-field w-full" placeholder="https://..." value={referenceImageUrl} onChange={e => setReferenceImageUrl(e.target.value)} />
+                        </div>
+                      )}
+                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Images generated via Kie.ai API — costs may apply</p>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <button className="btn-primary w-full flex items-center justify-center gap-2" onClick={generateConcepts} disabled={generating || !title.trim()}>
+              {generating ? (
+                <>
+                  <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" opacity="0.25" /><path d="M12 2a10 10 0 0 1 10 10" /></svg>
+                  Generating...
+                </>
+              ) : 'Generate Concepts'}
+            </button>
+          </div>
+        </div>
+
+        {/* RIGHT PANEL */}
+        <div className="flex-1 min-w-0">
+          <AnimatePresence mode="wait">
+            {generating && !result && (
+              <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                className="glass p-12 text-center">
+                <svg className="animate-spin mx-auto mb-4" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--accent-pink)" strokeWidth="2">
+                  <circle cx="12" cy="12" r="10" opacity="0.25" /><path d="M12 2a10 10 0 0 1 10 10" />
+                </svg>
+                <p style={{ color: 'var(--text-secondary)' }}>Generating thumbnail concepts...</p>
+              </motion.div>
+            )}
+
+            {result && (
+              <motion.div key="results" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                className="space-y-4">
+                {result.concepts.map((concept, idx) => (
+                  <div key={idx} className="glass p-5" style={{ borderColor: 'rgba(236,72,153,0.15)' }}>
+                    {/* Top section */}
+                    <div className="flex items-start justify-between gap-4 mb-4">
+                      <div className="flex-1">
+                        <h3 className="font-bold text-base" style={{ color: 'var(--text-primary)' }}>{concept.concept_name}</h3>
+                        <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{concept.creative_direction}</p>
+                        <span className="badge badge-pink mt-2 inline-block">{concept.emotional_trigger}</span>
+                      </div>
+                      <ScoreRing score={concept.ctr_prediction?.score ?? 0} />
+                    </div>
+
+                    {/* Expandable sections */}
+                    <div className="space-y-1 text-sm" style={{ color: 'var(--text-secondary)' }}>
+                      <details>
+                        <summary className="cursor-pointer font-medium py-1.5" style={{ color: 'var(--text-primary)' }}>Composition</summary>
+                        <div className="pl-4 pb-2 space-y-1 text-xs">
+                          <p><strong>Layout:</strong> {concept.composition.layout}</p>
+                          <p><strong>Focal Point:</strong> {concept.composition.focal_point}</p>
+                          <p><strong>Background:</strong> {concept.composition.background}</p>
+                          <p><strong>Subject Position:</strong> {concept.composition.subject_position}</p>
+                        </div>
+                      </details>
+                      <details>
+                        <summary className="cursor-pointer font-medium py-1.5" style={{ color: 'var(--text-primary)' }}>Face & People</summary>
+                        <div className="pl-4 pb-2 space-y-1 text-xs">
+                          <p><strong>Expression:</strong> {concept.face_and_people.expression}</p>
+                          <p><strong>Positioning:</strong> {concept.face_and_people.positioning}</p>
+                          <p><strong>Eye Contact:</strong> {concept.face_and_people.eye_contact}</p>
+                        </div>
+                      </details>
+                      <details>
+                        <summary className="cursor-pointer font-medium py-1.5" style={{ color: 'var(--text-primary)' }}>Text Overlay</summary>
+                        <div className="pl-4 pb-2 space-y-1 text-xs">
+                          <p><strong>Text:</strong> {concept.text_overlay.text}</p>
+                          <p><strong>Font Style:</strong> {concept.text_overlay.font_style}</p>
+                          <p><strong>Position:</strong> {concept.text_overlay.position}</p>
+                          <p><strong>Color:</strong> {concept.text_overlay.color}</p>
+                          <p><strong>Effect:</strong> {concept.text_overlay.effect}</p>
+                        </div>
+                      </details>
+                      <details>
+                        <summary className="cursor-pointer font-medium py-1.5" style={{ color: 'var(--text-primary)' }}>Color Palette</summary>
+                        <div className="pl-4 pb-2 flex gap-3 items-center">
+                          {['primary', 'secondary', 'accent'].map((key) => {
+                            const hex = String((concept.color_palette as Record<string, string>)?.[key] || '#888');
+                            return (
+                              <div key={key} className="flex items-center gap-1.5">
+                                <div style={{ background: hex.startsWith('#') ? hex : '#888', width: 24, height: 24, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.15)' }} />
+                                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{key}: {hex}</span>
+                              </div>
+                            );
+                          })}
+                          {concept.color_palette?.psychology && (
+                            <p className="text-xs mt-1 w-full" style={{ color: 'var(--text-muted)' }}>{concept.color_palette.psychology}</p>
+                          )}
+                        </div>
+                      </details>
+                      <details>
+                        <summary className="cursor-pointer font-medium py-1.5" style={{ color: 'var(--text-primary)' }}>CTR Breakdown</summary>
+                        <div className="pl-4 pb-2 space-y-1.5">
+                          {concept.ctr_prediction?.breakdown && Object.entries(concept.ctr_prediction.breakdown).map(([key, entry]) => (
+                            <MiniBar key={key} label={key.replace(/_/g, ' ')} value={typeof entry === 'object' && entry !== null ? (entry as CtrBreakdownEntry).score : (typeof entry === 'number' ? entry : 0)} />
+                          ))}
+                        </div>
+                      </details>
+                      <details>
+                        <summary className="cursor-pointer font-medium py-1.5" style={{ color: 'var(--text-primary)' }}>Why It Works</summary>
+                        <p className="pl-4 pb-2 text-xs">{concept.why_it_works}</p>
+                      </details>
+                      <details>
+                        <summary className="cursor-pointer font-medium py-1.5" style={{ color: 'var(--text-primary)' }}>Mobile Test</summary>
+                        <p className="pl-4 pb-2 text-xs">{concept.mobile_test}</p>
+                      </details>
+                    </div>
+
+                    {/* Action buttons */}
+                    <div className="flex gap-2 mt-4 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
+                      <button className="btn-secondary text-xs flex items-center gap-1.5" onClick={() => copyPrompt(concept.image_generation_prompt)}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                        Copy Prompt
+                      </button>
+                      {imageGenEnabled && (
+                        <button className="btn-primary text-xs flex items-center gap-1.5" disabled={generatingImages[idx]}
+                          onClick={() => generateImage(idx, concept.image_generation_prompt)}>
+                          {generatingImages[idx] ? (
+                            <>
+                              <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" opacity="0.25" /><path d="M12 2a10 10 0 0 1 10 10" /></svg>
+                              Generating...
+                            </>
+                          ) : 'Generate Image'}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Generated image */}
+                    {generatedImages[idx] && (
+                      <div className="mt-3 rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+                        <img src={generatedImages[idx]} alt={concept.concept_name} className="w-full" style={{ maxHeight: 320, objectFit: 'cover' }} />
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                {/* Bottom insights */}
+                <div className="glass p-5 space-y-5" style={{ borderColor: 'rgba(236,72,153,0.15)' }}>
+                  {result.niche_best_practices?.length > 0 && (
+                    <div>
+                      <h4 className="font-bold text-sm mb-2" style={{ color: 'var(--accent-pink)' }}>Niche Best Practices</h4>
+                      <ul className="list-disc pl-5 space-y-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                        {result.niche_best_practices.map((p, i) => <li key={i}>{p}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {result.common_mistakes_to_avoid?.length > 0 && (
+                    <div>
+                      <h4 className="font-bold text-sm mb-2" style={{ color: 'var(--accent-yellow)' }}>Common Mistakes to Avoid</h4>
+                      <ul className="list-disc pl-5 space-y-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                        {result.common_mistakes_to_avoid.map((m, i) => <li key={i}>{m}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {result.a_b_test_recommendation && (
+                    <div>
+                      <h4 className="font-bold text-sm mb-2" style={{ color: 'var(--accent-cyan-bright)' }}>A/B Test Recommendation</h4>
+                      <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>{result.a_b_test_recommendation}</p>
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            )}
+
+            {!generating && !result && (
+              <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                className="glass p-12 text-center">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--accent-pink)" strokeWidth="1.5" className="mx-auto mb-4" opacity="0.5">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" />
+                </svg>
+                <p className="font-medium" style={{ color: 'var(--text-secondary)' }}>Enter a video title and generate thumbnail concepts</p>
+                <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>AI will create 5 optimized concepts with CTR predictions</p>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </div>
+    </div>
+  );
+}

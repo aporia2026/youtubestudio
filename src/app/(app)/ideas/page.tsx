@@ -37,8 +37,8 @@ interface VideoIdea {
   tags: string[];
   competitor_gap: string;
   inspiration_sources?: {
-    from_reference_videos?: string;
-    from_reddit?: string;
+    from_reference_videos?: string | Array<{ video_title?: string; techniques_borrowed?: string; how_adapted?: string }>;
+    from_reddit?: string | Array<{ post_title?: string; post_url?: string; subreddit?: string; what_was_taken?: string; how_adapted?: string }>;
   };
   is_saved?: boolean;
 }
@@ -83,13 +83,14 @@ const VIEWS_COLORS: Record<string, string> = {
 };
 
 interface VideoRef {
-  id: string; // unique ID for stable updates
+  id: string;
   url: string;
   title: string;
   channelTitle: string;
   viewCount: number;
   thumbnailUrl: string;
   styleAnalysis: string | null;
+  analysis: Record<string, unknown> | null;
   loading: boolean;
 }
 
@@ -160,13 +161,14 @@ export default function IdeasPage() {
     if (!refUrl.trim()) return;
     const url = refUrl.trim();
     // Basic YouTube URL validation
+    if (refs.length >= 5) { toast.error('Maximum 5 reference videos allowed'); return; }
     if (!/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)/.test(url)) {
       toast.error('Please enter a valid YouTube URL');
       return;
     }
     setRefUrl('');
     const refId = `ref-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const placeholder: VideoRef = { id: refId, url, title: 'Analyzing...', channelTitle: '', viewCount: 0, thumbnailUrl: '', styleAnalysis: null, loading: true };
+    const placeholder: VideoRef = { id: refId, url, title: 'Deep analyzing...', channelTitle: '', viewCount: 0, thumbnailUrl: '', styleAnalysis: null, analysis: null, loading: true };
     setRefs(prev => [...prev, placeholder]);
 
     try {
@@ -185,9 +187,10 @@ export default function IdeasPage() {
         viewCount: data.metadata.viewCount,
         thumbnailUrl: data.metadata.thumbnailUrl,
         styleAnalysis: data.styleAnalysis,
+        analysis: data.analysis || null,
         loading: false,
       } : r));
-      toast.success(`Analyzed: ${data.metadata.title.slice(0, 40)}...`);
+      toast.success(`Deep analysis complete: ${data.metadata.title.slice(0, 40)}...`);
     } catch {
       setRefs(prev => prev.filter(r => r.id !== refId));
       toast.error('Failed to analyze video');
@@ -200,11 +203,10 @@ export default function IdeasPage() {
     setIdeas([]);
     setSavedIds(new Set());
 
-    // Build reference context (cap at ~4000 chars to avoid blowing token limits)
-    let refContext = refs.filter(r => !r.loading && r.styleAnalysis).map(r =>
-      `**"${r.title}"** by ${r.channelTitle} (${r.viewCount.toLocaleString()} views)\nStyle: ${r.styleAnalysis}`
-    ).join('\n\n');
-    if (refContext.length > 4000) refContext = refContext.slice(0, 4000) + '\n\n[... truncated ...]';
+    // Build rich reference context from deep analysis
+    const refContext = refs.filter(r => !r.loading && r.styleAnalysis).map((r, idx) =>
+      `### REFERENCE VIDEO ${idx + 1}: "${r.title}" by ${r.channelTitle} (${r.viewCount.toLocaleString()} views)\n${r.styleAnalysis}`
+    ).join('\n\n---\n\n');
 
     // Fetch Reddit data inline if toggle is on
     let redditContext: string | undefined;
@@ -448,7 +450,7 @@ export default function IdeasPage() {
                   className="overflow-hidden">
                   <div className="mt-3 space-y-2">
                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                      Paste YouTube URLs — AI will analyze their style and use it as inspiration
+                      Add YouTube videos — AI performs deep forensic analysis of visuals, transcript, pacing, and engagement
                     </p>
                     <div className="flex gap-2">
                       <input value={refUrl} onChange={e => setRefUrl(e.target.value)}
@@ -465,18 +467,29 @@ export default function IdeasPage() {
                           {ref.thumbnailUrl && <img src={ref.thumbnailUrl} alt="" width={64} height={36} className="w-16 h-9 rounded object-cover shrink-0" />}
                           <div className="flex-1 min-w-0">
                             <p className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>
-                              {ref.loading ? 'Analyzing...' : ref.title}
+                              {ref.loading ? 'Deep analyzing video...' : ref.title}
                             </p>
                             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                              {ref.loading ? <span className="spinner inline-block" style={{ width: 10, height: 10 }} /> : `${ref.channelTitle} · ${ref.viewCount.toLocaleString()} views`}
+                              {ref.loading ? (
+                                <span className="flex items-center gap-1">
+                                  <span className="spinner inline-block" style={{ width: 10, height: 10 }} />
+                                  Analyzing visuals, transcript, pacing, structure...
+                                </span>
+                              ) : `${ref.channelTitle} · ${ref.viewCount.toLocaleString()} views`}
                             </p>
                           </div>
                           <button onClick={() => setRefs(prev => prev.filter(r => r.id !== ref.id))} className="text-xs shrink-0" style={{ color: '#ef4444' }}>×</button>
                         </div>
+                        {/* Quick insight from analysis */}
+                        {ref.analysis && typeof (ref.analysis as Record<string, unknown>).what_makes_it_work === 'string' && (
+                          <p className="mt-1 text-[11px] italic" style={{ color: 'var(--accent-cyan-bright)' }}>
+                            &quot;{String((ref.analysis as Record<string, unknown>).what_makes_it_work)}&quot;
+                          </p>
+                        )}
                         {ref.styleAnalysis && (
                           <details className="mt-2">
-                            <summary className="text-xs cursor-pointer" style={{ color: 'var(--accent-cyan-bright)' }}>View style analysis</summary>
-                            <pre className="text-xs mt-1 whitespace-pre-wrap" style={{ color: 'var(--text-secondary)' }}>{ref.styleAnalysis}</pre>
+                            <summary className="text-xs cursor-pointer font-medium" style={{ color: 'var(--accent-purple-bright)' }}>View deep analysis</summary>
+                            <pre className="text-xs mt-1 whitespace-pre-wrap" style={{ color: 'var(--text-secondary)', maxHeight: 200, overflow: 'auto' }}>{ref.styleAnalysis}</pre>
                           </details>
                         )}
                       </div>
@@ -645,7 +658,7 @@ export default function IdeasPage() {
                           >
                             <div className="p-5 space-y-4">
                               {/* Performance data strip */}
-                              {idea.confidence_score && (
+                              {idea.confidence_score != null && (
                                 <div className="flex items-center gap-4 p-3 rounded-lg mb-3"
                                   style={{ background: 'rgba(124,58,237,0.08)', border: '1px solid rgba(124,58,237,0.2)' }}>
                                   <div className="text-center">
@@ -728,23 +741,79 @@ export default function IdeasPage() {
                                 </div>
                               </div>
 
-                              {/* Inspiration Sources */}
+                              {/* Inspiration Sources — with detailed attribution */}
                               {idea.inspiration_sources && (idea.inspiration_sources.from_reference_videos || idea.inspiration_sources.from_reddit) && (
                                 <div className="p-3 rounded-lg space-y-2"
                                   style={{ background: 'rgba(6,182,212,0.06)', border: '1px solid rgba(6,182,212,0.15)' }}>
                                   <h4 className="text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5" style={{ color: 'var(--accent-cyan-bright)' }}>
-                                    🔗 Inspiration Sources
+                                    🔗 Techniques Borrowed From References
                                   </h4>
                                   {idea.inspiration_sources.from_reference_videos && (
-                                    <div>
-                                      <span className="text-xs font-semibold" style={{ color: 'var(--accent-purple-bright)' }}>From Reference Videos: </span>
-                                      <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{idea.inspiration_sources.from_reference_videos}</span>
+                                    <div className="space-y-1.5">
+                                      {/* Handle new array format */}
+                                      {Array.isArray(idea.inspiration_sources.from_reference_videos) ? (
+                                        (idea.inspiration_sources.from_reference_videos as unknown as Array<{ video_title?: string; techniques_borrowed?: string; how_adapted?: string }>).map((src, si) => (
+                                          <div key={si} className="p-2 rounded" style={{ background: 'rgba(124,58,237,0.08)', border: '1px solid rgba(124,58,237,0.12)' }}>
+                                            {src.video_title && (
+                                              <p className="text-xs font-semibold" style={{ color: 'var(--accent-purple-bright)' }}>
+                                                From: &quot;{src.video_title}&quot;
+                                              </p>
+                                            )}
+                                            {src.techniques_borrowed && (
+                                              <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                                                <strong>Techniques:</strong> {src.techniques_borrowed}
+                                              </p>
+                                            )}
+                                            {src.how_adapted && (
+                                              <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                                                <strong>Adapted:</strong> {src.how_adapted}
+                                              </p>
+                                            )}
+                                          </div>
+                                        ))
+                                      ) : (
+                                        /* Handle old string format */
+                                        <div>
+                                          <span className="text-xs font-semibold" style={{ color: 'var(--accent-purple-bright)' }}>From Reference Videos: </span>
+                                          <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{idea.inspiration_sources.from_reference_videos as unknown as string}</span>
+                                        </div>
+                                      )}
                                     </div>
                                   )}
                                   {idea.inspiration_sources.from_reddit && (
-                                    <div>
-                                      <span className="text-xs font-semibold" style={{ color: '#ff4500' }}>From Reddit: </span>
-                                      <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{idea.inspiration_sources.from_reddit}</span>
+                                    <div className="space-y-1.5">
+                                      {Array.isArray(idea.inspiration_sources.from_reddit) ? (
+                                        (idea.inspiration_sources.from_reddit as Array<{ post_title?: string; post_url?: string; subreddit?: string; what_was_taken?: string; how_adapted?: string }>).map((src, si) => (
+                                          <div key={si} className="p-2 rounded" style={{ background: 'rgba(255,69,0,0.06)', border: '1px solid rgba(255,69,0,0.12)' }}>
+                                            <p className="text-xs font-semibold" style={{ color: '#ff4500' }}>
+                                              {src.subreddit && <span className="mr-1">r/{src.subreddit}</span>}
+                                              {src.post_url && src.post_url.startsWith('https://') ? (
+                                                <a href={src.post_url} target="_blank" rel="noopener noreferrer"
+                                                  className="underline hover:opacity-80" style={{ color: '#ff4500' }}>
+                                                  &quot;{src.post_title}&quot;
+                                                </a>
+                                              ) : (
+                                                <span>&quot;{src.post_title}&quot;</span>
+                                              )}
+                                            </p>
+                                            {src.what_was_taken && (
+                                              <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                                                <strong>Insight:</strong> {src.what_was_taken}
+                                              </p>
+                                            )}
+                                            {src.how_adapted && (
+                                              <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                                                <strong>Adapted:</strong> {src.how_adapted}
+                                              </p>
+                                            )}
+                                          </div>
+                                        ))
+                                      ) : (
+                                        <div>
+                                          <span className="text-xs font-semibold" style={{ color: '#ff4500' }}>From Reddit: </span>
+                                          <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{idea.inspiration_sources.from_reddit as string}</span>
+                                        </div>
+                                      )}
                                     </div>
                                   )}
                                 </div>

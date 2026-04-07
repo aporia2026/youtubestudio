@@ -2,8 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
 import { countWords, estimateDuration } from '@/lib/utils';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    const { searchParams } = new URL(req.url);
+    const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 100);
+    const offset = parseInt(searchParams.get('offset') || '0');
+
     const result = await sql`
       SELECT
         p.*,
@@ -14,11 +18,13 @@ export async function GET() {
       LEFT JOIN media_assets m ON m.project_id = p.id
       GROUP BY p.id
       ORDER BY p.updated_at DESC
+      LIMIT ${limit} OFFSET ${offset}
     `;
-    return NextResponse.json({ projects: result.rows });
+    const countResult = await sql`SELECT COUNT(*) as total FROM projects`;
+    return NextResponse.json({ projects: result.rows, total: parseInt(countResult.rows[0].total) });
   } catch (err) {
     console.error(err);
-    return NextResponse.json({ projects: [] });
+    return NextResponse.json({ projects: [], total: 0 });
   }
 }
 

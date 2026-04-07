@@ -1,11 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateText, getModelById } from '@/lib/ai';
 import { ideaGenerationPrompt } from '@/lib/prompts';
+import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 
 export const maxDuration = 120;
 
 export async function POST(req: NextRequest) {
   try {
+    const { limited, resetIn } = checkRateLimit(`ideas:${getClientIP(req)}`, 10, 60_000);
+    if (limited) {
+      return NextResponse.json(
+        { error: `Rate limited — try again in ${Math.ceil(resetIn / 1000)}s` },
+        { status: 429 },
+      );
+    }
+
     const { modelId, niche, count, audience, focus, videoType, referenceContext, redditContext, existingTitles } = await req.json();
 
     if (!niche) {

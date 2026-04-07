@@ -18,6 +18,21 @@ const TONES = ['Engaging & Friendly', 'Authoritative & Expert', 'Conversational'
 const STYLES = ['Explainer', 'Story-driven', 'Tutorial', 'Comparison', 'Opinion / Commentary', 'Top 10 List', 'Documentary'];
 const DURATIONS = [3, 5, 7, 10, 12, 15, 20];
 
+interface VideoAnalysis {
+  thumbnail_analysis?: { visual_composition?: string; clickability_score?: string; what_makes_it_click_worthy?: string; text_overlays?: string; colors_and_contrast?: string };
+  hook_breakdown?: { opening_technique?: string; first_sentence_verbatim?: string; curiosity_mechanism?: string; emotional_trigger?: string; time_to_hook_seconds?: string };
+  content_structure?: { format_type?: string; narrative_arc?: string; sections?: { timestamp: string; label: string; purpose: string }[]; transition_style?: string };
+  pacing_analysis?: { overall_tempo?: string; energy_map?: string; dead_zones?: string };
+  language_and_voice?: { tone_profile?: string; signature_phrases?: string[]; personality_markers?: string; audience_address_style?: string };
+  storytelling_techniques?: { narrative_devices?: string[]; emotional_arc?: string; tension_building?: string };
+  engagement_mechanics?: { pattern_interrupts?: { timestamp: string; technique: string }[]; curiosity_gaps?: string[]; calls_to_action?: string[] };
+  visual_production_cues?: { inferred_visuals?: string; production_level?: string };
+  creator_fingerprint?: string;
+  replicable_elements?: string[];
+  what_makes_it_work?: string;
+  weaknesses?: string[];
+}
+
 interface VideoRef {
   id: string;
   url: string;
@@ -26,6 +41,7 @@ interface VideoRef {
   viewCount: number;
   thumbnailUrl: string;
   styleAnalysis: string | null;
+  analysis: VideoAnalysis | null;
   loading: boolean;
 }
 
@@ -105,6 +121,7 @@ export default function GeneratorPage() {
 
   async function addReference() {
     if (!refUrl.trim()) return;
+    if (refs.length >= 5) { toast.error('Maximum 5 reference videos allowed'); return; }
     const url = refUrl.trim();
     if (!/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)/.test(url)) {
       toast.error('Please enter a valid YouTube URL');
@@ -112,7 +129,7 @@ export default function GeneratorPage() {
     }
     setRefUrl('');
     const refId = `ref-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    setRefs(prev => [...prev, { id: refId, url, title: 'Analyzing...', channelTitle: '', viewCount: 0, thumbnailUrl: '', styleAnalysis: null, loading: true }]);
+    setRefs(prev => [...prev, { id: refId, url, title: 'Deep analyzing...', channelTitle: '', viewCount: 0, thumbnailUrl: '', styleAnalysis: null, analysis: null, loading: true }]);
 
     try {
       const res = await fetch('/api/youtube/analyze', {
@@ -129,9 +146,10 @@ export default function GeneratorPage() {
         viewCount: data.metadata.viewCount,
         thumbnailUrl: data.metadata.thumbnailUrl,
         styleAnalysis: data.styleAnalysis,
+        analysis: data.analysis || null,
         loading: false,
       } : r));
-      toast.success(`Analyzed: ${data.metadata.title.slice(0, 40)}...`);
+      toast.success(`Deep analysis complete: ${data.metadata.title.slice(0, 40)}...`);
     } catch {
       setRefs(prev => prev.filter(r => r.id !== refId));
       toast.error('Failed to analyze video');
@@ -174,11 +192,10 @@ export default function GeneratorPage() {
     setShowSave(false);
     abortRef.current = new AbortController();
 
-    // Build reference context
-    let refContext = refs.filter(r => !r.loading && r.styleAnalysis).map(r =>
-      `**"${r.title}"** by ${r.channelTitle} (${r.viewCount.toLocaleString()} views)\nStyle: ${r.styleAnalysis}`
-    ).join('\n\n');
-    if (refContext.length > 4000) refContext = refContext.slice(0, 4000) + '\n\n[... truncated ...]';
+    // Build rich reference context from deep analysis
+    const refContext = refs.filter(r => !r.loading && r.styleAnalysis).map((r, idx) =>
+      `### REFERENCE VIDEO ${idx + 1}: "${r.title}" by ${r.channelTitle} (${r.viewCount.toLocaleString()} views)\n${r.styleAnalysis}`
+    ).join('\n\n---\n\n');
 
     try {
       const res = await fetch('/api/generate/script', {
@@ -368,7 +385,7 @@ export default function GeneratorPage() {
                     className="overflow-hidden">
                     <div className="mt-3 space-y-2">
                       <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                        Add YouTube videos — AI analyzes their style and matches your script to it
+                        Add YouTube videos — AI performs deep forensic analysis of visuals, transcript, pacing, structure, and engagement mechanics
                       </p>
                       <div className="flex gap-2">
                         <input value={refUrl} onChange={e => setRefUrl(e.target.value)}
@@ -383,15 +400,146 @@ export default function GeneratorPage() {
                             {ref.thumbnailUrl && <img src={ref.thumbnailUrl} alt="" width={64} height={36} className="w-16 h-9 rounded object-cover shrink-0" />}
                             <div className="flex-1 min-w-0">
                               <p className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>
-                                {ref.loading ? 'Analyzing...' : ref.title}
+                                {ref.loading ? 'Deep analyzing video...' : ref.title}
                               </p>
                               <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                                {ref.loading ? <span className="spinner inline-block" style={{ width: 10, height: 10 }} /> : `${ref.channelTitle} · ${ref.viewCount.toLocaleString()} views`}
+                                {ref.loading ? (
+                                  <span className="flex items-center gap-1">
+                                    <span className="spinner inline-block" style={{ width: 10, height: 10 }} />
+                                    Analyzing visuals, transcript, pacing, structure...
+                                  </span>
+                                ) : `${ref.channelTitle} · ${ref.viewCount.toLocaleString()} views`}
                               </p>
                             </div>
                             <button onClick={() => setRefs(prev => prev.filter(r => r.id !== ref.id))} className="text-xs shrink-0" style={{ color: '#ef4444' }}>×</button>
                           </div>
-                          {ref.styleAnalysis && (
+                          {ref.analysis && (
+                            <div className="mt-2 space-y-1">
+                              {/* Quick summary badges */}
+                              <div className="flex flex-wrap gap-1">
+                                {ref.analysis.content_structure?.format_type && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(124,58,237,0.15)', color: 'var(--accent-purple-bright)' }}>
+                                    {ref.analysis.content_structure.format_type}
+                                  </span>
+                                )}
+                                {ref.analysis.pacing_analysis?.overall_tempo && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(6,182,212,0.15)', color: 'var(--accent-cyan-bright)' }}>
+                                    {ref.analysis.pacing_analysis.overall_tempo} pace
+                                  </span>
+                                )}
+                                {ref.analysis.thumbnail_analysis?.clickability_score && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(16,185,129,0.15)', color: 'var(--accent-green)' }}>
+                                    Thumb: {ref.analysis.thumbnail_analysis.clickability_score}
+                                  </span>
+                                )}
+                              </div>
+                              {/* Core insight */}
+                              {ref.analysis.what_makes_it_work && (
+                                <p className="text-[11px] italic" style={{ color: 'var(--accent-cyan-bright)' }}>
+                                  &quot;{ref.analysis.what_makes_it_work}&quot;
+                                </p>
+                              )}
+                              {/* Expandable deep analysis sections */}
+                              <details className="mt-1">
+                                <summary className="text-xs cursor-pointer font-medium" style={{ color: 'var(--accent-purple-bright)' }}>
+                                  View full deep analysis
+                                </summary>
+                                <div className="mt-2 space-y-2 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                                  {ref.analysis.thumbnail_analysis && (
+                                    <details open>
+                                      <summary className="font-medium cursor-pointer" style={{ color: 'var(--text-primary)' }}>Thumbnail & Visuals</summary>
+                                      <div className="pl-2 mt-1 space-y-0.5">
+                                        {ref.analysis.thumbnail_analysis.what_makes_it_click_worthy && <p><strong>Click trigger:</strong> {ref.analysis.thumbnail_analysis.what_makes_it_click_worthy}</p>}
+                                        {ref.analysis.thumbnail_analysis.visual_composition && <p><strong>Composition:</strong> {ref.analysis.thumbnail_analysis.visual_composition}</p>}
+                                        {ref.analysis.thumbnail_analysis.colors_and_contrast && <p><strong>Colors:</strong> {ref.analysis.thumbnail_analysis.colors_and_contrast}</p>}
+                                        {ref.analysis.thumbnail_analysis.text_overlays && <p><strong>Text:</strong> {ref.analysis.thumbnail_analysis.text_overlays}</p>}
+                                      </div>
+                                    </details>
+                                  )}
+                                  {ref.analysis.hook_breakdown && (
+                                    <details>
+                                      <summary className="font-medium cursor-pointer" style={{ color: 'var(--text-primary)' }}>Hook Breakdown</summary>
+                                      <div className="pl-2 mt-1 space-y-0.5">
+                                        {ref.analysis.hook_breakdown.opening_technique && <p><strong>Technique:</strong> {ref.analysis.hook_breakdown.opening_technique}</p>}
+                                        {ref.analysis.hook_breakdown.first_sentence_verbatim && <p><strong>First line:</strong> &quot;{ref.analysis.hook_breakdown.first_sentence_verbatim}&quot;</p>}
+                                        {ref.analysis.hook_breakdown.curiosity_mechanism && <p><strong>Curiosity:</strong> {ref.analysis.hook_breakdown.curiosity_mechanism}</p>}
+                                        {ref.analysis.hook_breakdown.emotional_trigger && <p><strong>Emotion:</strong> {ref.analysis.hook_breakdown.emotional_trigger}</p>}
+                                      </div>
+                                    </details>
+                                  )}
+                                  {ref.analysis.content_structure && (
+                                    <details>
+                                      <summary className="font-medium cursor-pointer" style={{ color: 'var(--text-primary)' }}>Structure</summary>
+                                      <div className="pl-2 mt-1 space-y-0.5">
+                                        {ref.analysis.content_structure.narrative_arc && <p><strong>Arc:</strong> {ref.analysis.content_structure.narrative_arc}</p>}
+                                        {ref.analysis.content_structure.transition_style && <p><strong>Transitions:</strong> {ref.analysis.content_structure.transition_style}</p>}
+                                        {ref.analysis.content_structure.sections?.map((s, i) => (
+                                          <p key={i} className="ml-2"><span style={{ color: 'var(--accent-cyan-bright)' }}>[{s.timestamp}]</span> {s.label} — {s.purpose}</p>
+                                        ))}
+                                      </div>
+                                    </details>
+                                  )}
+                                  {ref.analysis.pacing_analysis && (
+                                    <details>
+                                      <summary className="font-medium cursor-pointer" style={{ color: 'var(--text-primary)' }}>Pacing & Energy</summary>
+                                      <div className="pl-2 mt-1 space-y-0.5">
+                                        {ref.analysis.pacing_analysis.energy_map && <p><strong>Energy:</strong> {ref.analysis.pacing_analysis.energy_map}</p>}
+                                        {ref.analysis.pacing_analysis.dead_zones && <p><strong>Dead zones:</strong> {ref.analysis.pacing_analysis.dead_zones}</p>}
+                                      </div>
+                                    </details>
+                                  )}
+                                  {ref.analysis.language_and_voice && (
+                                    <details>
+                                      <summary className="font-medium cursor-pointer" style={{ color: 'var(--text-primary)' }}>Voice & Language</summary>
+                                      <div className="pl-2 mt-1 space-y-0.5">
+                                        {ref.analysis.language_and_voice.tone_profile && <p><strong>Tone:</strong> {ref.analysis.language_and_voice.tone_profile}</p>}
+                                        {ref.analysis.language_and_voice.personality_markers && <p><strong>Personality:</strong> {ref.analysis.language_and_voice.personality_markers}</p>}
+                                        {ref.analysis.language_and_voice.signature_phrases?.length ? <p><strong>Phrases:</strong> {ref.analysis.language_and_voice.signature_phrases.join(', ')}</p> : null}
+                                        {ref.analysis.language_and_voice.audience_address_style && <p><strong>Talks to viewer:</strong> {ref.analysis.language_and_voice.audience_address_style}</p>}
+                                      </div>
+                                    </details>
+                                  )}
+                                  {ref.analysis.engagement_mechanics && (
+                                    <details>
+                                      <summary className="font-medium cursor-pointer" style={{ color: 'var(--text-primary)' }}>Engagement Mechanics</summary>
+                                      <div className="pl-2 mt-1 space-y-0.5">
+                                        {ref.analysis.engagement_mechanics.curiosity_gaps?.map((g, i) => (
+                                          <p key={i}>• Curiosity gap: {g}</p>
+                                        ))}
+                                        {ref.analysis.engagement_mechanics.pattern_interrupts?.map((p, i) => (
+                                          <p key={i}>• <span style={{ color: 'var(--accent-cyan-bright)' }}>[{p.timestamp}]</span> {p.technique}</p>
+                                        ))}
+                                      </div>
+                                    </details>
+                                  )}
+                                  {ref.analysis.replicable_elements?.length ? (
+                                    <details>
+                                      <summary className="font-medium cursor-pointer" style={{ color: 'var(--accent-green)' }}>Replicable Techniques</summary>
+                                      <div className="pl-2 mt-1">
+                                        {ref.analysis.replicable_elements.map((r, i) => (
+                                          <p key={i} className="flex gap-1"><span style={{ color: 'var(--accent-green)' }}>{i + 1}.</span> {r}</p>
+                                        ))}
+                                      </div>
+                                    </details>
+                                  ) : null}
+                                  {ref.analysis.weaknesses?.length ? (
+                                    <details>
+                                      <summary className="font-medium cursor-pointer" style={{ color: '#ef4444' }}>Weaknesses</summary>
+                                      <div className="pl-2 mt-1">
+                                        {ref.analysis.weaknesses.map((w, i) => <p key={i}>• {w}</p>)}
+                                      </div>
+                                    </details>
+                                  ) : null}
+                                  {ref.analysis.creator_fingerprint && (
+                                    <p className="mt-1 italic" style={{ color: 'var(--accent-purple-bright)' }}>
+                                      <strong>Creator DNA:</strong> {ref.analysis.creator_fingerprint}
+                                    </p>
+                                  )}
+                                </div>
+                              </details>
+                            </div>
+                          )}
+                          {!ref.analysis && ref.styleAnalysis && (
                             <details className="mt-2">
                               <summary className="text-xs cursor-pointer" style={{ color: 'var(--accent-cyan-bright)' }}>View style analysis</summary>
                               <pre className="text-xs mt-1 whitespace-pre-wrap" style={{ color: 'var(--text-secondary)' }}>{ref.styleAnalysis}</pre>

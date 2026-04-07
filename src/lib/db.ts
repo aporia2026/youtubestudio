@@ -146,6 +146,47 @@ export async function initDatabase() {
     )
   `;
 
+  // Competitor tracking tables
+  await sql`
+    CREATE TABLE IF NOT EXISTS competitor_channels (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      channel_id TEXT NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      custom_url TEXT,
+      description TEXT,
+      subscriber_count INTEGER DEFAULT 0,
+      video_count INTEGER DEFAULT 0,
+      view_count BIGINT DEFAULT 0,
+      thumbnail_url TEXT,
+      notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS competitor_videos (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      competitor_id UUID NOT NULL REFERENCES competitor_channels(id) ON DELETE CASCADE,
+      video_id TEXT NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      published_at TIMESTAMPTZ,
+      view_count INTEGER DEFAULT 0,
+      like_count INTEGER DEFAULT 0,
+      comment_count INTEGER DEFAULT 0,
+      duration TEXT,
+      thumbnail_url TEXT,
+      outlier_score NUMERIC(8,2) DEFAULT 0,
+      engagement_rate NUMERIC(8,4) DEFAULT 0,
+      synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+
+  // Index for competitor video lookups
+  try {
+    await sql`CREATE INDEX IF NOT EXISTS idx_comp_videos_competitor ON competitor_videos(competitor_id)`;
+  } catch { /* index may already exist */ }
+
   // Seed default niches if empty
   await sql`
     INSERT INTO niches (name, description, keywords)

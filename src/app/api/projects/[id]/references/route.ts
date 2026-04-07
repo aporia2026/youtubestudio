@@ -24,6 +24,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // Try to fetch YouTube metadata
     const videoData = await fetchYouTubeVideoData(youtube_url);
 
+    const scrapedAt = videoData ? new Date().toISOString() : null;
     const result = await sql`
       INSERT INTO youtube_references (
         project_id, youtube_url, video_id, title, channel,
@@ -40,7 +41,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         ${videoData?.duration || null},
         ${videoData?.thumbnailUrl || null},
         ${notes || ''},
-        ${videoData ? 'NOW()' : null}
+        ${scrapedAt}
       )
       RETURNING *
     `;
