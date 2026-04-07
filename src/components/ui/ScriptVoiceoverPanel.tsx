@@ -81,6 +81,11 @@ export function ScriptVoiceoverPanel({ script, tone, style, targetDuration, proj
   useEffect(() => {
     const saved = localStorage.getItem('elevenlabs_api_key');
     if (saved) { setApiKey(saved); loadVoices(saved); }
+    else {
+      fetch('/api/settings/key-status').then(r => r.json()).then(data => {
+        if (data.elevenlabs) { setApiKey('__server__'); loadVoices(''); }
+      }).catch(() => {});
+    }
   }, []);
 
   // Update preset when tone/style changes

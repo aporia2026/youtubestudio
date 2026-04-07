@@ -9,5 +9,6 @@ export async function GET() {
     youtube: !!process.env.YOUTUBE_API_KEY,
     postgres: !!process.env.POSTGRES_URL,
     blob: !!process.env.BLOB_READ_WRITE_TOKEN,
+    elevenlabs: !!process.env.ELEVENLABS_API_KEY,
   });
 }

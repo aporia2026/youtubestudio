@@ -73,6 +73,12 @@ function VoiceoverStudio() {
 
     const saved = localStorage.getItem('elevenlabs_api_key');
     if (saved) { setApiKey(saved); loadVoices(saved); }
+    else {
+      // Try server-side env var
+      fetch('/api/settings/key-status').then(r => r.json()).then(data => {
+        if (data.elevenlabs) { setApiKey('__server__'); loadVoices(''); }
+      }).catch(() => {});
+    }
   }, []);
 
   async function loadVoices(key: string) {

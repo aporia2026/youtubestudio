@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getVoices } from '@/lib/elevenlabs';
 
 export async function GET(req: NextRequest) {
-  const apiKey = req.headers.get('x-eleven-api-key') || '';
+  const apiKey = req.headers.get('x-eleven-api-key') || process.env.ELEVENLABS_API_KEY || '';
   if (!apiKey) return NextResponse.json({ error: 'API key required' }, { status: 401 });
 
   try {

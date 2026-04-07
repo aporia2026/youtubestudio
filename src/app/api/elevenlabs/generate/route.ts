@@ -7,7 +7,8 @@ export const maxDuration = 120;
 
 export async function POST(req: NextRequest) {
   try {
-    const { apiKey, text, voiceId, voiceSettings, modelId, projectId } = await req.json();
+    const { apiKey: clientKey, text, voiceId, voiceSettings, modelId, projectId } = await req.json();
+    const apiKey = clientKey || process.env.ELEVENLABS_API_KEY || '';
 
     if (!apiKey) return NextResponse.json({ error: 'ElevenLabs API key required' }, { status: 400 });
     if (!text || !voiceId) return NextResponse.json({ error: 'text and voiceId required' }, { status: 400 });
