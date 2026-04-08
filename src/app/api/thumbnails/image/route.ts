@@ -97,7 +97,7 @@ export async function POST(req: NextRequest) {
         const isPrivate = blocked.some(b => h === b)
           || h.startsWith('10.')
           || h.startsWith('192.168.')
-          || h.startsWith('100.64.') || h.startsWith('100.65.') || h.startsWith('100.66.') || h.startsWith('100.67.')
+          || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(h)
           || /^172\.(1[6-9]|2\d|3[01])\./.test(h)
           || h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe80')
           || h.endsWith('.internal') || h.endsWith('.local');
@@ -115,7 +115,7 @@ export async function POST(req: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const input: Record<string, any> = {
       prompt,
-      nsfw_checker: false,
+      nsfw_checker: true,
     };
 
     // Text-to-image models

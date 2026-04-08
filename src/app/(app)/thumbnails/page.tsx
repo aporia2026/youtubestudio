@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
@@ -138,18 +138,49 @@ export default function ThumbnailsPage() {
   const [uploadingRef, setUploadingRef] = useState(false);
   const [refPreviewUrl, setRefPreviewUrl] = useState('');
 
-  // Text overlay & style
-  const [textOverlay, setTextOverlay] = useState<TextOverlaySettings>(() => {
-    if (typeof window === 'undefined') return DEFAULT_TEXT_OVERLAY;
-    try { const s = localStorage.getItem('thumb_style_prefs'); return s ? { ...DEFAULT_TEXT_OVERLAY, ...JSON.parse(s) } : DEFAULT_TEXT_OVERLAY; } catch { return DEFAULT_TEXT_OVERLAY; }
-  });
+  // Text overlay & style — loaded from localStorage after mount to avoid SSR hydration mismatch
+  const [textOverlay, setTextOverlay] = useState<TextOverlaySettings>(DEFAULT_TEXT_OVERLAY);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    try {
+      const s = localStorage.getItem('thumb_style_prefs');
+      if (s) {
+        const parsed = JSON.parse(s);
+        // Validate critical fields
+        const validated: TextOverlaySettings = {
+          ...DEFAULT_TEXT_OVERLAY,
+          enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : false,
+          text: typeof parsed.text === 'string' ? parsed.text.slice(0, 50) : '',
+          mode: parsed.mode === 'custom' ? 'custom' : 'ai',
+          primaryColor: /^#[0-9a-fA-F]{6}$/.test(parsed.primaryColor) ? parsed.primaryColor : '#FFFFFF',
+          accentColor: /^#[0-9a-fA-F]{6}$/.test(parsed.accentColor) ? parsed.accentColor : '#FF0000',
+          accentWords: typeof parsed.accentWords === 'string' ? parsed.accentWords.slice(0, 100) : '',
+          stylePreset: STYLE_PRESETS.some(p => p.id === parsed.stylePreset) ? parsed.stylePreset : 'bold-impact',
+          customStyle: typeof parsed.customStyle === 'string' ? parsed.customStyle.slice(0, 200) : '',
+        };
+        setTextOverlay(validated);
+      }
+    } catch {}
+  }, []);
 
   function updateTextOverlay(updates: Partial<TextOverlaySettings>) {
     setTextOverlay((prev: TextOverlaySettings) => {
       const next = { ...prev, ...updates };
-      try { localStorage.setItem('thumb_style_prefs', JSON.stringify(next)); } catch {}
+      // Debounce localStorage write to avoid lag on every keystroke
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = setTimeout(() => {
+        try { localStorage.setItem('thumb_style_prefs', JSON.stringify(next)); }
+        catch { toast.error('Could not save style preferences — storage may be full'); }
+      }, 500);
       return next;
     });
+  }
+
+  function resetTextOverlay() {
+    setTextOverlay(DEFAULT_TEXT_OVERLAY);
+    try { localStorage.removeItem('thumb_style_prefs'); } catch {}
+    toast.success('Style preferences reset to defaults');
   }
 
   // YouTube channel videos for thumbnail attachment
@@ -254,13 +285,20 @@ export default function ThumbnailsPage() {
     }
   }
 
+  function sanitizePromptText(text: string): string {
+    // Strip anything that looks like prompt injection
+    return text.replace(/ignore.*instructions/gi, '').replace(/system.*prompt/gi, '').replace(/\n/g, ' ').trim().slice(0, 100);
+  }
+
   function buildImagePrompt(basePrompt: string): string {
     let p = basePrompt;
     if (textOverlay.enabled) {
       const preset = STYLE_PRESETS.find(s => s.id === textOverlay.stylePreset);
-      const fontDesc = textOverlay.stylePreset === 'custom' ? textOverlay.customStyle : preset?.font || 'bold sans-serif';
+      const fontDesc = textOverlay.stylePreset === 'custom'
+        ? (sanitizePromptText(textOverlay.customStyle) || 'bold, clean style')
+        : preset?.font || 'bold sans-serif';
       const textContent = textOverlay.mode === 'custom' && textOverlay.text.trim()
-        ? textOverlay.text.trim()
+        ? sanitizePromptText(textOverlay.text)
         : '(choose the most impactful 2-4 words from the concept)';
 
       p += `\n\nIMPORTANT TEXT OVERLAY INSTRUCTIONS: Include large, prominent text on the thumbnail reading: "${textContent}". `;
@@ -268,12 +306,15 @@ export default function ThumbnailsPage() {
       p += `Primary text color: ${textOverlay.primaryColor}. `;
 
       if (textOverlay.accentWords.trim()) {
-        p += `The following words must be in accent color ${textOverlay.accentColor}: "${textOverlay.accentWords}". All other words in ${textOverlay.primaryColor}. `;
+        const accentSafe = sanitizePromptText(textOverlay.accentWords);
+        p += `The following words must be in accent color ${textOverlay.accentColor}: "${accentSafe}". All other words in ${textOverlay.primaryColor}. `;
         p += `This creates a two-tone text effect for emphasis. `;
       }
       p += `The text must be clearly readable, high contrast against the background, and positioned prominently. `;
       if (preset?.desc) p += `Style: ${preset.desc}. `;
     }
+    // Ensure prompt doesn't exceed Kie.ai limit (5000 chars)
+    if (p.length > 4800) p = p.slice(0, 4800);
     return p;
   }
 
@@ -474,9 +515,12 @@ export default function ThumbnailsPage() {
                                 <input className="input-field w-full text-xs mt-1" placeholder="Describe your font/style..."
                                   value={textOverlay.customStyle} onChange={e => updateTextOverlay({ customStyle: e.target.value })} />
                               )}
-                              <p className="text-[9px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                                Saved for consistency — all thumbnails will use this style
-                              </p>
+                              <div className="flex items-center justify-between mt-0.5">
+                                <p className="text-[9px]" style={{ color: 'var(--text-muted)' }}>
+                                  Saved for consistency across all thumbnails
+                                </p>
+                                <button onClick={resetTextOverlay} className="text-[9px] underline" style={{ color: 'var(--text-muted)' }}>Reset</button>
+                              </div>
                             </div>
 
                             {/* Text content */}
@@ -652,15 +696,22 @@ export default function ThumbnailsPage() {
                         Copy Prompt
                       </button>
                       {imageGenEnabled && (
-                        <button className="btn-primary text-xs flex items-center gap-1.5" disabled={generatingImages[idx]}
-                          onClick={() => generateImage(idx, concept.image_generation_prompt)}>
-                          {generatingImages[idx] ? (
-                            <>
-                              <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" opacity="0.25" /><path d="M12 2a10 10 0 0 1 10 10" /></svg>
-                              Generating...
-                            </>
-                          ) : 'Generate Image'}
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button className="btn-primary text-xs flex items-center gap-1.5" disabled={generatingImages[idx]}
+                            onClick={() => generateImage(idx, concept.image_generation_prompt)}>
+                            {generatingImages[idx] ? (
+                              <>
+                                <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" opacity="0.25" /><path d="M12 2a10 10 0 0 1 10 10" /></svg>
+                                Generating...
+                              </>
+                            ) : 'Generate Image'}
+                          </button>
+                          {textOverlay.enabled && (
+                            <span className="text-[9px]" style={{ color: 'var(--accent-yellow)' }} title="AI image models may render text imperfectly. For pixel-perfect text, add it in post-processing.">
+                              Text is best-effort
+                            </span>
+                          )}
+                        </div>
                       )}
                     </div>
 
