@@ -10,6 +10,31 @@ import { DraftsBanner } from '@/components/ui/DraftsBanner';
 import { getThumbnailHistory, saveThumbnailEntry, deleteThumbnailEntry, clearThumbnailHistory, type ThumbnailHistoryEntry } from '@/lib/history';
 import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
 
+interface TextOverlaySettings {
+  enabled: boolean;
+  text: string;
+  mode: 'ai' | 'custom';
+  primaryColor: string;
+  accentColor: string;
+  accentWords: string;
+  stylePreset: string;
+  customStyle: string;
+}
+
+const DEFAULT_TEXT_OVERLAY: TextOverlaySettings = {
+  enabled: false, text: '', mode: 'ai', primaryColor: '#FFFFFF', accentColor: '#FF0000', accentWords: '', stylePreset: 'bold-impact', customStyle: '',
+};
+
+const STYLE_PRESETS = [
+  { id: 'bold-impact', label: 'Bold Impact', font: 'Impact/Bebas Neue', desc: 'Thick bold uppercase, high contrast stroke' },
+  { id: 'clean-modern', label: 'Clean Modern', font: 'Montserrat/Poppins', desc: 'Clean sans-serif, minimal, professional' },
+  { id: 'neon-glow', label: 'Neon Glow', font: 'bold sans-serif with neon glow effect', desc: 'Glowing text on dark backgrounds' },
+  { id: 'handwritten', label: 'Handwritten', font: 'handwritten/brush script style', desc: 'Casual, personal, authentic feel' },
+  { id: 'retro-gaming', label: 'Retro/Gaming', font: 'pixel/blocky/retro game style', desc: 'High energy, gaming/tech aesthetic' },
+  { id: 'cinematic', label: 'Cinematic', font: 'thin elegant serif/sans-serif', desc: 'Dramatic, movie-poster style' },
+  { id: 'custom', label: 'Custom', font: '', desc: 'Describe your own style' },
+];
+
 const IMAGE_MODELS = [
   { value: 'grok-imagine-t2i', label: 'Grok Imagine (Text-to-Image)' },
   { value: 'flux2-pro-t2i', label: 'Flux2 Pro (Text-to-Image)' },
@@ -113,6 +138,20 @@ export default function ThumbnailsPage() {
   const [uploadingRef, setUploadingRef] = useState(false);
   const [refPreviewUrl, setRefPreviewUrl] = useState('');
 
+  // Text overlay & style
+  const [textOverlay, setTextOverlay] = useState<TextOverlaySettings>(() => {
+    if (typeof window === 'undefined') return DEFAULT_TEXT_OVERLAY;
+    try { const s = localStorage.getItem('thumb_style_prefs'); return s ? { ...DEFAULT_TEXT_OVERLAY, ...JSON.parse(s) } : DEFAULT_TEXT_OVERLAY; } catch { return DEFAULT_TEXT_OVERLAY; }
+  });
+
+  function updateTextOverlay(updates: Partial<TextOverlaySettings>) {
+    setTextOverlay((prev: TextOverlaySettings) => {
+      const next = { ...prev, ...updates };
+      try { localStorage.setItem('thumb_style_prefs', JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }
+
   // YouTube channel videos for thumbnail attachment
   const [channels, setChannels] = useState<Array<{ id: string; name: string; channel_id: string }>>([]);
   const [channelVideos, setChannelVideos] = useState<Array<{ id: string; title: string; thumbnailUrl: string }>>([]);
@@ -215,10 +254,34 @@ export default function ThumbnailsPage() {
     }
   }
 
+  function buildImagePrompt(basePrompt: string): string {
+    let p = basePrompt;
+    if (textOverlay.enabled) {
+      const preset = STYLE_PRESETS.find(s => s.id === textOverlay.stylePreset);
+      const fontDesc = textOverlay.stylePreset === 'custom' ? textOverlay.customStyle : preset?.font || 'bold sans-serif';
+      const textContent = textOverlay.mode === 'custom' && textOverlay.text.trim()
+        ? textOverlay.text.trim()
+        : '(choose the most impactful 2-4 words from the concept)';
+
+      p += `\n\nIMPORTANT TEXT OVERLAY INSTRUCTIONS: Include large, prominent text on the thumbnail reading: "${textContent}". `;
+      p += `Font style: ${fontDesc}. `;
+      p += `Primary text color: ${textOverlay.primaryColor}. `;
+
+      if (textOverlay.accentWords.trim()) {
+        p += `The following words must be in accent color ${textOverlay.accentColor}: "${textOverlay.accentWords}". All other words in ${textOverlay.primaryColor}. `;
+        p += `This creates a two-tone text effect for emphasis. `;
+      }
+      p += `The text must be clearly readable, high contrast against the background, and positioned prominently. `;
+      if (preset?.desc) p += `Style: ${preset.desc}. `;
+    }
+    return p;
+  }
+
   async function generateImage(idx: number, prompt: string) {
     setGeneratingImages(prev => ({ ...prev, [idx]: true }));
     try {
-      const body: Record<string, string> = { model: imageModel, prompt };
+      const finalPrompt = buildImagePrompt(prompt);
+      const body: Record<string, string> = { model: imageModel, prompt: finalPrompt };
       if (referenceImageUrl.trim()) body.referenceImageUrl = referenceImageUrl.trim();
       const res = await fetch('/api/thumbnails/image', {
         method: 'POST',
@@ -381,6 +444,97 @@ export default function ThumbnailsPage() {
                           </div>
                         </details>
                       )}
+                      {/* Text Overlay & Style */}
+                      <div className="p-3 rounded-lg space-y-2.5" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                        <label className="flex items-center gap-2 cursor-pointer text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                          <input type="checkbox" checked={textOverlay.enabled} onChange={e => updateTextOverlay({ enabled: e.target.checked })}
+                            style={{ accentColor: 'var(--accent-pink)' }} />
+                          Text on thumbnail
+                        </label>
+                        {textOverlay.enabled && (
+                          <div className="space-y-2.5">
+                            {/* Style preset */}
+                            <div>
+                              <label className="block text-[10px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Style Preset</label>
+                              <div className="flex flex-wrap gap-1">
+                                {STYLE_PRESETS.map(s => (
+                                  <button key={s.id} onClick={() => updateTextOverlay({ stylePreset: s.id })}
+                                    className="text-[10px] px-2 py-1 rounded transition-all"
+                                    title={s.desc}
+                                    style={{
+                                      background: textOverlay.stylePreset === s.id ? 'rgba(236,72,153,0.2)' : 'var(--bg-card)',
+                                      border: `1px solid ${textOverlay.stylePreset === s.id ? 'rgba(236,72,153,0.4)' : 'var(--border)'}`,
+                                      color: textOverlay.stylePreset === s.id ? 'var(--accent-pink)' : 'var(--text-muted)',
+                                    }}>
+                                    {s.label}
+                                  </button>
+                                ))}
+                              </div>
+                              {textOverlay.stylePreset === 'custom' && (
+                                <input className="input-field w-full text-xs mt-1" placeholder="Describe your font/style..."
+                                  value={textOverlay.customStyle} onChange={e => updateTextOverlay({ customStyle: e.target.value })} />
+                              )}
+                              <p className="text-[9px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                                Saved for consistency — all thumbnails will use this style
+                              </p>
+                            </div>
+
+                            {/* Text content */}
+                            <div>
+                              <label className="block text-[10px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Text Content</label>
+                              <div className="flex gap-2 mb-1">
+                                <button onClick={() => updateTextOverlay({ mode: 'ai' })}
+                                  className="text-[10px] px-2 py-0.5 rounded"
+                                  style={{ background: textOverlay.mode === 'ai' ? 'rgba(124,58,237,0.2)' : 'var(--bg-card)', border: `1px solid ${textOverlay.mode === 'ai' ? 'rgba(124,58,237,0.3)' : 'var(--border)'}`, color: textOverlay.mode === 'ai' ? 'var(--accent-purple-bright)' : 'var(--text-muted)' }}>
+                                  AI decides
+                                </button>
+                                <button onClick={() => updateTextOverlay({ mode: 'custom' })}
+                                  className="text-[10px] px-2 py-0.5 rounded"
+                                  style={{ background: textOverlay.mode === 'custom' ? 'rgba(124,58,237,0.2)' : 'var(--bg-card)', border: `1px solid ${textOverlay.mode === 'custom' ? 'rgba(124,58,237,0.3)' : 'var(--border)'}`, color: textOverlay.mode === 'custom' ? 'var(--accent-purple-bright)' : 'var(--text-muted)' }}>
+                                  Custom text
+                                </button>
+                              </div>
+                              {textOverlay.mode === 'custom' && (
+                                <input className="input-field w-full text-xs" placeholder="YOUR TEXT HERE (2-5 words max)"
+                                  value={textOverlay.text} onChange={e => updateTextOverlay({ text: e.target.value })} maxLength={50} />
+                              )}
+                            </div>
+
+                            {/* Colors */}
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="block text-[10px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Primary Color</label>
+                                <div className="flex items-center gap-2">
+                                  <input type="color" value={textOverlay.primaryColor} onChange={e => updateTextOverlay({ primaryColor: e.target.value })}
+                                    className="w-7 h-7 rounded cursor-pointer" style={{ border: '2px solid var(--border)', background: 'none' }} />
+                                  <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>{textOverlay.primaryColor}</span>
+                                </div>
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Accent Color</label>
+                                <div className="flex items-center gap-2">
+                                  <input type="color" value={textOverlay.accentColor} onChange={e => updateTextOverlay({ accentColor: e.target.value })}
+                                    className="w-7 h-7 rounded cursor-pointer" style={{ border: '2px solid var(--border)', background: 'none' }} />
+                                  <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>{textOverlay.accentColor}</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Accent words */}
+                            <div>
+                              <label className="block text-[10px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>
+                                Accent words <span style={{ color: 'var(--text-muted)' }}>(these words get the accent color)</span>
+                              </label>
+                              <input className="input-field w-full text-xs" placeholder="e.g. DANGEROUS, NEVER"
+                                value={textOverlay.accentWords} onChange={e => updateTextOverlay({ accentWords: e.target.value })} />
+                              <p className="text-[9px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                                Creates multi-color text — e.g. &quot;<span style={{ color: textOverlay.primaryColor }}>you won&apos;t believe</span> <span style={{ color: textOverlay.accentColor }}>WHAT THEY SAY</span>&quot;
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
                       <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Images generated via Kie.ai API — costs may apply</p>
                     </>
                   )}
