@@ -4,50 +4,30 @@ import { uploadThumbnailOAuth } from '@/lib/youtube';
 
 export const maxDuration = 60;
 
+const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB — YouTube's thumbnail limit
+
 export async function POST(req: NextRequest) {
   try {
-    const contentType = req.headers.get('content-type') || '';
+    const formData = await req.formData();
+    const channelDbId = formData.get('channelId') as string;
+    const videoId = formData.get('videoId') as string;
+    const file = formData.get('image') as File;
 
-    let channelDbId: string;
-    let videoId: string;
-    let imageBuffer: Buffer;
-    let mimeType: string;
-
-    if (contentType.includes('multipart/form-data')) {
-      const formData = await req.formData();
-      channelDbId = formData.get('channelId') as string;
-      videoId = formData.get('videoId') as string;
-      const file = formData.get('image') as File;
-
-      if (!channelDbId || !videoId || !file) {
-        return NextResponse.json({ error: 'channelId, videoId, and image are required' }, { status: 400 });
-      }
-
-      mimeType = file.type;
-      imageBuffer = Buffer.from(await file.arrayBuffer());
-    } else {
-      const body = await req.json();
-      channelDbId = body.channelId;
-      videoId = body.videoId;
-      const imageUrl = body.imageUrl;
-
-      if (!channelDbId || !videoId || !imageUrl) {
-        return NextResponse.json({ error: 'channelId, videoId, and imageUrl are required' }, { status: 400 });
-      }
-
-      // Download the image
-      const imgRes = await fetch(imageUrl);
-      if (!imgRes.ok) {
-        return NextResponse.json({ error: 'Failed to download image' }, { status: 400 });
-      }
-      mimeType = imgRes.headers.get('content-type') || 'image/jpeg';
-      imageBuffer = Buffer.from(await imgRes.arrayBuffer());
+    if (!channelDbId || !videoId || !file) {
+      return NextResponse.json({ error: 'channelId, videoId, and image are required' }, { status: 400 });
     }
 
-    // Validate image type
-    if (!mimeType.startsWith('image/')) {
-      return NextResponse.json({ error: 'File must be an image' }, { status: 400 });
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      return NextResponse.json({ error: 'File must be an image (JPEG, PNG, etc.)' }, { status: 400 });
     }
+
+    // Validate file size
+    if (file.size > MAX_FILE_SIZE) {
+      return NextResponse.json({ error: 'Thumbnail must be under 2MB' }, { status: 400 });
+    }
+
+    const imageBuffer = Buffer.from(await file.arrayBuffer());
 
     // Get OAuth token
     const accessToken = await getValidAccessToken(channelDbId);
@@ -58,7 +38,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const result = await uploadThumbnailOAuth(accessToken, videoId, imageBuffer, mimeType);
+    const result = await uploadThumbnailOAuth(accessToken, videoId, imageBuffer, file.type);
 
     if (!result.success) {
       return NextResponse.json({ error: result.error }, { status: 500 });

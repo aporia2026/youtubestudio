@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
 import { fetchChannelVideos, listMyVideosOAuth } from '@/lib/youtube';
-import { getValidAccessToken } from '@/lib/google-oauth';
+import { getValidAccessToken, revokeOAuth } from '@/lib/google-oauth';
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -44,6 +44,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
+    // Revoke OAuth tokens with Google before deleting
+    try { await revokeOAuth(id); } catch { /* best effort */ }
     await sql`DELETE FROM channels WHERE id = ${id}`;
     return NextResponse.json({ success: true });
   } catch (err: unknown) {

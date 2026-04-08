@@ -10,6 +10,7 @@ export const YOUTUBE_SCOPES = [
   'https://www.googleapis.com/auth/youtube.readonly',
   'https://www.googleapis.com/auth/youtube.upload',
   'https://www.googleapis.com/auth/youtube',
+  'https://www.googleapis.com/auth/userinfo.email',
 ];
 
 function getOAuthConfig() {
@@ -140,12 +141,12 @@ export async function storeTokens(
   const accessTokenEnc = encrypt(tokens.access_token);
   const refreshTokenEnc = tokens.refresh_token ? encrypt(tokens.refresh_token) : null;
   const expiry = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
-  const scopes = tokens.scope.split(' ');
+  const scopesCsv = `{${tokens.scope.split(' ').join(',')}}`;
 
   // Upsert — update if already connected
   await sql`
     INSERT INTO oauth_tokens (channel_id, provider, access_token_encrypted, refresh_token_encrypted, token_expiry, scopes, google_email)
-    VALUES (${channelDbId}::uuid, 'google', ${accessTokenEnc}, ${refreshTokenEnc}, ${expiry}::timestamptz, ${scopes as unknown as string}, ${googleEmail || null})
+    VALUES (${channelDbId}::uuid, 'google', ${accessTokenEnc}, ${refreshTokenEnc}, ${expiry}::timestamptz, ${scopesCsv}::text[], ${googleEmail || null})
     ON CONFLICT (channel_id, provider) DO UPDATE SET
       access_token_encrypted = EXCLUDED.access_token_encrypted,
       refresh_token_encrypted = COALESCE(EXCLUDED.refresh_token_encrypted, oauth_tokens.refresh_token_encrypted),
@@ -212,7 +213,11 @@ export async function revokeOAuth(channelDbId: string): Promise<void> {
   if (result.rows.length) {
     try {
       const token = decrypt(result.rows[0].access_token_encrypted as string);
-      await fetch(`${GOOGLE_REVOKE_URL}?token=${token}`, { method: 'POST' });
+      await fetch(GOOGLE_REVOKE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `token=${encodeURIComponent(token)}`,
+      });
     } catch { /* best effort */ }
   }
 

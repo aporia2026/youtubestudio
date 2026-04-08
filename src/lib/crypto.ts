@@ -1,4 +1,4 @@
-import { randomBytes, createCipheriv, createDecipheriv } from 'crypto';
+import { randomBytes, createCipheriv, createDecipheriv, createHash } from 'crypto';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 16;
@@ -7,8 +7,6 @@ const AUTH_TAG_LENGTH = 16;
 function getKey(): Buffer {
   const key = process.env.ENCRYPTION_KEY || process.env.AUTH_SECRET;
   if (!key) throw new Error('ENCRYPTION_KEY or AUTH_SECRET must be set');
-  // Derive a 32-byte key from the secret by hashing
-  const { createHash } = require('crypto') as typeof import('crypto');
   return createHash('sha256').update(key).digest();
 }
 
@@ -30,5 +28,5 @@ export function decrypt(encoded: string): string {
   const ciphertext = data.subarray(IV_LENGTH + AUTH_TAG_LENGTH);
   const decipher = createDecipheriv(ALGORITHM, key, iv);
   decipher.setAuthTag(authTag);
-  return decipher.update(ciphertext) + decipher.final('utf8');
+  return decipher.update(ciphertext, undefined, 'utf8') + decipher.final('utf8');
 }

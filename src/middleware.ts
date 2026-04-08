@@ -12,7 +12,7 @@ function getSecret(): Uint8Array {
 }
 const COOKIE_NAME = 'yt_studio_session';
 
-const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/logout'];
+const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/logout', '/api/auth/google/callback'];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

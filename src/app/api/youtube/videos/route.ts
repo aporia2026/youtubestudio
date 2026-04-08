@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const maxResults = parseInt(req.nextUrl.searchParams.get('limit') || '30');
+    const maxResults = Math.min(Math.max(parseInt(req.nextUrl.searchParams.get('limit') || '30') || 30, 1), 50);
     const videos = await listMyVideosOAuth(accessToken, maxResults);
     return NextResponse.json({ videos });
   } catch (err: unknown) {

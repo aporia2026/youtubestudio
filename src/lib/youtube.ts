@@ -326,7 +326,7 @@ export async function uploadThumbnailOAuth(
     const data = await res.json();
     return {
       success: true,
-      thumbnailUrl: data.items?.[0]?.high?.url || data.items?.[0]?.default?.url,
+      thumbnailUrl: data.items?.[0]?.high?.url || data.items?.[0]?.medium?.url || data.items?.[0]?.default?.url || data.high?.url || data.default?.url,
     };
   } catch (err) {
     console.error('Thumbnail upload error:', err);
