@@ -428,7 +428,25 @@ For each idea, think:
 {
   "ideas": [
     {
-      "title": "<click-optimized video title>",
+      "title": "<click-optimized video title>",${referenceContext || redditContext ? `
+      "inspiration_sources": {
+        "from_reference_videos": ${referenceContext ? `[
+          {
+            "video_title": "<exact title of the reference video>",
+            "techniques_borrowed": "<specific techniques: hook style, structure, pacing, engagement, storytelling>",
+            "how_adapted": "<how you adapted those techniques for this idea>"
+          }
+        ]` : `[]`},
+        "from_reddit": ${redditContext ? `[
+          {
+            "post_title": "<EXACT title of the Reddit post — copy from the data above>",
+            "post_url": "<EXACT URL of the Reddit post — copy from the data above>",
+            "subreddit": "<r/subreddit name>",
+            "what_was_taken": "<the specific question, pain point, or insight from the post or its top comments>",
+            "how_adapted": "<how that discussion became this video idea>"
+          }
+        ]` : `[]`}
+      },` : ''}
       "hook": "<opening line that would make viewers stop scrolling>",
       "description": "<2-3 sentence video description>",
       "why_it_will_perform": "<specific, logic-based reason with data backing — e.g. 'This keyword gets 90K monthly searches with only 12 competing videos above 100K views. Conversion rate for cybersecurity queries is 3x the platform average.'>",
@@ -451,25 +469,7 @@ For each idea, think:
       "best_time_to_publish": "<strategic timing recommendation>",
       "thumbnail_concept": "<visual thumbnail description>",
       "tags": ["<tag1>", "<tag2>", "<tag3>", "<tag4>", "<tag5>"],
-      "competitor_gap": "<why this hasn't been done well yet — what existing videos are missing>"${referenceContext || redditContext ? `,
-      "inspiration_sources": {
-        "from_reference_videos": ${referenceContext ? `[
-          {
-            "video_title": "<exact title of the reference video>",
-            "techniques_borrowed": "<specific techniques: hook style, structure, pacing, engagement, storytelling>",
-            "how_adapted": "<how you adapted those techniques for this idea>"
-          }
-        ]` : `[]`},
-        "from_reddit": ${redditContext ? `[
-          {
-            "post_title": "<EXACT title of the Reddit post — copy from the data above>",
-            "post_url": "<EXACT URL of the Reddit post — copy from the data above>",
-            "subreddit": "<r/subreddit name>",
-            "what_was_taken": "<the specific question, pain point, or insight from the post or its top comments>",
-            "how_adapted": "<how that discussion became this video idea>"
-          }
-        ]` : `[]`}
-      }` : ''}
+      "competitor_gap": "<why this hasn't been done well yet — what existing videos are missing>"
     }
   ]
 }

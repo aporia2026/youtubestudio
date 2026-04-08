@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateText, getModelById } from '@/lib/ai';
 import { ideaGenerationPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { parseLlmJson } from '@/lib/parse-llm-json';
 
 export const maxDuration = 120;
 
@@ -35,21 +36,22 @@ export async function POST(req: NextRequest) {
       existingTitles,
     });
 
+    // More tokens needed when Reddit/reference attribution is included
+    const hasAttribution = !!(referenceContext || redditContext);
     const raw = await generateText({
       modelId,
       prompt: user,
       systemPrompt: system,
-      maxTokens: 6000,
+      maxTokens: hasAttribution ? 12000 : 6000,
       temperature: 0.9,
     });
 
-    // Extract JSON
-    const jsonMatch = raw.match(/```json\s*([\s\S]*?)\s*```/) || raw.match(/(\{[\s\S]*\})/);
-    if (!jsonMatch) {
-      return NextResponse.json({ error: 'Failed to parse ideas response' }, { status: 500 });
+    let parsed;
+    try {
+      parsed = parseLlmJson(raw) as { ideas?: unknown[] };
+    } catch {
+      return NextResponse.json({ error: 'Failed to parse ideas response — try again' }, { status: 500 });
     }
-
-    const parsed = JSON.parse(jsonMatch[1]);
     const ideas = parsed.ideas || [];
 
     return NextResponse.json({ ideas });

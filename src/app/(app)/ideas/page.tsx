@@ -246,14 +246,23 @@ export default function IdeasPage() {
           const redditRes = await fetch('/api/research/reddit', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ niche, subreddits: subs, limit: 20 }),
+            body: JSON.stringify({ niche, subreddits: subs.length > 0 ? subs : undefined, limit: 25 }),
           });
           if (redditRes.ok) {
             const data = await redditRes.json();
             redditContext = data.summary || undefined;
+            if (redditContext) {
+              setGenStep(`Found ${data.totalFound || 0} Reddit discussions — generating ideas...`);
+            } else {
+              toast.warning('No Reddit discussions found for this niche');
+            }
+          } else if (redditRes.status === 429) {
+            toast.warning('Reddit rate limited — generating ideas without Reddit data');
+          } else {
+            toast.warning('Reddit fetch failed — generating ideas without Reddit data');
           }
         } catch {
-          // Reddit fetch failed — continue without it
+          toast.warning('Reddit connection failed — continuing without Reddit');
         }
       }
 
