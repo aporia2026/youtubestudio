@@ -106,6 +106,27 @@ const FEATURE_CARDS = [
     href: '/channel',
     badge: 'YouTube API',
   },
+  {
+    icon: '🔍',
+    title: 'SEO Optimizer',
+    desc: 'Optimize titles, descriptions, and tags for maximum discoverability with AI-powered keyword analysis.',
+    href: '/seo',
+    badge: 'SEO',
+  },
+  {
+    icon: '🖼️',
+    title: 'Thumbnails',
+    desc: 'Design eye-catching thumbnails with text overlays, reference images, and AI-generated concepts.',
+    href: '/thumbnails',
+    badge: 'Visual',
+  },
+  {
+    icon: '📊',
+    title: 'Competitors',
+    desc: 'Track and analyze competitor channels to find content gaps and winning strategies in your niche.',
+    href: '/competitors',
+    badge: 'Analytics',
+  },
 ];
 
 const containerVariants = {
