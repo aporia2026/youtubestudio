@@ -251,15 +251,18 @@ export default function IdeasPage() {
           if (redditRes.ok) {
             const data = await redditRes.json();
             redditContext = data.summary || undefined;
-            if (redditContext) {
-              setGenStep(`Found ${data.totalFound || 0} Reddit discussions — generating ideas...`);
+            const count = data.totalFound || 0;
+            if (redditContext && count > 0) {
+              toast.success(`Found ${count} Reddit discussions`);
+              setGenStep(`Found ${count} Reddit posts — generating ideas with Reddit insights...`);
             } else {
-              toast.warning('No Reddit discussions found for this niche');
+              toast.warning(`Reddit returned no results for "${niche}" — Reddit may be blocking. Try adding specific subreddits.`);
             }
           } else if (redditRes.status === 429) {
-            toast.warning('Reddit rate limited — generating ideas without Reddit data');
+            toast.warning('Reddit rate limited — wait a minute and try again. Generating without Reddit.');
           } else {
-            toast.warning('Reddit fetch failed — generating ideas without Reddit data');
+            const errData = await redditRes.json().catch(() => ({}));
+            toast.warning(errData.error || 'Reddit fetch failed — generating without Reddit data');
           }
         } catch {
           toast.warning('Reddit connection failed — continuing without Reddit');

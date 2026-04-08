@@ -31,7 +31,8 @@ function decodeHtmlEntities(text: string): string {
     .replace(/&#x2F;/g, '/');
 }
 
-const UA = 'web:YTStudio:v1.0 (content research tool)';
+// Use a browser-like UA — Reddit blocks generic bot UAs from cloud IPs
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 /**
  * Fetch top comments for a Reddit post.
@@ -83,7 +84,13 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: 'Reddit rate limit — please wait a minute and try again' }, { status: 429 });
         }
         if (searchRes.ok) {
-          const data = await searchRes.json();
+          const text = await searchRes.text();
+          // Reddit sometimes returns HTML instead of JSON (bot detection)
+          if (!text.startsWith('{') && !text.startsWith('[')) {
+            console.error(`Reddit returned non-JSON for search (${sort}):`, text.slice(0, 200));
+            continue;
+          }
+          const data = JSON.parse(text);
           const posts = data?.data?.children || [];
           for (const post of posts) {
             const d = post.data;
@@ -100,6 +107,8 @@ export async function POST(req: NextRequest) {
               topComments: [],
             });
           }
+        } else {
+          console.error(`Reddit search (${sort}) returned ${searchRes.status}`);
         }
       } catch (err) {
         console.error(`Reddit search (${sort}) error:`, err);
