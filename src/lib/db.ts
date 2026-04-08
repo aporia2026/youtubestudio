@@ -133,6 +133,24 @@ export async function initDatabase() {
   try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS account_email TEXT`; } catch {}
   try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS account_color TEXT DEFAULT '#7c3aed'`; } catch {}
   try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS notes TEXT`; } catch {}
+  try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS oauth_connected BOOLEAN DEFAULT false`; } catch {}
+
+  // OAuth tokens table (encrypted access + refresh tokens)
+  await sql`
+    CREATE TABLE IF NOT EXISTS oauth_tokens (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      channel_id UUID REFERENCES channels(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL DEFAULT 'google',
+      access_token_encrypted TEXT NOT NULL,
+      refresh_token_encrypted TEXT,
+      token_expiry TIMESTAMPTZ NOT NULL,
+      scopes TEXT[] NOT NULL DEFAULT '{}',
+      google_email TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(channel_id, provider)
+    )
+  `;
 
   // Niches table (for flexible niche management)
   await sql`

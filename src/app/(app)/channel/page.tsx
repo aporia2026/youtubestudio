@@ -20,6 +20,13 @@ interface Channel {
   account_color: string | null;
   notes: string | null;
   has_api_key: boolean;
+  oauth_connected: boolean;
+}
+
+interface VideoItem {
+  video_id: string;
+  title: string;
+  thumbnail_url: string;
 }
 
 const ACCOUNT_COLORS = [
@@ -45,11 +52,36 @@ export default function ChannelPage() {
   const [accountApiKey, setAccountApiKey] = useState('');
   const [syncing, setSyncing] = useState<string | null>(null);
   const [hasApiKey, setHasApiKey] = useState(false);
+  const [hasOAuthConfig, setHasOAuthConfig] = useState(false);
   const [filterAccount, setFilterAccount] = useState<string | null>(null);
+  const [disconnecting, setDisconnecting] = useState<string | null>(null);
+  // Thumbnail upload state
+  const [thumbnailModal, setThumbnailModal] = useState<{ channelId: string; channelName: string } | null>(null);
+  const [videos, setVideos] = useState<VideoItem[]>([]);
+  const [loadingVideos, setLoadingVideos] = useState(false);
+  const [uploadingThumbnail, setUploadingThumbnail] = useState<string | null>(null);
 
   useEffect(() => {
     fetchChannels();
     checkApiKey();
+  }, []);
+
+  // Handle OAuth callback query params
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const oauth = params.get('oauth');
+    if (oauth === 'success') {
+      toast.success('YouTube channel connected successfully!');
+      fetchChannels();
+    } else if (oauth === 'denied') {
+      toast.error('YouTube authorization was denied');
+    } else if (oauth === 'error') {
+      toast.error('OAuth connection failed — please try again');
+    }
+    // Clean up URL
+    if (oauth) {
+      window.history.replaceState({}, '', '/channel');
+    }
   }, []);
 
   async function checkApiKey() {
@@ -58,6 +90,7 @@ export default function ChannelPage() {
       if (res.ok) {
         const data = await res.json();
         setHasApiKey(data.hasApiKey);
+        setHasOAuthConfig(data.hasOAuthConfig);
       }
     } catch {}
   }
@@ -95,6 +128,27 @@ export default function ChannelPage() {
     } finally { setAddingChannel(false); }
   }
 
+  async function connectOAuth(channelId: string) {
+    window.location.href = `/api/auth/google?channelId=${channelId}`;
+  }
+
+  async function disconnectOAuth(channelId: string) {
+    if (!confirm('Disconnect YouTube OAuth for this channel?')) return;
+    setDisconnecting(channelId);
+    try {
+      const res = await fetch('/api/auth/google/disconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channelId }),
+      });
+      if (!res.ok) throw new Error('Disconnect failed');
+      toast.success('YouTube disconnected');
+      fetchChannels();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Disconnect failed');
+    } finally { setDisconnecting(null); }
+  }
+
   async function syncChannel(channelId: string) {
     setSyncing(channelId);
     try {
@@ -124,6 +178,37 @@ export default function ChannelPage() {
     } catch { toast.error('Failed to remove channel'); }
   }
 
+  async function openThumbnailModal(channel: Channel) {
+    setThumbnailModal({ channelId: channel.id, channelName: channel.name });
+    setLoadingVideos(true);
+    setVideos([]);
+    try {
+      const res = await fetch(`/api/channels/${channel.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        setVideos(data.videos || []);
+      }
+    } catch {} finally { setLoadingVideos(false); }
+  }
+
+  async function uploadThumbnailFile(videoId: string, file: File) {
+    if (!thumbnailModal) return;
+    setUploadingThumbnail(videoId);
+    try {
+      const formData = new FormData();
+      formData.append('channelId', thumbnailModal.channelId);
+      formData.append('videoId', videoId);
+      formData.append('image', file);
+
+      const res = await fetch('/api/youtube/thumbnail', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      toast.success('Thumbnail uploaded to YouTube!');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Upload failed');
+    } finally { setUploadingThumbnail(null); }
+  }
+
   return (
     <div className="p-8 max-w-5xl mx-auto">
       <div className="mb-8">
@@ -140,8 +225,8 @@ export default function ChannelPage() {
         </p>
       </div>
 
-      {/* API Key Status */}
-      {!hasApiKey && (
+      {/* API Key / OAuth Status */}
+      {!hasApiKey && !hasOAuthConfig && (
         <div className="glass rounded-xl p-5 mb-6" style={{
           border: '1px solid rgba(245,158,11,0.3)',
           background: 'rgba(245,158,11,0.05)',
@@ -150,10 +235,29 @@ export default function ChannelPage() {
             <span className="text-2xl">⚠️</span>
             <div className="flex-1">
               <h3 className="font-semibold text-sm mb-1" style={{ color: 'var(--text-primary)' }}>
-                No Global YouTube API Key
+                No YouTube Connection Configured
               </h3>
               <p className="text-sm mb-2" style={{ color: 'var(--text-secondary)' }}>
-                Set <code className="px-1 py-0.5 rounded" style={{ background: 'var(--bg-secondary)' }}>YOUTUBE_API_KEY</code> in Vercel for a default key, or add a per-channel key below.
+                Set <code className="px-1 py-0.5 rounded" style={{ background: 'var(--bg-secondary)' }}>GOOGLE_CLIENT_ID</code> + <code className="px-1 py-0.5 rounded" style={{ background: 'var(--bg-secondary)' }}>GOOGLE_CLIENT_SECRET</code> for OAuth, or <code className="px-1 py-0.5 rounded" style={{ background: 'var(--bg-secondary)' }}>YOUTUBE_API_KEY</code> for read-only access.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {hasOAuthConfig && (
+        <div className="glass rounded-xl p-5 mb-6" style={{
+          border: '1px solid rgba(16,185,129,0.3)',
+          background: 'rgba(16,185,129,0.05)',
+        }}>
+          <div className="flex items-start gap-4">
+            <span className="text-2xl">🔗</span>
+            <div className="flex-1">
+              <h3 className="font-semibold text-sm mb-1" style={{ color: 'var(--text-primary)' }}>
+                YouTube OAuth Ready
+              </h3>
+              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                Add a channel below, then click <strong>Connect YouTube</strong> to authorize full access (upload thumbnails, manage videos).
               </p>
             </div>
           </div>
@@ -321,6 +425,15 @@ export default function ChannelPage() {
                                 {channel.account_label}
                               </span>
                             )}
+                            {channel.oauth_connected && (
+                              <span className="text-xs px-2 py-0.5 rounded-full" style={{
+                                background: 'rgba(16,185,129,0.15)',
+                                color: '#10b981',
+                                border: '1px solid rgba(16,185,129,0.3)',
+                              }}>
+                                OAuth Connected
+                              </span>
+                            )}
                           </div>
                           {channel.handle && <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{channel.handle}</p>}
                           <div className="flex items-center gap-4 mt-2 text-xs flex-wrap" style={{ color: 'var(--text-muted)' }}>
@@ -330,10 +443,52 @@ export default function ChannelPage() {
                             {channel.account_email && <span>📧 {channel.account_email}</span>}
                           </div>
                         </div>
-                        <div className="flex gap-2 shrink-0">
+                        <div className="flex gap-2 shrink-0 flex-wrap">
+                          {/* OAuth Connect/Disconnect */}
+                          {hasOAuthConfig && !channel.oauth_connected && (
+                            <button
+                              onClick={() => connectOAuth(channel.id)}
+                              className="px-3 py-1.5 rounded-lg text-sm font-medium transition-all flex items-center gap-1.5"
+                              style={{
+                                background: 'linear-gradient(135deg, rgba(16,185,129,0.2), rgba(6,182,212,0.2))',
+                                border: '1px solid rgba(16,185,129,0.4)',
+                                color: '#10b981',
+                              }}
+                            >
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+                                <polyline points="10 17 15 12 10 7" />
+                                <line x1="15" y1="12" x2="3" y2="12" />
+                              </svg>
+                              Connect YouTube
+                            </button>
+                          )}
+                          {channel.oauth_connected && (
+                            <>
+                              <button
+                                onClick={() => openThumbnailModal(channel)}
+                                className="btn-secondary text-sm"
+                                title="Upload thumbnails to videos"
+                              >
+                                🖼️ Thumbnails
+                              </button>
+                              <button
+                                onClick={() => disconnectOAuth(channel.id)}
+                                disabled={disconnecting === channel.id}
+                                className="px-3 py-1.5 rounded-lg text-sm transition-all"
+                                style={{
+                                  background: 'rgba(239,68,68,0.1)',
+                                  border: '1px solid rgba(239,68,68,0.3)',
+                                  color: '#ef4444',
+                                }}
+                              >
+                                {disconnecting === channel.id ? <div className="spinner" style={{ width: 14, height: 14 }} /> : 'Disconnect'}
+                              </button>
+                            </>
+                          )}
                           <button
                             onClick={() => syncChannel(channel.id)}
-                            disabled={syncing === channel.id || (!hasApiKey && !channel.has_api_key)}
+                            disabled={syncing === channel.id || (!hasApiKey && !channel.has_api_key && !channel.oauth_connected)}
                             className="btn-secondary text-sm"
                           >
                             {syncing === channel.id ? <div className="spinner" style={{ width: 14, height: 14 }} /> : '🔄 Sync'}
@@ -367,6 +522,81 @@ export default function ChannelPage() {
           </>
         );
       })()}
+
+      {/* Thumbnail Upload Modal */}
+      <AnimatePresence>
+        {thumbnailModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            style={{ background: 'rgba(0,0,0,0.6)' }}
+            onClick={() => setThumbnailModal(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="glass rounded-2xl p-6 w-full max-w-2xl max-h-[80vh] overflow-y-auto"
+              style={{ border: '1px solid var(--border)' }}
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-bold" style={{ color: 'var(--text-primary)' }}>
+                  Upload Thumbnail — {thumbnailModal.channelName}
+                </h2>
+                <button onClick={() => setThumbnailModal(null)} className="text-lg" style={{ color: 'var(--text-muted)' }}>✕</button>
+              </div>
+              <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
+                Select a video and upload a custom thumbnail image.
+              </p>
+
+              {loadingVideos ? (
+                <div className="space-y-3">
+                  {[1, 2, 3].map(i => <div key={i} className="h-16 rounded-lg animate-pulse" style={{ background: 'var(--bg-secondary)' }} />)}
+                </div>
+              ) : videos.length === 0 ? (
+                <div className="text-center py-8" style={{ color: 'var(--text-muted)' }}>
+                  <p>No videos found. Sync your channel first.</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {videos.map(video => (
+                    <div key={video.video_id} className="flex items-center gap-3 p-3 rounded-lg" style={{ background: 'var(--bg-secondary)' }}>
+                      {video.thumbnail_url && (
+                        <img src={video.thumbnail_url} alt="" className="w-24 h-14 rounded object-cover shrink-0" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>{video.title}</p>
+                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{video.video_id}</p>
+                      </div>
+                      <label className="btn-primary text-xs cursor-pointer shrink-0 flex items-center gap-1">
+                        {uploadingThumbnail === video.video_id ? (
+                          <><div className="spinner" style={{ width: 12, height: 12 }} /> Uploading...</>
+                        ) : (
+                          <>🖼️ Upload</>
+                        )}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          disabled={uploadingThumbnail !== null}
+                          onChange={e => {
+                            const file = e.target.files?.[0];
+                            if (file) uploadThumbnailFile(video.video_id, file);
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

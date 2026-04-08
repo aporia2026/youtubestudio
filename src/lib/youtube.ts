@@ -204,4 +204,134 @@ export async function fetchChannelVideos(channelId: string, maxResults = 50, ove
   }
 }
 
+// --- OAuth-based functions ---
+
+/**
+ * Fetch the authenticated user's channel data using an OAuth access token.
+ */
+export async function fetchMyChannelOAuth(accessToken: string): Promise<YouTubeChannelData | null> {
+  try {
+    const res = await fetch(
+      'https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&mine=true',
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const item = data.items?.[0];
+    if (!item) return null;
+    return {
+      id: item.id,
+      title: item.snippet.title,
+      description: item.snippet.description,
+      subscriberCount: parseInt(item.statistics.subscriberCount || '0'),
+      videoCount: parseInt(item.statistics.videoCount || '0'),
+      viewCount: parseInt(item.statistics.viewCount || '0'),
+      thumbnailUrl: item.snippet.thumbnails?.high?.url || '',
+      customUrl: item.snippet.customUrl || '',
+    };
+  } catch (err) {
+    console.error('OAuth channel fetch error:', err);
+    return null;
+  }
+}
+
+/**
+ * List the authenticated user's videos using an OAuth access token.
+ */
+export async function listMyVideosOAuth(accessToken: string, maxResults = 50): Promise<YouTubeVideoData[]> {
+  try {
+    // Get uploads playlist
+    const channelRes = await fetch(
+      'https://www.googleapis.com/youtube/v3/channels?part=contentDetails&mine=true',
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    if (!channelRes.ok) return [];
+    const channelData = await channelRes.json();
+    const uploadsPlaylistId = channelData.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+    if (!uploadsPlaylistId) return [];
+
+    // Get playlist items
+    const playlistRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&playlistId=${uploadsPlaylistId}&maxResults=${maxResults}`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    if (!playlistRes.ok) return [];
+    const playlistData = await playlistRes.json();
+    const videoIds = playlistData.items?.map((item: { contentDetails: { videoId: string } }) => item.contentDetails.videoId) || [];
+    if (!videoIds.length) return [];
+
+    // Get video details
+    const videosRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${videoIds.join(',')}`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    if (!videosRes.ok) return [];
+    const videosData = await videosRes.json();
+
+    return (videosData.items || []).map((item: {
+      id: string;
+      snippet: {
+        title: string; description: string; channelTitle: string; publishedAt: string;
+        thumbnails: { maxres?: { url: string }; high?: { url: string } }; tags?: string[];
+      };
+      statistics: { viewCount?: string; likeCount?: string; commentCount?: string };
+      contentDetails: { duration: string };
+    }) => ({
+      id: item.id,
+      title: item.snippet.title,
+      description: item.snippet.description,
+      channelTitle: item.snippet.channelTitle,
+      publishedAt: item.snippet.publishedAt,
+      viewCount: parseInt(item.statistics.viewCount || '0'),
+      likeCount: parseInt(item.statistics.likeCount || '0'),
+      commentCount: parseInt(item.statistics.commentCount || '0'),
+      duration: item.contentDetails.duration,
+      thumbnailUrl: item.snippet.thumbnails?.maxres?.url || item.snippet.thumbnails?.high?.url || '',
+      tags: item.snippet.tags || [],
+    }));
+  } catch (err) {
+    console.error('OAuth videos fetch error:', err);
+    return [];
+  }
+}
+
+/**
+ * Upload a thumbnail to a YouTube video using an OAuth access token.
+ */
+export async function uploadThumbnailOAuth(
+  accessToken: string,
+  videoId: string,
+  imageBuffer: Buffer,
+  mimeType: string,
+): Promise<{ success: boolean; thumbnailUrl?: string; error?: string }> {
+  try {
+    const res = await fetch(
+      `https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=${videoId}&uploadType=media`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': mimeType,
+          'Content-Length': imageBuffer.length.toString(),
+        },
+        body: new Uint8Array(imageBuffer),
+      },
+    );
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: { message: 'Upload failed' } }));
+      return { success: false, error: err.error?.message || `Upload failed (${res.status})` };
+    }
+
+    const data = await res.json();
+    return {
+      success: true,
+      thumbnailUrl: data.items?.[0]?.high?.url || data.items?.[0]?.default?.url,
+    };
+  } catch (err) {
+    console.error('Thumbnail upload error:', err);
+    return { success: false, error: err instanceof Error ? err.message : 'Upload failed' };
+  }
+}
+
 export { extractVideoId };

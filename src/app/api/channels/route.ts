@@ -8,6 +8,7 @@ export async function GET() {
       SELECT id, channel_id, name, handle, description, subscriber_count, video_count,
              niche, thumbnail_url, last_synced_at, account_label, account_email, account_color, notes,
              CASE WHEN api_credentials IS NOT NULL AND api_credentials != '{}' THEN true ELSE false END as has_api_key,
+             COALESCE(oauth_connected, false) as oauth_connected,
              created_at
       FROM channels ORDER BY created_at DESC
     `;
