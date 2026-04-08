@@ -12,13 +12,13 @@ function getSecret(): Uint8Array {
 }
 const COOKIE_NAME = 'yt_studio_session';
 
-const PUBLIC_PATHS = ['/login', '/api/auth'];
+const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/logout'];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // Allow public paths
-  if (PUBLIC_PATHS.some(p => pathname.startsWith(p))) {
+  // Allow public paths (exact match or startsWith for /login page)
+  if (PUBLIC_PATHS.some(p => pathname === p || pathname.startsWith(p + '/'))) {
     return NextResponse.next();
   }
 

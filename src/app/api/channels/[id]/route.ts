@@ -22,7 +22,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       }
     }
 
-    return NextResponse.json({ channel: channel, videos });
+    // Strip sensitive fields before sending to client
+    const { api_credentials: _, ...safeChannel } = channel as Record<string, unknown>;
+    return NextResponse.json({ channel: safeChannel, videos });
   } catch (err: unknown) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed' }, { status: 500 });
   }

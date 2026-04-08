@@ -11,12 +11,19 @@ export function parseLlmJson(raw: string): unknown {
     return JSON.parse(codeBlockMatch[1]);
   }
 
-  // Strategy 2: outermost braces
+  // Strategy 2: outermost braces (object)
   const firstBrace = raw.indexOf('{');
   const lastBrace = raw.lastIndexOf('}');
   if (firstBrace !== -1 && lastBrace > firstBrace) {
     return JSON.parse(raw.slice(firstBrace, lastBrace + 1));
   }
 
-  throw new Error('No JSON object found in LLM response');
+  // Strategy 3: outermost brackets (array)
+  const firstBracket = raw.indexOf('[');
+  const lastBracket = raw.lastIndexOf(']');
+  if (firstBracket !== -1 && lastBracket > firstBracket) {
+    return JSON.parse(raw.slice(firstBracket, lastBracket + 1));
+  }
+
+  throw new Error('No JSON found in LLM response');
 }

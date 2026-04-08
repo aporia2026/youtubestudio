@@ -92,8 +92,16 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: 'referenceImageUrl must use HTTPS' }, { status: 400 });
         }
         // Block private/internal IPs
-        const blocked = ['localhost', '127.0.0.1', '0.0.0.0', '169.254.169.254', '[::1]'];
-        if (blocked.some(b => refUrl.hostname === b) || refUrl.hostname.startsWith('10.') || refUrl.hostname.startsWith('192.168.')) {
+        const blocked = ['localhost', '127.0.0.1', '0.0.0.0', '169.254.169.254', '[::1]', 'metadata.google.internal'];
+        const h = refUrl.hostname;
+        const isPrivate = blocked.some(b => h === b)
+          || h.startsWith('10.')
+          || h.startsWith('192.168.')
+          || h.startsWith('100.64.') || h.startsWith('100.65.') || h.startsWith('100.66.') || h.startsWith('100.67.')
+          || /^172\.(1[6-9]|2\d|3[01])\./.test(h)
+          || h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe80')
+          || h.endsWith('.internal') || h.endsWith('.local');
+        if (isPrivate) {
           return NextResponse.json({ error: 'referenceImageUrl points to a private address' }, { status: 400 });
         }
       } catch {

@@ -157,7 +157,7 @@ export default function ThumbnailsPage() {
       const data = await res.json();
       setResult(data.result);
       const concepts = (data.result as any).concepts || [];
-      const best = concepts.sort((a: any, b: any) => ((b.ctr_prediction?.score || b.ctr_score || 0) - (a.ctr_prediction?.score || a.ctr_score || 0)))[0];
+      const best = [...concepts].sort((a: any, b: any) => ((b.ctr_prediction?.score || b.ctr_score || 0) - (a.ctr_prediction?.score || a.ctr_score || 0)))[0];
       saveThumbnailEntry({
         title, niche, modelId,
         conceptsCount: concepts.length,

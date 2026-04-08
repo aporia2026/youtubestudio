@@ -762,7 +762,9 @@ export default function QAPage() {
                         <div className="px-5 py-3 flex gap-2" style={{ borderTop: '1px solid var(--border)' }}>
                           <button
                             onClick={() => {
-                              localStorage.setItem('seo_prefill', JSON.stringify({ topic: niche, niche, script: fixedScript || script }));
+                              const s = fixedScript || script;
+                              const topicLine = s.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
+                              localStorage.setItem('seo_prefill', JSON.stringify({ topic: topicLine, niche, script: s }));
                               window.location.href = '/seo?from=qa';
                             }}
                             className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
@@ -771,7 +773,9 @@ export default function QAPage() {
                           </button>
                           <button
                             onClick={() => {
-                              localStorage.setItem('thumbnails_prefill', JSON.stringify({ title: niche, niche, description: (fixedScript || script)?.slice(0, 500) }));
+                              const s2 = fixedScript || script;
+                              const titleLine = s2.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
+                              localStorage.setItem('thumbnails_prefill', JSON.stringify({ title: titleLine, niche, description: s2.slice(0, 500) }));
                               window.location.href = '/thumbnails?from=qa';
                             }}
                             className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}

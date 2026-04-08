@@ -118,7 +118,7 @@ export default function SeoPage() {
       toast.success('SEO optimization complete!');
       // Save to history
       const titles = (data.result as any).titles || [];
-      const bestTitle = titles.sort((a: any, b: any) => (b.score || 0) - (a.score || 0))[0];
+      const bestTitle = [...titles].sort((a: any, b: any) => (b.score || 0) - (a.score || 0))[0];
       saveSeoEntry({
         topic, niche, modelId,
         titlesCount: titles.length,
@@ -584,7 +584,7 @@ export default function SeoPage() {
                   <div className="flex gap-2 mt-4">
                     <button
                       onClick={() => {
-                        const bestTitle = result.titles?.sort((a: any, b: any) => (b.score||0) - (a.score||0))[0];
+                        const bestTitle = [...(result.titles || [])].sort((a: any, b: any) => (b.score||0) - (a.score||0))[0];
                         if (draftId) saveDraft({ id: draftId, title: topic, niche, step: 'thumbnails', topic, modelId, seoTitle: bestTitle?.title });
                         localStorage.setItem('thumbnails_prefill', JSON.stringify({
                           title: bestTitle?.title || topic, niche, description: result.description?.full_description?.slice(0, 500),

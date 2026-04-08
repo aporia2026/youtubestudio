@@ -125,7 +125,9 @@ export async function POST(req: NextRequest) {
             const subRes = await fetch(subUrl, { headers: { 'User-Agent': UA } });
             if (subRes.status === 429) continue;
             if (subRes.ok) {
-              const data = await subRes.json();
+              const subText = await subRes.text();
+              if (!subText.startsWith('{') && !subText.startsWith('[')) continue;
+              const data = JSON.parse(subText);
               const posts = data?.data?.children || [];
               for (const post of posts) {
                 const d = post.data;

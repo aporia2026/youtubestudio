@@ -123,6 +123,7 @@ export function deleteScriptEntry(id: string): void {
 }
 
 export function clearScriptHistory(): void {
+  if (typeof window === 'undefined') return;
   localStorage.removeItem(SCRIPT_KEY);
 }
 
@@ -151,6 +152,7 @@ export function deleteIdeasEntry(id: string): void {
 }
 
 export function clearIdeasHistory(): void {
+  if (typeof window === 'undefined') return;
   localStorage.removeItem(IDEAS_KEY);
 }
 
@@ -199,7 +201,7 @@ export function deleteSeoEntry(id: string): void {
   safeSave(SEO_KEY, JSON.stringify(getSeoHistory().filter(e => e.id !== id)));
 }
 
-export function clearSeoHistory(): void { localStorage.removeItem(SEO_KEY); }
+export function clearSeoHistory(): void { if (typeof window === 'undefined') return; localStorage.removeItem(SEO_KEY); }
 
 // --- Thumbnails ---
 
@@ -222,7 +224,9 @@ export function deleteThumbnailEntry(id: string): void {
   safeSave(THUMBNAIL_KEY, JSON.stringify(getThumbnailHistory().filter(e => e.id !== id)));
 }
 
-export function clearThumbnailHistory(): void { localStorage.removeItem(THUMBNAIL_KEY); }
+export function clearThumbnailHistory(): void { if (typeof window === 'undefined') return; localStorage.removeItem(THUMBNAIL_KEY); }
+
+export function clearVoiceoverHistory(): void { if (typeof window === 'undefined') return; localStorage.removeItem(VOICEOVER_KEY); }
 
 // --- Search ---
 
