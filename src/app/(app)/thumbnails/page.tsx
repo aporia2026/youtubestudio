@@ -110,6 +110,14 @@ export default function ThumbnailsPage() {
   const [referenceImageUrl, setReferenceImageUrl] = useState('');
   const [generatingImages, setGeneratingImages] = useState<Record<number, boolean>>({});
   const [generatedImages, setGeneratedImages] = useState<Record<number, string>>({});
+  const [uploadingRef, setUploadingRef] = useState(false);
+  const [refPreviewUrl, setRefPreviewUrl] = useState('');
+
+  // YouTube channel videos for thumbnail attachment
+  const [channels, setChannels] = useState<Array<{ id: string; name: string; channel_id: string }>>([]);
+  const [channelVideos, setChannelVideos] = useState<Array<{ id: string; title: string; thumbnailUrl: string }>>([]);
+  const [showAttachDialog, setShowAttachDialog] = useState<number | null>(null);
+  const [loadingVideos, setLoadingVideos] = useState(false);
 
   const isI2I = imageModel.endsWith('-i2i');
 
@@ -117,6 +125,10 @@ export default function ThumbnailsPage() {
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
       if (data.niches?.length) setNiche(data.niches[0].name);
+    }).catch(() => {});
+    // Load channels for "attach to video" feature
+    fetch('/api/channels').then(r => r.json()).then(data => {
+      setChannels((data.channels || []).map((c: { id: string; name: string; channel_id: string }) => ({ id: c.id, name: c.name, channel_id: c.channel_id })));
     }).catch(() => {});
     try {
       const prefill = localStorage.getItem('thumbnails_prefill');
@@ -166,11 +178,48 @@ export default function ThumbnailsPage() {
     }
   }
 
+  async function uploadReferenceImage(file: File) {
+    if (!file.type.startsWith('image/')) { toast.error('Please select an image file'); return; }
+    if (file.size > 10 * 1024 * 1024) { toast.error('Image must be under 10MB'); return; }
+    setUploadingRef(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('type', 'image');
+      const res = await fetch('/api/upload', { method: 'POST', body: formData });
+      if (!res.ok) throw new Error('Upload failed');
+      const data = await res.json();
+      setReferenceImageUrl(data.url);
+      setRefPreviewUrl(data.url);
+      toast.success('Reference image uploaded');
+    } catch {
+      toast.error('Failed to upload reference image');
+    } finally {
+      setUploadingRef(false);
+    }
+  }
+
+  async function loadChannelVideos(channelId: string) {
+    setLoadingVideos(true);
+    try {
+      const res = await fetch(`/api/channels/${channelId}`);
+      if (!res.ok) throw new Error('Failed');
+      const data = await res.json();
+      setChannelVideos((data.videos || []).slice(0, 30).map((v: { video_id: string; title: string; thumbnail_url: string }) => ({
+        id: v.video_id, title: v.title, thumbnailUrl: v.thumbnail_url,
+      })));
+    } catch {
+      toast.error('Failed to load channel videos');
+    } finally {
+      setLoadingVideos(false);
+    }
+  }
+
   async function generateImage(idx: number, prompt: string) {
     setGeneratingImages(prev => ({ ...prev, [idx]: true }));
     try {
       const body: Record<string, string> = { model: imageModel, prompt };
-      if (isI2I && referenceImageUrl.trim()) body.referenceImageUrl = referenceImageUrl.trim();
+      if (referenceImageUrl.trim()) body.referenceImageUrl = referenceImageUrl.trim();
       const res = await fetch('/api/thumbnails/image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -279,10 +328,58 @@ export default function ThumbnailsPage() {
                         </select>
                       </div>
                       {isI2I && (
-                        <div>
-                          <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>Reference Image URL</label>
-                          <input className="input-field w-full" placeholder="https://..." value={referenceImageUrl} onChange={e => setReferenceImageUrl(e.target.value)} />
+                        <div className="space-y-2">
+                          <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>Reference Image</label>
+                          {/* Upload file */}
+                          <label className="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all text-xs"
+                            style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
+                            </svg>
+                            {uploadingRef ? 'Uploading...' : 'Upload reference image'}
+                            <input type="file" accept="image/*" className="hidden" disabled={uploadingRef}
+                              onChange={e => { const f = e.target.files?.[0]; if (f) uploadReferenceImage(f); e.target.value = ''; }} />
+                          </label>
+                          {/* Or paste URL */}
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] shrink-0" style={{ color: 'var(--text-muted)' }}>or URL:</span>
+                            <input className="input-field flex-1 text-xs" placeholder="https://example.com/image.jpg"
+                              value={referenceImageUrl} onChange={e => { setReferenceImageUrl(e.target.value); setRefPreviewUrl(e.target.value); }} />
+                          </div>
+                          {/* Preview */}
+                          {refPreviewUrl && (
+                            <div className="relative">
+                              <img src={refPreviewUrl} alt="Reference" className="w-full h-24 object-cover rounded-lg" style={{ border: '1px solid var(--border)' }}
+                                onError={() => setRefPreviewUrl('')} />
+                              <button onClick={() => { setReferenceImageUrl(''); setRefPreviewUrl(''); }}
+                                className="absolute top-1 right-1 w-5 h-5 rounded-full flex items-center justify-center text-xs"
+                                style={{ background: 'rgba(0,0,0,0.7)', color: '#ef4444' }}>×</button>
+                            </div>
+                          )}
                         </div>
+                      )}
+                      {/* Reference image for text-to-image (optional style reference) */}
+                      {!isI2I && (
+                        <details>
+                          <summary className="text-xs cursor-pointer" style={{ color: 'var(--text-muted)' }}>Add style reference image (optional)</summary>
+                          <div className="mt-2 space-y-2">
+                            <label className="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all text-xs"
+                              style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
+                              </svg>
+                              {uploadingRef ? 'Uploading...' : 'Upload image'}
+                              <input type="file" accept="image/*" className="hidden" disabled={uploadingRef}
+                                onChange={e => { const f = e.target.files?.[0]; if (f) uploadReferenceImage(f); e.target.value = ''; }} />
+                            </label>
+                            <input className="input-field w-full text-xs" placeholder="Or paste image URL..."
+                              value={referenceImageUrl} onChange={e => { setReferenceImageUrl(e.target.value); setRefPreviewUrl(e.target.value); }} />
+                            {refPreviewUrl && (
+                              <img src={refPreviewUrl} alt="Reference" className="w-full h-20 object-cover rounded-lg" style={{ border: '1px solid var(--border)' }}
+                                onError={() => setRefPreviewUrl('')} />
+                            )}
+                          </div>
+                        </details>
                       )}
                       <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Images generated via Kie.ai API — costs may apply</p>
                     </>
@@ -413,10 +510,69 @@ export default function ThumbnailsPage() {
                       )}
                     </div>
 
-                    {/* Generated image */}
+                    {/* Generated image with actions */}
                     {generatedImages[idx] && (
-                      <div className="mt-3 rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
-                        <img src={generatedImages[idx]} alt={concept.concept_name} className="w-full" style={{ maxHeight: 320, objectFit: 'cover' }} />
+                      <div className="mt-3 space-y-2">
+                        <div className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+                          <img src={generatedImages[idx]} alt={concept.concept_name} className="w-full" style={{ maxHeight: 320, objectFit: 'cover' }} />
+                        </div>
+                        <div className="flex gap-2 flex-wrap">
+                          <button onClick={() => { navigator.clipboard.writeText(generatedImages[idx]); toast.success('Image URL copied'); }}
+                            className="btn-secondary text-xs px-2 py-1">
+                            Copy URL
+                          </button>
+                          <a href={generatedImages[idx]} download={`thumbnail-${idx + 1}.png`} target="_blank" rel="noopener noreferrer"
+                            className="btn-secondary text-xs px-2 py-1 inline-flex items-center gap-1">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+                            </svg>
+                            Download
+                          </a>
+                          {channels.length > 0 && (
+                            <button onClick={() => { setShowAttachDialog(idx); setChannelVideos([]); }}
+                              className="btn-secondary text-xs px-2 py-1 flex items-center gap-1"
+                              style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.3)' }}>
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" />
+                              </svg>
+                              Set as YouTube Thumbnail
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Attach to YouTube dialog */}
+                    {showAttachDialog === idx && generatedImages[idx] && (
+                      <div className="mt-2 p-3 rounded-lg space-y-2" style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(239,68,68,0.3)' }}>
+                        <p className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>Select channel to load videos:</p>
+                        <div className="flex gap-2 flex-wrap">
+                          {channels.map(ch => (
+                            <button key={ch.id} onClick={() => loadChannelVideos(ch.id)}
+                              className="btn-secondary text-xs px-2 py-1">{ch.name}</button>
+                          ))}
+                        </div>
+                        {loadingVideos && <p className="text-xs animate-pulse" style={{ color: 'var(--text-muted)' }}>Loading videos...</p>}
+                        {channelVideos.length > 0 && (
+                          <div className="space-y-1 max-h-48 overflow-y-auto">
+                            <p className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>Select video to set thumbnail:</p>
+                            {channelVideos.map(v => (
+                              <button key={v.id} onClick={() => {
+                                // YouTube thumbnail set requires OAuth 2.0 — for now download + manual upload
+                                toast.info('Thumbnail downloaded. YouTube thumbnail upload requires OAuth — upload manually via YouTube Studio.');
+                                window.open(generatedImages[idx], '_blank');
+                                setShowAttachDialog(null);
+                              }}
+                                className="flex items-center gap-2 w-full p-2 rounded text-left transition-all hover:opacity-80"
+                                style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                                {v.thumbnailUrl && <img src={v.thumbnailUrl} alt="" className="w-16 h-9 rounded object-cover shrink-0" />}
+                                <span className="text-xs truncate" style={{ color: 'var(--text-secondary)' }}>{v.title}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        <button onClick={() => setShowAttachDialog(null)}
+                          className="text-xs" style={{ color: 'var(--text-muted)' }}>Cancel</button>
                       </div>
                     )}
                   </div>

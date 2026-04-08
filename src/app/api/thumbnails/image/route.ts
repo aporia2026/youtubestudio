@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (config.type === 'image-to-image' && !referenceImageUrl) {
-      return NextResponse.json({ error: 'referenceImageUrl is required for image-to-image models' }, { status: 400 });
+      return NextResponse.json({ error: 'Reference image is required for image-to-image models. Upload an image or paste a URL.' }, { status: 400 });
     }
 
     // Validate reference URL to prevent SSRF
