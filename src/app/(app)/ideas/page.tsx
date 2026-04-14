@@ -114,6 +114,23 @@ export default function IdeasPage() {
   const [generating, setGenerating] = useState(false);
   const [ideas, setIdeas] = useState<VideoIdea[]>([]);
   const [savedIds, setSavedIds] = useState<Set<number>>(new Set());
+
+  // Saved Ideas Library (persisted across sessions via /api/ideas GET)
+  interface SavedIdeaRow {
+    id: string;
+    title: string;
+    hook: string;
+    description: string;
+    niche: string;
+    tags: string[];
+    difficulty: string;
+    created_at: string;
+  }
+  const [library, setLibrary] = useState<SavedIdeaRow[]>([]);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryLoading, setLibraryLoading] = useState(true);
+  const [librarySearch, setLibrarySearch] = useState('');
+  const [deletingLibId, setDeletingLibId] = useState<string | null>(null);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
 
   // Reference videos
@@ -156,6 +173,50 @@ export default function IdeasPage() {
       if (data.niches?.length) setNiche(data.niches[0].name);
     }).catch(() => {});
   }, []);
+
+  // Load the persisted idea library
+  useEffect(() => {
+    (async () => {
+      setLibraryLoading(true);
+      try {
+        const res = await fetch('/api/ideas?limit=100');
+        if (res.ok) {
+          const data = await res.json();
+          setLibrary(data.ideas || []);
+        }
+      } catch { /* ignore */ }
+      finally { setLibraryLoading(false); }
+    })();
+  }, []);
+
+  async function deleteFromLibrary(id: string) {
+    if (!confirm('Remove this saved idea?')) return;
+    setDeletingLibId(id);
+    try {
+      const res = await fetch(`/api/ideas/${id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.error || `HTTP ${res.status}`);
+      }
+      setLibrary(prev => prev.filter(i => i.id !== id));
+      toast.success('Removed from library');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Delete failed');
+    } finally {
+      setDeletingLibId(null);
+    }
+  }
+
+  function sendSavedToGenerator(row: SavedIdeaRow) {
+    try {
+      localStorage.setItem('generator_prefill', JSON.stringify({
+        topic: row.title,
+        niche: row.niche || niche,
+        context: `Hook: ${row.hook}\n\n${row.description}`,
+      }));
+      window.location.href = '/generator';
+    } catch { toast.error('Handoff failed'); }
+  }
 
   async function addReference() {
     if (!refUrl.trim()) return;
@@ -385,6 +446,76 @@ export default function IdeasPage() {
         <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
           Discover high-potential video ideas based on your niche and current trends
         </p>
+      </div>
+
+      {/* Saved Ideas Library */}
+      <div className="glass rounded-xl p-5 mb-6">
+        <div className="flex items-center justify-between flex-wrap gap-3 mb-2">
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+              📚 Saved Ideas Library ({libraryLoading ? '…' : library.length})
+            </span>
+            {libraryOpen && library.length > 0 && (
+              <input
+                className="input-field text-xs"
+                style={{ maxWidth: 240 }}
+                placeholder="Search saved ideas..."
+                value={librarySearch}
+                onChange={e => setLibrarySearch(e.target.value)}
+              />
+            )}
+          </div>
+          <button
+            className="btn-secondary text-xs"
+            onClick={() => setLibraryOpen(o => !o)}
+            disabled={libraryLoading}
+          >
+            {libraryOpen ? 'Collapse ▲' : 'Open ▼'}
+          </button>
+        </div>
+        {libraryOpen && (
+          <div className="mt-3">
+            {library.length === 0 ? (
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                Nothing saved yet. Hit ⭐ Save on an idea below, or save ideas from the Competitors page — they all land here.
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[500px] overflow-y-auto pr-1">
+                {library
+                  .filter(row => {
+                    const q = librarySearch.trim().toLowerCase();
+                    if (!q) return true;
+                    return row.title.toLowerCase().includes(q) ||
+                      (row.description || '').toLowerCase().includes(q) ||
+                      (row.niche || '').toLowerCase().includes(q);
+                  })
+                  .map(row => (
+                    <div key={row.id} className="glass rounded-lg p-3" style={{ borderLeft: '3px solid #10b981' }}>
+                      <div className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>{row.title}</div>
+                      {row.hook && <div className="text-xs mt-1" style={{ color: '#10b981' }}>Hook: {row.hook}</div>}
+                      {row.description && <div className="text-xs mt-1 line-clamp-3" style={{ color: 'var(--text-muted)' }}>{row.description}</div>}
+                      <div className="flex items-center gap-2 mt-2 flex-wrap text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                        {row.niche && <span className="px-1.5 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.05)' }}>{row.niche}</span>}
+                        {row.difficulty && <span>⚙ {row.difficulty}</span>}
+                        <span>· {new Date(row.created_at).toLocaleDateString()}</span>
+                      </div>
+                      <div className="flex gap-2 mt-3">
+                        <button className="btn-primary text-xs" onClick={() => sendSavedToGenerator(row)}>✍ Write Script</button>
+                        <button
+                          className="btn-secondary text-xs"
+                          style={{ color: '#ef4444' }}
+                          onClick={() => deleteFromLibrary(row.id)}
+                          disabled={deletingLibId === row.id}
+                        >
+                          {deletingLibId === row.id ? '…' : '✕ Delete'}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-6">
