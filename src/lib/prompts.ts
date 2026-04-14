@@ -1515,3 +1515,68 @@ Return ONLY this JSON:
 Return ONLY valid JSON.`,
   };
 }
+
+// ============================================================
+// FEATURE: Channel Naming
+// ============================================================
+
+export function channelNamingPrompt({
+  niche,
+  freeText,
+  referenceVideosSummary,
+  hasImages,
+  count,
+}: {
+  niche: string;
+  freeText: string;
+  referenceVideosSummary: string;
+  hasImages: boolean;
+  count: number;
+}): { system: string; user: string } {
+  return {
+    system: `You are a YouTube brand strategist who names channels for virality and searchability.
+
+ABSOLUTE RULES:
+1. Every handle MUST be 3–30 characters, lowercase, and use ONLY a-z, 0-9, underscores (_), hyphens (-), or periods (.). No spaces, no uppercase, no special characters, no emojis.
+2. Do NOT invent trends, creators, or references that are not grounded in the context I provide.
+3. Each suggestion must be distinct — no near-duplicates.
+4. Names should be memorable, pronounceable, and brandable. Prefer 1–3 words. Avoid numbers-in-name unless they carry meaning.
+5. Handles should be as close to the name as possible for brand consistency.
+6. Score SEO potential honestly based on: keyword presence (niche terms), length, searchability, uniqueness, ambiguity.
+7. If reference images are provided, reference their visual tone in your reasoning (e.g. "minimalist matches the clean sans-serif aesthetic in the images").`,
+
+    user: `Generate ${count} candidate YouTube channel names + @handles.
+
+**Niche:** ${niche || '(not specified)'}
+
+**Creator's context / voice / style:**
+${freeText || '(not specified)'}
+
+**Reference videos (style/niche signal):**
+${referenceVideosSummary || '(none provided)'}
+
+${hasImages ? '**Reference images** are attached — incorporate their visual tone into name direction.' : ''}
+
+Return ONLY this JSON (no prose outside):
+
+\`\`\`json
+{
+  "candidates": [
+    {
+      "name": "<brand-friendly channel name, 1-3 words preferred>",
+      "handle": "<lowercase handle without the @ prefix, 3-30 chars, a-z 0-9 _ - . only>",
+      "seo_score": <integer 1-10>,
+      "brand_score": <integer 1-10>,
+      "memorability_score": <integer 1-10>,
+      "pronounceability": "<easy|moderate|hard>",
+      "reasoning": "<1-2 sentences explaining why this name works — reference the niche, style, and any relevant visual cues>",
+      "keyword_coverage": ["<niche keyword 1 if present in the name>", "..."],
+      "risks": "<one concern to watch out for — too generic, hard to spell, trademark risk, etc — or 'none'>"
+    }
+  ]
+}
+\`\`\`
+
+Generate ${count} candidates. Mix safe brandable names with a few bolder/creative options. Return ONLY valid JSON.`,
+  };
+}

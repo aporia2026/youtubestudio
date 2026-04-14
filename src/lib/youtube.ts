@@ -465,6 +465,98 @@ export const YT_CATEGORY_MAP: Record<string, string> = {
   '27': 'Education', '28': 'Science & Technology', '29': 'Nonprofits & Activism',
 };
 
+// ============================================================
+// Channel Naming support — handle availability + ref video fetch
+// ============================================================
+
+/**
+ * Check if a YouTube @handle is available (not already taken).
+ * Returns: { available: boolean, takenBy?: {id, title, thumbnail} }.
+ * A handle is "available" if `forHandle` lookup returns no items.
+ */
+export async function checkHandleAvailable(
+  handleRaw: string,
+  overrideApiKey?: string,
+): Promise<{ available: boolean; takenBy?: { id: string; title: string; thumbnail?: string }; error?: string }> {
+  const apiKey = overrideApiKey || process.env.YOUTUBE_API_KEY;
+  if (!apiKey) return { available: false, error: 'YOUTUBE_API_KEY not configured' };
+
+  // Normalize — YouTube handles: 3–30 chars, a-z 0-9 _ - .
+  const handle = handleRaw.replace(/^@/, '').toLowerCase();
+  if (!/^[a-z0-9._-]{3,30}$/.test(handle)) {
+    return { available: false, error: 'Invalid handle format (3-30 chars, a-z, 0-9, _ - .)' };
+  }
+
+  try {
+    const res = await fetch(
+      `https://www.googleapis.com/youtube/v3/channels?part=snippet&forHandle=@${handle}&key=${apiKey}`,
+    );
+    if (!res.ok) {
+      return { available: false, error: `YouTube API ${res.status}` };
+    }
+    const data = await res.json();
+    if (!data.items || data.items.length === 0) {
+      return { available: true };
+    }
+    const item = data.items[0];
+    return {
+      available: false,
+      takenBy: {
+        id: item.id,
+        title: item.snippet?.title || 'Unknown',
+        thumbnail: item.snippet?.thumbnails?.default?.url,
+      },
+    };
+  } catch (err) {
+    return { available: false, error: err instanceof Error ? err.message : 'lookup failed' };
+  }
+}
+
+/** Batch availability check with concurrency limit. */
+export async function checkHandlesBatch(
+  handles: string[],
+  overrideApiKey?: string,
+  concurrency = 5,
+): Promise<Record<string, { available: boolean; takenBy?: { id: string; title: string; thumbnail?: string }; error?: string }>> {
+  const results: Record<string, Awaited<ReturnType<typeof checkHandleAvailable>>> = {};
+  const queue = [...handles];
+  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+    while (queue.length > 0) {
+      const h = queue.shift()!;
+      results[h] = await checkHandleAvailable(h, overrideApiKey);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/** Fetch title/description/tags for a single video (by URL or ID) — used as naming reference. */
+export async function fetchVideoMetadata(
+  urlOrId: string,
+  overrideApiKey?: string,
+): Promise<{ title: string; description: string; channelTitle: string; tags: string[] } | null> {
+  const apiKey = overrideApiKey || process.env.YOUTUBE_API_KEY;
+  if (!apiKey) return null;
+  const id = extractVideoId(urlOrId) || urlOrId;
+  try {
+    const res = await fetch(
+      `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${encodeURIComponent(id)}&key=${apiKey}`,
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const item = data.items?.[0];
+    if (!item) return null;
+    return {
+      title: item.snippet.title || '',
+      description: (item.snippet.description || '').slice(0, 1000),
+      channelTitle: item.snippet.channelTitle || '',
+      tags: item.snippet.tags || [],
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Parse ISO 8601 duration string to seconds. */
 export function parseDurationSeconds(iso: string): number {
   const match = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
