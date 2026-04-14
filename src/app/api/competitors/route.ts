@@ -55,6 +55,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ competitor: result.rows[0] });
   } catch (err) {
     console.error('Add competitor error:', err);
-    return NextResponse.json({ error: 'Failed to add competitor' }, { status: 500 });
+    const detail = err instanceof Error ? err.message : 'unknown error';
+    return NextResponse.json({ error: `Failed to add competitor: ${detail}` }, { status: 500 });
   }
 }
