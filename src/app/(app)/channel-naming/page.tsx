@@ -130,6 +130,25 @@ export default function ChannelNamingPage() {
 
   // Filters
   const [showAvailableOnly, setShowAvailableOnly] = useState(false);
+  const [minOverall, setMinOverall] = useState(0);
+  const [minSeo, setMinSeo] = useState(0);
+  const [minBrand, setMinBrand] = useState(0);
+  const [minMemo, setMinMemo] = useState(0);
+  const [filterCategory, setFilterCategory] = useState<string>('');
+  const [filterTechnique, setFilterTechnique] = useState<string>('');
+  const [filterPronounce, setFilterPronounce] = useState<string>('');
+  const [filterHandleLen, setFilterHandleLen] = useState<'' | 'short' | 'medium' | 'long'>('');
+  const [filterText, setFilterText] = useState('');
+  const [sortBy, setSortBy] = useState<'combined' | 'seo' | 'brand' | 'memorable' | 'length'>('combined');
+  const [filtersOpen, setFiltersOpen] = useState(false);
+
+  function resetFilters() {
+    setShowAvailableOnly(false);
+    setMinOverall(0); setMinSeo(0); setMinBrand(0); setMinMemo(0);
+    setFilterCategory(''); setFilterTechnique(''); setFilterPronounce(''); setFilterHandleLen('');
+    setFilterText('');
+    setSortBy('combined');
+  }
 
   function addVideo() {
     const url = videoInput.trim();
@@ -564,20 +583,110 @@ export default function ChannelNamingPage() {
         </div>
       )}
 
-      {candidates.length > 0 && (
-        <div className="flex items-center gap-3 mb-3 flex-wrap">
-          <span className="text-xs font-semibold" style={{ color: 'var(--text-muted)' }}>{candidates.length} total candidates · {batchNum} generation{batchNum !== 1 ? 's' : ''} this session</span>
-          <label className="flex items-center gap-1 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
-            <input type="checkbox" checked={showAvailableOnly} onChange={e => setShowAvailableOnly(e.target.checked)} />
-            Available only
-          </label>
-        </div>
-      )}
+      {candidates.length > 0 && (() => {
+        const categorySet = Array.from(new Set(candidates.map(c => c.category).filter(Boolean) as string[]));
+        const techniqueSet = Array.from(new Set(candidates.map(c => c.naming_technique).filter(Boolean) as string[]));
+        const textLower = filterText.trim().toLowerCase();
+        const filtered = candidates
+          .filter(c => !showAvailableOnly || c.available)
+          .filter(c => c.combinedScore >= minOverall)
+          .filter(c => (Number(c.seo_score) || 0) >= minSeo)
+          .filter(c => (Number(c.brand_score) || 0) >= minBrand)
+          .filter(c => (Number(c.memorability_score) || 0) >= minMemo)
+          .filter(c => !filterCategory || c.category === filterCategory)
+          .filter(c => !filterTechnique || c.naming_technique === filterTechnique)
+          .filter(c => !filterPronounce || c.pronounceability === filterPronounce)
+          .filter(c => {
+            if (!filterHandleLen) return true;
+            const L = c.handle.length;
+            if (filterHandleLen === 'short') return L <= 7;
+            if (filterHandleLen === 'medium') return L >= 8 && L <= 15;
+            return L >= 16;
+          })
+          .filter(c => !textLower ||
+            c.name.toLowerCase().includes(textLower) ||
+            c.handle.toLowerCase().includes(textLower) ||
+            c.reasoning.toLowerCase().includes(textLower))
+          .sort((a, b) => {
+            if (sortBy === 'seo') return (b.seo_score || 0) - (a.seo_score || 0);
+            if (sortBy === 'brand') return (b.brand_score || 0) - (a.brand_score || 0);
+            if (sortBy === 'memorable') return (b.memorability_score || 0) - (a.memorability_score || 0);
+            if (sortBy === 'length') return a.handle.length - b.handle.length;
+            // 'combined' — available first, then combined desc
+            if (a.available !== b.available) return a.available ? -1 : 1;
+            return b.combinedScore - a.combinedScore;
+          });
 
-      <AnimatePresence>
-        {candidates.length > 0 && (
-          <motion.div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch" initial="hidden" animate="visible" variants={{ visible: { transition: { staggerChildren: 0.03 } } }}>
-            {(showAvailableOnly ? candidates.filter(c => c.available) : candidates).map((c, i) => (
+        const activeFilterCount = [
+          showAvailableOnly, minOverall > 0, minSeo > 0, minBrand > 0, minMemo > 0,
+          !!filterCategory, !!filterTechnique, !!filterPronounce, !!filterHandleLen, !!textLower,
+          sortBy !== 'combined',
+        ].filter(Boolean).length;
+
+        return (
+          <>
+            <div className="glass rounded-xl p-4 mb-4">
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  {filtered.length} / {candidates.length} shown
+                </span>
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  {batchNum} generation{batchNum !== 1 ? 's' : ''} this session
+                </span>
+                <div className="flex-1" />
+                <button
+                  className="btn-secondary text-xs flex items-center gap-2"
+                  onClick={() => setFiltersOpen(o => !o)}
+                >
+                  {filtersOpen ? '▲ Hide filters' : '▼ Filters'} {activeFilterCount > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full text-[10px]" style={{ background: 'rgba(124,58,237,0.2)', color: '#a78bfa' }}>
+                      {activeFilterCount}
+                    </span>
+                  )}
+                </button>
+                {activeFilterCount > 0 && (
+                  <button className="btn-secondary text-xs" onClick={resetFilters}>✕ Reset</button>
+                )}
+              </div>
+
+              {filtersOpen && (
+                <div className="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {/* Score sliders */}
+                  <FilterSlider label={`Min overall score (${minOverall.toFixed(1)})`} value={minOverall} max={10} step={0.5} onChange={setMinOverall} />
+                  <FilterSlider label={`Min SEO score (${minSeo})`} value={minSeo} max={10} step={1} onChange={setMinSeo} />
+                  <FilterSlider label={`Min brand score (${minBrand})`} value={minBrand} max={10} step={1} onChange={setMinBrand} />
+                  <FilterSlider label={`Min memorability (${minMemo})`} value={minMemo} max={10} step={1} onChange={setMinMemo} />
+
+                  {/* Dropdowns */}
+                  <FilterSelect label="Category" value={filterCategory} onChange={setFilterCategory} options={([['', 'All'], ...categorySet.map(c => [c, c] as [string, string])])} />
+                  <FilterSelect label="Naming technique" value={filterTechnique} onChange={setFilterTechnique} options={([['', 'All'], ...techniqueSet.map(t => [t, t] as [string, string])])} />
+                  <FilterSelect label="Pronounceability" value={filterPronounce} onChange={setFilterPronounce} options={[['', 'All'], ['easy', 'Easy'], ['moderate', 'Moderate'], ['hard', 'Hard']]} />
+                  <FilterSelect label="Handle length" value={filterHandleLen} onChange={(v) => setFilterHandleLen(v as '' | 'short' | 'medium' | 'long')} options={[['', 'All'], ['short', 'Short (≤7)'], ['medium', 'Medium (8–15)'], ['long', 'Long (16+)']]} />
+                  <FilterSelect label="Sort by" value={sortBy} onChange={(v) => setSortBy(v as 'combined' | 'seo' | 'brand' | 'memorable' | 'length')} options={[['combined', 'Overall (available first)'], ['seo', 'SEO score'], ['brand', 'Brand score'], ['memorable', 'Memorability'], ['length', 'Handle length (short→long)']]} />
+
+                  {/* Text search */}
+                  <div className="md:col-span-2 lg:col-span-3">
+                    <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>Search in name / handle / reasoning</label>
+                    <input className="input-field" placeholder="e.g. craft, hub, ai..." value={filterText} onChange={e => setFilterText(e.target.value)} />
+                  </div>
+
+                  {/* Toggle */}
+                  <label className="flex items-center gap-2 text-xs cursor-pointer md:col-span-2 lg:col-span-3" style={{ color: 'var(--text-secondary)' }}>
+                    <input type="checkbox" checked={showAvailableOnly} onChange={e => setShowAvailableOnly(e.target.checked)} />
+                    Available handles only
+                  </label>
+                </div>
+              )}
+            </div>
+
+            <AnimatePresence>
+              {filtered.length === 0 ? (
+                <div className="glass rounded-xl p-8 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
+                  No candidates match your filters. <button className="underline" onClick={resetFilters}>Reset filters</button>
+                </div>
+              ) : (
+                <motion.div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch" initial="hidden" animate="visible" variants={{ visible: { transition: { staggerChildren: 0.03 } } }}>
+                  {filtered.map((c, i) => (
               <motion.div
                 key={c.handle}
                 variants={{ hidden: { opacity: 0, y: 10 }, visible: { opacity: 1, y: 0 } }}
@@ -725,10 +834,33 @@ export default function ChannelNamingPage() {
                   )}
                 </div>
               </motion.div>
-            ))}
-          </motion.div>
-        )}
-      </AnimatePresence>
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </>
+        );
+      })()}
+    </div>
+  );
+}
+
+function FilterSlider({ label, value, max, step, onChange }: { label: string; value: number; max: number; step: number; onChange: (v: number) => void }) {
+  return (
+    <div>
+      <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>{label}</label>
+      <input type="range" min={0} max={max} step={step} value={value} onChange={e => onChange(parseFloat(e.target.value) || 0)} className="w-full" />
+    </div>
+  );
+}
+
+function FilterSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: [string, string][] }) {
+  return (
+    <div>
+      <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>{label}</label>
+      <select className="input-field" value={value} onChange={e => onChange(e.target.value)}>
+        {options.map(([v, lbl]) => <option key={v || '_all'} value={v}>{lbl}</option>)}
+      </select>
     </div>
   );
 }
