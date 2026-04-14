@@ -2,11 +2,48 @@ import { sql } from '@vercel/postgres';
 
 export { sql };
 
-/** Idempotent migration for competitor_videos rich columns. Cheap to call repeatedly. */
+/** Idempotent setup for competitor tables + rich columns. Cheap to call repeatedly. */
 let competitorMigrated = false;
 export async function ensureCompetitorSchema() {
   if (competitorMigrated) return;
   try {
+    // Base tables — create if missing (production DB may not have run initDatabase)
+    await sql`
+      CREATE TABLE IF NOT EXISTS competitor_channels (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        channel_id TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL,
+        custom_url TEXT,
+        description TEXT,
+        subscriber_count INTEGER DEFAULT 0,
+        video_count INTEGER DEFAULT 0,
+        view_count BIGINT DEFAULT 0,
+        thumbnail_url TEXT,
+        notes TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+    await sql`
+      CREATE TABLE IF NOT EXISTS competitor_videos (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        competitor_id UUID NOT NULL REFERENCES competitor_channels(id) ON DELETE CASCADE,
+        video_id TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL,
+        published_at TIMESTAMPTZ,
+        view_count INTEGER DEFAULT 0,
+        like_count INTEGER DEFAULT 0,
+        comment_count INTEGER DEFAULT 0,
+        duration TEXT,
+        thumbnail_url TEXT,
+        outlier_score NUMERIC(14,2) DEFAULT 0,
+        engagement_rate NUMERIC(8,4) DEFAULT 0,
+        synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_comp_videos_competitor ON competitor_videos(competitor_id)`; } catch {}
+
+    // Rich-data migrations — add columns missing on older deployments
     await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS description TEXT`;
     await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS tags JSONB DEFAULT '[]'`;
     await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS category_id TEXT`;
@@ -16,12 +53,11 @@ export async function ensureCompetitorSchema() {
     await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS video_analysis JSONB`;
     await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS video_analyzed_at TIMESTAMPTZ`;
     await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS video_analysis_model TEXT`;
-    // Widen outlier_score: NUMERIC(8,2) maxed at 999,999.99 — small channels with breakout
-    // videos can easily exceed this. NUMERIC(14,2) supports up to 999,999,999,999.99.
-    await sql`ALTER TABLE competitor_videos ALTER COLUMN outlier_score TYPE NUMERIC(14,2)`;
-    // Thumbnail forensics cache (so users don't re-pay vision costs on re-visit)
     await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS thumbnail_analysis JSONB`;
     await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS thumbnail_analyzed_at TIMESTAMPTZ`;
+    // Widen outlier_score on pre-existing tables created with NUMERIC(8,2)
+    try { await sql`ALTER TABLE competitor_videos ALTER COLUMN outlier_score TYPE NUMERIC(14,2)`; } catch {}
+
     competitorMigrated = true;
   } catch (err) {
     console.error('ensureCompetitorSchema error:', err);

@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { sql } from '@/lib/db';
+import { sql, ensureCompetitorSchema } from '@/lib/db';
 import { fetchChannelData } from '@/lib/youtube';
 
 export async function GET() {
   try {
+    await ensureCompetitorSchema();
     const result = await sql`
       SELECT c.*,
         (SELECT COUNT(*) FROM competitor_videos WHERE competitor_id = c.id) as video_count,
@@ -19,6 +20,7 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
+    await ensureCompetitorSchema();
     const { channel_url } = await req.json();
     if (!channel_url) return NextResponse.json({ error: 'channel_url required' }, { status: 400 });
 
