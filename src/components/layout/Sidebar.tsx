@@ -189,9 +189,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       {/* Nav */}
       <nav className="flex-1 py-4 px-2 space-y-1 overflow-y-auto">
         {NAV_ITEMS.map(item => {
+          // Match exact path or nested subpath (href + '/'), never a shared prefix
+          // like /channel vs /channel-naming.
           const isActive = item.href === '/dashboard'
             ? pathname === '/dashboard' || pathname === '/'
-            : pathname.startsWith(item.href);
+            : pathname === item.href || pathname.startsWith(item.href + '/');
 
           return (
             <Link key={item.href} href={item.href}>
