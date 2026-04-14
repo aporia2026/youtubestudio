@@ -3,7 +3,7 @@ import { generateText, getModelById } from '@/lib/ai';
 import { channelNamingPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
-import { fetchVideoMetadata, checkHandlesBatch } from '@/lib/youtube';
+import { fetchVideoMetadata, checkHandlesBatch, parseYouTubeUrl, fetchChannelData, fetchChannelVideosRich } from '@/lib/youtube';
 
 export const maxDuration = 180;
 
@@ -71,24 +71,57 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    // 1) Fetch reference video metadata in parallel. De-dupe by video ID so pasting
-    // both "youtu.be/abc" and "www.youtube.com/watch?v=abc" is a single lookup.
-    const { extractVideoId } = await import('@/lib/youtube');
-    const seenIds = new Set<string>();
-    const uniqueUrls: string[] = [];
-    for (const url of referenceVideoUrls.slice(0, 15)) {
-      const id = extractVideoId(url) || url;
-      if (seenIds.has(id)) continue;
-      seenIds.add(id);
-      uniqueUrls.push(url);
-      if (uniqueUrls.length >= 10) break;
-    }
+    // 1) Classify each reference URL — accept both VIDEO URLs and CHANNEL URLs.
+    //    For channels, fetch the 5 most-recent videos as style signal.
+    //    Dedupe video URLs by extracted ID.
+    const seenVideoIds = new Set<string>();
+    const seenChannels = new Set<string>();
+    type RefInput =
+      | { kind: 'video'; url: string }
+      | { kind: 'channel'; url: string; handleOrId: string };
+    const refInputs: RefInput[] = [];
 
-    const refResults = await Promise.all(
-      uniqueUrls.map(async url => ({ url, data: await fetchVideoMetadata(url) })),
-    );
-    const refVideoData = refResults.filter(r => r.data).map(r => r.data!);
-    const refFetchFailures = refResults.filter(r => !r.data).map(r => r.url);
+    for (const url of referenceVideoUrls.slice(0, 15)) {
+      const parsed = parseYouTubeUrl(url);
+      if (parsed.kind === 'video') {
+        if (seenVideoIds.has(parsed.videoId)) continue;
+        seenVideoIds.add(parsed.videoId);
+        refInputs.push({ kind: 'video', url });
+      } else if (parsed.kind === 'channel-handle' || parsed.kind === 'channel-id') {
+        const key = parsed.kind === 'channel-handle' ? `@${parsed.handle}` : parsed.channelId;
+        if (seenChannels.has(key)) continue;
+        seenChannels.add(key);
+        refInputs.push({ kind: 'channel', url, handleOrId: key });
+      }
+      // 'unknown' URLs are silently skipped — reported as failures below via compareset
+    }
+    const unknownUrls = referenceVideoUrls
+      .slice(0, 15)
+      .filter(u => parseYouTubeUrl(u).kind === 'unknown');
+
+    type RefVideoMeta = { title: string; description: string; channelTitle: string; tags: string[] };
+    const refResults = await Promise.all(refInputs.map(async (inp): Promise<{ url: string; videos: RefVideoMeta[] }> => {
+      if (inp.kind === 'video') {
+        const data = await fetchVideoMetadata(inp.url);
+        return { url: inp.url, videos: data ? [data] : [] };
+      }
+      // Channel — resolve, then fetch 5 most-recent videos
+      const channel = await fetchChannelData(inp.handleOrId);
+      if (!channel) return { url: inp.url, videos: [] };
+      const videos = await fetchChannelVideosRich(channel.id, 5);
+      return {
+        url: inp.url,
+        videos: videos.map(v => ({
+          title: v.title, description: v.description, channelTitle: v.channelTitle, tags: v.tags,
+        })),
+      };
+    }));
+
+    const refVideoData: RefVideoMeta[] = refResults.flatMap(r => r.videos);
+    const refFetchFailures = [
+      ...refResults.filter(r => r.videos.length === 0).map(r => r.url),
+      ...unknownUrls,
+    ];
 
     const refSummary = refVideoData.length
       ? refVideoData.map((v, i) => `${i + 1}. "${v.title}" by ${v.channelTitle}${v.tags.length ? ` [tags: ${v.tags.slice(0, 6).join(', ')}]` : ''}`).join('\n')

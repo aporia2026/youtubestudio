@@ -466,6 +466,37 @@ export const YT_CATEGORY_MAP: Record<string, string> = {
 };
 
 // ============================================================
+// URL classification helpers
+// ============================================================
+
+export type ParsedYouTubeUrl =
+  | { kind: 'video'; videoId: string }
+  | { kind: 'channel-handle'; handle: string }
+  | { kind: 'channel-id'; channelId: string }
+  | { kind: 'unknown' };
+
+/**
+ * Classify a raw YouTube URL. Supports watch/embed/shorts/youtu.be, @handle,
+ * /channel/UCxxx, /c/custom, /user/legacy.
+ */
+export function parseYouTubeUrl(raw: string): ParsedYouTubeUrl {
+  const url = raw.trim();
+  // Video URL?
+  const vid = extractVideoId(url);
+  if (vid) return { kind: 'video', videoId: vid };
+  // Handle? e.g. youtube.com/@FinestExplainerr or just @FinestExplainerr
+  const handleMatch = url.match(/(?:youtube\.com\/)?@([A-Za-z0-9._-]{3,30})(?:[/?#]|$)/);
+  if (handleMatch) return { kind: 'channel-handle', handle: handleMatch[1] };
+  // Direct channel ID
+  const idMatch = url.match(/youtube\.com\/channel\/(UC[A-Za-z0-9_-]{20,})/);
+  if (idMatch) return { kind: 'channel-id', channelId: idMatch[1] };
+  // /c/custom-name or /user/legacy-name — we can resolve via channels?forUsername or search
+  const legacyMatch = url.match(/youtube\.com\/(?:c|user)\/([A-Za-z0-9._-]+)/);
+  if (legacyMatch) return { kind: 'channel-handle', handle: legacyMatch[1] };
+  return { kind: 'unknown' };
+}
+
+// ============================================================
 // Channel Naming support — handle availability + ref video fetch
 // ============================================================
 

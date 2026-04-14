@@ -375,12 +375,12 @@ export default function ChannelNamingPage() {
 
         <div>
           <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
-            Reference videos (up to 10 — optional, helps steer the style)
+            Reference videos or channels (up to 10 — optional). Paste any mix of video URLs (youtube.com/watch, youtu.be, shorts) or channel URLs (@handle, /channel/UCxxx, /c/name). For channel URLs we pull the 5 most-recent videos as style signal.
           </label>
           <div className="flex gap-2 mb-2">
             <input
               className="input-field flex-1"
-              placeholder="Paste a YouTube URL..."
+              placeholder="Paste a YouTube video URL or a @handle / channel URL..."
               value={videoInput}
               onChange={e => setVideoInput(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addVideo())}
