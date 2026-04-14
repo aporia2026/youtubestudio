@@ -23,6 +23,7 @@ interface EnrichedCandidate extends Candidate {
   available: boolean;
   takenBy?: { id: string; title: string; thumbnail?: string };
   checkError?: string;
+  availabilityNote?: string;
   combinedScore: number;
 }
 
@@ -70,10 +71,24 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    // 1) Fetch reference video metadata in parallel
-    const refVideoData = (await Promise.all(
-      referenceVideoUrls.slice(0, 10).map(url => fetchVideoMetadata(url)),
-    )).filter((v): v is NonNullable<typeof v> => v !== null);
+    // 1) Fetch reference video metadata in parallel. De-dupe by video ID so pasting
+    // both "youtu.be/abc" and "www.youtube.com/watch?v=abc" is a single lookup.
+    const { extractVideoId } = await import('@/lib/youtube');
+    const seenIds = new Set<string>();
+    const uniqueUrls: string[] = [];
+    for (const url of referenceVideoUrls.slice(0, 15)) {
+      const id = extractVideoId(url) || url;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      uniqueUrls.push(url);
+      if (uniqueUrls.length >= 10) break;
+    }
+
+    const refResults = await Promise.all(
+      uniqueUrls.map(async url => ({ url, data: await fetchVideoMetadata(url) })),
+    );
+    const refVideoData = refResults.filter(r => r.data).map(r => r.data!);
+    const refFetchFailures = refResults.filter(r => !r.data).map(r => r.url);
 
     const refSummary = refVideoData.length
       ? refVideoData.map((v, i) => `${i + 1}. "${v.title}" by ${v.channelTitle}${v.tags.length ? ` [tags: ${v.tags.slice(0, 6).join(', ')}]` : ''}`).join('\n')
@@ -111,7 +126,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to parse candidates', raw: raw.slice(0, 500) }, { status: 500 });
     }
 
-    const rawCandidates = (parsed as { candidates?: Candidate[] }).candidates || [];
+    // Accept both { candidates: [...] } and root-level array shapes
+    let rawCandidates: Candidate[];
+    if (Array.isArray(parsed)) {
+      rawCandidates = parsed as Candidate[];
+    } else if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { candidates?: unknown }).candidates)) {
+      rawCandidates = (parsed as { candidates: Candidate[] }).candidates;
+    } else {
+      rawCandidates = [];
+    }
     if (rawCandidates.length === 0) {
       return NextResponse.json({ error: 'Model returned no candidates' }, { status: 500 });
     }
@@ -133,12 +156,20 @@ export async function POST(req: NextRequest) {
     // 6) Enrich + rank
     const enriched: EnrichedCandidate[] = clean.map(c => {
       const avail = availabilityMap[c.handle] || { available: false, error: 'not-checked' };
-      const combinedScore = (c.seo_score || 0) * 0.4 + (c.brand_score || 0) * 0.35 + (c.memorability_score || 0) * 0.25;
+      // Coerce scores defensively — the LLM occasionally returns strings
+      const seo = Number(c.seo_score) || 0;
+      const brand = Number(c.brand_score) || 0;
+      const memo = Number(c.memorability_score) || 0;
+      const combinedScore = seo * 0.4 + brand * 0.35 + memo * 0.25;
       return {
         ...c,
+        seo_score: seo,
+        brand_score: brand,
+        memorability_score: memo,
         available: avail.available,
         takenBy: avail.takenBy,
         checkError: avail.error,
+        availabilityNote: avail.note,
         combinedScore,
       };
     });
@@ -160,6 +191,9 @@ export async function POST(req: NextRequest) {
       allChecked: enriched.length,
       availableCount: availableOnly.length,
       model: model.name,
+      refVideosUsed: refVideoData.length,
+      refVideosFailed: refFetchFailures,
+      availabilityCaveat: 'Availability is best-effort based on YouTube forHandle lookup. Always verify by visiting youtube.com/@handle before claiming.',
     });
   } catch (err) {
     console.error('Channel naming error:', err);

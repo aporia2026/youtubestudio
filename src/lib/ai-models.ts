@@ -20,13 +20,14 @@ export interface AIModel {
 }
 
 // Features that support per-feature model selection
-export type AppFeature = 'script-generator' | 'qa-engine' | 'idea-generator' | 'competitor-analysis';
+export type AppFeature = 'script-generator' | 'qa-engine' | 'idea-generator' | 'competitor-analysis' | 'channel-naming';
 
 export const APP_FEATURES: { id: AppFeature; label: string; description: string }[] = [
   { id: 'script-generator', label: 'Script Generator', description: 'AI model used for generating YouTube scripts' },
   { id: 'qa-engine', label: 'QA Engine', description: 'AI model used for script quality analysis' },
   { id: 'idea-generator', label: 'Idea Generator', description: 'AI model used for brainstorming video ideas' },
   { id: 'competitor-analysis', label: 'Competitor Analysis', description: 'AI model used for deep competitor intelligence' },
+  { id: 'channel-naming', label: 'Channel Naming', description: 'AI model used for generating brandable channel names + @handles' },
 ];
 
 export const AI_MODELS: AIModel[] = [

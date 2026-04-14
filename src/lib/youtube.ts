@@ -470,23 +470,25 @@ export const YT_CATEGORY_MAP: Record<string, string> = {
 // ============================================================
 
 /**
- * Check if a YouTube @handle is available (not already taken).
- * Returns: { available: boolean, takenBy?: {id, title, thumbnail} }.
- * A handle is "available" if `forHandle` lookup returns no items.
+ * Handles that YouTube reserves or we should never suggest. Not exhaustive —
+ * YouTube's real reserved set is internal. This catches the obvious ones.
  */
-export async function checkHandleAvailable(
-  handleRaw: string,
-  overrideApiKey?: string,
-): Promise<{ available: boolean; takenBy?: { id: string; title: string; thumbnail?: string }; error?: string }> {
-  const apiKey = overrideApiKey || process.env.YOUTUBE_API_KEY;
-  if (!apiKey) return { available: false, error: 'YOUTUBE_API_KEY not configured' };
+const RESERVED_HANDLES = new Set([
+  'youtube', 'youtubekids', 'youtubestudio', 'youtubemusic', 'ytcreators', 'ytofficial',
+  'google', 'googleofficial', 'googlecloud', 'googleplay',
+  'admin', 'administrator', 'support', 'help', 'staff', 'mod', 'moderator', 'official',
+  'null', 'undefined', 'anonymous', 'deleted', 'banned',
+  'api', 'test', 'testing', 'example', 'demo',
+]);
 
-  // Normalize — YouTube handles: 3–30 chars, a-z 0-9 _ - .
-  const handle = handleRaw.replace(/^@/, '').toLowerCase();
-  if (!/^[a-z0-9._-]{3,30}$/.test(handle)) {
-    return { available: false, error: 'Invalid handle format (3-30 chars, a-z, 0-9, _ - .)' };
-  }
+/** Simple in-memory cache (per lambda instance) to avoid re-checking the same handle. */
+const handleCheckCache = new Map<string, { result: Awaited<ReturnType<typeof doHandleCheck>>; ts: number }>();
+const HANDLE_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
+async function doHandleCheck(
+  handle: string,
+  apiKey: string,
+): Promise<{ available: boolean; takenBy?: { id: string; title: string; thumbnail?: string }; error?: string; note?: string }> {
   try {
     const res = await fetch(
       `https://www.googleapis.com/youtube/v3/channels?part=snippet&forHandle=@${handle}&key=${apiKey}`,
@@ -496,7 +498,10 @@ export async function checkHandleAvailable(
     }
     const data = await res.json();
     if (!data.items || data.items.length === 0) {
-      return { available: true };
+      return {
+        available: true,
+        note: 'Not found via forHandle — likely free, but verify by visiting youtube.com/@handle before relying on it. YouTube may still reserve recently-created or brand-protected handles.',
+      };
     }
     const item = data.items[0];
     return {
@@ -512,12 +517,44 @@ export async function checkHandleAvailable(
   }
 }
 
+/**
+ * Check if a YouTube @handle is available. "Available" is best-effort — YouTube's
+ * forHandle endpoint does not reliably return every reserved/pending handle. We
+ * filter obvious reserved words up front, cache results for 24h, and annotate
+ * the response with a `note` reminding users to verify manually.
+ */
+export async function checkHandleAvailable(
+  handleRaw: string,
+  overrideApiKey?: string,
+): Promise<{ available: boolean; takenBy?: { id: string; title: string; thumbnail?: string }; error?: string; note?: string }> {
+  const apiKey = overrideApiKey || process.env.YOUTUBE_API_KEY;
+  if (!apiKey) return { available: false, error: 'YOUTUBE_API_KEY not configured' };
+
+  const handle = handleRaw.replace(/^@/, '').toLowerCase();
+  if (!/^[a-z0-9._-]{3,30}$/.test(handle)) {
+    return { available: false, error: 'Invalid handle format (3-30 chars, a-z, 0-9, _ - .)' };
+  }
+  if (RESERVED_HANDLES.has(handle)) {
+    return { available: false, error: 'Reserved — YouTube/Google reserves this handle' };
+  }
+
+  // Cache lookup
+  const cached = handleCheckCache.get(handle);
+  if (cached && Date.now() - cached.ts < HANDLE_CACHE_TTL_MS) {
+    return cached.result;
+  }
+
+  const result = await doHandleCheck(handle, apiKey);
+  handleCheckCache.set(handle, { result, ts: Date.now() });
+  return result;
+}
+
 /** Batch availability check with concurrency limit. */
 export async function checkHandlesBatch(
   handles: string[],
   overrideApiKey?: string,
   concurrency = 5,
-): Promise<Record<string, { available: boolean; takenBy?: { id: string; title: string; thumbnail?: string }; error?: string }>> {
+): Promise<Record<string, { available: boolean; takenBy?: { id: string; title: string; thumbnail?: string }; error?: string; note?: string }>> {
   const results: Record<string, Awaited<ReturnType<typeof checkHandleAvailable>>> = {};
   const queue = [...handles];
   const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
