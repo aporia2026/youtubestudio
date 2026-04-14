@@ -286,14 +286,38 @@ export default function ChannelNamingPage() {
         </div>
       )}
 
+      {generating && candidates.length === 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="glass rounded-xl p-5 flex flex-col gap-3" style={{ borderLeft: '3px solid rgba(255,255,255,0.05)' }}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1 space-y-2">
+                  <div className="rounded animate-pulse" style={{ height: 22, width: '60%', background: 'rgba(255,255,255,0.06)' }} />
+                  <div className="rounded animate-pulse" style={{ height: 14, width: '40%', background: 'rgba(255,255,255,0.04)' }} />
+                </div>
+                <div className="rounded animate-pulse" style={{ height: 36, width: 50, background: 'rgba(255,255,255,0.06)' }} />
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {[0,1,2].map(j => <div key={j} className="rounded animate-pulse" style={{ height: 36, background: 'rgba(255,255,255,0.04)' }} />)}
+              </div>
+              <div className="space-y-1">
+                <div className="rounded animate-pulse" style={{ height: 10, width: '95%', background: 'rgba(255,255,255,0.04)' }} />
+                <div className="rounded animate-pulse" style={{ height: 10, width: '85%', background: 'rgba(255,255,255,0.04)' }} />
+                <div className="rounded animate-pulse" style={{ height: 10, width: '70%', background: 'rgba(255,255,255,0.04)' }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <AnimatePresence>
         {candidates.length > 0 && (
-          <motion.div className="grid grid-cols-1 md:grid-cols-2 gap-4" initial="hidden" animate="visible" variants={{ visible: { transition: { staggerChildren: 0.05 } } }}>
+          <motion.div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch" initial="hidden" animate="visible" variants={{ visible: { transition: { staggerChildren: 0.05 } } }}>
             {candidates.map((c, i) => (
               <motion.div
                 key={c.handle}
                 variants={{ hidden: { opacity: 0, y: 10 }, visible: { opacity: 1, y: 0 } }}
-                className="glass rounded-xl p-5"
+                className="glass rounded-xl p-5 flex flex-col h-full"
                 style={{ borderLeft: `3px solid ${c.available ? '#10b981' : '#6b7280'}` }}
               >
                 <div className="flex items-start justify-between gap-3 mb-3">
@@ -346,7 +370,7 @@ export default function ChannelNamingPage() {
                   <Score label="Memorable" value={c.memorability_score} />
                 </div>
 
-                <p className="text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>{c.reasoning}</p>
+                <p className="text-xs mb-2 flex-1" style={{ color: 'var(--text-secondary)' }}>{c.reasoning}</p>
 
                 {c.keyword_coverage?.length ? (
                   <div className="flex flex-wrap gap-1 mb-2">
