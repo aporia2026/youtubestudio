@@ -108,6 +108,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     });
   } catch (err) {
     console.error('Competitor sync error:', err);
-    return NextResponse.json({ error: 'Sync failed' }, { status: 500 });
+    const detail = err instanceof Error ? err.message : 'unknown';
+    return NextResponse.json({ error: `Sync failed: ${detail}` }, { status: 500 });
   }
 }

@@ -135,6 +135,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ analysis, analytics });
   } catch (err) {
     console.error('Competitor analysis error:', err);
-    return NextResponse.json({ error: 'Analysis failed', detail: err instanceof Error ? err.message : 'unknown' }, { status: 500 });
+    const detail = err instanceof Error ? err.message : 'unknown';
+    return NextResponse.json({ error: `Analysis failed: ${detail}` }, { status: 500 });
   }
 }

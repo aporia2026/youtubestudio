@@ -88,6 +88,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ ideas });
   } catch (err) {
     console.error('Competitor ideas error:', err);
-    return NextResponse.json({ error: 'Failed', detail: err instanceof Error ? err.message : 'unknown' }, { status: 500 });
+    const detail = err instanceof Error ? err.message : 'unknown';
+    return NextResponse.json({ error: `Ideas generation failed: ${detail}` }, { status: 500 });
   }
 }
