@@ -93,7 +93,7 @@ export async function fetchChannelData(channelIdOrUrl: string, overrideApiKey?: 
   const apiKey = overrideApiKey || process.env.YOUTUBE_API_KEY;
   if (!apiKey) return null;
 
-  let channelId = channelIdOrUrl;
+  const channelId = channelIdOrUrl;
 
   // Handle @handle format — use forHandle for exact match
   if (channelIdOrUrl.includes('@') || channelIdOrUrl.includes('youtube.com')) {
@@ -335,3 +335,140 @@ export async function uploadThumbnailOAuth(
 }
 
 export { extractVideoId };
+
+// ============================================================
+// Extended fetching for competitor analysis — rich fields, pagination, comments
+// ============================================================
+
+export interface YouTubeVideoRich extends YouTubeVideoData {
+  categoryId: string;
+  defaultAudioLanguage?: string;
+  topicCategories?: string[];
+}
+
+/**
+ * Fetch up to `maxResults` videos from a channel with full snippet data.
+ * Paginates playlistItems (50 per page) and batches video details (50 per request).
+ */
+export async function fetchChannelVideosRich(
+  channelId: string,
+  maxResults = 200,
+  overrideApiKey?: string,
+): Promise<YouTubeVideoRich[]> {
+  const apiKey = overrideApiKey || process.env.YOUTUBE_API_KEY;
+  if (!apiKey) return [];
+
+  try {
+    const channelRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/channels?part=contentDetails&id=${channelId}&key=${apiKey}`,
+    );
+    const channelData = await channelRes.json();
+    const uploadsPlaylistId = channelData.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+    if (!uploadsPlaylistId) return [];
+
+    const videoIds: string[] = [];
+    let pageToken: string | undefined;
+    while (videoIds.length < maxResults) {
+      const pageSize = Math.min(50, maxResults - videoIds.length);
+      const url = new URL('https://www.googleapis.com/youtube/v3/playlistItems');
+      url.searchParams.set('part', 'contentDetails');
+      url.searchParams.set('playlistId', uploadsPlaylistId);
+      url.searchParams.set('maxResults', String(pageSize));
+      url.searchParams.set('key', apiKey);
+      if (pageToken) url.searchParams.set('pageToken', pageToken);
+
+      const res = await fetch(url.toString());
+      if (!res.ok) break;
+      const data = await res.json();
+      const batch = (data.items || []).map((it: { contentDetails: { videoId: string } }) => it.contentDetails.videoId);
+      videoIds.push(...batch);
+      pageToken = data.nextPageToken;
+      if (!pageToken) break;
+    }
+
+    if (!videoIds.length) return [];
+
+    // Batch video details in groups of 50
+    const videos: YouTubeVideoRich[] = [];
+    for (let i = 0; i < videoIds.length; i += 50) {
+      const chunk = videoIds.slice(i, i + 50);
+      const res = await fetch(
+        `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails,topicDetails&id=${chunk.join(',')}&key=${apiKey}`,
+      );
+      if (!res.ok) continue;
+      const data = await res.json();
+      for (const item of data.items || []) {
+        videos.push({
+          id: item.id,
+          title: item.snippet.title,
+          description: item.snippet.description || '',
+          channelTitle: item.snippet.channelTitle,
+          publishedAt: item.snippet.publishedAt,
+          viewCount: parseInt(item.statistics?.viewCount || '0'),
+          likeCount: parseInt(item.statistics?.likeCount || '0'),
+          commentCount: parseInt(item.statistics?.commentCount || '0'),
+          duration: item.contentDetails?.duration || 'PT0S',
+          thumbnailUrl: item.snippet.thumbnails?.maxres?.url || item.snippet.thumbnails?.high?.url || '',
+          tags: item.snippet.tags || [],
+          categoryId: item.snippet.categoryId || '',
+          defaultAudioLanguage: item.snippet.defaultAudioLanguage,
+          topicCategories: item.topicDetails?.topicCategories || [],
+        });
+      }
+    }
+    return videos;
+  } catch (err) {
+    console.error('fetchChannelVideosRich error:', err);
+    return [];
+  }
+}
+
+export interface YouTubeComment {
+  text: string;
+  authorName: string;
+  likeCount: number;
+  publishedAt: string;
+}
+
+/** Fetch top comments (by relevance) for a single video. */
+export async function fetchVideoComments(
+  videoId: string,
+  maxResults = 20,
+  overrideApiKey?: string,
+): Promise<YouTubeComment[]> {
+  const apiKey = overrideApiKey || process.env.YOUTUBE_API_KEY;
+  if (!apiKey) return [];
+  try {
+    const res = await fetch(
+      `https://www.googleapis.com/youtube/v3/commentThreads?part=snippet&videoId=${videoId}&maxResults=${maxResults}&order=relevance&key=${apiKey}`,
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.items || []).map((it: {
+      snippet: { topLevelComment: { snippet: { textDisplay: string; authorDisplayName: string; likeCount: number; publishedAt: string } } };
+    }) => ({
+      text: it.snippet.topLevelComment.snippet.textDisplay,
+      authorName: it.snippet.topLevelComment.snippet.authorDisplayName,
+      likeCount: it.snippet.topLevelComment.snippet.likeCount,
+      publishedAt: it.snippet.topLevelComment.snippet.publishedAt,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// YouTube category ID → human label (for categoryId 1-44, US region)
+export const YT_CATEGORY_MAP: Record<string, string> = {
+  '1': 'Film & Animation', '2': 'Autos & Vehicles', '10': 'Music', '15': 'Pets & Animals',
+  '17': 'Sports', '19': 'Travel & Events', '20': 'Gaming', '22': 'People & Blogs',
+  '23': 'Comedy', '24': 'Entertainment', '25': 'News & Politics', '26': 'Howto & Style',
+  '27': 'Education', '28': 'Science & Technology', '29': 'Nonprofits & Activism',
+};
+
+/** Parse ISO 8601 duration string to seconds. */
+export function parseDurationSeconds(iso: string): number {
+  const match = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return 0;
+  const [, h, m, s] = match;
+  return (parseInt(h || '0') * 3600) + (parseInt(m || '0') * 60) + parseInt(s || '0');
+}

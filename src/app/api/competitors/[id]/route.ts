@@ -11,7 +11,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       SELECT * FROM competitor_videos
       WHERE competitor_id = ${id}
       ORDER BY published_at DESC
-      LIMIT 100
+      LIMIT 200
     `;
 
     return NextResponse.json({ competitor: channel.rows[0], videos: videos.rows });

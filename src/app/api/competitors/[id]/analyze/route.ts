@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { sql } from '@/lib/db';
+import { sql, ensureCompetitorSchema } from '@/lib/db';
 import { generateText, getModelById } from '@/lib/ai';
-import { competitorOutlierPrompt } from '@/lib/prompts';
+import { competitorDeepAnalysisPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
+import { computeAnalytics, VideoRow } from '@/lib/competitor-analytics';
 
-export const maxDuration = 120;
+export const maxDuration = 180;
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -14,65 +15,126 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (limited) return NextResponse.json({ error: 'Rate limited' }, { status: 429 });
 
   try {
-    const { modelId, niche } = await req.json();
+    await ensureCompetitorSchema();
+
+    let body: { modelId?: string; niche?: string };
+    try { body = await req.json(); } catch {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
+    const { modelId, niche } = body;
+    if (!modelId) return NextResponse.json({ error: 'modelId required' }, { status: 400 });
     const model = getModelById(modelId);
     if (!model) return NextResponse.json({ error: 'Invalid model' }, { status: 400 });
 
     const channel = await sql`SELECT * FROM competitor_channels WHERE id = ${id}`;
     if (channel.rows.length === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    const ch = channel.rows[0];
 
-    const videos = await sql`
-      SELECT title, view_count, like_count, comment_count, published_at, outlier_score, engagement_rate
+    const videosRes = await sql`
+      SELECT video_id, title, description, published_at, view_count, like_count, comment_count,
+             duration, duration_seconds, category_id, tags, top_comments, outlier_score
       FROM competitor_videos
       WHERE competitor_id = ${id}
       ORDER BY published_at DESC
-      LIMIT 50
+      LIMIT 200
     `;
 
-    if (videos.rows.length === 0) {
+    if (videosRes.rows.length === 0) {
       return NextResponse.json({ error: 'No videos synced yet — sync the channel first' }, { status: 400 });
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rows: any[] = videos.rows;
-    const viewCounts = rows.map(v => Number(v.view_count) || 0).sort((a, b) => a - b);
-    const mid = Math.floor(viewCounts.length / 2);
-    const medianViews = viewCounts.length % 2 ? viewCounts[mid] : Math.round((viewCounts[mid - 1] + viewCounts[mid]) / 2);
-    const avgEngagement = rows.reduce((sum, v) => sum + (Number(v.engagement_rate) || 0), 0) / rows.length;
+    const videos: VideoRow[] = videosRes.rows.map(r => ({
+      video_id: String(r.video_id),
+      title: String(r.title),
+      description: r.description ? String(r.description) : '',
+      published_at: new Date(r.published_at).toISOString(),
+      view_count: Number(r.view_count) || 0,
+      like_count: Number(r.like_count) || 0,
+      comment_count: Number(r.comment_count) || 0,
+      duration: String(r.duration || 'PT0S'),
+      duration_seconds: Number(r.duration_seconds) || 0,
+      category_id: r.category_id ? String(r.category_id) : null,
+      tags: Array.isArray(r.tags) ? r.tags : (typeof r.tags === 'string' ? JSON.parse(r.tags || '[]') : []),
+      top_comments: Array.isArray(r.top_comments) ? r.top_comments : (typeof r.top_comments === 'string' ? JSON.parse(r.top_comments || '[]') : []),
+    }));
 
-    const { system, user } = competitorOutlierPrompt({
-      channelName: channel.rows[0].title as string,
+    const analytics = computeAnalytics(videos);
+
+    const formatVideo = (v: VideoRow) => ({
+      title: v.title,
+      views: v.view_count,
+      likes: v.like_count,
+      comments: v.comment_count,
+      durationSec: v.duration_seconds,
+      tags: v.tags,
+      publishedAt: v.published_at,
+      videoId: v.video_id,
+    });
+
+    const sampleComments = analytics.topPerformers
+      .filter(v => v.top_comments && v.top_comments.length > 0)
+      .slice(0, 3)
+      .map(v => ({
+        videoTitle: v.title,
+        videoId: v.video_id,
+        comments: (v.top_comments || []).slice(0, 10).map(c => ({ text: c.text, likes: c.likeCount })),
+      }));
+
+    // Trim analytics bundle (some arrays are large) — keep essential data
+    const slimAnalytics = {
+      dataset: analytics.dataset,
+      performance: analytics.performance,
+      cadence: analytics.cadence,
+      duration: analytics.duration,
+      titles: {
+        ...analytics.titles,
+        topWordsOverall: analytics.titles.topWordsOverall.slice(0, 10),
+      },
+      tags: {
+        avgTagsPerVideo: analytics.tags.avgTagsPerVideo,
+        topTags: analytics.tags.topTags.slice(0, 10),
+        tagsInTopPerformers: analytics.tags.tagsInTopPerformers,
+        tagsInBottomPerformers: analytics.tags.tagsInBottomPerformers,
+      },
+      descriptions: analytics.descriptions,
+      categories: analytics.categories,
+      trend: analytics.trend,
+    };
+
+    const { system, user } = competitorDeepAnalysisPrompt({
+      channelName: String(ch.title),
+      subscriberCount: Number(ch.subscriber_count) || 0,
       niche: niche || 'General',
-      videos: rows.map(v => ({
-        title: String(v.title),
-        views: Number(v.view_count) || 0,
-        likes: Number(v.like_count) || 0,
-        comments: Number(v.comment_count) || 0,
-        date: new Date(v.published_at).toLocaleDateString(),
-        outlierScore: Number(v.outlier_score) || 0,
+      analyticsJson: JSON.stringify(slimAnalytics, null, 2),
+      topVideos: analytics.topPerformers.map(formatVideo),
+      bottomVideos: analytics.bottomPerformers.map(formatVideo),
+      outlierVideos: analytics.outliers.slice(0, 10).map(v => ({
+        title: v.title,
+        views: v.view_count,
+        outlierScore: analytics.performance.medianViews > 0 ? v.view_count / analytics.performance.medianViews : 0,
+        videoId: v.video_id,
       })),
-      medianViews,
-      avgEngagement,
+      sampleComments,
     });
 
     const raw = await generateText({
       modelId,
       prompt: user,
       systemPrompt: system,
-      maxTokens: 6000,
-      temperature: 0.5,
+      maxTokens: 8000,
+      temperature: 0.3,
     });
 
     let analysis;
     try {
       analysis = parseLlmJson(raw);
     } catch {
-      return NextResponse.json({ error: 'Failed to parse analysis — try again' }, { status: 500 });
+      return NextResponse.json({ error: 'Failed to parse analysis', raw: raw.slice(0, 500) }, { status: 500 });
     }
 
-    return NextResponse.json({ analysis });
+    return NextResponse.json({ analysis, analytics });
   } catch (err) {
     console.error('Competitor analysis error:', err);
-    return NextResponse.json({ error: 'Analysis failed' }, { status: 500 });
+    return NextResponse.json({ error: 'Analysis failed', detail: err instanceof Error ? err.message : 'unknown' }, { status: 500 });
   }
 }

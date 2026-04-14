@@ -2,13 +2,14 @@
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { AI_MODELS, AIModel, AIProvider } from '@/lib/ai-models';
+import { AI_MODELS, AIModel, AIProvider, formatModelPricing } from '@/lib/ai-models';
 
 const PROVIDER_COLORS: Record<AIProvider, string> = {
   anthropic: '#7c3aed',
   openai: '#10b981',
   google: '#3b82f6',
   kie: '#f59e0b',
+  perplexity: '#06b6d4',
 };
 
 const PROVIDER_LABELS: Record<AIProvider, string> = {
@@ -16,6 +17,7 @@ const PROVIDER_LABELS: Record<AIProvider, string> = {
   openai: 'OpenAI',
   google: 'Google',
   kie: 'Kie.ai',
+  perplexity: 'Perplexity',
 };
 
 const TIER_LABELS = {
@@ -65,7 +67,8 @@ export function ModelSelector({ value, onChange, label = 'AI Model' }: ModelSele
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium truncate">{selected.name}</div>
           <div className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>
-            {PROVIDER_LABELS[selected.provider]} · {selected.contextWindow} context
+            {PROVIDER_LABELS[selected.provider]} · {selected.contextWindow} · {formatModelPricing(selected)}
+            {selected.webSearch ? ' · web search' : ''}
           </div>
         </div>
         <svg
@@ -117,8 +120,17 @@ export function ModelSelector({ value, onChange, label = 'AI Model' }: ModelSele
                         onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}
                       >
                         <div className="flex-1 min-w-0">
-                          <div className="text-sm font-medium">{model.name}</div>
+                          <div className="text-sm font-medium flex items-center gap-2">
+                            {model.name}
+                            {model.webSearch && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(6,182,212,0.15)', color: '#06b6d4' }}>🌐 search</span>
+                            )}
+                          </div>
                           <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{model.description}</div>
+                          <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                            {formatModelPricing(model)}
+                            {model.pricingNote ? ` · ${model.pricingNote}` : ''}
+                          </div>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           <span className="text-xs px-2 py-0.5 rounded-full"

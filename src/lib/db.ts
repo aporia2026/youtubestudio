@@ -2,6 +2,32 @@ import { sql } from '@vercel/postgres';
 
 export { sql };
 
+/** Idempotent migration for competitor_videos rich columns. Cheap to call repeatedly. */
+let competitorMigrated = false;
+export async function ensureCompetitorSchema() {
+  if (competitorMigrated) return;
+  try {
+    await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS description TEXT`;
+    await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS tags JSONB DEFAULT '[]'`;
+    await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS category_id TEXT`;
+    await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS duration_seconds INTEGER DEFAULT 0`;
+    await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS top_comments JSONB DEFAULT '[]'`;
+    await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS topic_categories JSONB DEFAULT '[]'`;
+    await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS video_analysis JSONB`;
+    await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS video_analyzed_at TIMESTAMPTZ`;
+    await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS video_analysis_model TEXT`;
+    // Widen outlier_score: NUMERIC(8,2) maxed at 999,999.99 — small channels with breakout
+    // videos can easily exceed this. NUMERIC(14,2) supports up to 999,999,999,999.99.
+    await sql`ALTER TABLE competitor_videos ALTER COLUMN outlier_score TYPE NUMERIC(14,2)`;
+    // Thumbnail forensics cache (so users don't re-pay vision costs on re-visit)
+    await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS thumbnail_analysis JSONB`;
+    await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS thumbnail_analyzed_at TIMESTAMPTZ`;
+    competitorMigrated = true;
+  } catch (err) {
+    console.error('ensureCompetitorSchema error:', err);
+  }
+}
+
 export async function initDatabase() {
   // Projects table
   await sql`
@@ -204,6 +230,17 @@ export async function initDatabase() {
   try {
     await sql`CREATE INDEX IF NOT EXISTS idx_comp_videos_competitor ON competitor_videos(competitor_id)`;
   } catch { /* index may already exist */ }
+
+  // Migration: expand competitor_videos with rich fields for deeper analysis
+  try { await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS description TEXT`; } catch {}
+  try { await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS tags JSONB DEFAULT '[]'`; } catch {}
+  try { await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS category_id TEXT`; } catch {}
+  try { await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS duration_seconds INTEGER DEFAULT 0`; } catch {}
+  try { await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS top_comments JSONB DEFAULT '[]'`; } catch {}
+  try { await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS topic_categories JSONB DEFAULT '[]'`; } catch {}
+  try { await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS video_analysis JSONB`; } catch {}
+  try { await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS video_analyzed_at TIMESTAMPTZ`; } catch {}
+  try { await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS video_analysis_model TEXT`; } catch {}
 
   // Seed default niches if empty
   await sql`

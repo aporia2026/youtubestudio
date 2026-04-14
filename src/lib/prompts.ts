@@ -1048,3 +1048,470 @@ ${videos.slice(0, 30).map(v =>
 Return ONLY valid JSON.`,
   };
 }
+
+// ============================================================
+// FEATURE: Competitor Deep Analysis (v2 — zero-hallucination)
+// ============================================================
+
+export function competitorDeepAnalysisPrompt({
+  channelName,
+  subscriberCount,
+  niche,
+  analyticsJson,
+  topVideos,
+  bottomVideos,
+  outlierVideos,
+  sampleComments,
+}: {
+  channelName: string;
+  subscriberCount: number;
+  niche: string;
+  analyticsJson: string;
+  topVideos: Array<{ title: string; views: number; likes: number; comments: number; durationSec: number; tags: string[]; publishedAt: string; videoId: string }>;
+  bottomVideos: Array<{ title: string; views: number; likes: number; comments: number; durationSec: number; tags: string[]; publishedAt: string; videoId: string }>;
+  outlierVideos: Array<{ title: string; views: number; outlierScore: number; videoId: string }>;
+  sampleComments: Array<{ videoTitle: string; videoId: string; comments: { text: string; likes: number }[] }>;
+}): { system: string; user: string } {
+  return {
+    system: `You are a senior YouTube competitive intelligence analyst producing a BRUTALLY DETAILED, PROFESSIONAL, DATA-DRIVEN audit of a competitor channel.
+
+ABSOLUTE RULES — violating any of these makes the entire analysis invalid:
+1. ZERO HALLUCINATIONS. Every quantitative claim must cite a number present in the analytics bundle I provide. Do not invent views, rates, dates, or trends.
+2. Every qualitative claim about a specific video MUST cite a concrete video title AND its video_id from the data I provide, in the form: "\\"Title Here\\" (videoId: ABC123)".
+3. If the data is insufficient to support a claim, write "insufficient data" instead of guessing. It is better to say less than to fabricate.
+4. Do not reference any competitor, creator, or trend that is not present in the data I provide.
+5. Numbers must match the analytics bundle exactly. Percentages, counts, and averages are already computed — use them verbatim.
+
+Your output is structured JSON. Be ruthless, specific, and actionable.`,
+
+    user: `Analyze this YouTube competitor. All numbers below are pre-computed from real YouTube API data. Use them — do not recompute or invent new numbers.
+
+**Channel:** ${channelName} (${subscriberCount.toLocaleString()} subscribers)
+**User's niche:** ${niche}
+
+## COMPUTED ANALYTICS BUNDLE (verbatim — cite these numbers):
+\`\`\`json
+${analyticsJson}
+\`\`\`
+
+## TOP PERFORMERS (top 10% by views):
+${topVideos.map(v => `- "${v.title}" (videoId: ${v.videoId}) — ${v.views.toLocaleString()} views, ${v.likes.toLocaleString()} likes, ${v.comments.toLocaleString()} comments, ${v.durationSec}s, tags: [${v.tags.slice(0, 8).join(', ')}], published ${v.publishedAt.slice(0, 10)}`).join('\n')}
+
+## BOTTOM PERFORMERS (bottom 10% by views):
+${bottomVideos.map(v => `- "${v.title}" (videoId: ${v.videoId}) — ${v.views.toLocaleString()} views, ${v.likes.toLocaleString()} likes, ${v.comments.toLocaleString()} comments, ${v.durationSec}s, tags: [${v.tags.slice(0, 8).join(', ')}], published ${v.publishedAt.slice(0, 10)}`).join('\n')}
+
+## OUTLIERS (≥3x median views):
+${outlierVideos.length ? outlierVideos.map(v => `- "${v.title}" (videoId: ${v.videoId}) — ${v.views.toLocaleString()} views, ${v.outlierScore.toFixed(1)}x median`).join('\n') : 'None'}
+
+## SAMPLE AUDIENCE COMMENTS (top comments on top-performing videos):
+${sampleComments.length ? sampleComments.map(s => `### "${s.videoTitle}" (videoId: ${s.videoId})\n${s.comments.slice(0, 8).map(c => `  - "${c.text.replace(/\n/g, ' ').slice(0, 180)}" (${c.likes} likes)`).join('\n')}`).join('\n\n') : 'No comments sampled'}
+
+---
+
+Return ONLY this JSON (no prose outside the JSON):
+
+\`\`\`json
+{
+  "executive_summary": "<3-5 sentences: who this channel is, what they do, their dominant strategy, and the single biggest insight from the data. Cite at least 2 hard numbers from the analytics bundle.>",
+  "threat_level": "<low|medium|high|critical>",
+  "threat_justification": "<1-2 sentences citing subscriber count, median views, and momentum from the analytics>",
+  "performance_snapshot": {
+    "median_views": 0,
+    "p90_views": 0,
+    "median_engagement_pct": 0,
+    "uploads_per_week": 0,
+    "consistency_score": 0,
+    "momentum": "steady",
+    "momentum_pct": 0,
+    "interpretation": "<2-3 sentence plain-English reading of these numbers>"
+  },
+  "what_they_do_right": [
+    { "strength": "<specific>", "quantitative_evidence": "<cite exact numbers>", "video_examples": ["\\"Title\\" (videoId: ABC)"], "why_it_works": "<mechanism>", "replicable_tactic": "<one concrete action>" }
+  ],
+  "what_they_do_wrong": [
+    { "weakness": "<specific>", "quantitative_evidence": "<cite exact numbers>", "video_examples": ["\\"Title\\" (videoId: XYZ)"], "cost_to_them": "<impact>", "lesson_for_user": "<what to avoid>" }
+  ],
+  "top_video_deep_dives": [
+    {
+      "video_title": "<exact title>",
+      "video_id": "<exact videoId>",
+      "views": 0,
+      "outlier_multiple": 0,
+      "why_it_succeeded": {
+        "title_mechanics": "<analysis citing concrete title elements>",
+        "duration_fit": "<alignment with best bucket>",
+        "tag_strategy": "<which tags and overlap with tagsInTopPerformers>",
+        "publish_timing": "<day/hour vs bestDayByAvgViews>",
+        "audience_signal": "<what comments praise — or 'insufficient data'>"
+      },
+      "replicable_elements": ["<element 1>", "<element 2>", "<element 3>"]
+    }
+  ],
+  "bottom_video_postmortems": [
+    {
+      "video_title": "<exact title>",
+      "video_id": "<exact videoId>",
+      "views": 0,
+      "views_vs_median_pct": 0,
+      "why_it_underperformed": {
+        "title_issues": "<specific flaws referencing actual title text>",
+        "duration_mismatch": "<if matching worstBucket>",
+        "tag_gap": "<missing tags from winning set>",
+        "timing_issue": "<if on a weak day/hour>"
+      },
+      "lesson": "<one sentence>"
+    }
+  ],
+  "title_formula_extraction": {
+    "winning_patterns": [ { "pattern": "<describe>", "evidence_videos": ["\\"Title\\" (videoId: X)"], "stat": "<cite from analytics>" } ],
+    "losing_patterns": [ { "pattern": "<describe>", "evidence_videos": ["\\"Title\\" (videoId: X)"], "stat": "<cite>" } ],
+    "recommended_title_templates": ["<template 1>", "<template 2>", "<template 3>"]
+  },
+  "cadence_verdict": {
+    "assessment": "<healthy|inconsistent|sparse|flooded>",
+    "evidence": "<cite uploadsPerWeek, consistencyScore, medianGapDays>",
+    "best_publishing_window": "<cite bestDayByAvgViews and bestHourByAvgViews>",
+    "recommendation": "<concrete action>"
+  },
+  "duration_strategy": {
+    "their_best_bucket": "<from analytics>",
+    "their_worst_bucket": "<from analytics>",
+    "avg_views_by_bucket": "<one-line summary>",
+    "recommendation_for_user": "<target duration>"
+  },
+  "audience_insights": {
+    "what_audience_loves": ["<pattern 1>", "<pattern 2>"],
+    "what_audience_complains_about": ["<criticism 1>"],
+    "audience_quotes": [ { "quote": "<verbatim>", "video_id": "<id>", "likes": 0 } ],
+    "sentiment_verdict": "<predominantly positive|mixed|hostile|insufficient data>",
+    "note": "<if no comments: 'No comments sampled — skip'>"
+  },
+  "content_gaps_for_user": [
+    { "gap": "<topic/format not covered>", "opportunity": "<why user could win>", "adjacent_evidence": "<what IS in their content>" }
+  ],
+  "steal_these_ideas": [
+    {
+      "video_idea_title": "<concrete title>",
+      "inspired_by": "<competitor video title + videoId>",
+      "your_angle": "<differentiator>",
+      "target_duration_seconds": 0,
+      "recommended_tags": ["<tag 1>"],
+      "hook_suggestion": "<one-line hook>"
+    }
+  ],
+  "thumbnail_strategy_hypothesis": "<1-2 sentences based on title cues>",
+  "one_page_action_plan": ["<action 1>", "<action 2>", "<action 3>", "<action 4>", "<action 5>"],
+  "data_quality_note": "<honest limitations, e.g. 'only 42 videos in dataset', 'no comments available'>"
+}
+\`\`\`
+
+Return ONLY valid JSON. No prose outside the JSON.`,
+  };
+}
+
+// ============================================================
+// FEATURE: Competitor Thumbnail Vision Analysis
+// ============================================================
+
+export function competitorThumbnailPrompt({
+  videoTitle,
+  views,
+  outlierScore,
+}: {
+  videoTitle: string;
+  views: number;
+  outlierScore: number;
+}): { system: string; user: string } {
+  return {
+    system: `You are a YouTube thumbnail design analyst. You analyze competitor thumbnails with forensic precision and produce actionable design briefs.
+
+ABSOLUTE RULES:
+1. Only describe what you can actually see in the image. Do not invent text, colors, objects, or faces not present.
+2. If the image is blurry, low-res, or you cannot identify an element, say "unclear" rather than guessing.
+3. Be specific about composition, color hex approximations, facial expression, text placement, visual hierarchy.`,
+    user: `Analyze this YouTube thumbnail.
+
+**Video title:** "${videoTitle}"
+**Views:** ${views.toLocaleString()}
+**Performance:** ${outlierScore.toFixed(1)}x channel median ${outlierScore >= 3 ? '(OUTLIER)' : outlierScore < 0.5 ? '(UNDERPERFORMER)' : '(average)'}
+
+Return ONLY this JSON:
+
+\`\`\`json
+{
+  "composition": {
+    "layout": "<e.g. 'face left, text right'>",
+    "focal_point": "<what draws the eye first>",
+    "rule_of_thirds": "<observed or violated>",
+    "visual_hierarchy_score": "<1-10 with justification>"
+  },
+  "colors": {
+    "dominant_palette": ["<approx hex 1>", "<hex 2>", "<hex 3>"],
+    "contrast_rating": "<high|medium|low>",
+    "uses_saturation_pop": false,
+    "color_psychology": "<emotions evoked>"
+  },
+  "text_overlay": {
+    "present": false,
+    "exact_text": "<verbatim or null>",
+    "font_style": "<description>",
+    "text_readability_at_small_size": "<high|medium|low>",
+    "text_percent_of_frame": "<approx>"
+  },
+  "human_element": {
+    "face_present": false,
+    "facial_expression": "<shocked|excited|angry|serious|smiling|neutral|none>",
+    "eye_contact_with_camera": false,
+    "gesture": "<pointing|holding object|none|unclear>"
+  },
+  "subjects_and_objects": ["<item 1>"],
+  "clickbait_elements": {
+    "arrows_or_circles": false,
+    "red_vs_green_contrast": false,
+    "numbers_visible": false,
+    "emotional_provocation": "<curiosity|fear|surprise|humor|none>"
+  },
+  "why_this_probably_worked_or_failed": "<2-3 sentences tying visual elements to performance>",
+  "replicable_design_brief": {
+    "layout_to_copy": "<description>",
+    "color_direction": "<description>",
+    "text_formula": "<if text present>",
+    "emotional_target": "<feeling to evoke>",
+    "specific_dos": ["<do 1>", "<do 2>", "<do 3>"],
+    "specific_donts": ["<don't 1>", "<don't 2>"]
+  }
+}
+\`\`\`
+
+Return ONLY valid JSON.`,
+  };
+}
+
+// ============================================================
+// FEATURE: Competitor Video Forensics (Gemini native YouTube input)
+// ============================================================
+
+export function competitorVideoForensicsPrompt({
+  videoTitle,
+  channelName,
+  views,
+  likes,
+  comments,
+  outlierScore,
+  durationSeconds,
+  publishedAt,
+  niche,
+}: {
+  videoTitle: string;
+  channelName: string;
+  views: number;
+  likes: number;
+  comments: number;
+  outlierScore: number;
+  durationSeconds: number;
+  publishedAt: string;
+  niche: string;
+}): { system: string; user: string } {
+  return {
+    system: `You are a forensic video analyst for YouTube creators. You watch the ENTIRE video and produce a frame-accurate, audio-accurate, structurally-rigorous breakdown.
+
+ABSOLUTE RULES — violating any of these makes the analysis invalid:
+1. ZERO HALLUCINATIONS. Only describe what is actually visible or audible in the video. If something is unclear, say "unclear" — do not guess.
+2. Quote on-screen text and spoken phrases VERBATIM. If you cannot make out a phrase, say "(inaudible)" or "(text unreadable)".
+3. Every timestamp you provide must reference an event you actually saw at that timestamp. Format: [MM:SS] or [HH:MM:SS].
+4. Do not invent statistics, brand mentions, sponsorships, or facts that are not stated/shown in the video.
+5. Be specific — "the host" not "they"; "a red graphic with the text 'BREAKING'" not "some text appears".
+6. If the video is region-blocked, age-restricted, or otherwise inaccessible, return a JSON object with only the field {"error": "Video inaccessible: <reason>"} and nothing else.
+
+Your output is a structured JSON document. Be ruthless, specific, and useful.`,
+
+    user: `Watch this YouTube video in full and produce a forensic analysis.
+
+**Video metadata (do not invent — these are pre-known facts):**
+- Title: "${videoTitle}"
+- Channel: ${channelName}
+- Views: ${views.toLocaleString()}
+- Likes: ${likes.toLocaleString()}
+- Comments: ${comments.toLocaleString()}
+- Duration: ${Math.floor(durationSeconds / 60)}:${(durationSeconds % 60).toString().padStart(2, '0')}
+- Outlier score: ${outlierScore.toFixed(2)}x channel median ${outlierScore >= 3 ? '(MASSIVE OUTLIER)' : outlierScore < 0.5 ? '(UNDERPERFORMER)' : '(typical)'}
+- Published: ${publishedAt.slice(0, 10)}
+- User's niche (for relevance scoring): ${niche}
+
+Return ONLY this JSON (no prose outside the JSON):
+
+\`\`\`json
+{
+  "video_summary": {
+    "one_line_pitch": "<what is this video actually about, in one sentence>",
+    "core_promise_to_viewer": "<what the title/thumbnail promises and whether the video delivers>",
+    "delivers_on_promise": "<yes|partial|no — with one-sentence justification>"
+  },
+
+  "hook_analysis": {
+    "first_15_seconds_transcript": "<verbatim spoken words in the first 15 seconds — or '(no narration)'>",
+    "first_15_seconds_visuals": "<what is shown on screen in the first 15s — be specific about cuts, b-roll, text>",
+    "hook_type": "<question|stat|claim|story|cold-open|teaser|controversy|other>",
+    "hook_effectiveness_score": "<1-10 with one-sentence justification>",
+    "retention_risk_in_hook": "<what might cause viewers to drop off in the first 30s>"
+  },
+
+  "structural_breakdown": [
+    { "timestamp": "[MM:SS]", "section": "<intro|context|main-point|demo|tangent|sponsor|cta|outro>", "description": "<what happens here, 1 sentence>", "purpose": "<what role this plays in the video's argument>" }
+  ],
+
+  "pacing_and_editing": {
+    "estimated_cuts_per_minute": "<rough estimate based on observation>",
+    "cut_style": "<jump-cut|smooth|cinematic|talking-head-static|mixed>",
+    "b_roll_density": "<heavy|moderate|sparse|none>",
+    "music_present": "<yes-throughout|yes-intermittent|no>",
+    "music_style": "<description if present>",
+    "energy_curve": "<one-sentence description of how energy ebbs and flows>",
+    "dead_zones": ["<timestamp + reason where attention may drop>"]
+  },
+
+  "on_screen_graphics": {
+    "lower_thirds": "<yes|no — describe style if yes>",
+    "text_overlays_present": "<yes|no>",
+    "key_text_overlays": [ { "timestamp": "[MM:SS]", "verbatim_text": "<exact text>", "purpose": "<emphasis|stat|quote|chapter|cta>" } ],
+    "graphics_quality": "<professional|amateur|stock|none>",
+    "branded_elements": "<watermark|intro-bumper|outro-card|none — describe>"
+  },
+
+  "verbal_content": {
+    "transcript_excerpts": [
+      { "timestamp": "[MM:SS]", "verbatim_quote": "<exact spoken words>", "why_notable": "<rhetorical device, key claim, emotional moment, etc>" }
+    ],
+    "speaking_style": "<calm|energetic|conversational|scripted|rant|teaching|sales>",
+    "filler_words_observed": "<low|moderate|heavy>",
+    "claims_made": [
+      { "claim": "<exact claim>", "evidence_provided_in_video": "<what evidence the host shows or cites>", "verifiable": "<yes|no|requires-external-check>" }
+    ]
+  },
+
+  "visual_production": {
+    "setting": "<studio|home-office|outdoor|on-location|screen-capture|mixed>",
+    "lighting": "<professional-key-fill|natural|harsh|soft|low — be specific>",
+    "color_grading": "<warm|cool|neutral|stylized — describe>",
+    "camera_setup": "<single-static|multi-angle|moving|gimbal|webcam — describe>",
+    "host_appearance": "<describe presentation: attire, demeanor, gestures — only what's visible>",
+    "backdrop_elements": ["<element 1 visible behind host>"]
+  },
+
+  "monetization_signals": {
+    "sponsor_segment_present": "<yes|no>",
+    "sponsor_timestamp": "<[MM:SS] or null>",
+    "sponsor_brand": "<name if mentioned, or null>",
+    "sponsor_integration_quality": "<seamless|abrupt|skippable-clearly-marked|na>",
+    "affiliate_or_product_mentions": ["<product 1 mentioned with timestamp>"],
+    "merch_or_own_product_pitch": "<yes|no — describe if yes>"
+  },
+
+  "calls_to_action": [
+    { "timestamp": "[MM:SS]", "cta_type": "<like|subscribe|comment|click-link|buy|next-video|newsletter>", "verbatim": "<exact words>", "placement_quality": "<natural|forced|too-early|effective>" }
+  ],
+
+  "thumbnail_vs_video_alignment": {
+    "title_promise_kept": "<yes|partial|no>",
+    "clickbait_assessment": "<honest|mild-clickbait|heavy-clickbait|misleading>",
+    "satisfaction_prediction": "<a viewer who clicked expecting X — were they satisfied? Why?>"
+  },
+
+  "audience_targeting": {
+    "assumed_knowledge_level": "<beginner|intermediate|advanced|mixed>",
+    "language_complexity": "<simple|moderate|technical>",
+    "cultural_or_regional_signals": ["<observed signal>"],
+    "ideal_viewer_persona": "<one-sentence description of who this video is FOR>"
+  },
+
+  "what_made_it_work_or_fail": {
+    "top_3_strengths": [
+      { "strength": "<specific>", "timestamp_evidence": "[MM:SS]", "explanation": "<1 sentence>" }
+    ],
+    "top_3_weaknesses": [
+      { "weakness": "<specific>", "timestamp_evidence": "[MM:SS]", "explanation": "<1 sentence>" }
+    ],
+    "single_biggest_lesson": "<one paragraph — the most important takeaway, tied to the outlier score>"
+  },
+
+  "replicable_playbook_for_user": {
+    "structural_template": "<a reusable structural skeleton based on this video>",
+    "hook_template": "<a fill-in-the-blanks hook the user could adapt>",
+    "must_steal_techniques": ["<technique 1>", "<technique 2>", "<technique 3>"],
+    "do_not_copy": ["<element 1 that won't work for the user>", "..."],
+    "estimated_production_difficulty": "<easy|medium|hard|very-hard>",
+    "estimated_production_cost": "<low|medium|high — with brief justification>"
+  },
+
+  "data_quality_note": "<honest disclosure of any analysis limitations — e.g. 'video too long for full coverage', 'audio quality made some quotes unreadable', 'no major issues'>"
+}
+\`\`\`
+
+Return ONLY valid JSON. No prose outside the JSON object.`,
+  };
+}
+
+// ============================================================
+// FEATURE: Competitor-Informed Idea Generation
+// ============================================================
+
+export function competitorInspiredIdeasPrompt({
+  channelName,
+  niche,
+  analyticsSummary,
+  topPerformers,
+  contentGaps,
+  userAngle,
+}: {
+  channelName: string;
+  niche: string;
+  analyticsSummary: string;
+  topPerformers: Array<{ title: string; views: number; videoId: string }>;
+  contentGaps: string[];
+  userAngle?: string;
+}): { system: string; user: string } {
+  return {
+    system: `You are a YouTube idea strategist. You generate concrete, high-conviction video ideas based on a competitor's proven data — not speculation.
+
+RULES:
+1. Every idea must be anchored to a specific competitor video (by title + videoId) OR an identified content gap.
+2. Do not invent trends or external context.
+3. Ideas must be differentiated — no copycats. Specify the user's angle.`,
+    user: `Generate 8 video ideas for the user based on this competitor analysis.
+
+**Competitor:** ${channelName}
+**User's niche:** ${niche}
+${userAngle ? `**User's angle/voice:** ${userAngle}` : ''}
+
+**Analytics summary:** ${analyticsSummary}
+
+**Top-performing videos:**
+${topPerformers.map(v => `- "${v.title}" (videoId: ${v.videoId}) — ${v.views.toLocaleString()} views`).join('\n')}
+
+**Identified content gaps:**
+${contentGaps.map(g => `- ${g}`).join('\n') || '- None identified'}
+
+Return ONLY this JSON:
+
+\`\`\`json
+{
+  "ideas": [
+    {
+      "title": "<compelling video title the user could publish>",
+      "hook": "<first 10 seconds — one sentence>",
+      "premise": "<2-3 sentence pitch>",
+      "inspired_by": { "competitor_video": "<exact title>", "video_id": "<videoId>", "or_gap": "<gap description if inspired by a gap>" },
+      "user_differentiator": "<how this is NOT a copy — specific angle>",
+      "target_duration_seconds": 0,
+      "recommended_tags": ["<tag 1>", "<tag 2>", "<tag 3>"],
+      "thumbnail_direction": "<one-line visual concept>",
+      "predicted_difficulty": "<easy|medium|hard>",
+      "why_this_will_work": "<evidence-based reasoning>"
+    }
+  ]
+}
+\`\`\`
+
+Return ONLY valid JSON.`,
+  };
+}

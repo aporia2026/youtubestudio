@@ -28,6 +28,7 @@ export default function SettingsPage() {
     'script-generator': AI_MODELS[0].id,
     'qa-engine': AI_MODELS[0].id,
     'idea-generator': AI_MODELS[0].id,
+    'competitor-analysis': AI_MODELS[0].id,
   });
   const [keyStatus, setKeyStatus] = useState<KeyStatus>({});
   const [keyStatusLoading, setKeyStatusLoading] = useState(true);
