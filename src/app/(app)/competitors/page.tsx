@@ -292,7 +292,8 @@ export default function CompetitorsPage() {
 
   async function runAnalysis() {
     if (!selectedId) return;
-    setAnalyzing(true); setAnalysis(null); setAnalytics(null);
+    // Don't blank prior analysis — keep it visible until the new one arrives.
+    setAnalyzing(true);
     try {
       const res = await fetch(`/api/competitors/${selectedId}/analyze`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -324,7 +325,8 @@ export default function CompetitorsPage() {
 
   async function generateIdeas() {
     if (!selectedId) return;
-    setIdeasLoading(true); setIdeas([]);
+    // Accumulate across generations — append + dedupe by title
+    setIdeasLoading(true);
     try {
       const contentGaps = analysis?.content_gaps_for_user?.map(g => g.gap) || [];
       const res = await fetch(`/api/competitors/${selectedId}/ideas`, {
@@ -333,10 +335,21 @@ export default function CompetitorsPage() {
       });
       if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || 'Failed'); }
       const data = await res.json();
-      setIdeas(data.ideas || []);
-      toast.success(`Generated ${data.ideas?.length || 0} ideas`);
+      const newIdeas: Idea[] = data.ideas || [];
+      setIdeas(prev => {
+        const seen = new Set(prev.map(i => i.title.toLowerCase()));
+        const fresh = newIdeas.filter(i => !seen.has(i.title.toLowerCase()));
+        return [...fresh, ...prev];
+      });
+      toast.success(`+${newIdeas.length} new ideas`);
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Failed'); }
     finally { setIdeasLoading(false); }
+  }
+
+  function clearIdeas() {
+    if (ideas.length === 0) return;
+    if (!confirm(`Clear all ${ideas.length} generated ideas?`)) return;
+    setIdeas([]);
   }
 
   async function saveIdea(idea: Idea, idx: number) {
@@ -727,10 +740,15 @@ export default function CompetitorsPage() {
                           <input className="input-field" placeholder="e.g. 'beginner-friendly, no jargon, hands-on demos'" value={userAngle} onChange={e => setUserAngle(e.target.value)} />
                         </div>
                         <button className="btn-primary flex items-center gap-2" onClick={generateIdeas} disabled={ideasLoading}>
-                          {ideasLoading ? <Spinner /> : '💡'} Generate Ideas From This Competitor
+                          {ideasLoading ? <Spinner /> : '💡'} {ideas.length > 0 ? 'Generate more ideas' : 'Generate Ideas From This Competitor'}
                         </button>
+                        {ideas.length > 0 && (
+                          <button className="btn-secondary text-xs flex items-center gap-2" onClick={clearIdeas} disabled={ideasLoading}>
+                            ✕ Clear all ({ideas.length})
+                          </button>
+                        )}
                         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                          Ideas are anchored to specific competitor videos and identified content gaps. Run Deep Analysis first for richer gap detection.
+                          Ideas accumulate across generations. Anchored to specific competitor videos and content gaps — run Deep Analysis first for richer gap detection.
                         </p>
                       </div>
 
@@ -1421,7 +1439,7 @@ function ForensicsTab({
           <div className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
             Video analysis requires a Gemini model. Both <strong>direct Google Gemini</strong>
             (Gemini 2.0/2.5/3/3.1 Flash or Pro — officially supported, billed by Google)
-            and <strong>Kie.ai Gemini variants</strong> (passes through Kie.ai's OpenAI-compatible chat completions, billed by Kie — undocumented but works as a passthrough)
+            and <strong>Kie.ai Gemini variants</strong> (passes through Kie.ai&apos;s OpenAI-compatible chat completions, billed by Kie — undocumented but works as a passthrough)
             are supported. Claude, GPT, and Perplexity cannot watch videos directly.
           </div>
         </div>

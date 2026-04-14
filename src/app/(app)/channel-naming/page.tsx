@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
@@ -21,6 +21,24 @@ interface Candidate {
   checkError?: string;
   availabilityNote?: string;
   combinedScore: number;
+  /** Client-only: which generation batch this came from */
+  batch?: number;
+  /** Client-only: saved row id if persisted */
+  savedId?: string;
+}
+
+interface SavedName {
+  id: string;
+  name: string;
+  handle: string;
+  niche: string;
+  combined_score: number;
+  seo_score: number;
+  brand_score: number;
+  memorability_score: number;
+  reasoning: string;
+  was_available: boolean | null;
+  saved_at: string;
 }
 
 function Spinner({ size = 16 }: { size?: number }) {
@@ -80,7 +98,21 @@ export default function ChannelNamingPage() {
   const [count, setCount] = useState(20);
   const [generating, setGenerating] = useState(false);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [batchNum, setBatchNum] = useState(0);
   const [stats, setStats] = useState<{ allChecked: number; availableCount: number; refVideosUsed?: number; refVideosFailed?: string[]; availabilityCaveat?: string } | null>(null);
+
+  // Saved
+  const [saved, setSaved] = useState<SavedName[]>([]);
+  const [savedOpen, setSavedOpen] = useState(false);
+  const [savingHandle, setSavingHandle] = useState<string | null>(null);
+
+  // Manual handle/name check
+  const [manualHandle, setManualHandle] = useState('');
+  const [checkingManual, setCheckingManual] = useState(false);
+  const [manualResult, setManualResult] = useState<{ handle: string; available: boolean; takenBy?: { id: string; title: string; thumbnail?: string }; error?: string; note?: string } | null>(null);
+
+  // Filters
+  const [showAvailableOnly, setShowAvailableOnly] = useState(false);
 
   function addVideo() {
     const url = videoInput.trim();
@@ -124,8 +156,10 @@ export default function ChannelNamingPage() {
       return;
     }
     setGenerating(true);
-    setCandidates([]);
-    setStats(null);
+    // NOTE: we accumulate across generations within the session — never wipe prior results.
+    // Use the "Clear results" button to reset.
+    const thisBatch = batchNum + 1;
+    setBatchNum(thisBatch);
     try {
       const res = await fetch('/api/channel-naming/generate', {
         method: 'POST',
@@ -141,7 +175,21 @@ export default function ChannelNamingPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed');
-      setCandidates(data.candidates || []);
+      const newOnes: Candidate[] = (data.candidates || []).map((c: Candidate) => ({ ...c, batch: thisBatch }));
+
+      // Merge with existing, dedup by handle, newer entries win, sort: available first then score desc
+      setCandidates(prev => {
+        const map = new Map<string, Candidate>();
+        for (const c of prev) map.set(c.handle, c);
+        for (const c of newOnes) map.set(c.handle, c);
+        const all = Array.from(map.values());
+        all.sort((a, b) => {
+          if (a.available !== b.available) return a.available ? -1 : 1;
+          return b.combinedScore - a.combinedScore;
+        });
+        return all;
+      });
+
       setStats({
         allChecked: data.allChecked,
         availableCount: data.availableCount,
@@ -150,14 +198,22 @@ export default function ChannelNamingPage() {
         availabilityCaveat: data.availabilityCaveat,
       });
       if (data.refVideosFailed?.length) {
-        toast.warning(`${data.refVideosFailed.length} reference video${data.refVideosFailed.length > 1 ? 's' : ''} could not be fetched — check URLs or quota`);
+        toast.warning(`${data.refVideosFailed.length} reference video${data.refVideosFailed.length > 1 ? 's' : ''} could not be fetched`);
       }
-      toast.success(`Got ${data.availableCount}/${data.allChecked} likely-available candidates`);
+      toast.success(`+${newOnes.length} candidates (batch ${thisBatch})`);
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Failed');
     } finally {
       setGenerating(false);
     }
+  }
+
+  function clearResults() {
+    if (candidates.length === 0) return;
+    if (!confirm(`Clear all ${candidates.length} generated candidates from this session?`)) return;
+    setCandidates([]);
+    setStats(null);
+    setBatchNum(0);
   }
 
   async function copy(text: string, label: string) {
@@ -167,6 +223,83 @@ export default function ChannelNamingPage() {
     } catch {
       toast.error('Copy failed');
     }
+  }
+
+  // ---- Saved names ----
+  const fetchSaved = useCallback(async () => {
+    try {
+      const res = await fetch('/api/channel-naming/saved');
+      if (!res.ok) return;
+      const data = await res.json();
+      const savedRows: SavedName[] = data.saved || [];
+      setSaved(savedRows);
+      // Reflect saved status on any currently displayed candidates
+      const idByHandle = new Map(savedRows.map(s => [s.handle, s.id]));
+      setCandidates(prev => prev.map(c => {
+        const id = idByHandle.get(c.handle);
+        return id ? { ...c, savedId: id } : c;
+      }));
+    } catch { /* ignore */ }
+  }, []);
+  useEffect(() => { fetchSaved(); }, [fetchSaved]);
+
+  async function saveCandidate(c: Candidate) {
+    setSavingHandle(c.handle);
+    try {
+      const res = await fetch('/api/channel-naming/saved', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: c.name, handle: c.handle,
+          niche, freeText,
+          seoScore: c.seo_score, brandScore: c.brand_score, memorabilityScore: c.memorability_score,
+          combinedScore: c.combinedScore,
+          reasoning: c.reasoning, keywordCoverage: c.keyword_coverage, risks: c.risks,
+          wasAvailable: c.available, aiModel: modelId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed');
+      // Mark as saved in the candidate list
+      setCandidates(prev => prev.map(x => x.handle === c.handle ? { ...x, savedId: data.saved.id } : x));
+      // Prepend to saved list
+      setSaved(prev => [data.saved, ...prev]);
+      toast.success(`Saved "${c.name}"`);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setSavingHandle(null);
+    }
+  }
+
+  async function deleteSaved(id: string) {
+    if (!confirm('Delete this saved name?')) return;
+    try {
+      const res = await fetch(`/api/channel-naming/saved/${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error();
+      setSaved(prev => prev.filter(s => s.id !== id));
+      // Unmark in candidates if present
+      setCandidates(prev => prev.map(c => c.savedId === id ? { ...c, savedId: undefined } : c));
+      toast.success('Deleted');
+    } catch { toast.error('Delete failed'); }
+  }
+
+  // ---- Manual handle / name check ----
+  async function runManualCheck() {
+    const raw = manualHandle.trim();
+    if (!raw) return;
+    setCheckingManual(true);
+    setManualResult(null);
+    try {
+      // Auto-derive a handle from a name input (lowercase, strip non-allowed)
+      const handleGuess = raw.replace(/^@/, '').toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 30);
+      const res = await fetch('/api/channel-naming/check-handle', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ handle: handleGuess }),
+      });
+      const data = await res.json();
+      setManualResult({ handle: handleGuess, ...data });
+    } catch { toast.error('Check failed'); }
+    finally { setCheckingManual(false); }
   }
 
   return (
@@ -259,11 +392,98 @@ export default function ChannelNamingPage() {
             <input type="number" className="input-field" style={{ width: 100 }} min={10} max={40} value={count} onChange={e => setCount(Math.max(10, Math.min(40, parseInt(e.target.value) || 20)))} />
           </div>
           <button className="btn-primary flex items-center gap-2" onClick={generate} disabled={generating}>
-            {generating ? <Spinner /> : '✨'} {generating ? 'Generating + checking handles...' : 'Generate names'}
+            {generating ? <Spinner /> : '✨'} {generating ? 'Generating + checking handles...' : candidates.length > 0 ? `Generate more (+${count})` : 'Generate names'}
           </button>
+          {candidates.length > 0 && (
+            <button className="btn-secondary text-xs flex items-center gap-2" onClick={clearResults} disabled={generating}>
+              ✕ Clear all ({candidates.length})
+            </button>
+          )}
           <p className="text-xs flex-1 min-w-[200px]" style={{ color: 'var(--text-muted)' }}>
-            We generate {count} candidates, then check each @handle against YouTube. Top 10 available are shown.
+            Generations accumulate during this session — hit Generate again for more variety. Use Clear to start fresh.
           </p>
+        </div>
+      </div>
+
+      {/* Manual check + Saved panel */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <div className="glass rounded-xl p-5">
+          <div className="text-sm font-semibold mb-3" style={{ color: 'var(--text-primary)' }}>🔎 Check a name / handle manually</div>
+          <div className="flex gap-2">
+            <input
+              className="input-field flex-1"
+              placeholder="e.g. PixelCraft or @pixelcraft"
+              value={manualHandle}
+              onChange={e => setManualHandle(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), runManualCheck())}
+            />
+            <button className="btn-secondary whitespace-nowrap flex items-center gap-2" onClick={runManualCheck} disabled={checkingManual || !manualHandle.trim()}>
+              {checkingManual ? <Spinner size={12} /> : '🔍'} Check
+            </button>
+          </div>
+          {manualResult && (
+            <div className="mt-3 p-3 rounded text-sm" style={{
+              background: manualResult.available ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)',
+              border: `1px solid ${manualResult.available ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'}`,
+            }}>
+              <div className="flex items-center gap-2">
+                <code className="font-mono" style={{ color: '#60a5fa' }}>@{manualResult.handle}</code>
+                <span className="text-xs px-2 py-0.5 rounded font-semibold" style={{
+                  background: manualResult.available ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)',
+                  color: manualResult.available ? '#10b981' : '#ef4444',
+                }}>
+                  {manualResult.available ? '✓ Likely available' : manualResult.error ? `⚠ ${manualResult.error}` : '✗ Taken'}
+                </span>
+                <a
+                  href={`https://www.youtube.com/@${manualResult.handle}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs ml-auto"
+                  style={{ color: '#60a5fa' }}
+                >Verify on YouTube ↗</a>
+              </div>
+              {manualResult.takenBy && (
+                <div className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>Owned by: <strong>{manualResult.takenBy.title}</strong></div>
+              )}
+              {manualResult.note && (
+                <div className="text-xs mt-2 italic" style={{ color: 'var(--text-muted)' }}>ℹ {manualResult.note}</div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="glass rounded-xl p-5">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>💾 Saved names ({saved.length})</div>
+            <button className="text-xs" style={{ color: 'var(--text-muted)' }} onClick={() => setSavedOpen(o => !o)}>
+              {savedOpen ? 'Collapse ▲' : 'Expand ▼'}
+            </button>
+          </div>
+          {savedOpen && (
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {saved.length === 0 ? (
+                <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Nothing saved yet. Hit ⭐ Save on a candidate.</div>
+              ) : saved.map(s => (
+                <div key={s.id} className="flex items-center gap-2 text-xs px-2 py-1.5 rounded" style={{ background: 'rgba(255,255,255,0.03)' }}>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-semibold" style={{ color: 'var(--text-primary)' }}>{s.name}</div>
+                    <code className="font-mono text-[11px]" style={{ color: '#60a5fa' }}>@{s.handle}</code>
+                  </div>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded" style={{
+                    background: s.was_available ? 'rgba(16,185,129,0.15)' : 'rgba(107,114,128,0.15)',
+                    color: s.was_available ? '#10b981' : '#9ca3af',
+                  }}>
+                    {s.was_available ? '✓ avail' : '✗ taken'}
+                  </span>
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    {s.combined_score.toFixed(1)}
+                  </span>
+                  <button onClick={() => copy(`${s.name} · @${s.handle}`, 'name+handle')} title="Copy" className="text-xs" style={{ color: 'var(--text-muted)' }}>📋</button>
+                  <button onClick={() => deleteSaved(s.id)} title="Delete" style={{ color: '#ef4444' }}>✕</button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -310,10 +530,20 @@ export default function ChannelNamingPage() {
         </div>
       )}
 
+      {candidates.length > 0 && (
+        <div className="flex items-center gap-3 mb-3 flex-wrap">
+          <span className="text-xs font-semibold" style={{ color: 'var(--text-muted)' }}>{candidates.length} total candidates · {batchNum} generation{batchNum !== 1 ? 's' : ''} this session</span>
+          <label className="flex items-center gap-1 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+            <input type="checkbox" checked={showAvailableOnly} onChange={e => setShowAvailableOnly(e.target.checked)} />
+            Available only
+          </label>
+        </div>
+      )}
+
       <AnimatePresence>
         {candidates.length > 0 && (
-          <motion.div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch" initial="hidden" animate="visible" variants={{ visible: { transition: { staggerChildren: 0.05 } } }}>
-            {candidates.map((c, i) => (
+          <motion.div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch" initial="hidden" animate="visible" variants={{ visible: { transition: { staggerChildren: 0.03 } } }}>
+            {(showAvailableOnly ? candidates.filter(c => c.available) : candidates).map((c, i) => (
               <motion.div
                 key={c.handle}
                 variants={{ hidden: { opacity: 0, y: 10 }, visible: { opacity: 1, y: 0 } }}
@@ -388,12 +618,25 @@ export default function ChannelNamingPage() {
                   <div className="text-[10px] mt-1 italic" style={{ color: 'var(--text-muted)' }}>ℹ Verify at youtube.com/@{c.handle} before claiming</div>
                 )}
 
-                <div className="flex gap-2 mt-3 pt-3 border-t" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
+                <div className="flex gap-2 mt-3 pt-3 border-t flex-wrap" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
+                  <button
+                    className="btn-secondary text-xs flex-1"
+                    onClick={() => saveCandidate(c)}
+                    disabled={!!c.savedId || savingHandle === c.handle}
+                    style={c.savedId ? { color: '#10b981' } : undefined}
+                  >
+                    {savingHandle === c.handle ? <Spinner size={12} /> : c.savedId ? '✓ Saved' : '⭐ Save'}
+                  </button>
                   <button className="btn-secondary text-xs flex-1" onClick={() => copy(c.name, 'name')}>Copy name</button>
                   <button className="btn-secondary text-xs flex-1" onClick={() => copy(`${c.name} · @${c.handle}`, 'both')}>Copy both</button>
-                  <span className="text-[10px] px-2 py-1 rounded" style={{ color: 'var(--text-muted)' }}>
-                    {i + 1}
+                  <span className="text-[10px] px-2 py-1 rounded" style={{ color: 'var(--text-muted)' }} title="Position in current sort">
+                    #{i + 1}
                   </span>
+                  {c.batch && (
+                    <span className="text-[10px] px-2 py-1 rounded" style={{ background: 'rgba(124,58,237,0.1)', color: '#a78bfa' }} title="Generation batch">
+                      gen {c.batch}
+                    </span>
+                  )}
                 </div>
               </motion.div>
             ))}

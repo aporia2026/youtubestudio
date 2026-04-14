@@ -2,6 +2,38 @@ import { sql } from '@vercel/postgres';
 
 export { sql };
 
+/** Idempotent setup for the saved channel names table. */
+let channelNamesMigrated = false;
+export async function ensureChannelNamesSchema() {
+  if (channelNamesMigrated) return;
+  try {
+    await sql`
+      CREATE TABLE IF NOT EXISTS saved_channel_names (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name TEXT NOT NULL,
+        handle TEXT NOT NULL,
+        niche TEXT,
+        free_text TEXT,
+        seo_score NUMERIC(4,1),
+        brand_score NUMERIC(4,1),
+        memorability_score NUMERIC(4,1),
+        combined_score NUMERIC(4,1),
+        reasoning TEXT,
+        keyword_coverage JSONB DEFAULT '[]',
+        risks TEXT,
+        was_available BOOLEAN,
+        ai_model TEXT,
+        notes TEXT,
+        saved_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_saved_names_saved_at ON saved_channel_names(saved_at DESC)`; } catch {}
+    channelNamesMigrated = true;
+  } catch (err) {
+    console.error('ensureChannelNamesSchema error:', err);
+  }
+}
+
 /** Idempotent setup for competitor tables + rich columns. Cheap to call repeatedly. */
 let competitorMigrated = false;
 export async function ensureCompetitorSchema() {
