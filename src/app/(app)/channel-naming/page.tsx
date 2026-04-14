@@ -9,13 +9,23 @@ import { getFeatureDefaultModelId } from '@/lib/ai-models';
 interface Candidate {
   name: string;
   handle: string;
+  category?: string;
+  naming_technique?: string;
   seo_score: number;
   brand_score: number;
   memorability_score: number;
   pronounceability: string;
-  reasoning: string;
+  search_intent_match?: string;
+  semantic_territory?: string[];
   keyword_coverage: string[];
+  phonetic_pattern?: string;
+  visual_mental_image?: string;
+  reasoning: string;
+  tagline_suggestion?: string;
+  domain_check_note?: string;
+  social_handle_consistency?: string;
   risks: string;
+  rejected_alternatives?: string[];
   available: boolean;
   takenBy?: { id: string; title: string; thumbnail?: string };
   checkError?: string;
@@ -26,6 +36,13 @@ interface Candidate {
   /** Client-only: saved row id if persisted */
   savedId?: string;
 }
+
+const CATEGORY_LABELS: Record<string, { label: string; color: string }> = {
+  'safe-descriptive': { label: 'Safe', color: '#10b981' },
+  'brandable-evocative': { label: 'Brandable', color: '#f59e0b' },
+  'bold-distinctive': { label: 'Bold', color: '#ef4444' },
+  'short-power': { label: 'Short power', color: '#a78bfa' },
+};
 
 interface SavedName {
   id: string;
@@ -175,13 +192,26 @@ export default function ChannelNamingPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed');
-      const newOnes: Candidate[] = (data.candidates || []).map((c: Candidate) => ({ ...c, batch: thisBatch }));
+      // Build a saved-handle index so newly generated candidates immediately
+      // reflect any prior saves (whether from earlier in this session or a
+      // previous one). Without this, fetchSaved->setCandidates fires before
+      // candidates exist and saved status is lost on the next generation.
+      const savedIdByHandle = new Map(saved.map(s => [s.handle, s.id] as const));
+      const newOnes: Candidate[] = (data.candidates || []).map((c: Candidate) => ({
+        ...c,
+        batch: thisBatch,
+        savedId: savedIdByHandle.get(c.handle),
+      }));
 
-      // Merge with existing, dedup by handle, newer entries win, sort: available first then score desc
+      // Merge with existing, dedup by handle, newer entries win, BUT preserve
+      // savedId from prior version (newer payload doesn't include client-only fields).
       setCandidates(prev => {
         const map = new Map<string, Candidate>();
         for (const c of prev) map.set(c.handle, c);
-        for (const c of newOnes) map.set(c.handle, c);
+        for (const c of newOnes) {
+          const old = map.get(c.handle);
+          map.set(c.handle, { ...c, savedId: c.savedId || old?.savedId });
+        }
         const all = Array.from(map.values());
         all.sort((a, b) => {
           if (a.available !== b.available) return a.available ? -1 : 1;
@@ -275,12 +305,16 @@ export default function ChannelNamingPage() {
     if (!confirm('Delete this saved name?')) return;
     try {
       const res = await fetch(`/api/channel-naming/saved/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error();
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.error || `HTTP ${res.status}`);
+      }
       setSaved(prev => prev.filter(s => s.id !== id));
-      // Unmark in candidates if present
       setCandidates(prev => prev.map(c => c.savedId === id ? { ...c, savedId: undefined } : c));
       toast.success('Deleted');
-    } catch { toast.error('Delete failed'); }
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Delete failed');
+    }
   }
 
   // ---- Manual handle / name check ----
@@ -594,21 +628,73 @@ export default function ChannelNamingPage() {
                   </div>
                 </div>
 
+                <div className="flex items-center gap-2 flex-wrap mb-2">
+                  {c.category && CATEGORY_LABELS[c.category] && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold uppercase" style={{
+                      background: `${CATEGORY_LABELS[c.category].color}22`,
+                      color: CATEGORY_LABELS[c.category].color,
+                    }}>{CATEGORY_LABELS[c.category].label}</span>
+                  )}
+                  {c.naming_technique && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>
+                      {c.naming_technique}
+                    </span>
+                  )}
+                </div>
+
                 <div className="grid grid-cols-3 gap-2 text-center mb-3">
                   <Score label="SEO" value={c.seo_score} />
                   <Score label="Brand" value={c.brand_score} />
                   <Score label="Memorable" value={c.memorability_score} />
                 </div>
 
-                <p className="text-xs mb-2 flex-1" style={{ color: 'var(--text-secondary)' }}>{c.reasoning}</p>
+                {c.tagline_suggestion && (
+                  <div className="text-xs italic mb-2" style={{ color: 'var(--text-secondary)' }}>“{c.tagline_suggestion}”</div>
+                )}
 
-                {c.keyword_coverage?.length ? (
-                  <div className="flex flex-wrap gap-1 mb-2">
-                    {c.keyword_coverage.map((k, j) => (
-                      <span key={j} className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(59,130,246,0.1)', color: '#60a5fa' }}>{k}</span>
+                <p className="text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>{c.reasoning}</p>
+
+                {c.visual_mental_image && (
+                  <div className="text-[11px] mb-1" style={{ color: 'var(--text-muted)' }}>
+                    <strong style={{ color: 'var(--text-secondary)' }}>Mental image:</strong> {c.visual_mental_image}
+                  </div>
+                )}
+
+                {c.search_intent_match && (
+                  <div className="text-[11px] mb-1" style={{ color: 'var(--text-muted)' }}>
+                    <strong style={{ color: 'var(--text-secondary)' }}>Search:</strong> {c.search_intent_match}
+                  </div>
+                )}
+
+                {c.phonetic_pattern && (
+                  <div className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>
+                    <strong style={{ color: 'var(--text-secondary)' }}>Sound:</strong> {c.phonetic_pattern}
+                  </div>
+                )}
+
+                {(c.keyword_coverage?.length || c.semantic_territory?.length) ? (
+                  <div className="flex flex-wrap gap-1 mb-2 flex-1">
+                    {c.keyword_coverage?.map((k, j) => (
+                      <span key={`k${j}`} className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(59,130,246,0.12)', color: '#60a5fa' }} title="Keyword present in name">#{k}</span>
+                    ))}
+                    {c.semantic_territory?.map((t, j) => (
+                      <span key={`t${j}`} className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(167,139,250,0.1)', color: '#a78bfa' }} title="Concept evoked">~{t}</span>
                     ))}
                   </div>
-                ) : null}
+                ) : <div className="flex-1" />}
+
+                {(c.domain_check_note || c.social_handle_consistency) && (
+                  <details className="text-[11px] mb-1" style={{ color: 'var(--text-muted)' }}>
+                    <summary className="cursor-pointer" style={{ color: 'var(--text-secondary)' }}>Branding notes</summary>
+                    <div className="mt-1 space-y-1 pl-3">
+                      {c.domain_check_note && <div>🌐 {c.domain_check_note}</div>}
+                      {c.social_handle_consistency && <div>📱 {c.social_handle_consistency}</div>}
+                      {c.rejected_alternatives?.length ? (
+                        <div>↩ Rejected: {c.rejected_alternatives.join(' · ')}</div>
+                      ) : null}
+                    </div>
+                  </details>
+                )}
 
                 {c.risks && c.risks !== 'none' && (
                   <div className="text-[11px] mt-1" style={{ color: '#f59e0b' }}>⚠ {c.risks}</div>

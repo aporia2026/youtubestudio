@@ -11,7 +11,7 @@ export async function ensureChannelNamesSchema() {
       CREATE TABLE IF NOT EXISTS saved_channel_names (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         name TEXT NOT NULL,
-        handle TEXT NOT NULL,
+        handle TEXT NOT NULL UNIQUE,
         niche TEXT,
         free_text TEXT,
         seo_score NUMERIC(4,1),
@@ -27,6 +27,9 @@ export async function ensureChannelNamesSchema() {
         saved_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `;
+    // Add UNIQUE constraint on legacy tables that were created without it
+    try { await sql`ALTER TABLE saved_channel_names ADD CONSTRAINT saved_channel_names_handle_unique UNIQUE (handle)`; }
+    catch { /* already exists */ }
     try { await sql`CREATE INDEX IF NOT EXISTS idx_saved_names_saved_at ON saved_channel_names(saved_at DESC)`; } catch {}
     channelNamesMigrated = true;
   } catch (err) {

@@ -112,12 +112,15 @@ export async function POST(req: NextRequest) {
       ? `${user}\n\n(Note: ${referenceImages.length} reference images provided; the first is attached for visual tone, the rest follow the same aesthetic.)`
       : user;
 
+    // Each candidate now carries ~12 fields including 2-sentence reasoning.
+    // Rough budget: ~200 tokens × N candidates + system overhead.
+    const tokenBudget = Math.min(16000, 1500 + clampedCount * 250);
     const raw = await generateText({
       modelId,
       prompt: augmentedPrompt,
       systemPrompt: system,
-      maxTokens: 6000,
-      temperature: 0.8,
+      maxTokens: tokenBudget,
+      temperature: 0.95, // higher creativity for branding work
       image: firstImage,
     });
 
