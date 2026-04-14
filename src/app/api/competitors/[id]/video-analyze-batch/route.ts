@@ -5,11 +5,10 @@ import { competitorVideoForensicsPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 
-// Vercel: Hobby caps at 60s, Pro at 300s, Enterprise at 800s. We request 800s; the platform
-// will clamp down to whatever the plan allows. Long batches may be truncated on smaller plans —
-// the SSE stream surfaces partial progress and the user can resume by re-clicking (cached
-// videos are skipped).
-export const maxDuration = 800;
+// Vercel: Hobby plan caps at 300s. Long batches may be truncated — the SSE stream
+// surfaces partial progress and the user can resume by re-clicking (cached videos
+// are skipped on retry). Bump this to 800 if you upgrade to Pro/Enterprise.
+export const maxDuration = 300;
 
 /**
  * Batch video forensics — analyzes the top-N videos by views (or by outlier score).
