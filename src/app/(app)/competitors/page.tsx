@@ -593,6 +593,20 @@ export default function CompetitorsPage() {
                   </div>
                 </div>
 
+                {videos.length === 0 && (
+                  <div className="glass rounded-xl p-5 mb-6 flex items-center gap-4 flex-wrap" style={{ borderLeft: '3px solid #f59e0b' }}>
+                    <div className="flex-1 min-w-[280px]">
+                      <div className="text-sm font-semibold" style={{ color: '#f59e0b' }}>📥 Sync this channel first</div>
+                      <div className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+                        No videos pulled yet. Sync to fetch up to 200 recent videos with tags, descriptions, and comments. Then you can run Deep Analysis, Video Forensics, and generate ideas.
+                      </div>
+                    </div>
+                    <button className="btn-primary flex items-center gap-2" onClick={() => syncCompetitor(detailComp.id)} disabled={syncingId === detailComp.id}>
+                      {syncingId === detailComp.id ? <Spinner /> : '↻'} Sync now
+                    </button>
+                  </div>
+                )}
+
                 <div className="flex gap-2 mb-6 flex-wrap">
                   {([
                     ['videos', `Videos (${videos.length})`],

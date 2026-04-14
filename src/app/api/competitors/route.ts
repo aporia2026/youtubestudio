@@ -12,7 +12,14 @@ export async function GET() {
       FROM competitor_channels c
       ORDER BY c.created_at DESC
     `;
-    return NextResponse.json({ competitors: result.rows });
+    // Coerce BIGINT columns to JS numbers
+    const competitors = result.rows.map(c => ({
+      ...c,
+      subscriber_count: Number(c.subscriber_count) || 0,
+      video_count: Number(c.video_count) || 0,
+      view_count: Number(c.view_count) || 0,
+    }));
+    return NextResponse.json({ competitors });
   } catch {
     return NextResponse.json({ competitors: [] });
   }
@@ -54,7 +61,13 @@ export async function POST(req: NextRequest) {
       RETURNING *
     `;
 
-    return NextResponse.json({ competitor: result.rows[0] });
+    const c = result.rows[0];
+    return NextResponse.json({ competitor: {
+      ...c,
+      subscriber_count: Number(c.subscriber_count) || 0,
+      video_count: Number(c.video_count) || 0,
+      view_count: Number(c.view_count) || 0,
+    } });
   } catch (err) {
     console.error('Add competitor error:', err);
     const detail = err instanceof Error ? err.message : 'unknown error';

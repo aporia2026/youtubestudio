@@ -15,7 +15,25 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       LIMIT 200
     `;
 
-    return NextResponse.json({ competitor: channel.rows[0], videos: videos.rows });
+    // Coerce NUMERIC/BIGINT columns to JS numbers — @vercel/postgres returns them as strings
+    const normalizedVideos = videos.rows.map(v => ({
+      ...v,
+      view_count: Number(v.view_count) || 0,
+      like_count: Number(v.like_count) || 0,
+      comment_count: Number(v.comment_count) || 0,
+      duration_seconds: Number(v.duration_seconds) || 0,
+      outlier_score: Number(v.outlier_score) || 0,
+      engagement_rate: Number(v.engagement_rate) || 0,
+    }));
+    const ch = channel.rows[0];
+    const normalizedChannel = {
+      ...ch,
+      subscriber_count: Number(ch.subscriber_count) || 0,
+      video_count: Number(ch.video_count) || 0,
+      view_count: Number(ch.view_count) || 0,
+    };
+
+    return NextResponse.json({ competitor: normalizedChannel, videos: normalizedVideos });
   } catch {
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
