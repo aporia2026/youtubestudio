@@ -30,6 +30,7 @@ export default function SettingsPage() {
     'idea-generator': AI_MODELS[0].id,
     'competitor-analysis': AI_MODELS[0].id,
     'channel-naming': AI_MODELS[0].id,
+    'seo-optimizer': AI_MODELS[0].id,
   });
   const [keyStatus, setKeyStatus] = useState<KeyStatus>({});
   const [keyStatusLoading, setKeyStatusLoading] = useState(true);

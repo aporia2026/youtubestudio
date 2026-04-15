@@ -58,7 +58,7 @@ interface SeoResult {
 }
 
 export default function SeoPage() {
-  const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('script-generator'));
+  const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('seo-optimizer'));
   const [topic, setTopic] = useState('');
   const [niche, setNiche] = useState('');
   const [niches, setNiches] = useState<{ id: string; name: string }[]>([]);
