@@ -35,6 +35,9 @@ export default function SettingsPage() {
   const [keyStatusLoading, setKeyStatusLoading] = useState(true);
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
   const [dbInitializing, setDbInitializing] = useState(false);
+  const [perplexityKeyInput, setPerplexityKeyInput] = useState('');
+  const [perplexityKeySaving, setPerplexityKeySaving] = useState(false);
+  const [perplexityKeyClearing, setPerplexityKeyClearing] = useState(false);
 
   async function loadKeyStatus() {
     setKeyStatusLoading(true);
@@ -118,6 +121,33 @@ export default function SettingsPage() {
     setFeatureModels(updated);
     localStorage.setItem('feature_model_defaults', JSON.stringify(updated));
     toast.success('Default model updated');
+  }
+
+  async function savePerplexityKey() {
+    if (!perplexityKeyInput.trim()) return;
+    setPerplexityKeySaving(true);
+    try {
+      const res = await fetch('/api/settings/perplexity-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: perplexityKeyInput.trim() }),
+      });
+      if (!res.ok) throw new Error();
+      setPerplexityKeyInput('');
+      await loadKeyStatus();
+      toast.success('Perplexity API key saved');
+    } catch { toast.error('Failed to save key'); }
+    finally { setPerplexityKeySaving(false); }
+  }
+
+  async function clearPerplexityKey() {
+    setPerplexityKeyClearing(true);
+    try {
+      await fetch('/api/settings/perplexity-key', { method: 'DELETE' });
+      await loadKeyStatus();
+      toast.success('Perplexity API key cleared');
+    } catch { toast.error('Failed to clear key'); }
+    finally { setPerplexityKeyClearing(false); }
   }
 
   const SECTIONS = [
@@ -304,6 +334,66 @@ export default function SettingsPage() {
               <div className="glass rounded-xl p-5">
                 <h2 className="text-sm font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>Other Services</h2>
                 <div className="space-y-2">
+                  {/* Perplexity */}
+                  {(() => {
+                    const configured = keyStatus['perplexity'];
+                    const test = testResults['perplexity'];
+                    return (
+                      <div className="rounded-lg overflow-hidden"
+                        style={{ border: `1px solid ${configured ? 'rgba(16,185,129,0.3)' : 'var(--border)'}` }}>
+                        <div className="flex items-center gap-3 p-3"
+                          style={{ background: 'var(--bg-secondary)' }}>
+                          <div className="w-2.5 h-2.5 rounded-full shrink-0"
+                            style={{ background: keyStatusLoading ? 'var(--text-muted)' : configured ? '#10b981' : '#6b7280' }} />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Perplexity (Web Search AI)</p>
+                            <p className="text-xs" style={{ color: test?.status === 'success' ? '#10b981' : test?.status === 'error' ? '#ef4444' : 'var(--text-muted)' }}>
+                              {test?.status === 'success' ? test.message || 'Connected' : test?.status === 'error' ? test.message : configured ? 'Key configured — stored in browser session' : 'Enter your key below to enable Sonar models'}
+                            </p>
+                          </div>
+                          {configured && (
+                            <button
+                              onClick={() => testConnection('perplexity')}
+                              disabled={test?.status === 'testing'}
+                              className="btn-secondary text-xs px-3 py-1.5 shrink-0"
+                            >
+                              {test?.status === 'testing' ? <div className="spinner" style={{ width: 12, height: 12 }} /> : test?.status === 'success' ? '✓ Connected' : test?.status === 'error' ? '✗ Retry' : 'Test'}
+                            </button>
+                          )}
+                        </div>
+                        <div className="px-3 pb-3 pt-2" style={{ background: 'var(--bg-secondary)', borderTop: '1px solid var(--border)' }}>
+                          <div className="flex gap-2">
+                            <input
+                              type="password"
+                              value={perplexityKeyInput}
+                              onChange={e => setPerplexityKeyInput(e.target.value)}
+                              onKeyDown={e => e.key === 'Enter' && savePerplexityKey()}
+                              placeholder="pplx-..."
+                              className="input-field flex-1 text-sm"
+                              style={{ padding: '0.4rem 0.75rem' }}
+                            />
+                            <button
+                              onClick={savePerplexityKey}
+                              disabled={!perplexityKeyInput.trim() || perplexityKeySaving}
+                              className="btn-primary text-xs px-3 shrink-0"
+                            >
+                              {perplexityKeySaving ? '...' : 'Save'}
+                            </button>
+                            {configured && (
+                              <button
+                                onClick={clearPerplexityKey}
+                                disabled={perplexityKeyClearing}
+                                className="btn-secondary text-xs px-3 shrink-0"
+                                style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.3)' }}
+                              >
+                                {perplexityKeyClearing ? '...' : 'Clear'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {/* ElevenLabs */}
                   <div className="flex items-center gap-3 p-3 rounded-lg"
                     style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>

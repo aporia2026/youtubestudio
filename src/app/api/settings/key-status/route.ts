@@ -1,11 +1,15 @@
 import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
 
 export async function GET() {
+  const store = await cookies();
+  const perplexityCookie = store.get('perplexity_api_key')?.value;
   return NextResponse.json({
     anthropic: !!process.env.ANTHROPIC_API_KEY,
     openai: !!process.env.OPENAI_API_KEY,
     google: !!process.env.GOOGLE_AI_API_KEY,
     kie: !!process.env.KIE_API_KEY,
+    perplexity: !!(process.env.PERPLEXITY_API_KEY || perplexityCookie),
     youtube: !!process.env.YOUTUBE_API_KEY,
     postgres: !!process.env.POSTGRES_URL,
     blob: !!process.env.BLOB_READ_WRITE_TOKEN,

@@ -1,4 +1,4 @@
-// Server-only AI provider abstraction — supports Anthropic, OpenAI, Google, Kie.ai
+// Server-only AI provider abstraction — supports Anthropic, OpenAI, Google, Kie.ai, Perplexity
 // Do NOT import this file from client components — import from ai-models.ts instead.
 
 export type { AIProvider, AIModel } from './ai-models';
@@ -6,6 +6,17 @@ export { AI_MODELS, getDefaultModel, getModelById } from './ai-models';
 
 import { getModelById } from './ai-models';
 import { KIE_MODEL_MAP } from './ai-models';
+import { cookies } from 'next/headers';
+
+async function getPerplexityKey(): Promise<string> {
+  if (process.env.PERPLEXITY_API_KEY) return process.env.PERPLEXITY_API_KEY;
+  try {
+    const store = await cookies();
+    const key = store.get('perplexity_api_key')?.value;
+    if (key) return key;
+  } catch { /* not in a request context */ }
+  throw new Error('Perplexity API key is not configured. Add it in Settings → API Keys.');
+}
 
 const KIE_BASE = 'https://api.kie.ai';
 
@@ -228,7 +239,7 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
   }
 
   if (model.provider === 'perplexity') {
-    if (!process.env.PERPLEXITY_API_KEY) throw new Error('PERPLEXITY_API_KEY environment variable is not configured');
+    const perplexityKey = await getPerplexityKey();
     const messages: { role: string; content: string }[] = [];
     if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
     messages.push({ role: 'user', content: prompt });
@@ -237,7 +248,7 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
     const effectiveTemp = isReasoning ? Math.min(0.1, temperature) : temperature;
     const res = await fetch('https://api.perplexity.ai/chat/completions', {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${process.env.PERPLEXITY_API_KEY}`, 'Content-Type': 'application/json' },
+      headers: { 'Authorization': `Bearer ${perplexityKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: model.id, messages, max_tokens: maxTokens, temperature: effectiveTemp }),
     });
     if (!res.ok) throw new Error(`Perplexity error ${res.status}: ${await res.text()}`);
@@ -404,13 +415,13 @@ export async function* generateTextStream(opts: GenerateOptions): AsyncGenerator
   }
 
   if (model.provider === 'perplexity') {
-    if (!process.env.PERPLEXITY_API_KEY) throw new Error('PERPLEXITY_API_KEY environment variable is not configured');
+    const perplexityKey = await getPerplexityKey();
     const messages: { role: string; content: string }[] = [];
     if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
     messages.push({ role: 'user', content: prompt });
     const res = await fetch('https://api.perplexity.ai/chat/completions', {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${process.env.PERPLEXITY_API_KEY}`, 'Content-Type': 'application/json' },
+      headers: { 'Authorization': `Bearer ${perplexityKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: model.id,
         messages,

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
 
 export async function POST(req: NextRequest) {
   const { provider } = await req.json();
@@ -68,6 +69,22 @@ export async function POST(req: NextRequest) {
       const { list } = await import('@vercel/blob');
       await list({ limit: 1 });
       return NextResponse.json({ ok: true });
+    }
+
+    if (provider === 'perplexity') {
+      const perplexityKey = process.env.PERPLEXITY_API_KEY || (await cookies()).get('perplexity_api_key')?.value;
+      if (!perplexityKey) return NextResponse.json({ ok: false, error: 'Perplexity API key not configured' });
+      const res = await fetch('https://api.perplexity.ai/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${perplexityKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'sonar',
+          max_tokens: 10,
+          messages: [{ role: 'user', content: 'Say "ok"' }],
+        }),
+      });
+      if (!res.ok) return NextResponse.json({ ok: false, error: `Perplexity returned ${res.status}` });
+      return NextResponse.json({ ok: true, model: 'sonar' });
     }
 
     return NextResponse.json({ ok: false, error: `Unknown provider: ${provider}` }, { status: 400 });
