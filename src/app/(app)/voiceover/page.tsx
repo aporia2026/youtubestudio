@@ -9,7 +9,7 @@ import { ELEVENLABS_MODELS } from '@/lib/elevenlabs';
 import { cleanScriptForVoiceover } from '@/lib/voiceover-presets';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
-import { getVoiceoverHistory, deleteVoiceoverEntry, type VoiceoverHistoryEntry } from '@/lib/history';
+import { getVoiceoverHistory, deleteVoiceoverEntry, saveVoiceover, type VoiceoverHistoryEntry } from '@/lib/history';
 
 interface ElevenVoice {
   voice_id: string;
@@ -135,6 +135,18 @@ function VoiceoverStudio() {
       }
       const data = await res.json();
       setAudioUrl(data.url);
+      // Save to history so Video Studio can pick up the latest URL
+      const entry = saveVoiceover({
+        voiceName: voices.find(v => v.voice_id === selectedVoice)?.name || selectedVoice,
+        voiceId: selectedVoice,
+        modelId: settings.model_id,
+        textPreview: text.slice(0, 2000),
+        charCount: text.length,
+        audioUrl: data.url,
+        tone: '',
+        style: '',
+      });
+      setVoHistoryItems(prev => [entry, ...prev]);
       toast.success('Voiceover generated!');
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Failed to generate voiceover');

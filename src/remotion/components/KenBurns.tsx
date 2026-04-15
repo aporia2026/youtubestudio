@@ -8,6 +8,8 @@ interface KenBurnsProps {
   direction?: VideoShot['kenBurnsDirection'];
   /** Extra zoom scale added on top of Ken Burns (1 = none) */
   baseScale?: number;
+  /** Called when the image fails to load */
+  onError?: () => void;
 }
 
 /**
@@ -19,6 +21,7 @@ export const KenBurns: React.FC<KenBurnsProps> = ({
   durationInFrames,
   direction = 'zoom-in',
   baseScale = 1,
+  onError,
 }) => {
   const frame = useCurrentFrame();
   const { width, height } = useVideoConfig();
@@ -74,6 +77,7 @@ export const KenBurns: React.FC<KenBurnsProps> = ({
     <AbsoluteFill style={{ overflow: 'hidden' }}>
       <Img
         src={imageUrl}
+        onError={onError}
         style={{
           width: '100%',
           height: '100%',

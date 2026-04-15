@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate } from 'remotion';
 import { KenBurns } from '../components/KenBurns';
 import { LowerThird } from '../components/LowerThird';
@@ -30,20 +30,25 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
+  const [imgError, setImgError] = useState(false);
 
   const direction = shot.kenBurnsDirection ?? KB_DIRECTIONS[shotIndex % KB_DIRECTIONS.length];
 
-  if (!shot.imageUrl) {
+  // No image, or image failed to load, or blob URL (expired after page reload)
+  const useImage = shot.imageUrl && !imgError && !shot.imageUrl.startsWith('blob:');
+
+  if (!useImage) {
     return <FallbackBRoll shot={shot} durationInFrames={durationInFrames} brand={brand} />;
   }
 
   return (
-    <AbsoluteFill style={{ background: '#000' }}>
+    <AbsoluteFill style={{ background: brand.backgroundColor }}>
       {/* Ken Burns image */}
       <KenBurns
         imageUrl={shot.imageUrl}
         durationInFrames={durationInFrames}
         direction={direction}
+        onError={() => setImgError(true)}
       />
 
       {/* Subtle dark gradient at bottom for text readability */}
