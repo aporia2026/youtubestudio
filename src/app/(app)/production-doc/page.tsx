@@ -1,11 +1,20 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { saveProductionDocEntry, getRecentNiches, getRecentTopics } from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
+import { productionDocToVideoConfig } from '@/remotion/utils';
+import type { BrandKit } from '@/remotion/types';
+
+// Dynamically import VideoPlayer — Remotion uses browser-only APIs (WebGL, Canvas)
+const VideoPlayer = dynamic(
+  () => import('@/components/video/VideoPlayer').then(m => m.VideoPlayer),
+  { ssr: false, loading: () => <VideoPlayerSkeleton /> },
+);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -199,6 +208,122 @@ function exportToCsv(doc: ProductionDoc, rowImages: RowImageState[]) {
   toast.success('CSV exported — open in Excel or Google Sheets');
 }
 
+// ─── Video Preview helpers ────────────────────────────────────────────────────
+
+const DEFAULT_BRAND: Partial<BrandKit> = {
+  primaryColor: '#FF0000',
+  secondaryColor: '#111111',
+  backgroundColor: '#FFFFFF',
+  textColor: '#111111',
+  titleColor: '#111111',
+};
+
+function VideoPlayerSkeleton() {
+  return (
+    <div
+      style={{
+        width: '100%',
+        aspectRatio: '16/9',
+        background: 'rgba(255,255,255,0.04)',
+        borderRadius: 12,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: 'var(--text-muted)',
+        fontSize: 14,
+      }}
+    >
+      <div className="spinner" style={{ width: 20, height: 20 }} />
+      <span className="ml-3">Loading video engine…</span>
+    </div>
+  );
+}
+
+function VideoPreviewBrandBar({ onBrandChange }: { onBrandChange: (b: Partial<BrandKit>) => void }) {
+  // Safe defaults — no localStorage in initial state to avoid SSR hydration mismatch
+  const [primary, setPrimary] = useState('#FF0000');
+  const [bg, setBg] = useState('#FFFFFF');
+
+  // Load persisted brand on client only (after hydration)
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('video_brand_kit') || '{}') as Partial<BrandKit>;
+      if (stored.primaryColor) setPrimary(stored.primaryColor);
+      if (stored.backgroundColor) setBg(stored.backgroundColor);
+    } catch { /* ignore corrupt storage */ }
+  }, []);
+
+  function update(p: string, b: string) {
+    setPrimary(p);
+    setBg(b);
+    const brand: Partial<BrandKit> = {
+      primaryColor: p,
+      backgroundColor: b,
+      titleColor: b === '#FFFFFF' ? '#111111' : '#FFFFFF',
+      textColor: b === '#FFFFFF' ? '#222222' : '#EEEEEE',
+    };
+    onBrandChange(brand);
+    try { localStorage.setItem('video_brand_kit', JSON.stringify(brand)); } catch { /* ignore */ }
+  }
+
+  return (
+    <div className="flex items-center gap-4 flex-wrap">
+      <span className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>Brand</span>
+      <label className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
+        Accent color
+        <input type="color" value={primary} onChange={e => update(e.target.value, bg)}
+          style={{ width: 28, height: 24, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'none', padding: 0 }} />
+      </label>
+      <label className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
+        Background
+        <input type="color" value={bg} onChange={e => update(primary, e.target.value)}
+          style={{ width: 28, height: 24, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'none', padding: 0 }} />
+      </label>
+      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        (changes apply on play)
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Memoized VideoPlayer wrapper — rebuilds config only when inputs change,
+ * preventing the Player from re-mounting on every parent state update.
+ */
+const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
+  doc,
+  rowImages,
+  voiceoverUrl,
+  brandKit,
+  onRender,
+  isRendering,
+  renderProgress,
+  outputUrl,
+}: {
+  doc: ProductionDoc;
+  rowImages: RowImageState[];
+  voiceoverUrl: string;
+  brandKit: Partial<BrandKit>;
+  onRender: () => void;
+  isRendering: boolean;
+  renderProgress: number;
+  outputUrl?: string;
+}) {
+  const config = React.useMemo(
+    () => productionDocToVideoConfig(doc, rowImages, voiceoverUrl || undefined, undefined, brandKit),
+    [doc, rowImages, voiceoverUrl, brandKit],
+  );
+  return (
+    <VideoPlayer
+      config={config}
+      onRender={onRender}
+      isRendering={isRendering}
+      renderProgress={renderProgress}
+      outputUrl={outputUrl}
+    />
+  );
+});
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function CopyButton({ text }: { text: string }) {
@@ -372,6 +497,31 @@ export default function ProductionDocPage() {
   // — Google Sheets export
   const [sheetsExporting, setSheetsExporting] = useState(false);
   const [sheetsUrl, setSheetsUrl] = useState<string | null>(null);
+
+  // — Video preview & render
+  const [showVideoPreview, setShowVideoPreview] = useState(false);
+  const [voiceoverUrl, setVoiceoverUrl] = useState('');
+  // Brand kit loaded client-side only to avoid SSR hydration mismatch
+  const [brandKit, setBrandKit] = useState<Partial<BrandKit>>(DEFAULT_BRAND);
+  const [renderId, setRenderId] = useState<string | null>(null);
+  const [renderProgress, setRenderProgress] = useState(0);
+  const [renderStatus, setRenderStatus] = useState<'idle' | 'rendering' | 'done' | 'error'>('idle');
+  const [renderOutputUrl, setRenderOutputUrl] = useState<string | null>(null);
+  const renderPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Load brand kit + voiceover URL from localStorage on client only
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('video_brand_kit') || '{}') as Partial<BrandKit>;
+      if (stored.primaryColor) setBrandKit(b => ({ ...b, ...stored }));
+    } catch { /* ignore */ }
+    try {
+      const history = JSON.parse(localStorage.getItem('voiceover_history') || '[]') as Array<{ audioUrl?: string }>;
+      if (Array.isArray(history) && history.length > 0 && history[0]?.audioUrl) {
+        setVoiceoverUrl(history[0].audioUrl);
+      }
+    } catch { /* ignore */ }
+  }, []);
 
   // Load prefill from generator / QA pages
   useEffect(() => {
@@ -850,6 +1000,59 @@ export default function ProductionDocPage() {
   const effectiveWpm = actualDurationSecs > 0 && wordCount > 0
     ? Math.round(wordCount / (actualDurationSecs / 60))
     : speakingPace;
+
+  // ── Video render ─────────────────────────────────────────────────────────────
+
+  async function startVideoRender() {
+    if (!doc) return;
+    const config = productionDocToVideoConfig(doc, rowImages, voiceoverUrl || undefined);
+    setRenderStatus('rendering');
+    setRenderProgress(0);
+    setRenderOutputUrl(null);
+
+    try {
+      const res = await fetch('/api/render/video', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config }),
+      });
+      const data = await res.json() as { renderId?: string; error?: string };
+      if (!res.ok || !data.renderId) throw new Error(data.error || 'Failed to start render');
+
+      setRenderId(data.renderId);
+
+      // Poll for progress
+      renderPollRef.current = setInterval(async () => {
+        try {
+          const statusRes = await fetch(`/api/render/video?renderId=${data.renderId}`);
+          const statusData = await statusRes.json() as {
+            status: string; progress: number; outputUrl?: string; error?: string;
+          };
+
+          setRenderProgress(statusData.progress ?? 0);
+
+          if (statusData.status === 'done') {
+            if (renderPollRef.current) clearInterval(renderPollRef.current);
+            setRenderStatus('done');
+            setRenderOutputUrl(statusData.outputUrl || null);
+            toast.success('Video rendered! Ready to download.');
+          } else if (statusData.status === 'error') {
+            if (renderPollRef.current) clearInterval(renderPollRef.current);
+            setRenderStatus('error');
+            toast.error(`Render failed: ${statusData.error || 'Unknown error'}`);
+          }
+        } catch { /* polling error — keep trying */ }
+      }, 2000);
+    } catch (err) {
+      setRenderStatus('error');
+      toast.error(err instanceof Error ? err.message : 'Render failed');
+    }
+  }
+
+  // Cleanup render polling on unmount
+  useEffect(() => {
+    return () => { if (renderPollRef.current) clearInterval(renderPollRef.current); };
+  }, []);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -1442,6 +1645,95 @@ export default function ProductionDocPage() {
                 );
               })}
             </div>
+          </div>
+
+          {/* ── Video Preview & Render ─────────────────────────────────────── */}
+          <div className="mt-6 glass rounded-xl overflow-hidden">
+            {/* Header — toggle */}
+            <button
+              className="w-full flex items-center justify-between px-5 py-4"
+              onClick={() => setShowVideoPreview(v => !v)}
+            >
+              <div className="flex items-center gap-3">
+                {/* Film icon */}
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'rgba(239,68,68,0.15)' }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2">
+                    <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18" />
+                    <line x1="7" y1="2" x2="7" y2="22" /><line x1="17" y1="2" x2="17" y2="22" />
+                    <line x1="2" y1="12" x2="22" y2="12" /><line x1="2" y1="7" x2="7" y2="7" />
+                    <line x1="2" y1="17" x2="7" y2="17" /><line x1="17" y1="17" x2="22" y2="17" />
+                    <line x1="17" y1="7" x2="22" y2="7" />
+                  </svg>
+                </div>
+                <div className="text-left">
+                  <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                    Video Preview & Render
+                  </span>
+                  <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                    Assemble your shots into a real animated video powered by Remotion
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {/* Shot/image count badges */}
+                <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171' }}>
+                  {doc.rows.length} shots
+                </span>
+                {rowImages.filter(r => r?.status === 'done').length > 0 && (
+                  <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'rgba(16,185,129,0.1)', color: '#34d399' }}>
+                    {rowImages.filter(r => r?.status === 'done').length} images ready
+                  </span>
+                )}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                  style={{ transform: showVideoPreview ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s', color: 'var(--text-muted)' }}>
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </div>
+            </button>
+
+            {showVideoPreview && (
+              <div className="px-5 pb-5 space-y-4" style={{ borderTop: '1px solid var(--border)' }}>
+                {/* Voiceover URL input */}
+                <div className="pt-4">
+                  <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                    Voiceover URL
+                    <span className="ml-2 font-normal" style={{ color: 'var(--text-muted)' }}>
+                      (optional — auto-filled from your latest Voiceover Studio generation)
+                    </span>
+                  </label>
+                  <input
+                    type="url"
+                    value={voiceoverUrl}
+                    onChange={e => setVoiceoverUrl(e.target.value)}
+                    placeholder="https://...vercel-storage.com/voiceover/..."
+                    className="input-field text-xs"
+                  />
+                </div>
+
+                {/* Brand kit quick-config */}
+                <VideoPreviewBrandBar
+                  onBrandChange={(brand) => setBrandKit(b => ({ ...b, ...brand }))}
+                />
+
+                {/* The actual player */}
+                <VideoPlayerMemo
+                  doc={doc}
+                  rowImages={rowImages}
+                  voiceoverUrl={voiceoverUrl}
+                  brandKit={brandKit}
+                  onRender={startVideoRender}
+                  isRendering={renderStatus === 'rendering'}
+                  renderProgress={renderProgress}
+                  outputUrl={renderOutputUrl || undefined}
+                />
+
+                {renderStatus === 'error' && (
+                  <p className="text-xs" style={{ color: '#f87171' }}>
+                    Render failed. Check server logs. Make sure BLOB_READ_WRITE_TOKEN is configured.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Bottom export */}
