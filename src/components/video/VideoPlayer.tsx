@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useState, useCallback } from 'react';
+import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { Player, PlayerRef } from '@remotion/player';
 import { YouTubeVideo } from '@/remotion/compositions/YouTubeVideo';
 import { VideoConfig } from '@/remotion/types';
@@ -13,6 +13,12 @@ interface VideoPlayerProps {
   isRendering?: boolean;
   renderProgress?: number; // 0–1
   outputUrl?: string;
+  /** Start playback at this frame (skip fade-in transitions at frame 0) */
+  initialFrame?: number;
+  /** When set to a frame number, seeks the player to that frame */
+  seekTargetFrame?: number | null;
+  /** Called after seekTargetFrame is consumed so parent can reset it */
+  onSeekConsumed?: () => void;
 }
 
 /**
@@ -26,9 +32,20 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   isRendering = false,
   renderProgress = 0,
   outputUrl,
+  initialFrame = 8,
+  seekTargetFrame,
+  onSeekConsumed,
 }) => {
   const playerRef = useRef<PlayerRef>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+
+  // Seek when parent requests it
+  useEffect(() => {
+    if (seekTargetFrame != null && playerRef.current) {
+      playerRef.current.seekTo(seekTargetFrame);
+      onSeekConsumed?.();
+    }
+  }, [seekTargetFrame, onSeekConsumed]);
 
   const frames = totalFrames(config);
 
@@ -83,7 +100,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           compositionWidth={config.width}
           compositionHeight={config.height}
           inputProps={{ config }}
-          style={{ width: '100%', aspectRatio: '16/9' }}
+          style={{ width: '100%' }}
           controls
           showVolumeControls
           clickToPlay
@@ -91,6 +108,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           spaceKeyToPlayOrPause
           loop={false}
           acknowledgeRemotionLicense
+          initialFrame={Math.min(initialFrame, frames - 1)}
         />
       </div>
 
