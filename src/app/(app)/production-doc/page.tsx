@@ -322,7 +322,13 @@ export default function ProductionDocPage() {
   const [generationLog, setGenerationLog] = useState<string[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
-  const [doc, setDoc] = useState<ProductionDoc | null>(null);
+  const [doc, setDoc] = useState<ProductionDoc | null>(() => {
+    try {
+      const saved = localStorage.getItem('prodoc_last_result');
+      if (saved) return JSON.parse(saved).doc ?? null;
+    } catch {}
+    return null;
+  });
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -332,13 +338,37 @@ export default function ProductionDocPage() {
     return () => { mountedRef.current = false; };
   }, []);
 
+  // Persist doc + images to localStorage so a page refresh doesn't lose the result
+  useEffect(() => {
+    if (!doc) return;
+    try {
+      localStorage.setItem('prodoc_last_result', JSON.stringify({ doc, savedAt: Date.now() }));
+    } catch { /* storage full — ignore */ }
+  }, [doc]);
+
+  useEffect(() => {
+    if (rowImages.length === 0) return;
+    try {
+      const saved = localStorage.getItem('prodoc_last_result');
+      if (!saved) return;
+      const parsed = JSON.parse(saved);
+      localStorage.setItem('prodoc_last_result', JSON.stringify({ ...parsed, rowImages }));
+    } catch { /* storage full — ignore */ }
+  }, [rowImages]);
+
   // Auto-scroll log to bottom when new entries are added
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [generationLog.length]);
 
   // — Image generation
-  const [rowImages, setRowImages] = useState<RowImageState[]>([]);
+  const [rowImages, setRowImages] = useState<RowImageState[]>(() => {
+    try {
+      const saved = localStorage.getItem('prodoc_last_result');
+      if (saved) return JSON.parse(saved).rowImages ?? [];
+    } catch {}
+    return [];
+  });
   const [imageProgress, setImageProgress] = useState({ done: 0, total: 0 });
   const [imagesGenerating, setImagesGenerating] = useState(false);
 
@@ -592,6 +622,7 @@ export default function ProductionDocPage() {
     setGenerating(true);
     setDoc(null);
     setRowImages([]);
+    try { localStorage.removeItem('prodoc_last_result'); } catch {};
     setImageProgress({ done: 0, total: 0 });
     setImagesGenerating(false);
     setGenerationLog([]);
