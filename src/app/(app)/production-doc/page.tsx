@@ -322,54 +322,52 @@ export default function ProductionDocPage() {
   const [generationLog, setGenerationLog] = useState<string[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
-  const [doc, setDoc] = useState<ProductionDoc | null>(() => {
-    try {
-      const saved = localStorage.getItem('prodoc_last_result');
-      if (saved) return JSON.parse(saved).doc ?? null;
-    } catch {}
-    return null;
-  });
+  const [doc, setDoc] = useState<ProductionDoc | null>(null);
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  // — Image generation (declared before effects that reference it)
+  const [rowImages, setRowImages] = useState<RowImageState[]>([]);
+  const [imageProgress, setImageProgress] = useState({ done: 0, total: 0 });
 
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
   }, []);
 
-  // Persist doc + images to localStorage so a page refresh doesn't lose the result
+  // Restore last result from localStorage after mount (useEffect so SSR is unaffected)
   useEffect(() => {
-    if (!doc) return;
-    try {
-      localStorage.setItem('prodoc_last_result', JSON.stringify({ doc, savedAt: Date.now() }));
-    } catch { /* storage full — ignore */ }
-  }, [doc]);
-
-  useEffect(() => {
-    if (rowImages.length === 0) return;
     try {
       const saved = localStorage.getItem('prodoc_last_result');
       if (!saved) return;
-      const parsed = JSON.parse(saved);
-      localStorage.setItem('prodoc_last_result', JSON.stringify({ ...parsed, rowImages }));
+      const parsed = JSON.parse(saved) as { doc?: ProductionDoc; rowImages?: RowImageState[] };
+      if (parsed.doc) setDoc(parsed.doc);
+      if (parsed.rowImages?.length) setRowImages(parsed.rowImages);
+    } catch { /* corrupt storage — ignore */ }
+  }, []);
+
+  // Persist doc + images to localStorage whenever they change
+  useEffect(() => {
+    if (!doc) return;
+    try {
+      localStorage.setItem('prodoc_last_result', JSON.stringify({ doc, rowImages, savedAt: Date.now() }));
     } catch { /* storage full — ignore */ }
-  }, [rowImages]);
+  // rowImages intentionally excluded: saved separately below to avoid stale closure
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc]);
+
+  useEffect(() => {
+    if (!doc || rowImages.length === 0) return;
+    try {
+      localStorage.setItem('prodoc_last_result', JSON.stringify({ doc, rowImages, savedAt: Date.now() }));
+    } catch { /* storage full — ignore */ }
+  }, [doc, rowImages]);
 
   // Auto-scroll log to bottom when new entries are added
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [generationLog.length]);
-
-  // — Image generation
-  const [rowImages, setRowImages] = useState<RowImageState[]>(() => {
-    try {
-      const saved = localStorage.getItem('prodoc_last_result');
-      if (saved) return JSON.parse(saved).rowImages ?? [];
-    } catch {}
-    return [];
-  });
-  const [imageProgress, setImageProgress] = useState({ done: 0, total: 0 });
   const [imagesGenerating, setImagesGenerating] = useState(false);
 
   // — Autocomplete hints
