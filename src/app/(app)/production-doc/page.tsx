@@ -311,6 +311,7 @@ export default function ProductionDocPage() {
     } catch { /* ignore storage errors */ }
   }
   const [speakingPace, setSpeakingPace] = useState(135);
+  const [actualDuration, setActualDuration] = useState(''); // "mm:ss" of actual voiceover recording
   const [stylePreset, setStylePreset] = useState('cinematic');
   const [creativeBrief, setCreativeBrief] = useState('');
   const [ytRefInput, setYtRefInput] = useState('');
@@ -695,7 +696,7 @@ export default function ProductionDocPage() {
           body: JSON.stringify({
             modelId, niche, topic,
             script: chunks[ci],
-            speakingPaceWpm: speakingPace,
+            speakingPaceWpm: effectiveWpm,
             stylePreset,
             creativeBrief: fullBrief || undefined,
             startTimecodeSeconds: timecodeOffsetSeconds,
@@ -716,7 +717,7 @@ export default function ProductionDocPage() {
 
         // Advance timecode offset by the actual words spoken (not just chunk length)
         const chunkWords = chunks[ci].trim().split(/\s+/).length;
-        timecodeOffsetSeconds += Math.round((chunkWords / speakingPace) * 60);
+        timecodeOffsetSeconds += Math.round((chunkWords / effectiveWpm) * 60);
       }
 
       // Merge chunk results into a single ProductionDoc
@@ -836,6 +837,19 @@ export default function ProductionDocPage() {
   const estDuration = wordCount > 0
     ? `~${Math.floor(wordCount / speakingPace)}:${String(Math.round(((wordCount / speakingPace) % 1) * 60)).padStart(2, '0')}`
     : null;
+  // Parse "mm:ss" actual voiceover duration → derive real WPM for timecode accuracy
+  const actualDurationSecs = (() => {
+    const parts = actualDuration.trim().split(':');
+    if (parts.length === 2) {
+      const m = parseInt(parts[0], 10);
+      const s = parseInt(parts[1], 10);
+      if (!isNaN(m) && !isNaN(s) && s < 60) return m * 60 + s;
+    }
+    return 0;
+  })();
+  const effectiveWpm = actualDurationSecs > 0 && wordCount > 0
+    ? Math.round(wordCount / (actualDurationSecs / 60))
+    : speakingPace;
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -878,23 +892,49 @@ export default function ProductionDocPage() {
           <div>
             <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
               Speaking Pace (wpm)
-              {estDuration && (
+              {actualDurationSecs > 0 && wordCount > 0 ? (
+                <span className="ml-2 font-normal" style={{ color: '#34d399' }}>
+                  → {actualDuration} actual · {Math.round(wordCount / (actualDurationSecs / 60))} wpm computed
+                </span>
+              ) : estDuration && (
                 <span className="ml-2 font-normal" style={{ color: 'var(--text-muted)' }}>
                   → est. {estDuration} video
                 </span>
               )}
             </label>
-            <select
-              value={speakingPace}
-              onChange={e => setSpeakingPace(Number(e.target.value))}
-              className="input-field"
-            >
-              <option value={110}>Slow — 110 wpm</option>
-              <option value={125}>Moderate — 125 wpm</option>
-              <option value={135}>Standard — 135 wpm</option>
-              <option value={150}>Fast — 150 wpm</option>
-              <option value={165}>Very Fast — 165 wpm</option>
-            </select>
+            <div className="flex gap-2">
+              <select
+                value={speakingPace}
+                onChange={e => setSpeakingPace(Number(e.target.value))}
+                className="input-field flex-1"
+                disabled={actualDurationSecs > 0}
+                style={{ opacity: actualDurationSecs > 0 ? 0.4 : 1 }}
+              >
+                <option value={110}>Slow — 110 wpm</option>
+                <option value={125}>Moderate — 125 wpm</option>
+                <option value={135}>Standard — 135 wpm</option>
+                <option value={150}>Fast — 150 wpm</option>
+                <option value={165}>Very Fast — 165 wpm</option>
+              </select>
+              <div style={{ position: 'relative', flexShrink: 0 }}>
+                <input
+                  type="text"
+                  value={actualDuration}
+                  onChange={e => setActualDuration(e.target.value.replace(/[^0-9:]/g, ''))}
+                  placeholder="actual mm:ss"
+                  className="input-field"
+                  style={{ width: 120, paddingRight: actualDurationSecs > 0 ? 28 : undefined }}
+                  title="Enter your actual voiceover recording length (e.g. 16:05) to compute exact timecodes"
+                />
+                {actualDurationSecs > 0 && (
+                  <button
+                    onClick={() => setActualDuration('')}
+                    style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', lineHeight: 1 }}
+                    title="Clear"
+                  >×</button>
+                )}
+              </div>
+            </div>
           </div>
         </div>
 

@@ -100,7 +100,7 @@ export async function createProductionDocSheet(
   const HEADER_ROW = 3; // 0-indexed (row 4 in Sheets = col headers)
   const DATA_START = 4; // 0-indexed (row 5+ in Sheets = data)
   const numDataRows = data.rows.length;
-  const COLS = 10;
+  const COLS = 11; // added Image Preview column (K)
 
   // ── 1. Create spreadsheet ──────────────────────────────────────────────────
   const createRes = await sheetsPost(SHEETS_BASE, accessToken, {
@@ -123,7 +123,7 @@ export async function createProductionDocSheet(
   // ── 2. Write values ────────────────────────────────────────────────────────
   const HEADERS = [
     '#', 'Timecode', 'Script Text', 'Visual Type', 'Visual Description',
-    'Stock Search Terms', 'Image', 'AI Image Prompt', 'On-Screen Text', 'Notes',
+    'Stock Search Terms', 'Image', 'AI Image Prompt', 'On-Screen Text', 'Notes', 'Image Preview',
   ];
 
   const valueRows: (string | number)[][] = [
@@ -139,7 +139,7 @@ export async function createProductionDocSheet(
     [],
     // Row 4: Column headers
     HEADERS,
-    // Rows 5+: Data — image column left empty, filled with formulas below
+    // Rows 5+: Data — image columns left empty, filled with formulas below
     ...data.rows.map((r, i) => [
       i + 1,
       r.timecode,
@@ -147,14 +147,15 @@ export async function createProductionDocSheet(
       r.visual_type,
       r.visual_description,
       r.stock_search_terms,
-      '', // image placeholder — overwritten with HYPERLINK formula
+      '', // col G: HYPERLINK formula added below
       r.ai_image_prompt,
       r.on_screen_text,
       r.notes,
+      '', // col K: IMAGE formula added below
     ]),
   ];
 
-  const range = `A1:J${DATA_START + numDataRows}`;
+  const range = `A1:K${DATA_START + numDataRows}`;
   const valRes = await sheetsPut(
     `${SHEETS_BASE}/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,
     accessToken,
@@ -162,32 +163,42 @@ export async function createProductionDocSheet(
   );
   await assertOk(valRes, 'Write values');
 
-  // ── 3. Write image/search hyperlinks via batchUpdate values ───────────────
-  const hyperlinkUpdates: { range: string; values: string[][] }[] = [];
+  // ── 3. Write image/search hyperlinks + IMAGE preview formulas ─────────────
+  const formulaUpdates: { range: string; values: string[][] }[] = [];
   data.rows.forEach((row, i) => {
     const sheetRow = DATA_START + i + 1; // 1-indexed for A1 notation
     const safeImageUrl = row.imageUrl ? safeHyperlinkUrl(row.imageUrl) : null;
     const safeSearchUrl = row.searchUrl ? safeHyperlinkUrl(row.searchUrl) : null;
+
+    // Column G — hyperlink to image or search
     if (safeImageUrl) {
-      hyperlinkUpdates.push({
+      formulaUpdates.push({
         range: `G${sheetRow}`,
         values: [[`=HYPERLINK("${safeImageUrl}","View Image")`]],
       });
     } else if (safeSearchUrl) {
-      hyperlinkUpdates.push({
+      formulaUpdates.push({
         range: `G${sheetRow}`,
         values: [[`=HYPERLINK("${safeSearchUrl}","Search Images")`]],
       });
     }
+
+    // Column K — inline image preview using =IMAGE(url, 1) (fit to cell)
+    if (safeImageUrl) {
+      formulaUpdates.push({
+        range: `K${sheetRow}`,
+        values: [[`=IMAGE("${safeImageUrl}",1)`]],
+      });
+    }
   });
 
-  if (hyperlinkUpdates.length > 0) {
+  if (formulaUpdates.length > 0) {
     const hlRes = await sheetsPost(
       `${SHEETS_BASE}/${spreadsheetId}/values:batchUpdate`,
       accessToken,
-      { valueInputOption: 'USER_ENTERED', data: hyperlinkUpdates },
+      { valueInputOption: 'USER_ENTERED', data: formulaUpdates },
     );
-    await assertOk(hlRes, 'Write hyperlinks');
+    await assertOk(hlRes, 'Write formulas');
   }
 
   // ── 4. Apply formatting ────────────────────────────────────────────────────
@@ -325,8 +336,8 @@ function buildFormatRequests(
   }));
   reqs.push(rowHeight(sheetId, HEADER_ROW, HEADER_ROW + 1, 36));
 
-  // — Column widths: #, Time, Script, VisType, VisDesc, Stock, Image, AIPrompt, OnScreen, Notes
-  const widths = [36, 68, 230, 130, 190, 155, 110, 270, 135, 135];
+  // — Column widths: #, Time, Script, VisType, VisDesc, Stock, Image, AIPrompt, OnScreen, Notes, ImagePreview
+  const widths = [36, 68, 230, 130, 190, 155, 110, 270, 135, 135, 160];
   widths.forEach((px, c) => reqs.push(colWidth(sheetId, c, c + 1, px)));
 
   // — Data rows
@@ -370,16 +381,25 @@ function buildFormatRequests(
       }));
     }
 
-    // Image column — center, blue link style
+    // Image link column (G) — center, blue link style
     reqs.push(cellFmt(sheetId, r, r + 1, 6, 7, {
       textFormat: { foregroundColor: rgb(59, 130, 246), fontSize: 9, underline: true },
       horizontalAlignment: 'CENTER',
       verticalAlignment: 'MIDDLE',
     }));
 
-    // Row height — taller for script rows (wrapped text)
+    // Image preview column (K) — center aligned, no text wrapping
+    reqs.push(cellFmt(sheetId, r, r + 1, 10, 11, {
+      horizontalAlignment: 'CENTER',
+      verticalAlignment: 'MIDDLE',
+      wrapStrategy: 'CLIP',
+    }));
+
+    // Row height — tall enough for image preview when available, otherwise wrap text height
     const scriptLen = row.script_text.length;
-    const estimatedHeight = Math.max(28, Math.min(120, Math.ceil(scriptLen / 40) * 16));
+    const textHeight = Math.max(28, Math.min(120, Math.ceil(scriptLen / 40) * 16));
+    const hasImage = !!row.imageUrl;
+    const estimatedHeight = hasImage ? Math.max(textHeight, 120) : textHeight;
     reqs.push(rowHeight(sheetId, r, r + 1, estimatedHeight));
   });
 
