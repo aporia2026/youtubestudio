@@ -1642,6 +1642,8 @@ export function productionDocPrompt({
   speakingPaceWpm = 135,
   stylePreset,
   creativeBrief,
+  startTimecodeSeconds = 0,
+  isChunk = false,
 }: {
   script: string;
   niche: string;
@@ -1649,11 +1651,20 @@ export function productionDocPrompt({
   speakingPaceWpm?: number;
   stylePreset?: string;
   creativeBrief?: string;
+  /** Timecode offset in seconds — used when generating a chunk of a longer script */
+  startTimecodeSeconds?: number;
+  /** True when this is a continuation chunk (suppress title card, adjust timecode start) */
+  isChunk?: boolean;
 }): { system: string; user: string } {
   const wordCount = script.trim().split(/\s+/).length;
-  const totalSeconds = Math.round((wordCount / speakingPaceWpm) * 60);
-  const totalMins = Math.floor(totalSeconds / 60);
-  const totalSecs = totalSeconds % 60;
+  const chunkDurationSeconds = Math.round((wordCount / speakingPaceWpm) * 60);
+  const chunkEndSeconds = startTimecodeSeconds + chunkDurationSeconds;
+  const fmtTimecode = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  const startTimecode = fmtTimecode(startTimecodeSeconds);
+  const endTimecode = fmtTimecode(chunkEndSeconds);
+  // Legacy fields kept for backwards-compatibility with the output JSON
+  const totalMins = Math.floor(chunkDurationSeconds / 60);
+  const totalSecs = chunkDurationSeconds % 60;
   const totalDuration = `${totalMins}:${String(totalSecs).padStart(2, '0')}`;
 
   const STYLE_SUFFIXES: Record<string, string> = {
@@ -1696,8 +1707,9 @@ Break the provided script into timed production rows. Each row = one visual shot
 ## TIMING RULES
 - Speaking pace is ${speakingPaceWpm} words per minute
 - Group sentences into segments of 6–10 seconds of spoken content
-- Timecodes start at 0:00, increment based on word count of each segment
-- Total video duration ≈ ${totalDuration}
+- Timecodes for THIS segment start at **${startTimecode}** and end at **${endTimecode}**
+- First row timecode MUST be "${startTimecode}" — increment from there based on word count${isChunk ? `
+- This is a CONTINUATION chunk — do NOT include a Title Card row` : ''}
 
 ## COLUMN DEFINITIONS
 
@@ -1738,7 +1750,7 @@ Break the provided script into timed production rows. Each row = one visual shot
   "speaking_pace_wpm": ${speakingPaceWpm},
   "rows": [
     {
-      "timecode": "0:00",
+      "timecode": "${startTimecode}",
       "script_text": "exact words",
       "visual_type": "Title Card",
       "visual_description": "specific shot direction matching the chosen style",
@@ -1757,7 +1769,7 @@ ABSOLUTE RULES:
 - ai_image_prompt ≥ 40 words for every non-Talking Head / non-Screen Recording row
 - Every ai_image_prompt MUST end with the style suffix${styleSuffix ? ` "${styleSuffix}"` : ' (if one was specified)'}
 - Talking Head + Screen Recording → ai_image_prompt = ""
-- Opening row: Title Card or first B-Roll/Animation scene
+- Opening row: ${isChunk ? 'First B-Roll/Animation scene (no Title Card — continuation chunk)' : 'Title Card or first B-Roll/Animation scene'}
 - Statistics/numbers in the script → "Statistics" type with on_screen_text`,
 
     user: `Generate a complete production document for this script.

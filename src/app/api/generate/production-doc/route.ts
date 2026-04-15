@@ -19,9 +19,10 @@ export async function POST(req: NextRequest) {
     } catch {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
     }
-    const { modelId, script, niche, topic, speakingPaceWpm, stylePreset, creativeBrief } = body as {
+    const { modelId, script, niche, topic, speakingPaceWpm, stylePreset, creativeBrief, startTimecodeSeconds, isChunk } = body as {
       modelId?: string; script?: string; niche?: string; topic?: string;
       speakingPaceWpm?: number; stylePreset?: string; creativeBrief?: string;
+      startTimecodeSeconds?: number; isChunk?: boolean;
     };
 
     if (!script || !niche) {
@@ -31,7 +32,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Script is too short — need at least 20 words' }, { status: 400 });
     }
 
-    const { system, user } = productionDocPrompt({ script, niche, topic, speakingPaceWpm, stylePreset, creativeBrief });
+    const { system, user } = productionDocPrompt({
+      script, niche, topic, speakingPaceWpm, stylePreset, creativeBrief,
+      startTimecodeSeconds: typeof startTimecodeSeconds === 'number' ? startTimecodeSeconds : 0,
+      isChunk: isChunk === true,
+    });
 
     const raw = await generateText({
       modelId: modelId || 'claude-sonnet-4-6',

@@ -25,6 +25,52 @@ async function safeJson(res: Response): Promise<Record<string, unknown>> {
   }
 }
 
+/**
+ * Split a script into chunks of at most `maxWords` words, breaking only at
+ * paragraph boundaries (double-newline) so shots don't mid-sentence.
+ * Falls back to splitting on single newlines if a single paragraph exceeds maxWords.
+ */
+function splitScriptIntoChunks(script: string, maxWords: number): string[] {
+  const paragraphs = script.split(/\n\n+/);
+  const chunks: string[] = [];
+  let current: string[] = [];
+  let currentWords = 0;
+
+  for (const para of paragraphs) {
+    const paraWords = para.trim().split(/\s+/).length;
+    if (currentWords + paraWords > maxWords && current.length > 0) {
+      chunks.push(current.join('\n\n'));
+      current = [];
+      currentWords = 0;
+    }
+    // If a single paragraph exceeds maxWords, split it on sentence boundaries
+    if (paraWords > maxWords) {
+      const sentences = para.match(/[^.!?]+[.!?]+/g) || [para];
+      let senBuf: string[] = [];
+      let senWords = 0;
+      for (const sen of sentences) {
+        const sw = sen.trim().split(/\s+/).length;
+        if (senWords + sw > maxWords && senBuf.length > 0) {
+          chunks.push(senBuf.join(' '));
+          senBuf = [];
+          senWords = 0;
+        }
+        senBuf.push(sen.trim());
+        senWords += sw;
+      }
+      if (senBuf.length > 0) {
+        current.push(senBuf.join(' '));
+        currentWords += senWords;
+      }
+    } else {
+      current.push(para);
+      currentWords += paraWords;
+    }
+  }
+  if (current.length > 0) chunks.push(current.join('\n\n'));
+  return chunks.length > 0 ? chunks : [script];
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface ProductionRow {
@@ -619,26 +665,70 @@ export default function ProductionDocPage() {
       }
 
       const analyzedCount = analyzedRefs.length;
-      appendLog(`Script: ${wordCount} words · Style: ${stylePreset}${analyzedCount > 0 ? ` · ${analyzedCount} visual ref(s) analyzed` : ''}`);
-      appendLog('Sending to AI model...');
+      const totalWords = script.trim().split(/\s+/).length;
+      appendLog(`Script: ${totalWords} words · Style: ${stylePreset}${analyzedCount > 0 ? ` · ${analyzedCount} visual ref(s) analyzed` : ''}`);
 
-      const res = await fetch('/api/generate/production-doc', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
-          modelId, script, niche, topic,
-          speakingPaceWpm: speakingPace,
-          stylePreset,
-          creativeBrief: fullBrief || undefined,
-        }),
-      });
+      // ── Chunked generation — split long scripts to avoid 504 timeouts ──────────
+      const MAX_CHUNK_WORDS = 1000;
+      const chunks = splitScriptIntoChunks(script.trim(), MAX_CHUNK_WORDS);
+      const isMultiChunk = chunks.length > 1;
+      if (isMultiChunk) {
+        appendLog(`Long script — splitting into ${chunks.length} chunks to avoid timeout...`);
+      } else {
+        appendLog('Sending to AI model...');
+      }
 
-      appendLog('Response received — parsing production doc...');
-      const data = await safeJson(res);
-      if (!res.ok) throw new Error((data.error as string) || 'Generation failed');
+      let allRows: ProductionRow[] = [];
+      let firstResult: ProductionDoc | null = null;
+      let timecodeOffsetSeconds = 0;
 
-      const result = data.result as ProductionDoc;
+      for (let ci = 0; ci < chunks.length; ci++) {
+        if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        if (isMultiChunk) appendLog(`Generating chunk ${ci + 1} of ${chunks.length}...`);
+
+        const res = await fetch('/api/generate/production-doc', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            modelId, niche, topic,
+            script: chunks[ci],
+            speakingPaceWpm: speakingPace,
+            stylePreset,
+            creativeBrief: fullBrief || undefined,
+            startTimecodeSeconds: timecodeOffsetSeconds,
+            isChunk: isMultiChunk && ci > 0,
+          }),
+        });
+
+        const data = await safeJson(res);
+        if (!res.ok) throw new Error((data.error as string) || `Chunk ${ci + 1} generation failed`);
+
+        const chunkResult = data.result as ProductionDoc;
+        if (!chunkResult?.rows?.length) {
+          throw new Error(`Chunk ${ci + 1} returned empty — try again`);
+        }
+
+        if (ci === 0) firstResult = chunkResult;
+        allRows = allRows.concat(chunkResult.rows);
+
+        // Advance timecode offset by the actual words spoken (not just chunk length)
+        const chunkWords = chunks[ci].trim().split(/\s+/).length;
+        timecodeOffsetSeconds += Math.round((chunkWords / speakingPace) * 60);
+      }
+
+      // Merge chunk results into a single ProductionDoc
+      const totalDurationSecs = timecodeOffsetSeconds;
+      const totalMins = Math.floor(totalDurationSecs / 60);
+      const totalSecs = totalDurationSecs % 60;
+      const result: ProductionDoc = {
+        ...(firstResult as ProductionDoc),
+        total_duration: `${totalMins}:${String(totalSecs).padStart(2, '0')}`,
+        total_words: totalWords,
+        rows: allRows,
+      };
+
+      appendLog(`Response received — parsing production doc...`);
       if (!result?.rows?.length) {
         throw new Error('Production doc returned empty — the AI may have failed to parse the script. Try again.');
       }
