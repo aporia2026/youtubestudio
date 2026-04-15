@@ -5,6 +5,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
+import { getRecentNiches } from '@/lib/history';
+import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 
 interface Candidate {
   name: string;
@@ -108,6 +110,7 @@ async function resizeAndEncode(file: File, maxSide = 1024, quality = 0.82): Prom
 export default function ChannelNamingPage() {
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('channel-naming'));
   const [niche, setNiche] = useState('');
+  const [nicheHints, setNicheHints] = useState<string[]>([]);
   const [freeText, setFreeText] = useState('');
   const [videoInput, setVideoInput] = useState('');
   const [refVideos, setRefVideos] = useState<string[]>([]);
@@ -291,6 +294,7 @@ export default function ChannelNamingPage() {
     } catch { /* ignore */ }
   }, []);
   useEffect(() => { fetchSaved(); }, [fetchSaved]);
+  useEffect(() => { setNicheHints(getRecentNiches()); }, []);
 
   async function saveCandidate(c: Candidate) {
     setSavingHandle(c.handle);
@@ -378,7 +382,7 @@ export default function ChannelNamingPage() {
 
         <div>
           <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Niche</label>
-          <input className="input-field" placeholder="e.g. Cybersecurity explainers, Home cooking, AI productivity..." value={niche} onChange={e => setNiche(e.target.value)} />
+          <AutocompleteInput value={niche} onChange={setNiche} suggestions={nicheHints} placeholder="e.g. Cybersecurity explainers, Home cooking, AI productivity..." />
         </div>
 
         <div>

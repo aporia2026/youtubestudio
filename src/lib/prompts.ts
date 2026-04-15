@@ -1640,11 +1640,15 @@ export function productionDocPrompt({
   niche,
   topic,
   speakingPaceWpm = 135,
+  stylePreset,
+  creativeBrief,
 }: {
   script: string;
   niche: string;
   topic?: string;
   speakingPaceWpm?: number;
+  stylePreset?: string;
+  creativeBrief?: string;
 }): { system: string; user: string } {
   const wordCount = script.trim().split(/\s+/).length;
   const totalSeconds = Math.round((wordCount / speakingPaceWpm) * 60);
@@ -1652,9 +1656,40 @@ export function productionDocPrompt({
   const totalSecs = totalSeconds % 60;
   const totalDuration = `${totalMins}:${String(totalSecs).padStart(2, '0')}`;
 
+  const STYLE_SUFFIXES: Record<string, string> = {
+    cinematic:    'cinematic live-action photography, dramatic lighting, anamorphic lens, movie-grade color grading, film grain, 8K quality',
+    animation_2d: '2D flat vector animation style, vibrant saturated colors, clean crisp outlines, motion-graphics aesthetic, NOT photorealistic, NOT a photograph',
+    animation_3d: '3D CGI render, Blender/Cinema4D quality, studio lighting, smooth shading, high-poly models, NOT photorealistic photography',
+    documentary:  'documentary photography, handheld camera feel, natural available light, authentic candid moment, journalistic realism',
+    stock:        'professional stock photo, clean commercial photography, bright natural lighting, sharp focus, Getty/Shutterstock quality',
+    tech:         'dark UI background, neon glow accents, cyberpunk aesthetic, blue and purple lighting, holographic data visualization, 8K ultra-detailed',
+    viral:        'bold high-contrast social media aesthetic, saturated colors, dramatic lighting, Gen-Z energy, YouTube thumbnail quality',
+    whiteboard:   'whiteboard animation style, hand-drawn black marker sketch on white background, educational explainer, minimal and clean, NOT photorealistic',
+  };
+
+  const styleSuffix = stylePreset && STYLE_SUFFIXES[stylePreset] ? STYLE_SUFFIXES[stylePreset] : null;
+
+  // Build the mandatory style block — controls HOW images look, not which shot types appear
+  const mandatoryStyleBlock = (styleSuffix || creativeBrief) ? `
+## MANDATORY IMAGE STYLE — APPLIES TO ALL ai_image_prompt FIELDS
+
+${styleSuffix ? `### Chosen Style: ${stylePreset}
+Every non-empty ai_image_prompt MUST end with this exact suffix (copy verbatim, do not rephrase):
+"${styleSuffix}"
+
+The style controls the VISUAL AESTHETIC of generated images — it does not restrict which shot types (Talking Head, B-Roll, etc.) you may use. Choose shot types based on what best serves the content. The style suffix ensures every generated image looks consistent.` : ''}
+
+${creativeBrief ? `### Creative Brief — Hard Requirements for Every Shot
+These requirements must be reflected in every visual description and ai_image_prompt:
+
+${creativeBrief}
+
+Match the specified aesthetic in every image prompt. Do not mix styles across rows.` : ''}
+` : '';
+
   return {
     system: `You are a professional video production coordinator and shot director. You transform finished YouTube scripts into detailed, frame-by-frame production documents that video editors can execute without any back-and-forth.
-
+${mandatoryStyleBlock}
 ## YOUR TASK
 Break the provided script into timed production rows. Each row = one visual shot or scene change (~6–10 seconds of narration).
 
@@ -1668,33 +1703,35 @@ Break the provided script into timed production rows. Each row = one visual shot
 
 **timecode** — "M:SS" format (e.g. "0:00", "1:23") — when this segment starts
 
-**script_text** — The EXACT verbatim words the narrator speaks in this segment. Do not paraphrase. Copy from script.
+**script_text** — The EXACT verbatim words the narrator speaks in this segment. Do not paraphrase.
 
-**visual_type** — One of:
+**visual_type** — Choose based on what best fits the content:
   - "Title Card" — opening title or section divider text
-  - "Talking Head" — presenter on camera
-  - "B-Roll" — footage over narration (most segments)
+  - "Talking Head" — on-camera presenter/narrator shot (real person or animated avatar). Use whenever a direct-to-camera moment fits the content. NOTE: ai_image_prompt is always "" for this type — use stock_search_terms to describe the presenter style (e.g. "animated host, 2D cartoon" or "presenter on camera, professional")
+  - "B-Roll" — footage over narration (live-action, stock, or animated scenes)
   - "Screen Recording" — software/website demonstration
-  - "Animation" — motion graphics or animated explainer
+  - "Animation" — motion graphics, animated explainer, or illustrated scene
   - "Lower Third" — text overlay identifying something
   - "Statistics" — on-screen data visualization
   - "Cutaway" — reaction shot or insert
 
-**visual_description** — Specific, actionable direction for the editor. NOT vague. Example: "Close-up of hands typing on a mechanical keyboard in dim blue lighting" NOT "show someone working on computer". Always include: subject, action, shot type (wide/medium/close), mood/lighting if relevant.
+**visual_description** — Specific and actionable for the editor. Include: subject, action, shot type (wide/medium/close), lighting/mood. Match the chosen visual style precisely.
 
-**stock_search_terms** — 2–4 comma-separated keywords for Pexels/Shutterstock/Envato. Short, specific. Example: "cybersecurity network dark, hacker silhouette, data breach visualization"
+**stock_search_terms** — 2–4 comma-separated keywords for stock image/footage search. For animation rows, describe what the scene depicts (e.g. "cartoon character thinking, 2D animation").
 
-**ai_image_prompt** — A complete, detailed prompt for kie.ai image generation. Format: [shot type], [subject & action], [style], [lighting], [mood], [color palette], [camera details]. Minimum 30 words. Example: "Cinematic close-up shot of a glowing padlock surrounded by streams of binary code, photorealistic, blue and purple neon lighting, dark background, dramatic shadows, 8K quality, ultra-detailed"
+**ai_image_prompt** — A complete, detailed prompt for AI image generation. Minimum 40 words. Must be usable as-is.
+- For "Talking Head" and "Screen Recording" rows: set to "" (empty — these use stock search instead)
+- For ALL other rows: write a full scene prompt, then append the mandatory style suffix verbatim${styleSuffix ? ` ("${styleSuffix}")` : ''}
+- The prompt must describe the exact scene: subject, action, environment, lighting, camera angle — then the style suffix
 
-**on_screen_text** — Any text that should appear on screen (title, statistic, caption, lower third label). Empty string "" if none.
+**on_screen_text** — Text to display on screen. Empty string if none.
 
-**notes** — Production notes: music cue changes, transition types, pacing notes, emphasis. Empty string "" if none.
+**notes** — Editor production notes. Empty string if none.
 
 ## OUTPUT FORMAT
-Return ONLY a JSON object:
 \`\`\`json
 {
-  "title": "string — derived from script topic",
+  "title": "derived from script",
   "niche": "string",
   "total_duration": "${totalDuration}",
   "total_words": ${wordCount},
@@ -1702,27 +1739,26 @@ Return ONLY a JSON object:
   "rows": [
     {
       "timecode": "0:00",
-      "script_text": "exact words from script",
+      "script_text": "exact words",
       "visual_type": "Title Card",
-      "visual_description": "Bold animated title card with channel branding",
-      "stock_search_terms": "youtube intro, channel branding, motion graphics",
-      "ai_image_prompt": "Clean minimalist title card with bold typography, gradient background from deep purple to cyan, professional YouTube channel intro, 16:9 ratio, high contrast text",
-      "on_screen_text": "Video Title Here",
-      "notes": "Use upbeat intro music, fade in from black"
+      "visual_description": "specific shot direction matching the chosen style",
+      "stock_search_terms": "keyword1, keyword2",
+      "ai_image_prompt": "Full detailed scene prompt... ${styleSuffix ?? ''}",
+      "on_screen_text": "",
+      "notes": ""
     }
   ]
 }
 \`\`\`
 
-RULES:
-- Every row must have ALL 8 fields (no omissions)
-- script_text must be verbatim from the script — do not invent words
-- visual_description must be specific enough for an editor with no context
-- ai_image_prompt must be ≥30 words and usable as-is in an image generator
-- Vary visual_type — do not use "B-Roll" for every row
-- Opening row is usually "Title Card" or "B-Roll with title overlay"
-- Statistics/numbers mentioned → use "Statistics" visual type with data overlay
-- Aim for natural shot changes — every 6–10 seconds`,
+ABSOLUTE RULES:
+- Every row has all 8 fields
+- script_text is verbatim from the script — never paraphrase
+- ai_image_prompt ≥ 40 words for every non-Talking Head / non-Screen Recording row
+- Every ai_image_prompt MUST end with the style suffix${styleSuffix ? ` "${styleSuffix}"` : ' (if one was specified)'}
+- Talking Head + Screen Recording → ai_image_prompt = ""
+- Opening row: Title Card or first B-Roll/Animation scene
+- Statistics/numbers in the script → "Statistics" type with on_screen_text`,
 
     user: `Generate a complete production document for this script.
 
@@ -1730,6 +1766,10 @@ RULES:
 **Niche:** ${niche}
 **Word Count:** ${wordCount} words
 **Estimated Duration:** ${totalDuration} at ${speakingPaceWpm} wpm
+**Visual Style:** ${stylePreset || 'not specified'}
+${creativeBrief ? `**Creative Brief:**\n${creativeBrief}` : ''}
+
+REMINDER: Apply the mandatory visual style and creative brief requirements to EVERY row. Do not default to "Talking Head" shots unless the style and script demand it.
 
 ---
 
@@ -1737,6 +1777,6 @@ ${script}
 
 ---
 
-Break this into production rows. Return ONLY the JSON object.`,
+Return ONLY the JSON object.`,
   };
 }

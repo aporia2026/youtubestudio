@@ -228,6 +228,121 @@ export function clearThumbnailHistory(): void { if (typeof window === 'undefined
 
 export function clearVoiceoverHistory(): void { if (typeof window === 'undefined') return; localStorage.removeItem(VOICEOVER_KEY); }
 
+// --- QA Engine ---
+
+export interface QAHistoryEntry {
+  id: string;
+  timestamp: number;
+  niche: string;
+  aggressiveness: string;
+  modelId: string;
+  scriptPreview: string;
+  overallScore: number;
+  verdict: string;
+  passCount: number;
+}
+
+const QA_KEY = 'qa_history';
+const MAX_QA_ENTRIES = 50;
+
+export function getQAHistory(): QAHistoryEntry[] {
+  if (typeof window === 'undefined') return [];
+  try { return JSON.parse(localStorage.getItem(QA_KEY) || '[]'); } catch { return []; }
+}
+
+export function saveQAEntry(entry: Omit<QAHistoryEntry, 'id' | 'timestamp'>): QAHistoryEntry {
+  const full: QAHistoryEntry = { ...entry, id: generateId(), timestamp: Date.now() };
+  const history = getQAHistory();
+  history.unshift(full);
+  if (history.length > MAX_QA_ENTRIES) history.length = MAX_QA_ENTRIES;
+  safeSave(QA_KEY, JSON.stringify(history));
+  return full;
+}
+
+export function deleteQAEntry(id: string): void {
+  if (typeof window === 'undefined') return;
+  safeSave(QA_KEY, JSON.stringify(getQAHistory().filter(e => e.id !== id)));
+}
+
+export function clearQAHistory(): void { if (typeof window === 'undefined') return; localStorage.removeItem(QA_KEY); }
+
+// --- Production Doc ---
+
+export interface ProductionDocHistoryEntry {
+  id: string;
+  timestamp: number;
+  title: string;
+  niche: string;
+  topic: string;
+  modelId: string;
+  shotCount: number;
+  totalDuration: string;
+  totalWords: number;
+  stylePreset: string;
+}
+
+const PROD_DOC_KEY = 'production_doc_history';
+const MAX_PROD_DOC_ENTRIES = 30;
+
+export function getProductionDocHistory(): ProductionDocHistoryEntry[] {
+  if (typeof window === 'undefined') return [];
+  try { return JSON.parse(localStorage.getItem(PROD_DOC_KEY) || '[]'); } catch { return []; }
+}
+
+export function saveProductionDocEntry(entry: Omit<ProductionDocHistoryEntry, 'id' | 'timestamp'>): ProductionDocHistoryEntry {
+  const full: ProductionDocHistoryEntry = { ...entry, id: generateId(), timestamp: Date.now() };
+  const history = getProductionDocHistory();
+  history.unshift(full);
+  if (history.length > MAX_PROD_DOC_ENTRIES) history.length = MAX_PROD_DOC_ENTRIES;
+  safeSave(PROD_DOC_KEY, JSON.stringify(history));
+  return full;
+}
+
+export function deleteProductionDocEntry(id: string): void {
+  if (typeof window === 'undefined') return;
+  safeSave(PROD_DOC_KEY, JSON.stringify(getProductionDocHistory().filter(e => e.id !== id)));
+}
+
+export function clearProductionDocHistory(): void { if (typeof window === 'undefined') return; localStorage.removeItem(PROD_DOC_KEY); }
+
+// --- Aggregate autocomplete helpers ---
+
+/** Returns unique niche strings from all history sources, ordered by recency. */
+export function getRecentNiches(): string[] {
+  if (typeof window === 'undefined') return [];
+  const seen = new Set<string>();
+  const results: string[] = [];
+  const add = (v: string | undefined) => {
+    if (!v?.trim()) return;
+    const norm = v.trim();
+    if (!seen.has(norm.toLowerCase())) { seen.add(norm.toLowerCase()); results.push(norm); }
+  };
+  getScriptHistory().forEach(e => add(e.niche));
+  getIdeasHistory().forEach(e => add(e.niche));
+  getSeoHistory().forEach(e => add(e.niche));
+  getThumbnailHistory().forEach(e => add(e.niche));
+  getQAHistory().forEach(e => add(e.niche));
+  getProductionDocHistory().forEach(e => add(e.niche));
+  return results.slice(0, 30);
+}
+
+/** Returns unique topic strings from all history sources, ordered by recency. */
+export function getRecentTopics(): string[] {
+  if (typeof window === 'undefined') return [];
+  const seen = new Set<string>();
+  const results: string[] = [];
+  const add = (v: string | undefined) => {
+    if (!v?.trim()) return;
+    const norm = v.trim();
+    if (!seen.has(norm.toLowerCase())) { seen.add(norm.toLowerCase()); results.push(norm); }
+  };
+  getScriptHistory().forEach(e => add(e.topic));
+  getSeoHistory().forEach(e => add(e.topic));
+  getThumbnailHistory().forEach(e => add(e.title));
+  getProductionDocHistory().forEach(e => add(e.topic));
+  return results.slice(0, 30);
+}
+
 // --- Search ---
 
 export function searchScripts(query: string): ScriptHistoryEntry[] {

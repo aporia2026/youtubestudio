@@ -11,6 +11,8 @@ export const YOUTUBE_SCOPES = [
   'https://www.googleapis.com/auth/youtube.upload',
   'https://www.googleapis.com/auth/youtube',
   'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/drive.file',
 ];
 
 function getOAuthConfig() {
@@ -161,11 +163,17 @@ export async function storeTokens(
 }
 
 /**
- * Get a valid access token for a channel. Handles refresh transparently.
+ * Get a valid access token for a channel, along with granted scopes.
+ * Handles refresh transparently.
  */
-export async function getValidAccessToken(channelDbId: string): Promise<string | null> {
+export async function getValidAccessToken(channelDbId: string): Promise<string | null>;
+export async function getValidAccessToken(channelDbId: string, includeScopes: true): Promise<{ token: string; scopes: string[] } | null>;
+export async function getValidAccessToken(
+  channelDbId: string,
+  includeScopes?: true,
+): Promise<string | { token: string; scopes: string[] } | null> {
   const result = await sql`
-    SELECT access_token_encrypted, refresh_token_encrypted, token_expiry
+    SELECT access_token_encrypted, refresh_token_encrypted, token_expiry, scopes
     FROM oauth_tokens
     WHERE channel_id = ${channelDbId}::uuid AND provider = 'google'
   `;
@@ -174,31 +182,37 @@ export async function getValidAccessToken(channelDbId: string): Promise<string |
 
   const row = result.rows[0];
   const expiry = new Date(row.token_expiry as string);
+  const scopes: string[] = (row.scopes as string[]) || [];
+
+  let token: string;
 
   // If token is still valid (with 5-min buffer), return it
   if (expiry.getTime() > Date.now() + 5 * 60 * 1000) {
-    return decrypt(row.access_token_encrypted as string);
+    token = decrypt(row.access_token_encrypted as string);
+  } else {
+    // Token expired — refresh it
+    if (!row.refresh_token_encrypted) return null;
+
+    try {
+      const refreshed = await refreshAccessToken(row.refresh_token_encrypted as string);
+      const newAccessEnc = encrypt(refreshed.access_token);
+      const newExpiry = new Date(Date.now() + refreshed.expires_in * 1000).toISOString();
+
+      await sql`
+        UPDATE oauth_tokens
+        SET access_token_encrypted = ${newAccessEnc}, token_expiry = ${newExpiry}::timestamptz, updated_at = NOW()
+        WHERE channel_id = ${channelDbId}::uuid AND provider = 'google'
+      `;
+
+      token = refreshed.access_token;
+    } catch (err) {
+      console.error('Token refresh failed for channel', channelDbId, err);
+      return null;
+    }
   }
 
-  // Token expired — refresh it
-  if (!row.refresh_token_encrypted) return null;
-
-  try {
-    const refreshed = await refreshAccessToken(row.refresh_token_encrypted as string);
-    const newAccessEnc = encrypt(refreshed.access_token);
-    const newExpiry = new Date(Date.now() + refreshed.expires_in * 1000).toISOString();
-
-    await sql`
-      UPDATE oauth_tokens
-      SET access_token_encrypted = ${newAccessEnc}, token_expiry = ${newExpiry}::timestamptz, updated_at = NOW()
-      WHERE channel_id = ${channelDbId}::uuid AND provider = 'google'
-    `;
-
-    return refreshed.access_token;
-  } catch (err) {
-    console.error('Token refresh failed for channel', channelDbId, err);
-    return null;
-  }
+  if (includeScopes) return { token, scopes };
+  return token;
 }
 
 /**

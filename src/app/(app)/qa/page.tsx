@@ -10,6 +10,9 @@ import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { ScoreRing } from '@/components/ui/ScoreRing';
 import { saveDraft, getActiveDraft } from '@/lib/drafts';
 import { scoreLabel } from '@/lib/utils';
+import { saveQAEntry, getQAHistory, deleteQAEntry, clearQAHistory, getRecentNiches, type QAHistoryEntry } from '@/lib/history';
+import { HistoryPanel } from '@/components/ui/HistoryPanel';
+import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 
 type Aggressiveness = 'standard' | 'brutal' | 'nuclear';
 
@@ -89,9 +92,12 @@ export default function QAPage() {
   const [applyingFixes, setApplyingFixes] = useState(false);
   const [fixedScript, setFixedScript] = useState('');
   const fixedScriptRef = useRef<HTMLDivElement>(null);
+  const [qaHistory, setQaHistory] = useState<QAHistoryEntry[]>(() => getQAHistory());
+  const [nicheHints, setNicheHints] = useState<string[]>([]);
 
   // Load prefill from Script Generator
   useEffect(() => {
+    setNicheHints(getRecentNiches());
     try {
       const prefill = localStorage.getItem('qa_prefill');
       if (prefill) {
@@ -239,6 +245,17 @@ export default function QAPage() {
       setResults(newResults);
       setActiveResult(newResults.length - 1);
       setPassNumber(p => p + 1);
+      // Save to QA history
+      saveQAEntry({
+        niche,
+        aggressiveness,
+        modelId,
+        scriptPreview: script.slice(0, 300),
+        overallScore: data.result.overall_score,
+        verdict: data.result.verdict || '',
+        passCount: newResults.length,
+      });
+      setQaHistory(getQAHistory());
       // Auto-save draft
       const activeDraft = getActiveDraft();
       if (activeDraft) {
@@ -292,7 +309,12 @@ export default function QAPage() {
 
             <div>
               <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Niche Context</label>
-              <input value={niche} onChange={e => setNiche(e.target.value)} className="input-field" placeholder="e.g. Cybersecurity & Antivirus" />
+              <AutocompleteInput
+                value={niche}
+                onChange={setNiche}
+                suggestions={nicheHints}
+                placeholder="e.g. Cybersecurity & Antivirus"
+              />
             </div>
 
             {/* Aggressiveness selector */}
@@ -807,6 +829,35 @@ export default function QAPage() {
           )}
         </div>
       </div>
+
+      {/* QA History panel */}
+      <HistoryPanel
+        title="QA History"
+        icon="📋"
+        accentColor="#ec4899"
+        items={qaHistory.map(e => ({
+          id: e.id,
+          timestamp: e.timestamp,
+          label: `Score ${e.overallScore}/100 · ${e.aggressiveness.charAt(0).toUpperCase() + e.aggressiveness.slice(1)}`,
+          sublabel: `${e.niche} · Pass ${e.passCount}`,
+          preview: e.verdict,
+        }))}
+        onRestore={id => {
+          const entry = qaHistory.find(e => e.id === id);
+          if (entry) {
+            setNiche(entry.niche);
+            setAggressiveness(entry.aggressiveness as Aggressiveness);
+          }
+        }}
+        onDelete={id => {
+          deleteQAEntry(id);
+          setQaHistory(getQAHistory());
+        }}
+        onClearAll={() => {
+          clearQAHistory();
+          setQaHistory([]);
+        }}
+      />
     </div>
   );
 }

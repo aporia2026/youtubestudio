@@ -4,10 +4,28 @@
   "devCommand": "npm run dev",
   "installCommand": "npm install",
   "functions": {
-    "src/app/api/generate/script/route.ts": { "maxDuration": 120 },
-    "src/app/api/qa/analyze/route.ts": { "maxDuration": 120 },
-    "src/app/api/generate/ideas/route.ts": { "maxDuration": 120 },
-    "src/app/api/elevenlabs/generate/route.ts": { "maxDuration": 120 },
-    "src/app/api/upload/route.ts": { "maxDuration": 60 }
+    "src/app/api/generate/script/route.ts":                          { "maxDuration": 120 },
+    "src/app/api/generate/ideas/route.ts":                           { "maxDuration": 120 },
+    "src/app/api/production-doc/export-sheets/route.ts":              { "maxDuration": 60 },
+    "src/app/api/generate/production-doc/route.ts":                  { "maxDuration": 300 },
+    "src/app/api/generate/production-doc/image/route.ts":            { "maxDuration": 300 },
+    "src/app/api/qa/analyze/route.ts":                               { "maxDuration": 120 },
+    "src/app/api/qa/apply-fixes/route.ts":                           { "maxDuration": 120 },
+    "src/app/api/seo/optimize/route.ts":                             { "maxDuration": 120 },
+    "src/app/api/thumbnails/generate/route.ts":                      { "maxDuration": 120 },
+    "src/app/api/thumbnails/image/route.ts":                         { "maxDuration": 120 },
+    "src/app/api/analyze/image-style/route.ts":                      { "maxDuration": 30 },
+    "src/app/api/analyze/youtube-style/route.ts":                    { "maxDuration": 30 },
+    "src/app/api/channel-naming/generate/route.ts":                  { "maxDuration": 120 },
+    "src/app/api/channels/[id]/analyze/route.ts":                    { "maxDuration": 120 },
+    "src/app/api/competitors/[id]/analyze/route.ts":                 { "maxDuration": 180 },
+    "src/app/api/competitors/[id]/ideas/route.ts":                   { "maxDuration": 120 },
+    "src/app/api/competitors/[id]/sync/route.ts":                    { "maxDuration": 120 },
+    "src/app/api/competitors/[id]/thumbnail-analyze/route.ts":       { "maxDuration": 60 },
+    "src/app/api/competitors/[id]/video-analyze/route.ts":           { "maxDuration": 300 },
+    "src/app/api/competitors/[id]/video-analyze-batch/route.ts":     { "maxDuration": 300 },
+    "src/app/api/elevenlabs/generate/route.ts":                      { "maxDuration": 120 },
+    "src/app/api/upload/route.ts":                                   { "maxDuration": 60 },
+    "src/app/api/research/reddit/route.ts":                          { "maxDuration": 60 }
   }
 }

@@ -1,9 +1,31 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
+import { saveProductionDocEntry, getRecentNiches, getRecentTopics } from '@/lib/history';
+import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Safely parse a fetch response as JSON. On non-JSON bodies (e.g. Vercel timeout HTML),
+ *  throws an error with the first 200 chars of the body for easier debugging. */
+async function safeJson(res: Response): Promise<Record<string, unknown>> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    const preview = text.slice(0, 200).replace(/\s+/g, ' ');
+    throw new Error(
+      res.ok
+        ? `Unexpected response from server (${res.status}): ${preview}`
+        : `Server error ${res.status}: ${preview}`,
+    );
+  }
+}
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface ProductionRow {
   timecode: string;
@@ -25,6 +47,41 @@ interface ProductionDoc {
   rows: ProductionRow[];
 }
 
+interface RowImageState {
+  status: 'idle' | 'pending' | 'loading' | 'done' | 'error' | 'search';
+  imageUrl?: string;
+  searchUrl?: string;
+  error?: string;
+}
+
+interface VisualRef {
+  type: 'youtube' | 'screenshot';
+  // YouTube
+  url?: string;
+  title?: string;
+  channelTitle?: string;
+  // Screenshot
+  dataUrl?: string;
+  mediaType?: string;
+  name?: string;
+  // Shared
+  analyzedStyle?: string;
+  analyzing?: boolean;
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const STYLE_PRESETS = [
+  { id: 'cinematic',    label: 'Cinematic' },
+  { id: 'animation_2d', label: '2D Animation' },
+  { id: 'animation_3d', label: '3D Animation' },
+  { id: 'documentary', label: 'Documentary' },
+  { id: 'stock',       label: 'Stock Photo' },
+  { id: 'tech',        label: 'Tech / SaaS' },
+  { id: 'viral',       label: 'Viral / Trendy' },
+  { id: 'whiteboard',  label: 'Whiteboard' },
+];
+
 const VISUAL_TYPE_COLORS: Record<string, { bg: string; color: string }> = {
   'Title Card':       { bg: 'rgba(124,58,237,0.15)', color: '#a78bfa' },
   'B-Roll':           { bg: 'rgba(6,182,212,0.12)',  color: '#22d3ee' },
@@ -33,8 +90,21 @@ const VISUAL_TYPE_COLORS: Record<string, { bg: string; color: string }> = {
   'Animation':        { bg: 'rgba(236,72,153,0.12)', color: '#f472b6' },
   'Lower Third':      { bg: 'rgba(59,130,246,0.12)', color: '#60a5fa' },
   'Statistics':       { bg: 'rgba(239,68,68,0.12)',  color: '#f87171' },
-  'Cutaway':          { bg: 'rgba(107,114,128,0.12)',color: '#9ca3af' },
+  'Cutaway':          { bg: 'rgba(107,114,128,0.12)', color: '#9ca3af' },
 };
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+function extractYouTubeId(url: string): string | null {
+  try {
+    const u = new URL(url.trim());
+    if (u.hostname.includes('youtube.com')) return u.searchParams.get('v');
+    if (u.hostname === 'youtu.be') return u.pathname.slice(1).split('?')[0];
+  } catch {
+    // not a valid URL
+  }
+  return null;
+}
 
 function escapeCsvCell(value: string): string {
   if (!value) return '';
@@ -45,18 +115,21 @@ function escapeCsvCell(value: string): string {
   return str;
 }
 
-function exportToCsv(doc: ProductionDoc) {
+function exportToCsv(doc: ProductionDoc, rowImages: RowImageState[]) {
   const headers = [
     'Timecode', 'Script Text', 'Visual Type', 'Visual Description',
-    'Stock Search Terms', 'AI Image Prompt (kie.ai)', 'On-Screen Text', 'Notes',
+    'Stock Search Terms', 'AI Image Prompt', 'Image URL', 'Stock Search URL',
+    'On-Screen Text', 'Notes',
   ];
-  const rows = doc.rows.map(r => [
+  const rows = doc.rows.map((r, i) => [
     r.timecode,
     r.script_text,
     r.visual_type,
     r.visual_description,
     r.stock_search_terms,
     r.ai_image_prompt,
+    rowImages[i]?.imageUrl || '',
+    rowImages[i]?.searchUrl || '',
     r.on_screen_text,
     r.notes,
   ].map(escapeCsvCell).join(','));
@@ -78,6 +151,8 @@ function exportToCsv(doc: ProductionDoc) {
   URL.revokeObjectURL(url);
   toast.success('CSV exported — open in Excel or Google Sheets');
 }
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -102,96 +177,586 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+function ImageCell({ state, onRetry }: { state: RowImageState; onRetry: () => void }) {
+  if (state.status === 'idle') return null;
+
+  if (state.status === 'search') {
+    return (
+      <a
+        href={state.searchUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded whitespace-nowrap"
+        style={{ background: 'rgba(59,130,246,0.12)', color: '#60a5fa' }}
+      >
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+        </svg>
+        Search Images
+      </a>
+    );
+  }
+
+  if (state.status === 'pending') {
+    return (
+      <span className="text-xs" style={{ color: 'var(--text-muted)', letterSpacing: 2 }}>•••</span>
+    );
+  }
+
+  if (state.status === 'loading') {
+    return <div className="spinner" style={{ width: 16, height: 16 }} />;
+  }
+
+  if (state.status === 'done' && state.imageUrl) {
+    return (
+      <a href={state.imageUrl} target="_blank" rel="noopener noreferrer" title="Open full image">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={state.imageUrl}
+          alt="AI generated"
+          style={{
+            width: 80,
+            height: 50,
+            objectFit: 'cover',
+            borderRadius: 5,
+            border: '1px solid var(--border)',
+            display: 'block',
+          }}
+        />
+      </a>
+    );
+  }
+
+  if (state.status === 'error') {
+    return (
+      <div className="flex flex-col gap-1">
+        <span className="text-xs" style={{ color: '#f87171' }} title={state.error}>⚠ Failed</span>
+        <button
+          onClick={onRetry}
+          className="text-xs px-1.5 py-0.5 rounded"
+          style={{ background: 'rgba(239,68,68,0.12)', color: '#f87171' }}
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
+
 export default function ProductionDocPage() {
+  // — Inputs
   const [script, setScript] = useState('');
   const [niche, setNiche] = useState('');
   const [topic, setTopic] = useState('');
-  const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('script-generator'));
+  const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('production-doc'));
+
+  function handleModelChange(id: string) {
+    setModelId(id);
+    // Persist as the default for Production Doc (readable in Settings → Model Defaults)
+    try {
+      const saved = JSON.parse(localStorage.getItem('feature_model_defaults') || '{}');
+      saved['production-doc'] = id;
+      localStorage.setItem('feature_model_defaults', JSON.stringify(saved));
+    } catch { /* ignore storage errors */ }
+  }
   const [speakingPace, setSpeakingPace] = useState(135);
+  const [stylePreset, setStylePreset] = useState('cinematic');
+  const [creativeBrief, setCreativeBrief] = useState('');
+  const [ytRefInput, setYtRefInput] = useState('');
+  const [visualRefs, setVisualRefs] = useState<VisualRef[]>([]);
+  const screenshotInputRef = useRef<HTMLInputElement>(null);
+
+  // — Generation
   const [generating, setGenerating] = useState(false);
+  const [generationLog, setGenerationLog] = useState<string[]>([]);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
   const [doc, setDoc] = useState<ProductionDoc | null>(null);
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
+  const logEndRef = useRef<HTMLDivElement>(null);
 
-  // Load prefill from localStorage (set by generator/QA pages)
   useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  // Auto-scroll log to bottom when new entries are added
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [generationLog.length]);
+
+  // — Image generation
+  const [rowImages, setRowImages] = useState<RowImageState[]>([]);
+  const [imageProgress, setImageProgress] = useState({ done: 0, total: 0 });
+  const [imagesGenerating, setImagesGenerating] = useState(false);
+
+  // — Autocomplete hints
+  const [nicheHints, setNicheHints] = useState<string[]>([]);
+  const [topicHints, setTopicHints] = useState<string[]>([]);
+
+  // — Google Sheets export
+  const [sheetsExporting, setSheetsExporting] = useState(false);
+  const [sheetsUrl, setSheetsUrl] = useState<string | null>(null);
+  const [oauthChannels, setOauthChannels] = useState<{ id: string; name: string; thumbnailUrl?: string }[]>([]);
+  const [selectedChannelId, setSelectedChannelId] = useState<string>('');
+
+  // Load OAuth-connected channels for Sheets export
+  useEffect(() => {
+    fetch('/api/channels')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data) return;
+        const connected = (data.channels ?? data ?? []).filter(
+          (c: { oauth_connected?: boolean }) => c.oauth_connected,
+        );
+        setOauthChannels(connected.map((c: { id: string; name: string; thumbnailUrl?: string }) => ({
+          id: c.id,
+          name: c.name,
+          thumbnailUrl: c.thumbnailUrl,
+        })));
+        if (connected.length > 0) setSelectedChannelId(connected[0].id);
+      })
+      .catch(() => { /* channels are optional */ });
+  }, []);
+
+  // Load prefill from generator / QA pages
+  useEffect(() => {
+    setNicheHints(getRecentNiches());
+    setTopicHints(getRecentTopics());
     try {
       const raw = localStorage.getItem('prodoc_prefill');
       if (raw) {
         localStorage.removeItem('prodoc_prefill');
         const data = JSON.parse(raw);
         if (data.script) setScript(data.script);
-        if (data.niche) setNiche(data.niche);
-        if (data.topic) setTopic(data.topic);
+        if (data.niche)  setNiche(data.niche);
+        if (data.topic)  setTopic(data.topic);
       }
-    } catch {}
+    } catch { /* ignore */ }
   }, []);
+
+  // ── YouTube reference helpers
+
+  async function analyzeYouTubeStyle(url: string, idx: number) {
+    setVisualRefs(prev => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], analyzing: true };
+      return next;
+    });
+    try {
+      const res = await fetch('/api/analyze/youtube-style', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ youtubeUrl: url }),
+      });
+      const data = await safeJson(res);
+      if (!res.ok) throw new Error((data.error as string) || 'Analysis failed');
+      setVisualRefs(prev => {
+        const next = [...prev];
+        next[idx] = {
+          ...next[idx],
+          analyzing: false,
+          title: (data.title as string) || undefined,
+          channelTitle: (data.channelTitle as string) || undefined,
+          analyzedStyle: data.styleDescription as string,
+        };
+        return next;
+      });
+      if (data.styleDescription) {
+        setCreativeBrief(prev => {
+          const label = (data.title as string) || url;
+          const tag = `[YouTube ref "${label}": ${data.styleDescription}]`;
+          return prev ? `${prev}\n\n${tag}` : tag;
+        });
+        toast.success('Visual style extracted from YouTube thumbnail');
+      }
+    } catch {
+      setVisualRefs(prev => {
+        const next = [...prev];
+        next[idx] = { ...next[idx], analyzing: false };
+        return next;
+      });
+      // Silent fail — thumbnail analysis is best-effort
+    }
+  }
+
+  function addYtRef() {
+    const id = extractYouTubeId(ytRefInput);
+    if (!id) { toast.error('Invalid YouTube URL'); return; }
+    const canonical = `https://www.youtube.com/watch?v=${id}`;
+    if (visualRefs.some(r => r.type === 'youtube' && r.url === canonical)) { toast.error('Already added'); return; }
+    // Capture index before state update — safe because we only ever append
+    const newIdx = visualRefs.length;
+    setVisualRefs(prev => [...prev, { type: 'youtube' as const, url: canonical }]);
+    setYtRefInput('');
+    // Analyze outside the state updater to avoid side-effects in a pure function
+    analyzeYouTubeStyle(canonical, newIdx);
+  }
+
+  async function analyzeScreenshot(ref: VisualRef, idx: number) {
+    if (!ref.dataUrl || !ref.mediaType) return;
+    const base64 = ref.dataUrl.split(',')[1];
+    if (!base64) return; // malformed data URL
+    setVisualRefs(prev => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], analyzing: true };
+      return next;
+    });
+    try {
+      const res = await fetch('/api/analyze/image-style', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64: base64, mediaType: ref.mediaType }),
+      });
+      const data = await safeJson(res);
+      if (!res.ok) throw new Error((data.error as string) || 'Analysis failed');
+      setVisualRefs(prev => {
+        const next = [...prev];
+        next[idx] = { ...next[idx], analyzing: false, analyzedStyle: data.description as string };
+        return next;
+      });
+      // Append to creative brief
+      if (data.description) {
+        setCreativeBrief(prev => {
+          const tag = `[Screenshot style: ${data.description}]`;
+          return prev ? `${prev}\n\n${tag}` : tag;
+        });
+        toast.success('Style extracted from screenshot and added to creative brief');
+      }
+    } catch (err) {
+      setVisualRefs(prev => {
+        const next = [...prev];
+        next[idx] = { ...next[idx], analyzing: false };
+        return next;
+      });
+      toast.error(err instanceof Error ? err.message : 'Style analysis failed');
+    }
+  }
+
+  function handleScreenshotUpload(files: FileList | null) {
+    if (!files) return;
+    Array.from(files).forEach(file => {
+      if (!file.type.startsWith('image/')) { toast.error('Only image files are supported'); return; }
+      if (file.size > 5 * 1024 * 1024) { toast.error('Image must be under 5 MB'); return; }
+      const reader = new FileReader();
+      reader.onload = e => {
+        const dataUrl = e.target?.result as string;
+        const newRef: VisualRef = {
+          type: 'screenshot',
+          dataUrl,
+          mediaType: file.type,
+          name: file.name,
+        };
+        const newIdx = visualRefs.length;
+        setVisualRefs(prev => [...prev, newRef]);
+        // Analyze outside the state updater
+        analyzeScreenshot(newRef, newIdx);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // ── Per-row image generation
+
+  async function generateImageForRow(rowIndex: number, prompt: string, signal?: AbortSignal): Promise<boolean> {
+    setRowImages(prev => {
+      const next = [...prev];
+      next[rowIndex] = { ...next[rowIndex], status: 'loading' };
+      return next;
+    });
+    try {
+      const res = await fetch('/api/generate/production-doc/image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal,
+        body: JSON.stringify({ prompt }),
+      });
+      const data = await safeJson(res);
+      if (!res.ok) throw new Error((data.error as string) || 'Failed');
+      setRowImages(prev => {
+        const next = [...prev];
+        next[rowIndex] = { status: 'done', imageUrl: data.imageUrl as string };
+        return next;
+      });
+      return true;
+    } catch (err) {
+      setRowImages(prev => {
+        const next = [...prev];
+        next[rowIndex] = { status: 'error', error: err instanceof Error ? err.message : 'Failed' };
+        return next;
+      });
+      return false;
+    }
+  }
+
+  async function generateImages(rows: ProductionRow[], signal?: AbortSignal) {
+    const aiRows = rows
+      .map((r, i) => ({ row: r, idx: i }))
+      .filter(({ row }) => row.ai_image_prompt?.trim());
+
+    // Initialise all row states immediately
+    const initialStates: RowImageState[] = rows.map(r => {
+      if (!r.ai_image_prompt?.trim()) {
+        const q = r.stock_search_terms || r.visual_description || r.visual_type;
+        return {
+          status: 'search',
+          searchUrl: `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(q)}`,
+        };
+      }
+      return { status: 'pending' };
+    });
+    setRowImages(initialStates);
+    setImageProgress({ done: 0, total: aiRows.length });
+    if (aiRows.length === 0) return;
+
+    setImagesGenerating(true);
+    appendLog(`Starting AI image generation for ${aiRows.length} shots (2 at a time)...`);
+    let doneCount = 0;
+    const CONCURRENCY = 2;
+
+    for (let i = 0; i < aiRows.length; i += CONCURRENCY) {
+      if (signal?.aborted) break;
+      const batch = aiRows.slice(i, i + CONCURRENCY);
+      await Promise.all(
+        batch.map(async ({ row, idx }) => {
+          if (signal?.aborted) return;
+          await generateImageForRow(idx, row.ai_image_prompt, signal);
+          doneCount++;
+          setImageProgress({ done: doneCount, total: aiRows.length });
+          appendLog(`Image ${doneCount}/${aiRows.length} — shot ${idx + 1} (${row.visual_type})`);
+        }),
+      );
+    }
+
+    setImagesGenerating(false);
+    appendLog(`✓ All ${aiRows.length} images complete`);
+    toast.success(`${aiRows.length} images generated`);
+  }
+
+  // ── Main generation
+
+  const appendLog = useCallback((msg: string) => {
+    if (!mountedRef.current) return;
+    const ts = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setGenerationLog(prev => [...prev, `${ts}  ${msg}`]);
+  }, []);
+
+  function cancelGeneration() {
+    abortControllerRef.current?.abort();
+  }
 
   async function generate() {
     if (!script.trim() || !niche.trim()) {
       toast.error('Script and niche are required');
       return;
     }
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setGenerating(true);
     setDoc(null);
+    setRowImages([]);
+    setImageProgress({ done: 0, total: 0 });
+    setImagesGenerating(false);
+    setGenerationLog([]);
+
     try {
+      // Build creative brief from analyzed visual refs (not raw URLs — the model can't click them)
+      let fullBrief = creativeBrief.trim();
+
+      const analyzedRefs = visualRefs.filter(r => r.analyzedStyle);
+      if (analyzedRefs.length > 0) {
+        const refLines = analyzedRefs.map(r => {
+          if (r.type === 'youtube') {
+            const label = r.title ? `"${r.title}"` : r.url || 'YouTube';
+            return `• YouTube ref ${label}: ${r.analyzedStyle}`;
+          }
+          return `• Screenshot${r.name ? ` "${r.name}"` : ''}: ${r.analyzedStyle}`;
+        }).join('\n');
+        fullBrief += (fullBrief ? '\n\n' : '') + `Visual Style References (match these exactly):\n${refLines}`;
+      }
+
+      const pendingRefs = visualRefs.filter(r => r.type === 'youtube' && r.url && !r.analyzedStyle && !r.analyzing);
+      if (pendingRefs.length > 0) {
+        appendLog(`⚠ ${pendingRefs.length} YouTube ref(s) not yet analyzed — add them earlier to include their style`);
+      }
+
+      const analyzedCount = analyzedRefs.length;
+      appendLog(`Script: ${wordCount} words · Style: ${stylePreset}${analyzedCount > 0 ? ` · ${analyzedCount} visual ref(s) analyzed` : ''}`);
+      appendLog('Sending to AI model...');
+
       const res = await fetch('/api/generate/production-doc', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ modelId, script, niche, topic, speakingPaceWpm: speakingPace }),
+        signal: controller.signal,
+        body: JSON.stringify({
+          modelId, script, niche, topic,
+          speakingPaceWpm: speakingPace,
+          stylePreset,
+          creativeBrief: fullBrief || undefined,
+        }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Generation failed');
-      setDoc(data.result as ProductionDoc);
-      toast.success(`Production doc ready — ${data.result.rows?.length} shots`);
+
+      appendLog('Response received — parsing production doc...');
+      const data = await safeJson(res);
+      if (!res.ok) throw new Error((data.error as string) || 'Generation failed');
+
+      const result = data.result as ProductionDoc;
+      if (!result?.rows?.length) {
+        throw new Error('Production doc returned empty — the AI may have failed to parse the script. Try again.');
+      }
+
+      setDoc(result);
+      saveProductionDocEntry({
+        title: result.title || topic || niche,
+        niche: result.niche || niche,
+        topic,
+        modelId,
+        shotCount: result.rows.length,
+        totalDuration: result.total_duration,
+        totalWords: result.total_words,
+        stylePreset,
+      });
+      appendLog(`✓ ${result.rows.length} shots generated`);
+      toast.success(`Production doc ready — ${result.rows.length} shots`);
       setTimeout(() => tableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+
+      // Fire-and-forget image generation — passes the same abort signal so Stop also cancels images
+      generateImages(result.rows, controller.signal).catch(err => {
+        if (err instanceof Error && err.name !== 'AbortError') {
+          console.error('Image generation error:', err);
+        }
+      });
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Generation failed');
+      if (err instanceof Error && err.name === 'AbortError') {
+        appendLog('⊘ Cancelled');
+        toast.info('Generation cancelled');
+      } else {
+        const msg = err instanceof Error ? err.message : 'Generation failed';
+        appendLog(`✗ ${msg}`);
+        toast.error(msg);
+      }
     } finally {
       setGenerating(false);
+      abortControllerRef.current = null;
+    }
+  }
+
+  // ── Google Sheets export
+
+  async function exportToSheets() {
+    if (!doc) return;
+    if (!selectedChannelId) {
+      toast.error('Connect a YouTube channel first (Settings → Channels → Authorize)');
+      return;
+    }
+    setSheetsExporting(true);
+    setSheetsUrl(null);
+    try {
+      const exportData = {
+        title: doc.title || topic || niche,
+        niche: doc.niche,
+        totalDuration: doc.total_duration,
+        totalWords: doc.total_words,
+        speakingPaceWpm: doc.speaking_pace_wpm,
+        rows: doc.rows.map((r, i) => ({
+          timecode: r.timecode,
+          script_text: r.script_text,
+          visual_type: r.visual_type,
+          visual_description: r.visual_description,
+          stock_search_terms: r.stock_search_terms,
+          ai_image_prompt: r.ai_image_prompt,
+          on_screen_text: r.on_screen_text,
+          notes: r.notes,
+          imageUrl: rowImages[i]?.imageUrl,
+          searchUrl: rowImages[i]?.searchUrl,
+        })),
+      };
+      const res = await fetch('/api/production-doc/export-sheets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channelId: selectedChannelId, exportData }),
+      });
+      const data = await safeJson(res);
+      if (!res.ok) {
+        if ((data.error as string) === 'NEEDS_REAUTH') {
+          toast.error(
+            (data.message as string) ||
+            'Google Sheets access not granted — re-authorize your channel in Settings → Channels',
+            { duration: 8000 },
+          );
+          return;
+        }
+        throw new Error((data.error as string) || 'Export failed');
+      }
+      const url = data.sheetUrl as string;
+      setSheetsUrl(url);
+      window.open(url, '_blank', 'noopener,noreferrer');
+      toast.success('Exported to Google Sheets!');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Export failed');
+    } finally {
+      setSheetsExporting(false);
     }
   }
 
   const wordCount = script.trim() ? script.trim().split(/\s+/).length : 0;
   const estDuration = wordCount > 0
-    ? `~${Math.floor((wordCount / speakingPace))}:${String(Math.round(((wordCount / speakingPace) % 1) * 60)).padStart(2, '0')}`
+    ? `~${Math.floor(wordCount / speakingPace)}:${String(Math.round(((wordCount / speakingPace) % 1) * 60)).padStart(2, '0')}`
     : null;
+
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div className="p-6 max-w-full">
-      {/* Header */}
+
+      {/* ── Header */}
       <div className="mb-6">
-        <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>Production Document</h1>
+        <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>
+          Production Document
+        </h1>
         <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
-          Generate a shot-by-shot production breakdown with timecodes, visuals, stock terms, and AI image prompts for your editor
+          Generate a shot-by-shot breakdown with timecodes, visuals, auto-generated AI images, and Google Images links
         </p>
       </div>
 
-      {/* Input Panel */}
-      <div className="glass rounded-xl p-5 mb-6">
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3 mb-4">
+      {/* ── Input Panel */}
+      <div className="glass rounded-xl p-5 mb-6 space-y-5">
+
+        {/* Row: niche / topic / pace */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <div>
             <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>Niche *</label>
-            <input
+            <AutocompleteInput
               value={niche}
-              onChange={e => setNiche(e.target.value)}
+              onChange={setNiche}
+              suggestions={nicheHints}
               placeholder="e.g. Cybersecurity & Antivirus"
-              className="input-field"
             />
           </div>
           <div>
             <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>Video Topic</label>
-            <input
+            <AutocompleteInput
               value={topic}
-              onChange={e => setTopic(e.target.value)}
+              onChange={setTopic}
+              suggestions={topicHints}
               placeholder="e.g. Top 5 Antivirus Mistakes"
-              className="input-field"
             />
           </div>
           <div>
             <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
               Speaking Pace (wpm)
-              {estDuration && <span className="ml-2 font-normal" style={{ color: 'var(--text-muted)' }}>→ est. {estDuration} video</span>}
+              {estDuration && (
+                <span className="ml-2 font-normal" style={{ color: 'var(--text-muted)' }}>
+                  → est. {estDuration} video
+                </span>
+              )}
             </label>
             <select
               value={speakingPace}
@@ -207,7 +772,157 @@ export default function ProductionDocPage() {
           </div>
         </div>
 
-        <div className="mb-4">
+        {/* ── Creative Direction card */}
+        <div
+          className="rounded-lg p-4 space-y-4"
+          style={{ background: 'rgba(124,58,237,0.05)', border: '1px solid rgba(124,58,237,0.15)' }}
+        >
+          <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--accent-purple-bright)' }}>
+            Creative Direction
+          </h3>
+
+          {/* Style preset buttons */}
+          <div>
+            <label className="block text-xs font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
+              Visual Style
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {STYLE_PRESETS.map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => setStylePreset(p.id)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+                  style={{
+                    background: stylePreset === p.id ? 'rgba(124,58,237,0.25)' : 'rgba(255,255,255,0.05)',
+                    color: stylePreset === p.id ? '#a78bfa' : 'var(--text-secondary)',
+                    border: stylePreset === p.id ? '1px solid rgba(124,58,237,0.4)' : '1px solid var(--border)',
+                  }}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Creative brief */}
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+              Creative Brief
+            </label>
+            <textarea
+              value={creativeBrief}
+              onChange={e => setCreativeBrief(e.target.value)}
+              placeholder="Describe the mood, color palette, tone, or any specific visual direction… e.g. Dark cyberpunk aesthetic, neon blues and purples, futuristic UI overlays"
+              className="input-field text-xs"
+              style={{ minHeight: 68, resize: 'vertical' }}
+            />
+          </div>
+
+          {/* Visual References — YouTube URLs or uploaded screenshots */}
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+              Visual References
+            </label>
+            <div className="flex gap-2 mb-2 flex-wrap">
+              <input
+                value={ytRefInput}
+                onChange={e => setYtRefInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addYtRef(); } }}
+                placeholder="Paste a YouTube URL and press Enter"
+                className="input-field flex-1 text-xs"
+                style={{ minWidth: 180 }}
+              />
+              <button onClick={addYtRef} className="btn-secondary text-xs px-3 shrink-0">
+                + YouTube
+              </button>
+              <button
+                onClick={() => screenshotInputRef.current?.click()}
+                className="btn-secondary text-xs px-3 shrink-0"
+              >
+                + Screenshot
+              </button>
+              <input
+                ref={screenshotInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                style={{ display: 'none' }}
+                onChange={e => handleScreenshotUpload(e.target.files)}
+              />
+            </div>
+            <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+              Add YouTube videos or upload screenshots — AI will analyze the style and auto-fill the creative brief
+            </p>
+            {visualRefs.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {visualRefs.map((ref, idx) => (
+                  <div key={idx} className="relative group">
+                    {ref.type === 'youtube' && ref.url ? (
+                      <div style={{ position: 'relative' }}>
+                        <a href={ref.url} target="_blank" rel="noopener noreferrer">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={`https://img.youtube.com/vi/${extractYouTubeId(ref.url)}/mqdefault.jpg`}
+                            alt="YouTube reference"
+                            title={ref.analyzedStyle || ref.title || ref.url}
+                            style={{ width: 100, height: 56, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)', display: 'block' }}
+                          />
+                        </a>
+                        {ref.analyzing && (
+                          <div className="absolute inset-0 flex items-center justify-center rounded-md" style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(2px)' }}>
+                            <div className="spinner" style={{ width: 16, height: 16 }} />
+                          </div>
+                        )}
+                        {ref.analyzedStyle && !ref.analyzing && (
+                          <div className="absolute bottom-0 left-0 right-0 rounded-b-md px-1 py-0.5 text-center" style={{ background: 'rgba(16,185,129,0.85)', fontSize: '0.55rem', color: 'white', lineHeight: 1.2 }}>
+                            ✓ Style analyzed
+                          </div>
+                        )}
+                      </div>
+                    ) : ref.type === 'screenshot' && ref.dataUrl ? (
+                      <div style={{ position: 'relative' }}>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={ref.dataUrl}
+                          alt={ref.name || 'Screenshot'}
+                          title={ref.analyzedStyle || ref.name}
+                          style={{ width: 100, height: 56, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)', display: 'block' }}
+                        />
+                        {ref.analyzing && (
+                          <div
+                            className="absolute inset-0 flex items-center justify-center rounded-md"
+                            style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(2px)' }}
+                          >
+                            <div className="spinner" style={{ width: 16, height: 16 }} />
+                          </div>
+                        )}
+                        {ref.analyzedStyle && !ref.analyzing && (
+                          <div
+                            className="absolute bottom-0 left-0 right-0 rounded-b-md px-1 py-0.5 text-center"
+                            style={{ background: 'rgba(16,185,129,0.85)', fontSize: '0.55rem', color: 'white', lineHeight: 1.2 }}
+                          >
+                            ✓ Style analyzed
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
+                    <button
+                      onClick={() => setVisualRefs(prev => prev.filter((_, i) => i !== idx))}
+                      className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold"
+                      style={{ background: '#ef4444', color: 'white', lineHeight: 1 }}
+                      title="Remove"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Script textarea */}
+        <div>
           <div className="flex items-center justify-between mb-1.5">
             <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>Script *</label>
             {wordCount > 0 && (
@@ -225,9 +940,10 @@ export default function ProductionDocPage() {
           />
         </div>
 
+        {/* Model + Generate */}
         <div className="flex items-center gap-3">
           <div className="flex-1">
-            <ModelSelector value={modelId} onChange={setModelId} label="" />
+            <ModelSelector value={modelId} onChange={handleModelChange} label="" />
           </div>
           <button
             onClick={generate}
@@ -237,40 +953,134 @@ export default function ProductionDocPage() {
             {generating ? (
               <><div className="spinner" style={{ width: 14, height: 14 }} /> Generating...</>
             ) : (
-              '🎬 Generate Production Doc'
+              'Generate Production Doc'
             )}
           </button>
         </div>
 
-        {generating && (
-          <div className="mt-3 p-3 rounded-lg text-xs" style={{ background: 'rgba(124,58,237,0.08)', color: 'var(--text-secondary)' }}>
-            Breaking your script into shots and writing visual directions + AI prompts for every scene. This takes 20–40 seconds...
+        {(generating || generationLog.length > 0) && (
+          <div
+            className="rounded-lg overflow-hidden"
+            style={{ background: 'rgba(0,0,0,0.35)', border: '1px solid rgba(124,58,237,0.2)' }}
+          >
+            <div className="flex items-center justify-between px-3 py-2" style={{ borderBottom: '1px solid rgba(124,58,237,0.15)', background: 'rgba(124,58,237,0.08)' }}>
+              <div className="flex items-center gap-2">
+                {generating && <div className="spinner" style={{ width: 10, height: 10 }} />}
+                <span className="text-xs font-medium" style={{ color: 'var(--accent-purple-bright)' }}>
+                  {generating ? 'Generating…' : 'Done'}
+                </span>
+              </div>
+              {generating && (
+                <button
+                  onClick={cancelGeneration}
+                  className="text-xs px-2 py-0.5 rounded transition-colors"
+                  style={{ background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)' }}
+                >
+                  ✕ Stop
+                </button>
+              )}
+            </div>
+            <div className="px-3 py-2 font-mono text-xs space-y-0.5 max-h-40 overflow-y-auto" style={{ color: 'var(--text-secondary)' }}>
+              {generationLog.map((line, i) => (
+                <div key={i} style={{ color: line.includes('✓') ? '#34d399' : line.includes('✗') || line.includes('⊘') ? '#f87171' : line.includes('⚠') ? '#fbbf24' : 'var(--text-secondary)' }}>
+                  {line}
+                </div>
+              ))}
+              {generating && <div style={{ color: 'var(--text-muted)' }}>▌</div>}
+              <div ref={logEndRef} />
+            </div>
           </div>
         )}
       </div>
 
-      {/* Results */}
+      {/* ── Image Generation Progress */}
+      {(imagesGenerating || (imageProgress.total > 0 && imageProgress.done < imageProgress.total)) && (
+        <div className="glass rounded-xl p-4 mb-6">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+              Generating AI images with Grok…
+            </span>
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              {imageProgress.done} / {imageProgress.total}
+            </span>
+          </div>
+          <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
+            <div
+              className="h-1.5 rounded-full transition-all duration-700"
+              style={{
+                width: `${imageProgress.total ? (imageProgress.done / imageProgress.total) * 100 : 0}%`,
+                background: 'linear-gradient(90deg, #7c3aed, #06b6d4)',
+              }}
+            />
+          </div>
+          <p className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
+            Each image takes ~30–60 s. They appear inline as they complete — non-AI rows already have Google Image search links.
+          </p>
+        </div>
+      )}
+
+      {/* ── Results */}
       {doc && (
         <div ref={tableRef}>
-          {/* Doc header + export */}
+          {/* Doc header */}
           <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
             <div>
-              <h2 className="text-lg font-bold" style={{ color: 'var(--text-primary)' }}>{doc.title || topic || niche}</h2>
+              <h2 className="text-lg font-bold" style={{ color: 'var(--text-primary)' }}>
+                {doc.title || topic || niche}
+              </h2>
               <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
                 {doc.rows?.length} shots · {doc.total_duration} · {doc.total_words?.toLocaleString()} words · {doc.speaking_pace_wpm} wpm
               </p>
             </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => exportToCsv(doc)}
-                className="btn-primary text-sm px-4"
-              >
-                ⬇ Export CSV / Google Sheets
+            <div className="flex flex-wrap items-center gap-2">
+              <button onClick={() => exportToCsv(doc, rowImages)} className="btn-primary text-sm px-4">
+                ⬇ Export CSV
               </button>
+              {/* Google Sheets export */}
+              {oauthChannels.length > 1 && (
+                <select
+                  value={selectedChannelId}
+                  onChange={e => setSelectedChannelId(e.target.value)}
+                  className="input-field text-xs"
+                  style={{ height: 34, minWidth: 130, padding: '0 8px' }}
+                >
+                  {oauthChannels.map(c => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              )}
               <button
-                onClick={generate}
-                className="btn-secondary text-sm px-4"
+                onClick={exportToSheets}
+                disabled={sheetsExporting}
+                className="btn-secondary text-sm px-4 flex items-center gap-1.5"
+                title={oauthChannels.length === 0 ? 'Connect a YouTube channel in Settings → Channels first' : 'Export to Google Sheets'}
               >
+                {sheetsExporting ? (
+                  <><div className="spinner" style={{ width: 12, height: 12 }} /> Exporting…</>
+                ) : (
+                  <>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ opacity: 0.85 }}>
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <polyline points="14 2 14 8 20 8" />
+                      <line x1="8" y1="13" x2="16" y2="13" />
+                      <line x1="8" y1="17" x2="16" y2="17" />
+                    </svg>
+                    Export to Sheets
+                  </>
+                )}
+              </button>
+              {sheetsUrl && (
+                <a
+                  href={sheetsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs flex items-center gap-1 underline"
+                  style={{ color: '#34d399' }}
+                >
+                  ↗ Open Sheet
+                </a>
+              )}
+              <button onClick={generate} className="btn-secondary text-sm px-4">
                 ↺ Regenerate
               </button>
             </div>
@@ -279,87 +1089,101 @@ export default function ProductionDocPage() {
           {/* Legend */}
           <div className="flex flex-wrap gap-2 mb-4">
             {Object.entries(VISUAL_TYPE_COLORS).map(([type, { bg, color }]) => (
-              <span key={type} className="text-xs px-2 py-0.5 rounded-full"
-                style={{ background: bg, color }}>
+              <span key={type} className="text-xs px-2 py-0.5 rounded-full" style={{ background: bg, color }}>
                 {type}
               </span>
             ))}
           </div>
 
-          {/* Table */}
+          {/* ── Desktop table */}
           <div className="glass rounded-xl overflow-hidden">
-            {/* Desktop table */}
             <div className="overflow-x-auto hidden md:block">
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
                 <thead>
                   <tr style={{ background: 'var(--bg-card)', borderBottom: '1px solid var(--border)' }}>
-                    {['#', 'Time', 'Script Text', 'Visual Type', 'Visual Description', 'Stock Terms', 'AI Image Prompt', 'On-Screen Text', 'Notes'].map(h => (
+                    {['#', 'Time', 'Script Text', 'Visual Type', 'Visual Description', 'Stock Terms', 'Image', 'AI Prompt', 'On-Screen Text', 'Notes'].map(h => (
                       <th key={h} style={{
                         padding: '10px 12px', textAlign: 'left', fontWeight: 600,
                         color: 'var(--text-secondary)', whiteSpace: 'nowrap',
                         borderRight: '1px solid var(--border)',
-                      }}>{h}</th>
+                      }}>
+                        {h}
+                      </th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {doc.rows?.map((row, i) => {
                     const vt = VISUAL_TYPE_COLORS[row.visual_type] || VISUAL_TYPE_COLORS['B-Roll'];
+                    const imgState = rowImages[i] || { status: 'idle' };
                     return (
-                      <tr key={i}
+                      <tr
+                        key={i}
                         style={{
                           borderBottom: '1px solid var(--border)',
                           background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)',
                         }}
                       >
-                        {/* Row number */}
+                        {/* # */}
                         <td style={{ padding: '8px 10px', color: 'var(--text-muted)', whiteSpace: 'nowrap', borderRight: '1px solid var(--border)' }}>
                           {i + 1}
                         </td>
                         {/* Timecode */}
-                        <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: 'var(--accent-cyan-bright)', whiteSpace: 'nowrap', borderRight: '1px solid var(--border)', fontWeight: 600 }}>
+                        <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: 'var(--accent-cyan-bright)', whiteSpace: 'nowrap', fontWeight: 600, borderRight: '1px solid var(--border)' }}>
                           {row.timecode}
                         </td>
                         {/* Script text */}
-                        <td style={{ padding: '8px 12px', color: 'var(--text-primary)', maxWidth: 220, borderRight: '1px solid var(--border)', lineHeight: 1.5 }}>
+                        <td style={{ padding: '8px 12px', color: 'var(--text-primary)', maxWidth: 200, lineHeight: 1.5, borderRight: '1px solid var(--border)' }}>
                           {row.script_text}
                         </td>
-                        {/* Visual type badge */}
+                        {/* Visual type */}
                         <td style={{ padding: '8px 10px', whiteSpace: 'nowrap', borderRight: '1px solid var(--border)' }}>
-                          <span className="px-2 py-0.5 rounded-full text-xs font-medium"
-                            style={{ background: vt.bg, color: vt.color }}>
+                          <span className="px-2 py-0.5 rounded-full text-xs font-medium" style={{ background: vt.bg, color: vt.color }}>
                             {row.visual_type}
                           </span>
                         </td>
                         {/* Visual description */}
-                        <td style={{ padding: '8px 12px', color: 'var(--text-secondary)', maxWidth: 200, borderRight: '1px solid var(--border)', lineHeight: 1.5 }}>
+                        <td style={{ padding: '8px 12px', color: 'var(--text-secondary)', maxWidth: 180, lineHeight: 1.5, borderRight: '1px solid var(--border)' }}>
                           {row.visual_description}
                         </td>
                         {/* Stock terms */}
-                        <td style={{ padding: '8px 12px', color: 'var(--text-muted)', maxWidth: 150, borderRight: '1px solid var(--border)' }}>
+                        <td style={{ padding: '8px 12px', maxWidth: 130, borderRight: '1px solid var(--border)' }}>
                           <div className="flex flex-wrap gap-1">
                             {row.stock_search_terms.split(',').map((t, ti) => (
-                              <span key={ti} className="px-1.5 py-0.5 rounded text-xs"
-                                style={{ background: 'var(--bg-card)', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                              <span key={ti} className="px-1.5 py-0.5 rounded text-xs" style={{ background: 'var(--bg-card)', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
                                 {t.trim()}
                               </span>
                             ))}
                           </div>
                         </td>
-                        {/* AI image prompt */}
-                        <td style={{ padding: '8px 12px', maxWidth: 260, borderRight: '1px solid var(--border)' }}>
-                          <div className="flex items-start gap-1">
-                            <span style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', lineHeight: 1.5, flex: 1 }}>
-                              {row.ai_image_prompt}
-                            </span>
-                            <CopyButton text={row.ai_image_prompt} />
-                          </div>
+                        {/* Image */}
+                        <td style={{ padding: '8px 10px', width: 100, borderRight: '1px solid var(--border)', verticalAlign: 'middle' }}>
+                          <ImageCell
+                            state={imgState}
+                            onRetry={() => {
+                              if (row.ai_image_prompt?.trim()) {
+                                generateImageForRow(i, row.ai_image_prompt);
+                              }
+                            }}
+                          />
+                        </td>
+                        {/* AI prompt */}
+                        <td style={{ padding: '8px 12px', maxWidth: 240, borderRight: '1px solid var(--border)' }}>
+                          {row.ai_image_prompt ? (
+                            <div className="flex items-start gap-1">
+                              <span style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', lineHeight: 1.5, flex: 1 }}>
+                                {row.ai_image_prompt}
+                              </span>
+                              <CopyButton text={row.ai_image_prompt} />
+                            </div>
+                          ) : (
+                            <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>—</span>
+                          )}
                         </td>
                         {/* On-screen text */}
                         <td style={{ padding: '8px 12px', borderRight: '1px solid var(--border)' }}>
                           {row.on_screen_text ? (
-                            <span className="px-1.5 py-0.5 rounded text-xs font-medium"
-                              style={{ background: 'rgba(245,158,11,0.15)', color: '#fbbf24' }}>
+                            <span className="px-1.5 py-0.5 rounded text-xs font-medium" style={{ background: 'rgba(245,158,11,0.15)', color: '#fbbf24' }}>
                               {row.on_screen_text}
                             </span>
                           ) : (
@@ -367,7 +1191,7 @@ export default function ProductionDocPage() {
                           )}
                         </td>
                         {/* Notes */}
-                        <td style={{ padding: '8px 12px', color: 'var(--text-muted)', maxWidth: 140, fontSize: '0.7rem', lineHeight: 1.5 }}>
+                        <td style={{ padding: '8px 12px', color: 'var(--text-muted)', maxWidth: 130, fontSize: '0.7rem', lineHeight: 1.5 }}>
                           {row.notes || '—'}
                         </td>
                       </tr>
@@ -377,10 +1201,11 @@ export default function ProductionDocPage() {
               </table>
             </div>
 
-            {/* Mobile cards */}
+            {/* ── Mobile cards */}
             <div className="md:hidden divide-y" style={{ borderColor: 'var(--border)' }}>
               {doc.rows?.map((row, i) => {
                 const vt = VISUAL_TYPE_COLORS[row.visual_type] || VISUAL_TYPE_COLORS['B-Roll'];
+                const imgState = rowImages[i] || { status: 'idle' };
                 const isOpen = expandedRow === i;
                 return (
                   <div key={i} className="p-4">
@@ -389,16 +1214,9 @@ export default function ProductionDocPage() {
                       onClick={() => setExpandedRow(isOpen ? null : i)}
                     >
                       <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem', width: 16 }}>{i + 1}</span>
-                      <span style={{ fontFamily: 'monospace', color: 'var(--accent-cyan-bright)', fontWeight: 700, fontSize: '0.8rem' }}>
-                        {row.timecode}
-                      </span>
-                      <span className="px-2 py-0.5 rounded-full text-xs"
-                        style={{ background: vt.bg, color: vt.color }}>
-                        {row.visual_type}
-                      </span>
-                      <span className="flex-1 text-xs truncate" style={{ color: 'var(--text-secondary)' }}>
-                        {row.script_text}
-                      </span>
+                      <span style={{ fontFamily: 'monospace', color: 'var(--accent-cyan-bright)', fontWeight: 700, fontSize: '0.8rem' }}>{row.timecode}</span>
+                      <span className="px-2 py-0.5 rounded-full text-xs" style={{ background: vt.bg, color: vt.color }}>{row.visual_type}</span>
+                      <span className="flex-1 text-xs truncate" style={{ color: 'var(--text-secondary)' }}>{row.script_text}</span>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                         style={{ transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s', color: 'var(--text-muted)', flexShrink: 0 }}>
                         <path d="M6 9l6 6 6-6" />
@@ -415,15 +1233,24 @@ export default function ProductionDocPage() {
                           <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>{row.visual_description}</p>
                         </div>
                         <div>
+                          <p className="text-xs font-semibold mb-0.5" style={{ color: 'var(--text-muted)' }}>Image</p>
+                          <ImageCell
+                            state={imgState}
+                            onRetry={() => row.ai_image_prompt?.trim() && generateImageForRow(i, row.ai_image_prompt)}
+                          />
+                        </div>
+                        {row.ai_image_prompt && (
+                          <div>
+                            <div className="flex items-center justify-between mb-0.5">
+                              <p className="text-xs font-semibold" style={{ color: 'var(--text-muted)' }}>AI Prompt</p>
+                              <CopyButton text={row.ai_image_prompt} />
+                            </div>
+                            <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>{row.ai_image_prompt}</p>
+                          </div>
+                        )}
+                        <div>
                           <p className="text-xs font-semibold mb-0.5" style={{ color: 'var(--text-muted)' }}>Stock Terms</p>
                           <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>{row.stock_search_terms}</p>
-                        </div>
-                        <div>
-                          <div className="flex items-center justify-between mb-0.5">
-                            <p className="text-xs font-semibold" style={{ color: 'var(--text-muted)' }}>AI Image Prompt</p>
-                            <CopyButton text={row.ai_image_prompt} />
-                          </div>
-                          <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>{row.ai_image_prompt}</p>
                         </div>
                         {row.on_screen_text && (
                           <div>
@@ -446,9 +1273,19 @@ export default function ProductionDocPage() {
           </div>
 
           {/* Bottom export */}
-          <div className="mt-4 flex justify-end">
-            <button onClick={() => exportToCsv(doc)} className="btn-primary text-sm px-6">
-              ⬇ Export CSV / Google Sheets
+          <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+            <button onClick={() => exportToCsv(doc, rowImages)} className="btn-primary text-sm px-6">
+              ⬇ Export CSV
+            </button>
+            <button
+              onClick={exportToSheets}
+              disabled={sheetsExporting}
+              className="btn-secondary text-sm px-6 flex items-center gap-1.5"
+              title={oauthChannels.length === 0 ? 'Connect a YouTube channel in Settings → Channels first' : 'Export to Google Sheets'}
+            >
+              {sheetsExporting ? (
+                <><div className="spinner" style={{ width: 12, height: 12 }} /> Exporting…</>
+              ) : 'Export to Sheets'}
             </button>
           </div>
         </div>

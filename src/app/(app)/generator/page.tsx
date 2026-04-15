@@ -11,7 +11,8 @@ import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
 import { ExportScript } from '@/components/ui/ExportScript';
 import { DraftsBanner } from '@/components/ui/DraftsBanner';
-import { getScriptHistory, saveScript as saveScriptToHistory, deleteScriptEntry, clearScriptHistory, type ScriptHistoryEntry } from '@/lib/history';
+import { getScriptHistory, saveScript as saveScriptToHistory, deleteScriptEntry, clearScriptHistory, getRecentTopics, type ScriptHistoryEntry } from '@/lib/history';
+import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
 
 const TONES = ['Engaging & Friendly', 'Authoritative & Expert', 'Conversational', 'Dramatic & Urgent', 'Humorous & Relaxed', 'Educational & Clear'];
@@ -48,6 +49,7 @@ interface VideoRef {
 export default function GeneratorPage() {
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('script-generator'));
   const [topic, setTopic] = useState('');
+  const [topicHints, setTopicHints] = useState<string[]>([]);
   const [niche, setNiche] = useState('');
   const [niches, setNiches] = useState<{ id: string; name: string }[]>([]);
   const [duration, setDuration] = useState(7);
@@ -157,6 +159,7 @@ export default function GeneratorPage() {
   }
 
   useEffect(() => {
+    setTopicHints(getRecentTopics());
     // Read prefill FIRST (before async fetch can overwrite)
     let prefillNiche: string | null = null;
     try {
@@ -293,11 +296,11 @@ export default function GeneratorPage() {
               <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
                 Topic / Title *
               </label>
-              <input
+              <AutocompleteInput
                 value={topic}
-                onChange={e => setTopic(e.target.value)}
+                onChange={setTopic}
+                suggestions={topicHints}
                 placeholder="e.g. How antivirus software actually works in 2024"
-                className="input-field"
               />
             </div>
 

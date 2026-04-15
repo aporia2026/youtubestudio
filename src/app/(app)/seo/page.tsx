@@ -7,7 +7,8 @@ import { ModelSelector } from '@/components/ui/ModelSelector';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { DraftsBanner } from '@/components/ui/DraftsBanner';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
-import { getSeoHistory, saveSeoEntry, deleteSeoEntry, clearSeoHistory, type SeoHistoryEntry } from '@/lib/history';
+import { getSeoHistory, saveSeoEntry, deleteSeoEntry, clearSeoHistory, getRecentTopics, type SeoHistoryEntry } from '@/lib/history';
+import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
 
 interface TitleBreakdownEntry {
@@ -60,6 +61,7 @@ interface SeoResult {
 export default function SeoPage() {
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('seo-optimizer'));
   const [topic, setTopic] = useState('');
+  const [topicHints, setTopicHints] = useState<string[]>([]);
   const [niche, setNiche] = useState('');
   const [niches, setNiches] = useState<{ id: string; name: string }[]>([]);
   const [targetKeywords, setTargetKeywords] = useState('');
@@ -73,6 +75,7 @@ export default function SeoPage() {
   const [draftId, setDraftId] = useState<string | null>(() => getActiveDraft()?.id || null);
 
   useEffect(() => {
+    setTopicHints(getRecentTopics());
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
       if (data.niches?.length) setNiche(data.niches[0].name);
@@ -230,11 +233,12 @@ export default function SeoPage() {
             {/* Topic */}
             <div>
               <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>Topic / Title *</label>
-              <input
-                className="input-field w-full"
-                placeholder="e.g. How to grow a YouTube channel in 2026"
+              <AutocompleteInput
                 value={topic}
-                onChange={e => setTopic(e.target.value)}
+                onChange={setTopic}
+                suggestions={topicHints}
+                placeholder="e.g. How to grow a YouTube channel in 2026"
+                className="input-field w-full"
               />
             </div>
 

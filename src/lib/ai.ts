@@ -38,7 +38,7 @@ function requireKieKey(): string {
   return key;
 }
 
-async function kieGeminiFetch(kieModelId: string, prompt: string, systemPrompt?: string, stream = false) {
+async function kieGeminiFetch(kieModelId: string, prompt: string, systemPrompt?: string, stream = false, maxTokens = 4000) {
   const apiKey = requireKieKey();
   const url = `${KIE_BASE}/${kieModelId}/v1/chat/completions`;
   const messages: { role: string; content: string }[] = [];
@@ -51,7 +51,7 @@ async function kieGeminiFetch(kieModelId: string, prompt: string, systemPrompt?:
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ messages, stream }),
+    body: JSON.stringify({ messages, stream, max_tokens: maxTokens }),
   });
 }
 
@@ -76,7 +76,7 @@ async function kieClaudeFetch(kieModelId: string, prompt: string, systemPrompt?:
   });
 }
 
-async function kieGptResponsesFetch(kieModelId: string, prompt: string, systemPrompt?: string, stream = false) {
+async function kieGptResponsesFetch(kieModelId: string, prompt: string, systemPrompt?: string, stream = false, maxTokens = 4000) {
   const apiKey = requireKieKey();
   const url = `${KIE_BASE}/codex/v1/responses`;
   const input = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
@@ -87,8 +87,42 @@ async function kieGptResponsesFetch(kieModelId: string, prompt: string, systemPr
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ model: kieModelId, input, stream }),
+    body: JSON.stringify({ model: kieModelId, input, stream, max_tokens: maxTokens }),
   });
+}
+
+// --- Error helpers ---
+
+/** Extract a clean error message from a failed kie.ai response.
+ *  Strips HTML (Cloudflare gateway pages) and truncates long messages. */
+async function kieErrorMessage(res: Response): Promise<string> {
+  const text = await res.text().catch(() => '');
+  // If the body is HTML (Cloudflare / nginx gateway error pages), return a clean message
+  if (text.trimStart().startsWith('<') || text.includes('</html>')) {
+    if (res.status === 502 || res.status === 503) {
+      return `Kie.ai is temporarily unavailable (${res.status} gateway error) — please try again in a moment`;
+    }
+    return `Kie.ai returned an unexpected response (HTTP ${res.status})`;
+  }
+  // Try to extract a message from JSON error responses
+  try {
+    const json = JSON.parse(text);
+    const msg = json?.error?.message || json?.message || json?.error;
+    if (typeof msg === 'string') return `Kie.ai error: ${msg}`;
+  } catch { /* not JSON */ }
+  return `Kie.ai error ${res.status}: ${text.slice(0, 200)}`;
+}
+
+/** Retry a fetch up to `attempts` times for transient 502/503/504 errors. */
+async function kieRetry(fn: () => Promise<Response>, attempts = 3): Promise<Response> {
+  let last!: Response;
+  for (let i = 0; i < attempts; i++) {
+    const res = await fn();
+    if (res.status !== 502 && res.status !== 503 && res.status !== 504) return res;
+    last = res;
+    if (i < attempts - 1) await new Promise(r => setTimeout(r, 2000 * (i + 1)));
+  }
+  return last;
 }
 
 // --- Non-streaming ---
@@ -98,15 +132,15 @@ async function kieGenerateText(modelId: string, prompt: string, systemPrompt?: s
   if (!config) throw new Error(`Unknown Kie model: ${modelId}`);
 
   if (config.endpointType === 'gemini') {
-    const res = await kieGeminiFetch(config.kieModelId, prompt, systemPrompt, false);
-    if (!res.ok) throw new Error(`Kie.ai error ${res.status}: ${await res.text()}`);
+    const res = await kieRetry(() => kieGeminiFetch(config.kieModelId, prompt, systemPrompt, false, maxTokens));
+    if (!res.ok) throw new Error(await kieErrorMessage(res));
     const data = await res.json();
     return data.choices?.[0]?.message?.content || '';
   }
 
   if (config.endpointType === 'claude') {
-    const res = await kieClaudeFetch(config.kieModelId, prompt, systemPrompt, maxTokens, false);
-    if (!res.ok) throw new Error(`Kie.ai error ${res.status}: ${await res.text()}`);
+    const res = await kieRetry(() => kieClaudeFetch(config.kieModelId, prompt, systemPrompt, maxTokens, false));
+    if (!res.ok) throw new Error(await kieErrorMessage(res));
     const data = await res.json();
     // Find the text block — skip thinking blocks
     const textBlock = data.content?.find((b: { type: string }) => b.type === 'text');
@@ -114,8 +148,8 @@ async function kieGenerateText(modelId: string, prompt: string, systemPrompt?: s
   }
 
   if (config.endpointType === 'gpt-responses') {
-    const res = await kieGptResponsesFetch(config.kieModelId, prompt, systemPrompt, false);
-    if (!res.ok) throw new Error(`Kie.ai error ${res.status}: ${await res.text()}`);
+    const res = await kieRetry(() => kieGptResponsesFetch(config.kieModelId, prompt, systemPrompt, false, maxTokens));
+    if (!res.ok) throw new Error(await kieErrorMessage(res));
     const data = await res.json();
     // Responses API: output is in output[].content[].text or output_text
     if (data.output_text) return data.output_text;
@@ -144,16 +178,16 @@ async function* kieStreamText(modelId: string, prompt: string, systemPrompt?: st
   let res: Response;
 
   if (config.endpointType === 'gemini') {
-    res = await kieGeminiFetch(config.kieModelId, prompt, systemPrompt, true);
+    res = await kieRetry(() => kieGeminiFetch(config.kieModelId, prompt, systemPrompt, true, maxTokens));
   } else if (config.endpointType === 'claude') {
-    res = await kieClaudeFetch(config.kieModelId, prompt, systemPrompt, maxTokens, true);
+    res = await kieRetry(() => kieClaudeFetch(config.kieModelId, prompt, systemPrompt, maxTokens, true));
   } else if (config.endpointType === 'gpt-responses') {
-    res = await kieGptResponsesFetch(config.kieModelId, prompt, systemPrompt, true);
+    res = await kieRetry(() => kieGptResponsesFetch(config.kieModelId, prompt, systemPrompt, true, maxTokens));
   } else {
     throw new Error(`Unknown Kie endpoint type: ${config.endpointType}`);
   }
 
-  if (!res.ok) throw new Error(`Kie.ai stream error ${res.status}: ${await res.text()}`);
+  if (!res.ok) throw new Error(await kieErrorMessage(res));
   if (!res.body) throw new Error('No response body from Kie.ai');
 
   const reader = res.body.getReader();
@@ -377,8 +411,8 @@ export async function analyzeYouTubeVideo(opts: VideoAnalysisOptions): Promise<s
       }),
     });
     if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Kie.ai Gemini video error ${res.status}: ${errText}. Note: YouTube URL support via Kie.ai is undocumented — if this fails consistently, switch to a direct Google Gemini model.`);
+      const clean = await kieErrorMessage(res);
+      throw new Error(`${clean}. Note: YouTube URL support via Kie.ai is undocumented — if this fails consistently, switch to a direct Google Gemini model.`);
     }
     const data = await res.json();
     return data.choices?.[0]?.message?.content || '';

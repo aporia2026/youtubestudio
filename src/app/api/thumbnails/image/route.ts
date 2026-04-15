@@ -136,22 +136,28 @@ export async function POST(req: NextRequest) {
       input.image_urls = [referenceImageUrl];
     }
 
-    // Create task
-    const createRes = await fetch(`${KIE_BASE}/createTask`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: config.model,
-        input,
-      }),
-    });
+    // Create task — retry up to 3× on transient gateway errors
+    let createRes!: Response;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt));
+      createRes = await fetch(`${KIE_BASE}/createTask`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ model: config.model, input }),
+      });
+      if (createRes.status !== 502 && createRes.status !== 503 && createRes.status !== 504) break;
+    }
 
     if (!createRes.ok) {
-      const errText = await createRes.text();
-      throw new Error(`Kie.ai task creation failed (${createRes.status}): ${errText}`);
+      const body = await createRes.text().catch(() => '');
+      const isHtml = body.trimStart().startsWith('<') || body.includes('</html>');
+      const msg = isHtml
+        ? `Kie.ai is temporarily unavailable (${createRes.status}) — please try again`
+        : `Kie.ai task creation failed (${createRes.status}): ${body.slice(0, 200)}`;
+      throw new Error(msg);
     }
 
     const createData = await createRes.json();
