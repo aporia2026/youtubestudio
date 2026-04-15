@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import path from 'path';
 import os from 'os';
 import fs from 'fs/promises';
+import { randomUUID } from 'crypto';
 import { sql } from '@vercel/postgres';
 import { VideoConfig } from '@/remotion/types';
 
@@ -61,7 +62,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: validationError }, { status: 400 });
   }
 
-  const renderId = `render_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const renderId = `render_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
 
   try {
     await ensureTable();
@@ -87,7 +88,7 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   const renderId = req.nextUrl.searchParams.get('renderId');
-  if (!renderId || !/^render_\d+_[a-z0-9]+$/.test(renderId)) {
+  if (!renderId || !/^render_\d{1,15}_[a-f0-9]{8,12}$/.test(renderId)) {
     return NextResponse.json({ error: 'Invalid renderId' }, { status: 400 });
   }
 
@@ -124,14 +125,18 @@ export async function GET(req: NextRequest) {
 async function updateJob(renderId: string, fields: {
   status?: string; progress?: number; output_url?: string; error?: string; finished_at?: number;
 }) {
+  // Use fully parameterized queries — no string interpolation of user-controlled values.
   const sets: string[] = [];
-  if (fields.status !== undefined) sets.push(`status = '${fields.status}'`);
-  if (fields.progress !== undefined) sets.push(`progress = ${fields.progress}`);
-  if (fields.output_url !== undefined) sets.push(`output_url = '${fields.output_url}'`);
-  if (fields.error !== undefined) sets.push(`error = '${fields.error.slice(0, 2000).replace(/'/g, "''")}'`);
-  if (fields.finished_at !== undefined) sets.push(`finished_at = ${fields.finished_at}`);
+  const values: (string | number)[] = [];
+  let p = 1;
+  if (fields.status     !== undefined) { sets.push(`status = $${p++}`);      values.push(fields.status); }
+  if (fields.progress   !== undefined) { sets.push(`progress = $${p++}`);    values.push(Math.max(0, Math.min(1, fields.progress))); }
+  if (fields.output_url !== undefined) { sets.push(`output_url = $${p++}`);  values.push(fields.output_url); }
+  if (fields.error      !== undefined) { sets.push(`error = $${p++}`);       values.push(fields.error.slice(0, 2000)); }
+  if (fields.finished_at !== undefined) { sets.push(`finished_at = $${p++}`); values.push(fields.finished_at); }
   if (sets.length === 0) return;
-  await sql.query(`UPDATE render_jobs SET ${sets.join(', ')} WHERE id = $1`, [renderId]);
+  values.push(renderId);
+  await sql.query(`UPDATE render_jobs SET ${sets.join(', ')} WHERE id = $${p}`, values);
 }
 
 async function startRender(renderId: string, config: VideoConfig) {
@@ -188,7 +193,7 @@ async function startRender(renderId: string, config: VideoConfig) {
       { access: 'public', contentType: 'video/mp4', addRandomSuffix: false },
     );
 
-    await fs.unlink(outPath).catch(() => {});
+    await fs.unlink(outPath).catch((e) => console.warn('[render] temp file cleanup failed:', e));
     await updateJob(renderId, {
       status: 'done',
       progress: 1,

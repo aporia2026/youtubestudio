@@ -48,6 +48,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   }, [seekTargetFrame, onSeekConsumed]);
 
   const frames = totalFrames(config);
+  const clampedProgress = Math.max(0, Math.min(1, renderProgress));
 
   const handlePlayPause = useCallback(() => {
     if (!playerRef.current) return;
@@ -147,7 +148,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               {isRendering ? (
                 <>
                   <SpinnerIcon />
-                  Rendering {Math.round(renderProgress * 100)}%
+                  Rendering {Math.round(clampedProgress * 100)}%
                 </>
               ) : (
                 <>
@@ -165,7 +166,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         <div className="h-1.5 w-full bg-gray-800 rounded-full overflow-hidden">
           <div
             className="h-full bg-red-500 transition-all duration-300 ease-out"
-            style={{ width: `${renderProgress * 100}%` }}
+            style={{ width: `${clampedProgress * 100}%` }}
           />
         </div>
       )}
@@ -193,7 +194,7 @@ const SpinnerIcon = () => (
   <svg
     width="14" height="14" viewBox="0 0 24 24" fill="none"
     stroke="currentColor" strokeWidth="2.5"
-    style={{ animation: 'spin 1s linear infinite' }}
+    className="animate-spin"
   >
     <path d="M21 12a9 9 0 1 1-6.219-8.56" />
   </svg>

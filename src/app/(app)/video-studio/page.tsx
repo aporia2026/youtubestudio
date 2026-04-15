@@ -174,9 +174,16 @@ export default function VideoStudioPage() {
     setSelectedShotIdx(idx);
     const shot = allShots[idx];
     if (shot && videoConfig) {
-      setSeekTargetFrame(Math.max(0, msToFrame(shot.startMs, videoConfig.fps) + 8));
+      const baseFrame = msToFrame(shot.startMs, videoConfig.fps);
+      const shotFrames = Math.max(1, msToFrame(shot.durationMs, videoConfig.fps));
+      // Skip fade-in (8 frames) but never overshoot the shot
+      const seekFrame = Math.min(baseFrame + 8, baseFrame + shotFrames - 1);
+      setSeekTargetFrame(seekFrame);
     }
   }, [allShots, videoConfig]);
+
+  // ── Memoised seek-consumed callback (stable ref prevents VideoPlayer effect from re-running)
+  const handleSeekConsumed = useCallback(() => setSeekTargetFrame(null), []);
 
   // ── Brand update
   const updateBrand = useCallback((patch: Partial<BrandKit>) => {
@@ -227,6 +234,8 @@ export default function VideoStudioPage() {
   // ── Render
   const startRender = useCallback(async () => {
     if (!videoConfig) return;
+    // Clear any existing poll before starting a new one (prevents memory leak)
+    if (renderPollRef.current) clearInterval(renderPollRef.current);
     setRenderStatus('rendering');
     setRenderProgress(0);
     setRenderOutputUrl(null);
@@ -238,9 +247,10 @@ export default function VideoStudioPage() {
       });
       const data = await res.json() as { renderId?: string; error?: string };
       if (!res.ok || !data.renderId) throw new Error(data.error || 'Failed to start render');
+      const renderId = data.renderId;
       renderPollRef.current = setInterval(async () => {
         try {
-          const s = await fetch(`/api/render/video?renderId=${data.renderId}`);
+          const s = await fetch(`/api/render/video?renderId=${renderId}`);
           const sd = await s.json() as { status: string; progress: number; outputUrl?: string; error?: string };
           setRenderProgress(sd.progress ?? 0);
           if (sd.status === 'done') {
@@ -353,7 +363,7 @@ export default function VideoStudioPage() {
                   outputUrl={renderOutputUrl || undefined}
                   initialFrame={8}
                   seekTargetFrame={seekTargetFrame}
-                  onSeekConsumed={() => setSeekTargetFrame(null)}
+                  onSeekConsumed={handleSeekConsumed}
                 />
               </div>
               {/* Shot info bar */}

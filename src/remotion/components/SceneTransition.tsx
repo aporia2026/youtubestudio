@@ -29,12 +29,14 @@ export const SceneTransition: React.FC<SceneTransitionProps> = ({
 
   if (fadeIn && frame < durationInFrames) {
     opacity = Math.max(opacity, interpolate(frame, [0, durationInFrames], [1, 0], {
+      extrapolateLeft: 'clamp',
       extrapolateRight: 'clamp',
     }));
   }
 
   if (fadeOut && frame > totalFrames - durationInFrames) {
     opacity = Math.max(opacity, interpolate(frame, [totalFrames - durationInFrames, totalFrames], [0, 1], {
+      extrapolateLeft: 'clamp',
       extrapolateRight: 'clamp',
     }));
   }

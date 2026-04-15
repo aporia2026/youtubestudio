@@ -24,7 +24,7 @@ export const TextRevealScene: React.FC<TextRevealSceneProps> = ({
   const { fps } = useVideoConfig();
 
   const text = shot.onScreenText || shot.scriptText || '';
-  const lines = text.split(/\n|•|·/).map(l => l.trim()).filter(Boolean);
+  const lines = text.split(/\r\n|\n|•|·/).map(l => l.trim()).filter(Boolean);
 
   // If we have a short single line, render it as a bold statement
   const isBoldStatement = lines.length === 1 && lines[0].length < 60;

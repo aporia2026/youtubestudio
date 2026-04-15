@@ -4,7 +4,6 @@ import {
   Audio,
   Sequence,
   useVideoConfig,
-  staticFile,
 } from 'remotion';
 import { TitleCardScene } from '../scenes/TitleCardScene';
 import { BRollScene } from '../scenes/BRollScene';
