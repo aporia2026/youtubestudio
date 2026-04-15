@@ -2,6 +2,29 @@ import { sql } from '@vercel/postgres';
 
 export { sql };
 
+/** Idempotent setup for the workflow drafts table. */
+let draftsMigrated = false;
+export async function ensureDraftsSchema() {
+  if (draftsMigrated) return;
+  try {
+    await sql`
+      CREATE TABLE IF NOT EXISTS workflow_drafts (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        niche TEXT NOT NULL DEFAULT '',
+        step TEXT NOT NULL DEFAULT 'idea',
+        data JSONB NOT NULL DEFAULT '{}',
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_workflow_drafts_updated ON workflow_drafts(updated_at DESC)`; } catch {}
+    draftsMigrated = true;
+  } catch (err) {
+    console.error('ensureDraftsSchema error:', err);
+  }
+}
+
 /** Idempotent setup for the saved channel names table. */
 let channelNamesMigrated = false;
 export async function ensureChannelNamesSchema() {

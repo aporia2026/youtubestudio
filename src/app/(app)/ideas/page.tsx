@@ -352,6 +352,14 @@ export default function IdeasPage() {
       if (generatedIdeas.length > 0) {
         saveIdeas({ niche, focus, videoType, modelId, count, ideas: generatedIdeas });
         setIdeasHistoryItems(getIdeasHistory());
+        // Auto-persist all generated ideas to the database so they survive browser resets
+        fetch('/api/ideas/batch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ideas: generatedIdeas, niche }),
+        }).then(r => r.json()).then(result => {
+          if (result.inserted > 0) setSavedIds(new Set(generatedIdeas.map((_: unknown, i: number) => i)));
+        }).catch(() => { /* best-effort */ });
       }
       toast.success(`Generated ${generatedIdeas.length} video ideas!`);
     } catch (err: unknown) {

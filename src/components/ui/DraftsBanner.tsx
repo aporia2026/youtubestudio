@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { getDrafts, deleteDraft, setActiveDraftId, type WorkflowDraft } from '@/lib/drafts';
+import { getDrafts, deleteDraft, setActiveDraftId, hydrateDraftsFromDb, type WorkflowDraft } from '@/lib/drafts';
 
 const STEP_LABELS: Record<string, { label: string; color: string }> = {
   idea: { label: 'Idea', color: '#10b981' },
@@ -34,18 +34,18 @@ export function DraftsBanner({ currentStep, onResume }: DraftsBannerProps) {
   const [drafts, setDraftsState] = useState<WorkflowDraft[]>(() => getDrafts());
   const [showAll, setShowAll] = useState(false);
 
+  // On mount: pull from DB and merge — restores drafts even after browser storage is cleared
+  useEffect(() => {
+    hydrateDraftsFromDb().then(merged => setDraftsState(merged));
+  }, []);
+
   // Show drafts relevant to the current page + adjacent pipeline steps
   const relevantDrafts = drafts.filter(d => {
     if (d.step === currentStep) return true;
-    // Script page shows qa/seo drafts too (they came from scripts)
     if (currentStep === 'script' && ['qa', 'seo'].includes(d.step)) return true;
-    // QA page shows script drafts
     if (currentStep === 'qa' && d.step === 'script') return true;
-    // SEO page shows script/qa drafts (that have scripts)
     if (currentStep === 'seo' && ['script', 'qa'].includes(d.step) && d.script) return true;
-    // Thumbnails page shows seo/script drafts (that have titles)
     if (currentStep === 'thumbnails' && ['seo', 'script', 'qa'].includes(d.step)) return true;
-    // Voiceover shows script/qa drafts (that have scripts)
     if (currentStep === 'voiceover' && ['script', 'qa'].includes(d.step) && d.script) return true;
     return false;
   });

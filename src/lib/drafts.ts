@@ -1,5 +1,5 @@
 // Workflow draft system — auto-saves progress across pages
-// A draft tracks the full pipeline: idea → script → QA → voiceover
+// Write-through: localStorage (fast cache) + DB (persistent truth)
 
 export interface WorkflowDraft {
   id: string;
@@ -49,6 +49,8 @@ function generateId(): string {
   return `draft-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// ─── localStorage helpers ─────────────────────────────────────────────────────
+
 export function getDrafts(): WorkflowDraft[] {
   if (typeof window === 'undefined') return [];
   try {
@@ -73,6 +75,45 @@ export function setActiveDraftId(id: string | null): void {
   else localStorage.removeItem(ACTIVE_DRAFT_KEY);
 }
 
+function writeToLocalStorage(drafts: WorkflowDraft[]): void {
+  try {
+    localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+  } catch {
+    // Quota exceeded — warn and prune, but don't silently swallow
+    console.warn('[drafts] localStorage quota exceeded — pruning old drafts');
+    try {
+      const pruned = drafts.slice(0, Math.ceil(drafts.length / 2));
+      localStorage.setItem(DRAFTS_KEY, JSON.stringify(pruned));
+    } catch {
+      // Last resort: keep only the newest draft
+      try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts.slice(0, 1))); } catch {}
+    }
+    // Show toast if available in context (non-blocking import)
+    try {
+      import('sonner').then(({ toast }) => {
+        toast.warning('Browser storage is nearly full — older drafts may be removed. Your current draft is always saved to the cloud.');
+      });
+    } catch { /* ignore */ }
+  }
+}
+
+// ─── DB sync (fire-and-forget) ────────────────────────────────────────────────
+
+function syncToDb(draft: WorkflowDraft): void {
+  fetch('/api/drafts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(draft),
+  }).catch(() => { /* best-effort */ });
+}
+
+function deleteFromDb(id: string): void {
+  fetch(`/api/drafts/${id}`, { method: 'DELETE' })
+    .catch(() => { /* best-effort */ });
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
 export function saveDraft(draft: Partial<WorkflowDraft> & { title: string; niche: string; step: WorkflowDraft['step'] }): WorkflowDraft {
   const drafts = getDrafts();
   const existingIdx = draft.id ? drafts.findIndex(d => d.id === draft.id) : -1;
@@ -84,14 +125,6 @@ export function saveDraft(draft: Partial<WorkflowDraft> & { title: string; niche
     updatedAt: Date.now(),
   } as WorkflowDraft;
 
-  // Truncate script in draft storage to prevent quota issues
-  if (full.script && full.script.length > 15000) {
-    full.script = full.script.slice(0, 15000) + '\n\n[... truncated in draft ...]';
-  }
-  if (full.fixedScript && full.fixedScript.length > 15000) {
-    full.fixedScript = full.fixedScript.slice(0, 15000) + '\n\n[... truncated in draft ...]';
-  }
-
   if (existingIdx >= 0) {
     drafts[existingIdx] = full;
   } else {
@@ -100,32 +133,52 @@ export function saveDraft(draft: Partial<WorkflowDraft> & { title: string; niche
 
   if (drafts.length > MAX_DRAFTS) drafts.length = MAX_DRAFTS;
 
-  try {
-    localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
-  } catch {
-    // Quota — prune oldest
-    drafts.length = Math.floor(drafts.length / 2);
-    try {
-      localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
-    } catch {
-      // Last resort — only save the current draft
-      try { localStorage.setItem(DRAFTS_KEY, JSON.stringify([full])); } catch {}
-    }
-  }
-
+  writeToLocalStorage(drafts);
   setActiveDraftId(full.id);
+
+  // Persist to DB in background — this is the durable copy
+  syncToDb(full);
+
   return full;
 }
 
 export function deleteDraft(id: string): void {
   if (typeof window === 'undefined') return;
   const drafts = getDrafts().filter(d => d.id !== id);
-  localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+  writeToLocalStorage(drafts);
   if (getActiveDraftId() === id) setActiveDraftId(null);
+  deleteFromDb(id);
 }
 
 export function clearDrafts(): void {
   if (typeof window === 'undefined') return;
   localStorage.removeItem(DRAFTS_KEY);
   localStorage.removeItem(ACTIVE_DRAFT_KEY);
+}
+
+// ─── DB hydration (called on app mount) ──────────────────────────────────────
+
+/** Fetch drafts from DB and merge into localStorage. DB wins for the same ID. */
+export async function hydrateDraftsFromDb(): Promise<WorkflowDraft[]> {
+  try {
+    const res = await fetch('/api/drafts');
+    if (!res.ok) return getDrafts();
+    const { drafts: dbDrafts }: { drafts: WorkflowDraft[] } = await res.json();
+
+    if (!dbDrafts || dbDrafts.length === 0) return getDrafts();
+
+    // Merge: DB drafts take precedence for same ID; keep local-only drafts
+    const local = getDrafts();
+    const dbById = new Map(dbDrafts.map(d => [d.id, d]));
+    const localOnlyDrafts = local.filter(d => !dbById.has(d.id));
+
+    const merged = [...dbDrafts, ...localOnlyDrafts]
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, MAX_DRAFTS);
+
+    writeToLocalStorage(merged);
+    return merged;
+  } catch {
+    return getDrafts();
+  }
 }
