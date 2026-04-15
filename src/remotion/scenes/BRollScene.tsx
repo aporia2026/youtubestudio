@@ -45,7 +45,7 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
     <AbsoluteFill style={{ background: brand.backgroundColor }}>
       {/* Ken Burns image */}
       <KenBurns
-        imageUrl={shot.imageUrl}
+        imageUrl={shot.imageUrl!}
         durationInFrames={durationInFrames}
         direction={direction}
         onError={() => setImgError(true)}
