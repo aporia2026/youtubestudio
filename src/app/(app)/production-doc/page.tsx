@@ -341,24 +341,18 @@ export default function ProductionDocPage() {
     try {
       const saved = localStorage.getItem('prodoc_last_result');
       if (!saved) return;
-      const parsed = JSON.parse(saved) as { doc?: ProductionDoc; rowImages?: RowImageState[] };
-      if (parsed.doc) setDoc(parsed.doc);
+      const parsed = JSON.parse(saved) as { doc?: ProductionDoc; rowImages?: RowImageState[]; savedAt?: number };
+      if (!parsed.doc?.rows?.length) return;
+      setDoc(parsed.doc);
       if (parsed.rowImages?.length) setRowImages(parsed.rowImages);
+      const ago = parsed.savedAt ? Math.round((Date.now() - parsed.savedAt) / 60000) : null;
+      toast.success(`Previous session restored${ago !== null ? ` (saved ${ago < 1 ? 'just now' : `${ago}m ago`})` : ''}`, { duration: 4000 });
     } catch { /* corrupt storage — ignore */ }
   }, []);
 
-  // Persist doc + images to localStorage whenever they change
+  // Persist doc + images together whenever either changes
   useEffect(() => {
-    if (!doc) return;
-    try {
-      localStorage.setItem('prodoc_last_result', JSON.stringify({ doc, rowImages, savedAt: Date.now() }));
-    } catch { /* storage full — ignore */ }
-  // rowImages intentionally excluded: saved separately below to avoid stale closure
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc]);
-
-  useEffect(() => {
-    if (!doc || rowImages.length === 0) return;
+    if (!doc?.rows?.length) return;
     try {
       localStorage.setItem('prodoc_last_result', JSON.stringify({ doc, rowImages, savedAt: Date.now() }));
     } catch { /* storage full — ignore */ }
