@@ -26,49 +26,49 @@ async function safeJson(res: Response): Promise<Record<string, unknown>> {
 }
 
 /**
- * Split a script into chunks of at most `maxWords` words, breaking only at
- * paragraph boundaries (double-newline) so shots don't mid-sentence.
- * Falls back to splitting on single newlines if a single paragraph exceeds maxWords.
+ * Split a script into chunks of at most `maxWords` words.
+ * Treats each non-empty line as an atomic unit and greedily fills chunks.
+ * Any chunk that ends up below MIN_CHUNK_WORDS is merged into the adjacent chunk
+ * so the API's 20-word minimum is never hit.
  */
 function splitScriptIntoChunks(script: string, maxWords: number): string[] {
-  const paragraphs = script.split(/\n\n+/);
+  const MIN_CHUNK_WORDS = 50;
+  const lines = script.split(/\n/).filter(l => l.trim().length > 0);
+
   const chunks: string[] = [];
-  let current: string[] = [];
+  let currentLines: string[] = [];
   let currentWords = 0;
 
-  for (const para of paragraphs) {
-    const paraWords = para.trim().split(/\s+/).length;
-    if (currentWords + paraWords > maxWords && current.length > 0) {
-      chunks.push(current.join('\n\n'));
-      current = [];
+  for (const line of lines) {
+    const lw = line.trim().split(/\s+/).length;
+    if (currentWords + lw > maxWords && currentLines.length > 0) {
+      chunks.push(currentLines.join('\n'));
+      currentLines = [];
       currentWords = 0;
     }
-    // If a single paragraph exceeds maxWords, split it on sentence boundaries
-    if (paraWords > maxWords) {
-      const sentences = para.match(/[^.!?]+[.!?]+/g) || [para];
-      let senBuf: string[] = [];
-      let senWords = 0;
-      for (const sen of sentences) {
-        const sw = sen.trim().split(/\s+/).length;
-        if (senWords + sw > maxWords && senBuf.length > 0) {
-          chunks.push(senBuf.join(' '));
-          senBuf = [];
-          senWords = 0;
-        }
-        senBuf.push(sen.trim());
-        senWords += sw;
-      }
-      if (senBuf.length > 0) {
-        current.push(senBuf.join(' '));
-        currentWords += senWords;
-      }
+    currentLines.push(line);
+    currentWords += lw;
+  }
+  if (currentLines.length > 0) chunks.push(currentLines.join('\n'));
+
+  // Merge any chunk that is too small into its neighbor to avoid API rejection
+  const merged: string[] = [];
+  for (const chunk of chunks) {
+    const wc = chunk.trim().split(/\s+/).length;
+    if (wc < MIN_CHUNK_WORDS && merged.length > 0) {
+      // Append to previous chunk (it's already been sent if sequential, so prepend to next is safer)
+      merged[merged.length - 1] += '\n' + chunk;
     } else {
-      current.push(para);
-      currentWords += paraWords;
+      merged.push(chunk);
     }
   }
-  if (current.length > 0) chunks.push(current.join('\n\n'));
-  return chunks.length > 0 ? chunks : [script];
+  // Edge case: first chunk is tiny — merge forward into the second
+  if (merged.length > 1 && merged[0].trim().split(/\s+/).length < MIN_CHUNK_WORDS) {
+    const head = merged.shift()!;
+    merged[0] = head + '\n' + merged[0];
+  }
+
+  return merged.length > 0 ? merged : [script];
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
