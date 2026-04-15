@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { put } from '@vercel/blob';
 
 export const maxDuration = 120;
 
@@ -132,7 +133,26 @@ export async function POST(req: NextRequest) {
     const taskId = (createData.data as Record<string, unknown>)?.taskId as string | undefined;
     if (!taskId) throw new Error('No taskId returned from Kie.ai');
 
-    const imageUrl = await pollForResult(taskId, apiKey);
+    const kieUrl = await pollForResult(taskId, apiKey);
+
+    // Re-host in Vercel Blob so the URL never expires
+    let imageUrl = kieUrl;
+    try {
+      const imgRes = await fetch(kieUrl);
+      if (imgRes.ok) {
+        const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+        const buffer = await imgRes.arrayBuffer();
+        const blob = await put(`prodoc-images/${Date.now()}.jpg`, buffer, {
+          access: 'public',
+          contentType,
+          addRandomSuffix: true,
+        });
+        imageUrl = blob.url;
+      }
+    } catch (uploadErr) {
+      console.warn('[image-gen] Vercel Blob upload failed, falling back to Kie.ai URL:', uploadErr);
+    }
+
     return NextResponse.json({ imageUrl });
   } catch (err: unknown) {
     console.error('Production doc image generation error:', err);

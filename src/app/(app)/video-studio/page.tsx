@@ -29,6 +29,53 @@ interface ManualShotDef {
 let _nextId = 0;
 const nextId = () => `ms_${++_nextId}_${Date.now()}`;
 
+// ─── Bulk import parser ───────────────────────────────────────────────────────
+
+interface ImportedShot {
+  sceneType: SceneType;
+  fields: Partial<ManualShotDef>;
+  preview: string;
+}
+
+const IMAGE_EXT_RE = /\.(jpg|jpeg|png|webp|gif|avif|svg)(\?.*)?$/i;
+
+function parseImportBlocks(raw: string): ImportedShot[] {
+  // Split by blank lines — each block is a separate shot
+  const blocks = raw.split(/\n[ \t]*\n/).map(b => b.trim()).filter(Boolean);
+  return blocks.map(block => {
+    // ── Image URL ──
+    if (IMAGE_EXT_RE.test(block) && /^https?:\/\//i.test(block)) {
+      return { sceneType: 'b-roll' as SceneType, fields: { imageUrl: block, durationMs: 5000 }, preview: block.slice(block.lastIndexOf('/') + 1).slice(0, 40) || 'Image' };
+    }
+    // ── Any URL ──
+    if (/^https?:\/\//i.test(block)) {
+      const isScreen = /screen|app|ui|demo|mockup|interface|dashboard/i.test(block);
+      const type: SceneType = isScreen ? 'screen-mockup' : 'b-roll';
+      return { sceneType: type, fields: { imageUrl: block, durationMs: 5000 }, preview: isScreen ? 'Screen' : 'URL → B-Roll' };
+    }
+    // ── Outro / subscribe ──
+    if (/^(outro|subscribe|end card|end screen)/i.test(block)) {
+      return { sceneType: 'outro' as SceneType, fields: { onScreenText: block, durationMs: 5000 }, preview: block.slice(0, 40) };
+    }
+    // ── Multi-line text (bullets / list) ──
+    const lines = block.split('\n').map(l => l.replace(/^[\s\-•·*]+/, '').trim()).filter(Boolean);
+    if (lines.length >= 2) {
+      const cleaned = lines.join('\n');
+      return {
+        sceneType: 'text-reveal' as SceneType,
+        fields: { onScreenText: cleaned, durationMs: Math.min(Math.max(lines.length * 2000, 4000), 12000) },
+        preview: lines[0].slice(0, 40) + (lines.length > 1 ? ` + ${lines.length - 1} more` : ''),
+      };
+    }
+    // ── Short single line → title card ──
+    if (block.length <= 70 && !block.includes('.')) {
+      return { sceneType: 'title-card' as SceneType, fields: { title: block, durationMs: 4000 }, preview: block };
+    }
+    // ── Long text → text reveal ──
+    return { sceneType: 'text-reveal' as SceneType, fields: { onScreenText: block, durationMs: 6000 }, preview: block.slice(0, 40) + '…' };
+  });
+}
+
 function buildShotsFromManual(defs: ManualShotDef[]): VideoShot[] {
   let time = 0;
   return defs.map(def => {
@@ -231,6 +278,21 @@ export default function VideoStudioPage() {
     });
   }, []);
 
+  const addManualShotsInBulk = useCallback((imported: ImportedShot[]) => {
+    const newShots: ManualShotDef[] = imported.map(imp => ({
+      id: nextId(),
+      durationMs: imp.fields.durationMs ?? 5000,
+      sceneType: imp.sceneType,
+      title: imp.fields.title,
+      subtitle: imp.fields.subtitle,
+      onScreenText: imp.fields.onScreenText,
+      imageUrl: imp.fields.imageUrl,
+      backgroundColor: imp.fields.backgroundColor,
+      kenBurnsDirection: imp.fields.kenBurnsDirection,
+    }));
+    setManualShots(prev => [...prev, ...newShots]);
+  }, []);
+
   // ── Render
   const startRender = useCallback(async () => {
     if (!videoConfig) return;
@@ -337,6 +399,7 @@ export default function VideoStudioPage() {
               showAddPicker={showAddPicker}
               onShowAddPicker={setShowAddPicker}
               onAddShot={addManualShot}
+              onBulkAdd={addManualShotsInBulk}
               onEditShot={id => setEditingShot(cur => cur === id ? null : id)}
               onUpdateShot={updateManualShot}
               onRemoveShot={removeManualShot}
@@ -537,6 +600,7 @@ interface ScratchPanelProps {
   showAddPicker: boolean;
   onShowAddPicker: (v: boolean) => void;
   onAddShot: (type: SceneType) => void;
+  onBulkAdd: (shots: ImportedShot[]) => void;
   onEditShot: (id: string) => void;
   onUpdateShot: (id: string, patch: Partial<ManualShotDef>) => void;
   onRemoveShot: (id: string) => void;
@@ -546,28 +610,51 @@ interface ScratchPanelProps {
 
 const ADDABLE_SCENES: SceneType[] = ['title-card', 'b-roll', 'icon-scene', 'text-reveal', 'screen-mockup', 'outro'];
 
-function ScratchPanel({ shots, editingShot, showAddPicker, onShowAddPicker, onAddShot, onEditShot, onUpdateShot, onRemoveShot, onMoveUp, onMoveDown }: ScratchPanelProps) {
+function ScratchPanel({ shots, editingShot, showAddPicker, onShowAddPicker, onAddShot, onBulkAdd, onEditShot, onUpdateShot, onRemoveShot, onMoveUp, onMoveDown }: ScratchPanelProps) {
+  const [showBulk, setShowBulk] = React.useState(false);
   const totalMs = shots.reduce((s, sh) => s + sh.durationMs, 0);
 
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="shrink-0 p-3 space-y-2" style={{ borderBottom: '1px solid var(--border)' }}>
-        <div className="flex items-center justify-between">
-          <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+        <div className="flex items-center justify-between gap-1">
+          <p className="text-xs font-semibold uppercase tracking-wider truncate" style={{ color: 'var(--text-muted)' }}>
             Shots {shots.length > 0 ? `· ${shots.length} · ${(totalMs / 1000).toFixed(0)}s` : ''}
           </p>
-          <button
-            onClick={() => onShowAddPicker(!showAddPicker)}
-            className="text-xs px-3 py-1 rounded-lg font-medium transition-colors"
-            style={{ background: 'rgba(124,58,237,0.2)', color: '#c4b5fd', border: '1px solid rgba(124,58,237,0.3)' }}
-          >
-            + Add Shot
-          </button>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={() => { setShowBulk(b => !b); onShowAddPicker(false); }}
+              title="Paste content in bulk — system auto-detects scene types"
+              className="text-xs px-2 py-1 rounded-lg font-medium transition-colors"
+              style={{
+                background: showBulk ? 'rgba(6,182,212,0.2)' : 'rgba(255,255,255,0.06)',
+                color: showBulk ? '#67e8f9' : 'var(--text-muted)',
+                border: showBulk ? '1px solid rgba(6,182,212,0.35)' : '1px solid var(--border)',
+              }}
+            >
+              Bulk
+            </button>
+            <button
+              onClick={() => { onShowAddPicker(!showAddPicker); setShowBulk(false); }}
+              className="text-xs px-2 py-1 rounded-lg font-medium transition-colors"
+              style={{ background: 'rgba(124,58,237,0.2)', color: '#c4b5fd', border: '1px solid rgba(124,58,237,0.3)' }}
+            >
+              + Add
+            </button>
+          </div>
         </div>
 
+        {/* Bulk import area */}
+        {showBulk && (
+          <BulkImportArea
+            onAdd={imported => { onBulkAdd(imported); setShowBulk(false); }}
+            onClose={() => setShowBulk(false)}
+          />
+        )}
+
         {/* Scene type picker */}
-        {showAddPicker && (
+        {showAddPicker && !showBulk && (
           <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
             {ADDABLE_SCENES.map(type => {
               const meta = SCENE_META[type];
@@ -594,9 +681,10 @@ function ScratchPanel({ shots, editingShot, showAddPicker, onShowAddPicker, onAd
           </div>
         )}
 
-        {shots.length === 0 && !showAddPicker && (
+        {shots.length === 0 && !showAddPicker && !showBulk && (
           <p className="text-xs leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-            Click <strong style={{ color: 'var(--text-secondary)' }}>+ Add Shot</strong> to start building your video scene by scene.
+            <strong style={{ color: 'var(--text-secondary)' }}>Bulk</strong> — paste images & text, auto-detected.{' '}
+            <strong style={{ color: 'var(--text-secondary)' }}>+ Add</strong> — pick a scene type manually.
           </p>
         )}
       </div>
@@ -621,6 +709,63 @@ function ScratchPanel({ shots, editingShot, showAddPicker, onShowAddPicker, onAd
             )}
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── BulkImportArea ────────────────────────────────────────────────────────────
+
+function BulkImportArea({ onAdd, onClose }: { onAdd: (shots: ImportedShot[]) => void; onClose: () => void }) {
+  const [raw, setRaw] = React.useState('');
+  const previews = React.useMemo(() => parseImportBlocks(raw), [raw]);
+
+  return (
+    <div className="space-y-2 rounded-xl p-3" style={{ background: 'rgba(6,182,212,0.05)', border: '1px solid rgba(6,182,212,0.2)' }}>
+      <p className="text-xs font-semibold" style={{ color: '#67e8f9' }}>Bulk Import</p>
+      <p className="text-xs leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+        Paste URLs, text, or bullet lists. Separate shots with a blank line — the system detects each scene type.
+      </p>
+      <textarea
+        value={raw}
+        onChange={e => setRaw(e.target.value)}
+        placeholder={`https://example.com/photo.jpg\n\nLearn JavaScript in 10 Steps\n\n• Step 1: Variables\n• Step 2: Functions\n• Step 3: Arrays\n\nSubscribe for more tips`}
+        className="input-field text-xs w-full resize-none font-mono"
+        rows={6}
+        autoFocus
+      />
+      {previews.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Detected {previews.length} shot{previews.length !== 1 ? 's' : ''}:</p>
+          <div className="max-h-28 overflow-y-auto space-y-0.5">
+            {previews.map((p, i) => {
+              const meta = SCENE_META[p.sceneType];
+              return (
+                <div key={i} className="flex items-center gap-2 text-xs">
+                  <span className="shrink-0 w-6 h-5 rounded flex items-center justify-center font-bold text-[10px]"
+                    style={{ background: meta.color + '22', color: meta.color }}>
+                    {meta.abbr}
+                  </span>
+                  <span className="truncate" style={{ color: 'var(--text-secondary)' }}>{p.preview}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      <div className="flex gap-2">
+        <button
+          onClick={() => previews.length > 0 && onAdd(previews)}
+          disabled={previews.length === 0}
+          className="flex-1 py-1.5 rounded-lg text-xs font-semibold transition-all disabled:opacity-40"
+          style={{ background: 'rgba(6,182,212,0.25)', color: '#67e8f9', border: '1px solid rgba(6,182,212,0.4)' }}
+        >
+          Add {previews.length > 0 ? `${previews.length} shot${previews.length !== 1 ? 's' : ''}` : 'shots'}
+        </button>
+        <button onClick={onClose} className="px-3 py-1.5 rounded-lg text-xs transition-all hover:bg-white/10"
+          style={{ color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
+          Cancel
+        </button>
       </div>
     </div>
   );
