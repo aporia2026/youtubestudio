@@ -166,15 +166,17 @@ export async function createProductionDocSheet(
   const hyperlinkUpdates: { range: string; values: string[][] }[] = [];
   data.rows.forEach((row, i) => {
     const sheetRow = DATA_START + i + 1; // 1-indexed for A1 notation
-    if (row.imageUrl) {
+    const safeImageUrl = row.imageUrl ? safeHyperlinkUrl(row.imageUrl) : null;
+    const safeSearchUrl = row.searchUrl ? safeHyperlinkUrl(row.searchUrl) : null;
+    if (safeImageUrl) {
       hyperlinkUpdates.push({
         range: `G${sheetRow}`,
-        values: [[`=HYPERLINK("${esc(row.imageUrl)}","View Image")`]],
+        values: [[`=HYPERLINK("${safeImageUrl}","View Image")`]],
       });
-    } else if (row.searchUrl) {
+    } else if (safeSearchUrl) {
       hyperlinkUpdates.push({
         range: `G${sheetRow}`,
-        values: [[`=HYPERLINK("${esc(row.searchUrl)}","Search Images")`]],
+        values: [[`=HYPERLINK("${safeSearchUrl}","Search Images")`]],
       });
     }
   });
@@ -208,8 +210,17 @@ export async function createProductionDocSheet(
 
 // ── Format request builders ──────────────────────────────────────────────────
 
-function esc(url: string): string {
-  return url.replace(/"/g, '""'); // escape double quotes inside HYPERLINK formula
+/** Validate and escape a URL for use inside a HYPERLINK formula string.
+ *  Only http/https URLs are allowed. Returns null if the URL is unsafe. */
+function safeHyperlinkUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+  } catch {
+    return null; // not a valid URL
+  }
+  // Escape double quotes so they cannot break out of the HYPERLINK("...") argument
+  return url.replace(/"/g, '""');
 }
 
 function cellFmt(

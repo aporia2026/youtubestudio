@@ -1,13 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
+import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 
 export const maxDuration = 30;
 
+const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as const;
+type AllowedMediaType = typeof ALLOWED_MEDIA_TYPES[number];
+
 export async function POST(req: NextRequest) {
   try {
-    const { imageBase64, mediaType } = await req.json();
+    const { limited } = checkRateLimit(`image-style:${getClientIP(req)}`, 15, 60_000);
+    if (limited) return NextResponse.json({ error: 'Rate limited — try again shortly' }, { status: 429 });
+
+    let body: { imageBase64?: string; mediaType?: string };
+    try { body = await req.json(); } catch {
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+    }
+    const { imageBase64, mediaType } = body;
     if (!imageBase64 || !mediaType) {
       return NextResponse.json({ error: 'imageBase64 and mediaType are required' }, { status: 400 });
+    }
+    if (!(ALLOWED_MEDIA_TYPES as readonly string[]).includes(mediaType)) {
+      return NextResponse.json({ error: `Unsupported media type. Allowed: ${ALLOWED_MEDIA_TYPES.join(', ')}` }, { status: 400 });
+    }
+    // Rough size guard — base64 of a 5 MB file is ~6.7 MB of string
+    if (imageBase64.length > 7_000_000) {
+      return NextResponse.json({ error: 'Image too large — maximum 5 MB' }, { status: 400 });
     }
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -28,7 +46,7 @@ export async function POST(req: NextRequest) {
               type: 'image',
               source: {
                 type: 'base64',
-                media_type: mediaType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
+                media_type: mediaType as AllowedMediaType,
                 data: imageBase64,
               },
             },

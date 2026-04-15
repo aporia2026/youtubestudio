@@ -846,7 +846,10 @@ export default function QAPage() {
           const entry = qaHistory.find(e => e.id === id);
           if (entry) {
             setNiche(entry.niche);
-            setAggressiveness(entry.aggressiveness as Aggressiveness);
+            const validAgg: Aggressiveness[] = ['standard', 'brutal', 'nuclear'];
+            if (validAgg.includes(entry.aggressiveness as Aggressiveness)) {
+              setAggressiveness(entry.aggressiveness as Aggressiveness);
+            }
           }
         }}
         onDelete={id => {

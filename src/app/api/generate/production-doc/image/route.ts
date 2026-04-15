@@ -87,6 +87,9 @@ export async function POST(req: NextRequest) {
     if (!prompt?.trim()) {
       return NextResponse.json({ error: 'prompt is required' }, { status: 400 });
     }
+    if (prompt.trim().length > 1500) {
+      return NextResponse.json({ error: 'Prompt too long — maximum 1500 characters' }, { status: 400 });
+    }
 
     const apiKey = process.env.KIE_API_KEY;
     if (!apiKey) {

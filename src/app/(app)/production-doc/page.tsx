@@ -556,6 +556,10 @@ export default function ProductionDocPage() {
       return;
     }
 
+    // Cancel any in-progress generation before starting a new one
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
@@ -666,14 +670,14 @@ export default function ProductionDocPage() {
         totalWords: doc.total_words,
         speakingPaceWpm: doc.speaking_pace_wpm,
         rows: doc.rows.map((r, i) => ({
-          timecode: r.timecode,
-          script_text: r.script_text,
-          visual_type: r.visual_type,
-          visual_description: r.visual_description,
-          stock_search_terms: r.stock_search_terms,
-          ai_image_prompt: r.ai_image_prompt,
-          on_screen_text: r.on_screen_text,
-          notes: r.notes,
+          timecode: r.timecode || '',
+          script_text: r.script_text || '',
+          visual_type: r.visual_type || '',
+          visual_description: r.visual_description || '',
+          stock_search_terms: r.stock_search_terms || '',
+          ai_image_prompt: r.ai_image_prompt || '',
+          on_screen_text: r.on_screen_text || '',
+          notes: r.notes || '',
           imageUrl: rowImages[i]?.imageUrl,
           searchUrl: rowImages[i]?.searchUrl,
         })),
@@ -1080,7 +1084,7 @@ export default function ProductionDocPage() {
                   ↗ Open Sheet
                 </a>
               )}
-              <button onClick={generate} className="btn-secondary text-sm px-4">
+              <button onClick={generate} disabled={generating} className="btn-secondary text-sm px-4">
                 ↺ Regenerate
               </button>
             </div>
