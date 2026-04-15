@@ -31,6 +31,7 @@ export default function SettingsPage() {
     'competitor-analysis': AI_MODELS[0].id,
     'channel-naming': AI_MODELS[0].id,
     'seo-optimizer': AI_MODELS[0].id,
+    'production-doc': AI_MODELS[0].id,
   });
   const [keyStatus, setKeyStatus] = useState<KeyStatus>({});
   const [keyStatusLoading, setKeyStatusLoading] = useState(true);
