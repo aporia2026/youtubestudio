@@ -26,6 +26,7 @@
     "src/app/api/competitors/[id]/video-analyze-batch/route.ts":     { "maxDuration": 300 },
     "src/app/api/elevenlabs/generate/route.ts":                      { "maxDuration": 120 },
     "src/app/api/upload/route.ts":                                   { "maxDuration": 60 },
-    "src/app/api/research/reddit/route.ts":                          { "maxDuration": 60 }
+    "src/app/api/research/reddit/route.ts":                          { "maxDuration": 60 },
+    "src/app/api/render/video/route.ts":                             { "maxDuration": 300 }
   }
 }
