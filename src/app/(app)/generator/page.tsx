@@ -710,6 +710,15 @@ export default function GeneratorPage() {
                   >
                     🎨 Generate Thumbnail
                   </button>
+                  <button
+                    onClick={() => {
+                      localStorage.setItem('prodoc_prefill', JSON.stringify({ script, niche, topic }));
+                      window.location.href = '/production-doc?from=generator';
+                    }}
+                    className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
+                  >
+                    🎬 Production Doc
+                  </button>
                 </div>
               </motion.div>
             )}

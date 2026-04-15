@@ -1632,3 +1632,111 @@ Hard requirements for the response:
 Return ONLY valid JSON.`,
   };
 }
+
+// ─── Production Document ──────────────────────────────────────────────────────
+
+export function productionDocPrompt({
+  script,
+  niche,
+  topic,
+  speakingPaceWpm = 135,
+}: {
+  script: string;
+  niche: string;
+  topic?: string;
+  speakingPaceWpm?: number;
+}): { system: string; user: string } {
+  const wordCount = script.trim().split(/\s+/).length;
+  const totalSeconds = Math.round((wordCount / speakingPaceWpm) * 60);
+  const totalMins = Math.floor(totalSeconds / 60);
+  const totalSecs = totalSeconds % 60;
+  const totalDuration = `${totalMins}:${String(totalSecs).padStart(2, '0')}`;
+
+  return {
+    system: `You are a professional video production coordinator and shot director. You transform finished YouTube scripts into detailed, frame-by-frame production documents that video editors can execute without any back-and-forth.
+
+## YOUR TASK
+Break the provided script into timed production rows. Each row = one visual shot or scene change (~6–10 seconds of narration).
+
+## TIMING RULES
+- Speaking pace is ${speakingPaceWpm} words per minute
+- Group sentences into segments of 6–10 seconds of spoken content
+- Timecodes start at 0:00, increment based on word count of each segment
+- Total video duration ≈ ${totalDuration}
+
+## COLUMN DEFINITIONS
+
+**timecode** — "M:SS" format (e.g. "0:00", "1:23") — when this segment starts
+
+**script_text** — The EXACT verbatim words the narrator speaks in this segment. Do not paraphrase. Copy from script.
+
+**visual_type** — One of:
+  - "Title Card" — opening title or section divider text
+  - "Talking Head" — presenter on camera
+  - "B-Roll" — footage over narration (most segments)
+  - "Screen Recording" — software/website demonstration
+  - "Animation" — motion graphics or animated explainer
+  - "Lower Third" — text overlay identifying something
+  - "Statistics" — on-screen data visualization
+  - "Cutaway" — reaction shot or insert
+
+**visual_description** — Specific, actionable direction for the editor. NOT vague. Example: "Close-up of hands typing on a mechanical keyboard in dim blue lighting" NOT "show someone working on computer". Always include: subject, action, shot type (wide/medium/close), mood/lighting if relevant.
+
+**stock_search_terms** — 2–4 comma-separated keywords for Pexels/Shutterstock/Envato. Short, specific. Example: "cybersecurity network dark, hacker silhouette, data breach visualization"
+
+**ai_image_prompt** — A complete, detailed prompt for kie.ai image generation. Format: [shot type], [subject & action], [style], [lighting], [mood], [color palette], [camera details]. Minimum 30 words. Example: "Cinematic close-up shot of a glowing padlock surrounded by streams of binary code, photorealistic, blue and purple neon lighting, dark background, dramatic shadows, 8K quality, ultra-detailed"
+
+**on_screen_text** — Any text that should appear on screen (title, statistic, caption, lower third label). Empty string "" if none.
+
+**notes** — Production notes: music cue changes, transition types, pacing notes, emphasis. Empty string "" if none.
+
+## OUTPUT FORMAT
+Return ONLY a JSON object:
+\`\`\`json
+{
+  "title": "string — derived from script topic",
+  "niche": "string",
+  "total_duration": "${totalDuration}",
+  "total_words": ${wordCount},
+  "speaking_pace_wpm": ${speakingPaceWpm},
+  "rows": [
+    {
+      "timecode": "0:00",
+      "script_text": "exact words from script",
+      "visual_type": "Title Card",
+      "visual_description": "Bold animated title card with channel branding",
+      "stock_search_terms": "youtube intro, channel branding, motion graphics",
+      "ai_image_prompt": "Clean minimalist title card with bold typography, gradient background from deep purple to cyan, professional YouTube channel intro, 16:9 ratio, high contrast text",
+      "on_screen_text": "Video Title Here",
+      "notes": "Use upbeat intro music, fade in from black"
+    }
+  ]
+}
+\`\`\`
+
+RULES:
+- Every row must have ALL 8 fields (no omissions)
+- script_text must be verbatim from the script — do not invent words
+- visual_description must be specific enough for an editor with no context
+- ai_image_prompt must be ≥30 words and usable as-is in an image generator
+- Vary visual_type — do not use "B-Roll" for every row
+- Opening row is usually "Title Card" or "B-Roll with title overlay"
+- Statistics/numbers mentioned → use "Statistics" visual type with data overlay
+- Aim for natural shot changes — every 6–10 seconds`,
+
+    user: `Generate a complete production document for this script.
+
+**Topic:** ${topic || niche}
+**Niche:** ${niche}
+**Word Count:** ${wordCount} words
+**Estimated Duration:** ${totalDuration} at ${speakingPaceWpm} wpm
+
+---
+
+${script}
+
+---
+
+Break this into production rows. Return ONLY the JSON object.`,
+  };
+}

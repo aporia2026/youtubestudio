@@ -782,6 +782,17 @@ export default function QAPage() {
                           >
                             🎨 Generate Thumbnail
                           </button>
+                          <button
+                            onClick={() => {
+                              const s3 = fixedScript || script;
+                              const topicLine3 = s3.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
+                              localStorage.setItem('prodoc_prefill', JSON.stringify({ script: s3, niche, topic: topicLine3 }));
+                              window.location.href = '/production-doc?from=qa';
+                            }}
+                            className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
+                          >
+                            🎬 Production Doc
+                          </button>
                         </div>
                         <div className="flex gap-2">
                           <SaveAsProject script={fixedScript} niche={niche} topic="" variant="secondary" className="flex-1" />
