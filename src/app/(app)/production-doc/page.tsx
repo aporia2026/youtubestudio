@@ -67,6 +67,7 @@ interface VisualRef {
   // Shared
   analyzedStyle?: string;
   analyzing?: boolean;
+  analysisFailed?: boolean;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -378,10 +379,10 @@ export default function ProductionDocPage() {
     } catch {
       setVisualRefs(prev => {
         const next = [...prev];
-        next[idx] = { ...next[idx], analyzing: false };
+        next[idx] = { ...next[idx], analyzing: false, analysisFailed: true };
         return next;
       });
-      // Silent fail — thumbnail analysis is best-effort
+      // Best-effort — the ref stays in the list but won't contribute to the brief
     }
   }
 
@@ -431,7 +432,7 @@ export default function ProductionDocPage() {
     } catch (err) {
       setVisualRefs(prev => {
         const next = [...prev];
-        next[idx] = { ...next[idx], analyzing: false };
+        next[idx] = { ...next[idx], analyzing: false, analysisFailed: true };
         return next;
       });
       toast.error(err instanceof Error ? err.message : 'Style analysis failed');
@@ -586,9 +587,35 @@ export default function ProductionDocPage() {
         fullBrief += (fullBrief ? '\n\n' : '') + `Visual Style References (match these exactly):\n${refLines}`;
       }
 
-      const pendingRefs = visualRefs.filter(r => r.type === 'youtube' && r.url && !r.analyzedStyle && !r.analyzing);
-      if (pendingRefs.length > 0) {
-        appendLog(`⚠ ${pendingRefs.length} YouTube ref(s) not yet analyzed — add them earlier to include their style`);
+      // Refs that failed analysis — re-attempt them now and wait up to 12 s
+      const failedRefs = visualRefs.filter(r => r.type === 'youtube' && r.url && r.analysisFailed && !r.analyzedStyle);
+      if (failedRefs.length > 0) {
+        appendLog(`↻ Retrying style analysis for ${failedRefs.length} YouTube ref(s)...`);
+        await Promise.all(
+          failedRefs.map((r, fi) => {
+            const idx = visualRefs.findIndex(v => v === r);
+            if (idx === -1 || !r.url) return;
+            // Clear failed flag before retry
+            setVisualRefs(prev => {
+              const next = [...prev];
+              next[idx] = { ...next[idx], analysisFailed: false };
+              return next;
+            });
+            return Promise.race([
+              analyzeYouTubeStyle(r.url, idx),
+              new Promise(res => setTimeout(res, 12000)), // 12 s max wait
+            ]);
+          }),
+        );
+      }
+
+      // Refs still without a style after retry (genuinely failed or still analyzing)
+      const stillPending = visualRefs.filter(r => r.type === 'youtube' && r.url && !r.analyzedStyle);
+      if (stillPending.length > 0) {
+        const analyzing = stillPending.filter(r => r.analyzing).length;
+        const failed = stillPending.filter(r => !r.analyzing).length;
+        if (analyzing > 0) appendLog(`⚠ ${analyzing} YouTube ref(s) still analyzing — their style won't be in this generation`);
+        if (failed > 0) appendLog(`⚠ ${failed} YouTube ref(s) could not be analyzed (thumbnail unavailable) — their style won't be included`);
       }
 
       const analyzedCount = analyzedRefs.length;
@@ -882,6 +909,16 @@ export default function ProductionDocPage() {
                             ✓ Style analyzed
                           </div>
                         )}
+                        {ref.analysisFailed && !ref.analyzing && !ref.analyzedStyle && (
+                          <button
+                            onClick={() => analyzeYouTubeStyle(ref.url!, idx)}
+                            className="absolute bottom-0 left-0 right-0 rounded-b-md px-1 py-0.5 text-center"
+                            style={{ background: 'rgba(239,68,68,0.85)', fontSize: '0.55rem', color: 'white', lineHeight: 1.2 }}
+                            title="Analysis failed — click to retry"
+                          >
+                            ✗ Failed · retry
+                          </button>
+                        )}
                       </div>
                     ) : ref.type === 'screenshot' && ref.dataUrl ? (
                       <div style={{ position: 'relative' }}>
@@ -906,6 +943,15 @@ export default function ProductionDocPage() {
                             style={{ background: 'rgba(16,185,129,0.85)', fontSize: '0.55rem', color: 'white', lineHeight: 1.2 }}
                           >
                             ✓ Style analyzed
+                          </div>
+                        )}
+                        {ref.analysisFailed && !ref.analyzing && !ref.analyzedStyle && (
+                          <div
+                            className="absolute bottom-0 left-0 right-0 rounded-b-md px-1 py-0.5 text-center"
+                            style={{ background: 'rgba(239,68,68,0.85)', fontSize: '0.55rem', color: 'white', lineHeight: 1.2 }}
+                            title="Style analysis failed"
+                          >
+                            ✗ Failed
                           </div>
                         )}
                       </div>

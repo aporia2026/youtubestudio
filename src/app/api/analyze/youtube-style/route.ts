@@ -17,18 +17,23 @@ function extractVideoId(url: string): string | null {
 }
 
 async function fetchThumbnailBase64(videoId: string): Promise<{ base64: string; mimeType: string } | null> {
-  // Try high-res first, fall back to standard
+  // Try quality levels from highest to lowest — mqdefault is almost always available
+  // and is the same thumbnail the UI renders in the ref chip.
   const urls = [
     `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+    `https://img.youtube.com/vi/${videoId}/sddefault.jpg`,
     `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
+    `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
+    `https://img.youtube.com/vi/${videoId}/default.jpg`,
   ];
   for (const url of urls) {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
       if (!res.ok) continue;
       const buf = await res.arrayBuffer();
-      // Skip YouTube's "no thumbnail" placeholder (< 2KB)
-      if (buf.byteLength < 2000) continue;
+      // Skip YouTube's grey "no thumbnail" placeholder — it's always exactly 1133 or
+      // 1146 bytes. Using 1500 as a safe floor; real thumbnails are always larger.
+      if (buf.byteLength < 1500) continue;
       return { base64: Buffer.from(buf).toString('base64'), mimeType: 'image/jpeg' };
     } catch {
       continue;
