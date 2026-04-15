@@ -349,27 +349,6 @@ export default function ProductionDocPage() {
   // — Google Sheets export
   const [sheetsExporting, setSheetsExporting] = useState(false);
   const [sheetsUrl, setSheetsUrl] = useState<string | null>(null);
-  const [oauthChannels, setOauthChannels] = useState<{ id: string; name: string; thumbnailUrl?: string }[]>([]);
-  const [selectedChannelId, setSelectedChannelId] = useState<string>('');
-
-  // Load OAuth-connected channels for Sheets export
-  useEffect(() => {
-    fetch('/api/channels')
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (!data) return;
-        const connected = (data.channels ?? data ?? []).filter(
-          (c: { oauth_connected?: boolean }) => c.oauth_connected,
-        );
-        setOauthChannels(connected.map((c: { id: string; name: string; thumbnailUrl?: string }) => ({
-          id: c.id,
-          name: c.name,
-          thumbnailUrl: c.thumbnailUrl,
-        })));
-        if (connected.length > 0) setSelectedChannelId(connected[0].id);
-      })
-      .catch(() => { /* channels are optional */ });
-  }, []);
 
   // Load prefill from generator / QA pages
   useEffect(() => {
@@ -773,10 +752,6 @@ export default function ProductionDocPage() {
 
   async function exportToSheets() {
     if (!doc) return;
-    if (!selectedChannelId) {
-      toast.error('Connect a YouTube channel first (Settings → Channels → Authorize)');
-      return;
-    }
     setSheetsExporting(true);
     setSheetsUrl(null);
     try {
@@ -802,14 +777,21 @@ export default function ProductionDocPage() {
       const res = await fetch('/api/production-doc/export-sheets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channelId: selectedChannelId, exportData }),
+        body: JSON.stringify({ exportData }),
       });
       const data = await safeJson(res);
       if (!res.ok) {
+        if ((data.error as string) === 'NEEDS_GOOGLE_AUTH') {
+          toast.error(
+            (data.message as string) || 'Connect your Google account in Settings to export to Sheets.',
+            { duration: 8000 },
+          );
+          return;
+        }
         if ((data.error as string) === 'NEEDS_REAUTH') {
           toast.error(
             (data.message as string) ||
-            'Google Sheets access not granted — re-authorize your channel in Settings → Channels',
+            'Google Sheets access not granted — reconnect in Settings → Google Account',
             { duration: 8000 },
           );
           return;
@@ -1176,24 +1158,11 @@ export default function ProductionDocPage() {
               <button onClick={() => exportToCsv(doc, rowImages)} className="btn-primary text-sm px-4">
                 ⬇ Export CSV
               </button>
-              {/* Google Sheets export */}
-              {oauthChannels.length > 1 && (
-                <select
-                  value={selectedChannelId}
-                  onChange={e => setSelectedChannelId(e.target.value)}
-                  className="input-field text-xs"
-                  style={{ height: 34, minWidth: 130, padding: '0 8px' }}
-                >
-                  {oauthChannels.map(c => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </select>
-              )}
               <button
                 onClick={exportToSheets}
                 disabled={sheetsExporting}
                 className="btn-secondary text-sm px-4 flex items-center gap-1.5"
-                title={oauthChannels.length === 0 ? 'Connect a YouTube channel in Settings → Channels first' : 'Export to Google Sheets'}
+                title="Export to Google Sheets"
               >
                 {sheetsExporting ? (
                   <><div className="spinner" style={{ width: 12, height: 12 }} /> Exporting…</>
@@ -1421,7 +1390,7 @@ export default function ProductionDocPage() {
               onClick={exportToSheets}
               disabled={sheetsExporting}
               className="btn-secondary text-sm px-6 flex items-center gap-1.5"
-              title={oauthChannels.length === 0 ? 'Connect a YouTube channel in Settings → Channels first' : 'Export to Google Sheets'}
+              title="Export to Google Sheets"
             >
               {sheetsExporting ? (
                 <><div className="spinner" style={{ width: 12, height: 12 }} /> Exporting…</>

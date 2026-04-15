@@ -40,6 +40,8 @@ export default function SettingsPage() {
   const [perplexityKeyInput, setPerplexityKeyInput] = useState('');
   const [perplexityKeySaving, setPerplexityKeySaving] = useState(false);
   const [perplexityKeyClearing, setPerplexityKeyClearing] = useState(false);
+  const [googleAccount, setGoogleAccount] = useState<{ connected: boolean; email?: string } | null>(null);
+  const [googleDisconnecting, setGoogleDisconnecting] = useState(false);
 
   async function loadKeyStatus() {
     setKeyStatusLoading(true);
@@ -48,6 +50,13 @@ export default function SettingsPage() {
       if (res.ok) setKeyStatus(await res.json());
     } catch {}
     setKeyStatusLoading(false);
+  }
+
+  async function loadGoogleAccount() {
+    try {
+      const res = await fetch('/api/google-account');
+      if (res.ok) setGoogleAccount(await res.json());
+    } catch {}
   }
 
   async function testConnection(provider: string) {
@@ -75,10 +84,26 @@ export default function SettingsPage() {
   useEffect(() => {
     fetch('/api/niches').then(r => r.json()).then(data => setNiches(data.niches || []));
     loadKeyStatus();
+    loadGoogleAccount();
     try {
       const saved = localStorage.getItem('feature_model_defaults');
       if (saved) setFeatureModels(prev => ({ ...prev, ...JSON.parse(saved) }));
     } catch {}
+
+    // Handle Google OAuth redirect params
+    const params = new URLSearchParams(window.location.search);
+    const googleParam = params.get('google');
+    if (googleParam === 'success') {
+      toast.success('Google account connected successfully!');
+      setActiveSection('api');
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (googleParam === 'denied') {
+      toast.error('Google account connection was denied.');
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (googleParam === 'error') {
+      toast.error('Google account connection failed — please try again.');
+      window.history.replaceState({}, '', window.location.pathname);
+    }
   }, []);
 
   async function addNiche() {
@@ -235,6 +260,55 @@ export default function SettingsPage() {
 
           {activeSection === 'api' && (
             <div className="space-y-4">
+              {/* Google Account */}
+              <div className="glass rounded-xl p-5">
+                <h2 className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>Google Account</h2>
+                <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
+                  Connect your Google account to enable Export to Google Sheets from the Production Doc page.
+                </p>
+                {googleAccount?.connected ? (
+                  <div className="flex items-center gap-3 p-3 rounded-lg"
+                    style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(16,185,129,0.3)' }}>
+                    <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: '#10b981' }} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Connected</p>
+                      <p className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>{googleAccount.email}</p>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        setGoogleDisconnecting(true);
+                        try {
+                          await fetch('/api/google-account', { method: 'DELETE' });
+                          setGoogleAccount({ connected: false });
+                          toast.success('Google account disconnected');
+                        } catch { toast.error('Failed to disconnect'); }
+                        setGoogleDisconnecting(false);
+                      }}
+                      disabled={googleDisconnecting}
+                      className="btn-secondary text-xs px-3 py-1.5 shrink-0"
+                    >
+                      {googleDisconnecting ? 'Disconnecting…' : 'Disconnect'}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3 p-3 rounded-lg"
+                    style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(239,68,68,0.3)' }}>
+                    <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: '#ef4444' }} />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Not connected</p>
+                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Sheets export requires a Google account</p>
+                    </div>
+                    <a
+                      href="/api/auth/google-sheets"
+                      className="btn-primary text-xs px-3 py-1.5 shrink-0"
+                      style={{ textDecoration: 'none' }}
+                    >
+                      Connect Google
+                    </a>
+                  </div>
+                )}
+              </div>
+
               {/* Infrastructure */}
               <div className="glass rounded-xl p-5">
                 <h2 className="text-sm font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>Infrastructure</h2>

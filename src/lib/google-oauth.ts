@@ -215,6 +215,109 @@ export async function getValidAccessToken(
   return token;
 }
 
+const SHEETS_ONLY_SCOPES = [
+  'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/userinfo.email',
+];
+
+/** Build the Google OAuth URL for Sheets-only auth (no YouTube). */
+export async function getAuthorizationUrlForSheets(): Promise<string> {
+  const { clientId } = getOAuthConfig();
+  const state = await new SignJWT({ flow: 'sheets' })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime('10m')
+    .sign(getSecret());
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: getRedirectUri(),
+    response_type: 'code',
+    scope: SHEETS_ONLY_SCOPES.join(' '),
+    access_type: 'offline',
+    prompt: 'consent',
+    state,
+  });
+  return `${GOOGLE_AUTH_URL}?${params.toString()}`;
+}
+
+/** Verify state JWT and return full payload (works for both flows). */
+export async function verifyStatePayload(state: string): Promise<Record<string, unknown>> {
+  const { payload } = await jwtVerify(state, getSecret());
+  return payload as Record<string, unknown>;
+}
+
+/** Store Google auth tokens in the user-level table (not tied to a channel). */
+export async function storeSheetsTokens(tokens: TokenResponse, email: string): Promise<void> {
+  const accessTokenEnc = encrypt(tokens.access_token);
+  const refreshTokenEnc = tokens.refresh_token ? encrypt(tokens.refresh_token) : null;
+  const expiry = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
+  const scopesCsv = `{${tokens.scope.split(' ').join(',')}}`;
+  await sql`
+    INSERT INTO google_auth_tokens (email, access_token_encrypted, refresh_token_encrypted, token_expiry, scopes)
+    VALUES (${email}, ${accessTokenEnc}, ${refreshTokenEnc}, ${expiry}::timestamptz, ${scopesCsv}::text[])
+    ON CONFLICT (email) DO UPDATE SET
+      access_token_encrypted = EXCLUDED.access_token_encrypted,
+      refresh_token_encrypted = COALESCE(EXCLUDED.refresh_token_encrypted, google_auth_tokens.refresh_token_encrypted),
+      token_expiry = EXCLUDED.token_expiry,
+      scopes = EXCLUDED.scopes,
+      updated_at = NOW()
+  `;
+}
+
+/** Get a valid access token from the user-level table. Refreshes transparently. */
+export async function getValidSheetsToken(): Promise<{ token: string; scopes: string[]; email: string } | null> {
+  const result = await sql`
+    SELECT email, access_token_encrypted, refresh_token_encrypted, token_expiry, scopes
+    FROM google_auth_tokens
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `;
+  if (!result.rows.length) return null;
+  const row = result.rows[0];
+  const expiry = new Date(row.token_expiry as string);
+  const scopes: string[] = (row.scopes as string[]) || [];
+  let token: string;
+  if (expiry.getTime() > Date.now() + 5 * 60 * 1000) {
+    token = decrypt(row.access_token_encrypted as string);
+  } else {
+    if (!row.refresh_token_encrypted) return null;
+    try {
+      const refreshed = await refreshAccessToken(row.refresh_token_encrypted as string);
+      const newAccessEnc = encrypt(refreshed.access_token);
+      const newExpiry = new Date(Date.now() + refreshed.expires_in * 1000).toISOString();
+      await sql`
+        UPDATE google_auth_tokens
+        SET access_token_encrypted = ${newAccessEnc}, token_expiry = ${newExpiry}::timestamptz, updated_at = NOW()
+        WHERE email = ${row.email as string}
+      `;
+      token = refreshed.access_token;
+    } catch {
+      return null;
+    }
+  }
+  return { token, scopes, email: row.email as string };
+}
+
+/** Get connected Google account info without fetching a token. */
+export async function getSheetsAccountInfo(): Promise<{ email: string; scopes: string[] } | null> {
+  try {
+    const result = await sql`
+      SELECT email, scopes FROM google_auth_tokens ORDER BY updated_at DESC LIMIT 1
+    `;
+    if (!result.rows.length) return null;
+    const row = result.rows[0];
+    return { email: row.email as string, scopes: (row.scopes as string[]) || [] };
+  } catch {
+    return null;
+  }
+}
+
+/** Disconnect Google account — deletes all tokens. */
+export async function deleteSheetsTokens(): Promise<void> {
+  await sql`DELETE FROM google_auth_tokens`;
+}
+
 /**
  * Revoke OAuth tokens and remove from database.
  */

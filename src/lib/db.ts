@@ -345,3 +345,25 @@ export async function initDatabase() {
     ON CONFLICT (name) DO NOTHING
   `;
 }
+
+let googleAuthMigrated = false;
+export async function ensureGoogleAuthSchema() {
+  if (googleAuthMigrated) return;
+  try {
+    await sql`
+      CREATE TABLE IF NOT EXISTS google_auth_tokens (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        email TEXT NOT NULL UNIQUE,
+        access_token_encrypted TEXT NOT NULL,
+        refresh_token_encrypted TEXT,
+        token_expiry TIMESTAMPTZ NOT NULL,
+        scopes TEXT[] NOT NULL DEFAULT '{}',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+    googleAuthMigrated = true;
+  } catch (err) {
+    console.error('ensureGoogleAuthSchema error:', err);
+  }
+}

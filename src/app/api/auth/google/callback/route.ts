@@ -1,29 +1,52 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
-import { verifyState, exchangeCodeForTokens, storeTokens } from '@/lib/google-oauth';
+import { ensureGoogleAuthSchema } from '@/lib/db';
+import {
+  verifyStatePayload,
+  exchangeCodeForTokens,
+  storeTokens,
+  storeSheetsTokens,
+} from '@/lib/google-oauth';
 
 export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get('code');
   const state = req.nextUrl.searchParams.get('state');
   const error = req.nextUrl.searchParams.get('error');
 
-  // User denied consent
   if (error) {
-    return NextResponse.redirect(new URL('/channel?oauth=denied', req.url));
+    return NextResponse.redirect(new URL('/settings?google=denied', req.url));
   }
-
   if (!code || !state) {
-    return NextResponse.redirect(new URL('/channel?oauth=error', req.url));
+    return NextResponse.redirect(new URL('/settings?google=error', req.url));
   }
 
   try {
-    // Verify state JWT to get channel DB id
-    const { channelDbId } = await verifyState(state);
+    const payload = await verifyStatePayload(state);
 
-    // Exchange code for tokens
+    if (payload.flow === 'sheets') {
+      // ── Sheets-only flow ───────────────────────────────────────────────────
+      const tokens = await exchangeCodeForTokens(code);
+      await ensureGoogleAuthSchema();
+
+      let email = 'default';
+      try {
+        const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+          headers: { Authorization: `Bearer ${tokens.access_token}` },
+        });
+        if (userinfoRes.ok) {
+          const userinfo = await userinfoRes.json();
+          if (userinfo.email) email = userinfo.email;
+        }
+      } catch { /* email is optional */ }
+
+      await storeSheetsTokens(tokens, email);
+      return NextResponse.redirect(new URL('/settings?google=success', req.url));
+    }
+
+    // ── Existing YouTube channel flow ──────────────────────────────────────
+    const channelDbId = payload.channelDbId as string;
     const tokens = await exchangeCodeForTokens(code);
 
-    // Fetch the authenticated user's YouTube channel info
     let googleEmail: string | undefined;
     try {
       const channelRes = await fetch(
@@ -34,7 +57,6 @@ export async function GET(req: NextRequest) {
         const channelData = await channelRes.json();
         const item = channelData.items?.[0];
         if (item) {
-          // Update the channel record with real YouTube data
           await sql`
             UPDATE channels SET
               channel_id = ${item.id},
@@ -50,7 +72,6 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      // Get the user's email from the userinfo endpoint
       const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
         headers: { Authorization: `Bearer ${tokens.access_token}` },
       });
@@ -65,12 +86,10 @@ export async function GET(req: NextRequest) {
       console.error('Failed to fetch YouTube channel data after OAuth:', err);
     }
 
-    // Store encrypted tokens
     await storeTokens(channelDbId, tokens, googleEmail);
-
     return NextResponse.redirect(new URL('/channel?oauth=success', req.url));
   } catch (err: unknown) {
     console.error('OAuth callback error:', err);
-    return NextResponse.redirect(new URL('/channel?oauth=error', req.url));
+    return NextResponse.redirect(new URL('/settings?google=error', req.url));
   }
 }
