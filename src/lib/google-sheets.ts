@@ -102,6 +102,17 @@ export async function createProductionDocSheet(
   const numDataRows = data.rows.length;
   const COLS = 11; // added Image Preview column (K)
 
+  // Compute the full continuous script that we'll append at the bottom of
+  // the doc. Editors often want to read the narrative end-to-end as one
+  // text block alongside the per-row breakdown above.
+  const fullScript = data.rows
+    .map(r => (r.script_text || '').trim())
+    .filter(Boolean)
+    .join('\n\n');
+  // Layout for the appended block: separator row + heading row + body row.
+  // Total appended height = 4 (1 separator + 1 heading + 1 body + 1 trailing).
+  const SCRIPT_BLOCK_ROWS = 4;
+
   // ── 1. Create spreadsheet ──────────────────────────────────────────────────
   const createRes = await sheetsPost(SHEETS_BASE, accessToken, {
     properties: { title: `Production Doc: ${data.title}` },
@@ -110,7 +121,7 @@ export async function createProductionDocSheet(
         sheetId,
         title: 'Production Document',
         gridProperties: {
-          rowCount: numDataRows + DATA_START + 5,
+          rowCount: numDataRows + DATA_START + SCRIPT_BLOCK_ROWS + 5,
           columnCount: COLS,
           frozenRowCount: DATA_START, // freeze title + meta + header
         },
@@ -199,6 +210,27 @@ export async function createProductionDocSheet(
       { valueInputOption: 'USER_ENTERED', data: formulaUpdates },
     );
     await assertOk(hlRes, 'Write formulas');
+  }
+
+  // ── 3b. Append full-script block at the bottom (editor convenience) ───────
+  // Heading in column A, full continuous script in the cell below it,
+  // spanning columns A:J via merge so the long text is readable.
+  if (fullScript) {
+    const headingRow = DATA_START + numDataRows + 2; // 1-indexed; +2 = blank separator + heading
+    const bodyRow = headingRow + 1;
+    const scriptRes = await sheetsPut(
+      `${SHEETS_BASE}/${spreadsheetId}/values/${encodeURIComponent(`A${headingRow}:A${bodyRow}`)}?valueInputOption=USER_ENTERED`,
+      accessToken,
+      {
+        range: `A${headingRow}:A${bodyRow}`,
+        majorDimension: 'ROWS',
+        values: [
+          ['📜 FULL SCRIPT (continuous, for reading)'],
+          [fullScript],
+        ],
+      },
+    );
+    await assertOk(scriptRes, 'Write full-script block');
   }
 
   // ── 4. Apply formatting ────────────────────────────────────────────────────

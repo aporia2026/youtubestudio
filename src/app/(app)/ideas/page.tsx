@@ -8,6 +8,28 @@ import { getFeatureDefaultModelId, getModelById } from '@/lib/ai-models';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { getIdeasHistory, saveIdeas, deleteIdeasEntry, clearIdeasHistory, type IdeasHistoryEntry } from '@/lib/history';
 
+// Collect every previously-generated title across all history entries —
+// passed as `existingTitles` so the LLM never repeats and the server can
+// post-filter dupes. Caps at 500 to keep the prompt sane.
+function collectAllPreviousTitles(entries: IdeasHistoryEntry[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of entries) {
+    for (const idea of entry.ideas ?? []) {
+      const t = (idea as { title?: unknown }).title;
+      if (typeof t === 'string' && t.trim()) {
+        const norm = t.trim().toLowerCase();
+        if (!seen.has(norm)) {
+          seen.add(norm);
+          out.push(t.trim());
+          if (out.length >= 500) return out;
+        }
+      }
+    }
+  }
+  return out;
+}
+
 interface PerformanceBreakdown {
   search_volume?: string;
   competition_level?: string;
@@ -330,7 +352,10 @@ export default function IdeasPage() {
         }
       }
 
-      // STEP 3: Generate ideas with all context
+      // STEP 3: Generate ideas with all context — pass every title we've
+      // already generated (across the full history, this niche AND others)
+      // so the LLM never repeats. Server post-filters too as a safety net.
+      const existingTitles = collectAllPreviousTitles(ideasHistoryItems);
       setGenStep('Generating ideas from all sources...');
       const res = await fetch('/api/generate/ideas', {
         method: 'POST',
@@ -340,6 +365,7 @@ export default function IdeasPage() {
           videoType: videoType !== 'any' ? videoType : undefined,
           referenceContext: refContext || undefined,
           redditContext,
+          existingTitles,
         }),
       });
       if (!res.ok) {

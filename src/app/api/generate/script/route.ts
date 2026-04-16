@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext } = await req.json();
+    const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext, previousScripts } = await req.json();
 
     if (!topic || !niche) {
       return NextResponse.json({ error: 'topic and niche are required' }, { status: 400 });
@@ -24,6 +24,14 @@ export async function POST(req: NextRequest) {
     const model = getModelById(modelId);
     if (!model) return NextResponse.json({ error: 'Invalid model' }, { status: 400 });
 
+    // Fold recent scripts into additionalContext so the LLM avoids repeating
+    // its own prior hooks/angles for this user. Matches the same mechanism
+    // used by /api/generate/script-validated.
+    const priors = Array.isArray(previousScripts) ? previousScripts.slice(0, 6).filter((s: unknown) => typeof s === 'string' && s) as string[] : [];
+    const dedupNote = priors.length > 0
+      ? `\n\nPREVIOUSLY GENERATED SCRIPTS — DO NOT REPEAT THESE HOOKS, OPENINGS, OR ANGLES:\n${priors.map((s, i) => `--- Prior #${i + 1} (first 400 chars) ---\n${s.slice(0, 400)}`).join('\n\n')}\nWrite a fundamentally different angle.`
+      : '';
+
     const { system, user } = scriptGenerationPrompt({
       topic,
       niche,
@@ -31,7 +39,7 @@ export async function POST(req: NextRequest) {
       tone,
       style,
       targetAudience: audience,
-      additionalContext: context,
+      additionalContext: (context || '') + dedupNote,
       referenceContext,
     });
 

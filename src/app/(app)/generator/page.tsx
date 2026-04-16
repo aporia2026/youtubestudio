@@ -10,6 +10,7 @@ import { countWords, estimateDuration, formatDuration } from '@/lib/utils';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
 import { ExportScript } from '@/components/ui/ExportScript';
+import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { DraftsBanner } from '@/components/ui/DraftsBanner';
 import { getScriptHistory, saveScript as saveScriptToHistory, deleteScriptEntry, clearScriptHistory, getRecentTopics, type ScriptHistoryEntry } from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
@@ -63,6 +64,38 @@ export default function GeneratorPage() {
   const [showSave, setShowSave] = useState(false);
   const scriptRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Self-QA: when on, we hit /api/generate/script-validated which generates,
+  // scores against a brutal rubric, and regenerates up to maxAttempts times
+  // if the score < threshold. Blocks the script entirely when it never
+  // clears the bar — per the user's "don't even return it" requirement.
+  const [selfQA, setSelfQA] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return localStorage.getItem('script-gen:self-qa') === 'true';
+  });
+  const [qaThreshold, setQaThreshold] = useState<number>(() => {
+    if (typeof window === 'undefined') return 85;
+    const v = Number(localStorage.getItem('script-gen:qa-threshold') ?? 85);
+    return Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 85;
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem('script-gen:self-qa', String(selfQA));
+  }, [selfQA]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem('script-gen:qa-threshold', String(qaThreshold));
+  }, [qaThreshold]);
+  // Last-run QA metadata so we can show the score + strengths/issues after
+  // a validated run completes.
+  const [qaResult, setQaResult] = useState<{
+    overall_score?: number;
+    passed: boolean;
+    attempts: number;
+    threshold: number;
+    strengths?: string[];
+    critical_issues?: string[];
+  } | null>(null);
 
   // Reference videos
   const [refUrl, setRefUrl] = useState('');
@@ -193,6 +226,7 @@ export default function GeneratorPage() {
     setGenerating(true);
     setScript('');
     setShowSave(false);
+    setQaResult(null);
     abortRef.current = new AbortController();
 
     // Build rich reference context from deep analysis
@@ -200,11 +234,65 @@ export default function GeneratorPage() {
       `### REFERENCE VIDEO ${idx + 1}: "${r.title}" by ${r.channelTitle} (${r.viewCount.toLocaleString()} views)\n${r.styleAnalysis}`
     ).join('\n\n---\n\n');
 
+    // Previously-generated scripts from history — fed to both endpoints so
+    // the LLM doesn't repeat hooks/angles it has used for this user before.
+    // Cap at ~6 recent entries to keep the prompt compact.
+    const previousScripts = getScriptHistory().slice(0, 6).map(e => e.script).filter(Boolean);
+
     try {
+      if (selfQA) {
+        // Non-streaming validated path. Round-trips once per attempt; can
+        // take 1–5 minutes depending on threshold + attempts.
+        toast.info(`Self-QA running — scoring at threshold ${qaThreshold}. This may take a few minutes…`);
+        const res = await fetch('/api/generate/script-validated', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            modelId, topic, niche, duration, tone, style, audience, context,
+            referenceContext: refContext || undefined,
+            threshold: qaThreshold,
+            previousScripts,
+          }),
+          signal: abortRef.current.signal,
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Generation failed');
+        if (!data.passed) {
+          // Per the user's requirement: if it never clears the bar, don't
+          // return the script — warn so they can retry or lower the threshold.
+          setQaResult({
+            overall_score: data.bestScore,
+            passed: false,
+            attempts: data.attempts,
+            threshold: data.threshold,
+            critical_issues: data.qa?.critical_issues,
+            strengths: data.qa?.strengths,
+          });
+          toast.error(`Self-QA failed after ${data.attempts} attempts — best score ${data.bestScore}/${data.threshold}. Lower the threshold or try a stronger model.`);
+          return;
+        }
+        setScript(data.script);
+        setQaResult({
+          overall_score: data.qa?.overall_score,
+          passed: true,
+          attempts: data.attempts,
+          threshold: data.threshold,
+          critical_issues: data.qa?.critical_issues,
+          strengths: data.qa?.strengths,
+        });
+        setShowSave(true);
+        saveScriptToHistory({ topic, niche, tone, style, duration, modelId, script: data.script, wordCount: countWords(data.script) });
+        setHistoryItems(getScriptHistory());
+        const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: data.script, wordCount: countWords(data.script) });
+        setDraftId(draft.id);
+        toast.success(`Self-QA passed in ${data.attempts} attempt${data.attempts === 1 ? '' : 's'} — score ${data.qa?.overall_score ?? '?'}/100`);
+        return;
+      }
+
       const res = await fetch('/api/generate/script', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ modelId, topic, niche, duration, tone, style, audience, context, referenceContext: refContext || undefined }),
+        body: JSON.stringify({ modelId, topic, niche, duration, tone, style, audience, context, referenceContext: refContext || undefined, previousScripts }),
         signal: abortRef.current.signal,
       });
 
@@ -556,6 +644,35 @@ export default function GeneratorPage() {
               </AnimatePresence>
             </div>
 
+            {/* Self-QA controls. When enabled, hits /script-validated which
+                scores the script 0–100 and regenerates if below threshold.
+                If it can't clear the bar after maxAttempts, the script is
+                withheld — per "don't even return it" requirement. */}
+            <div className="rounded-lg p-3 border" style={{ borderColor: 'var(--border)', background: 'rgba(124,58,237,0.05)' }}>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={selfQA} onChange={e => setSelfQA(e.target.checked)} />
+                <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Self-QA mode</span>
+                <span className="badge badge-purple text-xs">brutal scorer</span>
+              </label>
+              <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                Generates → scores 0–100 → regenerates with feedback. Blocks scripts that score below the threshold.
+              </p>
+              {selfQA && (
+                <div className="mt-2">
+                  <div className="flex items-center justify-between text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>
+                    <span>Threshold</span>
+                    <span className="font-semibold" style={{ color: 'var(--accent-purple-bright)' }}>{qaThreshold}/100</span>
+                  </div>
+                  <input
+                    type="range" min={50} max={100} step={1}
+                    value={qaThreshold}
+                    onChange={e => setQaThreshold(Number(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+              )}
+            </div>
+
             <button
               onClick={generating ? () => abortRef.current?.abort() : generateScript}
               disabled={!topic.trim() || !niche.trim()}
@@ -605,6 +722,45 @@ export default function GeneratorPage() {
 
         {/* RIGHT PANEL - Output */}
         <div className="space-y-4">
+          {qaResult && (
+            <div
+              className="glass rounded-xl p-4"
+              style={{ borderLeft: `3px solid ${qaResult.passed ? 'var(--accent-green)' : '#F87171'}` }}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                    {qaResult.passed ? '✓ Self-QA passed' : '✕ Self-QA blocked this script'}
+                  </span>
+                  <span className="badge badge-purple text-xs">
+                    {qaResult.overall_score ?? '?'}/100 · threshold {qaResult.threshold} · {qaResult.attempts} attempt{qaResult.attempts === 1 ? '' : 's'}
+                  </span>
+                </div>
+                <button
+                  onClick={() => setQaResult(null)}
+                  className="text-xs"
+                  style={{ color: 'var(--text-muted)' }}
+                  title="Dismiss"
+                >✕</button>
+              </div>
+              {qaResult.strengths && qaResult.strengths.length > 0 && (
+                <details className="mt-1">
+                  <summary className="text-xs cursor-pointer" style={{ color: 'var(--accent-green)' }}>Strengths ({qaResult.strengths.length})</summary>
+                  <ul className="text-xs mt-1 ml-4 list-disc" style={{ color: 'var(--text-secondary)' }}>
+                    {qaResult.strengths.slice(0, 8).map((s, i) => <li key={i}>{s}</li>)}
+                  </ul>
+                </details>
+              )}
+              {qaResult.critical_issues && qaResult.critical_issues.length > 0 && (
+                <details className="mt-1" open={!qaResult.passed}>
+                  <summary className="text-xs cursor-pointer" style={{ color: '#F87171' }}>Critical issues ({qaResult.critical_issues.length})</summary>
+                  <ul className="text-xs mt-1 ml-4 list-disc" style={{ color: 'var(--text-secondary)' }}>
+                    {qaResult.critical_issues.slice(0, 8).map((s, i) => <li key={i}>{s}</li>)}
+                  </ul>
+                </details>
+              )}
+            </div>
+          )}
           <div className="glass rounded-xl" style={{ minHeight: 600 }}>
             {/* Output header */}
             <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -628,6 +784,8 @@ export default function GeneratorPage() {
                     </svg>
                     Copy
                   </button>
+                  <CopyForElevenLabs script={script} version="v3" />
+                  <CopyForElevenLabs script={script} version="v2" />
                   <ExportScript title={topic} script={script} niche={niche} duration={formatDuration(estimateDuration(wordCount))} />
                 </div>
               )}

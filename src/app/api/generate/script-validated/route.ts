@@ -1,0 +1,190 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { generateText, getModelById } from '@/lib/ai';
+import { scriptGenerationPrompt, scriptQAPrompt } from '@/lib/prompts';
+import { parseLlmJson } from '@/lib/parse-llm-json';
+import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+
+/**
+ * Self-QA'd script generation. Generates a script, runs it through the
+ * existing nuclear-QA prompt to get a 0–100 score, and regenerates with
+ * targeted feedback if the score falls below the threshold (default 85).
+ *
+ * Workflow per attempt:
+ *   1. Generate script (or regenerate with previous QA feedback)
+ *   2. Run QA scorer
+ *   3. If overall_score >= threshold → return script + score
+ *   4. Else → feed critical_issues + rewrite_suggestions back into the
+ *      next attempt's prompt and try again
+ *
+ * Capped at MAX_ATTEMPTS to bound cost. If we never hit the threshold,
+ * return the BEST attempt with its score and a `passed: false` flag so
+ * the client can warn the user (or auto-reject per their settings).
+ *
+ * Input:  { modelId, topic, niche, duration, tone, style, audience,
+ *           context, referenceContext, threshold?, maxAttempts?,
+ *           previousScripts? }
+ * Output: { script, qa, attempts, passed }
+ */
+
+export const runtime = 'nodejs';
+export const maxDuration = 600; // up to 3 attempts × ~2 min each
+
+const DEFAULT_THRESHOLD = 85;
+const DEFAULT_MAX_ATTEMPTS = 3;
+
+interface QAResult {
+  overall_score?: number;
+  hook_strength?: number;
+  retention?: number;
+  content_quality?: number;
+  audience_targeting?: number;
+  cta?: number;
+  seo?: number;
+  pacing?: number;
+  critical_issues?: string[];
+  strengths?: string[];
+  rewrite_suggestions?: string[];
+}
+
+export async function POST(req: NextRequest) {
+  const { limited } = checkRateLimit(`script-validated:${getClientIP(req)}`, 5, 60_000);
+  if (limited) return NextResponse.json({ error: 'Rate limited — try again shortly' }, { status: 429 });
+
+  let body: {
+    modelId?: string;
+    topic?: string;
+    niche?: string;
+    duration?: number;
+    tone?: string;
+    style?: string;
+    audience?: string;
+    context?: string;
+    referenceContext?: string;
+    threshold?: number;
+    maxAttempts?: number;
+    /** Previously-generated scripts (hooks/topics) to avoid repeating. */
+    previousScripts?: string[];
+  };
+  try { body = await req.json(); }
+  catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }); }
+
+  const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext, previousScripts = [] } = body;
+  if (!topic || !niche) return NextResponse.json({ error: 'topic and niche are required' }, { status: 400 });
+  if (!modelId) return NextResponse.json({ error: 'modelId is required' }, { status: 400 });
+  const model = getModelById(modelId);
+  if (!model) return NextResponse.json({ error: 'Invalid model' }, { status: 400 });
+
+  const threshold = Math.max(0, Math.min(100, body.threshold ?? DEFAULT_THRESHOLD));
+  const maxAttempts = Math.max(1, Math.min(5, body.maxAttempts ?? DEFAULT_MAX_ATTEMPTS));
+
+  // Build a prefix that warns the LLM about prior scripts to avoid
+  // repeating exact hooks / openings / structure.
+  const dedupNote = previousScripts.length > 0
+    ? `\n\nPREVIOUSLY GENERATED SCRIPTS — DO NOT REPEAT THESE HOOKS, OPENINGS, OR ANGLES:\n${previousScripts.slice(0, 6).map((s, i) => `--- Prior #${i + 1} (first 400 chars) ---\n${s.slice(0, 400)}`).join('\n\n')}\nWrite a fundamentally different angle.`
+    : '';
+
+  const attempts: Array<{ script: string; qa: QAResult; score: number }> = [];
+  let lastFeedback: string | undefined;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // 1) Generate the script. On retries, fold the previous attempt's
+    // critical issues into the prompt so the model knows what to fix.
+    const retryNote = lastFeedback
+      ? `\n\nPRIOR ATTEMPT FAILED QA (scored below ${threshold}). The reviewer's critical notes:\n${lastFeedback}\n\nRewrite from scratch addressing every issue. Don't merely tweak the prior script — restructure as needed.`
+      : '';
+    const { system: scriptSystem, user: scriptUser } = scriptGenerationPrompt({
+      topic,
+      niche,
+      targetDurationMinutes: duration || 7,
+      tone,
+      style,
+      targetAudience: audience,
+      additionalContext: (context || '') + dedupNote + retryNote,
+      referenceContext,
+    });
+
+    let script: string;
+    try {
+      script = await generateText({
+        modelId,
+        prompt: scriptUser,
+        systemPrompt: scriptSystem,
+        maxTokens: 8000,
+        // Slightly higher temperature on retries to escape the prior local minimum.
+        temperature: 0.8 + (attempt - 1) * 0.05,
+      });
+      script = script.trim();
+    } catch (err) {
+      return NextResponse.json({
+        error: `Script generation failed on attempt ${attempt}: ${err instanceof Error ? err.message : err}`,
+      }, { status: 502 });
+    }
+
+    if (!script || script.length < 200) {
+      lastFeedback = 'Script came back empty or too short — generate a full draft.';
+      continue;
+    }
+
+    // 2) QA the script.
+    const { system: qaSystem, user: qaUser } = scriptQAPrompt({
+      script,
+      niche,
+      passNumber: attempt,
+      previousFeedback: lastFeedback,
+      aggressiveness: 'brutal',
+    });
+
+    let qa: QAResult = {};
+    let qaRaw = '';
+    try {
+      qaRaw = await generateText({
+        modelId,
+        prompt: qaUser,
+        systemPrompt: qaSystem,
+        maxTokens: 4000,
+        temperature: 0.3,
+      });
+      qa = parseLlmJson(qaRaw) as QAResult;
+    } catch (err) {
+      // QA failed to parse — accept the script with score=0 and mark failed
+      // rather than blocking. Worst case: client falls back to manual QA.
+      console.warn(`[script-validated] QA parse failed attempt ${attempt}:`, err);
+      attempts.push({ script, qa: {}, score: 0 });
+      lastFeedback = 'QA reviewer returned malformed output. Re-attempt.';
+      continue;
+    }
+
+    const score = typeof qa.overall_score === 'number' ? qa.overall_score : 0;
+    attempts.push({ script, qa, score });
+
+    if (score >= threshold) {
+      return NextResponse.json({
+        script,
+        qa,
+        attempts: attempt,
+        passed: true,
+        threshold,
+      });
+    }
+
+    // 3) Build feedback for the next attempt.
+    const issues = (qa.critical_issues ?? []).slice(0, 8).map(i => `- ${i}`).join('\n');
+    const fixes = (qa.rewrite_suggestions ?? []).slice(0, 8).map(s => `- ${s}`).join('\n');
+    lastFeedback = `Score: ${score}/100 (threshold: ${threshold}).\nCRITICAL ISSUES:\n${issues || '(none cited)'}\n\nSUGGESTED FIXES:\n${fixes || '(none cited)'}`;
+  }
+
+  // No attempt cleared the threshold — return the best one with passed:false
+  // so the client can show a warning + allow manual override.
+  const best = attempts.sort((a, b) => b.score - a.score)[0];
+  if (!best) {
+    return NextResponse.json({ error: 'All generation attempts failed' }, { status: 500 });
+  }
+  return NextResponse.json({
+    script: best.script,
+    qa: best.qa,
+    attempts: attempts.length,
+    passed: false,
+    threshold,
+    bestScore: best.score,
+  });
+}
