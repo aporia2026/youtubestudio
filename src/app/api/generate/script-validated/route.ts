@@ -27,7 +27,10 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
  */
 
 export const runtime = 'nodejs';
-export const maxDuration = 600; // up to 3 attempts × ~2 min each
+// Vercel Pro caps serverless functions at 300s. Each attempt is ~90–120s
+// (script gen + QA scorer), so 300s comfortably covers 2 attempts. Users
+// who hit the cap mid-third-attempt will get a 504 and can retry.
+export const maxDuration = 300;
 
 const DEFAULT_THRESHOLD = 85;
 const DEFAULT_MAX_ATTEMPTS = 3;

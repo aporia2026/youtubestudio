@@ -5,6 +5,8 @@
   "installCommand": "npm install",
   "functions": {
     "src/app/api/generate/script/route.ts":                          { "maxDuration": 120 },
+    "src/app/api/generate/script-validated/route.ts":                { "maxDuration": 300 },
+    "src/app/api/script/elevenlabs-format/route.ts":                 { "maxDuration": 60 },
     "src/app/api/generate/ideas/route.ts":                           { "maxDuration": 120 },
     "src/app/api/production-doc/export-sheets/route.ts":              { "maxDuration": 60 },
     "src/app/api/generate/production-doc/route.ts":                  { "maxDuration": 300 },
