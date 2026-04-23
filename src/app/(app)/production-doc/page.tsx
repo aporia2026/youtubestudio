@@ -7,6 +7,7 @@ import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { saveProductionDocEntry, getRecentNiches, getRecentTopics } from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
+import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { productionDocToVideoConfig } from '@/remotion/utils';
 import type { BrandKit } from '@/remotion/types';
 
@@ -1323,13 +1324,21 @@ export default function ProductionDocPage() {
 
         {/* Script textarea */}
         <div>
-          <div className="flex items-center justify-between mb-1.5">
+          <div className="flex items-center justify-between mb-1.5 flex-wrap gap-2">
             <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>Script *</label>
-            {wordCount > 0 && (
-              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                {wordCount.toLocaleString()} words
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              {script.trim().length > 0 && (
+                <>
+                  <CopyForElevenLabs script={script} version="v2" />
+                  <CopyForElevenLabs script={script} version="v3" />
+                </>
+              )}
+              {wordCount > 0 && (
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  {wordCount.toLocaleString()} words
+                </span>
+              )}
+            </div>
           </div>
           <textarea
             value={script}

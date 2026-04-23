@@ -106,7 +106,7 @@ export default function GeneratorPage() {
   const [historyItems, setHistoryItems] = useState<ScriptHistoryEntry[]>(() => getScriptHistory());
   const [draftId, setDraftId] = useState<string | null>(() => getActiveDraft()?.id || null);
 
-  function resumeDraft(draft: WorkflowDraft) {
+  function resumeDraft(draft: WorkflowDraft, options?: { silent?: boolean }) {
     // Abort any in-progress generation
     if (generating) {
       abortRef.current?.abort();
@@ -126,7 +126,7 @@ export default function GeneratorPage() {
       }
     }
     setDraftId(draft.id);
-    toast.success('Draft resumed');
+    if (!options?.silent) toast.success('Draft resumed');
   }
 
   function restoreScript(id: string) {
@@ -212,11 +212,29 @@ export default function GeneratorPage() {
       }
     } catch {}
 
+    // When arriving from QA, auto-resume the active draft so the QA-improved script
+    // is shown immediately instead of requiring a manual click on the drafts banner.
+    // Silent mode: the arrival itself is the confirmation — no toast needed.
+    // Also strip ?from=qa from the URL so a bookmark/share doesn't re-trigger this path.
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get('from') === 'qa') {
+        const active = getActiveDraft();
+        if (active?.script) {
+          resumeDraft(active, { silent: true });
+          if (!prefillNiche && active.niche) prefillNiche = active.niche;
+        }
+        url.searchParams.delete('from');
+        window.history.replaceState({}, '', url.pathname + (url.search || ''));
+      }
+    } catch {}
+
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
       // Only set default niche if no prefill was applied
       if (!prefillNiche && data.niches?.length) setNiche(data.niches[0].name);
     }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function generateScript() {

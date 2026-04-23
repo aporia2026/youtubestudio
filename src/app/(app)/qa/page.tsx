@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
 import { ExportScript } from '@/components/ui/ExportScript';
+import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { ScoreRing } from '@/components/ui/ScoreRing';
 import { saveDraft, getActiveDraft } from '@/lib/drafts';
@@ -94,20 +95,103 @@ export default function QAPage() {
   const fixedScriptRef = useRef<HTMLDivElement>(null);
   const [qaHistory, setQaHistory] = useState<QAHistoryEntry[]>(() => getQAHistory());
   const [nicheHints, setNicheHints] = useState<string[]>([]);
+  // Linked project + script (set when "Save as Project" is used, or carried from an active draft).
+  // When present, QA sessions and fixed-script revisions are persisted to the projects/scripts/qa_sessions tables.
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [scriptId, setScriptId] = useState<string | null>(null);
+  // Persisted-to-project flag so "Save as Project" toasts land once even if the user re-runs fixes.
+  const [savingProject, setSavingProject] = useState(false);
 
-  // Load prefill from Script Generator
+  // Load prefill from Script Generator. Also restore any previously-backed-up session
+  // so a refresh or HMR cycle doesn't wipe a multi-pass QA run.
+  //
+  // All restore writes use functional setters (prev => prev || backup) so that:
+  //   (a) a fresh qa_prefill set earlier in the same effect wins over a stale backup, and
+  //   (b) Fast-Refresh re-runs of this mount effect can't clobber in-memory state that
+  //       was accumulated after the original mount — the closure's initial `script`/`results`
+  //       are stale, but the functional-setter `prev` is always current.
   useEffect(() => {
     setNicheHints(getRecentNiches());
+    let hadPrefill = false;
     try {
       const prefill = localStorage.getItem('qa_prefill');
       if (prefill) {
         localStorage.removeItem('qa_prefill');
         const data = JSON.parse(prefill);
-        if (data.script) setScript(data.script);
+        if (data.script) { setScript(data.script); hadPrefill = true; }
         if (data.niche) setNiche(data.niche);
       }
     } catch {}
+    try {
+      const backup = localStorage.getItem('qa_session_backup');
+      if (backup) {
+        const s = JSON.parse(backup) as {
+          script?: string;
+          niche?: string;
+          aggressiveness?: Aggressiveness;
+          results?: QAResult[];
+          activeResult?: number;
+          fixedScript?: string;
+          passNumber?: number;
+          projectId?: string | null;
+          scriptId?: string | null;
+          ts?: number;
+        };
+        // 24h freshness cap — beyond that, don't auto-restore (stale).
+        if (s && s.ts && Date.now() - s.ts < 24 * 60 * 60 * 1000) {
+          if (s.script && !hadPrefill) setScript(prev => prev || s.script!);
+          if (s.niche) setNiche(prev => prev || s.niche!);
+          if (s.aggressiveness) setAggressiveness(prev => prev === 'brutal' ? s.aggressiveness! : prev);
+          if (s.results?.length) {
+            setResults(prev => prev.length ? prev : s.results!);
+            setActiveResult(prev => prev || (s.activeResult ?? s.results!.length - 1));
+            setPassNumber(prev => prev > 1 ? prev : (s.passNumber ?? s.results!.length + 1));
+          }
+          if (s.fixedScript) setFixedScript(prev => prev || s.fixedScript!);
+          if (s.projectId) setProjectId(prev => prev || s.projectId!);
+          if (s.scriptId) setScriptId(prev => prev || s.scriptId!);
+        }
+      }
+    } catch {}
+    // If an active draft is linked to a project, inherit the project/script ids so
+    // QA runs persist to the right place.
+    try {
+      const active = getActiveDraft();
+      if (active?.projectId) setProjectId(prev => prev || active.projectId!);
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Back up the QA session to localStorage so it survives refresh/HMR.
+  // Debounced 800ms — typing in the script textarea triggers this effect on every keystroke,
+  // and JSON.stringify(results) for a 9-pass session is ~100 KB. Without the debounce we'd
+  // burn CPU and hit the quota much faster.
+  useEffect(() => {
+    if (!script && results.length === 0 && !fixedScript) return;
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem('qa_session_backup', JSON.stringify({
+          script, niche, aggressiveness,
+          results, activeResult, fixedScript, passNumber,
+          projectId, scriptId,
+          ts: Date.now(),
+        }));
+      } catch {
+        // Quota exceeded — drop older passes to make room. This is the only meaningful
+        // thing to trim; the script/fixedScript together are usually <50 KB.
+        try {
+          localStorage.setItem('qa_session_backup', JSON.stringify({
+            script, niche, aggressiveness,
+            results: results.slice(-3),
+            activeResult: Math.min(activeResult, 2),
+            fixedScript, passNumber, projectId, scriptId,
+            ts: Date.now(),
+          }));
+        } catch { /* give up — in-memory state is still intact */ }
+      }
+    }, 800);
+    return () => clearTimeout(t);
+  }, [script, niche, aggressiveness, results, activeResult, fixedScript, passNumber, projectId, scriptId]);
 
   function toggleFix(key: string) {
     setApprovedFixes(prev => {
@@ -188,12 +272,131 @@ export default function QAPage() {
         fixedScriptRef.current?.scrollTo({ top: fixedScriptRef.current.scrollHeight });
       }
 
-      toast.success('Fixed script generated!');
+      // Persist the improved script so it survives navigation:
+      //   1. Active draft gets `fixedScript` + `script` updated to the new version
+      //      (Generator's resume reads `draft.script`, so future navigation prefills the fixed text).
+      //   2. If linked to a project, POST a new version to /api/projects/:id/scripts.
+      try {
+        const active = getActiveDraft();
+        const draftTitle = active?.title || niche || 'QA-improved script';
+        const draft = saveDraft({
+          id: active?.id,
+          title: draftTitle,
+          niche,
+          step: 'qa',
+          topic: active?.topic,
+          modelId,
+          script: full,
+          fixedScript: full,
+          qaScore: currentResult.overall_score,
+          qaVerdict: currentResult.verdict,
+          projectId: projectId || active?.projectId,
+        });
+        // If we had an untracked projectId previously, carry it forward
+        if (!projectId && draft.projectId) setProjectId(draft.projectId);
+      } catch {}
+
+      if (projectId) {
+        // Fire-and-forget version bump — keepalive so it survives a subsequent
+        // handoff-navigation that would otherwise abort the fetch.
+        fetch(`/api/projects/${projectId}/scripts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: full, modelId }),
+          keepalive: true,
+        })
+          .then(r => r.ok ? r.json() : null)
+          .then(data => { if (data?.script?.id) setScriptId(data.script.id); })
+          .catch(() => { /* best-effort */ });
+      }
+
+      toast.success('Fixed script generated and saved to your draft!');
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Failed to apply fixes');
     } finally {
       setApplyingFixes(false);
     }
+  }
+
+  // Save the current (best) script as a new project and link it.
+  // Called from the Next-Steps CTA bar so users don't have to scroll to the Apply Fixes tab.
+  async function saveAsProjectQuick(title?: string): Promise<string | null> {
+    const contentToSave = fixedScript || script;
+    if (!contentToSave.trim()) { toast.error('Nothing to save yet'); return null; }
+    const resolvedTitle = (title || niche || 'Untitled video').trim();
+    setSavingProject(true);
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: resolvedTitle,
+          niche: niche || 'General',
+          topic: resolvedTitle,
+          script: contentToSave,
+          modelId,
+        }),
+      });
+      if (!res.ok) throw new Error('Save failed');
+      const data = await res.json();
+      const id = data.project?.id || data.id;
+      if (id) {
+        setProjectId(id);
+        // Write the linkage back to the active draft.
+        try {
+          const active = getActiveDraft();
+          saveDraft({
+            id: active?.id,
+            title: resolvedTitle,
+            niche: niche || '',
+            step: 'qa',
+            topic: active?.topic,
+            modelId,
+            script: contentToSave,
+            fixedScript: fixedScript || undefined,
+            projectId: id,
+            qaScore: currentResult?.overall_score,
+            qaVerdict: currentResult?.verdict,
+          });
+        } catch {}
+        toast.success('Saved to project — QA history is now tied to it');
+        return id;
+      }
+      return null;
+    } catch {
+      toast.error('Failed to save project');
+      return null;
+    } finally {
+      setSavingProject(false);
+    }
+  }
+
+  // Update the active draft's script field with the "best" script we have,
+  // then navigate to the given route. Used by all CTA handoffs so the destination
+  // page resumes with the improved script — not the pre-QA version.
+  function handoffWithBestScript(path: string, prefillKey?: string, prefillValue?: unknown) {
+    const best = fixedScript || script;
+    if (!best.trim()) { toast.error('No script to carry forward yet'); return; }
+    try {
+      const active = getActiveDraft();
+      saveDraft({
+        id: active?.id,
+        title: active?.title || niche || 'QA-improved script',
+        niche,
+        step: 'qa',
+        topic: active?.topic,
+        modelId,
+        script: best,
+        fixedScript: fixedScript || undefined,
+        projectId: projectId || active?.projectId,
+        qaScore: currentResult?.overall_score,
+        qaVerdict: currentResult?.verdict,
+      });
+    } catch {}
+    if (prefillKey) {
+      try { localStorage.setItem(prefillKey, JSON.stringify(prefillValue)); } catch {}
+    }
+    window.location.href = path;
   }
 
   async function runQA() {
@@ -232,6 +435,8 @@ export default function QAPage() {
           aggressiveness,
           passNumber,
           previousFeedback,
+          projectId: projectId || undefined,
+          scriptId: scriptId || undefined,
         }),
       });
 
@@ -480,9 +685,11 @@ export default function QAPage() {
                     <p className="text-lg font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
                       {currentResult.verdict}
                     </p>
-                    <p className="text-sm" style={{ color: currentResult.will_it_perform.toLowerCase().startsWith('yes') ? '#10b981' : currentResult.will_it_perform.toLowerCase().startsWith('maybe') ? '#f59e0b' : '#ef4444' }}>
-                      Performance Outlook: {currentResult.will_it_perform}
-                    </p>
+                    {currentResult.will_it_perform && (
+                      <p className="text-sm" style={{ color: currentResult.will_it_perform.toLowerCase().startsWith('yes') ? '#10b981' : currentResult.will_it_perform.toLowerCase().startsWith('maybe') ? '#f59e0b' : '#ef4444' }}>
+                        Performance Outlook: {currentResult.will_it_perform}
+                      </p>
+                    )}
                   </div>
                 </div>
 
@@ -495,6 +702,111 @@ export default function QAPage() {
                     <span className="text-xs ml-2" style={{ color: 'var(--text-secondary)' }}>{currentResult.next_pass_focus}</span>
                   </div>
                 )}
+              </div>
+
+              {/* Persistent Next-Steps CTA — visible from every tab so the "what now?" is always answered.
+                  Uses the fixed script if one has been generated, otherwise the original (for high-scoring scripts
+                  that don't need Apply Fixes). */}
+              <div className="glass rounded-xl p-5" style={{
+                background: currentResult.overall_score >= 85
+                  ? 'linear-gradient(135deg, rgba(16,185,129,0.08), rgba(124,58,237,0.08))'
+                  : undefined,
+                border: currentResult.overall_score >= 85 ? '1px solid rgba(16,185,129,0.3)' : undefined,
+              }}>
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                      {fixedScript ? '✨ Continue with your QA-improved script' : currentResult.overall_score >= 85 ? '✅ Your script is ready — what\'s next?' : '🚀 Next Steps'}
+                    </h3>
+                    <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                      {fixedScript
+                        ? 'The fixed script is auto-saved to your draft. Pick where to go next:'
+                        : currentResult.overall_score >= 85
+                          ? 'Use the current script as-is, or refine further via Apply Fixes.'
+                          : 'Apply fixes first, or continue with the current script if you\'re happy with it.'}
+                    </p>
+                  </div>
+                  {projectId && (
+                    <span className="text-xs px-2 py-1 rounded-full shrink-0" style={{ background: 'rgba(16,185,129,0.15)', color: '#10b981' }}>
+                      🔗 Linked to project
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                  <button
+                    onClick={() => handoffWithBestScript('/voiceover?from=qa', 'voiceover_prefill', { script: fixedScript || script, niche })}
+                    className="btn-primary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                  >
+                    🎙️ Voiceover
+                  </button>
+                  <button
+                    onClick={() => {
+                      const best = fixedScript || script;
+                      const topicLine = best.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
+                      handoffWithBestScript('/production-doc?from=qa', 'prodoc_prefill', { script: best, niche, topic: topicLine });
+                    }}
+                    className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                  >
+                    🎬 Production Doc
+                  </button>
+                  <button
+                    onClick={() => {
+                      const best = fixedScript || script;
+                      const titleLine = best.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
+                      handoffWithBestScript('/thumbnails?from=qa', 'thumbnails_prefill', { title: titleLine, niche, description: best.slice(0, 500) });
+                    }}
+                    className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                  >
+                    🎨 Thumbnails
+                  </button>
+                  <button
+                    onClick={() => {
+                      const best = fixedScript || script;
+                      const topicLine = best.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
+                      handoffWithBestScript('/seo?from=qa', 'seo_prefill', { topic: topicLine, niche, script: best });
+                    }}
+                    className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                  >
+                    🔍 SEO
+                  </button>
+                  <button
+                    onClick={() => handoffWithBestScript('/generator?from=qa')}
+                    className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                    title="Updates your active draft with the QA-improved script, then opens Script Generator so you can resume there."
+                  >
+                    📝 Script Generator
+                  </button>
+                  {!projectId ? (
+                    <button
+                      onClick={() => saveAsProjectQuick()}
+                      disabled={savingProject}
+                      className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                    >
+                      {savingProject ? '💾 Saving…' : '💾 Save as Project'}
+                    </button>
+                  ) : (
+                    <a
+                      href={`/projects/${projectId}`}
+                      className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center', textDecoration: 'none' }}
+                    >
+                      📁 Open Project
+                    </a>
+                  )}
+                </div>
+
+                {/* ElevenLabs formats — the user wants these wherever the new script is surfaced. */}
+                <div className="mt-3 pt-3 flex items-center gap-2 flex-wrap" style={{ borderTop: '1px solid var(--border)' }}>
+                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Export for TTS:</span>
+                  <CopyForElevenLabs script={fixedScript || script} version="v2" />
+                  <CopyForElevenLabs script={fixedScript || script} version="v3" voiceContext={niche} />
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(fixedScript || script); toast.success('Script copied!'); }}
+                    className="btn-secondary text-xs px-3 py-1.5 ml-auto"
+                  >
+                    Copy script
+                  </button>
+                </div>
               </div>
 
               {/* Tabs */}
@@ -743,9 +1055,11 @@ export default function QAPage() {
                     )}
                     {fixedScript && !applyingFixes && (
                       <div className="glass rounded-xl overflow-hidden">
-                        <div className="flex items-center justify-between px-5 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
+                        <div className="flex items-center justify-between px-5 py-3 flex-wrap gap-2" style={{ borderBottom: '1px solid var(--border)' }}>
                           <span className="text-sm font-semibold" style={{ color: 'var(--accent-green)' }}>✅ Fixed Script</span>
-                          <div className="flex gap-2">
+                          <div className="flex gap-2 items-center flex-wrap">
+                            <CopyForElevenLabs script={fixedScript} version="v2" />
+                            <CopyForElevenLabs script={fixedScript} version="v3" voiceContext={niche} />
                             <button onClick={() => { navigator.clipboard.writeText(fixedScript); toast.success('Copied!'); }}
                               className="btn-secondary text-xs px-3 py-1.5">Copy</button>
                             <button onClick={() => {
@@ -764,20 +1078,15 @@ export default function QAPage() {
                           </pre>
                         </div>
                         <div className="px-5 py-3 flex gap-2" style={{ borderTop: '1px solid var(--border)' }}>
-                          <button onClick={() => {
-                            localStorage.setItem('voiceover_prefill', JSON.stringify({ script: fixedScript, niche }));
-                            window.location.href = '/voiceover?from=qa';
-                          }} className="btn-primary text-sm flex-1 justify-center" style={{ justifyContent: 'center' }}>
+                          <button
+                            onClick={() => handoffWithBestScript('/voiceover?from=qa', 'voiceover_prefill', { script: fixedScript, niche })}
+                            className="btn-primary text-sm flex-1 justify-center" style={{ justifyContent: 'center' }}>
                             🎙️ Generate Voiceover
                           </button>
-                          <button onClick={() => {
-                            localStorage.setItem('generator_prefill', JSON.stringify({
-                              topic: niche,
-                              niche,
-                              context: `Post-QA fixed script (score: ${currentResult?.overall_score}/100):\n${fixedScript.slice(0, 3000)}`,
-                            }));
-                            window.location.href = '/generator?from=qa';
-                          }} className="btn-secondary text-sm flex-1 justify-center" style={{ justifyContent: 'center' }}>
+                          <button
+                            onClick={() => handoffWithBestScript('/generator?from=qa')}
+                            className="btn-secondary text-sm flex-1 justify-center" style={{ justifyContent: 'center' }}
+                            title="Updates your active draft with this fixed script and opens the Script Generator resumed on it.">
                             📝 Back to Script Generator
                           </button>
                         </div>
@@ -786,8 +1095,7 @@ export default function QAPage() {
                             onClick={() => {
                               const s = fixedScript || script;
                               const topicLine = s.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
-                              localStorage.setItem('seo_prefill', JSON.stringify({ topic: topicLine, niche, script: s }));
-                              window.location.href = '/seo?from=qa';
+                              handoffWithBestScript('/seo?from=qa', 'seo_prefill', { topic: topicLine, niche, script: s });
                             }}
                             className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
                           >
@@ -797,8 +1105,7 @@ export default function QAPage() {
                             onClick={() => {
                               const s2 = fixedScript || script;
                               const titleLine = s2.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
-                              localStorage.setItem('thumbnails_prefill', JSON.stringify({ title: titleLine, niche, description: s2.slice(0, 500) }));
-                              window.location.href = '/thumbnails?from=qa';
+                              handoffWithBestScript('/thumbnails?from=qa', 'thumbnails_prefill', { title: titleLine, niche, description: s2.slice(0, 500) });
                             }}
                             className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
                           >
@@ -808,8 +1115,7 @@ export default function QAPage() {
                             onClick={() => {
                               const s3 = fixedScript || script;
                               const topicLine3 = s3.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
-                              localStorage.setItem('prodoc_prefill', JSON.stringify({ script: s3, niche, topic: topicLine3 }));
-                              window.location.href = '/production-doc?from=qa';
+                              handoffWithBestScript('/production-doc?from=qa', 'prodoc_prefill', { script: s3, niche, topic: topicLine3 });
                             }}
                             className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
                           >
@@ -817,7 +1123,30 @@ export default function QAPage() {
                           </button>
                         </div>
                         <div className="flex gap-2">
-                          <SaveAsProject script={fixedScript} niche={niche} topic="" variant="secondary" className="flex-1" />
+                          <SaveAsProject
+                            script={fixedScript}
+                            niche={niche}
+                            topic=""
+                            variant="secondary"
+                            className="flex-1"
+                            onSaved={id => {
+                              setProjectId(id);
+                              // Also persist the linkage onto the active draft so that
+                              // closing the tab here (without hitting another handoff) doesn't leave
+                              // the draft row unlinked locally.
+                              try {
+                                const active = getActiveDraft();
+                                if (active) {
+                                  saveDraft({
+                                    ...active,
+                                    projectId: id,
+                                    fixedScript,
+                                    script: fixedScript || active.script,
+                                  });
+                                }
+                              } catch {}
+                            }}
+                          />
                           <ExportScript title={niche} script={fixedScript} niche={niche} />
                         </div>
                       </div>

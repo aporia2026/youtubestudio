@@ -9,6 +9,7 @@ import { ELEVENLABS_MODELS } from '@/lib/elevenlabs';
 import { cleanScriptForVoiceover } from '@/lib/voiceover-presets';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
+import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { getVoiceoverHistory, deleteVoiceoverEntry, type VoiceoverHistoryEntry } from '@/lib/history';
 
 interface ElevenVoice {
@@ -329,11 +330,19 @@ function VoiceoverStudio() {
           <div className="space-y-4">
             {/* Text input */}
             <div className="glass rounded-xl p-5">
-              <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
                 <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Script / Text</h2>
-                <span className="text-xs" style={{ color: charCount > 5000 ? '#ef4444' : 'var(--text-muted)' }}>
-                  {charCount.toLocaleString()} chars
-                </span>
+                <div className="flex items-center gap-2">
+                  {text.trim().length > 0 && (
+                    <>
+                      <CopyForElevenLabs script={text} version="v2" />
+                      <CopyForElevenLabs script={text} version="v3" />
+                    </>
+                  )}
+                  <span className="text-xs" style={{ color: charCount > 5000 ? '#ef4444' : 'var(--text-muted)' }}>
+                    {charCount.toLocaleString()} chars
+                  </span>
+                </div>
               </div>
               <textarea
                 value={text}
