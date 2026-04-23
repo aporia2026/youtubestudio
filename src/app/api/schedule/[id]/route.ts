@@ -35,7 +35,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
     // Status transition side-effects: stage_entered_at reset + optional checklist injection.
     let stageAdvanced = false;
-    let injectedChecklist: Array<{ id: string; text: string; done: boolean; stage: string }> | null = null;
+    // stage is optional because existing DB rows may predate the field.
+    let injectedChecklist: Array<{ id: string; text: string; done: boolean; stage?: string }> | null = null;
     if (hasField('status') && patch.status) {
       const prev = await sql`SELECT status, checklist FROM schedule_items WHERE id = ${id}`;
       const prevStatus = prev.rows[0]?.status;
