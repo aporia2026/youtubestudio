@@ -28,13 +28,29 @@ export function HealthWidget({ items, statuses, onSelect }: Props) {
       const days = Math.floor((new Date(it.scheduled_for!).getTime() - now.getTime()) / 86400000);
       return days < 3;
     });
-    // Scheduled window next 14 days — how many are published-ready?
     const nothingScheduled = upcoming.length === 0;
     const statusBreakdown: Record<string, number> = {};
     for (const s of statuses) statusBreakdown[s.key] = 0;
     for (const it of items) statusBreakdown[it.status] = (statusBreakdown[it.status] ?? 0) + 1;
 
-    return { stuck, upcoming, upcomingShort, nothingScheduled, statusBreakdown };
+    // Pillar gap detection: for every pillar that has appeared on any item,
+    // check when it was last touched. Flag pillars untouched for >14 days.
+    const pillarLastSeen = new Map<string, Date>();
+    for (const it of items) {
+      if (!it.pillar) continue;
+      const stamp = new Date(it.updated_at);
+      const cur = pillarLastSeen.get(it.pillar);
+      if (!cur || stamp > cur) pillarLastSeen.set(it.pillar, stamp);
+    }
+    const neglectedPillars = Array.from(pillarLastSeen.entries())
+      .map(([pillar, seen]) => ({
+        pillar,
+        daysSince: Math.floor((now.getTime() - seen.getTime()) / 86400000),
+      }))
+      .filter(x => x.daysSince > 14)
+      .sort((a, b) => b.daysSince - a.daysSince);
+
+    return { stuck, upcoming, upcomingShort, nothingScheduled, statusBreakdown, neglectedPillars };
   }, [items, statuses, now]);
 
   const signals: Array<{ severity: 'high' | 'medium' | 'low'; label: string; detail: string }> = [];
@@ -57,6 +73,14 @@ export function HealthWidget({ items, statuses, onSelect }: Props) {
       severity: 'medium',
       label: 'empty pipeline',
       detail: 'Nothing scheduled in the next 14 days',
+    });
+  }
+  if (health.neglectedPillars.length > 0) {
+    const top = health.neglectedPillars[0];
+    signals.push({
+      severity: 'medium',
+      label: `pillar gap: ${top.pillar}`,
+      detail: `No item in #${top.pillar} for ${top.daysSince} days`,
     });
   }
   if (signals.length === 0) {
@@ -144,6 +168,22 @@ export function HealthWidget({ items, statuses, onSelect }: Props) {
                     ))}
                   </div>
                 </>
+              )}
+
+              {/* Pillars */}
+              {health.neglectedPillars.length > 0 && (
+                <div className="px-3 py-2 border-t" style={{ borderColor: 'var(--border)' }}>
+                  <div className="text-[10px] uppercase tracking-wider font-semibold mb-1.5"
+                    style={{ color: 'var(--text-muted)' }}>Pillar gaps</div>
+                  <div className="space-y-0.5">
+                    {health.neglectedPillars.slice(0, 5).map(g => (
+                      <div key={g.pillar} className="flex items-center text-[11px]">
+                        <span className="flex-1" style={{ color: 'var(--text-secondary)' }}>#{g.pillar}</span>
+                        <span style={{ color: '#f59e0b' }}>{g.daysSince}d</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
 
               {/* Status breakdown */}

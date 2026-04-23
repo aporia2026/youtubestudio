@@ -1,7 +1,8 @@
 'use client';
 
-import { useMemo } from 'react';
-import { motion } from 'framer-motion';
+import { useMemo, useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { toast } from 'sonner';
 import type { ScheduleItem, ScheduleStatus } from '@/lib/schedule';
 import { statusColor, statusLabel } from '@/lib/schedule';
 import type { Channel } from './types';
@@ -22,6 +23,24 @@ function formatWhen(iso: string | null): string {
 }
 
 export function ListView({ items, statuses, onSelect, onPatch, onDelete }: Props) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  function toggle(id: string) {
+    setSelected(s => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }
+  async function bulkStatus(status: string) {
+    await Promise.all(Array.from(selected).map(id => onPatch(id, { status })));
+    toast.success(`Updated ${selected.size} items`);
+    setSelected(new Set());
+  }
+  async function bulkDelete() {
+    if (!window.confirm(`Delete ${selected.size} items?`)) return;
+    await Promise.all(Array.from(selected).map(id => onDelete(id)));
+    setSelected(new Set());
+  }
   // Group by week bucket, plus a backlog for unscheduled.
   const groups = useMemo(() => {
     const byBucket = new Map<string, ScheduleItem[]>();
@@ -46,6 +65,38 @@ export function ListView({ items, statuses, onSelect, onPatch, onDelete }: Props
 
   return (
     <div className="space-y-6">
+      <AnimatePresence>
+        {selected.size > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            className="sticky top-4 z-10 flex items-center gap-2 px-3 py-2 rounded-lg"
+            style={{ background: 'var(--bg-secondary)', border: '1px solid var(--accent-purple-bright)', boxShadow: '0 4px 20px rgba(124,58,237,0.2)' }}
+          >
+            <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+              {selected.size} selected
+            </span>
+            <select
+              onChange={e => { if (e.target.value) { bulkStatus(e.target.value); e.target.value = ''; } }}
+              className="text-xs px-2 py-1 rounded"
+              style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}>
+              <option value="">Set status…</option>
+              {statuses.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+            </select>
+            <button onClick={bulkDelete}
+              className="text-xs px-3 py-1 rounded-md"
+              style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}>
+              Delete
+            </button>
+            <button onClick={() => setSelected(new Set())}
+              className="ml-auto text-xs" style={{ color: 'var(--text-muted)' }}>
+              Clear
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {groups.map(([bucket, list]) => (
         <div key={bucket}>
           <h3 className="text-xs font-semibold uppercase tracking-wider mb-2"
@@ -57,8 +108,16 @@ export function ListView({ items, statuses, onSelect, onPatch, onDelete }: Props
                 whileHover={{ x: 2 }}
                 onClick={() => onSelect(item.id)}
                 className="group flex items-center gap-3 px-3 py-3 rounded-lg cursor-pointer transition-all"
-                style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+                style={{
+                  background: selected.has(item.id) ? 'rgba(124,58,237,0.1)' : 'var(--bg-secondary)',
+                  border: `1px solid ${selected.has(item.id) ? 'var(--accent-purple-bright)' : 'var(--border)'}`,
+                }}
               >
+                <input type="checkbox"
+                  checked={selected.has(item.id)}
+                  onChange={() => toggle(item.id)}
+                  onClick={e => e.stopPropagation()}
+                  className="shrink-0" />
                 {/* Status pill */}
                 <select
                   value={item.status}

@@ -16,6 +16,8 @@ import { HealthWidget } from './HealthWidget';
 import { CommandPalette } from './CommandPalette';
 import { SuggestNextDialog } from './SuggestNextDialog';
 import { ShareDialog } from './ShareDialog';
+import { SavedViewsMenu } from './SavedViewsMenu';
+import { ChecklistTemplatesDialog } from './ChecklistTemplatesDialog';
 import type { Channel } from './types';
 import type { ScheduleItem, ScheduleStatus } from '@/lib/schedule';
 
@@ -47,6 +49,7 @@ function SchedulePage() {
   const view: ViewMode = ['list', 'calendar', 'spreadsheet', 'kanban'].includes(viewParam) ? viewParam : 'kanban';
   const statusFilter = search.get('status');
   const searchText = search.get('q') ?? '';
+  const density = (search.get('density') === 'compact' ? 'compact' : 'comfortable') as 'comfortable' | 'compact';
 
   const [items, setItems] = useState<ScheduleItem[]>([]);         // channel-scoped items
   const [allCounts, setAllCounts] = useState<Record<string, number>>({}); // tabs counts across channels
@@ -58,6 +61,7 @@ function SchedulePage() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [suggestOpen, setSuggestOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
 
   // Cmd+K / Ctrl+K opens command palette; "n" creates a new item when nothing's focused.
   useEffect(() => {
@@ -176,10 +180,10 @@ function SchedulePage() {
   const scopeColor = selectedChannel?.account_color ?? '#7c3aed';
 
   return (
-    <div className="min-h-screen" style={{ background: 'var(--bg-primary)' }}>
+    <div className="min-h-screen" data-density={density} style={{ background: 'var(--bg-primary)' }}>
       <div className="max-w-[1600px] mx-auto px-6 py-6">
         {/* Header — title reflects the active channel scope */}
-        <div className="flex items-center justify-between mb-5">
+        <div className="flex flex-col md:flex-row md:items-center justify-between mb-5 gap-3">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl flex items-center justify-center"
               style={{ background: `linear-gradient(135deg, ${scopeColor}, ${scopeColor}99)` }}>
@@ -199,7 +203,7 @@ function SchedulePage() {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <HealthWidget items={items} statuses={statuses} onSelect={setSelected} />
             <button
               onClick={() => setSuggestOpen(true)}
@@ -281,7 +285,37 @@ function SchedulePage() {
             </button>
           )}
 
-          <div className="ml-auto flex gap-1 p-1 rounded-lg"
+          <div className="ml-auto flex items-center gap-2">
+            <button onClick={() => setTemplatesOpen(true)}
+              title="Edit stage checklists"
+              className="flex items-center gap-1 px-2 py-1.5 rounded text-xs font-medium"
+              style={{ background: 'var(--bg-tertiary)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
+              ☑ Checklists
+            </button>
+            <SavedViewsMenu
+              channelId={channelId}
+              currentConfig={{ view, status: statusFilter, q: searchText, density }}
+              onApply={v => updateUrl({
+                view: v.config.view ?? 'kanban',
+                status: v.config.status ?? null,
+                q: v.config.q ?? null,
+                density: v.config.density ?? null,
+                channel: v.channel_id,
+              })}
+            />
+          </div>
+          <button
+            onClick={() => updateUrl({ density: density === 'compact' ? null : 'compact' })}
+            title={density === 'compact' ? 'Switch to comfortable density' : 'Switch to compact density'}
+            className="p-2 rounded-lg text-xs"
+            style={{ background: 'var(--bg-tertiary)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}
+          >
+            {density === 'compact'
+              ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="7" x2="21" y2="7"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="17" x2="21" y2="17"/></svg>
+              : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>}
+          </button>
+
+          <div className="flex gap-1 p-1 rounded-lg"
             style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border)' }}>
             {VIEW_TABS.map(tab => (
               <button
@@ -370,6 +404,15 @@ function SchedulePage() {
           channelId={channelId}
           channelName={scopeLabel}
           onClose={() => setShareOpen(false)}
+        />
+      )}
+
+      {templatesOpen && (
+        <ChecklistTemplatesDialog
+          channelId={channelId}
+          channelName={scopeLabel}
+          statuses={statuses}
+          onClose={() => setTemplatesOpen(false)}
         />
       )}
     </div>
