@@ -18,7 +18,7 @@ const PUBLIC_PATHS = [
   '/share', '/api/public',
 ];
 
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   // Allow public paths (exact match or startsWith for /login page)
