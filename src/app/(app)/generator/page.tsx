@@ -255,8 +255,20 @@ export default function GeneratorPage() {
           }),
           signal: abortRef.current.signal,
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Generation failed');
+        // Vercel returns an HTML/text error page (not JSON) when a serverless
+        // function crashes or hits FUNCTION_INVOCATION_TIMEOUT. Parse the body
+        // as text first so we can surface a readable message instead of a
+        // cryptic JSON.parse error.
+        const rawBody = await res.text();
+        let data: { error?: string; passed?: boolean; script?: string; qa?: { overall_score?: number; critical_issues?: Array<{ severity?: string; location?: string; issue?: string; fix?: string }>; strengths?: string[] }; attempts?: number; threshold?: number; bestScore?: number } = {};
+        try { data = rawBody ? JSON.parse(rawBody) : {}; }
+        catch {
+          if (res.status === 504 || /timeout|FUNCTION_INVOCATION_TIMEOUT/i.test(rawBody)) {
+            throw new Error('Self-QA timed out on the server (Vercel 300s cap). Lower the threshold or try a faster model.');
+          }
+          throw new Error(`Self-QA server error (${res.status}). The function likely crashed — check the Vercel dashboard for this deployment's runtime logs.`);
+        }
+        if (!res.ok) throw new Error(data.error || `Generation failed (${res.status})`);
         if (!data.passed) {
           // Per the user's requirement: if it never clears the bar, don't
           // return the script — warn so they can retry or lower the threshold.
