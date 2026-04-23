@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { sql } from '@/lib/db';
+import { sql, ensureChannelsSchema } from '@/lib/db';
 import { fetchChannelData } from '@/lib/youtube';
 
 export async function GET() {
   try {
+    await ensureChannelsSchema();
     const result = await sql`
       SELECT id, channel_id, name, handle, description, subscriber_count, video_count,
              niche, thumbnail_url, last_synced_at, account_label, account_email, account_color, notes,
@@ -23,6 +24,7 @@ export async function POST(req: NextRequest) {
   if (!url) return NextResponse.json({ error: 'url required' }, { status: 400 });
 
   try {
+    await ensureChannelsSchema();
     // Try to fetch channel data from YouTube API (use per-account key if provided)
     const channelData = await fetchChannelData(url, accountApiKey || undefined);
 

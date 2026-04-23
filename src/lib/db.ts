@@ -346,6 +346,42 @@ export async function initDatabase() {
   `;
 }
 
+/** Idempotent setup for the channels table + per-account columns. */
+let channelsMigrated = false;
+export async function ensureChannelsSchema() {
+  if (channelsMigrated) return;
+  try {
+    await sql`
+      CREATE TABLE IF NOT EXISTS channels (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        channel_id TEXT UNIQUE,
+        name TEXT NOT NULL,
+        handle TEXT,
+        description TEXT,
+        subscriber_count BIGINT,
+        video_count INTEGER,
+        niche TEXT,
+        thumbnail_url TEXT,
+        last_synced_at TIMESTAMPTZ,
+        api_credentials JSONB DEFAULT '{}',
+        account_label TEXT,
+        account_email TEXT,
+        account_color TEXT DEFAULT '#7c3aed',
+        notes TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+    try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS account_label TEXT`; } catch {}
+    try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS account_email TEXT`; } catch {}
+    try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS account_color TEXT DEFAULT '#7c3aed'`; } catch {}
+    try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS notes TEXT`; } catch {}
+    try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS oauth_connected BOOLEAN DEFAULT false`; } catch {}
+    channelsMigrated = true;
+  } catch (err) {
+    console.error('ensureChannelsSchema error:', err);
+  }
+}
+
 let googleAuthMigrated = false;
 export async function ensureGoogleAuthSchema() {
   if (googleAuthMigrated) return;
