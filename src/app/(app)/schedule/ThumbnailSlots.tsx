@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import type { ScheduleItem } from '@/lib/schedule';
 
 type Props = {
@@ -46,6 +47,20 @@ function Slot({ label, url, isWinner, onChange, onPickWinner }: {
   onChange: (url: string | null) => void;
   onPickWinner: () => void;
 }) {
+  // Controlled input so typing-then-clicking-"Set winner" doesn't lose unsaved text.
+  // Sync down when the prop changes from outside (e.g. a different item opens).
+  const [draft, setDraft] = useState(url ?? '');
+  useEffect(() => { setDraft(url ?? ''); }, [url]);
+
+  function commit() {
+    const next = draft.trim() || null;
+    if (next !== (url ?? null)) onChange(next);
+  }
+  function commitAndPickWinner() {
+    commit();
+    onPickWinner();
+  }
+
   return (
     <div className="rounded-lg p-2"
       style={{
@@ -56,8 +71,8 @@ function Slot({ label, url, isWinner, onChange, onPickWinner }: {
         <span className="text-xs font-semibold" style={{ color: isWinner ? '#10b981' : 'var(--text-secondary)' }}>
           {label}{isWinner && ' · Winner'}
         </span>
-        {url && !isWinner && (
-          <button onClick={onPickWinner}
+        {(draft || url) && !isWinner && (
+          <button onClick={commitAndPickWinner}
             className="text-[10px] px-1.5 py-0.5 rounded"
             style={{ background: 'rgba(16,185,129,0.15)', color: '#10b981' }}>
             Set winner
@@ -74,8 +89,9 @@ function Slot({ label, url, isWinner, onChange, onPickWinner }: {
         )}
       </div>
       <input
-        defaultValue={url ?? ''}
-        onBlur={e => onChange(e.currentTarget.value.trim() || null)}
+        value={draft}
+        onChange={e => setDraft(e.currentTarget.value)}
+        onBlur={commit}
         placeholder="Paste image URL"
         className="w-full px-2 py-1 rounded text-xs"
         style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}

@@ -24,9 +24,11 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
       ? await sql`SELECT id, name, account_color FROM channels WHERE id = ${channel_id}`
       : { rows: [] as Array<{ id: string; name: string; account_color: string | null }> };
 
+    // Public payload — intentionally drops `notes` (may contain private info) and
+    // anything not strictly needed for a read-only at-a-glance view.
     const items = channel_id
       ? await sql`
-          SELECT si.id, si.title, si.scheduled_for, si.status, si.notes, si.tags,
+          SELECT si.id, si.title, si.scheduled_for, si.status, si.tags, si.pillar,
                  COALESCE(
                    (SELECT json_agg(json_build_object('name', c.name, 'account_color', c.account_color))
                     FROM schedule_item_channels sic JOIN channels c ON c.id = sic.channel_id
@@ -39,7 +41,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
           ORDER BY si.scheduled_for NULLS LAST
         `
       : await sql`
-          SELECT si.id, si.title, si.scheduled_for, si.status, si.notes, si.tags,
+          SELECT si.id, si.title, si.scheduled_for, si.status, si.tags, si.pillar,
                  COALESCE(
                    (SELECT json_agg(json_build_object('name', c.name, 'account_color', c.account_color))
                     FROM schedule_item_channels sic JOIN channels c ON c.id = sic.channel_id

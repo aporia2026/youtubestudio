@@ -13,9 +13,11 @@ type Props = {
 
 export function HealthWidget({ items, statuses, onSelect }: Props) {
   const [open, setOpen] = useState(false);
-  const now = new Date();
 
   const health = useMemo(() => {
+    // Compute `now` inside the memo so we don't force the memo to recompute
+    // every render (a fresh Date() would change the deps reference each time).
+    const now = new Date();
     const stuck = items.filter(it => isStuck(it));
     // Upcoming: scheduled in the next 14 days but still in early stages.
     const in14d = new Date(now.getTime() + 14 * 86400000);
@@ -51,7 +53,7 @@ export function HealthWidget({ items, statuses, onSelect }: Props) {
       .sort((a, b) => b.daysSince - a.daysSince);
 
     return { stuck, upcoming, upcomingShort, nothingScheduled, statusBreakdown, neglectedPillars };
-  }, [items, statuses, now]);
+  }, [items, statuses]);
 
   const signals: Array<{ severity: 'high' | 'medium' | 'low'; label: string; detail: string }> = [];
   if (health.stuck.length > 0) {

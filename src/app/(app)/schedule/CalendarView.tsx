@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ScheduleItem, ScheduleStatus } from '@/lib/schedule';
 import { statusColor } from '@/lib/schedule';
 
@@ -56,13 +56,20 @@ export function CalendarView({ items, statuses, channelId, onSelect, onPatch }: 
     return () => controller.abort();
   }, [showCompetitors]);
 
-  // Keyboard nav when a day is focused.
+  // Keep refs up-to-date so the keydown listener reads current state without
+  // being re-registered on every arrow press.
+  const focusDayRef = useRef(focusDay);
+  const cursorRef = useRef(cursor);
+  useEffect(() => { focusDayRef.current = focusDay; }, [focusDay]);
+  useEffect(() => { cursorRef.current = cursor; }, [cursor]);
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (!focusDay) return;
+      const fd = focusDayRef.current;
+      if (!fd) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
-      const [y, m, d] = focusDay.split('-').map(Number);
+      const [y, m, d] = fd.split('-').map(Number);
       const cur = new Date(y, m, d);
       let delta = 0;
       if (e.key === 'ArrowLeft') delta = -1;
@@ -73,14 +80,14 @@ export function CalendarView({ items, statuses, channelId, onSelect, onPatch }: 
       e.preventDefault();
       cur.setDate(cur.getDate() + delta);
       setFocusDay(`${cur.getFullYear()}-${cur.getMonth()}-${cur.getDate()}`);
-      // Auto-paginate month if we scrolled past
-      if (cur.getMonth() !== cursor.getMonth() || cur.getFullYear() !== cursor.getFullYear()) {
+      const c = cursorRef.current;
+      if (cur.getMonth() !== c.getMonth() || cur.getFullYear() !== c.getFullYear()) {
         setCursor(new Date(cur.getFullYear(), cur.getMonth(), 1));
       }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [focusDay, cursor]);
+  }, []);
 
   const days = useMemo(() => {
     // Build a 6-row grid starting from the Sunday on/before day 1.

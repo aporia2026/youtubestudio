@@ -19,13 +19,15 @@ export async function GET(req: NextRequest) {
 
   try {
     const videos = await listMyVideosOAuth(accessToken, 50);
-    // Bucket: day-of-week (0..6, Sun=0) × hour-of-day (0..23).
+    // Bucket in UTC so Vercel-server TZ (UTC) and an eventual user TZ don't
+    // disagree. Returned grid is { dow: UTC day-of-week, hr: UTC hour }; the
+    // UI re-localizes for display.
     const buckets: number[][][] = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => [] as number[]));
     for (const v of videos) {
       if (!v.publishedAt) continue;
       const d = new Date(v.publishedAt);
-      const dow = d.getDay();
-      const hr = d.getHours();
+      const dow = d.getUTCDay();
+      const hr = d.getUTCHours();
       buckets[dow][hr].push(v.viewCount);
     }
     const grid: (number | null)[][] = buckets.map(row =>
@@ -43,6 +45,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       sample_size: videos.length,
+      tz: 'UTC',
       grid,
       top,
     });

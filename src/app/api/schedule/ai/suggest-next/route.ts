@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateText } from '@/lib/ai';
 import { sql, ensureScheduleSchema } from '@/lib/db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
-import { getFeatureDefaultModelId } from '@/lib/ai-models';
 
 export const maxDuration = 60;
 
@@ -68,7 +67,9 @@ ${savedIdeas.map(i => `- ${i.title}${i.hook ? ` — hook: ${i.hook}` : ''}`).joi
 
 Pick 3 strong next-video candidates. Prefer pulling from the saved idea library unless the backlog has an obvious gap (e.g. a pillar untouched for weeks) — in that case propose a new idea. Return JSON only, no prose.`;
 
-    const chosenModel = modelId || getFeatureDefaultModelId('idea-generator');
+    // Deliberate server-side default: balanced Sonnet works well for JSON-structured
+    // strategy calls without the Opus-tier cost. Client can override by passing modelId.
+    const chosenModel = modelId || 'claude-sonnet-4-6';
     const raw = await generateText({
       modelId: chosenModel,
       prompt,

@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateText } from '@/lib/ai';
 import { sql, ensureScheduleSchema } from '@/lib/db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
-import { getFeatureDefaultModelId } from '@/lib/ai-models';
 
 export const maxDuration = 45;
 
@@ -37,7 +36,8 @@ export async function POST(req: NextRequest) {
     // Use only the first ~2000 chars — hook + opening arc dominate title relevance.
     const snippet = content.slice(0, 2500);
 
-    const chosenModel = modelId || getFeatureDefaultModelId('seo');
+    // Titles are short, creative, cheap — Haiku is the right default here.
+    const chosenModel = modelId || 'claude-haiku-4-5-20251001';
     const system = `You are a YouTube title strategist. Generate exactly 5 title candidates for the given script.
 Rules:
 - 55-70 chars each. Title case.

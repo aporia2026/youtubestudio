@@ -38,7 +38,14 @@ export function ListView({ items, statuses, onSelect, onPatch, onDelete }: Props
   }
   async function bulkDelete() {
     if (!window.confirm(`Delete ${selected.size} items?`)) return;
-    await Promise.all(Array.from(selected).map(id => onDelete(id)));
+    // Pass alsoChildren=true when the row is a recurrence parent so children
+    // don't become orphaned. Row-level delete already does this.
+    await Promise.all(
+      Array.from(selected).map(id => {
+        const it = items.find(x => x.id === id);
+        return onDelete(id, !!it?.recurrence);
+      }),
+    );
     setSelected(new Set());
   }
   // Group by week bucket, plus a backlog for unscheduled.
