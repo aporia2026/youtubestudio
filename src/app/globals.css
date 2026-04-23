@@ -43,6 +43,26 @@ body {
   overflow-x: hidden;
 }
 
+/* Native select dropdowns — the browser uses the OS default for the popup
+   list, which makes pale text-on-white invisible in our dark theme. Force
+   dark-bg + bright-fg on every <option> so the dropdown is readable. */
+select {
+  color-scheme: dark;
+}
+option,
+optgroup {
+  background-color: var(--bg-card);
+  color: var(--text-primary);
+}
+option:checked,
+option:hover {
+  background-color: var(--accent-purple);
+  color: #ffffff;
+}
+option:disabled {
+  color: var(--text-muted);
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
