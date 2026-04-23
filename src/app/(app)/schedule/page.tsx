@@ -7,18 +7,24 @@ import { motion } from 'framer-motion';
 import { ListView } from './ListView';
 import { CalendarView } from './CalendarView';
 import { SpreadsheetView } from './SpreadsheetView';
+import { KanbanView } from './KanbanView';
 import { ItemDetail } from './ItemDetail';
 import { NewItemDialog } from './NewItemDialog';
 import { ChannelTabs } from './ChannelTabs';
 import { ExportMenu } from './ExportMenu';
+import { HealthWidget } from './HealthWidget';
+import { CommandPalette } from './CommandPalette';
+import { SuggestNextDialog } from './SuggestNextDialog';
+import { ShareDialog } from './ShareDialog';
 import type { Channel } from './types';
 import type { ScheduleItem, ScheduleStatus } from '@/lib/schedule';
 
-type ViewMode = 'list' | 'calendar' | 'spreadsheet';
+type ViewMode = 'list' | 'calendar' | 'spreadsheet' | 'kanban';
 
 const VIEW_TABS: Array<{ key: ViewMode; label: string; icon: React.ReactNode }> = [
-  { key: 'list',        label: 'List',        icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg> },
+  { key: 'kanban',      label: 'Kanban',      icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="5" height="18" rx="1"/><rect x="10" y="3" width="5" height="12" rx="1"/><rect x="17" y="3" width="4" height="15" rx="1"/></svg> },
   { key: 'calendar',    label: 'Calendar',    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> },
+  { key: 'list',        label: 'List',        icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg> },
   { key: 'spreadsheet', label: 'Spreadsheet', icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg> },
 ];
 
@@ -37,8 +43,8 @@ function SchedulePage() {
 
   // URL state is the source of truth so channel + view are shareable/bookmarkable.
   const channelId = search.get('channel');        // null | "<uuid>"
-  const viewParam = (search.get('view') ?? 'list') as ViewMode;
-  const view: ViewMode = ['list', 'calendar', 'spreadsheet'].includes(viewParam) ? viewParam : 'list';
+  const viewParam = (search.get('view') ?? 'kanban') as ViewMode;
+  const view: ViewMode = ['list', 'calendar', 'spreadsheet', 'kanban'].includes(viewParam) ? viewParam : 'kanban';
   const statusFilter = search.get('status');
   const searchText = search.get('q') ?? '';
 
@@ -49,6 +55,26 @@ function SchedulePage() {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+
+  // Cmd+K / Ctrl+K opens command palette; "n" creates a new item when nothing's focused.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const t = e.target as HTMLElement | null;
+      const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen(p => !p);
+      } else if (!typing && e.key === 'n') {
+        e.preventDefault();
+        setCreating(true);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // URL helpers — keep a single "update URL" function so we never drop existing params.
   const updateUrl = useCallback((patch: Record<string, string | null>) => {
@@ -174,6 +200,35 @@ function SchedulePage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <HealthWidget items={items} statuses={statuses} onSelect={setSelected} />
+            <button
+              onClick={() => setSuggestOpen(true)}
+              title="AI suggests what to make next"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium"
+              style={{ background: 'rgba(124,58,237,0.15)', color: '#a78bfa', border: '1px solid rgba(124,58,237,0.4)' }}
+            >
+              ✨ What next
+            </button>
+            <button
+              onClick={() => setShareOpen(true)}
+              title="Create a read-only share link"
+              className="p-2 rounded-lg"
+              style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+              </svg>
+            </button>
+            <button
+              onClick={() => setPaletteOpen(true)}
+              title="Command palette (Cmd+K)"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium"
+              style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+              ⌘K
+            </button>
             <ExportMenu items={items} statuses={statuses} scopeLabel={scopeLabel} />
             <button
               onClick={() => setCreating(true)}
@@ -249,11 +304,14 @@ function SchedulePage() {
         <motion.div key={`${view}-${channelId ?? 'all'}`} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
           {loading ? (
             <div className="py-20 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>
+          ) : view === 'kanban' ? (
+            <KanbanView items={items} statuses={statuses} channels={channels}
+              onSelect={setSelected} onPatch={patchItem} />
           ) : view === 'list' ? (
             <ListView items={items} statuses={statuses} channels={channels}
               onSelect={setSelected} onPatch={patchItem} onDelete={deleteItem} />
           ) : view === 'calendar' ? (
-            <CalendarView items={items} statuses={statuses}
+            <CalendarView items={items} statuses={statuses} channelId={channelId}
               onSelect={setSelected} onPatch={patchItem} />
           ) : (
             <SpreadsheetView items={items} statuses={statuses} channels={channels}
@@ -267,10 +325,12 @@ function SchedulePage() {
           item={selectedItem}
           channels={channels}
           statuses={statuses}
+          allItems={items}
           onClose={() => setSelected(null)}
           onPatch={patchItem}
           onDelete={deleteItem}
           onRefresh={fetchItems}
+          onSelectItem={setSelected}
         />
       )}
 
@@ -281,6 +341,35 @@ function SchedulePage() {
           defaultChannelId={channelId}
           onClose={() => setCreating(false)}
           onCreated={() => { setCreating(false); fetchItems(); fetchCounts(); }}
+        />
+      )}
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        items={items}
+        channels={channels}
+        statuses={statuses}
+        onGoto={updateUrl}
+        onSelectItem={setSelected}
+        onNewItem={() => setCreating(true)}
+        onPatch={patchItem}
+      />
+
+      {suggestOpen && (
+        <SuggestNextDialog
+          channelId={channelId}
+          channelName={scopeLabel}
+          onClose={() => setSuggestOpen(false)}
+          onCreated={() => { setSuggestOpen(false); fetchItems(); fetchCounts(); }}
+        />
+      )}
+
+      {shareOpen && (
+        <ShareDialog
+          channelId={channelId}
+          channelName={scopeLabel}
+          onClose={() => setShareOpen(false)}
         />
       )}
     </div>

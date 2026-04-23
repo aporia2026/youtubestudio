@@ -12,7 +12,11 @@ function getSecret(): Uint8Array {
 }
 const COOKIE_NAME = 'yt_studio_session';
 
-const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/logout', '/api/auth/google/callback'];
+const PUBLIC_PATHS = [
+  '/login', '/api/auth/login', '/api/auth/logout', '/api/auth/google/callback',
+  // Public schedule share tokens — readable without session when a valid token is provided.
+  '/share', '/api/public',
+];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

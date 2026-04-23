@@ -4,19 +4,24 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
-import type { ScheduleItem, ScheduleStatus, RecurrenceRule } from '@/lib/schedule';
+import type { ScheduleItem, ScheduleStatus, RecurrenceRule, ChecklistItem } from '@/lib/schedule';
 import { statusColor } from '@/lib/schedule';
 import type { Channel } from './types';
 import { RecurrenceEditor } from './RecurrenceEditor';
+import { ChecklistSection } from './ChecklistSection';
+import { ThumbnailSlots } from './ThumbnailSlots';
+import { DependenciesSection } from './DependenciesSection';
 
 type Props = {
   item: ScheduleItem;
   channels: Channel[];
   statuses: ScheduleStatus[];
+  allItems: ScheduleItem[];
   onClose: () => void;
   onPatch: (id: string, patch: Partial<ScheduleItem> & { channel_ids?: string[] }) => void;
   onDelete: (id: string, alsoChildren?: boolean) => void;
   onRefresh: () => void;
+  onSelectItem: (id: string) => void;
 };
 
 type ScriptRow = {
@@ -36,7 +41,7 @@ function dtLocal(iso: string | null): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-export function ItemDetail({ item, channels, statuses, onClose, onPatch, onDelete, onRefresh }: Props) {
+export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatch, onDelete, onRefresh, onSelectItem }: Props) {
   const [tab, setTab] = useState<'details' | 'script' | 'recurrence'>('details');
   const [scripts, setScripts] = useState<ScriptRow[]>([]);
   const [scriptDraft, setScriptDraft] = useState('');
@@ -111,6 +116,48 @@ export function ItemDetail({ item, channels, statuses, onClose, onPatch, onDelet
   }
 
   const channelIds = new Set((item.channels ?? []).map(c => c.id));
+  const [titleSuggestions, setTitleSuggestions] = useState<Array<{ title: string; angle: string; ctr_hint: string }> | null>(null);
+  const [suggestingTitles, setSuggestingTitles] = useState(false);
+
+  async function suggestTitles() {
+    setSuggestingTitles(true);
+    try {
+      const res = await fetch('/api/schedule/ai/title-from-script', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ item_id: item.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed');
+      setTitleSuggestions(data.titles || []);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'AI failed');
+    } finally {
+      setSuggestingTitles(false);
+    }
+  }
+
+  async function prepareForYouTube() {
+    const lines = [
+      `Title: ${item.title || 'Untitled'}`,
+      '',
+      'Description:',
+      item.yt_description || item.notes || '',
+      '',
+      `Tags: ${(item.yt_tags ?? item.tags ?? []).join(', ')}`,
+      '',
+      item.scheduled_for ? `Scheduled publish: ${new Date(item.scheduled_for).toLocaleString()}` : 'No scheduled date',
+    ];
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      toast.success('Copied to clipboard — opening YouTube Studio', {
+        action: { label: 'Open', onClick: () => window.open('https://studio.youtube.com/channel/UC/videos/upload', '_blank') },
+      });
+      window.open('https://studio.youtube.com/channel/UC/videos/upload', '_blank');
+    } catch {
+      toast.error('Could not copy to clipboard');
+    }
+  }
 
   return (
     <AnimatePresence>
@@ -165,6 +212,45 @@ export function ItemDetail({ item, channels, statuses, onClose, onPatch, onDelet
             </svg>
           </button>
         </div>
+
+        {/* Quick actions row */}
+        <div className="flex items-center gap-2 px-4 pt-2 pb-1 text-xs">
+          <button onClick={suggestTitles} disabled={suggestingTitles || !item.project_id}
+            title={item.project_id ? 'AI title candidates from the linked script' : 'Add a script first'}
+            className="flex items-center gap-1 px-2 py-1 rounded"
+            style={{
+              background: 'rgba(124,58,237,0.1)',
+              color: item.project_id ? '#7c3aed' : 'var(--text-muted)',
+              opacity: item.project_id ? 1 : 0.5,
+              border: '1px solid rgba(124,58,237,0.3)',
+            }}>
+            ✨ {suggestingTitles ? 'Thinking…' : 'AI titles'}
+          </button>
+          <button onClick={prepareForYouTube}
+            className="flex items-center gap-1 px-2 py-1 rounded"
+            style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}>
+            📺 Prepare for YouTube
+          </button>
+        </div>
+
+        {titleSuggestions && (
+          <div className="px-4 pt-2 pb-2 space-y-1" style={{ borderBottom: '1px solid var(--border)' }}>
+            <div className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: 'var(--text-muted)' }}>
+              AI title candidates
+            </div>
+            {titleSuggestions.map((t, i) => (
+              <button key={i} onClick={() => { onPatch(item.id, { title: t.title }); toast.success('Title updated'); setTitleSuggestions(null); }}
+                className="w-full text-left px-2 py-1.5 rounded text-xs"
+                style={{ background: 'var(--bg-tertiary)' }}>
+                <div className="font-medium" style={{ color: 'var(--text-primary)' }}>{t.title}</div>
+                <div style={{ color: 'var(--text-muted)' }}>{t.angle} · {t.ctr_hint}</div>
+              </button>
+            ))}
+            <button onClick={() => setTitleSuggestions(null)} className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              Dismiss
+            </button>
+          </div>
+        )}
 
         {/* Tabs */}
         <div className="flex gap-1 px-4 pt-3" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -227,18 +313,48 @@ export function ItemDetail({ item, channels, statuses, onClose, onPatch, onDelet
                 </div>
               </Field>
 
-              <Field label="Tags">
-                <input
-                  defaultValue={(item.tags ?? []).join(', ')}
-                  placeholder="tag, tag, tag"
-                  onBlur={e => {
-                    const tags = e.currentTarget.value.split(',').map(t => t.trim()).filter(Boolean);
-                    onPatch(item.id, { tags });
-                  }}
-                  className="w-full px-3 py-2 rounded-md text-sm"
-                  style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
-                />
-              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Pillar (content bucket)">
+                  <input
+                    defaultValue={item.pillar ?? ''}
+                    placeholder="e.g. tutorials, reviews, deep-dive"
+                    onBlur={e => {
+                      const v = e.currentTarget.value.trim();
+                      onPatch(item.id, { pillar: v || null });
+                    }}
+                    className="w-full px-3 py-2 rounded-md text-sm"
+                    style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+                  />
+                </Field>
+                <Field label="Tags">
+                  <input
+                    defaultValue={(item.tags ?? []).join(', ')}
+                    placeholder="tag, tag, tag"
+                    onBlur={e => {
+                      const tags = e.currentTarget.value.split(',').map(t => t.trim()).filter(Boolean);
+                      onPatch(item.id, { tags });
+                    }}
+                    className="w-full px-3 py-2 rounded-md text-sm"
+                    style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+                  />
+                </Field>
+              </div>
+
+              <ChecklistSection
+                items={(item.checklist ?? []) as ChecklistItem[]}
+                onChange={next => onPatch(item.id, { checklist: next })}
+              />
+
+              <ThumbnailSlots
+                item={item}
+                onPatch={patch => onPatch(item.id, patch)}
+              />
+
+              <DependenciesSection
+                itemId={item.id}
+                allItems={allItems}
+                onSelectItem={onSelectItem}
+              />
 
               <Field label="Notes">
                 <textarea

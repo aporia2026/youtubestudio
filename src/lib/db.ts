@@ -436,6 +436,73 @@ export async function ensureScheduleSchema() {
     try { await sql`CREATE INDEX IF NOT EXISTS idx_schedule_item_channels_channel ON schedule_item_channels(channel_id)`; } catch {}
     try { await sql`CREATE INDEX IF NOT EXISTS idx_channel_statuses_channel ON channel_statuses(channel_id, position)`; } catch {}
 
+    // --- Extended schema for Tier 1/2 features ---------------------------------
+    // Stage stuck-detection: track when the item entered its current status.
+    try { await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS stage_entered_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`; } catch {}
+    // Content pillar tagging (gap-detection target).
+    try { await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS pillar TEXT`; } catch {}
+    // Checklist lives on the item as JSONB [{ id, text, done, stage }].
+    try { await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS checklist JSONB NOT NULL DEFAULT '[]'`; } catch {}
+    // Thumbnail A/B slots
+    try { await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS thumbnail_a_url TEXT`; } catch {}
+    try { await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS thumbnail_b_url TEXT`; } catch {}
+    try { await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS thumbnail_winner TEXT`; } catch {} // 'a' | 'b' | null
+    // Final YouTube metadata captured on the schedule item (for publish handoff).
+    try { await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS yt_description TEXT`; } catch {}
+    try { await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS yt_tags JSONB DEFAULT '[]'`; } catch {}
+
+    // Stage-transition checklist templates (per channel + status).
+    await sql`
+      CREATE TABLE IF NOT EXISTS schedule_checklist_templates (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        channel_id UUID REFERENCES channels(id) ON DELETE CASCADE,
+        status TEXT NOT NULL,
+        items JSONB NOT NULL DEFAULT '[]',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (channel_id, status)
+      )
+    `;
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_cl_tpl_channel ON schedule_checklist_templates(channel_id)`; } catch {}
+
+    // Saved views — user-named filter bundles.
+    await sql`
+      CREATE TABLE IF NOT EXISTS schedule_saved_views (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name TEXT NOT NULL,
+        channel_id UUID REFERENCES channels(id) ON DELETE CASCADE,
+        config JSONB NOT NULL DEFAULT '{}',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+
+    // Dependency edges between schedule items (sequel_of, companion_of, uses_broll).
+    await sql`
+      CREATE TABLE IF NOT EXISTS schedule_dependencies (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        from_id UUID NOT NULL REFERENCES schedule_items(id) ON DELETE CASCADE,
+        to_id UUID NOT NULL REFERENCES schedule_items(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL DEFAULT 'relates_to',
+        note TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (from_id, to_id, kind)
+      )
+    `;
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_deps_from ON schedule_dependencies(from_id)`; } catch {}
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_deps_to ON schedule_dependencies(to_id)`; } catch {}
+
+    // Public share tokens (read-only scoped view — collaboration without auth).
+    await sql`
+      CREATE TABLE IF NOT EXISTS schedule_share_tokens (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        token TEXT NOT NULL UNIQUE,
+        channel_id UUID REFERENCES channels(id) ON DELETE CASCADE,
+        label TEXT,
+        expires_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+
     scheduleMigrated = true;
   } catch (err) {
     console.error('ensureScheduleSchema error:', err);

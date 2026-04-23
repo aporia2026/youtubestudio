@@ -1,12 +1,15 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ScheduleItem, ScheduleStatus } from '@/lib/schedule';
 import { statusColor } from '@/lib/schedule';
+
+type CompetitorEvent = { published_at: string; title: string; channel_name: string; view_count: number; outlier_score: number };
 
 type Props = {
   items: ScheduleItem[];
   statuses: ScheduleStatus[];
+  channelId: string | null;
   onSelect: (id: string) => void;
   onPatch: (id: string, patch: Partial<ScheduleItem>) => void;
 };
@@ -24,9 +27,60 @@ function sameDay(a: Date, b: Date) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
-export function CalendarView({ items, statuses, onSelect, onPatch }: Props) {
+export function CalendarView({ items, statuses, channelId, onSelect, onPatch }: Props) {
   const [cursor, setCursor] = useState(() => startOfMonth(new Date()));
   const [hoverDay, setHoverDay] = useState<string | null>(null);
+  const [focusDay, setFocusDay] = useState<string | null>(null);
+  const [heatmap, setHeatmap] = useState<(number | null)[][] | null>(null); // 7x24 median views
+  const [showCompetitors, setShowCompetitors] = useState(false);
+  const [competitorEvents, setCompetitorEvents] = useState<CompetitorEvent[]>([]);
+
+  // Best-times heatmap per channel — use the per-weekday max across hours as the cell tint.
+  useEffect(() => {
+    if (!channelId) { setHeatmap(null); return; }
+    const controller = new AbortController();
+    fetch(`/api/schedule/best-times?channel_id=${channelId}`, { signal: controller.signal })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.grid) setHeatmap(d.grid); })
+      .catch(err => { if (err.name !== 'AbortError') setHeatmap(null); });
+    return () => controller.abort();
+  }, [channelId]);
+
+  useEffect(() => {
+    if (!showCompetitors) return;
+    const controller = new AbortController();
+    fetch('/api/schedule/competitor-cadence', { signal: controller.signal })
+      .then(r => r.ok ? r.json() : { events: [] })
+      .then(d => setCompetitorEvents(d.events || []))
+      .catch(err => { if (err.name !== 'AbortError') setCompetitorEvents([]); });
+    return () => controller.abort();
+  }, [showCompetitors]);
+
+  // Keyboard nav when a day is focused.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!focusDay) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+      const [y, m, d] = focusDay.split('-').map(Number);
+      const cur = new Date(y, m, d);
+      let delta = 0;
+      if (e.key === 'ArrowLeft') delta = -1;
+      else if (e.key === 'ArrowRight') delta = 1;
+      else if (e.key === 'ArrowUp') delta = -7;
+      else if (e.key === 'ArrowDown') delta = 7;
+      else return;
+      e.preventDefault();
+      cur.setDate(cur.getDate() + delta);
+      setFocusDay(`${cur.getFullYear()}-${cur.getMonth()}-${cur.getDate()}`);
+      // Auto-paginate month if we scrolled past
+      if (cur.getMonth() !== cursor.getMonth() || cur.getFullYear() !== cursor.getFullYear()) {
+        setCursor(new Date(cur.getFullYear(), cur.getMonth(), 1));
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [focusDay, cursor]);
 
   const days = useMemo(() => {
     // Build a 6-row grid starting from the Sunday on/before day 1.
@@ -55,6 +109,28 @@ export function CalendarView({ items, statuses, onSelect, onPatch }: Props) {
   }, [items]);
 
   const unscheduled = items.filter(i => !i.scheduled_for);
+
+  const competitorByDay = useMemo(() => {
+    const map = new Map<string, CompetitorEvent[]>();
+    for (const ev of competitorEvents) {
+      const d = new Date(ev.published_at);
+      const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      if (!map.has(k)) map.set(k, []);
+      map.get(k)!.push(ev);
+    }
+    return map;
+  }, [competitorEvents]);
+
+  // Per-weekday heatmap intensity (normalized 0..1 of the median view count, max across hours).
+  const weekdayIntensity = useMemo(() => {
+    if (!heatmap) return null;
+    const perDay = heatmap.map(row => {
+      const vals = row.filter(v => v != null) as number[];
+      return vals.length ? Math.max(...vals) : 0;
+    });
+    const max = Math.max(...perDay, 1);
+    return perDay.map(v => (max > 0 ? v / max : 0));
+  }, [heatmap]);
 
   function dayKey(d: Date) { return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; }
 
@@ -107,7 +183,18 @@ export function CalendarView({ items, statuses, onSelect, onPatch }: Props) {
           <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
             {cursor.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
           </div>
-          <div className="w-20"></div>
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+              <input type="checkbox" checked={showCompetitors} onChange={e => setShowCompetitors(e.currentTarget.checked)} />
+              Competitors
+            </label>
+            {weekdayIntensity && (
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}
+                title="Background tint: historical day-of-week view performance">
+                🔥 heatmap
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Weekday header */}
@@ -125,17 +212,28 @@ export function CalendarView({ items, statuses, onSelect, onPatch }: Props) {
             const inMonth = d.getMonth() === cursor.getMonth();
             const isToday = sameDay(d, new Date());
             const cellItems = itemsByDay.get(key) ?? [];
+            const intensity = weekdayIntensity ? weekdayIntensity[d.getDay()] : 0;
+            const heatBg = inMonth && intensity > 0
+              ? `rgba(16,185,129,${Math.min(0.18, intensity * 0.18)})`
+              : null;
+            const competitorsToday = competitorByDay.get(key) ?? [];
+            const isFocused = focusDay === key;
             return (
               <div
                 key={key}
+                tabIndex={0}
+                onFocus={() => setFocusDay(key)}
                 onDragOver={e => { e.preventDefault(); setHoverDay(key); }}
                 onDragLeave={() => setHoverDay(h => h === key ? null : h)}
                 onDrop={e => handleDrop(e, d)}
-                className="min-h-[108px] p-1.5 relative transition-colors"
+                className="min-h-[108px] p-1.5 relative transition-colors outline-none"
                 style={{
-                  background: hoverDay === key ? 'rgba(124,58,237,0.1)' : inMonth ? 'transparent' : 'rgba(0,0,0,0.15)',
+                  background: hoverDay === key ? 'rgba(124,58,237,0.1)'
+                    : heatBg ?? (inMonth ? 'transparent' : 'rgba(0,0,0,0.15)'),
                   borderRight: '1px solid var(--border)',
                   borderBottom: '1px solid var(--border)',
+                  outline: isFocused ? '2px solid var(--accent-purple-bright)' : 'none',
+                  outlineOffset: '-2px',
                   opacity: inMonth ? 1 : 0.5,
                 }}
               >
@@ -172,6 +270,17 @@ export function CalendarView({ items, statuses, onSelect, onPatch }: Props) {
                     </div>
                   )}
                 </div>
+                {/* Competitor ghost markers (top-right corner) */}
+                {showCompetitors && competitorsToday.length > 0 && (
+                  <div className="absolute top-1 right-1 flex gap-0.5" title={competitorsToday.map(c => `${c.channel_name}: ${c.title}`).join('\n')}>
+                    {competitorsToday.slice(0, 3).map((_, i) => (
+                      <span key={i} className="w-1 h-1 rounded-full" style={{ background: '#f59e0b', opacity: 0.7 }} />
+                    ))}
+                    {competitorsToday.length > 3 && (
+                      <span className="text-[8px]" style={{ color: '#f59e0b' }}>+{competitorsToday.length - 3}</span>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
