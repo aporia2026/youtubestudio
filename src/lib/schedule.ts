@@ -1,0 +1,102 @@
+export type ScheduleStatus = {
+  key: string;
+  label: string;
+  color: string;
+};
+
+export type RecurrenceRule = {
+  freq: 'DAILY' | 'WEEKLY' | 'MONTHLY';
+  interval?: number;
+  byday?: Array<'MO' | 'TU' | 'WE' | 'TH' | 'FR' | 'SA' | 'SU'>;
+  count?: number;
+  until?: string;
+};
+
+export type ScheduleItem = {
+  id: string;
+  title: string;
+  scheduled_for: string | null;
+  status: string;
+  notes: string | null;
+  tags: string[];
+  custom_fields: Record<string, unknown>;
+  position: number;
+  idea_id: string | null;
+  project_id: string | null;
+  script_id: string | null;
+  recurrence: RecurrenceRule | null;
+  recurrence_parent_id: string | null;
+  created_at: string;
+  updated_at: string;
+  channels?: Array<{ id: string; name: string; account_color: string | null }>;
+};
+
+const DAY_INDEX: Record<NonNullable<RecurrenceRule['byday']>[number], number> = {
+  SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6,
+};
+
+/** Expand a recurrence rule into concrete ISO timestamps, capped at `max` entries. */
+export function expandRecurrence(
+  start: Date,
+  rule: RecurrenceRule,
+  max = 52,
+): string[] {
+  const out: string[] = [];
+  const interval = Math.max(1, rule.interval ?? 1);
+  const untilDate = rule.until ? new Date(rule.until) : null;
+  const limit = Math.min(max, rule.count ?? max);
+
+  if (rule.freq === 'DAILY') {
+    const cursor = new Date(start);
+    while (out.length < limit) {
+      if (untilDate && cursor > untilDate) break;
+      out.push(cursor.toISOString());
+      cursor.setDate(cursor.getDate() + interval);
+    }
+    return out;
+  }
+
+  if (rule.freq === 'WEEKLY') {
+    const days = rule.byday && rule.byday.length > 0
+      ? rule.byday.map(d => DAY_INDEX[d]).sort((a, b) => a - b)
+      : [start.getDay()];
+    // Walk week by week; within each week emit times for each chosen day at the start's time of day.
+    const weekStart = new Date(start);
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay()); // Sunday-aligned
+    const hours = start.getHours();
+    const minutes = start.getMinutes();
+    while (out.length < limit) {
+      for (const d of days) {
+        const dt = new Date(weekStart);
+        dt.setDate(dt.getDate() + d);
+        dt.setHours(hours, minutes, 0, 0);
+        if (dt < start) continue;
+        if (untilDate && dt > untilDate) return out;
+        out.push(dt.toISOString());
+        if (out.length >= limit) return out;
+      }
+      weekStart.setDate(weekStart.getDate() + 7 * interval);
+    }
+    return out;
+  }
+
+  if (rule.freq === 'MONTHLY') {
+    const cursor = new Date(start);
+    while (out.length < limit) {
+      if (untilDate && cursor > untilDate) break;
+      out.push(cursor.toISOString());
+      cursor.setMonth(cursor.getMonth() + interval);
+    }
+    return out;
+  }
+
+  return out;
+}
+
+export function statusColor(statuses: ScheduleStatus[], key: string): string {
+  return statuses.find(s => s.key === key)?.color || '#64748b';
+}
+
+export function statusLabel(statuses: ScheduleStatus[], key: string): string {
+  return statuses.find(s => s.key === key)?.label || key;
+}

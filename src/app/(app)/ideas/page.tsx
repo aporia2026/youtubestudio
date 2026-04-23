@@ -411,6 +411,34 @@ export default function IdeasPage() {
     }
   }
 
+  async function addToSchedule(idea: VideoIdea | SavedIdeaRow, savedId?: string) {
+    const title = idea.title;
+    const notesParts = [
+      'hook' in idea && idea.hook ? `Hook: ${idea.hook}` : null,
+      idea.description ? `Description: ${idea.description}` : null,
+      'why_it_will_perform' in idea && idea.why_it_will_perform ? `Why it performs: ${idea.why_it_will_perform}` : null,
+    ].filter(Boolean).join('\n\n');
+    try {
+      const res = await fetch('/api/schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title,
+          notes: notesParts || null,
+          tags: Array.isArray(idea.tags) ? idea.tags : [],
+          idea_id: savedId || null,
+          status: 'idea',
+        }),
+      });
+      if (!res.ok) throw new Error('Failed');
+      toast.success('Added to schedule', {
+        action: { label: 'View', onClick: () => { window.location.href = '/schedule'; } },
+      });
+    } catch {
+      toast.error('Could not add to schedule');
+    }
+  }
+
   function sendToGenerator(idea: VideoIdea) {
     // Store full context in localStorage for the generator to pick up
     const payload: Record<string, unknown> = {
@@ -535,6 +563,7 @@ export default function IdeasPage() {
                       </div>
                       <div className="flex gap-2 mt-3">
                         <button className="btn-primary text-xs" onClick={() => sendSavedToGenerator(row)}>✍ Write Script</button>
+                        <button className="btn-secondary text-xs" onClick={() => addToSchedule(row, row.id)}>📅 Add to Schedule</button>
                         <button
                           className="btn-secondary text-xs"
                           style={{ color: '#ef4444' }}
@@ -1073,6 +1102,9 @@ export default function IdeasPage() {
                                   <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
                                 </svg>
                                 Generate Script for This Idea
+                              </button>
+                              <button onClick={() => addToSchedule(idea)} className="btn-secondary text-xs px-3 py-1.5">
+                                📅 Add to Schedule
                               </button>
                               <button onClick={() => sendToSeo(idea)} className="btn-secondary text-xs px-3 py-1.5">
                                 🔍 Optimize SEO

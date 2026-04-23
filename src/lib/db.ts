@@ -382,6 +382,75 @@ export async function ensureChannelsSchema() {
   }
 }
 
+/** Idempotent setup for the schedule feature.
+ *  One schedule_item per planned video slot (recurring rules expand into concrete items).
+ *  Multi-channel via join table so cross-posting doesn't require schema changes.
+ *  custom_fields JSONB keeps the spreadsheet view flexible without migrations per column. */
+let scheduleMigrated = false;
+export async function ensureScheduleSchema() {
+  if (scheduleMigrated) return;
+  try {
+    await sql`
+      CREATE TABLE IF NOT EXISTS schedule_items (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        title TEXT NOT NULL DEFAULT '',
+        scheduled_for TIMESTAMPTZ,
+        status TEXT NOT NULL DEFAULT 'idea',
+        notes TEXT,
+        tags JSONB NOT NULL DEFAULT '[]',
+        custom_fields JSONB NOT NULL DEFAULT '{}',
+        position INTEGER NOT NULL DEFAULT 0,
+        idea_id UUID REFERENCES video_ideas(id) ON DELETE SET NULL,
+        project_id UUID REFERENCES projects(id) ON DELETE SET NULL,
+        script_id UUID REFERENCES scripts(id) ON DELETE SET NULL,
+        recurrence JSONB,
+        recurrence_parent_id UUID REFERENCES schedule_items(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS schedule_item_channels (
+        item_id UUID NOT NULL REFERENCES schedule_items(id) ON DELETE CASCADE,
+        channel_id UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+        PRIMARY KEY (item_id, channel_id)
+      )
+    `;
+
+    // Per-channel status pipelines. If a channel has no rows here, falls back to the default global list.
+    await sql`
+      CREATE TABLE IF NOT EXISTS channel_statuses (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        channel_id UUID REFERENCES channels(id) ON DELETE CASCADE,
+        key TEXT NOT NULL,
+        label TEXT NOT NULL,
+        color TEXT NOT NULL DEFAULT '#7c3aed',
+        position INTEGER NOT NULL DEFAULT 0,
+        UNIQUE (channel_id, key)
+      )
+    `;
+
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_schedule_items_scheduled ON schedule_items(scheduled_for)`; } catch {}
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_schedule_items_status ON schedule_items(status)`; } catch {}
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_schedule_item_channels_channel ON schedule_item_channels(channel_id)`; } catch {}
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_channel_statuses_channel ON channel_statuses(channel_id, position)`; } catch {}
+
+    scheduleMigrated = true;
+  } catch (err) {
+    console.error('ensureScheduleSchema error:', err);
+  }
+}
+
+export const DEFAULT_SCHEDULE_STATUSES = [
+  { key: 'idea', label: 'Idea', color: '#64748b', position: 0 },
+  { key: 'scripting', label: 'Scripting', color: '#8b5cf6', position: 1 },
+  { key: 'recording', label: 'Recording', color: '#f59e0b', position: 2 },
+  { key: 'editing', label: 'Editing', color: '#06b6d4', position: 3 },
+  { key: 'ready', label: 'Ready', color: '#10b981', position: 4 },
+  { key: 'published', label: 'Published', color: '#3b82f6', position: 5 },
+];
+
 let googleAuthMigrated = false;
 export async function ensureGoogleAuthSchema() {
   if (googleAuthMigrated) return;
