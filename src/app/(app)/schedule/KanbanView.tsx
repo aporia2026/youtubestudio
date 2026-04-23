@@ -118,7 +118,10 @@ export function KanbanView({ items, statuses, channels, onSelect, onPatch }: Pro
                   <motion.div
                     key={it.id}
                     draggable
-                    onDragStart={e => e.dataTransfer.setData('text/plain', it.id)}
+                    // framer-motion narrows onDragStart to pointer drag events (for its own
+                    // gesture system). Cast to React.DragEvent so we can reach dataTransfer
+                    // for the native HTML5 drag the `draggable` attribute enables.
+                    onDragStart={(e) => (e as unknown as React.DragEvent).dataTransfer.setData('text/plain', it.id)}
                     onClick={() => onSelect(it.id)}
                     whileHover={{ y: -2 }}
                     className="p-2.5 rounded-md cursor-pointer"
