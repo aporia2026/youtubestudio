@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { ScheduleItem, ScheduleStatus, RecurrenceRule, ChecklistItem } from '@/lib/schedule';
 import { statusColor } from '@/lib/schedule';
+import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import type { Channel } from './types';
 import { RecurrenceEditor } from './RecurrenceEditor';
 import { ChecklistSection } from './ChecklistSection';
@@ -125,7 +126,10 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
       const res = await fetch('/api/schedule/ai/title-from-script', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ item_id: item.id }),
+        body: JSON.stringify({
+          item_id: item.id,
+          modelId: getFeatureDefaultModelId('schedule-title'),
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed');

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
+import { getFeatureDefaultModelId } from '@/lib/ai-models';
 
 type Suggestion = { title: string; reason: string; source: 'idea' | 'new'; matched_idea_title?: string };
 
@@ -25,7 +26,10 @@ export function SuggestNextDialog({ channelId, channelName, onClose, onCreated }
         const res = await fetch('/api/schedule/ai/suggest-next', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ channel_id: channelId }),
+          body: JSON.stringify({
+            channel_id: channelId,
+            modelId: getFeatureDefaultModelId('schedule-suggest'),
+          }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Failed');
