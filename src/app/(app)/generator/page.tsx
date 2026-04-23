@@ -275,29 +275,30 @@ export default function GeneratorPage() {
           setQaResult({
             overall_score: data.bestScore,
             passed: false,
-            attempts: data.attempts,
-            threshold: data.threshold,
+            attempts: data.attempts ?? 0,
+            threshold: data.threshold ?? qaThreshold,
             critical_issues: data.qa?.critical_issues,
             strengths: data.qa?.strengths,
           });
-          toast.error(`Self-QA failed after ${data.attempts} attempts — best score ${data.bestScore}/${data.threshold}. Lower the threshold or try a stronger model.`);
+          toast.error(`Self-QA failed after ${data.attempts ?? 0} attempts — best score ${data.bestScore ?? '?'}/${data.threshold ?? qaThreshold}. Lower the threshold or try a stronger model.`);
           return;
         }
-        setScript(data.script);
+        setScript(data.script ?? '');
         setQaResult({
           overall_score: data.qa?.overall_score,
           passed: true,
-          attempts: data.attempts,
-          threshold: data.threshold,
+          attempts: data.attempts ?? 0,
+          threshold: data.threshold ?? qaThreshold,
           critical_issues: data.qa?.critical_issues,
           strengths: data.qa?.strengths,
         });
         setShowSave(true);
-        saveScriptToHistory({ topic, niche, tone, style, duration, modelId, script: data.script, wordCount: countWords(data.script) });
+        const finalScript = data.script ?? '';
+        saveScriptToHistory({ topic, niche, tone, style, duration, modelId, script: finalScript, wordCount: countWords(finalScript) });
         setHistoryItems(getScriptHistory());
-        const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: data.script, wordCount: countWords(data.script) });
+        const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: finalScript, wordCount: countWords(finalScript) });
         setDraftId(draft.id);
-        toast.success(`Self-QA passed in ${data.attempts} attempt${data.attempts === 1 ? '' : 's'} — score ${data.qa?.overall_score ?? '?'}/100`);
+        toast.success(`Self-QA passed in ${data.attempts ?? 1} attempt${(data.attempts ?? 1) === 1 ? '' : 's'} — score ${data.qa?.overall_score ?? '?'}/100`);
         return;
       }
 
