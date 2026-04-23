@@ -94,7 +94,7 @@ export default function GeneratorPage() {
     attempts: number;
     threshold: number;
     strengths?: string[];
-    critical_issues?: string[];
+    critical_issues?: Array<{ severity?: string; location?: string; issue?: string; fix?: string }>;
   } | null>(null);
 
   // Reference videos
@@ -755,7 +755,17 @@ export default function GeneratorPage() {
                 <details className="mt-1" open={!qaResult.passed}>
                   <summary className="text-xs cursor-pointer" style={{ color: '#F87171' }}>Critical issues ({qaResult.critical_issues.length})</summary>
                   <ul className="text-xs mt-1 ml-4 list-disc" style={{ color: 'var(--text-secondary)' }}>
-                    {qaResult.critical_issues.slice(0, 8).map((s, i) => <li key={i}>{s}</li>)}
+                    {qaResult.critical_issues.slice(0, 8).map((ci, i) => {
+                      if (typeof ci === 'string') return <li key={i}>{ci}</li>;
+                      const sev = ci.severity ? `[${ci.severity}] ` : '';
+                      const loc = ci.location ? `${ci.location}: ` : '';
+                      return (
+                        <li key={i}>
+                          <span>{sev}{loc}{ci.issue || ''}</span>
+                          {ci.fix && <div className="ml-2 mt-0.5" style={{ color: 'var(--text-muted)' }}>Fix: {ci.fix}</div>}
+                        </li>
+                      );
+                    })}
                   </ul>
                 </details>
               )}

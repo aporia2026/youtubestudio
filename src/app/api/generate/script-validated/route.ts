@@ -35,6 +35,17 @@ export const maxDuration = 300;
 const DEFAULT_THRESHOLD = 85;
 const DEFAULT_MAX_ATTEMPTS = 3;
 
+interface CriticalIssue {
+  severity?: string;
+  location?: string;
+  issue?: string;
+  fix?: string;
+}
+interface RewriteSuggestion {
+  original?: string;
+  improved?: string;
+  reason?: string;
+}
 interface QAResult {
   overall_score?: number;
   hook_strength?: number;
@@ -44,9 +55,9 @@ interface QAResult {
   cta?: number;
   seo?: number;
   pacing?: number;
-  critical_issues?: string[];
+  critical_issues?: CriticalIssue[];
   strengths?: string[];
-  rewrite_suggestions?: string[];
+  rewrite_suggestions?: RewriteSuggestion[];
 }
 
 export async function POST(req: NextRequest) {
@@ -171,8 +182,12 @@ export async function POST(req: NextRequest) {
     }
 
     // 3) Build feedback for the next attempt.
-    const issues = (qa.critical_issues ?? []).slice(0, 8).map(i => `- ${i}`).join('\n');
-    const fixes = (qa.rewrite_suggestions ?? []).slice(0, 8).map(s => `- ${s}`).join('\n');
+    const issues = (qa.critical_issues ?? []).slice(0, 8).map(i =>
+      `- [${i.severity || 'issue'}] ${i.location ? `${i.location}: ` : ''}${i.issue || ''}${i.fix ? ` — fix: ${i.fix}` : ''}`,
+    ).join('\n');
+    const fixes = (qa.rewrite_suggestions ?? []).slice(0, 8).map(s =>
+      `- "${s.original || ''}" → "${s.improved || ''}"${s.reason ? ` (${s.reason})` : ''}`,
+    ).join('\n');
     lastFeedback = `Score: ${score}/100 (threshold: ${threshold}).\nCRITICAL ISSUES:\n${issues || '(none cited)'}\n\nSUGGESTED FIXES:\n${fixes || '(none cited)'}`;
   }
 
