@@ -128,44 +128,50 @@ export default function QAPage() {
         if (data.constraints) setConstraints({ ...EMPTY_CONSTRAINTS, ...data.constraints });
       }
     } catch {}
-    try {
-      const backup = localStorage.getItem('qa_session_backup');
-      if (backup) {
-        const s = JSON.parse(backup) as {
-          script?: string;
-          niche?: string;
-          aggressiveness?: Aggressiveness;
-          results?: QAResult[];
-          activeResult?: number;
-          fixedScript?: string;
-          passNumber?: number;
-          projectId?: string | null;
-          scriptId?: string | null;
-          constraints?: ScriptConstraints;
-          ts?: number;
-        };
-        // 24h freshness cap — beyond that, don't auto-restore (stale).
-        if (s && s.ts && Date.now() - s.ts < 24 * 60 * 60 * 1000) {
-          if (s.script && !hadPrefill) setScript(prev => prev || s.script!);
-          if (s.niche) setNiche(prev => prev || s.niche!);
-          if (s.aggressiveness) setAggressiveness(prev => prev === 'brutal' ? s.aggressiveness! : prev);
-          if (s.results?.length) {
-            setResults(prev => prev.length ? prev : s.results!);
-            setActiveResult(prev => prev || (s.activeResult ?? s.results!.length - 1));
-            setPassNumber(prev => prev > 1 ? prev : (s.passNumber ?? s.results!.length + 1));
-          }
-          if (s.fixedScript) setFixedScript(prev => prev || s.fixedScript!);
-          if (s.projectId) setProjectId(prev => prev || s.projectId!);
-          if (s.scriptId) setScriptId(prev => prev || s.scriptId!);
-          // Functional setter so we don't clobber constraints the prefill
-          // block (a few lines up) just set synchronously — the `constraints`
-          // closure here is the stale initial EMPTY_CONSTRAINTS value.
-          if (s.constraints) {
-            setConstraints(prev => hasAnyConstraint(prev) ? prev : { ...EMPTY_CONSTRAINTS, ...s.constraints });
+    // Sending a fresh script from the generator (qa_prefill) is an explicit "new session"
+    // intent — drop the prior backup so stale results/fixedScript/project linkage don't bleed in.
+    if (hadPrefill) {
+      try { localStorage.removeItem('qa_session_backup'); } catch {}
+    } else {
+      try {
+        const backup = localStorage.getItem('qa_session_backup');
+        if (backup) {
+          const s = JSON.parse(backup) as {
+            script?: string;
+            niche?: string;
+            aggressiveness?: Aggressiveness;
+            results?: QAResult[];
+            activeResult?: number;
+            fixedScript?: string;
+            passNumber?: number;
+            projectId?: string | null;
+            scriptId?: string | null;
+            constraints?: ScriptConstraints;
+            ts?: number;
+          };
+          // 24h freshness cap — beyond that, don't auto-restore (stale).
+          if (s && s.ts && Date.now() - s.ts < 24 * 60 * 60 * 1000) {
+            if (s.script) setScript(prev => prev || s.script!);
+            if (s.niche) setNiche(prev => prev || s.niche!);
+            if (s.aggressiveness) setAggressiveness(prev => prev === 'brutal' ? s.aggressiveness! : prev);
+            if (s.results?.length) {
+              setResults(prev => prev.length ? prev : s.results!);
+              setActiveResult(prev => prev || (s.activeResult ?? s.results!.length - 1));
+              setPassNumber(prev => prev > 1 ? prev : (s.passNumber ?? s.results!.length + 1));
+            }
+            if (s.fixedScript) setFixedScript(prev => prev || s.fixedScript!);
+            if (s.projectId) setProjectId(prev => prev || s.projectId!);
+            if (s.scriptId) setScriptId(prev => prev || s.scriptId!);
+            // Functional setter so we don't clobber constraints the prefill
+            // block (a few lines up) just set synchronously — the `constraints`
+            // closure here is the stale initial EMPTY_CONSTRAINTS value.
+            if (s.constraints) {
+              setConstraints(prev => hasAnyConstraint(prev) ? prev : { ...EMPTY_CONSTRAINTS, ...s.constraints });
+            }
           }
         }
-      }
-    } catch {}
+      } catch {}
+    }
     // If an active draft is linked to a project, inherit the project/script ids so
     // QA runs persist to the right place.
     try {
