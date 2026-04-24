@@ -132,6 +132,10 @@ export default function GeneratorPage() {
   function restoreScript(id: string) {
     const entry = historyItems.find(e => e.id === id);
     if (!entry) return;
+    if (script && typeof window !== 'undefined' &&
+        !confirm('Replace the current script with this restored entry?')) {
+      return;
+    }
     setTopic(entry.topic);
     setNiche(entry.niche);
     setTone(entry.tone);
@@ -140,6 +144,27 @@ export default function GeneratorPage() {
     // Only restore model if it still exists
     if (getModelById(entry.modelId)) setModelId(entry.modelId);
     setScript(entry.script);
+    // Rehydrate the full input context if the entry has it.
+    if (entry.audience !== undefined) setAudience(entry.audience);
+    if (entry.context !== undefined) setContext(entry.context);
+    if (entry.refs && entry.refs.length) {
+      // Reconstruct VideoRef shape; the deep styleAnalysis/analysis blobs were
+      // too large to keep in history — user can re-analyze if they want them.
+      setRefs(entry.refs.map((r, i) => ({
+        id: `restored-${i}-${Date.now()}`,
+        url: r.url,
+        title: r.title,
+        channelTitle: r.channelTitle || '',
+        viewCount: r.viewCount || 0,
+        thumbnailUrl: r.thumbnailUrl || '',
+        styleAnalysis: null,
+        analysis: null,
+        loading: false,
+      })));
+      setShowRefs(true);
+    } else {
+      setRefs([]);
+    }
     setShowSave(true);
     toast.success('Script restored from history');
   }
@@ -312,7 +337,16 @@ export default function GeneratorPage() {
         });
         setShowSave(true);
         const finalScript = data.script ?? '';
-        saveScriptToHistory({ topic, niche, tone, style, duration, modelId, script: finalScript, wordCount: countWords(finalScript) });
+        saveScriptToHistory({
+          topic, niche, tone, style, duration, modelId,
+          script: finalScript, wordCount: countWords(finalScript),
+          audience: audience || undefined,
+          context: context || undefined,
+          refs: refs.filter(r => !r.loading).map(r => ({
+            url: r.url, title: r.title, channelTitle: r.channelTitle,
+            viewCount: r.viewCount, thumbnailUrl: r.thumbnailUrl,
+          })),
+        });
         setHistoryItems(getScriptHistory());
         const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: finalScript, wordCount: countWords(finalScript) });
         setDraftId(draft.id);
@@ -347,8 +381,18 @@ export default function GeneratorPage() {
       }
 
       setShowSave(true);
-      // Auto-save to history
-      saveScriptToHistory({ topic, niche, tone, style, duration, modelId, script: full, wordCount: countWords(full) });
+      // Auto-save to history — include audience/context/refs so restore brings
+      // back the full input context, not just the generated script output.
+      saveScriptToHistory({
+        topic, niche, tone, style, duration, modelId,
+        script: full, wordCount: countWords(full),
+        audience: audience || undefined,
+        context: context || undefined,
+        refs: refs.filter(r => !r.loading).map(r => ({
+          url: r.url, title: r.title, channelTitle: r.channelTitle,
+          viewCount: r.viewCount, thumbnailUrl: r.thumbnailUrl,
+        })),
+      });
       setHistoryItems(getScriptHistory());
       // Auto-save draft
       const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: full, wordCount: countWords(full) });

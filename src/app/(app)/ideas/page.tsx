@@ -170,13 +170,33 @@ export default function IdeasPage() {
   function restoreIdeas(id: string) {
     const entry = ideasHistoryItems.find(e => e.id === id);
     if (!entry) return;
+    if (ideas.length > 0 && typeof window !== 'undefined' &&
+        !confirm('Replace the current ideas list with this restored entry?')) {
+      return;
+    }
     setNiche(entry.niche);
     setFocus(entry.focus);
     setVideoType(entry.videoType || 'any');
     if (getModelById(entry.modelId)) setModelId(entry.modelId);
     setCount(entry.count);
     setIdeas(entry.ideas as unknown as VideoIdea[]);
-    toast.success('Ideas restored from history');
+    // Rehydrate the input context so the "why these ideas" is clear on restore.
+    if (entry.audience !== undefined) setAudience(entry.audience);
+    if (typeof entry.usedReddit === 'boolean') setUseReddit(entry.usedReddit);
+    if (entry.refs && entry.refs.length) {
+      setRefs(entry.refs.map((r, i) => ({
+        id: `restored-${i}-${Date.now()}`,
+        url: r.url,
+        title: r.title,
+        channelTitle: r.channelTitle || '',
+        viewCount: r.viewCount || 0,
+        thumbnailUrl: '',
+        styleAnalysis: null,
+        analysis: null,
+        loading: false,
+      })));
+    }
+    toast.success(`Ideas restored — ${entry.ideas.length} ideas`);
   }
 
   function handleDeleteIdeas(id: string) {
@@ -376,7 +396,15 @@ export default function IdeasPage() {
       const generatedIdeas = data.ideas || [];
       setIdeas(generatedIdeas);
       if (generatedIdeas.length > 0) {
-        saveIdeas({ niche, focus, videoType, modelId, count, ideas: generatedIdeas });
+        // Save history with the full input context so restore brings it all back.
+        saveIdeas({
+          niche, focus, videoType, modelId, count, ideas: generatedIdeas,
+          audience: audience || undefined,
+          usedReddit: useReddit,
+          refs: refs.filter(r => !r.loading).map(r => ({
+            url: r.url, title: r.title, channelTitle: r.channelTitle, viewCount: r.viewCount,
+          })),
+        });
         setIdeasHistoryItems(getIdeasHistory());
         // Auto-persist all generated ideas to the database so they survive browser resets
         fetch('/api/ideas/batch', {

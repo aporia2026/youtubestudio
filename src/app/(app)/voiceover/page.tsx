@@ -10,7 +10,8 @@ import { cleanScriptForVoiceover } from '@/lib/voiceover-presets';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
 import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
-import { getVoiceoverHistory, deleteVoiceoverEntry, type VoiceoverHistoryEntry } from '@/lib/history';
+import { getVoiceoverHistory, saveVoiceover, deleteVoiceoverEntry, type VoiceoverHistoryEntry } from '@/lib/history';
+import { saveDraft, getActiveDraft } from '@/lib/drafts';
 
 interface ElevenVoice {
   voice_id: string;
@@ -56,9 +57,20 @@ function VoiceoverStudio() {
   function restoreVoiceover(id: string) {
     const entry = voHistoryItems.find(e => e.id === id);
     if (!entry) return;
+    if ((audioUrl || text) && typeof window !== 'undefined' &&
+        !confirm('Replace the current voiceover state with this restored entry?')) {
+      return;
+    }
     setAudioUrl(entry.audioUrl);
-    setText(entry.textPreview);
-    toast.success('Voiceover restored from history');
+    // Prefer full text when it was saved; fall back to the preview for legacy entries.
+    setText(entry.text ?? entry.textPreview ?? '');
+    if (entry.voiceId) setSelectedVoice(entry.voiceId);
+    if (entry.settings) setSettings(entry.settings);
+    if (entry.text) {
+      toast.success(`Voiceover restored — ${entry.charCount.toLocaleString()} chars, voice "${entry.voiceName}"`);
+    } else {
+      toast.info('Older entry — only preview was saved. Audio still plays; paste or re-enter the full text to regenerate.');
+    }
   }
 
   useEffect(() => {
@@ -136,6 +148,37 @@ function VoiceoverStudio() {
       }
       const data = await res.json();
       setAudioUrl(data.url);
+      // Save to history with the full text + settings so clicking a past entry
+      // rehydrates everything (text, voice, sliders, model) — not just audio+preview.
+      const voiceName = voices.find(v => v.voice_id === selectedVoice)?.name || 'Unknown';
+      saveVoiceover({
+        voiceName,
+        voiceId: selectedVoice,
+        modelId: settings.model_id,
+        textPreview: text.slice(0, 300),
+        charCount: text.length,
+        audioUrl: data.url,
+        tone: '',
+        style: '',
+        text,
+        settings: { ...settings },
+      });
+      setVoHistoryItems(getVoiceoverHistory());
+      // Save draft so leaving the page doesn't lose the voiceover.
+      try {
+        const active = getActiveDraft();
+        saveDraft({
+          id: active?.id,
+          title: active?.title || voiceName || 'Voiceover',
+          niche: active?.niche || '',
+          step: 'voiceover',
+          topic: active?.topic,
+          modelId: settings.model_id,
+          script: text,
+          voiceoverUrl: data.url,
+          voiceName,
+        });
+      } catch {}
       toast.success('Voiceover generated!');
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Failed to generate voiceover');

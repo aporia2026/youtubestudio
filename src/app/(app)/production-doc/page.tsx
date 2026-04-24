@@ -5,9 +5,19 @@ import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
-import { saveProductionDocEntry, getRecentNiches, getRecentTopics } from '@/lib/history';
+import {
+  saveProductionDocEntry,
+  getProductionDocHistory,
+  updateProductionDocEntry,
+  deleteProductionDocEntry,
+  clearProductionDocHistory,
+  getRecentNiches,
+  getRecentTopics,
+  type ProductionDocHistoryEntry,
+} from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
+import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { productionDocToVideoConfig } from '@/remotion/utils';
 import type { BrandKit } from '@/remotion/types';
 
@@ -464,6 +474,11 @@ export default function ProductionDocPage() {
   const [doc, setDoc] = useState<ProductionDoc | null>(null);
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
+  const [historyItems, setHistoryItems] = useState<ProductionDocHistoryEntry[]>(() => getProductionDocHistory());
+  // Track which history entry the current on-screen doc belongs to, so row-image
+  // generations (fire-and-forget after the doc is saved) can patch back onto the
+  // same entry instead of being lost.
+  const [historyEntryId, setHistoryEntryId] = useState<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   // — Image generation (declared before effects that reference it)
@@ -495,7 +510,15 @@ export default function ProductionDocPage() {
     try {
       localStorage.setItem('prodoc_last_result', JSON.stringify({ doc, rowImages, savedAt: Date.now() }));
     } catch { /* storage full — ignore */ }
-  }, [doc, rowImages]);
+    // Also patch the current history entry so row-image URLs survive on restore.
+    if (historyEntryId && rowImages.length > 0) {
+      const imgMap: Record<number, string> = {};
+      rowImages.forEach((r, i) => { if (r?.imageUrl) imgMap[i] = r.imageUrl; });
+      if (Object.keys(imgMap).length > 0) {
+        updateProductionDocEntry(historyEntryId, { rowImages: imgMap });
+      }
+    }
+  }, [doc, rowImages, historyEntryId]);
 
   // Auto-scroll log to bottom when new entries are added
   useEffect(() => {
@@ -900,7 +923,7 @@ export default function ProductionDocPage() {
       }
 
       setDoc(result);
-      saveProductionDocEntry({
+      const savedEntry = saveProductionDocEntry({
         title: result.title || topic || niche,
         niche: result.niche || niche,
         topic,
@@ -909,7 +932,11 @@ export default function ProductionDocPage() {
         totalDuration: result.total_duration,
         totalWords: result.total_words,
         stylePreset,
+        doc: result,
+        script: script.trim() || undefined,
       });
+      setHistoryEntryId(savedEntry.id);
+      setHistoryItems(getProductionDocHistory());
       appendLog(`✓ ${result.rows.length} shots generated`);
       toast.success(`Production doc ready — ${result.rows.length} shots`);
       setTimeout(() => tableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
@@ -1793,6 +1820,53 @@ export default function ProductionDocPage() {
           </div>
         </div>
       )}
+
+      <HistoryPanel
+        title="Production Doc History"
+        icon="🎬"
+        items={historyItems.map(e => ({
+          id: e.id,
+          timestamp: e.timestamp,
+          label: e.title,
+          sublabel: `${e.niche} · ${e.shotCount} shots · ${e.totalDuration} · ${e.stylePreset}`,
+        }))}
+        onRestore={(id) => {
+          const entry = historyItems.find(e => e.id === id);
+          if (!entry) return;
+          if (doc && typeof window !== 'undefined' &&
+              !confirm('Replace the current production doc with this restored entry?')) {
+            return;
+          }
+          setNiche(entry.niche);
+          setTopic(entry.topic);
+          if (entry.modelId) setModelId(entry.modelId);
+          if (entry.stylePreset) setStylePreset(entry.stylePreset);
+          if (entry.script) setScript(entry.script);
+          if (entry.doc) {
+            const restoredDoc = entry.doc as ProductionDoc;
+            setDoc(restoredDoc);
+            // Rebuild rowImages from the saved map
+            if (entry.rowImages && restoredDoc.rows?.length) {
+              const restoredImages: RowImageState[] = restoredDoc.rows.map((_row, i) => {
+                const url = entry.rowImages?.[i];
+                return url ? { status: 'done', imageUrl: url } : { status: 'idle' };
+              });
+              setRowImages(restoredImages);
+            } else {
+              setRowImages([]);
+            }
+            setHistoryEntryId(entry.id);
+            toast.success(`Restored — ${entry.shotCount} shots, ${entry.totalDuration}`);
+          } else {
+            setDoc(null);
+            setRowImages([]);
+            setHistoryEntryId(null);
+            toast.info('Older entry — only metadata was saved. Re-generate to produce the doc.');
+          }
+        }}
+        onDelete={(id) => { deleteProductionDocEntry(id); setHistoryItems(getProductionDocHistory()); }}
+        onClearAll={() => { clearProductionDocHistory(); setHistoryItems([]); }}
+      />
     </div>
   );
 }

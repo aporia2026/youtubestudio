@@ -119,22 +119,27 @@ export default function SeoPage() {
       setResult(data.result);
       setActiveTab('titles');
       toast.success('SEO optimization complete!');
-      // Save to history
-      const titles = (data.result as any).titles || [];
-      const bestTitle = [...titles].sort((a: any, b: any) => (b.score || 0) - (a.score || 0))[0];
+      // Save to history — include the full result + original inputs so clicking
+      // a past entry fully rehydrates the results panel, not just the form.
+      const titles = (data.result as { titles?: Array<{ title?: string; score?: number }> }).titles || [];
+      const bestTitle = [...titles].sort((a, b) => (b.score || 0) - (a.score || 0))[0];
       saveSeoEntry({
         topic, niche, modelId,
         titlesCount: titles.length,
         bestTitle: bestTitle?.title || topic,
         bestScore: bestTitle?.score || 0,
-        tagsCount: ((data.result as any).tags || []).length,
+        tagsCount: ((data.result as { tags?: unknown[] }).tags || []).length,
+        result: data.result,
+        script: script.trim() || undefined,
+        targetKeywords: targetKeywords.trim() || undefined,
+        existingTitle: existingTitle.trim() || undefined,
       });
       setHistoryItems(getSeoHistory());
       // Save draft
       const draft = saveDraft({
         id: draftId || undefined, title: topic, niche, step: 'seo',
         topic, modelId, seoTitle: bestTitle?.title,
-        seoDescription: (data.result as any).description?.above_fold,
+        seoDescription: (data.result as { description?: { above_fold?: string } }).description?.above_fold,
       });
       setDraftId(draft.id);
     } catch (e: unknown) {
@@ -627,7 +632,24 @@ export default function SeoPage() {
         }))}
         onRestore={(id) => {
           const entry = historyItems.find(e => e.id === id);
-          if (entry) { setTopic(entry.topic || entry.bestTitle); setNiche(entry.niche); toast.success('Restored from history'); }
+          if (!entry) return;
+          if (result && typeof window !== 'undefined' &&
+              !confirm('Replace current SEO results with this restored entry?')) {
+            return;
+          }
+          setTopic(entry.topic || entry.bestTitle);
+          setNiche(entry.niche);
+          if (entry.modelId) setModelId(entry.modelId);
+          if (entry.script !== undefined) setScript(entry.script);
+          if (entry.targetKeywords !== undefined) setTargetKeywords(entry.targetKeywords);
+          if (entry.existingTitle !== undefined) setExistingTitle(entry.existingTitle);
+          if (entry.result) {
+            setResult(entry.result as SeoResult);
+            setActiveTab('titles');
+            toast.success(`Restored — ${entry.titlesCount} titles, best ${entry.bestScore}/100`);
+          } else {
+            toast.info('Older entry — only metadata was saved. Click Generate to re-run with these inputs.');
+          }
         }}
         onDelete={(id) => { deleteSeoEntry(id); setHistoryItems(getSeoHistory()); }}
         onClearAll={() => { clearSeoHistory(); setHistoryItems([]); }}
