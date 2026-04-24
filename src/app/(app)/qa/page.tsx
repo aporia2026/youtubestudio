@@ -450,8 +450,11 @@ export default function QAPage() {
       setResults(newResults);
       setActiveResult(newResults.length - 1);
       setPassNumber(p => p + 1);
-      // Save to QA history — includes full script + the full QAResult for this
-      // pass so clicking a history entry can actually resume the session.
+      // Save to QA history — includes the full script + the full results array up to
+      // this pass so clicking a history entry can fully rehydrate the session
+      // (Next-Steps CTA, score rings, tabs, EL buttons all reappear).
+      // Entries written before this field existed will only have scriptPreview and
+      // restore via a metadata-only fallback with an informational toast.
       saveQAEntry({
         niche,
         aggressiveness,
@@ -461,7 +464,7 @@ export default function QAPage() {
         verdict: data.result.verdict || '',
         passCount: newResults.length,
         script,
-        result: data.result,
+        results: newResults,
       });
       setQaHistory(getQAHistory());
       // Auto-save draft
@@ -644,7 +647,87 @@ export default function QAPage() {
 
         {/* RIGHT PANEL - Results */}
         <div>
-          {!currentResult && !running && (
+          {/* Smart empty state: if no QA has been run but there is a script in the textarea
+              (either typed by the user or restored from a metadata-only history entry),
+              surface the same handoff + EL-format affordances so the script is still useful
+              — you can ship it to Voiceover / Production Doc / Script Generator, or format
+              it for ElevenLabs, without being forced to run a QA pass first. */}
+          {!currentResult && !running && script.trim().length >= 50 && (
+            <div className="glass rounded-xl p-6 space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  📋 Script loaded — {script.trim().split(/\s+/).length} words
+                </h3>
+                <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                  Run QA for detailed critique, or use this script directly in the rest of the workflow.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                <button
+                  onClick={() => handoffWithBestScript('/voiceover?from=qa', 'voiceover_prefill', { script, niche })}
+                  className="btn-primary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                >
+                  🎙️ Voiceover
+                </button>
+                <button
+                  onClick={() => {
+                    const topicLine = script.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
+                    handoffWithBestScript('/production-doc?from=qa', 'prodoc_prefill', { script, niche, topic: topicLine });
+                  }}
+                  className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                >
+                  🎬 Production Doc
+                </button>
+                <button
+                  onClick={() => {
+                    const titleLine = script.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
+                    handoffWithBestScript('/thumbnails?from=qa', 'thumbnails_prefill', { title: titleLine, niche, description: script.slice(0, 500) });
+                  }}
+                  className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                >
+                  🎨 Thumbnails
+                </button>
+                <button
+                  onClick={() => {
+                    const topicLine = script.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
+                    handoffWithBestScript('/seo?from=qa', 'seo_prefill', { topic: topicLine, niche, script });
+                  }}
+                  className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                >
+                  🔍 SEO
+                </button>
+                <button
+                  onClick={() => handoffWithBestScript('/generator?from=qa')}
+                  className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                  title="Saves this script to your active draft and opens Script Generator resumed on it."
+                >
+                  📝 Script Generator
+                </button>
+                <button
+                  onClick={() => saveAsProjectQuick()}
+                  disabled={savingProject}
+                  className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                >
+                  {savingProject ? '💾 Saving…' : '💾 Save as Project'}
+                </button>
+              </div>
+
+              <div className="pt-3 flex items-center gap-2 flex-wrap" style={{ borderTop: '1px solid var(--border)' }}>
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Export for TTS:</span>
+                <CopyForElevenLabs script={script} version="v2" />
+                <CopyForElevenLabs script={script} version="v3" voiceContext={niche} />
+                <button
+                  onClick={() => { navigator.clipboard.writeText(script); toast.success('Script copied!'); }}
+                  className="btn-secondary text-xs px-3 py-1.5 ml-auto"
+                >
+                  Copy script
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!currentResult && !running && script.trim().length < 50 && (
             <div className="glass rounded-xl h-full min-h-96 flex items-center justify-center" style={{ color: 'var(--text-muted)' }}>
               <div className="text-center">
                 <div className="text-5xl mb-4">🔬</div>
@@ -1177,6 +1260,15 @@ export default function QAPage() {
         onRestore={id => {
           const entry = qaHistory.find(e => e.id === id);
           if (!entry) return;
+
+          // Protect in-progress work: if the user has unsaved results in memory,
+          // confirm before replacing. Backup is still in localStorage either way,
+          // but this avoids silent surprise.
+          if (results.length > 0 && typeof window !== 'undefined' &&
+              !confirm(`Replace your current ${results.length}-pass session with "${entry.niche}" (${entry.passCount} pass${entry.passCount === 1 ? '' : 'es'}, score ${entry.overallScore}/100)?`)) {
+            return;
+          }
+
           // Basic config.
           setNiche(entry.niche);
           const validAgg: Aggressiveness[] = ['standard', 'brutal', 'nuclear'];
@@ -1185,32 +1277,52 @@ export default function QAPage() {
           }
           if (entry.modelId) setModelId(entry.modelId);
 
-          // Script: new entries carry the full text; older entries only have
-          // the 300-char preview, which we still surface so the user isn't
-          // left with a blank textarea on restore.
+          // Script: newer entries carry the full text; older entries only have
+          // the 300-char preview — still useful as a starting point for EL
+          // formatting or a voiceover handoff, but flag it clearly.
+          const hasFullScript = Boolean(entry.script);
           if (entry.script) {
             setScript(entry.script);
           } else if (entry.scriptPreview) {
             setScript(entry.scriptPreview);
-            toast.message('Restored config only — this entry predates full-script history.');
           }
 
-          // QA result: load the pass that was stored with this entry as the
-          // only/active result so the user can see what was said and re-run
-          // more passes on top.
-          if (entry.result) {
-            setResults([entry.result as QAResult]);
-            setActiveResult(0);
-            setPassNumber(Math.max(entry.passCount + 1, 1));
+          // Results can be stored in two shapes:
+          //   - `results: QAResult[]`  — full multi-pass history (current format).
+          //   - `result: QAResult`     — single latest pass (earlier format, fc6762a).
+          // Normalize both to an array so restore works either way.
+          const resultsArr: QAResult[] | null =
+            Array.isArray(entry.results) && entry.results.length > 0
+              ? (entry.results as QAResult[])
+              : entry.result
+                ? [entry.result as QAResult]
+                : null;
+
+          if (resultsArr && resultsArr.length > 0) {
+            setResults(resultsArr);
+            setActiveResult(resultsArr.length - 1);
+            setPassNumber(resultsArr.length + 1);
           } else {
-            // No stored result — clear any stale display.
+            // Legacy metadata-only entry — clear any stale results view. The
+            // smart empty-state (below) will let the user still format/copy/
+            // hand off whatever script text we did recover.
             setResults([]);
             setActiveResult(0);
             setPassNumber(Math.max(entry.passCount + 1, 1));
           }
+          const hasFullResults = Boolean(resultsArr && resultsArr.length > 0);
           setApprovedFixes(new Set());
           setFixedScript('');
-          toast.success('Session restored');
+          setActiveTab('scores');
+
+          if (hasFullResults && resultsArr) {
+            const n = resultsArr.length;
+            toast.success(`Session restored — ${n} pass${n === 1 ? '' : 'es'}, score ${entry.overallScore}/100`);
+          } else if (hasFullScript) {
+            toast.info('Script restored — QA details were not saved on this entry. Re-run QA to regenerate them.');
+          } else {
+            toast.info('Older entry — only a 300-char preview was saved. Use it as a starting point, or paste the full script to re-run QA.');
+          }
         }}
         onDelete={id => {
           deleteQAEntry(id);

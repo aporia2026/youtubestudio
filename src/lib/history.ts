@@ -240,9 +240,12 @@ export interface QAHistoryEntry {
   overallScore: number;
   verdict: string;
   passCount: number;
-  // Full payload needed to actually resume a session. Older entries written
-  // before these fields existed are restored from `scriptPreview` only.
+  // Full payload for session restore. Older entries written before these
+  // fields existed are metadata-only — restore falls back to scriptPreview.
   script?: string;
+  results?: unknown[];
+  /** @deprecated Singular field from an earlier partial fix; kept so entries
+   * saved with just the latest pass still restore as a 1-result session. */
   result?: unknown;
 }
 
