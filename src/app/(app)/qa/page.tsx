@@ -256,7 +256,7 @@ function QAPage() {
         // thing to trim; the script/fixedScript together are usually <50 KB.
         try {
           localStorage.setItem('qa_session_backup', JSON.stringify({
-            script, niche, aggressiveness,
+            script, niche, topic, aggressiveness,
             results: results.slice(-3),
             activeResult: Math.min(activeResult, 2),
             fixedScript, passNumber, projectId, scriptId, constraints,
@@ -266,7 +266,7 @@ function QAPage() {
       }
     }, 800);
     return () => clearTimeout(t);
-  }, [script, niche, aggressiveness, results, activeResult, fixedScript, passNumber, projectId, scriptId, constraints]);
+  }, [script, niche, topic, aggressiveness, results, activeResult, fixedScript, passNumber, projectId, scriptId, constraints]);
 
   function toggleFix(key: string) {
     setApprovedFixes(prev => {
@@ -594,6 +594,7 @@ function QAPage() {
       return;
     }
     setScript('');
+    setTopic('');
     setResults([]);
     setPassNumber(1);
     setActiveResult(0);
@@ -624,11 +625,25 @@ function QAPage() {
           <span className="badge badge-pink">Multi-Pass QA Engine</span>
         </div>
         <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div>
+          <div className="min-w-0 flex-1">
             <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>Script QA Engine</h1>
             <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
               Brutally critique your script — as many passes as needed
             </p>
+            {topic && (
+              <div
+                className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg max-w-full"
+                style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+                title={topic}
+              >
+                <span className="text-[10px] uppercase tracking-wider font-semibold shrink-0" style={{ color: 'var(--text-muted)' }}>
+                  Reviewing
+                </span>
+                <span className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+                  {topic}
+                </span>
+              </div>
+            )}
           </div>
           <button
             onClick={startNewSession}
