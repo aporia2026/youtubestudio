@@ -608,15 +608,15 @@ export default function ProductionDocPage() {
           const tag = `[YouTube ref "${label}": ${data.styleDescription}]`;
           return prev ? `${prev}\n\n${tag}` : tag;
         });
-        toast.success('Visual style extracted from YouTube thumbnail');
+        toast.success('Visual style extracted from YouTube video');
       }
-    } catch {
+    } catch (err) {
       setVisualRefs(prev => {
         const next = [...prev];
         next[idx] = { ...next[idx], analyzing: false, analysisFailed: true };
         return next;
       });
-      // Best-effort — the ref stays in the list but won't contribute to the brief
+      toast.error(err instanceof Error ? err.message : 'YouTube style analysis failed');
     }
   }
 
