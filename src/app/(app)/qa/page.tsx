@@ -10,6 +10,7 @@ import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { ScoreRing } from '@/components/ui/ScoreRing';
 import { saveDraft, getActiveDraft } from '@/lib/drafts';
+import { EMPTY_CONSTRAINTS, hasAnyConstraint, type ScriptConstraints } from '@/lib/script-options';
 import { scoreLabel } from '@/lib/utils';
 import { saveQAEntry, getQAHistory, deleteQAEntry, clearQAHistory, getRecentNiches, type QAHistoryEntry } from '@/lib/history';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
@@ -101,6 +102,10 @@ export default function QAPage() {
   const [scriptId, setScriptId] = useState<string | null>(null);
   // Persisted-to-project flag so "Save as Project" toasts land once even if the user re-runs fixes.
   const [savingProject, setSavingProject] = useState(false);
+  // Constraints inherited from the Script Generator (skip hook, skip CTA, custom
+  // exclusions). Passed to /api/qa/analyze so the reviewer doesn't penalize
+  // intentionally-omitted elements. User can view/toggle them on this page too.
+  const [constraints, setConstraints] = useState<ScriptConstraints>(EMPTY_CONSTRAINTS);
 
   // Load prefill from Script Generator. Also restore any previously-backed-up session
   // so a refresh or HMR cycle doesn't wipe a multi-pass QA run.
@@ -120,6 +125,7 @@ export default function QAPage() {
         const data = JSON.parse(prefill);
         if (data.script) { setScript(data.script); hadPrefill = true; }
         if (data.niche) setNiche(data.niche);
+        if (data.constraints) setConstraints({ ...EMPTY_CONSTRAINTS, ...data.constraints });
       }
     } catch {}
     try {
@@ -135,6 +141,7 @@ export default function QAPage() {
           passNumber?: number;
           projectId?: string | null;
           scriptId?: string | null;
+          constraints?: ScriptConstraints;
           ts?: number;
         };
         // 24h freshness cap — beyond that, don't auto-restore (stale).
@@ -150,6 +157,12 @@ export default function QAPage() {
           if (s.fixedScript) setFixedScript(prev => prev || s.fixedScript!);
           if (s.projectId) setProjectId(prev => prev || s.projectId!);
           if (s.scriptId) setScriptId(prev => prev || s.scriptId!);
+          // Functional setter so we don't clobber constraints the prefill
+          // block (a few lines up) just set synchronously — the `constraints`
+          // closure here is the stale initial EMPTY_CONSTRAINTS value.
+          if (s.constraints) {
+            setConstraints(prev => hasAnyConstraint(prev) ? prev : { ...EMPTY_CONSTRAINTS, ...s.constraints });
+          }
         }
       }
     } catch {}
@@ -173,7 +186,7 @@ export default function QAPage() {
         localStorage.setItem('qa_session_backup', JSON.stringify({
           script, niche, aggressiveness,
           results, activeResult, fixedScript, passNumber,
-          projectId, scriptId,
+          projectId, scriptId, constraints,
           ts: Date.now(),
         }));
       } catch {
@@ -184,14 +197,14 @@ export default function QAPage() {
             script, niche, aggressiveness,
             results: results.slice(-3),
             activeResult: Math.min(activeResult, 2),
-            fixedScript, passNumber, projectId, scriptId,
+            fixedScript, passNumber, projectId, scriptId, constraints,
             ts: Date.now(),
           }));
         } catch { /* give up — in-memory state is still intact */ }
       }
     }, 800);
     return () => clearTimeout(t);
-  }, [script, niche, aggressiveness, results, activeResult, fixedScript, passNumber, projectId, scriptId]);
+  }, [script, niche, aggressiveness, results, activeResult, fixedScript, passNumber, projectId, scriptId, constraints]);
 
   function toggleFix(key: string) {
     setApprovedFixes(prev => {
@@ -254,6 +267,7 @@ export default function QAPage() {
             ...(currentResult.strengths?.length ? [`\nStrengths to Preserve: ${currentResult.strengths.join(', ')}`] : []),
           ].filter(Boolean).join('\n'),
           approvedFixes: fixes,
+          constraints: hasAnyConstraint(constraints) ? constraints : undefined,
         }),
       });
 
@@ -437,6 +451,7 @@ export default function QAPage() {
           previousFeedback,
           projectId: projectId || undefined,
           scriptId: scriptId || undefined,
+          constraints: hasAnyConstraint(constraints) ? constraints : undefined,
         }),
       });
 
@@ -508,6 +523,7 @@ export default function QAPage() {
     setActiveTab('scores');
     setProjectId(null);
     setScriptId(null);
+    setConstraints(EMPTY_CONSTRAINTS);
     try { localStorage.removeItem('qa_session_backup'); } catch {}
     toast.success('New QA session — paste a script to get started.');
   }
@@ -560,6 +576,48 @@ export default function QAPage() {
                 suggestions={nicheHints}
                 placeholder="e.g. Cybersecurity & Antivirus"
               />
+            </div>
+
+            {/* QA Review Exclusions — the reviewer won't flag anything on this
+                list as an issue, and won't suggest adding anything on it. Works
+                for scripts sent from the Generator (constraints inherited via
+                qa_prefill) AND for standalone manual QA runs on a pasted script. */}
+            <div>
+              <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
+                QA Review Exclusions
+                {hasAnyConstraint(constraints) && (
+                  <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(124,58,237,0.2)', color: 'var(--accent-purple-bright)' }}>active</span>
+                )}
+              </label>
+              <div className="p-3 rounded-lg space-y-2" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  Tell the reviewer what NOT to check. Absent items on this list won&apos;t be flagged as issues and won&apos;t appear in rewrite suggestions.
+                </p>
+                <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                  <input type="checkbox" checked={!!constraints.skipHook} onChange={e => setConstraints(c => ({ ...c, skipHook: e.target.checked }))} />
+                  Don&apos;t judge the hook / opening grab
+                </label>
+                <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                  <input type="checkbox" checked={!!constraints.skipSubscribeCTA} onChange={e => setConstraints(c => ({ ...c, skipSubscribeCTA: e.target.checked }))} />
+                  Don&apos;t expect subscribe / like / bell CTAs
+                </label>
+                <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                  <input type="checkbox" checked={!!constraints.skipClickableLinks} onChange={e => setConstraints(c => ({ ...c, skipClickableLinks: e.target.checked }))} />
+                  Don&apos;t expect &quot;link in description&quot; / promo links
+                </label>
+                <div className="pt-1">
+                  <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>
+                    Custom exclusions (one per line — e.g. &quot;don&apos;t flag casual profanity&quot;, &quot;don&apos;t suggest adding humor&quot;)
+                  </label>
+                  <textarea
+                    value={(constraints.custom || []).join('\n')}
+                    onChange={e => setConstraints(c => ({ ...c, custom: e.target.value.split('\n').map(s => s.trim()).filter(Boolean) }))}
+                    placeholder="One rule per line…"
+                    className="input-field w-full"
+                    style={{ fontSize: 12, minHeight: 60 }}
+                  />
+                </div>
+              </div>
             </div>
 
             {/* Aggressiveness selector */}

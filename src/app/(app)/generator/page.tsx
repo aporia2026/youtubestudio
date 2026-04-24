@@ -14,6 +14,7 @@ import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { DraftsBanner } from '@/components/ui/DraftsBanner';
 import { SeriesPicker } from '@/components/ui/SeriesPicker';
 import { fetchPriorParts, formatPriorPartsForPrompt, saveSeriesPart } from '@/lib/series';
+import { EMPTY_CONSTRAINTS, type ScriptConstraints } from '@/lib/script-options';
 import { getScriptHistory, saveScript as saveScriptToHistory, deleteScriptEntry, clearScriptHistory, getRecentTopics, type ScriptHistoryEntry } from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
@@ -113,6 +114,20 @@ export default function GeneratorPage() {
   const [seriesId, setSeriesId] = useState<string | null>(null);
   const [seriesTitle, setSeriesTitle] = useState<string>('');
   const [partNumber, setPartNumber] = useState<number>(1);
+
+  // User-authored script constraints — skip hook, skip CTA, custom rules.
+  // These ride with every generate + QA call so the reviewer doesn't flag
+  // intentional omissions as issues. Default to empty (all off).
+  const [constraints, setConstraints] = useState<ScriptConstraints>(EMPTY_CONSTRAINTS);
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const [customRuleInput, setCustomRuleInput] = useState('');
+
+  // Post-generation refinement UI state.
+  const [refining, setRefining] = useState(false);
+  const [refineOpen, setRefineOpen] = useState(false);
+  const [refineNotes, setRefineNotes] = useState('');
+  const [previousScriptSnapshot, setPreviousScriptSnapshot] = useState<string | null>(null);
+  const refineAbortRef = useRef<AbortController | null>(null);
   const [seriesTokenBudget, setSeriesTokenBudget] = useState<number>(() => {
     if (typeof window === 'undefined') return 15000;
     const v = Number(localStorage.getItem('series:token-budget'));
@@ -142,8 +157,103 @@ export default function GeneratorPage() {
         toast.warning('This draft\'s script was truncated for storage. You may need to regenerate.');
       }
     }
+    if (draft.constraints) {
+      setConstraints({ ...EMPTY_CONSTRAINTS, ...draft.constraints });
+      setOptionsOpen(true);
+    }
+    if (draft.seriesId) {
+      setSeriesId(draft.seriesId);
+      setSeriesTitle(draft.seriesTitle || '');
+      setPartNumber(draft.partNumber || 1);
+    }
     setDraftId(draft.id);
     if (!options?.silent) toast.success('Draft resumed');
+  }
+
+  /** Post-generation refinement: stream an edited version of the current
+   *  script using the user's notes, preserving constraints. On success the
+   *  edited text replaces `script`; the prior version is stashed so the
+   *  "Undo" button can bring it back without a round-trip. */
+  async function refineScript() {
+    const notes = refineNotes.trim();
+    if (!notes) { toast.error('Describe what to improve first.'); return; }
+    if (!script.trim()) { toast.error('Generate a script first.'); return; }
+    setRefining(true);
+    setPreviousScriptSnapshot(script);
+    const prevScript = script;
+    setScript('');
+    refineAbortRef.current = new AbortController();
+    try {
+      const res = await fetch('/api/generate/script/refine', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          modelId,
+          originalScript: prevScript,
+          refinementInstructions: notes,
+          topic,
+          niche,
+          constraints,
+        }),
+        signal: refineAbortRef.current.signal,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Refine failed' }));
+        throw new Error(err.error || 'Refine failed');
+      }
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      if (!reader) throw new Error('No response stream');
+      let refined = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        refined += decoder.decode(value, { stream: true });
+        setScript(refined);
+        scriptRef.current?.scrollTo({ top: scriptRef.current.scrollHeight, behavior: 'smooth' });
+      }
+      // Save the refined version as a new history entry so both versions are recoverable.
+      saveScriptToHistory({
+        topic, niche, tone, style, duration, modelId,
+        script: refined, wordCount: countWords(refined),
+        audience: audience || undefined,
+        context: (context ? context + '\n\n' : '') + `[Refined: ${notes}]`,
+        refs: refs.filter(r => !r.loading).map(r => ({
+          url: r.url, title: r.title, channelTitle: r.channelTitle,
+          viewCount: r.viewCount, thumbnailUrl: r.thumbnailUrl,
+        })),
+        constraints,
+        seriesId: seriesId || undefined,
+        seriesTitle: seriesTitle || undefined,
+        partNumber: seriesId ? partNumber : undefined,
+      });
+      setHistoryItems(getScriptHistory());
+      // Update draft too — the current script is now the refined one.
+      const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: refined, wordCount: countWords(refined), constraints, seriesId: seriesId || undefined, seriesTitle: seriesTitle || undefined, partNumber: seriesId ? partNumber : undefined });
+      setDraftId(draft.id);
+      setRefineNotes('');
+      setRefineOpen(false);
+      toast.success('Script refined — click Undo to revert.');
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        setScript(prevScript); // bring the prior version back if user cancelled mid-stream
+        setPreviousScriptSnapshot(null); // clear the snapshot so no spurious "Undo" button appears
+        return;
+      }
+      // Restore prior version on any error
+      setScript(prevScript);
+      setPreviousScriptSnapshot(null);
+      toast.error(err instanceof Error ? err.message : 'Refine failed');
+    } finally {
+      setRefining(false);
+    }
+  }
+
+  function undoRefine() {
+    if (!previousScriptSnapshot) return;
+    setScript(previousScriptSnapshot);
+    setPreviousScriptSnapshot(null);
+    toast.message('Reverted to the previous version.');
   }
 
   function restoreScript(id: string) {
@@ -181,6 +291,16 @@ export default function GeneratorPage() {
       setShowRefs(true);
     } else {
       setRefs([]);
+    }
+    // Rehydrate constraints + series linkage.
+    if (entry.constraints) {
+      setConstraints({ ...EMPTY_CONSTRAINTS, ...entry.constraints });
+      setOptionsOpen(true);
+    }
+    if (entry.seriesId) {
+      setSeriesId(entry.seriesId);
+      setSeriesTitle(entry.seriesTitle || '');
+      setPartNumber(entry.partNumber || 1);
     }
     setShowSave(true);
     toast.success('Script restored from history');
@@ -331,6 +451,7 @@ export default function GeneratorPage() {
             threshold: qaThreshold,
             previousScripts,
             seriesContext: seriesContext || undefined,
+            constraints,
           }),
           signal: abortRef.current.signal,
         });
@@ -382,9 +503,13 @@ export default function GeneratorPage() {
             url: r.url, title: r.title, channelTitle: r.channelTitle,
             viewCount: r.viewCount, thumbnailUrl: r.thumbnailUrl,
           })),
+          constraints,
+          seriesId: seriesId || undefined,
+          seriesTitle: seriesTitle || undefined,
+          partNumber: seriesId ? partNumber : undefined,
         });
         setHistoryItems(getScriptHistory());
-        const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: finalScript, wordCount: countWords(finalScript) });
+        const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: finalScript, wordCount: countWords(finalScript), constraints, seriesId: seriesId || undefined, seriesTitle: seriesTitle || undefined, partNumber: seriesId ? partNumber : undefined });
         setDraftId(draft.id);
         // If this is a series part, persist it to the series so cross-device Part N+1 can pull it.
         if (seriesId && finalScript) {
@@ -399,7 +524,7 @@ export default function GeneratorPage() {
       const res = await fetch('/api/generate/script', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ modelId, topic, niche, duration, tone, style, audience, context, referenceContext: refContext || undefined, previousScripts, seriesContext: seriesContext || undefined }),
+        body: JSON.stringify({ modelId, topic, niche, duration, tone, style, audience, context, referenceContext: refContext || undefined, previousScripts, seriesContext: seriesContext || undefined, constraints }),
         signal: abortRef.current.signal,
       });
 
@@ -423,8 +548,8 @@ export default function GeneratorPage() {
       }
 
       setShowSave(true);
-      // Auto-save to history — include audience/context/refs so restore brings
-      // back the full input context, not just the generated script output.
+      // Auto-save to history — include audience/context/refs/constraints/series
+      // so restoring brings back the full input context, not just the output.
       saveScriptToHistory({
         topic, niche, tone, style, duration, modelId,
         script: full, wordCount: countWords(full),
@@ -434,10 +559,14 @@ export default function GeneratorPage() {
           url: r.url, title: r.title, channelTitle: r.channelTitle,
           viewCount: r.viewCount, thumbnailUrl: r.thumbnailUrl,
         })),
+        constraints,
+        seriesId: seriesId || undefined,
+        seriesTitle: seriesTitle || undefined,
+        partNumber: seriesId ? partNumber : undefined,
       });
       setHistoryItems(getScriptHistory());
       // Auto-save draft
-      const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: full, wordCount: countWords(full) });
+      const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: full, wordCount: countWords(full), constraints, seriesId: seriesId || undefined, seriesTitle: seriesTitle || undefined, partNumber: seriesId ? partNumber : undefined });
       setDraftId(draft.id);
       // Persist to series if linked — cross-device continuity for the next part.
       if (seriesId && full) {
@@ -796,6 +925,54 @@ export default function GeneratorPage() {
               )}
             </div>
 
+            {/* Script Options — user-authored exclusions that ride with both
+                generation AND the QA review, so intentionally-omitted elements
+                (hook, CTA, links) aren't later flagged as issues. Collapsed by
+                default; all three toggles plus a free-form custom-rules list. */}
+            <div>
+              <button
+                type="button"
+                onClick={() => setOptionsOpen(v => !v)}
+                className="w-full flex items-center justify-between text-xs font-semibold uppercase tracking-wider px-3 py-2 rounded-lg"
+                style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+              >
+                <span>⚙️ Script Options {constraints.skipHook || constraints.skipSubscribeCTA || constraints.skipClickableLinks || (constraints.custom && constraints.custom.length) ? <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(124,58,237,0.2)', color: 'var(--accent-purple-bright)' }}>active</span> : null}</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ transform: optionsOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </button>
+              {optionsOpen && (
+                <div className="mt-2 p-3 rounded-lg space-y-2" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                  <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    These rules apply to both the generation and the QA review — flagged omissions won&apos;t be treated as issues.
+                  </p>
+                  <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                    <input type="checkbox" checked={!!constraints.skipHook} onChange={e => setConstraints(c => ({ ...c, skipHook: e.target.checked }))} />
+                    Zero hook — open directly in-scene / with the story
+                  </label>
+                  <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                    <input type="checkbox" checked={!!constraints.skipSubscribeCTA} onChange={e => setConstraints(c => ({ ...c, skipSubscribeCTA: e.target.checked }))} />
+                    No subscribe / like / bell CTAs
+                  </label>
+                  <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                    <input type="checkbox" checked={!!constraints.skipClickableLinks} onChange={e => setConstraints(c => ({ ...c, skipClickableLinks: e.target.checked }))} />
+                    No &quot;link in description&quot; / promo links
+                  </label>
+                  <div>
+                    <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Custom exclusions (one per line — e.g. &quot;no pop-culture refs&quot;)</label>
+                    <textarea
+                      value={(constraints.custom || []).join('\n')}
+                      onChange={e => setConstraints(c => ({ ...c, custom: e.target.value.split('\n').map(s => s.trim()).filter(Boolean) }))}
+                      onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) e.stopPropagation(); }}
+                      placeholder="One rule per line…"
+                      className="input-field w-full"
+                      style={{ fontSize: 12, minHeight: 60 }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Series linkage — optional. If enabled and partNumber > 1, the
                 generator pulls prior parts as continuity context. */}
             <div>
@@ -989,6 +1166,56 @@ export default function GeneratorPage() {
                 exit={{ opacity: 0 }}
                 className="space-y-3"
               >
+                {/* ✨ Refine — post-generation improvement loop. User describes
+                    what to change; the server returns an edited version streaming
+                    in place of the current script. Previous version is stashed
+                    for one-click Undo. */}
+                <div className="glass rounded-xl p-4 space-y-2" style={{ border: '1px solid rgba(124,58,237,0.25)' }}>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>✨ Refine this script</h3>
+                    <div className="flex gap-2">
+                      {previousScriptSnapshot && !refining && (
+                        <button onClick={undoRefine} className="btn-secondary text-xs px-3 py-1">↶ Undo</button>
+                      )}
+                      <button
+                        onClick={() => setRefineOpen(v => !v)}
+                        className="btn-secondary text-xs px-3 py-1"
+                      >
+                        {refineOpen ? 'Hide' : 'Open'}
+                      </button>
+                    </div>
+                  </div>
+                  {refineOpen && (
+                    <div className="space-y-2">
+                      <textarea
+                        value={refineNotes}
+                        onChange={e => setRefineNotes(e.target.value)}
+                        placeholder="What should be improved? e.g. 'Make the second section snappier', 'Replace the ColonialPipeline example with Equifax', 'Tighten the middle — it drags'."
+                        className="input-field w-full"
+                        style={{ minHeight: 80, fontSize: 13 }}
+                        disabled={refining}
+                      />
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={refining ? () => refineAbortRef.current?.abort() : refineScript}
+                          disabled={!refining && !refineNotes.trim()}
+                          className={refining ? 'btn-danger text-sm flex-1 justify-center' : 'btn-primary text-sm flex-1 justify-center'}
+                          style={{ justifyContent: 'center' }}
+                        >
+                          {refining ? (
+                            <><div className="spinner" style={{ width: 14, height: 14 }} /> Stop</>
+                          ) : (
+                            <>✨ Apply refinement</>
+                          )}
+                        </button>
+                      </div>
+                      <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                        Constraints (skip hook / CTA / links) are respected — the refine won&apos;t re-add anything you opted out of.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
                 {/* Save as Project */}
                 <SaveAsProject script={script} niche={niche} topic={topic} modelId={modelId} />
 
@@ -997,8 +1224,9 @@ export default function GeneratorPage() {
                   <button
                     onClick={() => {
                       // Update draft to QA step
-                      if (draftId) saveDraft({ id: draftId, title: topic, niche, step: 'qa', topic, tone, style, duration, modelId, script, wordCount: countWords(script) });
-                      localStorage.setItem('qa_prefill', JSON.stringify({ script, niche }));
+                      if (draftId) saveDraft({ id: draftId, title: topic, niche, step: 'qa', topic, tone, style, duration, modelId, script, wordCount: countWords(script), constraints });
+                      // Include constraints in the prefill so QA honors the same exclusions.
+                      localStorage.setItem('qa_prefill', JSON.stringify({ script, niche, constraints }));
                       window.location.href = '/qa?from=generator';
                     }}
                     className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center"

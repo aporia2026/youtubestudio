@@ -39,6 +39,21 @@ export interface WorkflowDraft {
 
   // Project
   projectId?: string;
+
+  // User-authored generation constraints (skip hook, skip CTA, etc.). Kept in
+  // the draft so leaving and returning preserves the user's checkboxes.
+  constraints?: {
+    skipHook?: boolean;
+    skipSubscribeCTA?: boolean;
+    skipClickableLinks?: boolean;
+    custom?: string[];
+  };
+
+  // Series linkage — so the Script Generator remembers which series this
+  // draft is Part N of when resumed from the drafts banner.
+  seriesId?: string;
+  seriesTitle?: string;
+  partNumber?: number;
 }
 
 const DRAFTS_KEY = 'workflow_drafts';

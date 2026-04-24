@@ -80,11 +80,18 @@ export async function POST(req: NextRequest) {
     previousScripts?: string[];
     /** Pre-built series-continuity block (from lib/series.ts formatPriorPartsForPrompt). */
     seriesContext?: string;
+    /** User-authored script constraints (skip hook / skip CTA / custom). */
+    constraints?: {
+      skipHook?: boolean;
+      skipSubscribeCTA?: boolean;
+      skipClickableLinks?: boolean;
+      custom?: string[];
+    };
   };
   try { body = await req.json(); }
   catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }); }
 
-  const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext, previousScripts = [], seriesContext } = body;
+  const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext, previousScripts = [], seriesContext, constraints } = body;
   if (!topic || !niche) return NextResponse.json({ error: 'topic and niche are required' }, { status: 400 });
   if (!modelId) return NextResponse.json({ error: 'modelId is required' }, { status: 400 });
   const model = getModelById(modelId);
@@ -121,6 +128,7 @@ export async function POST(req: NextRequest) {
       targetAudience: audience,
       additionalContext: (context || '') + (seriesBlock || dedupNote) + retryNote,
       referenceContext,
+      constraints,
     });
 
     let script: string;
@@ -145,13 +153,15 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
-    // 2) QA the script.
+    // 2) QA the script. Pass the same constraints so the reviewer doesn't
+    // penalize intentionally-omitted elements (hook, CTA, links).
     const { system: qaSystem, user: qaUser } = scriptQAPrompt({
       script,
       niche,
       passNumber: attempt,
       previousFeedback: lastFeedback,
       aggressiveness: 'brutal',
+      constraints,
     });
 
     let qa: QAResult = {};

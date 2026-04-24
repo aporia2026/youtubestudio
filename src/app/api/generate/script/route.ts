@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext, previousScripts, seriesContext } = await req.json();
+    const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext, previousScripts, seriesContext, constraints } = await req.json();
 
     if (!topic || !niche) {
       return NextResponse.json({ error: 'topic and niche are required' }, { status: 400 });
@@ -51,6 +51,7 @@ export async function POST(req: NextRequest) {
       targetAudience: audience,
       additionalContext,
       referenceContext,
+      constraints,
     });
 
     // Stream response

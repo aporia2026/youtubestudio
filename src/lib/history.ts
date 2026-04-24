@@ -18,6 +18,19 @@ export interface ScriptHistoryEntry {
   /** Minimal reference-video metadata — not the full deep-analysis payload
    * (too large), but enough to show "these were the inspirations". */
   refs?: Array<{ url: string; title: string; channelTitle?: string; viewCount?: number; thumbnailUrl?: string }>;
+  /** User-authored exclusions (skip hook, skip CTA, custom) used for this
+   * generation. Restored so the toggles come back on click. Typed loosely
+   * here to avoid a circular import with lib/script-options. */
+  constraints?: {
+    skipHook?: boolean;
+    skipSubscribeCTA?: boolean;
+    skipClickableLinks?: boolean;
+    custom?: string[];
+  };
+  /** Series linkage when this script was generated as part of a named series. */
+  seriesId?: string;
+  seriesTitle?: string;
+  partNumber?: number;
 }
 
 export interface IdeasHistoryEntry {

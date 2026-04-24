@@ -1,4 +1,5 @@
 // All AI prompts for the YouTube Studio system
+import { buildConstraintsPromptBlock, buildQAConstraintsPromptBlock, type ScriptConstraints } from './script-options';
 
 export function scriptGenerationPrompt({
   topic,
@@ -9,6 +10,7 @@ export function scriptGenerationPrompt({
   style,
   additionalContext,
   referenceContext,
+  constraints,
 }: {
   topic: string;
   niche: string;
@@ -18,6 +20,7 @@ export function scriptGenerationPrompt({
   style?: string;
   additionalContext?: string;
   referenceContext?: string;
+  constraints?: ScriptConstraints;
 }): { system: string; user: string } {
   const wordsPerMinute = 140;
   const targetWords = targetDurationMinutes * wordsPerMinute;
@@ -124,7 +127,9 @@ ${styleNote}
 
 ## Structure (follow precisely):
 
-1. **HOOK** (first 10-15 seconds): Gut-punch opening. No warm-up. Drop the viewer into the most compelling moment of the topic. Make them feel something immediately — fear, shock, curiosity, outrage.
+${constraints?.skipHook
+  ? `1. **OPENING** (first 10-15 seconds): NO hook. Open directly in-scene, mid-action, mid-sentence, or with the first beat of the story itself. The viewer should feel like they just walked into a moment already in progress. No warm-up, no attention-grabber, no "In this video", no teaser stat.`
+  : `1. **HOOK** (first 10-15 seconds): Gut-punch opening. No warm-up. Drop the viewer into the most compelling moment of the topic. Make them feel something immediately — fear, shock, curiosity, outrage.`}
 
 2. **INTRO** (20-40 seconds): Quick context. Why should THEY care? What's at stake for them personally? Tease the structure: "By the end of this video, you'll know X, Y, and Z."
 
@@ -135,14 +140,16 @@ ${styleNote}
    - A pattern interrupt or surprise reveal
    - A bridge to the next section that creates anticipation
 
-4. **OUTRO** (20-30 seconds): Circle back to the hook. Deliver a final insight that reframes everything. CTA that feels natural. Tease next video.
+${constraints?.skipSubscribeCTA || constraints?.skipClickableLinks
+  ? `4. **OUTRO** (20-30 seconds): Circle back to the opening. Deliver a final insight that reframes everything. ${constraints?.skipSubscribeCTA ? 'Do NOT include any subscribe / like / bell CTAs.' : 'CTA that feels natural.'} ${constraints?.skipClickableLinks ? 'Do NOT reference any links, promo codes, or "link in description" prompts.' : ''} ${!constraints?.skipSubscribeCTA && !constraints?.skipClickableLinks ? 'Tease next video.' : 'End on a thought, not a request.'}`
+  : `4. **OUTRO** (20-30 seconds): Circle back to the hook. Deliver a final insight that reframes everything. CTA that feels natural. Tease next video.`}
 
 ## Format:
 - Use [VISUAL CUE: description] for B-roll/visual suggestions
 - Use [PAUSE] for dramatic effect
 - Use **BOLD** for emphasis
 - Mark sections with ## Section Name
-
+${buildConstraintsPromptBlock(constraints)}
 Write the complete script now. Make it exceptional.`,
   };
 }
@@ -153,12 +160,14 @@ export function scriptQAPrompt({
   previousFeedback,
   niche,
   aggressiveness,
+  constraints,
 }: {
   script: string;
   passNumber: number;
   previousFeedback?: string;
   niche: string;
   aggressiveness: 'standard' | 'brutal' | 'nuclear';
+  constraints?: ScriptConstraints;
 }): { system: string; user: string } {
   const aggressivenessInstructions = {
     standard: 'Be thorough and constructive. Point out all issues clearly.',
@@ -200,7 +209,7 @@ ${humanAuthenticityNote}
 Your analysis must always be actionable — for every problem you find, provide a specific fix.`,
 
     user: `Perform a ${aggressiveness.toUpperCase()} QA review of this YouTube script. This is Pass #${passNumber}.
-
+${buildQAConstraintsPromptBlock(constraints)}
 ${previousFeedback ? `## Previous QA Feedback (Pass ${passNumber - 1}):\n${previousFeedback}\n\nIMPORTANT SCORING RULES FOR FOLLOW-UP PASSES:
 - If previous issues were FIXED, the score for those categories MUST increase significantly (at least +15-25 points per fixed category)
 - Only deduct points for genuinely NEW problems, not re-stating things that were already addressed
@@ -311,10 +320,12 @@ export function applyFixesPrompt({
   script,
   qaFeedback,
   approvedFixes,
+  constraints,
 }: {
   script: string;
   qaFeedback: string;
   approvedFixes: string[];
+  constraints?: ScriptConstraints;
 }): { system: string; user: string } {
   return {
     system: `You are an elite YouTube scriptwriter performing a COMPREHENSIVE rewrite based on QA feedback.
@@ -343,7 +354,7 @@ ${qaFeedback}
 
 ## Approved Fixes (apply ALL of these):
 ${approvedFixes.map((fix, i) => `${i + 1}. ${fix}`).join('\n')}
-
+${buildConstraintsPromptBlock(constraints)}
 Return the complete rewritten script with these fixes applied. Nothing else — just the script.`,
   };
 }

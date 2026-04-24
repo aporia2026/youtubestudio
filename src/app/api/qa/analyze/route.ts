@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { modelId, script, niche, aggressiveness, passNumber, previousFeedback, scriptId, projectId } = await req.json();
+    const { modelId, script, niche, aggressiveness, passNumber, previousFeedback, scriptId, projectId, constraints } = await req.json();
 
     if (!script || script.length < 50) {
       return NextResponse.json({ error: 'Script too short (min 50 chars)' }, { status: 400 });
@@ -31,6 +31,7 @@ export async function POST(req: NextRequest) {
       passNumber: passNumber || 1,
       previousFeedback,
       aggressiveness: aggressiveness || 'brutal',
+      constraints,
     });
 
     const raw = await generateText({
