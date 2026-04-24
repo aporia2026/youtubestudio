@@ -489,6 +489,29 @@ export default function QAPage() {
     setActiveTab('scores');
   }
 
+  /** Wipe the entire QA page back to a blank slate — script, results, fixed
+   * script, approved fixes, project/script linkage, and the localStorage
+   * backup. Niche/aggressiveness/model stay because those are usually the
+   * user's preferences, not session state. */
+  function startNewSession() {
+    const hasWork = script.trim().length > 0 || results.length > 0 || fixedScript.length > 0;
+    if (hasWork && typeof window !== 'undefined' &&
+        !confirm('Start a new QA session? The current script and all pass results will be cleared from this page. (Past runs remain in QA History below.)')) {
+      return;
+    }
+    setScript('');
+    setResults([]);
+    setPassNumber(1);
+    setActiveResult(0);
+    setApprovedFixes(new Set());
+    setFixedScript('');
+    setActiveTab('scores');
+    setProjectId(null);
+    setScriptId(null);
+    try { localStorage.removeItem('qa_session_backup'); } catch {}
+    toast.success('New QA session — paste a script to get started.');
+  }
+
   const currentResult = results[activeResult];
 
   return (
@@ -504,10 +527,21 @@ export default function QAPage() {
           </div>
           <span className="badge badge-pink">Multi-Pass QA Engine</span>
         </div>
-        <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>Script QA Engine</h1>
-        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
-          Brutally critique your script — as many passes as needed
-        </p>
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>Script QA Engine</h1>
+            <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
+              Brutally critique your script — as many passes as needed
+            </p>
+          </div>
+          <button
+            onClick={startNewSession}
+            className="btn-secondary text-sm shrink-0"
+            title="Clear the current script and all passes — keep niche/aggressiveness/model. Past runs stay in QA History."
+          >
+            ✨ New QA Session
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-6">
