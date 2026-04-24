@@ -19,7 +19,10 @@ export function NewItemDialog({ channels, statuses, defaultChannelId, onClose, o
   const [title, setTitle] = useState('');
   const [scheduledFor, setScheduledFor] = useState('');
   const [status, setStatus] = useState(statuses[0]?.key ?? 'idea');
-  const [channelIds, setChannelIds] = useState<string[]>(defaultChannelId ? [defaultChannelId] : []);
+  // Defensive: don't treat the "__unassigned" virtual tab as a real default channel.
+  const [channelIds, setChannelIds] = useState<string[]>(
+    defaultChannelId && defaultChannelId !== '__unassigned' ? [defaultChannelId] : [],
+  );
   const [notes, setNotes] = useState('');
   const [recurrence, setRecurrence] = useState<RecurrenceRule | null>(null);
   const [submitting, setSubmitting] = useState(false);

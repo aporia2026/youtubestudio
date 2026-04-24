@@ -7,6 +7,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     await ensureScheduleSchema();
     const result = await sql`
       SELECT si.*,
+             ed.name AS editor_name,
+             ed.channel_id AS editor_channel_id,
              COALESCE(
                (SELECT json_agg(json_build_object('id', c.id, 'name', c.name, 'account_color', c.account_color))
                 FROM schedule_item_channels sic
@@ -14,7 +16,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
                 WHERE sic.item_id = si.id),
                '[]'::json
              ) AS channels
-      FROM schedule_items si WHERE si.id = ${id}
+      FROM schedule_items si
+      LEFT JOIN channel_editors ed ON ed.id = si.editor_id
+      WHERE si.id = ${id}
     `;
     if (!result.rows.length) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     return NextResponse.json({ item: result.rows[0] });
@@ -109,8 +113,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         thumbnail_winner = CASE WHEN ${hasField('thumbnail_winner')} THEN ${patch.thumbnail_winner ?? null} ELSE thumbnail_winner END,
         yt_description   = CASE WHEN ${hasField('yt_description')} THEN ${patch.yt_description ?? null} ELSE yt_description END,
         yt_tags          = CASE WHEN ${hasField('yt_tags')}       THEN ${JSON.stringify(patch.yt_tags ?? [])}::jsonb ELSE yt_tags END,
+        youtube_url      = CASE WHEN ${hasField('youtube_url')}   THEN ${patch.youtube_url ?? null}   ELSE youtube_url END,
         series_id        = CASE WHEN ${hasField('series_id')}     THEN ${patch.series_id ?? null}::uuid ELSE series_id END,
         part_number      = CASE WHEN ${hasField('part_number')}   THEN ${patch.part_number ?? null}   ELSE part_number END,
+        editor_id        = CASE WHEN ${hasField('editor_id')}     THEN ${patch.editor_id ?? null}::uuid ELSE editor_id END,
         updated_at       = NOW()
       WHERE id = ${id}
     `;

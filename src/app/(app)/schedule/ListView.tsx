@@ -22,8 +22,9 @@ function formatWhen(iso: string | null): string {
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-export function ListView({ items, statuses, onSelect, onPatch, onDelete }: Props) {
+export function ListView({ items, statuses, channels, onSelect, onPatch, onDelete }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [assigningChannels, setAssigningChannels] = useState(false);
   function toggle(id: string) {
     setSelected(s => {
       const n = new Set(s);
@@ -35,6 +36,30 @@ export function ListView({ items, statuses, onSelect, onPatch, onDelete }: Props
     await Promise.all(Array.from(selected).map(id => onPatch(id, { status })));
     toast.success(`Updated ${selected.size} items`);
     setSelected(new Set());
+  }
+  async function bulkAssignChannels(channelIds: string[], mode: 'add' | 'replace') {
+    if (channelIds.length === 0) return;
+    const res = await fetch('/api/schedule/bulk-assign-channels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_ids: Array.from(selected), channel_ids: channelIds, mode }),
+    });
+    if (!res.ok) { toast.error('Bulk assign failed'); return; }
+    // Optimistic patch so affected rows show their new channels without a full refetch;
+    // the next mutation (or a page nav) will reconcile with the server if anything drifted.
+    const resolved = channels.filter(c => channelIds.includes(c.id));
+    for (const id of selected) {
+      const it = items.find(x => x.id === id);
+      if (!it) continue;
+      const existing = it.channels ?? [];
+      const nextChannels = mode === 'replace'
+        ? resolved
+        : [...existing, ...resolved.filter(c => !existing.some(e => e.id === c.id))];
+      onPatch(id, { channels: nextChannels, channel_ids: nextChannels.map(c => c.id) } as Partial<ScheduleItem> & { channel_ids: string[] });
+    }
+    toast.success(`Assigned ${selected.size} items to ${resolved.length} channel${resolved.length === 1 ? '' : 's'}`);
+    setSelected(new Set());
+    setAssigningChannels(false);
   }
   async function bulkDelete() {
     if (!window.confirm(`Delete ${selected.size} items?`)) return;
@@ -91,6 +116,22 @@ export function ListView({ items, statuses, onSelect, onPatch, onDelete }: Props
               <option value="">Set status…</option>
               {statuses.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
             </select>
+            {channels.length > 0 && (
+              <div className="relative">
+                <button onClick={() => setAssigningChannels(v => !v)}
+                  className="text-xs px-3 py-1 rounded-md"
+                  style={{ background: 'rgba(124,58,237,0.15)', color: 'var(--accent-purple-bright)', border: '1px solid rgba(124,58,237,0.35)' }}>
+                  Assign channels ▾
+                </button>
+                {assigningChannels && (
+                  <ChannelAssignPopover
+                    channels={channels}
+                    onApply={bulkAssignChannels}
+                    onClose={() => setAssigningChannels(false)}
+                  />
+                )}
+              </div>
+            )}
             <button onClick={bulkDelete}
               className="text-xs px-3 py-1 rounded-md"
               style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}>
@@ -181,6 +222,67 @@ export function ListView({ items, statuses, onSelect, onPatch, onDelete }: Props
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function ChannelAssignPopover({ channels, onApply, onClose }: {
+  channels: Channel[];
+  onApply: (ids: string[], mode: 'add' | 'replace') => void;
+  onClose: () => void;
+}) {
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [mode, setMode] = useState<'add' | 'replace'>('add');
+  function toggle(id: string) {
+    setPicked(s => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }
+  return (
+    <div
+      onClick={e => e.stopPropagation()}
+      className="absolute left-0 top-full mt-1 z-20 w-72 p-3 rounded-lg space-y-2"
+      style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }}
+    >
+      <div className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+        Pick channels
+      </div>
+      <div className="flex flex-col gap-1 max-h-60 overflow-y-auto">
+        {channels.map(c => (
+          <label key={c.id} className="flex items-center gap-2 text-sm px-2 py-1 rounded cursor-pointer"
+            style={{ background: picked.has(c.id) ? 'rgba(124,58,237,0.12)' : 'transparent', color: 'var(--text-primary)' }}>
+            <input type="checkbox" checked={picked.has(c.id)} onChange={() => toggle(c.id)} />
+            <span className="w-2 h-2 rounded-full" style={{ background: c.account_color || '#7c3aed' }} />
+            {c.name}
+          </label>
+        ))}
+      </div>
+      <div className="flex items-center gap-3 text-xs pt-1" style={{ borderTop: '1px solid var(--border)' }}>
+        <label className="flex items-center gap-1 cursor-pointer" style={{ color: 'var(--text-primary)' }}>
+          <input type="radio" checked={mode === 'add'} onChange={() => setMode('add')} /> Add
+        </label>
+        <label className="flex items-center gap-1 cursor-pointer" style={{ color: 'var(--text-primary)' }}>
+          <input type="radio" checked={mode === 'replace'} onChange={() => setMode('replace')} /> Replace
+        </label>
+      </div>
+      <div className="flex items-center justify-end gap-2 pt-1">
+        <button onClick={onClose} className="text-xs px-2 py-1" style={{ color: 'var(--text-muted)' }}>
+          Cancel
+        </button>
+        <button
+          onClick={() => onApply(Array.from(picked), mode)}
+          disabled={picked.size === 0}
+          className="text-xs px-3 py-1 rounded-md"
+          style={{
+            background: picked.size ? 'var(--accent-purple-bright)' : 'var(--bg-tertiary)',
+            color: picked.size ? 'white' : 'var(--text-muted)',
+            opacity: picked.size ? 1 : 0.6,
+          }}>
+          Apply
+        </button>
+      </div>
     </div>
   );
 }

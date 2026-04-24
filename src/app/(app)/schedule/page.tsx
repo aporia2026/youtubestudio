@@ -10,7 +10,7 @@ import { SpreadsheetView } from './SpreadsheetView';
 import { KanbanView } from './KanbanView';
 import { ItemDetail } from './ItemDetail';
 import { NewItemDialog } from './NewItemDialog';
-import { ChannelTabs } from './ChannelTabs';
+import { ChannelTabs, UNASSIGNED_CHANNEL_ID } from './ChannelTabs';
 import { ExportMenu } from './ExportMenu';
 import { HealthWidget } from './HealthWidget';
 import { CommandPalette } from './CommandPalette';
@@ -111,11 +111,15 @@ function SchedulePage() {
     const data = await res.json();
     const all: ScheduleItem[] = data.items || [];
     const counts: Record<string, number> = { __all: all.length };
+    let unassigned = 0;
     for (const it of all) {
-      for (const c of it.channels ?? []) {
+      const channels = it.channels ?? [];
+      if (channels.length === 0) unassigned++;
+      for (const c of channels) {
         counts[c.id] = (counts[c.id] ?? 0) + 1;
       }
     }
+    counts[UNASSIGNED_CHANNEL_ID] = unassigned;
     setAllCounts(counts);
   }, []);
 
@@ -206,8 +210,9 @@ function SchedulePage() {
     });
   }, [items, groupBySeries]);
 
-  const scopeLabel = selectedChannel?.name ?? 'All channels';
-  const scopeColor = selectedChannel?.account_color ?? '#7c3aed';
+  const isUnassignedScope = channelId === UNASSIGNED_CHANNEL_ID;
+  const scopeLabel = isUnassignedScope ? 'Unassigned' : (selectedChannel?.name ?? 'All channels');
+  const scopeColor = isUnassignedScope ? '#f59e0b' : (selectedChannel?.account_color ?? '#7c3aed');
 
   return (
     <div className="min-h-screen" data-density={density} style={{ background: 'var(--bg-primary)' }}>
@@ -227,9 +232,11 @@ function SchedulePage() {
             <div>
               <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>{scopeLabel}</h1>
               <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-                {selectedChannel
-                  ? `Schedule for ${selectedChannel.name}`
-                  : 'Plan, track, and edit every video across your channels'}
+                {isUnassignedScope
+                  ? 'Videos not assigned to any channel — select and assign them in bulk from the list view'
+                  : selectedChannel
+                    ? `Schedule for ${selectedChannel.name}`
+                    : 'Plan, track, and edit every video across your channels'}
               </p>
             </div>
           </div>

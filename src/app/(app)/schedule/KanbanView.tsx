@@ -5,6 +5,7 @@ import { motion } from 'framer-motion';
 import type { ScheduleItem, ScheduleStatus } from '@/lib/schedule';
 import { statusColor, daysInStage, isStuck } from '@/lib/schedule';
 import type { Channel } from './types';
+import { EditorAvatar } from './EditorPicker';
 
 type Props = {
   items: ScheduleItem[];
@@ -171,17 +172,30 @@ export function KanbanView({ items, statuses, channels, onSelect, onPatch }: Pro
                         <span className="px-1.5 py-0.5 rounded" title="Has thumbnail" style={{ background: 'var(--bg-secondary)' }}>🖼️</span>
                       )}
                     </div>
-                    {/* Channel chips */}
-                    {(it.channels?.length ?? 0) > 1 && (
-                      <div className="flex -space-x-1 mt-1.5">
-                        {it.channels!.slice(0, 3).map(c => (
-                          <div key={c.id}
-                            className="w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center border"
-                            style={{ background: c.account_color || '#7c3aed', color: 'white', borderColor: 'var(--bg-tertiary)' }}
-                            title={c.name}>
-                            {c.name.charAt(0).toUpperCase()}
+                    {/* Channel chips + editor avatar */}
+                    {((it.channels?.length ?? 0) > 1 || it.editor_name) && (
+                      <div className="flex items-center gap-1.5 mt-1.5">
+                        {(it.channels?.length ?? 0) > 1 && (
+                          <div className="flex -space-x-1">
+                            {it.channels!.slice(0, 3).map(c => (
+                              <div key={c.id}
+                                className="w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center border"
+                                style={{ background: c.account_color || '#7c3aed', color: 'white', borderColor: 'var(--bg-tertiary)' }}
+                                title={c.name}>
+                                {c.name.charAt(0).toUpperCase()}
+                              </div>
+                            ))}
                           </div>
-                        ))}
+                        )}
+                        {it.editor_name && (
+                          <div className="flex items-center gap-1 ml-auto" title={`Editor: ${it.editor_name}`}>
+                            <EditorAvatar
+                              name={it.editor_name}
+                              color={(it.channels ?? []).find(c => c.id === it.editor_channel_id)?.account_color ?? null}
+                              size={14}
+                            />
+                          </div>
+                        )}
                       </div>
                     )}
                   </motion.div>

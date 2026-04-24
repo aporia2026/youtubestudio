@@ -28,7 +28,11 @@ export async function GET(req: NextRequest) {
     const clauses: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
-    if (channelId) {
+    if (channelId === '__unassigned') {
+      // Items with no channel rows in the join table — orphaned entries that
+      // the per-channel tabs would otherwise hide.
+      clauses.push(`NOT EXISTS (SELECT 1 FROM schedule_item_channels sic WHERE sic.item_id = si.id)`);
+    } else if (channelId) {
       clauses.push(`EXISTS (SELECT 1 FROM schedule_item_channels sic WHERE sic.item_id = si.id AND sic.channel_id = $${idx}::uuid)`);
       values.push(channelId);
       idx++;
@@ -58,6 +62,8 @@ export async function GET(req: NextRequest) {
     const { rows } = await sql.query(
       `SELECT si.*,
               s.title AS series_title,
+              ed.name AS editor_name,
+              ed.channel_id AS editor_channel_id,
               COALESCE(
                 (SELECT json_agg(json_build_object('id', c.id, 'name', c.name, 'account_color', c.account_color))
                  FROM schedule_item_channels sic
@@ -67,6 +73,7 @@ export async function GET(req: NextRequest) {
               ) AS channels
        FROM schedule_items si
        LEFT JOIN series s ON s.id = si.series_id
+       LEFT JOIN channel_editors ed ON ed.id = si.editor_id
        ${where}
        ORDER BY si.scheduled_for NULLS LAST, si.position, si.created_at DESC`,
       values,

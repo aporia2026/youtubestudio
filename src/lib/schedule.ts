@@ -50,6 +50,23 @@ export type ScheduleItem = {
   series_id?: string | null;
   series_title?: string | null;
   part_number?: number | null;
+  // Assigned editor (picked from one of the linked channels' rosters).
+  // editor_name is denormalized onto the row so card chips don't need a join.
+  editor_id?: string | null;
+  editor_name?: string | null;
+  editor_channel_id?: string | null;
+  // Once published, the YouTube URL lets us pull title/description back.
+  youtube_url?: string | null;
+};
+
+export type ChannelEditor = {
+  id: string;
+  channel_id: string;
+  name: string;
+  email: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 /** How long the item has been stuck in its current stage, or null if no stage_entered_at. */

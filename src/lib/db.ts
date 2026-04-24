@@ -450,6 +450,26 @@ export async function ensureScheduleSchema() {
     // Final YouTube metadata captured on the schedule item (for publish handoff).
     try { await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS yt_description TEXT`; } catch {}
     try { await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS yt_tags JSONB DEFAULT '[]'`; } catch {}
+    // Published-video URL so we can pull title/description back from YouTube.
+    try { await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS youtube_url TEXT`; } catch {}
+
+    // Editor roster — per-channel list of people who edit videos. A schedule
+    // item points to one editor (nullable). Deleting an editor unlinks rather
+    // than cascades so historical items don't disappear.
+    await sql`
+      CREATE TABLE IF NOT EXISTS channel_editors (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        channel_id UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        email TEXT,
+        notes TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_channel_editors_channel ON channel_editors(channel_id)`; } catch {}
+    try { await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS editor_id UUID REFERENCES channel_editors(id) ON DELETE SET NULL`; } catch {}
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_schedule_items_editor ON schedule_items(editor_id)`; } catch {}
 
     // Stage-transition checklist templates (per channel + status).
     await sql`

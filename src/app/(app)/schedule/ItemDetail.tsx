@@ -13,6 +13,7 @@ import { ChecklistSection } from './ChecklistSection';
 import { ThumbnailSlots } from './ThumbnailSlots';
 import { DependenciesSection } from './DependenciesSection';
 import { SeriesPicker } from '@/components/ui/SeriesPicker';
+import { EditorPicker } from './EditorPicker';
 
 type Props = {
   item: ScheduleItem;
@@ -318,6 +319,14 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
                 </div>
               </Field>
 
+              <Field label="Editor">
+                <EditorPicker
+                  linkedChannels={(item.channels ?? []).map(c => ({ id: c.id, name: c.name, account_color: c.account_color }))}
+                  selectedEditorId={item.editor_id ?? null}
+                  onChange={editorId => onPatch(item.id, { editor_id: editorId })}
+                />
+              </Field>
+
               <Field label="Series">
                 <SeriesPicker
                   seriesId={item.series_id ?? null}
@@ -387,6 +396,45 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
                   className="w-full px-3 py-2 rounded-md text-sm resize-y"
                   style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
                 />
+              </Field>
+
+              <Field label="YouTube URL (after publishing)">
+                <div className="flex gap-2">
+                  <input
+                    defaultValue={item.youtube_url ?? ''}
+                    placeholder="https://www.youtube.com/watch?v=…"
+                    onBlur={e => {
+                      const v = e.currentTarget.value.trim() || null;
+                      if (v !== (item.youtube_url ?? null)) onPatch(item.id, { youtube_url: v });
+                    }}
+                    className="flex-1 px-3 py-2 rounded-md text-sm"
+                    style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+                  />
+                  <button
+                    onClick={async () => {
+                      if (!item.youtube_url) { toast.error('Save a YouTube URL first'); return; }
+                      toast.message('Pulling from YouTube…');
+                      const res = await fetch(`/api/schedule/${item.id}/pull-youtube-metadata`, { method: 'POST' });
+                      const data = await res.json();
+                      if (!res.ok) { toast.error(data.error || 'Pull failed'); return; }
+                      onPatch(item.id, {
+                        title: data.title,
+                        yt_description: data.description,
+                        yt_tags: data.tags,
+                      });
+                      toast.success('Pulled title, description, and tags from YouTube');
+                    }}
+                    disabled={!item.youtube_url}
+                    className="text-xs px-3 py-2 rounded-md whitespace-nowrap"
+                    style={{
+                      background: item.youtube_url ? 'rgba(239,68,68,0.15)' : 'var(--bg-tertiary)',
+                      color: item.youtube_url ? '#ef4444' : 'var(--text-muted)',
+                      border: `1px solid ${item.youtube_url ? 'rgba(239,68,68,0.3)' : 'var(--border)'}`,
+                      opacity: item.youtube_url ? 1 : 0.6,
+                    }}>
+                    Pull metadata
+                  </button>
+                </div>
               </Field>
 
               <Field label="Links">
