@@ -1,8 +1,12 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { Suspense, useState, useRef, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
+import type { ScheduleItem } from '@/lib/schedule';
+import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule } from '@/lib/schedule-link';
+import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
 import { ExportScript } from '@/components/ui/ExportScript';
@@ -80,9 +84,26 @@ const CATEGORY_LABELS: Record<string, { label: string; emoji: string }> = {
   logic_coherence: { label: 'Logic & Flow', emoji: '🔗' },
 };
 
-export default function QAPage() {
+export default function QAPageWrapper() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>}>
+      <QAPage />
+    </Suspense>
+  );
+}
+
+function QAPage() {
+  const search = useSearchParams();
+  const scheduleItemId = getScheduleLinkId(search);
+  const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
+  const [schedulePrefilled, setSchedulePrefilled] = useState(false);
+
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('qa-engine'));
   const [script, setScript] = useState('');
+  // The video title/topic this QA session is for. Surfaced in the header so the user
+  // always knows which script they're reviewing. Set from generator handoff, schedule
+  // link, active draft, or session backup.
+  const [topic, setTopic] = useState('');
   const [niche, setNiche] = useState('Cybersecurity & Antivirus');
   const [aggressiveness, setAggressiveness] = useState<Aggressiveness>('brutal');
   const [running, setRunning] = useState(false);
@@ -115,6 +136,36 @@ export default function QAPage() {
   //   (b) Fast-Refresh re-runs of this mount effect can't clobber in-memory state that
   //       was accumulated after the original mount — the closure's initial `script`/`results`
   //       are stale, but the functional-setter `prev` is always current.
+  // Schedule-link preload: if launched with ?scheduleItemId, pull the linked
+  // item's script (via its project) so the QA screen starts populated.
+  useEffect(() => {
+    if (!scheduleItemId || schedulePrefilled) return;
+    let cancelled = false;
+    (async () => {
+      const item = await fetchScheduleItem(scheduleItemId);
+      if (cancelled || !item) return;
+      setScheduleItem(item);
+      setSchedulePrefilled(true);
+      setNiche(curr => curr || item.pillar || curr);
+      if (item.title) setTopic(curr => curr || item.title);
+      // Pull the active script from the linked project, if any, so the user
+      // doesn't have to paste it back in.
+      if (item.project_id && !script) {
+        try {
+          const res = await fetch(`/api/projects/${item.project_id}/scripts`);
+          const data = await res.json();
+          type ScriptRow = { id: string; content: string; is_active?: boolean };
+          const list: ScriptRow[] = data.scripts ?? [];
+          const active = list.find(s => s.id === item.script_id) ?? list.find(s => s.is_active) ?? list[0];
+          if (active?.content) setScript(prev => prev || active.content);
+        } catch { /* best-effort preload */ }
+      }
+    })();
+    return () => { cancelled = true; };
+    // `script` intentionally omitted from deps — we only peek at its initial value on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scheduleItemId, schedulePrefilled]);
+
   useEffect(() => {
     setNicheHints(getRecentNiches());
     let hadPrefill = false;
@@ -125,6 +176,7 @@ export default function QAPage() {
         const data = JSON.parse(prefill);
         if (data.script) { setScript(data.script); hadPrefill = true; }
         if (data.niche) setNiche(data.niche);
+        if (data.topic) setTopic(data.topic);
         if (data.constraints) setConstraints({ ...EMPTY_CONSTRAINTS, ...data.constraints });
       }
     } catch {}
@@ -139,6 +191,7 @@ export default function QAPage() {
           const s = JSON.parse(backup) as {
             script?: string;
             niche?: string;
+            topic?: string;
             aggressiveness?: Aggressiveness;
             results?: QAResult[];
             activeResult?: number;
@@ -153,6 +206,7 @@ export default function QAPage() {
           if (s && s.ts && Date.now() - s.ts < 24 * 60 * 60 * 1000) {
             if (s.script) setScript(prev => prev || s.script!);
             if (s.niche) setNiche(prev => prev || s.niche!);
+            if (s.topic) setTopic(prev => prev || s.topic!);
             if (s.aggressiveness) setAggressiveness(prev => prev === 'brutal' ? s.aggressiveness! : prev);
             if (s.results?.length) {
               setResults(prev => prev.length ? prev : s.results!);
@@ -177,6 +231,8 @@ export default function QAPage() {
     try {
       const active = getActiveDraft();
       if (active?.projectId) setProjectId(prev => prev || active.projectId!);
+      const draftTitle = active?.title || active?.topic;
+      if (draftTitle) setTopic(prev => prev || draftTitle);
     } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -190,7 +246,7 @@ export default function QAPage() {
     const t = setTimeout(() => {
       try {
         localStorage.setItem('qa_session_backup', JSON.stringify({
-          script, niche, aggressiveness,
+          script, niche, topic, aggressiveness,
           results, activeResult, fixedScript, passNumber,
           projectId, scriptId, constraints,
           ts: Date.now(),
@@ -494,6 +550,23 @@ export default function QAPage() {
         saveDraft({ ...activeDraft, step: 'qa', qaScore: data.result.overall_score, qaVerdict: data.result.verdict });
       }
       toast.success(`QA Pass ${passNumber} complete! Score: ${data.result.overall_score}/100`);
+
+      // Write back to the linked schedule item so the card surfaces the latest
+      // QA score + verdict. QA is advisory so no status auto-advance.
+      if (scheduleItemId) {
+        writeBackToSchedule(scheduleItemId, {}, {
+          customFieldsMerge: {
+            latest_qa: {
+              score: data.result.overall_score,
+              verdict: data.result.verdict,
+              pass_count: newResults.length,
+              ran_at: new Date().toISOString(),
+              model_id: modelId,
+              aggressiveness,
+            },
+          },
+        });
+      }
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'QA analysis failed');
     } finally {
@@ -538,6 +611,7 @@ export default function QAPage() {
 
   return (
     <div className="p-8 max-w-7xl mx-auto">
+      {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="QA Engine" />}
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">

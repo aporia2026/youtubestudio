@@ -1,8 +1,12 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { Suspense, useState, useEffect, useRef, useCallback } from 'react';
+import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
+import type { ScheduleItem } from '@/lib/schedule';
+import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule } from '@/lib/schedule-link';
+import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import {
@@ -442,7 +446,20 @@ function ImageCell({ state, onRetry }: { state: RowImageState; onRetry: () => vo
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
-export default function ProductionDocPage() {
+export default function ProductionDocPageWrapper() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>}>
+      <ProductionDocPage />
+    </Suspense>
+  );
+}
+
+function ProductionDocPage() {
+  const search = useSearchParams();
+  const scheduleItemId = getScheduleLinkId(search);
+  const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
+  const [schedulePrefilled, setSchedulePrefilled] = useState(false);
+
   // — Inputs
   const [script, setScript] = useState('');
   const [niche, setNiche] = useState('');
@@ -489,6 +506,32 @@ export default function ProductionDocPage() {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
   }, []);
+
+  // Schedule-link preload: topic/niche from the item, script from its project.
+  useEffect(() => {
+    if (!scheduleItemId || schedulePrefilled) return;
+    let cancelled = false;
+    (async () => {
+      const item = await fetchScheduleItem(scheduleItemId);
+      if (cancelled || !item) return;
+      setScheduleItem(item);
+      setSchedulePrefilled(true);
+      setTopic(curr => curr || item.title || '');
+      setNiche(curr => curr || item.pillar || '');
+      if (item.project_id) {
+        try {
+          const res = await fetch(`/api/projects/${item.project_id}/scripts`);
+          const data = await res.json();
+          type ScriptRow = { id: string; content: string; is_active?: boolean };
+          const list: ScriptRow[] = data.scripts ?? [];
+          const active = list.find(s => s.id === item.script_id) ?? list.find(s => s.is_active) ?? list[0];
+          if (active?.content) setScript(prev => prev || active.content);
+        } catch { /* best-effort */ }
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scheduleItemId, schedulePrefilled]);
 
   // Restore last result from localStorage after mount (useEffect so SSR is unaffected)
   useEffect(() => {
@@ -939,6 +982,24 @@ export default function ProductionDocPage() {
       setHistoryItems(getProductionDocHistory());
       appendLog(`✓ ${result.rows.length} shots generated`);
       toast.success(`Production doc ready — ${result.rows.length} shots`);
+
+      // Write back to the linked schedule item so the schedule surfaces that a
+      // production doc exists (history is localStorage-scoped; the history
+      // entry ID here lets the card round-trip back to this doc).
+      if (scheduleItemId) {
+        writeBackToSchedule(scheduleItemId, {}, {
+          customFieldsMerge: {
+            latest_production_doc: {
+              history_entry_id: savedEntry.id,
+              shot_count: result.rows.length,
+              total_duration: result.total_duration,
+              style_preset: stylePreset,
+              generated_at: new Date().toISOString(),
+              model_id: modelId,
+            },
+          },
+        });
+      }
       setTimeout(() => tableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
 
       // Fire-and-forget image generation — passes the same abort signal so Stop also cancels images
@@ -1098,6 +1159,7 @@ export default function ProductionDocPage() {
 
   return (
     <div className="p-6 max-w-full">
+      {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Production Doc" />}
 
       {/* ── Header */}
       <div className="mb-6">

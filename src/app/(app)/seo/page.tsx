@@ -1,8 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { Suspense, useState, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
+import type { ScheduleItem } from '@/lib/schedule';
+import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule } from '@/lib/schedule-link';
+import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { DraftsBanner } from '@/components/ui/DraftsBanner';
@@ -58,7 +62,20 @@ interface SeoResult {
   seo_analysis: SeoAnalysis;
 }
 
-export default function SeoPage() {
+export default function SeoPageWrapper() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>}>
+      <SeoPage />
+    </Suspense>
+  );
+}
+
+function SeoPage() {
+  const search = useSearchParams();
+  const scheduleItemId = getScheduleLinkId(search);
+  const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
+  const [schedulePrefilled, setSchedulePrefilled] = useState(false);
+
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('seo-optimizer'));
   const [topic, setTopic] = useState('');
   const [topicHints, setTopicHints] = useState<string[]>([]);
@@ -73,6 +90,34 @@ export default function SeoPage() {
   const [expandedTitle, setExpandedTitle] = useState<number | null>(null);
   const [historyItems, setHistoryItems] = useState<SeoHistoryEntry[]>(() => getSeoHistory());
   const [draftId, setDraftId] = useState<string | null>(() => getActiveDraft()?.id || null);
+
+  // Schedule-link preload: pull topic / niche / script context from the
+  // linked item so the user doesn't retype state they already recorded.
+  useEffect(() => {
+    if (!scheduleItemId || schedulePrefilled) return;
+    let cancelled = false;
+    (async () => {
+      const item = await fetchScheduleItem(scheduleItemId);
+      if (cancelled || !item) return;
+      setScheduleItem(item);
+      setSchedulePrefilled(true);
+      setTopic(curr => curr || item.title || '');
+      setNiche(curr => curr || item.pillar || '');
+      setExistingTitle(curr => curr || item.title || '');
+      if (item.project_id) {
+        try {
+          const res = await fetch(`/api/projects/${item.project_id}/scripts`);
+          const data = await res.json();
+          type ScriptRow = { id: string; content: string; is_active?: boolean };
+          const list: ScriptRow[] = data.scripts ?? [];
+          const active = list.find(s => s.id === item.script_id) ?? list.find(s => s.is_active) ?? list[0];
+          if (active?.content) setScript(prev => prev || active.content);
+        } catch { /* best-effort */ }
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scheduleItemId, schedulePrefilled]);
 
   useEffect(() => {
     setTopicHints(getRecentTopics());
@@ -123,6 +168,33 @@ export default function SeoPage() {
       // a past entry fully rehydrates the results panel, not just the form.
       const titles = (data.result as { titles?: Array<{ title?: string; score?: number }> }).titles || [];
       const bestTitle = [...titles].sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+
+      // Write back to the linked schedule item — stamp the generated description
+      // and tags onto the item so the publish step can copy them straight through.
+      // Title is only updated when the user explicitly picks one (see below),
+      // never auto-overwritten from the top-ranked suggestion.
+      if (scheduleItemId) {
+        const desc = (data.result as { description?: { full_description?: string; above_fold?: string } }).description;
+        const fullDesc = desc?.full_description || desc?.above_fold || '';
+        const tagStrings: string[] = ((data.result as { tags?: Array<{ tag?: string }> }).tags ?? [])
+          .map(t => t.tag)
+          .filter((t): t is string => !!t);
+        writeBackToSchedule(scheduleItemId, {
+          yt_description: fullDesc || undefined,
+          yt_tags: tagStrings,
+        }, {
+          customFieldsMerge: {
+            latest_seo: {
+              best_title: bestTitle?.title ?? null,
+              best_score: bestTitle?.score ?? null,
+              titles_count: titles.length,
+              tags_count: tagStrings.length,
+              ran_at: new Date().toISOString(),
+              model_id: modelId,
+            },
+          },
+        });
+      }
       saveSeoEntry({
         topic, niche, modelId,
         titlesCount: titles.length,
@@ -188,6 +260,7 @@ export default function SeoPage() {
 
   return (
     <div className="p-8 max-w-6xl mx-auto">
+      {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="SEO Optimizer" />}
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">
@@ -377,6 +450,18 @@ export default function SeoPage() {
                       <div key={i} className="glass rounded-xl p-4">
                         <div className="flex items-start justify-between gap-3 mb-2">
                           <p className="text-base font-semibold flex-1" style={{ color: 'var(--text-primary)' }}>{t.title}</p>
+                          {scheduleItemId && (
+                            <button
+                              className="btn-secondary text-xs px-2 py-1 shrink-0"
+                              onClick={() => {
+                                writeBackToSchedule(scheduleItemId, { title: t.title });
+                                toast.success('Title saved to schedule item');
+                              }}
+                              title="Use this title on the linked schedule item"
+                            >
+                              Use title
+                            </button>
+                          )}
                           <button
                             className="btn-secondary text-xs px-2 py-1 shrink-0"
                             onClick={() => copyText(t.title, 'Title copied!')}

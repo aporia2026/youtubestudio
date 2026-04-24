@@ -1,8 +1,12 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { Suspense, useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
+import type { ScheduleItem } from '@/lib/schedule';
+import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, SCHEDULE_LINK_PARAM } from '@/lib/schedule-link';
+import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { ScriptVoiceoverPanel } from '@/components/ui/ScriptVoiceoverPanel';
 import { getFeatureDefaultModelId, getModelById } from '@/lib/ai-models';
@@ -50,7 +54,20 @@ interface VideoRef {
   loading: boolean;
 }
 
-export default function GeneratorPage() {
+export default function GeneratorPageWrapper() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>}>
+      <GeneratorPage />
+    </Suspense>
+  );
+}
+
+function GeneratorPage() {
+  const search = useSearchParams();
+  const scheduleItemId = getScheduleLinkId(search);
+  const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
+  const [schedulePrefilled, setSchedulePrefilled] = useState(false);
+
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('script-generator'));
   const [topic, setTopic] = useState('');
   const [topicHints, setTopicHints] = useState<string[]>([]);
@@ -353,6 +370,24 @@ export default function GeneratorPage() {
     }
   }
 
+  // Load the linked schedule item once, then prefill empty fields from it so
+  // the user doesn't retype the title / topic / context they already captured
+  // in the schedule. Manual edits made after the first prefill win.
+  useEffect(() => {
+    if (!scheduleItemId || schedulePrefilled) return;
+    let cancelled = false;
+    (async () => {
+      const item = await fetchScheduleItem(scheduleItemId);
+      if (cancelled || !item) return;
+      setScheduleItem(item);
+      setSchedulePrefilled(true);
+      setTopic(curr => curr || item.title || '');
+      setNiche(curr => curr || item.pillar || '');
+      setContext(curr => curr || item.notes || '');
+    })();
+    return () => { cancelled = true; };
+  }, [scheduleItemId, schedulePrefilled]);
+
   useEffect(() => {
     setTopicHints(getRecentTopics());
     // Read prefill FIRST (before async fetch can overwrite)
@@ -588,6 +623,7 @@ export default function GeneratorPage() {
 
   return (
     <div className="p-8 max-w-6xl mx-auto">
+      {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Script Generator" />}
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">
@@ -1216,8 +1252,23 @@ export default function GeneratorPage() {
                   )}
                 </div>
 
-                {/* Save as Project */}
-                <SaveAsProject script={script} niche={niche} topic={topic} modelId={modelId} />
+                {/* Save as Project — also write back to the linked schedule item
+                    (script_id / project_id / status idea → scripting). */}
+                <SaveAsProject
+                  script={script}
+                  niche={niche}
+                  topic={topic}
+                  modelId={modelId}
+                  onSaved={(projectId, scriptId) => {
+                    if (scheduleItemId) {
+                      writeBackToSchedule(
+                        scheduleItemId,
+                        { project_id: projectId, ...(scriptId ? { script_id: scriptId } : {}) },
+                        { autoAdvanceTo: 'scripting', advanceMessage: 'Moved to Scripting' },
+                      );
+                    }
+                  }}
+                />
 
                 {/* Next steps */}
                 <div className="flex gap-2">
@@ -1226,8 +1277,10 @@ export default function GeneratorPage() {
                       // Update draft to QA step
                       if (draftId) saveDraft({ id: draftId, title: topic, niche, step: 'qa', topic, tone, style, duration, modelId, script, wordCount: countWords(script), constraints });
                       // Include constraints in the prefill so QA honors the same exclusions.
-                      localStorage.setItem('qa_prefill', JSON.stringify({ script, niche, constraints }));
-                      window.location.href = '/qa?from=generator';
+                      // `topic` rides along so QA can show the user which script/title they're working on.
+                      localStorage.setItem('qa_prefill', JSON.stringify({ script, niche, constraints, topic }));
+                      const sched = scheduleItemId ? `&${SCHEDULE_LINK_PARAM}=${scheduleItemId}` : '';
+                      window.location.href = `/qa?from=generator${sched}`;
                     }}
                     className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center"
                     style={{ justifyContent: 'center' }}
@@ -1237,7 +1290,8 @@ export default function GeneratorPage() {
                   <button
                     onClick={() => {
                       localStorage.setItem('voiceover_prefill', JSON.stringify({ script, niche }));
-                      window.location.href = '/voiceover?from=generator';
+                      const sched = scheduleItemId ? `&${SCHEDULE_LINK_PARAM}=${scheduleItemId}` : '';
+                      window.location.href = `/voiceover?from=generator${sched}`;
                     }}
                     className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center"
                     style={{ justifyContent: 'center' }}
@@ -1247,7 +1301,8 @@ export default function GeneratorPage() {
                   <button
                     onClick={() => {
                       localStorage.setItem('seo_prefill', JSON.stringify({ topic, niche, script }));
-                      window.location.href = '/seo?from=generator';
+                      const sched = scheduleItemId ? `&${SCHEDULE_LINK_PARAM}=${scheduleItemId}` : '';
+                      window.location.href = `/seo?from=generator${sched}`;
                     }}
                     className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
                   >
@@ -1256,7 +1311,8 @@ export default function GeneratorPage() {
                   <button
                     onClick={() => {
                       localStorage.setItem('thumbnails_prefill', JSON.stringify({ title: topic, niche, description: script?.slice(0, 500) }));
-                      window.location.href = '/thumbnails?from=generator';
+                      const sched = scheduleItemId ? `&${SCHEDULE_LINK_PARAM}=${scheduleItemId}` : '';
+                      window.location.href = `/thumbnails?from=generator${sched}`;
                     }}
                     className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
                   >

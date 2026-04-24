@@ -14,6 +14,7 @@ import { ThumbnailSlots } from './ThumbnailSlots';
 import { DependenciesSection } from './DependenciesSection';
 import { SeriesPicker } from '@/components/ui/SeriesPicker';
 import { EditorPicker } from './EditorPicker';
+import { SCHEDULE_LINK_PARAM } from '@/lib/schedule-link';
 
 type Props = {
   item: ScheduleItem;
@@ -237,6 +238,23 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
             style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}>
             📺 Prepare for YouTube
           </button>
+        </div>
+
+        {/* Send to another feature — propagates the scheduleItemId so the
+            target page can preload context and write back on completion. */}
+        <div className="flex items-center gap-1 px-4 pt-2 pb-1 text-xs overflow-x-auto"
+          style={{ borderBottom: '1px solid var(--border)' }}>
+          <span className="text-[10px] uppercase tracking-wider font-semibold shrink-0 mr-1" style={{ color: 'var(--text-muted)' }}>
+            Send to
+          </span>
+          <SendToButton label="🧠 Script" href={`/generator?${SCHEDULE_LINK_PARAM}=${item.id}`} />
+          <SendToButton label="🔬 QA"     href={`/qa?${SCHEDULE_LINK_PARAM}=${item.id}`} disabled={!item.project_id}
+            title={item.project_id ? 'Open QA Engine with this item linked' : 'Generate or paste a script first'} />
+          <SendToButton label="🎬 Production Doc" href={`/production-doc?${SCHEDULE_LINK_PARAM}=${item.id}`} />
+          <SendToButton label="🔍 SEO" href={`/seo?${SCHEDULE_LINK_PARAM}=${item.id}`} />
+          <SendToButton label="🎙️ Voiceover" href={`/voiceover?${SCHEDULE_LINK_PARAM}=${item.id}`} disabled={!item.project_id}
+            title={item.project_id ? 'Open Voiceover with this item linked' : 'Link a script first'} />
+          <SendToButton label="🎨 Thumbnail" href={`/thumbnails?${SCHEDULE_LINK_PARAM}=${item.id}`} />
         </div>
 
         {titleSuggestions && (
@@ -516,6 +534,25 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
       </motion.aside>
     </AnimatePresence>
   );
+}
+
+function SendToButton({ label, href, disabled, title }: { label: string; href: string; disabled?: boolean; title?: string }) {
+  const body = (
+    <span
+      className="flex items-center gap-1 px-2 py-1 rounded shrink-0 whitespace-nowrap"
+      style={{
+        background: disabled ? 'var(--bg-tertiary)' : 'rgba(124,58,237,0.08)',
+        color: disabled ? 'var(--text-muted)' : 'var(--accent-purple-bright)',
+        border: `1px solid ${disabled ? 'var(--border)' : 'rgba(124,58,237,0.25)'}`,
+        opacity: disabled ? 0.55 : 1,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+      }}
+    >
+      {label}
+    </span>
+  );
+  if (disabled) return <span title={title}>{body}</span>;
+  return <Link href={href} title={title}>{body}</Link>;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

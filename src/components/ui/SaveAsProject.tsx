@@ -8,7 +8,8 @@ interface SaveAsProjectProps {
   niche: string;
   topic: string;
   modelId?: string;
-  onSaved?: (projectId: string) => void;
+  /** Receives ids for both the project row and the initial script version (when a script was sent with the save). */
+  onSaved?: (projectId: string, scriptId: string | null) => void;
   className?: string;
   variant?: 'primary' | 'secondary';
   label?: string;
@@ -39,7 +40,8 @@ export function SaveAsProject({ script, niche, topic, modelId, onSaved, classNam
       toast.success('Project saved!');
       setOpen(false);
       const id = data.project?.id || data.id;
-      if (id) onSaved?.(id);
+      const scriptId: string | null = data.script?.id ?? null;
+      if (id) onSaved?.(id, scriptId);
     } catch {
       toast.error('Failed to save project');
     } finally {
