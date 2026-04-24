@@ -240,6 +240,10 @@ export interface QAHistoryEntry {
   overallScore: number;
   verdict: string;
   passCount: number;
+  // Full payload needed to actually resume a session. Older entries written
+  // before these fields existed are restored from `scriptPreview` only.
+  script?: string;
+  result?: unknown;
 }
 
 const QA_KEY = 'qa_history';

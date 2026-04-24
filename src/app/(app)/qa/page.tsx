@@ -450,7 +450,8 @@ export default function QAPage() {
       setResults(newResults);
       setActiveResult(newResults.length - 1);
       setPassNumber(p => p + 1);
-      // Save to QA history
+      // Save to QA history — includes full script + the full QAResult for this
+      // pass so clicking a history entry can actually resume the session.
       saveQAEntry({
         niche,
         aggressiveness,
@@ -459,6 +460,8 @@ export default function QAPage() {
         overallScore: data.result.overall_score,
         verdict: data.result.verdict || '',
         passCount: newResults.length,
+        script,
+        result: data.result,
       });
       setQaHistory(getQAHistory());
       // Auto-save draft
@@ -1173,13 +1176,41 @@ export default function QAPage() {
         }))}
         onRestore={id => {
           const entry = qaHistory.find(e => e.id === id);
-          if (entry) {
-            setNiche(entry.niche);
-            const validAgg: Aggressiveness[] = ['standard', 'brutal', 'nuclear'];
-            if (validAgg.includes(entry.aggressiveness as Aggressiveness)) {
-              setAggressiveness(entry.aggressiveness as Aggressiveness);
-            }
+          if (!entry) return;
+          // Basic config.
+          setNiche(entry.niche);
+          const validAgg: Aggressiveness[] = ['standard', 'brutal', 'nuclear'];
+          if (validAgg.includes(entry.aggressiveness as Aggressiveness)) {
+            setAggressiveness(entry.aggressiveness as Aggressiveness);
           }
+          if (entry.modelId) setModelId(entry.modelId);
+
+          // Script: new entries carry the full text; older entries only have
+          // the 300-char preview, which we still surface so the user isn't
+          // left with a blank textarea on restore.
+          if (entry.script) {
+            setScript(entry.script);
+          } else if (entry.scriptPreview) {
+            setScript(entry.scriptPreview);
+            toast.message('Restored config only — this entry predates full-script history.');
+          }
+
+          // QA result: load the pass that was stored with this entry as the
+          // only/active result so the user can see what was said and re-run
+          // more passes on top.
+          if (entry.result) {
+            setResults([entry.result as QAResult]);
+            setActiveResult(0);
+            setPassNumber(Math.max(entry.passCount + 1, 1));
+          } else {
+            // No stored result — clear any stale display.
+            setResults([]);
+            setActiveResult(0);
+            setPassNumber(Math.max(entry.passCount + 1, 1));
+          }
+          setApprovedFixes(new Set());
+          setFixedScript('');
+          toast.success('Session restored');
         }}
         onDelete={id => {
           deleteQAEntry(id);
