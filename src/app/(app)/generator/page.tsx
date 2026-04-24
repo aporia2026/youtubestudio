@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import type { ScheduleItem } from '@/lib/schedule';
 import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, SCHEDULE_LINK_PARAM } from '@/lib/schedule-link';
 import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
+import { AddToScheduleButton } from '@/components/ui/AddToScheduleButton';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { ScriptVoiceoverPanel } from '@/components/ui/ScriptVoiceoverPanel';
 import { getFeatureDefaultModelId, getModelById } from '@/lib/ai-models';
@@ -1254,21 +1255,34 @@ function GeneratorPage() {
 
                 {/* Save as Project — also write back to the linked schedule item
                     (script_id / project_id / status idea → scripting). */}
-                <SaveAsProject
-                  script={script}
-                  niche={niche}
-                  topic={topic}
-                  modelId={modelId}
-                  onSaved={(projectId, scriptId) => {
-                    if (scheduleItemId) {
-                      writeBackToSchedule(
-                        scheduleItemId,
-                        { project_id: projectId, ...(scriptId ? { script_id: scriptId } : {}) },
-                        { autoAdvanceTo: 'scripting', advanceMessage: 'Moved to Scripting' },
-                      );
-                    }
-                  }}
-                />
+                <div className="flex items-center gap-2 flex-wrap">
+                  <SaveAsProject
+                    script={script}
+                    niche={niche}
+                    topic={topic}
+                    modelId={modelId}
+                    onSaved={(projectId, scriptId) => {
+                      if (scheduleItemId) {
+                        writeBackToSchedule(
+                          scheduleItemId,
+                          { project_id: projectId, ...(scriptId ? { script_id: scriptId } : {}) },
+                          { autoAdvanceTo: 'scripting', advanceMessage: 'Moved to Scripting' },
+                        );
+                      }
+                    }}
+                  />
+                  {/* Symmetric entry point: if this generation wasn't launched
+                      from a schedule item, offer to park it in the schedule
+                      right now. Hidden once a link is active. */}
+                  {!scheduleItemId && (
+                    <AddToScheduleButton
+                      title={topic}
+                      notes={context || undefined}
+                      pillar={niche || undefined}
+                      initialStatus="scripting"
+                    />
+                  )}
+                </div>
 
                 {/* Next steps */}
                 <div className="flex gap-2">

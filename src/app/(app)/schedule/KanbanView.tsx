@@ -171,6 +171,39 @@ export function KanbanView({ items, statuses, channels, onSelect, onPatch }: Pro
                       {(it.thumbnail_a_url || it.thumbnail_b_url) && (
                         <span className="px-1.5 py-0.5 rounded" title="Has thumbnail" style={{ background: 'var(--bg-secondary)' }}>🖼️</span>
                       )}
+                      {(() => {
+                        // Feature run markers. custom_fields is JSONB so these keys may
+                        // be absent — reading through a narrow lens keeps TS happy.
+                        const cf = (it.custom_fields ?? {}) as Record<string, unknown>;
+                        const qa = cf.latest_qa as { score?: number } | undefined;
+                        const hasProdDoc = !!cf.latest_production_doc;
+                        const seo = cf.latest_seo as { best_score?: number } | undefined;
+                        const youtube = it.youtube_url;
+                        return (
+                          <>
+                            {typeof qa?.score === 'number' && (
+                              <span
+                                className="px-1.5 py-0.5 rounded"
+                                title={`Latest QA score: ${qa.score}/100`}
+                                style={{
+                                  background: qa.score >= 80 ? 'rgba(16,185,129,0.15)' : qa.score >= 60 ? 'rgba(245,158,11,0.15)' : 'rgba(239,68,68,0.15)',
+                                  color:      qa.score >= 80 ? '#10b981'               : qa.score >= 60 ? '#f59e0b'               : '#ef4444',
+                                }}>
+                                🔬 {qa.score}
+                              </span>
+                            )}
+                            {hasProdDoc && (
+                              <span className="px-1.5 py-0.5 rounded" title="Has production doc" style={{ background: 'var(--bg-secondary)' }}>🎬</span>
+                            )}
+                            {seo && (
+                              <span className="px-1.5 py-0.5 rounded" title={`SEO optimized${typeof seo.best_score === 'number' ? ` · top score ${seo.best_score}` : ''}`} style={{ background: 'rgba(6,182,212,0.15)', color: '#06b6d4' }}>🔍</span>
+                            )}
+                            {youtube && (
+                              <span className="px-1.5 py-0.5 rounded" title="Published on YouTube" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>📺</span>
+                            )}
+                          </>
+                        );
+                      })()}
                     </div>
                     {/* Channel chips + editor avatar */}
                     {((it.channels?.length ?? 0) > 1 || it.editor_name) && (
