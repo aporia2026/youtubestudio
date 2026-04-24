@@ -109,6 +109,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         thumbnail_winner = CASE WHEN ${hasField('thumbnail_winner')} THEN ${patch.thumbnail_winner ?? null} ELSE thumbnail_winner END,
         yt_description   = CASE WHEN ${hasField('yt_description')} THEN ${patch.yt_description ?? null} ELSE yt_description END,
         yt_tags          = CASE WHEN ${hasField('yt_tags')}       THEN ${JSON.stringify(patch.yt_tags ?? [])}::jsonb ELSE yt_tags END,
+        series_id        = CASE WHEN ${hasField('series_id')}     THEN ${patch.series_id ?? null}::uuid ELSE series_id END,
+        part_number      = CASE WHEN ${hasField('part_number')}   THEN ${patch.part_number ?? null}   ELSE part_number END,
         updated_at       = NOW()
       WHERE id = ${id}
     `;

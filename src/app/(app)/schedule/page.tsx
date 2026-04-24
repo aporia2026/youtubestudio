@@ -20,6 +20,7 @@ import { SavedViewsMenu } from './SavedViewsMenu';
 import { ChecklistTemplatesDialog } from './ChecklistTemplatesDialog';
 import type { Channel } from './types';
 import type { ScheduleItem, ScheduleStatus } from '@/lib/schedule';
+import { listSeries, type Series } from '@/lib/series';
 
 type ViewMode = 'list' | 'calendar' | 'spreadsheet' | 'kanban';
 
@@ -49,12 +50,15 @@ function SchedulePage() {
   const view: ViewMode = ['list', 'calendar', 'spreadsheet', 'kanban'].includes(viewParam) ? viewParam : 'kanban';
   const statusFilter = search.get('status');
   const searchText = search.get('q') ?? '';
+  const seriesFilter = search.get('series');         // null | "<uuid>"
+  const groupBySeries = search.get('group') === 'series';
   const density = (search.get('density') === 'compact' ? 'compact' : 'comfortable') as 'comfortable' | 'compact';
 
   const [items, setItems] = useState<ScheduleItem[]>([]);         // channel-scoped items
   const [allCounts, setAllCounts] = useState<Record<string, number>>({}); // tabs counts across channels
   const [channels, setChannels] = useState<Channel[]>([]);
   const [statuses, setStatuses] = useState<ScheduleStatus[]>([]);
+  const [seriesList, setSeriesList] = useState<Series[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -95,10 +99,11 @@ function SchedulePage() {
     if (channelId) params.set('channel_id', channelId);
     if (statusFilter) params.set('status', statusFilter);
     if (searchText) params.set('search', searchText);
+    if (seriesFilter) params.set('series_id', seriesFilter);
     const res = await fetch(`/api/schedule?${params.toString()}`);
     const data = await res.json();
     setItems(data.items || []);
-  }, [channelId, statusFilter, searchText]);
+  }, [channelId, statusFilter, searchText, seriesFilter]);
 
   // Fetch the unfiltered set once to compute channel-tab counts, and refresh on mutations.
   const fetchCounts = useCallback(async () => {
@@ -139,6 +144,11 @@ function SchedulePage() {
     return () => controller.abort();
   }, [channelId]);
 
+  // Load series for the filter dropdown. Cheap list fetch (lib has a 30s cache).
+  useEffect(() => {
+    listSeries({ channelId: channelId || undefined }).then(setSeriesList).catch(() => {});
+  }, [channelId]);
+
   const patchItem = useCallback(async (id: string, patch: Partial<ScheduleItem> & { channel_ids?: string[] }) => {
     setItems(curr => curr.map(it => (it.id === id ? { ...it, ...patch } : it)));
     const res = await fetch(`/api/schedule/${id}`, {
@@ -175,6 +185,26 @@ function SchedulePage() {
     () => channels.find(c => c.id === channelId) ?? null,
     [channels, channelId],
   );
+
+  // When "Group by series" is on, sort items so parts of the same series sit
+  // next to each other, ordered by part_number. Keeps series-less items at the
+  // top so the default experience doesn't surprise users who haven't adopted
+  // the feature yet.
+  const displayItems = useMemo(() => {
+    if (!groupBySeries) return items;
+    return [...items].sort((a, b) => {
+      const aHas = a.series_title ? 1 : 0;
+      const bHas = b.series_title ? 1 : 0;
+      if (aHas !== bHas) return aHas - bHas; // unseried first
+      if (aHas && bHas) {
+        const byTitle = (a.series_title || '').localeCompare(b.series_title || '');
+        if (byTitle !== 0) return byTitle;
+        return (a.part_number || 0) - (b.part_number || 0);
+      }
+      // Fallback: preserve original order
+      return 0;
+    });
+  }, [items, groupBySeries]);
 
   const scopeLabel = selectedChannel?.name ?? 'All channels';
   const scopeColor = selectedChannel?.account_color ?? '#7c3aed';
@@ -265,6 +295,34 @@ function SchedulePage() {
             {statuses.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
           </select>
 
+          {seriesList.length > 0 && (
+            <select
+              value={seriesFilter ?? ''}
+              onChange={e => updateUrl({ series: e.target.value || null })}
+              className="px-3 py-1.5 rounded-md text-sm"
+              style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+              title="Filter by series"
+            >
+              <option value="">All series</option>
+              {seriesList.map(s => (
+                <option key={s.id} value={s.id}>📺 {s.title}{s.part_count ? ` (${s.part_count})` : ''}</option>
+              ))}
+            </select>
+          )}
+
+          {seriesList.length > 0 && (
+            <label className="flex items-center gap-1.5 px-2 py-1.5 rounded text-xs cursor-pointer"
+              style={{ background: groupBySeries ? 'rgba(6,182,212,0.15)' : 'var(--bg-tertiary)', color: groupBySeries ? '#06b6d4' : 'var(--text-muted)', border: '1px solid var(--border)' }}>
+              <input
+                type="checkbox"
+                checked={groupBySeries}
+                onChange={e => updateUrl({ group: e.target.checked ? 'series' : null })}
+                style={{ accentColor: '#06b6d4' }}
+              />
+              Group by series
+            </label>
+          )}
+
           <input
             type="text"
             placeholder="Search title or notes"
@@ -275,9 +333,9 @@ function SchedulePage() {
             style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
           />
 
-          {(statusFilter || searchText) && (
+          {(statusFilter || searchText || seriesFilter || groupBySeries) && (
             <button
-              onClick={() => updateUrl({ status: null, q: null })}
+              onClick={() => updateUrl({ status: null, q: null, series: null, group: null })}
               className="text-xs px-2 py-1 rounded"
               style={{ color: 'var(--text-muted)' }}
             >
@@ -335,20 +393,20 @@ function SchedulePage() {
         </div>
 
         {/* Body */}
-        <motion.div key={`${view}-${channelId ?? 'all'}`} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+        <motion.div key={`${view}-${channelId ?? 'all'}-${groupBySeries ? 'g' : 'u'}`} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
           {loading ? (
             <div className="py-20 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>
           ) : view === 'kanban' ? (
-            <KanbanView items={items} statuses={statuses} channels={channels}
+            <KanbanView items={displayItems} statuses={statuses} channels={channels}
               onSelect={setSelected} onPatch={patchItem} />
           ) : view === 'list' ? (
-            <ListView items={items} statuses={statuses} channels={channels}
+            <ListView items={displayItems} statuses={statuses} channels={channels}
               onSelect={setSelected} onPatch={patchItem} onDelete={deleteItem} />
           ) : view === 'calendar' ? (
-            <CalendarView items={items} statuses={statuses} channelId={channelId}
+            <CalendarView items={displayItems} statuses={statuses} channelId={channelId}
               onSelect={setSelected} onPatch={patchItem} />
           ) : (
-            <SpreadsheetView items={items} statuses={statuses} channels={channels}
+            <SpreadsheetView items={displayItems} statuses={statuses} channels={channels}
               onSelect={setSelected} onPatch={patchItem} onDelete={deleteItem} onRefresh={fetchItems} />
           )}
         </motion.div>

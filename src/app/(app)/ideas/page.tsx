@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId, getModelById } from '@/lib/ai-models';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
+import { SeriesPicker } from '@/components/ui/SeriesPicker';
 import { getIdeasHistory, saveIdeas, deleteIdeasEntry, clearIdeasHistory, type IdeasHistoryEntry } from '@/lib/history';
 
 // Collect every previously-generated title across all history entries —
@@ -136,6 +137,12 @@ export default function IdeasPage() {
   const [generating, setGenerating] = useState(false);
   const [ideas, setIdeas] = useState<VideoIdea[]>([]);
   const [savedIds, setSavedIds] = useState<Set<number>>(new Set());
+  // Series linkage — optional. When set, generated ideas/selected-idea will be
+  // tagged with series_id/part_number so the Script Generator can pick up the
+  // series context when this idea is promoted.
+  const [seriesId, setSeriesId] = useState<string | null>(null);
+  const [seriesTitle, setSeriesTitle] = useState<string>('');
+  const [partNumber, setPartNumber] = useState<number>(1);
 
   // Saved Ideas Library (persisted across sessions via /api/ideas GET)
   interface SavedIdeaRow {
@@ -406,11 +413,18 @@ export default function IdeasPage() {
           })),
         });
         setIdeasHistoryItems(getIdeasHistory());
-        // Auto-persist all generated ideas to the database so they survive browser resets
+        // Auto-persist all generated ideas to the database. If this generation is
+        // linked to a series, tag the ideas with series_id + part_number so the
+        // Script Generator can later pick up the right continuity context.
         fetch('/api/ideas/batch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ideas: generatedIdeas, niche }),
+          body: JSON.stringify({
+            ideas: generatedIdeas,
+            niche,
+            seriesId: seriesId || undefined,
+            partNumber: seriesId ? partNumber : undefined,
+          }),
         }).then(r => r.json()).then(result => {
           if (result.inserted > 0) setSavedIds(new Set(generatedIdeas.map((_: unknown, i: number) => i)));
         }).catch(() => { /* best-effort */ });
@@ -811,6 +825,25 @@ export default function IdeasPage() {
               <input value={redditSubs} onChange={e => setRedditSubs(e.target.value)}
                 placeholder="Subreddits (optional, e.g. cybersecurity, netsec)"
                 className="input-field mt-3" style={{ fontSize: 12, padding: '6px 10px' }} />
+            )}
+          </div>
+
+          {/* Series linkage — tag generated ideas as parts of a named series. */}
+          <div className="glass rounded-xl p-4">
+            <SeriesPicker
+              seriesId={seriesId}
+              partNumber={partNumber}
+              niche={niche}
+              onChange={({ seriesId: id, seriesTitle: t, partNumber: p }) => {
+                setSeriesId(id);
+                if (t !== undefined) setSeriesTitle(t);
+                setPartNumber(p);
+              }}
+            />
+            {seriesId && (
+              <p className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
+                Ideas generated here will be saved as Parts {partNumber}–{partNumber + count - 1} of &quot;{seriesTitle}&quot;.
+              </p>
             )}
           </div>
 

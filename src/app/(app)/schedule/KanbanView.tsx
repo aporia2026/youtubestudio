@@ -159,6 +159,11 @@ export function KanbanView({ items, statuses, channels, onSelect, onPatch }: Pro
                           #{it.pillar}
                         </span>
                       )}
+                      {it.series_title && (
+                        <span className="px-1.5 py-0.5 rounded" title={`Series: ${it.series_title}`} style={{ background: 'rgba(6,182,212,0.15)', color: '#06b6d4' }}>
+                          📺 {it.series_title}{it.part_number ? ` · Pt ${it.part_number}` : ''}
+                        </span>
+                      )}
                       {it.script_id && (
                         <span className="px-1.5 py-0.5 rounded" title="Has script" style={{ background: 'var(--bg-secondary)' }}>📝</span>
                       )}

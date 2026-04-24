@@ -12,6 +12,7 @@ import { RecurrenceEditor } from './RecurrenceEditor';
 import { ChecklistSection } from './ChecklistSection';
 import { ThumbnailSlots } from './ThumbnailSlots';
 import { DependenciesSection } from './DependenciesSection';
+import { SeriesPicker } from '@/components/ui/SeriesPicker';
 
 type Props = {
   item: ScheduleItem;
@@ -315,6 +316,24 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
                     </div>
                   )}
                 </div>
+              </Field>
+
+              <Field label="Series">
+                <SeriesPicker
+                  seriesId={item.series_id ?? null}
+                  partNumber={item.part_number ?? 1}
+                  onChange={({ seriesId, seriesTitle, partNumber }) => {
+                    // Forward series_title into the optimistic patch too so the
+                    // card badge updates immediately; PATCH server-side ignores
+                    // it (no column update for series_title — it's derived).
+                    onPatch(item.id, {
+                      series_id: seriesId,
+                      part_number: seriesId ? partNumber : null,
+                      series_title: seriesId ? (seriesTitle ?? null) : null,
+                    });
+                  }}
+                  compact
+                />
               </Field>
 
               <div className="grid grid-cols-2 gap-3">

@@ -12,6 +12,8 @@ import { SaveAsProject } from '@/components/ui/SaveAsProject';
 import { ExportScript } from '@/components/ui/ExportScript';
 import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { DraftsBanner } from '@/components/ui/DraftsBanner';
+import { SeriesPicker } from '@/components/ui/SeriesPicker';
+import { fetchPriorParts, formatPriorPartsForPrompt, saveSeriesPart } from '@/lib/series';
 import { getScriptHistory, saveScript as saveScriptToHistory, deleteScriptEntry, clearScriptHistory, getRecentTopics, type ScriptHistoryEntry } from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
@@ -105,6 +107,21 @@ export default function GeneratorPage() {
   // History & drafts
   const [historyItems, setHistoryItems] = useState<ScriptHistoryEntry[]>(() => getScriptHistory());
   const [draftId, setDraftId] = useState<string | null>(() => getActiveDraft()?.id || null);
+
+  // Series linkage (optional). If set, generate() fetches prior parts as
+  // continuity context and saves the new script as the next series part.
+  const [seriesId, setSeriesId] = useState<string | null>(null);
+  const [seriesTitle, setSeriesTitle] = useState<string>('');
+  const [partNumber, setPartNumber] = useState<number>(1);
+  const [seriesTokenBudget, setSeriesTokenBudget] = useState<number>(() => {
+    if (typeof window === 'undefined') return 15000;
+    const v = Number(localStorage.getItem('series:token-budget'));
+    return Number.isFinite(v) && v > 0 ? v : 15000;
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem('series:token-budget', String(seriesTokenBudget));
+  }, [seriesTokenBudget]);
 
   function resumeDraft(draft: WorkflowDraft, options?: { silent?: boolean }) {
     // Abort any in-progress generation
@@ -282,6 +299,24 @@ export default function GeneratorPage() {
     // Cap at ~6 recent entries to keep the prompt compact.
     const previousScripts = getScriptHistory().slice(0, 6).map(e => e.script).filter(Boolean);
 
+    // Series continuity: if this script is Part >= 2 of a linked series, fetch
+    // budgeted prior-parts context. The server handles truncation/summaries to
+    // stay within `seriesTokenBudget`. On failure (offline etc.) we continue
+    // without continuity rather than blocking the user from generating.
+    let seriesContext = '';
+    if (seriesId && partNumber > 1) {
+      try {
+        const parts = await fetchPriorParts(seriesId, { before: partNumber, maxTokens: seriesTokenBudget });
+        if (parts.length > 0) {
+          seriesContext = formatPriorPartsForPrompt(parts, seriesTitle || 'Series', partNumber);
+          toast.info(`Series continuity loaded — ${parts.length} prior part${parts.length === 1 ? '' : 's'} used as context`);
+        }
+      } catch (err) {
+        console.warn('Series context fetch failed:', err);
+        toast.warning('Could not load prior series parts — generating without continuity context');
+      }
+    }
+
     try {
       if (selfQA) {
         // Non-streaming validated path. Round-trips once per attempt; can
@@ -295,6 +330,7 @@ export default function GeneratorPage() {
             referenceContext: refContext || undefined,
             threshold: qaThreshold,
             previousScripts,
+            seriesContext: seriesContext || undefined,
           }),
           signal: abortRef.current.signal,
         });
@@ -350,6 +386,12 @@ export default function GeneratorPage() {
         setHistoryItems(getScriptHistory());
         const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: finalScript, wordCount: countWords(finalScript) });
         setDraftId(draft.id);
+        // If this is a series part, persist it to the series so cross-device Part N+1 can pull it.
+        if (seriesId && finalScript) {
+          saveSeriesPart(seriesId, { content: finalScript, partNumber, modelId })
+            .then(r => { if (r) toast.success(`Saved as Part ${partNumber} of "${seriesTitle}"`); })
+            .catch(() => { /* best-effort */ });
+        }
         toast.success(`Self-QA passed in ${data.attempts ?? 1} attempt${(data.attempts ?? 1) === 1 ? '' : 's'} — score ${data.qa?.overall_score ?? '?'}/100`);
         return;
       }
@@ -357,7 +399,7 @@ export default function GeneratorPage() {
       const res = await fetch('/api/generate/script', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ modelId, topic, niche, duration, tone, style, audience, context, referenceContext: refContext || undefined, previousScripts }),
+        body: JSON.stringify({ modelId, topic, niche, duration, tone, style, audience, context, referenceContext: refContext || undefined, previousScripts, seriesContext: seriesContext || undefined }),
         signal: abortRef.current.signal,
       });
 
@@ -397,6 +439,12 @@ export default function GeneratorPage() {
       // Auto-save draft
       const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: full, wordCount: countWords(full) });
       setDraftId(draft.id);
+      // Persist to series if linked — cross-device continuity for the next part.
+      if (seriesId && full) {
+        saveSeriesPart(seriesId, { content: full, partNumber, modelId })
+          .then(r => { if (r) toast.success(`Saved as Part ${partNumber} of "${seriesTitle}"`); })
+          .catch(() => { /* best-effort */ });
+      }
       toast.success('Script generated!');
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') return;
@@ -748,6 +796,36 @@ export default function GeneratorPage() {
               )}
             </div>
 
+            {/* Series linkage — optional. If enabled and partNumber > 1, the
+                generator pulls prior parts as continuity context. */}
+            <div>
+              <SeriesPicker
+                seriesId={seriesId}
+                partNumber={partNumber}
+                niche={niche}
+                onChange={({ seriesId: id, seriesTitle: t, partNumber: p }) => {
+                  setSeriesId(id);
+                  if (t !== undefined) setSeriesTitle(t);
+                  setPartNumber(p);
+                }}
+              />
+              {seriesId && partNumber > 1 && (
+                <div className="mt-2 px-3 py-2 rounded-lg flex items-center gap-2 flex-wrap" style={{ background: 'rgba(124,58,237,0.08)', border: '1px solid rgba(124,58,237,0.2)' }}>
+                  <label className="text-xs" style={{ color: 'var(--text-muted)' }}>Continuity budget:</label>
+                  <input
+                    type="number" min={2000} max={60000} step={1000}
+                    value={seriesTokenBudget}
+                    onChange={e => setSeriesTokenBudget(Math.max(2000, Math.min(60000, parseInt(e.target.value) || 15000)))}
+                    className="input-field"
+                    style={{ width: 90, fontSize: 12, padding: '4px 8px' }}
+                  />
+                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                    tokens — prev part full, older parts summarized.
+                  </span>
+                </div>
+              )}
+            </div>
+
             <button
               onClick={generating ? () => abortRef.current?.abort() : generateScript}
               disabled={!topic.trim() || !niche.trim()}
@@ -764,7 +842,7 @@ export default function GeneratorPage() {
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
                   </svg>
-                  Generate Script
+                  {seriesId && partNumber > 1 ? `Generate Part ${partNumber}` : 'Generate Script'}
                 </>
               )}
             </button>

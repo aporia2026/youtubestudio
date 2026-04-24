@@ -518,6 +518,87 @@ export const DEFAULT_SCHEDULE_STATUSES = [
   { key: 'published', label: 'Published', color: '#3b82f6', position: 5 },
 ];
 
+/** Idempotent setup for the series feature. A series is a cross-device grouping
+ * of ideas/scripts/schedule items that share a continuing narrative (Part 1,
+ * Part 2, …). Kept in a dedicated table (not a JSONB blob) so we can query by
+ * series_id from any page without scanning. */
+let seriesMigrated = false;
+
+/** Returns true iff a table with that name exists in the public schema. Used
+ *  to gate ALTER TABLE calls on a fresh deployment where initDatabase may not
+ *  have run yet — silently swallowing the error would just defer the failure
+ *  until the first INSERT against a column that was never added. */
+async function tableExists(name: string): Promise<boolean> {
+  try {
+    const r = await sql`SELECT to_regclass(${`public.${name}`}) AS oid`;
+    return r.rows[0]?.oid != null;
+  } catch {
+    return false;
+  }
+}
+
+export async function ensureSeriesSchema() {
+  if (seriesMigrated) return;
+  try {
+    // The series table itself (and its channels FK) always needs initDatabase
+    // or ensureChannelsSchema to have created `channels` first. Ensure it now.
+    await ensureChannelsSchema();
+    await sql`
+      CREATE TABLE IF NOT EXISTS series (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        title TEXT NOT NULL,
+        niche TEXT,
+        description TEXT,
+        total_parts_planned INTEGER,
+        channel_id UUID REFERENCES channels(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_series_title ON series(title)`; } catch {}
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_series_channel ON series(channel_id)`; } catch {}
+
+    // Add series_id/part_number/summary to the content tables. Each ALTER is
+    // gated on the table existing so a fresh deployment that hasn't run
+    // initDatabase doesn't swallow real errors — the migration simply waits
+    // until the base table is created elsewhere, then re-runs on the next call.
+    // ON DELETE SET NULL so removing a series unlinks rather than cascades.
+    let allOk = true;
+
+    if (await tableExists('scripts')) {
+      await sql`ALTER TABLE scripts ADD COLUMN IF NOT EXISTS series_id UUID REFERENCES series(id) ON DELETE SET NULL`;
+      await sql`ALTER TABLE scripts ADD COLUMN IF NOT EXISTS part_number INTEGER`;
+      await sql`ALTER TABLE scripts ADD COLUMN IF NOT EXISTS series_summary TEXT`;
+      try { await sql`CREATE INDEX IF NOT EXISTS idx_scripts_series ON scripts(series_id, part_number)`; } catch {}
+    } else {
+      allOk = false;
+    }
+
+    if (await tableExists('video_ideas')) {
+      await sql`ALTER TABLE video_ideas ADD COLUMN IF NOT EXISTS series_id UUID REFERENCES series(id) ON DELETE SET NULL`;
+      await sql`ALTER TABLE video_ideas ADD COLUMN IF NOT EXISTS part_number INTEGER`;
+      try { await sql`CREATE INDEX IF NOT EXISTS idx_video_ideas_series ON video_ideas(series_id, part_number)`; } catch {}
+    } else {
+      allOk = false;
+    }
+
+    if (await tableExists('schedule_items')) {
+      await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS series_id UUID REFERENCES series(id) ON DELETE SET NULL`;
+      await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS part_number INTEGER`;
+      try { await sql`CREATE INDEX IF NOT EXISTS idx_schedule_items_series ON schedule_items(series_id, part_number)`; } catch {}
+    } else {
+      allOk = false;
+    }
+
+    // Only mark as migrated when every target table was present. If a base
+    // table was missing, leave the flag false so a later call (after the base
+    // is created) can apply the pending column additions.
+    if (allOk) seriesMigrated = true;
+  } catch (err) {
+    console.error('ensureSeriesSchema error:', err);
+  }
+}
+
 let googleAuthMigrated = false;
 export async function ensureGoogleAuthSchema() {
   if (googleAuthMigrated) return;

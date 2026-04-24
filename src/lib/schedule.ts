@@ -45,6 +45,11 @@ export type ScheduleItem = {
   thumbnail_winner?: 'a' | 'b' | null;
   yt_description?: string | null;
   yt_tags?: string[];
+  // Series linkage — items belonging to the same narrative arc. The title
+  // is denormalized onto the row so the UI can render badges without a join.
+  series_id?: string | null;
+  series_title?: string | null;
+  part_number?: number | null;
 };
 
 /** How long the item has been stuck in its current stage, or null if no stage_entered_at. */
