@@ -5,29 +5,49 @@
 // channel + status so the user knows what they're working on, and exposes an
 // "Unlink" escape hatch that strips the param without losing page state.
 
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { ScheduleItem } from '@/lib/schedule';
-import { SCHEDULE_LINK_PARAM } from '@/lib/schedule-link';
+import { SCHEDULE_LINK_PARAM, fetchScheduleItem } from '@/lib/schedule-link';
 
 type Props = {
   item: ScheduleItem;
   feature?: string;
 };
 
-export function ScheduleLinkBanner({ item, feature }: Props) {
+export function ScheduleLinkBanner({ item: initialItem, feature }: Props) {
   const router = useRouter();
   const search = useSearchParams();
+  // Banner-owned copy of the item so we can refresh it on tab focus without
+  // forcing the whole feature page to reload. Initial value comes from the
+  // parent's preload fetch.
+  const [item, setItem] = useState<ScheduleItem>(initialItem);
+
+  // Refetch when the tab becomes visible (user edited the item in another
+  // tab / window). Cheap: one GET per focus event.
+  useEffect(() => {
+    let cancelled = false;
+    function refresh() {
+      if (document.visibilityState !== 'visible') return;
+      fetchScheduleItem(initialItem.id).then(fresh => {
+        if (!cancelled && fresh) setItem(fresh);
+      });
+    }
+    document.addEventListener('visibilitychange', refresh);
+    return () => { cancelled = true; document.removeEventListener('visibilitychange', refresh); };
+  }, [initialItem.id]);
 
   const unlink = useCallback(() => {
     const params = new URLSearchParams(search?.toString() ?? '');
     params.delete(SCHEDULE_LINK_PARAM);
     const qs = params.toString();
-    router.replace(qs ? `?${qs}` : window.location.pathname, { scroll: false });
+    router.replace(qs ? `?${qs}` : '?', { scroll: false });
   }, [router, search]);
 
   const primaryChannel = item.channels?.[0];
   const accent = primaryChannel?.account_color ?? '#7c3aed';
+  const scheduleHref = primaryChannel ? `/schedule?channel=${primaryChannel.id}` : '/schedule';
 
   return (
     <div
@@ -63,15 +83,19 @@ export function ScheduleLinkBanner({ item, feature }: Props) {
       >
         {item.status}
       </span>
-      <a
-        href={`/schedule?channel=${primaryChannel?.id ?? ''}`}
-        onClick={e => { e.preventDefault(); window.open(`/schedule?channel=${primaryChannel?.id ?? ''}`, '_blank'); }}
+      {/* Plain anchor — let the browser handle middle-click / Cmd-click
+          natively instead of forcing window.open (which used to run in
+          addition to the native navigation, double-opening the tab). */}
+      <Link
+        href={scheduleHref}
+        target="_blank"
+        rel="noopener"
         className="text-xs px-2 py-1 rounded"
         style={{ color: 'var(--text-muted)', border: '1px solid var(--border)' }}
         title="Open in schedule"
       >
         ↗
-      </a>
+      </Link>
       <button
         onClick={unlink}
         className="text-xs px-2 py-1 rounded"

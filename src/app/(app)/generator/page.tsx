@@ -1266,7 +1266,7 @@ function GeneratorPage() {
                         writeBackToSchedule(
                           scheduleItemId,
                           { project_id: projectId, ...(scriptId ? { script_id: scriptId } : {}) },
-                          { autoAdvanceTo: 'scripting', advanceMessage: 'Moved to Scripting' },
+                          { autoAdvanceTo: 'scripting', advanceLabel: 'Scripting' },
                         );
                       }
                     }}

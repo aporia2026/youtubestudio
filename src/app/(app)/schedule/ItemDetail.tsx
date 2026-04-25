@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -120,6 +120,15 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
   }
 
   const channelIds = new Set((item.channels ?? []).map(c => c.id));
+  // Memoise the linked-channels array by stable identity so EditorPicker's
+  // effect doesn't refetch the roster on every parent rerender (keystrokes
+  // in the title input triggered N /api/channels/{id}/editors fetches).
+  const linkedChannels = useMemo(
+    () => (item.channels ?? []).map(c => ({ id: c.id, name: c.name, account_color: c.account_color })),
+    // Item identity from the server is stable per render; channel set only
+    // changes when channel_ids is patched, in which case we do want to refetch.
+    [item.channels?.map(c => c.id).join(',')],
+  );
   const [titleSuggestions, setTitleSuggestions] = useState<Array<{ title: string; angle: string; ctr_hint: string }> | null>(null);
   const [suggestingTitles, setSuggestingTitles] = useState(false);
 
@@ -157,10 +166,11 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
     ];
     try {
       await navigator.clipboard.writeText(lines.join('\n'));
-      toast.success('Copied to clipboard — opening YouTube Studio', {
-        action: { label: 'Open', onClick: () => window.open('https://studio.youtube.com/channel/UC/videos/upload', '_blank') },
+      // Single open — the action button on the toast used to double-open a
+      // tab because the line below it also eagerly called window.open.
+      toast.success('Copied to clipboard', {
+        action: { label: 'Open YouTube Studio', onClick: () => window.open('https://studio.youtube.com/channel/UC/videos/upload', '_blank') },
       });
-      window.open('https://studio.youtube.com/channel/UC/videos/upload', '_blank');
     } catch {
       toast.error('Could not copy to clipboard');
     }
@@ -206,7 +216,16 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
             className="flex-1 bg-transparent text-lg font-semibold outline-none"
             style={{ color: 'var(--text-primary)' }}
           />
-          <button onClick={() => { onDelete(item.id, !!item.recurrence); }} title="Delete"
+          <button
+            onClick={() => {
+              // Recurrence parents cascade their children; warn about that in the prompt
+              // so a one-click tap doesn't silently nuke the whole series.
+              const msg = item.recurrence
+                ? `Delete "${item.title || 'Untitled'}" and every recurrence child? This cannot be undone.`
+                : `Delete "${item.title || 'Untitled'}"? This cannot be undone.`;
+              if (window.confirm(msg)) onDelete(item.id, !!item.recurrence);
+            }}
+            title="Delete"
             className="p-1.5 rounded"
             style={{ color: 'var(--text-muted)' }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -339,9 +358,13 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
 
               <Field label="Editor">
                 <EditorPicker
-                  linkedChannels={(item.channels ?? []).map(c => ({ id: c.id, name: c.name, account_color: c.account_color }))}
+                  linkedChannels={linkedChannels}
                   selectedEditorId={item.editor_id ?? null}
                   onChange={editorId => onPatch(item.id, { editor_id: editorId })}
+                  // Bubble a refresh to the parent so deleting an editor from
+                  // the roster flushes denormalised editor_name off every
+                  // card (FK cascades server-side, but items state is stale).
+                  onRosterChanged={onRefresh}
                 />
               </Field>
 
@@ -433,14 +456,32 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
                       if (!item.youtube_url) { toast.error('Save a YouTube URL first'); return; }
                       toast.message('Pulling from YouTube…');
                       const res = await fetch(`/api/schedule/${item.id}/pull-youtube-metadata`, { method: 'POST' });
-                      const data = await res.json();
+                      const data: {
+                        error?: string;
+                        applied?: { title: string; description: string; tags: string[] };
+                        wrote?: { title: boolean; description: boolean; tags: boolean };
+                      } = await res.json();
                       if (!res.ok) { toast.error(data.error || 'Pull failed'); return; }
-                      onPatch(item.id, {
-                        title: data.title,
-                        yt_description: data.description,
-                        yt_tags: data.tags,
-                      });
-                      toast.success('Pulled title, description, and tags from YouTube');
+                      // Server preserves user-curated fields; only sync what it
+                      // actually wrote so the optimistic patch matches.
+                      if (data.applied) {
+                        onPatch(item.id, {
+                          title: data.applied.title,
+                          yt_description: data.applied.description,
+                          yt_tags: data.applied.tags,
+                        });
+                      }
+                      const wrote = data.wrote ?? { title: false, description: false, tags: false };
+                      const writtenParts = [
+                        wrote.title && 'title',
+                        wrote.description && 'description',
+                        wrote.tags && 'tags',
+                      ].filter(Boolean);
+                      if (writtenParts.length === 0) {
+                        toast.message('Already up to date — your curated fields were preserved');
+                      } else {
+                        toast.success(`Pulled ${writtenParts.join(', ')} from YouTube`);
+                      }
                     }}
                     disabled={!item.youtube_url}
                     className="text-xs px-3 py-2 rounded-md whitespace-nowrap"

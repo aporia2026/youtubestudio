@@ -45,7 +45,11 @@ function SchedulePage() {
   const search = useSearchParams();
 
   // URL state is the source of truth so channel + view are shareable/bookmarkable.
-  const channelId = search.get('channel');        // null | "<uuid>"
+  const channelId = search.get('channel');        // null | "<uuid>" | "__unassigned"
+  // `channelId` carries the virtual "__unassigned" sentinel for tab UI, but
+  // downstream dialogs/APIs expect a real UUID or null — using `realChannelId`
+  // for those prevents "__unassigned" from leaking into SQL uuid casts.
+  const realChannelId: string | null = channelId === UNASSIGNED_CHANNEL_ID ? null : channelId;
   const viewParam = (search.get('view') ?? 'kanban') as ViewMode;
   const view: ViewMode = ['list', 'calendar', 'spreadsheet', 'kanban'].includes(viewParam) ? viewParam : 'kanban';
   const statusFilter = search.get('status');
@@ -130,6 +134,16 @@ function SchedulePage() {
     fetchCounts();
   }, [fetchCounts]);
 
+  // If the user is viewing Unassigned and the count drops to 0 (e.g. they
+  // just bulk-assigned the last orphan), the tab disappears from the header
+  // but the URL still reads `?channel=__unassigned` — scope title stays as
+  // "Unassigned" over an empty list. Send them back to All channels.
+  useEffect(() => {
+    if (channelId === UNASSIGNED_CHANNEL_ID && (allCounts[UNASSIGNED_CHANNEL_ID] ?? 0) === 0 && Object.keys(allCounts).length > 0) {
+      updateUrl({ channel: null });
+    }
+  }, [channelId, allCounts, updateUrl]);
+
   // Items refetch when the scope (channel / status / search) changes.
   useEffect(() => {
     setLoading(true);
@@ -141,17 +155,18 @@ function SchedulePage() {
   // Statuses follow the active channel; abort-on-switch to avoid last-write-wins.
   useEffect(() => {
     const controller = new AbortController();
-    const url = channelId ? `/api/schedule/statuses?channel_id=${channelId}` : '/api/schedule/statuses';
+    // Unassigned tab uses the global default pipeline — realChannelId strips "__unassigned".
+    const url = realChannelId ? `/api/schedule/statuses?channel_id=${realChannelId}` : '/api/schedule/statuses';
     fetch(url, { signal: controller.signal })
       .then(r => r.json()).then(d => setStatuses(d.statuses || []))
       .catch(err => { if (err.name !== 'AbortError') console.error(err); });
     return () => controller.abort();
-  }, [channelId]);
+  }, [realChannelId]);
 
   // Load series for the filter dropdown. Cheap list fetch (lib has a 30s cache).
   useEffect(() => {
-    listSeries({ channelId: channelId || undefined }).then(setSeriesList).catch(() => {});
-  }, [channelId]);
+    listSeries({ channelId: realChannelId || undefined }).then(setSeriesList).catch(() => {});
+  }, [realChannelId]);
 
   const patchItem = useCallback(async (id: string, patch: Partial<ScheduleItem> & { channel_ids?: string[] }) => {
     setItems(curr => curr.map(it => (it.id === id ? { ...it, ...patch } : it)));
@@ -358,7 +373,7 @@ function SchedulePage() {
               ☑ Checklists
             </button>
             <SavedViewsMenu
-              channelId={channelId}
+              channelId={realChannelId}
               currentConfig={{ view, status: statusFilter, q: searchText, density }}
               onApply={v => updateUrl({
                 view: v.config.view ?? 'kanban',
@@ -408,9 +423,10 @@ function SchedulePage() {
               onSelect={setSelected} onPatch={patchItem} />
           ) : view === 'list' ? (
             <ListView items={displayItems} statuses={statuses} channels={channels}
-              onSelect={setSelected} onPatch={patchItem} onDelete={deleteItem} />
+              onSelect={setSelected} onPatch={patchItem} onDelete={deleteItem}
+              onRefresh={() => { fetchItems(); fetchCounts(); }} />
           ) : view === 'calendar' ? (
-            <CalendarView items={displayItems} statuses={statuses} channelId={channelId}
+            <CalendarView items={displayItems} statuses={statuses} channelId={realChannelId}
               onSelect={setSelected} onPatch={patchItem} />
           ) : (
             <SpreadsheetView items={displayItems} statuses={statuses} channels={channels}
@@ -437,7 +453,7 @@ function SchedulePage() {
         <NewItemDialog
           channels={channels}
           statuses={statuses}
-          defaultChannelId={channelId}
+          defaultChannelId={realChannelId}
           onClose={() => setCreating(false)}
           onCreated={() => { setCreating(false); fetchItems(); fetchCounts(); }}
         />
@@ -457,7 +473,7 @@ function SchedulePage() {
 
       {suggestOpen && (
         <SuggestNextDialog
-          channelId={channelId}
+          channelId={realChannelId}
           channelName={scopeLabel}
           onClose={() => setSuggestOpen(false)}
           onCreated={() => { setSuggestOpen(false); fetchItems(); fetchCounts(); }}
@@ -466,7 +482,7 @@ function SchedulePage() {
 
       {shareOpen && (
         <ShareDialog
-          channelId={channelId}
+          channelId={realChannelId}
           channelName={scopeLabel}
           onClose={() => setShareOpen(false)}
         />
@@ -474,7 +490,7 @@ function SchedulePage() {
 
       {templatesOpen && (
         <ChecklistTemplatesDialog
-          channelId={channelId}
+          channelId={realChannelId}
           channelName={scopeLabel}
           statuses={statuses}
           onClose={() => setTemplatesOpen(false)}

@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import type { ScheduleItem } from '@/lib/schedule';
-import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule } from '@/lib/schedule-link';
+import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadActiveScriptForItem } from '@/lib/schedule-link';
 import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
@@ -150,16 +150,8 @@ function QAPage() {
       if (item.title) setTopic(curr => curr || item.title);
       // Pull the active script from the linked project, if any, so the user
       // doesn't have to paste it back in.
-      if (item.project_id && !script) {
-        try {
-          const res = await fetch(`/api/projects/${item.project_id}/scripts`);
-          const data = await res.json();
-          type ScriptRow = { id: string; content: string; is_active?: boolean };
-          const list: ScriptRow[] = data.scripts ?? [];
-          const active = list.find(s => s.id === item.script_id) ?? list.find(s => s.is_active) ?? list[0];
-          if (active?.content) setScript(prev => prev || active.content);
-        } catch { /* best-effort preload */ }
-      }
+      const content = await loadActiveScriptForItem(item);
+      if (!cancelled && content) setScript(prev => prev || content);
     })();
     return () => { cancelled = true; };
     // `script` intentionally omitted from deps — we only peek at its initial value on mount.
@@ -180,9 +172,14 @@ function QAPage() {
         if (data.constraints) setConstraints({ ...EMPTY_CONSTRAINTS, ...data.constraints });
       }
     } catch {}
-    // Sending a fresh script from the generator (qa_prefill) is an explicit "new session"
-    // intent — drop the prior backup so stale results/fixedScript/project linkage don't bleed in.
-    if (hadPrefill) {
+    // Sending a fresh script from the generator (qa_prefill) OR arriving via a
+    // schedule-link (?scheduleItemId=…) is an explicit "new session" intent —
+    // drop the prior backup so stale results / fixedScript / project linkage
+    // don't bleed into the new context. Without this guard, clicking
+    // "Send to QA" on a schedule item restores a 24h-old unrelated session.
+    const hasScheduleLink = typeof window !== 'undefined'
+      && new URLSearchParams(window.location.search).has('scheduleItemId');
+    if (hadPrefill || hasScheduleLink) {
       try { localStorage.removeItem('qa_session_backup'); } catch {}
     } else {
       try {

@@ -2,8 +2,7 @@
 
 // Shared client-side helpers so every feature page can preload from a linked
 // schedule item and write back its output. Keeps the URL-param name + fetch
-// shape consistent across pages; any feature that adopts this stays wired
-// end-to-end with the schedule.
+// shape consistent across pages.
 //
 // Contract:
 //   1. Feature page reads `?scheduleItemId=xxx` from the URL.
@@ -11,12 +10,15 @@
 //   3. On the user's "done" moment, calls `writeBackToSchedule(id, patch, opts)`
 //      with whatever artifact was produced.
 //
-// Status auto-advance: only forward, only when the current status is strictly
-// earlier in the pipeline than the target. Always toasts with an Undo action
-// so a wrong auto-advance is one click away from being reverted.
+// The server does the heavy lifting for two formerly-fragile paths:
+//   - `custom_fields_merge` on PATCH shallow-merges server-side, so two
+//     concurrent write-backs can't clobber each other's keys.
+//   - `auto_advance_to` on PATCH evaluates the item's channel pipeline + its
+//     current status in one round-trip, so the client doesn't need pipeline
+//     knowledge and there's no TOCTOU.
 
 import { toast } from 'sonner';
-import type { ScheduleItem, ScheduleStatus } from '@/lib/schedule';
+import type { ScheduleItem } from '@/lib/schedule';
 
 export const SCHEDULE_LINK_PARAM = 'scheduleItemId';
 
@@ -31,88 +33,66 @@ export async function fetchScheduleItem(id: string): Promise<ScheduleItem | null
   }
 }
 
-/** Return the position of a status key in the channel's pipeline, or -1 if missing. */
-function statusIndex(statuses: ScheduleStatus[] | undefined, key: string): number {
-  if (!statuses || statuses.length === 0) {
-    // Fall back to the default global order if the caller didn't pass statuses.
-    const defaults = ['idea', 'scripting', 'recording', 'editing', 'ready', 'published'];
-    return defaults.indexOf(key);
-  }
-  return statuses.findIndex(s => s.key === key);
-}
-
 export interface WriteBackOptions {
-  /** Status key to advance to, if the item's current status is strictly earlier. */
+  /** Status key to advance to. Server compares against the item's channel
+   *  pipeline and only advances if the target is strictly later than the
+   *  current status. No-op if the pipeline doesn't contain the target. */
   autoAdvanceTo?: string;
-  /** Known status pipeline for ordering decisions. If omitted, a default global order is assumed. */
-  statuses?: ScheduleStatus[];
-  /** Label for the toast on auto-advance. Defaults to "Moved to <label>". */
-  advanceMessage?: string;
-  /** Shallow-merged into `custom_fields` so features can stamp their artifacts
-   *  (e.g. latest_qa, production_doc_id) without overwriting other features'
-   *  keys. Merge is top-level only; nested objects are replaced. */
+  /** Human-readable label used in the Undo toast. Defaults to the status key. */
+  advanceLabel?: string;
+  /** Shallow-merged into `custom_fields` server-side so features can stamp
+   *  their artifacts without a read-modify-write race. */
   customFieldsMerge?: Record<string, unknown>;
 }
 
-/** PATCH the schedule item with `patch`, then (optionally) auto-forward its
- *  status. Returns true on success. The undo path is best-effort — if the
- *  revert PATCH fails, the toast simply stays dismissed and the user can drag
- *  the card back manually. */
+/** PATCH the schedule item. Returns true on success. */
 export async function writeBackToSchedule(
   itemId: string,
   patch: Record<string, unknown>,
   opts: WriteBackOptions = {},
 ): Promise<boolean> {
   try {
-    // Fetch current status so we can decide on auto-advance without trusting
-    // whatever stale copy the caller may have.
-    const current = await fetchScheduleItem(itemId);
-    if (!current) {
-      // The item may have been deleted since the feature page opened. Warn
-      // once rather than silently dropping the artifact.
-      toast.warning('Linked schedule item is gone — not writing back');
-      return false;
-    }
-
-    let nextPatch = { ...patch };
-    if (opts.customFieldsMerge) {
-      const existing = (current.custom_fields ?? {}) as Record<string, unknown>;
-      nextPatch = { ...nextPatch, custom_fields: { ...existing, ...opts.customFieldsMerge } };
-    }
-    let advanced = false;
-    let prevStatus: string | null = null;
-    if (opts.autoAdvanceTo) {
-      const fromIdx = statusIndex(opts.statuses, current.status);
-      const toIdx = statusIndex(opts.statuses, opts.autoAdvanceTo);
-      if (fromIdx >= 0 && toIdx > fromIdx) {
-        nextPatch = { ...nextPatch, status: opts.autoAdvanceTo };
-        advanced = true;
-        prevStatus = current.status;
-      }
-    }
+    const body: Record<string, unknown> = { ...patch };
+    if (opts.customFieldsMerge) body.custom_fields_merge = opts.customFieldsMerge;
+    if (opts.autoAdvanceTo) body.auto_advance_to = opts.autoAdvanceTo;
 
     const res = await fetch(`/api/schedule/${itemId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(nextPatch),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
-      toast.error('Could not update the linked schedule item');
+      if (res.status === 404) {
+        toast.warning('Linked schedule item is gone — not writing back');
+      } else {
+        toast.error('Could not update the linked schedule item');
+      }
       return false;
     }
 
-    if (advanced && prevStatus) {
-      const label = opts.advanceMessage ?? `Moved to ${opts.statuses?.find(s => s.key === opts.autoAdvanceTo)?.label ?? opts.autoAdvanceTo}`;
-      toast.success(label, {
+    const data: { advanced?: { prev_status: string; new_status: string } | null } = await res.json().catch(() => ({}));
+    if (data.advanced) {
+      const { prev_status, new_status } = data.advanced;
+      const label = opts.advanceLabel ?? new_status;
+      toast.success(`Moved to ${label}`, {
         action: {
           label: 'Undo',
           onClick: async () => {
-            await fetch(`/api/schedule/${itemId}`, {
+            // Re-fetch current status so a manual move between advance and
+            // undo isn't silently reverted by a stale closure.
+            const fresh = await fetchScheduleItem(itemId);
+            if (!fresh) { toast.error('Item is gone'); return; }
+            if (fresh.status !== new_status) {
+              toast.message('Status already changed — nothing to undo');
+              return;
+            }
+            const r = await fetch(`/api/schedule/${itemId}`, {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ status: prevStatus }),
+              body: JSON.stringify({ status: prev_status }),
             });
-            toast.message('Undone');
+            if (r.ok) toast.message('Undone');
+            else toast.error('Undo failed');
           },
         },
       });
@@ -129,4 +109,30 @@ export async function writeBackToSchedule(
 export function getScheduleLinkId(search: URLSearchParams | null | undefined): string | null {
   const v = search?.get(SCHEDULE_LINK_PARAM);
   return v && v.length > 0 ? v : null;
+}
+
+/** Resolve the best script content associated with a schedule item:
+ *  - its pinned `script_id` if present,
+ *  - else the project's currently-active script,
+ *  - else the first script,
+ *  - else null.
+ *
+ *  Returns null (not throws) on any failure so callers can fall through to
+ *  their own defaults. Used by QA / SEO / Production Doc preload flows so
+ *  they don't each reinvent the same fetch + narrow logic. */
+export async function loadActiveScriptForItem(item: ScheduleItem): Promise<string | null> {
+  if (!item.project_id) return null;
+  try {
+    const res = await fetch(`/api/projects/${item.project_id}/scripts`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    type ScriptRow = { id: string; content: string; is_active?: boolean };
+    const list: ScriptRow[] = Array.isArray(data.scripts) ? data.scripts : [];
+    const active = list.find(s => s.id === item.script_id)
+                ?? list.find(s => s.is_active)
+                ?? list[0];
+    return active?.content ?? null;
+  } catch {
+    return null;
+  }
 }

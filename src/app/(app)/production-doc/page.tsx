@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
 import type { ScheduleItem } from '@/lib/schedule';
-import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule } from '@/lib/schedule-link';
+import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadActiveScriptForItem } from '@/lib/schedule-link';
 import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
@@ -518,16 +518,8 @@ function ProductionDocPage() {
       setSchedulePrefilled(true);
       setTopic(curr => curr || item.title || '');
       setNiche(curr => curr || item.pillar || '');
-      if (item.project_id) {
-        try {
-          const res = await fetch(`/api/projects/${item.project_id}/scripts`);
-          const data = await res.json();
-          type ScriptRow = { id: string; content: string; is_active?: boolean };
-          const list: ScriptRow[] = data.scripts ?? [];
-          const active = list.find(s => s.id === item.script_id) ?? list.find(s => s.is_active) ?? list[0];
-          if (active?.content) setScript(prev => prev || active.content);
-        } catch { /* best-effort */ }
-      }
+      const content = await loadActiveScriptForItem(item);
+      if (!cancelled && content) setScript(prev => prev || content);
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps

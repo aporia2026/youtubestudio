@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import type { ScheduleItem, ScheduleStatus } from '@/lib/schedule';
@@ -14,6 +14,7 @@ type Props = {
   onSelect: (id: string) => void;
   onPatch: (id: string, patch: Partial<ScheduleItem>) => void;
   onDelete: (id: string, alsoChildren?: boolean) => void;
+  onRefresh: () => void;
 };
 
 function formatWhen(iso: string | null): string {
@@ -22,7 +23,7 @@ function formatWhen(iso: string | null): string {
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-export function ListView({ items, statuses, channels, onSelect, onPatch, onDelete }: Props) {
+export function ListView({ items, statuses, channels, onSelect, onPatch, onDelete, onRefresh }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [assigningChannels, setAssigningChannels] = useState(false);
   function toggle(id: string) {
@@ -39,25 +40,21 @@ export function ListView({ items, statuses, channels, onSelect, onPatch, onDelet
   }
   async function bulkAssignChannels(channelIds: string[], mode: 'add' | 'replace') {
     if (channelIds.length === 0) return;
+    const count = selected.size;
     const res = await fetch('/api/schedule/bulk-assign-channels', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ item_ids: Array.from(selected), channel_ids: channelIds, mode }),
     });
     if (!res.ok) { toast.error('Bulk assign failed'); return; }
-    // Optimistic patch so affected rows show their new channels without a full refetch;
-    // the next mutation (or a page nav) will reconcile with the server if anything drifted.
-    const resolved = channels.filter(c => channelIds.includes(c.id));
-    for (const id of selected) {
-      const it = items.find(x => x.id === id);
-      if (!it) continue;
-      const existing = it.channels ?? [];
-      const nextChannels = mode === 'replace'
-        ? resolved
-        : [...existing, ...resolved.filter(c => !existing.some(e => e.id === c.id))];
-      onPatch(id, { channels: nextChannels, channel_ids: nextChannels.map(c => c.id) } as Partial<ScheduleItem> & { channel_ids: string[] });
-    }
-    toast.success(`Assigned ${selected.size} items to ${resolved.length} channel${resolved.length === 1 ? '' : 's'}`);
+    // Bulk endpoint already wrote every join row in one CTE — all we need now
+    // is to pull fresh item rows + tab counts. Avoids the N×PATCH + N×counts
+    // request storm the first version did.
+    onRefresh();
+    const resolvedCount = channels.filter(c => channelIds.includes(c.id)).length;
+    toast.success(
+      `Assigned ${count} ${count === 1 ? 'item' : 'items'} to ${resolvedCount} ${resolvedCount === 1 ? 'channel' : 'channels'}`,
+    );
     setSelected(new Set());
     setAssigningChannels(false);
   }
@@ -240,10 +237,18 @@ function ChannelAssignPopover({ channels, onApply, onClose }: {
       return n;
     });
   }
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
   return (
     <div
       onClick={e => e.stopPropagation()}
-      className="absolute left-0 top-full mt-1 z-20 w-72 p-3 rounded-lg space-y-2"
+      // `right-0` keeps the popover inside the sticky toolbar on narrow
+      // viewports (where an absolute-left popover would clip off-screen).
+      // Max-w clamps width on ultra-narrow devices.
+      className="absolute right-0 top-full mt-1 z-20 w-72 max-w-[calc(100vw-2rem)] p-3 rounded-lg space-y-2"
       style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }}
     >
       <div className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>

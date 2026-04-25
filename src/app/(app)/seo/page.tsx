@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import type { ScheduleItem } from '@/lib/schedule';
-import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule } from '@/lib/schedule-link';
+import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadActiveScriptForItem } from '@/lib/schedule-link';
 import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
@@ -104,16 +104,8 @@ function SeoPage() {
       setTopic(curr => curr || item.title || '');
       setNiche(curr => curr || item.pillar || '');
       setExistingTitle(curr => curr || item.title || '');
-      if (item.project_id) {
-        try {
-          const res = await fetch(`/api/projects/${item.project_id}/scripts`);
-          const data = await res.json();
-          type ScriptRow = { id: string; content: string; is_active?: boolean };
-          const list: ScriptRow[] = data.scripts ?? [];
-          const active = list.find(s => s.id === item.script_id) ?? list.find(s => s.is_active) ?? list[0];
-          if (active?.content) setScript(prev => prev || active.content);
-        } catch { /* best-effort */ }
-      }
+      const content = await loadActiveScriptForItem(item);
+      if (!cancelled && content) setScript(prev => prev || content);
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -179,10 +171,12 @@ function SeoPage() {
         const tagStrings: string[] = ((data.result as { tags?: Array<{ tag?: string }> }).tags ?? [])
           .map(t => t.tag)
           .filter((t): t is string => !!t);
-        writeBackToSchedule(scheduleItemId, {
-          yt_description: fullDesc || undefined,
-          yt_tags: tagStrings,
-        }, {
+        // Only send fields that actually have values — sending `yt_tags: []`
+        // would wipe the user's existing tags on the item.
+        const patch: Record<string, unknown> = {};
+        if (fullDesc) patch.yt_description = fullDesc;
+        if (tagStrings.length) patch.yt_tags = tagStrings;
+        writeBackToSchedule(scheduleItemId, patch, {
           customFieldsMerge: {
             latest_seo: {
               best_title: bestTitle?.title ?? null,

@@ -41,16 +41,28 @@ export function AddToScheduleButton({
   const [channelId, setChannelId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const popRef = useRef<HTMLDivElement>(null);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
-    fetch('/api/channels').then(r => r.json()).then(d => {
-      const list: Channel[] = d.channels || [];
-      setChannels(list);
-      if (list.length) {
-        const last = typeof window !== 'undefined' ? localStorage.getItem(LAST_CHANNEL_KEY) : null;
-        setChannelId(list.some(c => c.id === last) ? last : list[0].id);
-      }
-    }).catch(() => {});
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('/api/channels', { signal: controller.signal })
+      .then(r => r.json())
+      .then(d => {
+        if (!mountedRef.current) return;
+        const list: Channel[] = d.channels || [];
+        setChannels(list);
+        if (list.length) {
+          const last = typeof window !== 'undefined' ? localStorage.getItem(LAST_CHANNEL_KEY) : null;
+          setChannelId(list.some(c => c.id === last) ? last : list[0].id);
+        }
+      })
+      .catch(err => { if (err.name !== 'AbortError') console.error(err); });
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -58,14 +70,21 @@ export function AddToScheduleButton({
     function onDown(e: MouseEvent) {
       if (popRef.current && !popRef.current.contains(e.target as Node)) setOpen(false);
     }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false); }
     document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
   }, [open]);
 
   async function submit() {
     if (!title.trim()) { toast.error('Needs a title'); return; }
     setSubmitting(true);
     try {
+      // Server accepts `pillar` on POST now, so we save the artifact in one
+      // round-trip. No follow-up PATCH means no silent half-written state.
       const res = await fetch('/api/schedule', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -74,44 +93,42 @@ export function AddToScheduleButton({
           status: initialStatus,
           notes: notes?.trim() || null,
           channel_ids: channelId ? [channelId] : [],
-          custom_fields: pillar ? { } : undefined,
+          pillar: pillar?.trim() || null,
         }),
       });
       const data = await res.json();
+      if (!mountedRef.current) return;
       if (!res.ok) { toast.error(data.error || 'Failed'); return; }
       const newId: string | undefined = data.item?.id ?? data.id;
       if (!newId) { toast.error('No id returned'); return; }
 
-      // If a pillar was suggested, stamp it via a follow-up PATCH (POST route
-      // doesn't accept pillar directly — single source of truth for optional
-      // fields is the PATCH handler).
-      if (pillar) {
-        await fetch(`/api/schedule/${newId}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pillar }),
-        });
-      }
       if (channelId) localStorage.setItem(LAST_CHANNEL_KEY, channelId);
 
       toast.success('Added to schedule', {
-        action: { label: 'Open', onClick: () => window.open(`/schedule?channel=${channelId ?? ''}`, '_blank') },
+        action: {
+          label: 'Open',
+          onClick: () => window.open(`/schedule?channel=${channelId ?? ''}`, '_blank'),
+        },
       });
       setOpen(false);
 
       // Auto-link: replace current URL so any subsequent completions on this
-      // page write back to the freshly-created item.
+      // page write back to the freshly-created item. The feature page's
+      // preload effect uses functional setters (`prev || item.value`), so
+      // the URL change won't clobber state the user has already entered.
       if (autoLink) {
         const params = new URLSearchParams(search?.toString() ?? '');
         params.set(SCHEDULE_LINK_PARAM, newId);
         router.replace(`?${params.toString()}`, { scroll: false });
       }
     } finally {
-      setSubmitting(false);
+      if (mountedRef.current) setSubmitting(false);
     }
   }
 
-  if (channels.length === 0) return null;
+  // Render even with zero channels — offer (Unassigned) so a brand-new user
+  // isn't silently blocked from adding generations to the schedule.
+  const noChannelsAllowed = channels.length === 0;
 
   return (
     <div ref={popRef} className={`relative inline-block ${className}`}>
@@ -126,7 +143,7 @@ export function AddToScheduleButton({
       </button>
       {open && (
         <div
-          className="absolute right-0 top-full mt-1 z-30 w-72 p-3 rounded-lg space-y-2"
+          className="absolute right-0 top-full mt-1 z-30 w-72 max-w-[calc(100vw-2rem)] p-3 rounded-lg space-y-2"
           style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }}
         >
           <div className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
@@ -138,6 +155,7 @@ export function AddToScheduleButton({
           <label className="flex flex-col gap-1 text-xs" style={{ color: 'var(--text-muted)' }}>
             Channel
             <select
+              autoFocus
               value={channelId ?? ''}
               onChange={e => setChannelId(e.currentTarget.value || null)}
               className="px-2 py-1 rounded text-sm"
@@ -146,6 +164,11 @@ export function AddToScheduleButton({
               <option value="">(Unassigned)</option>
               {channels.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
+            {noChannelsAllowed && (
+              <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                No channels configured yet — it will be saved as Unassigned.
+              </span>
+            )}
           </label>
           <div className="flex items-center justify-end gap-2 pt-1">
             <button onClick={() => setOpen(false)} className="text-xs px-2 py-1" style={{ color: 'var(--text-muted)' }}>Cancel</button>

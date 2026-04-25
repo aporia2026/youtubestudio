@@ -109,7 +109,7 @@ export function KanbanView({ items, statuses, channels, onSelect, onPatch }: Pro
               {columnItems.map(it => {
                 const stuck = isStuck(it);
                 const days = daysInStage(it);
-                const primaryChannel = it.channels?.[0] ?? (it.channels?.[0] as undefined);
+                const primaryChannel = it.channels?.[0];
                 const accent = primaryChannel
                   ? channelsById.get(primaryChannel.id)?.account_color ?? st.color
                   : st.color;
