@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureScheduleSchema, ensureSeriesSchema } from '@/lib/db';
 import { expandRecurrence, type RecurrenceRule } from '@/lib/schedule';
+import { UNASSIGNED_CHANNEL_ID } from '@/lib/schedule-constants';
+
+/** Escape `%`, `_`, and `\` so a search term's literal wildcards don't
+ *  amplify into a full-table scan or OR-shape query. */
+function escapeLike(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
 
 async function attachChannels(itemId: string, channelIds: string[]): Promise<void> {
   if (!channelIds.length) return;
@@ -28,7 +35,7 @@ export async function GET(req: NextRequest) {
     const clauses: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
-    if (channelId === '__unassigned') {
+    if (channelId === UNASSIGNED_CHANNEL_ID) {
       // Items with no channel rows in the join table — orphaned entries that
       // the per-channel tabs would otherwise hide.
       clauses.push(`NOT EXISTS (SELECT 1 FROM schedule_item_channels sic WHERE sic.item_id = si.id)`);
@@ -51,7 +58,7 @@ export async function GET(req: NextRequest) {
     }
     if (search) {
       clauses.push(`(si.title ILIKE $${idx} OR si.notes ILIKE $${idx})`);
-      values.push(`%${search}%`); idx++;
+      values.push(`%${escapeLike(search)}%`); idx++;
     }
     if (seriesId) {
       clauses.push(`si.series_id = $${idx}::uuid`);
@@ -81,7 +88,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ items: rows });
   } catch (err) {
     console.error('GET /api/schedule error:', err);
-    return NextResponse.json({ items: [] });
+    return NextResponse.json({ items: [], error: 'Failed' }, { status: 500 });
   }
 }
 
@@ -105,6 +112,7 @@ export async function POST(req: NextRequest) {
       from_idea = null,
       series_id = null,
       part_number = null,
+      pillar = null,
     }: {
       title?: string;
       scheduled_for?: string | null;
@@ -120,6 +128,7 @@ export async function POST(req: NextRequest) {
       from_idea?: { id: string; title: string } | null;
       series_id?: string | null;
       part_number?: number | null;
+      pillar?: string | null;
     } = body;
     if (series_id) await ensureSeriesSchema();
 
@@ -158,11 +167,11 @@ export async function POST(req: NextRequest) {
     }
 
     const result = await sql`
-      INSERT INTO schedule_items (title, scheduled_for, status, notes, tags, custom_fields, idea_id, project_id, script_id, series_id, part_number)
+      INSERT INTO schedule_items (title, scheduled_for, status, notes, tags, custom_fields, idea_id, project_id, script_id, series_id, part_number, pillar)
       VALUES (${resolvedTitle}, ${scheduled_for}, ${status}, ${notes},
               ${JSON.stringify(tags)}, ${JSON.stringify(custom_fields)},
               ${resolvedIdeaId}, ${project_id}, ${script_id},
-              ${series_id}::uuid, ${part_number})
+              ${series_id}::uuid, ${part_number}, ${pillar})
       RETURNING *
     `;
     const itemId = result.rows[0].id as string;
@@ -170,6 +179,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ item: result.rows[0] });
   } catch (err) {
     console.error('POST /api/schedule error:', err);
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

@@ -2,8 +2,8 @@
 
 import { motion } from 'framer-motion';
 import type { Channel } from './types';
-
-export const UNASSIGNED_CHANNEL_ID = '__unassigned';
+export { UNASSIGNED_CHANNEL_ID } from '@/lib/schedule-constants';
+import { UNASSIGNED_CHANNEL_ID } from '@/lib/schedule-constants';
 
 type Props = {
   channels: Channel[];

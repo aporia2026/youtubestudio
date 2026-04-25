@@ -1,5 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { sql, ensureScheduleSchema } from '@/lib/db';
+import { sql, ensureScheduleSchema, DEFAULT_SCHEDULE_STATUSES } from '@/lib/db';
+
+// youtube_url guard: accept only http/https URLs on youtube hosts. Rejecting
+// javascript:/file:/data: scheme URLs prevents a stored-XSS sink when the
+// column is later rendered or followed.
+const YOUTUBE_HOSTS = new Set(['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be']);
+function isValidYouTubeUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
+    return YOUTUBE_HOSTS.has(u.host.toLowerCase());
+  } catch {
+    return false;
+  }
+}
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -23,7 +37,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     if (!result.rows.length) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     return NextResponse.json({ item: result.rows[0] });
   } catch (err) {
-    console.error(err);
+    console.error('GET /api/schedule/[id]', err);
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
@@ -37,17 +51,68 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     // Whitelist + individual COALESCE-style updates so clients can send partial patches.
     const hasField = (k: string) => Object.prototype.hasOwnProperty.call(patch, k);
 
-    // Status transition side-effects: stage_entered_at reset + optional checklist injection.
+    // --- youtube_url format guard --------------------------------------------
+    if (hasField('youtube_url') && patch.youtube_url != null && patch.youtube_url !== '') {
+      if (typeof patch.youtube_url !== 'string' || !isValidYouTubeUrl(patch.youtube_url)) {
+        return NextResponse.json({ error: 'youtube_url must be a https youtube.com or youtu.be URL' }, { status: 400 });
+      }
+    }
+
+    // --- editor_id cross-channel guard ---------------------------------------
+    // An editor may only be assigned if they belong to one of the item's
+    // currently-linked channels. Prevents accidental cross-tenant leakage
+    // where channel A's item points to channel B's editor.
+    if (hasField('editor_id') && patch.editor_id) {
+      const valid = await sql`
+        SELECT 1 FROM channel_editors ed
+        JOIN schedule_item_channels sic ON sic.channel_id = ed.channel_id
+        WHERE ed.id = ${patch.editor_id}::uuid AND sic.item_id = ${id}
+        LIMIT 1
+      `;
+      if (!valid.rows.length) {
+        return NextResponse.json({ error: 'Editor does not belong to this item\'s channels' }, { status: 400 });
+      }
+    }
+
+    // Single SELECT for the pieces the rest of the handler needs.
+    const prev = await sql`SELECT status, checklist, custom_fields FROM schedule_items WHERE id = ${id}`;
+    if (!prev.rows.length) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    const prevStatus: string = prev.rows[0]?.status;
+
+    // --- Server-side auto-advance --------------------------------------------
+    // Caller passes `auto_advance_to: 'scripting'`; server decides whether
+    // the item's channel pipeline allows moving from prevStatus → target, and
+    // the decision becomes part of this single PATCH — no client-side pipeline
+    // knowledge, no TOCTOU between a read and a write.
+    let advanced: { prev_status: string; new_status: string } | null = null;
+    if (hasField('auto_advance_to') && typeof patch.auto_advance_to === 'string') {
+      // Fetch the pipeline for this item's primary channel (or global default).
+      const channelRows = await sql`SELECT channel_id FROM schedule_item_channels WHERE item_id = ${id} LIMIT 1`;
+      const channelId: string | null = channelRows.rows[0]?.channel_id ?? null;
+      let pipeline: Array<{ key: string; position: number }> = [];
+      if (channelId) {
+        const r = await sql`SELECT key, position FROM channel_statuses WHERE channel_id = ${channelId} ORDER BY position ASC`;
+        pipeline = r.rows as Array<{ key: string; position: number }>;
+      }
+      if (pipeline.length === 0) {
+        pipeline = DEFAULT_SCHEDULE_STATUSES.map((s, i) => ({ key: s.key, position: i }));
+      }
+      const fromIdx = pipeline.findIndex(s => s.key === prevStatus);
+      const toIdx = pipeline.findIndex(s => s.key === patch.auto_advance_to);
+      if (fromIdx >= 0 && toIdx > fromIdx) {
+        // Promote it into a regular status change so the existing side-effects
+        // (stage_entered_at reset + checklist injection) run naturally.
+        patch.status = patch.auto_advance_to;
+        advanced = { prev_status: prevStatus, new_status: patch.auto_advance_to };
+      }
+    }
+
+    // Status-change side-effects: stage_entered_at reset + optional checklist injection.
     let stageAdvanced = false;
-    // stage is optional because existing DB rows may predate the field.
     let injectedChecklist: Array<{ id: string; text: string; done: boolean; stage?: string }> | null = null;
     if (hasField('status') && patch.status) {
-      const prev = await sql`SELECT status, checklist FROM schedule_items WHERE id = ${id}`;
-      const prevStatus = prev.rows[0]?.status;
       stageAdvanced = prevStatus !== patch.status;
-
       if (stageAdvanced) {
-        // Find the best-matching template: exact channel match first, then channel-null (global default).
         const channelRows = await sql`SELECT channel_id FROM schedule_item_channels WHERE item_id = ${id} LIMIT 1`;
         const channelId = channelRows.rows[0]?.channel_id ?? null;
         const tpl = await sql`
@@ -71,8 +136,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
     if (hasField('channel_ids')) {
       const channelIds: string[] = patch.channel_ids ?? [];
-      // Atomic reassignment via a single CTE: delete rows not in the new set,
-      // then upsert the new set. One statement = no partial state on crash.
+      // Atomic reassignment via a single CTE.
       await sql.query(
         `WITH new_ids AS (SELECT unnest($2::uuid[]) AS cid),
               pruned AS (
@@ -92,6 +156,15 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       : (hasField('checklist') ? JSON.stringify(patch.checklist ?? []) : null);
     const checklistProvided = injectedChecklist != null || hasField('checklist');
 
+    // custom_fields_merge: shallow-merge ($existing || $merge) on the server so
+    // two concurrent feature completions don't clobber each other's keys. The
+    // explicit `custom_fields` whole-object write still works; if both are
+    // supplied, the whole-object write applies first and the merge stamps on
+    // top (same SQL expression order).
+    const customFieldsMergeJson = hasField('custom_fields_merge')
+      ? JSON.stringify(patch.custom_fields_merge ?? {})
+      : null;
+
     await sql`
       UPDATE schedule_items SET
         title            = CASE WHEN ${hasField('title')}         THEN ${patch.title ?? null}         ELSE title END,
@@ -100,7 +173,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         stage_entered_at = CASE WHEN ${stageAdvanced}             THEN NOW()                          ELSE stage_entered_at END,
         notes            = CASE WHEN ${hasField('notes')}         THEN ${patch.notes ?? null}         ELSE notes END,
         tags             = CASE WHEN ${hasField('tags')}          THEN ${JSON.stringify(patch.tags ?? [])}::jsonb ELSE tags END,
-        custom_fields    = CASE WHEN ${hasField('custom_fields')} THEN ${JSON.stringify(patch.custom_fields ?? {})}::jsonb ELSE custom_fields END,
+        custom_fields    = CASE
+                             WHEN ${hasField('custom_fields')}       THEN ${JSON.stringify(patch.custom_fields ?? {})}::jsonb
+                             WHEN ${customFieldsMergeJson !== null}  THEN COALESCE(custom_fields, '{}'::jsonb) || ${customFieldsMergeJson}::jsonb
+                             ELSE custom_fields
+                           END,
         position         = CASE WHEN ${hasField('position')}      THEN ${patch.position ?? 0}         ELSE position END,
         idea_id          = CASE WHEN ${hasField('idea_id')}       THEN ${patch.idea_id ?? null}::uuid  ELSE idea_id END,
         project_id       = CASE WHEN ${hasField('project_id')}    THEN ${patch.project_id ?? null}::uuid ELSE project_id END,
@@ -121,10 +198,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       WHERE id = ${id}
     `;
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, advanced });
   } catch (err) {
     console.error('PATCH /api/schedule/[id]', err);
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
 
@@ -140,7 +217,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     await sql`DELETE FROM schedule_items WHERE id = ${id}`;
     return NextResponse.json({ success: true });
   } catch (err) {
-    console.error(err);
+    console.error('DELETE /api/schedule/[id]', err);
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
