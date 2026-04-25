@@ -42,15 +42,24 @@ export async function POST(req: NextRequest) {
       modelId: modelId || 'claude-sonnet-4-6',
       prompt: user,
       systemPrompt: system,
-      maxTokens: 6000,
+      maxTokens: 16000,
       temperature: 0.4,
     });
 
     let result;
     try {
       result = parseLlmJson(raw);
-    } catch {
-      return NextResponse.json({ error: 'Failed to parse production document — try again' }, { status: 500 });
+    } catch (parseErr) {
+      // Surface the real cause so the client can distinguish truncation from
+      // malformed JSON — generic "try again" hides a multi-minute failure.
+      const detail = parseErr instanceof Error ? parseErr.message : 'unknown parser error';
+      const tail = raw.slice(-120).replace(/\s+/g, ' ').trim();
+      const looksTruncated = !raw.trimEnd().endsWith('}') && !raw.trimEnd().endsWith('```');
+      const hint = looksTruncated ? ' (output appears truncated — model hit token cap)' : '';
+      return NextResponse.json(
+        { error: `Failed to parse production document${hint} — ${detail}. Tail: …${tail}` },
+        { status: 500 },
+      );
     }
 
     return NextResponse.json({ result });

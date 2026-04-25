@@ -525,8 +525,18 @@ function ProductionDocPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scheduleItemId, schedulePrefilled]);
 
-  // Restore last result from localStorage after mount (useEffect so SSR is unaffected)
+  // Restore last result from localStorage after mount (useEffect so SSR is unaffected).
+  // Skip restore on a handoff (schedule-link, generator, QA) so the new script
+  // starts a fresh session — and discard the saved draft so it doesn't resurface.
   useEffect(() => {
+    const fromHandoff = !!scheduleItemId
+      || search.get('from') === 'generator'
+      || search.get('from') === 'qa'
+      || !!localStorage.getItem('prodoc_prefill');
+    if (fromHandoff) {
+      try { localStorage.removeItem('prodoc_last_result'); } catch { /* ignore */ }
+      return;
+    }
     try {
       const saved = localStorage.getItem('prodoc_last_result');
       if (!saved) return;
@@ -537,6 +547,7 @@ function ProductionDocPage() {
       const ago = parsed.savedAt ? Math.round((Date.now() - parsed.savedAt) / 60000) : null;
       toast.success(`Previous session restored${ago !== null ? ` (saved ${ago < 1 ? 'just now' : `${ago}m ago`})` : ''}`, { duration: 4000 });
     } catch { /* corrupt storage — ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Persist doc + images together whenever either changes
@@ -893,7 +904,8 @@ function ProductionDocPage() {
       appendLog(`Script: ${totalWords} words · Style: ${stylePreset}${analyzedCount > 0 ? ` · ${analyzedCount} visual ref(s) analyzed` : ''}`);
 
       // ── Chunked generation — split long scripts to avoid 504 timeouts ──────────
-      const MAX_CHUNK_WORDS = 1000;
+      // 700 words ≈ 35–50 rows per chunk, comfortably within the API's 16k output cap.
+      const MAX_CHUNK_WORDS = 700;
       const chunks = splitScriptIntoChunks(script.trim(), MAX_CHUNK_WORDS);
       const isMultiChunk = chunks.length > 1;
       if (isMultiChunk) {
