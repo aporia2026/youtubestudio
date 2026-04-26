@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
 import type { ScheduleItem } from '@/lib/schedule';
-import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadActiveScriptForItem } from '@/lib/schedule-link';
+import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadFullContextForItem, buildContextNotesFromItem } from '@/lib/schedule-link';
 import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
@@ -507,7 +507,10 @@ function ProductionDocPage() {
     return () => { mountedRef.current = false; };
   }, []);
 
-  // Schedule-link preload: topic/niche from the item, script from its project.
+  // Schedule-link preload: pull every relevant field off the linked item so
+  // the user doesn't retype context they already captured upstream. Functional
+  // setters (curr => curr || ctx.x) keep manual edits made before the async
+  // resolves from being clobbered.
   useEffect(() => {
     if (!scheduleItemId || schedulePrefilled) return;
     let cancelled = false;
@@ -516,10 +519,20 @@ function ProductionDocPage() {
       if (cancelled || !item) return;
       setScheduleItem(item);
       setSchedulePrefilled(true);
-      setTopic(curr => curr || item.title || '');
-      setNiche(curr => curr || item.pillar || '');
-      const content = await loadActiveScriptForItem(item);
-      if (!cancelled && content) setScript(prev => prev || content);
+      const ctx = await loadFullContextForItem(item);
+      if (cancelled) return;
+      setTopic(curr => curr || ctx.topic);
+      setNiche(curr => curr || ctx.niche);
+      if (ctx.script) setScript(prev => prev || ctx.script!);
+      // Seed the creative brief with the item's accumulated narrative context
+      // (notes, series part, prior published description, editor, open
+      // checklist) — the prod-doc generator will weight these as scene-shaping
+      // hints. User can still wipe / edit before generating.
+      const briefSeed = [buildContextNotesFromItem(ctx), ctx.prevDescription]
+        .filter(Boolean)
+        .join('\n\n');
+      if (briefSeed) setCreativeBrief(curr => curr || briefSeed);
+      toast.message(`Loaded context from "${item.title || 'schedule item'}"`);
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -605,7 +618,9 @@ function ProductionDocPage() {
     } catch { /* ignore */ }
   }, []);
 
-  // Load prefill from generator / QA pages
+  // Load prefill from generator / QA pages. Functional setters so a
+  // schedule-link prefill that resolved first isn't clobbered by stale
+  // localStorage from an earlier handoff.
   useEffect(() => {
     setNicheHints(getRecentNiches());
     setTopicHints(getRecentTopics());
@@ -614,9 +629,9 @@ function ProductionDocPage() {
       if (raw) {
         localStorage.removeItem('prodoc_prefill');
         const data = JSON.parse(raw);
-        if (data.script) setScript(data.script);
-        if (data.niche)  setNiche(data.niche);
-        if (data.topic)  setTopic(data.topic);
+        if (data.script) setScript(curr => curr || data.script);
+        if (data.niche)  setNiche(curr => curr || data.niche);
+        if (data.topic)  setTopic(curr => curr || data.topic);
       }
     } catch { /* ignore */ }
   }, []);

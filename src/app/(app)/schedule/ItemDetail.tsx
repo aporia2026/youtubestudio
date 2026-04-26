@@ -266,6 +266,8 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
           <span className="text-[10px] uppercase tracking-wider font-semibold shrink-0 mr-1" style={{ color: 'var(--text-muted)' }}>
             Send to
           </span>
+          <SendToButton label="💡 Ideas" href={`/ideas?${SCHEDULE_LINK_PARAM}=${item.id}`}
+            title={item.series_id ? 'Generate next ideas in this series' : 'Open Idea Generator seeded with this niche'} />
           <SendToButton label="🧠 Script" href={`/generator?${SCHEDULE_LINK_PARAM}=${item.id}`} />
           <SendToButton label="🔬 QA"     href={`/qa?${SCHEDULE_LINK_PARAM}=${item.id}`} disabled={!item.project_id}
             title={item.project_id ? 'Open QA Engine with this item linked' : 'Generate or paste a script first'} />

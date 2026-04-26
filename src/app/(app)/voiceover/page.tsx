@@ -5,6 +5,9 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
+import type { ScheduleItem } from '@/lib/schedule';
+import { getScheduleLinkId, fetchScheduleItem, loadFullContextForItem } from '@/lib/schedule-link';
+import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ELEVENLABS_MODELS } from '@/lib/elevenlabs';
 import { cleanScriptForVoiceover } from '@/lib/voiceover-presets';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
@@ -32,6 +35,9 @@ interface VoiceoverSettings {
 function VoiceoverStudio() {
   const searchParams = useSearchParams();
   const projectId = searchParams.get('projectId');
+  const scheduleItemId = getScheduleLinkId(searchParams);
+  const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
+  const [schedulePrefilled, setSchedulePrefilled] = useState(false);
   const [apiKey, setApiKey] = useState('');
   const [keyInput, setKeyInput] = useState('');
   const [voices, setVoices] = useState<ElevenVoice[]>([]);
@@ -74,13 +80,14 @@ function VoiceoverStudio() {
   }
 
   useEffect(() => {
-    // Check for prefill from QA page
+    // Check for prefill from QA page. Functional setter so a schedule-link
+    // prefill that resolved first isn't clobbered by stale localStorage.
     try {
       const prefill = localStorage.getItem('voiceover_prefill');
       if (prefill) {
         localStorage.removeItem('voiceover_prefill');
         const data = JSON.parse(prefill);
-        if (data.script) setText(cleanScriptForVoiceover(data.script));
+        if (data.script) setText(curr => curr || cleanScriptForVoiceover(data.script));
       }
     } catch {}
 
@@ -93,6 +100,25 @@ function VoiceoverStudio() {
       }).catch(() => {});
     }
   }, []);
+
+  // Schedule-link preload: pull the active script from the linked item's
+  // project so the user doesn't have to paste it. Cleaned for voiceover (SSML
+  // markers, stage directions stripped) before being placed in the textarea.
+  useEffect(() => {
+    if (!scheduleItemId || schedulePrefilled) return;
+    let cancelled = false;
+    (async () => {
+      const item = await fetchScheduleItem(scheduleItemId);
+      if (cancelled || !item) return;
+      setScheduleItem(item);
+      setSchedulePrefilled(true);
+      const ctx = await loadFullContextForItem(item);
+      if (cancelled) return;
+      if (ctx.script) setText(curr => curr || cleanScriptForVoiceover(ctx.script!));
+      toast.message(`Loaded context from "${item.title || 'schedule item'}"`);
+    })();
+    return () => { cancelled = true; };
+  }, [scheduleItemId, schedulePrefilled]);
 
   async function loadVoices(key: string) {
     try {
@@ -229,6 +255,7 @@ function VoiceoverStudio() {
 
   return (
     <div className="p-8 max-w-7xl mx-auto">
+      {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Voiceover Studio" />}
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">

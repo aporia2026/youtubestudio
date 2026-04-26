@@ -1,8 +1,12 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { Suspense, useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
+import type { ScheduleItem } from '@/lib/schedule';
+import { getScheduleLinkId, fetchScheduleItem, loadFullContextForItem } from '@/lib/schedule-link';
+import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
@@ -115,7 +119,20 @@ function MiniBar({ label, value }: { label: string; value: number }) {
   );
 }
 
-export default function ThumbnailsPage() {
+export default function ThumbnailsPageWrapper() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>}>
+      <ThumbnailsPage />
+    </Suspense>
+  );
+}
+
+function ThumbnailsPage() {
+  const search = useSearchParams();
+  const scheduleItemId = getScheduleLinkId(search);
+  const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
+  const [schedulePrefilled, setSchedulePrefilled] = useState(false);
+
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('script-generator'));
   const [niche, setNiche] = useState('');
   const [niches, setNiches] = useState<{ id: string; name: string }[]>([]);
@@ -198,7 +215,9 @@ export default function ThumbnailsPage() {
   useEffect(() => {
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
-      if (data.niches?.length) setNiche(data.niches[0].name);
+      // Functional setter so a parallel schedule-link prefill that resolved
+      // first isn't clobbered by the default-first-niche on slow networks.
+      if (data.niches?.length) setNiche(curr => curr || data.niches[0].name);
     }).catch(() => {});
     // Load channels for "attach to video" feature
     fetch('/api/channels').then(r => r.json()).then(data => {
@@ -209,12 +228,34 @@ export default function ThumbnailsPage() {
       if (prefill) {
         localStorage.removeItem('thumbnails_prefill');
         const data = JSON.parse(prefill);
-        if (data.title) setTitle(data.title);
-        if (data.niche) setNiche(data.niche);
-        if (data.description) setDescription(data.description);
+        if (data.title) setTitle(curr => curr || data.title);
+        if (data.niche) setNiche(curr => curr || data.niche);
+        if (data.description) setDescription(curr => curr || data.description);
       }
     } catch {}
   }, []);
+
+  // Schedule-link preload: title + niche from the item, description seeded
+  // from any prior YouTube description, and the active script (if any) so the
+  // concept generator has the full visual context on hand.
+  useEffect(() => {
+    if (!scheduleItemId || schedulePrefilled) return;
+    let cancelled = false;
+    (async () => {
+      const item = await fetchScheduleItem(scheduleItemId);
+      if (cancelled || !item) return;
+      setScheduleItem(item);
+      setSchedulePrefilled(true);
+      const ctx = await loadFullContextForItem(item);
+      if (cancelled) return;
+      if (ctx.topic) setTitle(curr => curr || ctx.topic);
+      if (ctx.niche) setNiche(curr => curr || ctx.niche);
+      if (ctx.prevDescription) setDescription(curr => curr || ctx.prevDescription);
+      if (ctx.script) setScript(prev => prev || ctx.script!);
+      toast.message(`Loaded context from "${item.title || 'schedule item'}"`);
+    })();
+    return () => { cancelled = true; };
+  }, [scheduleItemId, schedulePrefilled]);
 
   async function generateConcepts() {
     if (!title.trim()) { toast.error('Please enter a video title'); return; }
@@ -374,6 +415,7 @@ export default function ThumbnailsPage() {
 
   return (
     <div className="p-8 max-w-6xl mx-auto">
+      {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Thumbnail Studio" />}
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">

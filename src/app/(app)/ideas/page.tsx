@@ -1,8 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { Suspense, useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
+import type { ScheduleItem } from '@/lib/schedule';
+import { getScheduleLinkId, fetchScheduleItem, loadFullContextForItem } from '@/lib/schedule-link';
+import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId, getModelById } from '@/lib/ai-models';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
@@ -125,7 +129,20 @@ interface RedditPost {
   subreddit: string;
 }
 
-export default function IdeasPage() {
+export default function IdeasPageWrapper() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>}>
+      <IdeasPage />
+    </Suspense>
+  );
+}
+
+function IdeasPage() {
+  const search = useSearchParams();
+  const scheduleItemId = getScheduleLinkId(search);
+  const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
+  const [schedulePrefilled, setSchedulePrefilled] = useState(false);
+
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('idea-generator'));
   const [niche, setNiche] = useState('');
   const [niches, setNiches] = useState<{ id: string; name: string }[]>([]);
@@ -219,9 +236,45 @@ export default function IdeasPage() {
   useEffect(() => {
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
-      if (data.niches?.length) setNiche(data.niches[0].name);
+      // Functional setter so a parallel schedule-link prefill that resolved
+      // first isn't clobbered by the default-first-niche.
+      if (data.niches?.length) setNiche(curr => curr || data.niches[0].name);
     }).catch(() => {});
   }, []);
+
+  // Tracks whether the user has manually changed `partNumber` since mount.
+  // Without this, a fast schedule fetch could overwrite a value the user just
+  // typed (initial state `1` is indistinguishable from "user typed 1").
+  const partNumberDirtyRef = useRef(false);
+
+  // Schedule-link preload: when launched from a schedule item (typically a
+  // "next part of this series" intent), seed the niche and series linkage so
+  // generated ideas slot directly into the existing arc. Skips the script
+  // fetch — Ideas never uses the script body.
+  useEffect(() => {
+    if (!scheduleItemId || schedulePrefilled) return;
+    let cancelled = false;
+    (async () => {
+      const item = await fetchScheduleItem(scheduleItemId);
+      if (cancelled || !item) return;
+      setScheduleItem(item);
+      setSchedulePrefilled(true);
+      const ctx = await loadFullContextForItem(item, { withScript: false });
+      if (cancelled) return;
+      if (ctx.niche) setNiche(curr => curr || ctx.niche);
+      if (ctx.series) {
+        setSeriesId(curr => curr || ctx.series!.id);
+        setSeriesTitle(curr => curr || ctx.series!.title);
+        // Suggest the *next* part as the starting number — an idea generated
+        // from a series item is almost always a continuation. Only auto-set
+        // if the user hasn't touched the field (dirty ref guards against the
+        // race where the user typed during the fetch).
+        if (!partNumberDirtyRef.current) setPartNumber(ctx.series.partNumber + 1);
+      }
+      toast.message(`Loaded context from "${item.title || 'schedule item'}"`);
+    })();
+    return () => { cancelled = true; };
+  }, [scheduleItemId, schedulePrefilled]);
 
   // Load the persisted idea library
   useEffect(() => {
@@ -534,6 +587,7 @@ export default function IdeasPage() {
 
   return (
     <div className="p-8 max-w-7xl mx-auto">
+      {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Idea Generator" />}
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">
@@ -837,6 +891,7 @@ export default function IdeasPage() {
               onChange={({ seriesId: id, seriesTitle: t, partNumber: p }) => {
                 setSeriesId(id);
                 if (t !== undefined) setSeriesTitle(t);
+                if (p !== partNumber) partNumberDirtyRef.current = true;
                 setPartNumber(p);
               }}
             />

@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import type { ScheduleItem } from '@/lib/schedule';
-import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadActiveScriptForItem } from '@/lib/schedule-link';
+import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadFullContextForItem } from '@/lib/schedule-link';
 import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
@@ -137,7 +137,9 @@ function QAPage() {
   //       was accumulated after the original mount — the closure's initial `script`/`results`
   //       are stale, but the functional-setter `prev` is always current.
   // Schedule-link preload: if launched with ?scheduleItemId, pull the linked
-  // item's script (via its project) so the QA screen starts populated.
+  // item's script (via its project) so the QA screen starts populated. Also
+  // links the active project so QA results write back to the right script
+  // version.
   useEffect(() => {
     if (!scheduleItemId || schedulePrefilled) return;
     let cancelled = false;
@@ -146,12 +148,16 @@ function QAPage() {
       if (cancelled || !item) return;
       setScheduleItem(item);
       setSchedulePrefilled(true);
-      setNiche(curr => curr || item.pillar || curr);
-      if (item.title) setTopic(curr => curr || item.title);
-      // Pull the active script from the linked project, if any, so the user
-      // doesn't have to paste it back in.
-      const content = await loadActiveScriptForItem(item);
-      if (!cancelled && content) setScript(prev => prev || content);
+      const ctx = await loadFullContextForItem(item);
+      if (cancelled) return;
+      if (ctx.niche) setNiche(curr => curr || ctx.niche);
+      if (ctx.topic) setTopic(curr => curr || ctx.topic);
+      if (ctx.script) setScript(prev => prev || ctx.script!);
+      // Carry forward the project linkage so saved QA sessions and applied
+      // fixes land on the same script row that the schedule item points to.
+      if (item.project_id) setProjectId(curr => curr || item.project_id);
+      if (item.script_id) setScriptId(curr => curr || item.script_id);
+      toast.message(`Loaded context from "${item.title || 'schedule item'}"`);
     })();
     return () => { cancelled = true; };
     // `script` intentionally omitted from deps — we only peek at its initial value on mount.

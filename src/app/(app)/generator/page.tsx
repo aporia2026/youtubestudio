@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import type { ScheduleItem } from '@/lib/schedule';
-import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, SCHEDULE_LINK_PARAM } from '@/lib/schedule-link';
+import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadFullContextForItem, buildContextNotesFromItem, SCHEDULE_LINK_PARAM } from '@/lib/schedule-link';
 import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { AddToScheduleButton } from '@/components/ui/AddToScheduleButton';
 import { ModelSelector } from '@/components/ui/ModelSelector';
@@ -132,6 +132,10 @@ function GeneratorPage() {
   const [seriesId, setSeriesId] = useState<string | null>(null);
   const [seriesTitle, setSeriesTitle] = useState<string>('');
   const [partNumber, setPartNumber] = useState<number>(1);
+  // Tracks whether the user has manually changed `partNumber` since mount.
+  // Without this, a fast schedule fetch could overwrite a value the user just
+  // typed (initial state `1` is indistinguishable from "user typed 1").
+  const partNumberDirtyRef = useRef(false);
 
   // User-authored script constraints — skip hook, skip CTA, custom rules.
   // These ride with every generate + QA call so the reviewer doesn't flag
@@ -382,9 +386,25 @@ function GeneratorPage() {
       if (cancelled || !item) return;
       setScheduleItem(item);
       setSchedulePrefilled(true);
-      setTopic(curr => curr || item.title || '');
-      setNiche(curr => curr || item.pillar || '');
-      setContext(curr => curr || item.notes || '');
+      const ctx = await loadFullContextForItem(item);
+      if (cancelled) return;
+      setTopic(curr => curr || ctx.topic);
+      setNiche(curr => curr || ctx.niche);
+      // Compose the freeform context from notes + series + tags + checklist,
+      // not just notes — gives the script generator everything the schedule
+      // item already knows about this video.
+      const composed = buildContextNotesFromItem(ctx);
+      if (composed) setContext(curr => curr || composed);
+      // Auto-link the series so part-N continuity context is fetched at
+      // generate time. Series picker picks this up via its prop sync effect.
+      // Only auto-set partNumber if the user hasn't touched it (dirty ref
+      // guards against the race where the user typed during the fetch).
+      if (ctx.series) {
+        setSeriesId(curr => curr || ctx.series!.id);
+        setSeriesTitle(curr => curr || ctx.series!.title);
+        if (!partNumberDirtyRef.current) setPartNumber(ctx.series.partNumber);
+      }
+      toast.message(`Loaded context from "${item.title || 'schedule item'}"`);
     })();
     return () => { cancelled = true; };
   }, [scheduleItemId, schedulePrefilled]);
@@ -398,13 +418,16 @@ function GeneratorPage() {
       if (prefill) {
         localStorage.removeItem('generator_prefill');
         const data = JSON.parse(prefill);
-        if (data.topic) setTopic(data.topic);
-        if (data.niche) { setNiche(data.niche); prefillNiche = data.niche; }
-        if (data.audience) setAudience(data.audience);
-        if (data.context) setContext(data.context);
+        // Functional setters so a schedule-link prefill that resolved first
+        // (`?scheduleItemId=…`) isn't clobbered by stale localStorage from a
+        // prior session.
+        if (data.topic) setTopic(curr => curr || data.topic);
+        if (data.niche) { setNiche(curr => curr || data.niche); prefillNiche = data.niche; }
+        if (data.audience) setAudience(curr => curr || data.audience);
+        if (data.context) setContext(curr => curr || data.context);
         if (data.style && STYLES.includes(data.style)) setStyle(data.style);
         if (data.refs && Array.isArray(data.refs)) {
-          setRefs(data.refs);
+          setRefs(prev => prev.length ? prev : data.refs);
           setShowRefs(true);
         }
       }
@@ -429,8 +452,10 @@ function GeneratorPage() {
 
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
-      // Only set default niche if no prefill was applied
-      if (!prefillNiche && data.niches?.length) setNiche(data.niches[0].name);
+      // Only set default niche if no prefill was applied. Functional setter
+      // also covers the schedule-link race: if the schedule prefill effect
+      // resolved first and set a niche, this won't clobber it.
+      if (!prefillNiche && data.niches?.length) setNiche(curr => curr || data.niches[0].name);
     }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1020,6 +1045,7 @@ function GeneratorPage() {
                 onChange={({ seriesId: id, seriesTitle: t, partNumber: p }) => {
                   setSeriesId(id);
                   if (t !== undefined) setSeriesTitle(t);
+                  if (p !== partNumber) partNumberDirtyRef.current = true;
                   setPartNumber(p);
                 }}
               />

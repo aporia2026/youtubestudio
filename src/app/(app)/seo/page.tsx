@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import type { ScheduleItem } from '@/lib/schedule';
-import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadActiveScriptForItem } from '@/lib/schedule-link';
+import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadFullContextForItem } from '@/lib/schedule-link';
 import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
@@ -91,8 +91,9 @@ function SeoPage() {
   const [historyItems, setHistoryItems] = useState<SeoHistoryEntry[]>(() => getSeoHistory());
   const [draftId, setDraftId] = useState<string | null>(() => getActiveDraft()?.id || null);
 
-  // Schedule-link preload: pull topic / niche / script context from the
-  // linked item so the user doesn't retype state they already recorded.
+  // Schedule-link preload: pull topic / niche / script + carry over any prior
+  // SEO outputs already stamped on the item (yt_tags, freeform tags) as a
+  // keyword seed so a re-run can refine instead of starting from scratch.
   useEffect(() => {
     if (!scheduleItemId || schedulePrefilled) return;
     let cancelled = false;
@@ -101,11 +102,19 @@ function SeoPage() {
       if (cancelled || !item) return;
       setScheduleItem(item);
       setSchedulePrefilled(true);
-      setTopic(curr => curr || item.title || '');
-      setNiche(curr => curr || item.pillar || '');
-      setExistingTitle(curr => curr || item.title || '');
-      const content = await loadActiveScriptForItem(item);
-      if (!cancelled && content) setScript(prev => prev || content);
+      const ctx = await loadFullContextForItem(item);
+      if (cancelled) return;
+      setTopic(curr => curr || ctx.topic);
+      setNiche(curr => curr || ctx.niche);
+      setExistingTitle(curr => curr || ctx.topic);
+      if (ctx.script) setScript(prev => prev || ctx.script!);
+      // Seed target keywords from the user's freeform schedule tags only —
+      // *not* from `prevTags` (yt_tags), which are the AI's own previous
+      // output. Reseeding from past output would create a self-reinforcement
+      // loop where the LLM treats its prior suggestions as the target.
+      const seedTags = Array.from(new Set(ctx.freeformTags)).slice(0, 12);
+      if (seedTags.length) setTargetKeywords(curr => curr || seedTags.join(', '));
+      toast.message(`Loaded context from "${item.title || 'schedule item'}"`);
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -115,7 +124,9 @@ function SeoPage() {
     setTopicHints(getRecentTopics());
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
-      if (data.niches?.length) setNiche(data.niches[0].name);
+      // Functional setter so a schedule-link or other prefill that already set
+      // niche isn't overwritten by the default-first-niche on slow networks.
+      if (data.niches?.length) setNiche(curr => curr || data.niches[0].name);
     }).catch(() => {});
 
     try {
@@ -123,9 +134,9 @@ function SeoPage() {
       if (prefill) {
         localStorage.removeItem('seo_prefill');
         const data = JSON.parse(prefill);
-        if (data.topic) setTopic(data.topic);
-        if (data.niche) setNiche(data.niche);
-        if (data.script) setScript(data.script);
+        if (data.topic) setTopic(curr => curr || data.topic);
+        if (data.niche) setNiche(curr => curr || data.niche);
+        if (data.script) setScript(curr => curr || data.script);
       }
     } catch {}
   }, []);

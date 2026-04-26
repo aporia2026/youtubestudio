@@ -18,9 +18,29 @@
 //     knowledge and there's no TOCTOU.
 
 import { toast } from 'sonner';
-import type { ScheduleItem } from '@/lib/schedule';
+import type { ChecklistItem, ScheduleItem } from '@/lib/schedule';
 
 export const SCHEDULE_LINK_PARAM = 'scheduleItemId';
+
+/** Everything a downstream feature page might want to prefill from a linked
+ *  schedule item, derived in one place so each page doesn't reinvent its own
+ *  field-picking logic. All entries are nullable/empty-default so callers can
+ *  pass `(curr) => curr || ctx.x` and never overwrite user-typed input. */
+export interface ScheduleItemContext {
+  item: ScheduleItem;
+  topic: string;
+  niche: string;
+  notes: string;
+  script: string | null;
+  prevDescription: string;
+  prevTags: string[];
+  freeformTags: string[];
+  series: { id: string; title: string; partNumber: number } | null;
+  editor: { id: string; name: string; channelId: string | null } | null;
+  youtubeUrl: string;
+  thumbnails: { aUrl: string | null; bUrl: string | null; winner: 'a' | 'b' | null };
+  checklist: ChecklistItem[];
+}
 
 export async function fetchScheduleItem(id: string): Promise<ScheduleItem | null> {
   try {
@@ -135,4 +155,71 @@ export async function loadActiveScriptForItem(item: ScheduleItem): Promise<strin
   } catch {
     return null;
   }
+}
+
+export interface LoadContextOptions {
+  /** Pull the project's active script (one extra GET). Defaults to true.
+   *  Pages that won't display the script (Ideas) should pass false to avoid
+   *  the wasted round-trip. */
+  withScript?: boolean;
+}
+
+/** Build the full prefill context for a schedule item: optionally pulls the
+ *  linked script and projects every relevant item field into a predictable
+ *  shape. Returns empty strings/null rather than throwing so callers can
+ *  `setX(curr => curr || ctx.x)` without conditional guards. */
+export async function loadFullContextForItem(
+  item: ScheduleItem,
+  opts: LoadContextOptions = {},
+): Promise<ScheduleItemContext> {
+  const withScript = opts.withScript !== false;
+  const script = withScript ? await loadActiveScriptForItem(item) : null;
+  return {
+    item,
+    topic: item.title,
+    niche: item.pillar ?? '',
+    notes: item.notes ?? '',
+    script,
+    prevDescription: item.yt_description ?? '',
+    prevTags: Array.isArray(item.yt_tags) ? item.yt_tags : [],
+    freeformTags: Array.isArray(item.tags) ? item.tags : [],
+    series: item.series_id
+      ? {
+          id: item.series_id,
+          title: item.series_title ?? '',
+          partNumber: item.part_number ?? 1,
+        }
+      : null,
+    editor: item.editor_id
+      ? {
+          id: item.editor_id,
+          name: item.editor_name ?? '',
+          channelId: item.editor_channel_id ?? null,
+        }
+      : null,
+    youtubeUrl: item.youtube_url ?? '',
+    thumbnails: {
+      aUrl: item.thumbnail_a_url ?? null,
+      bUrl: item.thumbnail_b_url ?? null,
+      winner: item.thumbnail_winner ?? null,
+    },
+    checklist: Array.isArray(item.checklist) ? item.checklist : [],
+  };
+}
+
+/** Compose a single "background context" string from the schedule item — used
+ *  by features that take freeform text (Generator's `context`, Production
+ *  Doc's brief input). Only includes fields that are actually present. */
+export function buildContextNotesFromItem(ctx: ScheduleItemContext): string {
+  const parts: string[] = [];
+  if (ctx.notes) parts.push(ctx.notes);
+  if (ctx.series) parts.push(`Series: ${ctx.series.title} (Part ${ctx.series.partNumber})`);
+  if (ctx.freeformTags.length) parts.push(`Tags: ${ctx.freeformTags.join(', ')}`);
+  if (ctx.youtubeUrl) parts.push(`Published video: ${ctx.youtubeUrl}`);
+  if (ctx.editor?.name) parts.push(`Editor: ${ctx.editor.name}`);
+  if (ctx.checklist.length) {
+    const open = ctx.checklist.filter(c => !c.done).map(c => `• ${c.text}`);
+    if (open.length) parts.push(`Open checklist:\n${open.join('\n')}`);
+  }
+  return parts.join('\n\n');
 }
