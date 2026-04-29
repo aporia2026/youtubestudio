@@ -54,11 +54,13 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
       ORDER BY created_at DESC
     `;
 
-    // Refresh presigned URLs on R2-backed assets
+    // Refresh presigned URLs on R2-backed assets. Decide which bucket-aware
+    // presigner to use based on the stored r2_bucket — images vs videos.
+    const imagesBucket = process.env.R2_IMAGES_BUCKET_NAME || 'images';
     const refreshed = await Promise.all((mediaRows as MediaRow[]).map(async (r) => {
       if (!r.r2_key) return r;
       try {
-        const isImages = r.r2_bucket && r.r2_bucket !== process.env.R2_BUCKET_NAME && r.r2_bucket !== 'review-videos';
+        const isImages = r.r2_bucket === imagesBucket;
         const url = isImages ? await getImagesDownloadUrl(r.r2_key) : await getDownloadPresignedUrl(r.r2_key);
         return { ...r, url };
       } catch { return r; }

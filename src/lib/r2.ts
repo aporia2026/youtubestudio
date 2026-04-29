@@ -55,7 +55,7 @@ export async function deleteFromBucket(bucket: string, key: string): Promise<voi
 // ---------------------------------------------------------------------------
 
 function getReviewBucket(): string {
-  return process.env.R2_BUCKET_NAME || 'review-videos';
+  return process.env.R2_BUCKET_NAME || 'videos';
 }
 
 /** Generate a presigned PUT URL for direct browser → R2 upload (1-hour expiry). */
