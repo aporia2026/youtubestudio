@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, use } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
+import { compressVideo, isCompressionSupported } from '@/lib/compress-video';
 
 interface Version {
   id: string;
@@ -72,6 +73,17 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  // Compression state — distinct from upload progress so the UI can show
+  // a two-phase progress bar (compress → upload).
+  const [compressing, setCompressing] = useState(false);
+  const [compressProgress, setCompressProgress] = useState(0);
+  const [compressionStats, setCompressionStats] = useState<{ originalMB: number; compressedMB: number; savedPct: number } | null>(null);
+  // Persisted preference — once a user opts out we don't pester them again
+  // for the rest of the session.
+  const [skipCompression, setSkipCompression] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage?.getItem('skipVideoCompression') === '1';
+  });
   const [showAddPerson, setShowAddPerson] = useState(false);
   const [pickedCollaboratorId, setPickedCollaboratorId] = useState('');
   const [newName, setNewName] = useState('');
@@ -106,16 +118,51 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
   }
 
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const original = e.target.files?.[0];
+    if (!original) return;
 
-    if (!file.type.startsWith('video/')) {
+    if (!original.type.startsWith('video/')) {
       toast.error('Please select a video file');
       return;
     }
 
     setUploading(true);
     setUploadProgress(0);
+    setCompressionStats(null);
+
+    let file: File = original;
+
+    // 0. Compress in the browser before uploading. Cuts file size roughly
+    // in half on most footage and produces a faststart MP4 (moov atom at
+    // the front), which fixes the mid-playback stalls on R2. We skip if
+    // the browser doesn't have hardware H.264, the user opted out, or the
+    // file is already tiny — and silently fall back to the original on
+    // any compression error so a broken codec path can never block upload.
+    if (!skipCompression && original.size >= 5 * 1024 * 1024) {
+      try {
+        const supported = await isCompressionSupported();
+        if (supported) {
+          setCompressing(true);
+          setCompressProgress(0);
+          const result = await compressVideo(original, p => setCompressProgress(p.fraction));
+          // Only keep the compressed version if it actually saved bytes —
+          // some sources (e.g. already-tightly-encoded screen recordings)
+          // can grow on a re-encode.
+          if (result.compressedSize < result.originalSize) {
+            file = result.file;
+            const originalMB = result.originalSize / (1024 * 1024);
+            const compressedMB = result.compressedSize / (1024 * 1024);
+            const savedPct = Math.round((1 - result.compressedSize / result.originalSize) * 100);
+            setCompressionStats({ originalMB, compressedMB, savedPct });
+            toast.success(`Compressed ${originalMB.toFixed(1)} MB → ${compressedMB.toFixed(1)} MB (saved ${savedPct}%)`);
+          }
+        }
+      } catch (err) {
+        console.warn('Compression failed, uploading original:', err);
+      } finally {
+        setCompressing(false);
+      }
+    }
 
     try {
       // 1. Get presigned URL
@@ -455,28 +502,77 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
               className="px-3 py-1.5 rounded-lg text-xs font-medium text-white disabled:opacity-50"
               style={{ background: '#7c3aed' }}
             >
-              {uploading ? 'Uploading...' : '+ Upload Video'}
+              {compressing ? 'Compressing…' : uploading ? 'Uploading…' : '+ Upload Video'}
             </button>
           </div>
 
-          {/* Upload progress */}
+          {/* Compression toggle — once a user opts out we remember it for the
+              session via localStorage so they don't have to keep dismissing
+              the bar on every upload. */}
+          {!uploading && (
+            <label className="flex items-center gap-2 mb-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              <input
+                type="checkbox"
+                checked={!skipCompression}
+                onChange={e => {
+                  const enabled = e.target.checked;
+                  setSkipCompression(!enabled);
+                  if (typeof window !== 'undefined') {
+                    if (enabled) window.localStorage.removeItem('skipVideoCompression');
+                    else window.localStorage.setItem('skipVideoCompression', '1');
+                  }
+                }}
+              />
+              <span>Auto-compress before upload (faster, smaller — runs in your browser)</span>
+            </label>
+          )}
+
+          {/* Upload progress — two-phase bar (compress → upload) so the user
+              can see which stage they're in. Compression is the slower step
+              for large files; the upload step is bandwidth-bound. */}
           <AnimatePresence>
             {uploading && (
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
-                className="mb-4"
+                className="mb-4 space-y-2"
               >
-                <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
-                  <motion.div
-                    className="h-full rounded-full"
-                    style={{ background: 'linear-gradient(90deg, #7c3aed, #06b6d4)', width: `${uploadProgress}%` }}
-                    initial={{ width: 0 }}
-                    animate={{ width: `${uploadProgress}%` }}
-                  />
-                </div>
-                <p className="text-xs mt-1 text-center" style={{ color: 'var(--text-muted)' }}>{uploadProgress}%</p>
+                {compressing && (
+                  <div>
+                    <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
+                      <motion.div
+                        className="h-full rounded-full"
+                        style={{ background: 'linear-gradient(90deg, #f59e0b, #ef4444)', width: `${Math.round(compressProgress * 100)}%` }}
+                        initial={{ width: 0 }}
+                        animate={{ width: `${Math.round(compressProgress * 100)}%` }}
+                      />
+                    </div>
+                    <p className="text-xs mt-1 text-center" style={{ color: 'var(--text-muted)' }}>
+                      Compressing in your browser… {Math.round(compressProgress * 100)}%
+                    </p>
+                  </div>
+                )}
+                {!compressing && (
+                  <div>
+                    <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
+                      <motion.div
+                        className="h-full rounded-full"
+                        style={{ background: 'linear-gradient(90deg, #7c3aed, #06b6d4)', width: `${uploadProgress}%` }}
+                        initial={{ width: 0 }}
+                        animate={{ width: `${uploadProgress}%` }}
+                      />
+                    </div>
+                    <p className="text-xs mt-1 text-center" style={{ color: 'var(--text-muted)' }}>
+                      Uploading… {uploadProgress}%
+                      {compressionStats && (
+                        <span className="ml-2" style={{ color: '#22c55e' }}>
+                          (saved {compressionStats.savedPct}% via browser compression)
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>

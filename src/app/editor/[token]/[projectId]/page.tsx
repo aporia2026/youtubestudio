@@ -2,6 +2,7 @@
 
 import { use, useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
+import { compressVideo, isCompressionSupported } from '@/lib/compress-video';
 
 interface ProjectData {
   editor: { id: string; name: string; color: string };
@@ -31,6 +32,13 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [compressing, setCompressing] = useState(false);
+  const [compressProgress, setCompressProgress] = useState(0);
+  const [compressionSavedPct, setCompressionSavedPct] = useState<number | null>(null);
+  const [skipCompression, setSkipCompression] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage?.getItem('skipVideoCompression') === '1';
+  });
   const [uploadNote, setUploadNote] = useState('');
 
   const load = useCallback(async () => {
@@ -51,10 +59,34 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
 
   useEffect(() => { load(); }, [load]);
 
-  async function handleUpload(file: File) {
-    if (!file.type.startsWith('video/')) { alert('Please choose a video file'); return; }
+  async function handleUpload(originalFile: File) {
+    if (!originalFile.type.startsWith('video/')) { alert('Please choose a video file'); return; }
     setUploading(true);
     setUploadProgress(0);
+    setCompressionSavedPct(null);
+
+    let file: File = originalFile;
+
+    // Browser-side compression — same flow as the owner-side review upload.
+    // Cuts file size, fixes faststart, falls back to original on any failure.
+    if (!skipCompression && originalFile.size >= 5 * 1024 * 1024) {
+      try {
+        const supported = await isCompressionSupported();
+        if (supported) {
+          setCompressing(true);
+          setCompressProgress(0);
+          const result = await compressVideo(originalFile, p => setCompressProgress(p.fraction));
+          if (result.compressedSize < result.originalSize) {
+            file = result.file;
+            setCompressionSavedPct(Math.round((1 - result.compressedSize / result.originalSize) * 100));
+          }
+        }
+      } catch (err) {
+        console.warn('Compression failed, uploading original:', err);
+      } finally {
+        setCompressing(false);
+      }
+    }
 
     try {
       // Probe video metadata
@@ -283,18 +315,53 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
 
         {uploading ? (
           <div>
-            <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
-              <div className="h-full transition-all" style={{ width: `${uploadProgress}%`, background: 'linear-gradient(90deg, #7c3aed, #06b6d4)' }} />
-            </div>
-            <p className="text-xs mt-1 text-center" style={{ color: 'var(--text-muted)' }}>Uploading… {uploadProgress}%</p>
+            {compressing ? (
+              <>
+                <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
+                  <div className="h-full transition-all" style={{ width: `${Math.round(compressProgress * 100)}%`, background: 'linear-gradient(90deg, #f59e0b, #ef4444)' }} />
+                </div>
+                <p className="text-xs mt-1 text-center" style={{ color: 'var(--text-muted)' }}>
+                  Compressing in your browser… {Math.round(compressProgress * 100)}%
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
+                  <div className="h-full transition-all" style={{ width: `${uploadProgress}%`, background: 'linear-gradient(90deg, #7c3aed, #06b6d4)' }} />
+                </div>
+                <p className="text-xs mt-1 text-center" style={{ color: 'var(--text-muted)' }}>
+                  Uploading… {uploadProgress}%
+                  {compressionSavedPct != null && (
+                    <span className="ml-2" style={{ color: '#22c55e' }}>(saved {compressionSavedPct}% via browser compression)</span>
+                  )}
+                </p>
+              </>
+            )}
           </div>
         ) : (
-          <label className="flex items-center justify-center gap-2 p-4 rounded-lg border-2 border-dashed cursor-pointer transition-colors hover:border-purple-500/50"
-            style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
-            <input type="file" accept="video/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload(f); }} />
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
-            <span className="text-sm">Click to choose a video</span>
-          </label>
+          <>
+            <label className="flex items-center justify-center gap-2 p-4 rounded-lg border-2 border-dashed cursor-pointer transition-colors hover:border-purple-500/50"
+              style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
+              <input type="file" accept="video/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload(f); }} />
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
+              <span className="text-sm">Click to choose a video</span>
+            </label>
+            <label className="flex items-center gap-2 mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              <input
+                type="checkbox"
+                checked={!skipCompression}
+                onChange={e => {
+                  const enabled = e.target.checked;
+                  setSkipCompression(!enabled);
+                  if (typeof window !== 'undefined') {
+                    if (enabled) window.localStorage.removeItem('skipVideoCompression');
+                    else window.localStorage.setItem('skipVideoCompression', '1');
+                  }
+                }}
+              />
+              <span>Auto-compress before upload (faster, smaller — runs in your browser)</span>
+            </label>
+          </>
         )}
       </div>
     </div>
