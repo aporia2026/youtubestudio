@@ -144,3 +144,86 @@ export async function bumpEditorAssignmentAccess(projectId: string, editorId: st
     `;
   } catch {}
 }
+
+/**
+ * Find the main `projects.id` that corresponds to a `review_projects.id`.
+ *
+ * The link is indirect — when a schedule item spawns a review project we stash
+ * `review_project_id` in `schedule_items.custom_fields`, and the schedule item
+ * already carries the main `project_id`. So we hop schedule_items to translate.
+ *
+ * Returns null when no schedule item links the two (standalone review project).
+ */
+export async function findMainProjectIdForReviewProject(reviewProjectId: string): Promise<string | null> {
+  try {
+    const { rows } = await sql`
+      SELECT project_id FROM schedule_items
+      WHERE custom_fields->>'review_project_id' = ${reviewProjectId}
+        AND project_id IS NOT NULL
+      LIMIT 1
+    `;
+    return (rows[0]?.project_id as string | undefined) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Best-effort: when an editor gets a review link, ensure they also have an
+ * editor_assignment so the project shows up on their personal dashboard.
+ * Silently no-ops if the review project isn't tied to a main project (e.g.
+ * standalone review projects created outside the schedule flow).
+ */
+export async function ensureEditorAssignmentFromReviewLink(reviewProjectId: string, editorId: string) {
+  try {
+    const projectId = await findMainProjectIdForReviewProject(reviewProjectId);
+    if (!projectId) return null;
+    await ensureEditorSchema();
+    const { rows } = await sql`
+      INSERT INTO editor_assignments (project_id, editor_id, review_project_id)
+      VALUES (${projectId}, ${editorId}, ${reviewProjectId})
+      ON CONFLICT (project_id, editor_id) DO UPDATE
+        SET review_project_id = COALESCE(editor_assignments.review_project_id, EXCLUDED.review_project_id),
+            updated_at = NOW()
+      RETURNING *
+    `;
+    return rows[0] ?? null;
+  } catch (err) {
+    console.error('ensureEditorAssignmentFromReviewLink error:', err);
+    return null;
+  }
+}
+
+/**
+ * Return review_share_links assigned to this editor that have NO matching
+ * editor_assignment (and no resolvable main project). Used by the dashboard
+ * to show "review-only" projects so a misconfigured share still surfaces.
+ */
+export async function getReviewOnlyEntriesForEditor(editorId: string) {
+  await ensureEditorSchema();
+  try {
+    const { rows } = await sql`
+      SELECT
+        s.id           AS link_id,
+        s.token        AS share_token,
+        s.permission   AS permission,
+        s.label        AS label,
+        s.created_at   AS created_at,
+        rp.id          AS review_project_id,
+        rp.title       AS project_title,
+        rp.status      AS review_status
+      FROM review_share_links s
+      JOIN review_projects rp ON rp.id = s.project_id
+      WHERE s.collaborator_id = ${editorId}
+        AND NOT EXISTS (
+          SELECT 1 FROM editor_assignments ea
+          WHERE ea.editor_id = ${editorId}
+            AND ea.review_project_id = rp.id
+        )
+      ORDER BY s.created_at DESC
+    `;
+    return rows;
+  } catch {
+    return [];
+  }
+}

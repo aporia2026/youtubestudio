@@ -56,6 +56,13 @@ export async function ensureTeamSchema() {
     try { await sql`UPDATE collaborators SET personal_token = encode(gen_random_bytes(24), 'hex') WHERE personal_token IS NULL`; } catch {}
     try { await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_collaborators_personal_token ON collaborators(personal_token)`; } catch {}
 
+    // Multi-role support — `role` (singular) stays as the legacy "primary"
+    // role for back-compat with existing queries. `roles` is the new source
+    // of truth (an array). Backfill it from `role` for any rows where it's
+    // NULL so the rest of the codebase can rely on it being populated.
+    try { await sql`ALTER TABLE collaborators ADD COLUMN IF NOT EXISTS roles TEXT[]`; } catch {}
+    try { await sql`UPDATE collaborators SET roles = ARRAY[role] WHERE roles IS NULL AND role IS NOT NULL`; } catch {}
+
     teamMigrated = true;
   } catch (err) {
     console.error('ensureTeamSchema error:', err);
@@ -66,10 +73,30 @@ export async function ensureTeamSchema() {
 // Collaborator CRUD
 // ---------------------------------------------------------------------------
 
+/** Normalise a roles input — accepts a string, an array of strings, or
+ *  nothing — and produces { primary, all } where primary is the first role
+ *  (used for the legacy `role` column) and all is the deduped array of roles
+ *  to write to the `roles` column. */
+function normalizeRoles(roleField: string | undefined, rolesField: string[] | undefined): { primary: string; all: string[] } {
+  const validRoles = new Set(['editor', 'narrator', 'reviewer', 'client']);
+  const collected: string[] = [];
+  if (Array.isArray(rolesField)) {
+    for (const r of rolesField) if (validRoles.has(r) && !collected.includes(r)) collected.push(r);
+  }
+  if (roleField && validRoles.has(roleField) && !collected.includes(roleField)) {
+    collected.push(roleField);
+  }
+  if (collected.length === 0) collected.push('reviewer'); // safe default
+  return { primary: collected[0], all: collected };
+}
+
 export async function createCollaborator(fields: {
   name: string;
   email?: string;
   role?: string;
+  /** Multiple roles — stored in the new roles[] column. Order matters: the
+   *  first role becomes the legacy "primary" role. */
+  roles?: string[];
   color?: string;
   specialties?: string[];
   notes?: string;
@@ -78,14 +105,28 @@ export async function createCollaborator(fields: {
   // Generate long random tokens (48-char hex). Used in unsubscribe + dashboard URLs.
   const unsubscribeToken = Array.from({ length: 6 }, () => Math.random().toString(16).slice(2, 10)).join('');
   const personalToken = Array.from({ length: 6 }, () => Math.random().toString(16).slice(2, 10)).join('');
-  const { rows } = await sql`
-    INSERT INTO collaborators (name, email, role, color, specialties, notes, unsubscribe_token, personal_token)
-    VALUES (${fields.name}, ${fields.email ?? null}, ${fields.role ?? 'reviewer'}, ${fields.color ?? '#7c3aed'}, ${JSON.stringify(fields.specialties || [])}, ${fields.notes ?? null}, ${unsubscribeToken}, ${personalToken})
-    RETURNING *
-  `;
+  const { primary, all } = normalizeRoles(fields.role, fields.roles);
+  // sql.query() (the lower-level pg interface) handles TEXT[] parameter binding
+  // natively. The template-literal `sql` tag does not, so we use query() here.
+  const { rows } = await sql.query(
+    `INSERT INTO collaborators (name, email, role, roles, color, specialties, notes, unsubscribe_token, personal_token)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
+     RETURNING *`,
+    [
+      fields.name,
+      fields.email ?? null,
+      primary,
+      all,
+      fields.color ?? '#7c3aed',
+      JSON.stringify(fields.specialties || []),
+      fields.notes ?? null,
+      unsubscribeToken,
+      personalToken,
+    ],
+  );
 
-  // Also insert into narrator_profiles for backwards compatibility if role is narrator
-  if ((fields.role ?? 'reviewer') === 'narrator') {
+  // Also insert into narrator_profiles for backwards compatibility if narrator is one of the roles
+  if (all.includes('narrator')) {
     try {
       await sql`
         INSERT INTO narrator_profiles (id, name, email, color, specialties, notes)
@@ -101,7 +142,14 @@ export async function createCollaborator(fields: {
 export async function listCollaborators(role?: string) {
   await ensureTeamSchema();
   if (role) {
-    const { rows } = await sql`SELECT * FROM collaborators WHERE role = ${role} ORDER BY name ASC`;
+    // Match the role against EITHER the legacy `role` column or the `roles[]`
+    // array — old rows might only have `role` set if the migration backfill
+    // didn't run, and the new code writes both.
+    const { rows } = await sql`
+      SELECT * FROM collaborators
+      WHERE role = ${role} OR ${role} = ANY(COALESCE(roles, ARRAY[role]))
+      ORDER BY name ASC
+    `;
     return rows;
   }
   const { rows } = await sql`SELECT * FROM collaborators ORDER BY name ASC`;
@@ -118,22 +166,50 @@ export async function updateCollaborator(id: string, fields: {
   name?: string;
   email?: string;
   role?: string;
+  /** When provided, replaces the entire roles array. The legacy `role` column
+   *  is synced to roles[0]. To clear all roles, pass an empty array — but
+   *  normalizeRoles will fall back to 'reviewer' so a person always has at
+   *  least one role. */
+  roles?: string[];
   color?: string;
   specialties?: string[];
   notes?: string;
 }) {
   await ensureTeamSchema();
-  const { rows } = await sql`
-    UPDATE collaborators
-    SET name = COALESCE(${fields.name ?? null}, name),
-        email = COALESCE(${fields.email ?? null}, email),
-        role = COALESCE(${fields.role ?? null}, role),
-        color = COALESCE(${fields.color ?? null}, color),
-        specialties = COALESCE(${fields.specialties ? JSON.stringify(fields.specialties) : null}, specialties),
-        notes = COALESCE(${fields.notes ?? null}, notes)
-    WHERE id = ${id}
-    RETURNING *
-  `;
+  // Roles are only updated when the caller actually provided them. Otherwise
+  // we leave the existing values alone so a partial PATCH doesn't wipe roles.
+  const rolesProvided = fields.roles !== undefined || fields.role !== undefined;
+  let primary: string | null = null;
+  let all: string[] | null = null;
+  if (rolesProvided) {
+    const norm = normalizeRoles(fields.role, fields.roles);
+    primary = norm.primary;
+    all = norm.all;
+  }
+  // sql.query() handles TEXT[] parameter binding natively (the template tag
+  // does not). Empty/omitted fields stay as-is via COALESCE.
+  const { rows } = await sql.query(
+    `UPDATE collaborators
+     SET name = COALESCE($1, name),
+         email = COALESCE($2, email),
+         role = COALESCE($3, role),
+         roles = COALESCE($4::text[], roles),
+         color = COALESCE($5, color),
+         specialties = COALESCE($6::jsonb, specialties),
+         notes = COALESCE($7, notes)
+     WHERE id = $8
+     RETURNING *`,
+    [
+      fields.name ?? null,
+      fields.email ?? null,
+      primary,
+      all,
+      fields.color ?? null,
+      fields.specialties ? JSON.stringify(fields.specialties) : null,
+      fields.notes ?? null,
+      id,
+    ],
+  );
 
   // Sync to narrator_profiles
   if (rows[0]) {

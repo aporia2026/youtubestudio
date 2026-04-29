@@ -28,6 +28,17 @@ interface EditorInfo {
   color: string;
 }
 
+interface ReviewOnlyEntry {
+  link_id: string;
+  share_token: string;
+  permission: string;
+  label: string | null;
+  created_at: string;
+  review_project_id: string;
+  project_title: string;
+  review_status: string;
+}
+
 const STATUS_STYLES: Record<string, { label: string; bg: string; text: string }> = {
   assigned:  { label: 'New',          bg: 'rgba(234,179,8,0.15)',  text: '#eab308' },
   editing:   { label: 'In progress',  bg: 'rgba(124,58,237,0.18)', text: '#a78bfa' },
@@ -53,6 +64,7 @@ export default function EditorDashboard({ params }: { params: Promise<{ token: s
   const { token } = use(params);
   const [editor, setEditor] = useState<EditorInfo | null>(null);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [reviewOnly, setReviewOnly] = useState<ReviewOnlyEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
@@ -63,6 +75,7 @@ export default function EditorDashboard({ params }: { params: Promise<{ token: s
         const data = await r.json();
         setEditor(data.editor);
         setAssignments(data.assignments);
+        setReviewOnly(data.reviewOnly || []);
       })
       .catch(() => setError(true))
       .finally(() => setLoading(false));
@@ -127,6 +140,39 @@ export default function EditorDashboard({ params }: { params: Promise<{ token: s
           </div>
         )}
       </section>
+
+      {reviewOnly.length > 0 && (
+        <section className="mb-8">
+          <h2 className="text-xs font-bold uppercase tracking-widest mb-3" style={{ color: 'var(--text-secondary)' }}>
+            Review access only
+          </h2>
+          <p className="text-[11px] mb-3" style={{ color: 'var(--text-muted)' }}>
+            These projects gave you a review link but weren&apos;t formally assigned to you as an editor — so the script and references aren&apos;t available here. You can still watch + comment.
+          </p>
+          <div className="space-y-2">
+            {reviewOnly.map(r => (
+              <a
+                key={r.link_id}
+                href={`/review/${r.share_token}`}
+                target="_blank"
+                rel="noreferrer"
+                className="block rounded-xl p-4 transition-all hover:translate-y-[-1px]"
+                style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold truncate" style={{ color: 'var(--text-primary)' }}>
+                    {r.project_title}
+                  </h3>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full font-medium shrink-0" style={{ background: 'rgba(6,182,212,0.15)', color: '#06b6d4' }}>
+                    Review only · {r.permission}
+                  </span>
+                </div>
+                {r.label && <p className="text-[11px] italic mt-1" style={{ color: 'var(--text-muted)' }}>{r.label}</p>}
+              </a>
+            ))}
+          </div>
+        </section>
+      )}
 
       {done.length > 0 && (
         <section>

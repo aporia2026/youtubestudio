@@ -305,6 +305,7 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId }: ReviewPa
                   durationMs={activeVersion.duration_ms || 0}
                   comments={versionComments}
                   onSeek={handleSeek}
+                  videoUrl={activeVersion.video_url}
                 />
               </>
             ) : (

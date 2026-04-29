@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useCallback } from 'react';
+import { useRef, useCallback, useState, useEffect } from 'react';
 import type { ReviewComment } from './ReviewPage';
 
 interface ReviewTimelineProps {
@@ -8,6 +8,8 @@ interface ReviewTimelineProps {
   durationMs: number;
   comments: ReviewComment[];
   onSeek: (ms: number) => void;
+  /** Optional: when provided, a YouTube-style frame preview pops up on hover. */
+  videoUrl?: string | null;
 }
 
 function formatTime(ms: number) {
@@ -17,8 +19,55 @@ function formatTime(ms: number) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek }: ReviewTimelineProps) {
+export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek, videoUrl }: ReviewTimelineProps) {
   const barRef = useRef<HTMLDivElement>(null);
+
+  // Frame-preview state. Hidden <video> seeks to the hover time; a popup
+  // canvas paints the current frame above the cursor (YouTube-style).
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const seekRafRef = useRef<number | null>(null);
+  const [hover, setHover] = useState<{ ms: number; xPx: number; barWidth: number } | null>(null);
+
+  // Throttled seek of the preview video to the hovered timestamp. We coalesce
+  // mousemove → one seek per animation frame so we don't thrash the decoder.
+  useEffect(() => {
+    if (!hover || !previewVideoRef.current) return;
+    if (seekRafRef.current != null) cancelAnimationFrame(seekRafRef.current);
+    seekRafRef.current = requestAnimationFrame(() => {
+      const v = previewVideoRef.current;
+      if (!v) return;
+      const t = hover.ms / 1000;
+      // Some browsers throw if currentTime is set before metadata loads.
+      if (Number.isFinite(t) && v.readyState >= 1) {
+        try { v.currentTime = t; } catch {}
+      }
+    });
+    return () => {
+      if (seekRafRef.current != null) cancelAnimationFrame(seekRafRef.current);
+    };
+  }, [hover]);
+
+  // Repaint the canvas whenever the hidden video finishes seeking.
+  useEffect(() => {
+    const v = previewVideoRef.current;
+    const c = previewCanvasRef.current;
+    if (!v || !c) return;
+    function paint() {
+      const v = previewVideoRef.current;
+      const c = previewCanvasRef.current;
+      if (!v || !c) return;
+      const ctx = c.getContext('2d');
+      if (!ctx) return;
+      try { ctx.drawImage(v, 0, 0, c.width, c.height); } catch {}
+    }
+    v.addEventListener('seeked', paint);
+    v.addEventListener('loadeddata', paint);
+    return () => {
+      v.removeEventListener('seeked', paint);
+      v.removeEventListener('loadeddata', paint);
+    };
+  }, [videoUrl]);
 
   const handleClick = useCallback((e: React.MouseEvent) => {
     const bar = barRef.current;
@@ -27,6 +76,17 @@ export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek }: 
     const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     onSeek(Math.round(pct * durationMs));
   }, [durationMs, onSeek]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    const bar = barRef.current;
+    if (!bar || !durationMs) return;
+    const rect = bar.getBoundingClientRect();
+    const xPx = e.clientX - rect.left;
+    const pct = Math.max(0, Math.min(1, xPx / rect.width));
+    setHover({ ms: Math.round(pct * durationMs), xPx, barWidth: rect.width });
+  }, [durationMs]);
+
+  const handleMouseLeave = useCallback(() => setHover(null), []);
 
   const progress = durationMs > 0 ? (currentTimeMs / durationMs) * 100 : 0;
 
@@ -93,9 +153,74 @@ export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek }: 
       <div
         ref={barRef}
         onClick={handleClick}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
         className="relative h-2 rounded-full cursor-pointer group"
         style={{ background: 'rgba(255,255,255,0.1)' }}
       >
+        {/* Hidden seekable <video> used purely as a frame source for the
+            preview canvas. Muted + preload=auto so seeks resolve quickly. */}
+        {videoUrl && (
+          <video
+            ref={previewVideoRef}
+            src={videoUrl}
+            muted
+            playsInline
+            preload="auto"
+            style={{ display: 'none' }}
+          />
+        )}
+
+        {/* Hover preview popup */}
+        {videoUrl && hover && durationMs > 0 && (() => {
+          const previewW = 160;
+          const previewH = 90;
+          // Clamp horizontally so the popup doesn't overflow the bar.
+          const half = previewW / 2;
+          const left = Math.max(half, Math.min(hover.barWidth - half, hover.xPx));
+          return (
+            <div
+              className="absolute pointer-events-none"
+              style={{
+                left,
+                bottom: '24px',
+                transform: 'translateX(-50%)',
+                zIndex: 20,
+              }}
+            >
+              <div
+                className="rounded-md overflow-hidden"
+                style={{
+                  background: '#000',
+                  border: '1px solid rgba(255,255,255,0.18)',
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                  width: previewW,
+                  height: previewH,
+                }}
+              >
+                <canvas
+                  ref={previewCanvasRef}
+                  width={previewW}
+                  height={previewH}
+                  style={{ width: '100%', height: '100%', display: 'block' }}
+                />
+              </div>
+              <div
+                className="text-[10px] font-mono text-center mt-1 px-1.5 py-0.5 rounded inline-block"
+                style={{
+                  position: 'relative',
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  background: 'rgba(0,0,0,0.7)',
+                  color: '#fff',
+                }}
+              >
+                {formatTime(hover.ms)}
+              </div>
+            </div>
+          );
+        })()}
+
         <div
           className="absolute inset-y-0 left-0 rounded-full"
           style={{ width: `${progress}%`, background: 'linear-gradient(90deg, #7c3aed, #06b6d4)' }}
