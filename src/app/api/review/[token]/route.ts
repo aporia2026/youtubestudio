@@ -26,10 +26,14 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
     );
 
     // Look up the linked collaborator's role(s) so the client can decide
-    // whether the resolve button should be available. Editors and narrators
-    // get to mark comments as fixed; reviewers/clients should reply instead.
+    // whether the resolve button + upload-corrected-version + narrator
+    // portal links should appear. Personal_token is intentionally NOT
+    // included in this response — it grants access to ALL the user's
+    // other assignments, so we expose it only via server-side redirects
+    // (see /api/review/[token]/narrator-portal).
     let canResolve = false;
     let collaboratorName: string | null = null;
+    let collaboratorRoles: string[] = [];
     if (link.collaborator_id) {
       try {
         const { rows: collab } = await sql`
@@ -37,10 +41,10 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
         `;
         if (collab[0]) {
           collaboratorName = collab[0].name as string;
-          const roles: string[] = Array.isArray(collab[0].roles) && collab[0].roles.length > 0
-            ? collab[0].roles
-            : (collab[0].role ? [collab[0].role] : []);
-          canResolve = roles.includes('editor') || roles.includes('narrator');
+          collaboratorRoles = Array.isArray(collab[0].roles) && collab[0].roles.length > 0
+            ? (collab[0].roles as string[])
+            : (collab[0].role ? [collab[0].role as string] : []);
+          canResolve = collaboratorRoles.includes('editor') || collaboratorRoles.includes('narrator');
         }
       } catch {}
     }
@@ -55,6 +59,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
       permission: link.permission,
       canResolve,
       collaboratorName,
+      collaboratorRoles,
       versions: versionsWithUrls,
       comments,
     });
