@@ -26,15 +26,22 @@ function formatTime(ms: number) {
 export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek, videoUrl, bufferedPct }: ReviewTimelineProps) {
   const barRef = useRef<HTMLDivElement>(null);
 
-  // Frame-preview state. Hidden <video> seeks to the hover time; a popup
-  // canvas paints the current frame above the cursor (YouTube-style).
+  // Frame-preview state. We render the preview <video> element directly in
+  // the popup (no canvas) and seek it to the hover timestamp.
+  //
+  // IMPORTANT: the previous implementation painted the frame to a canvas and
+  // hid the source video with `display:none`. Browsers (especially Chrome)
+  // skip decoding for `display:none` videos to save power, so drawImage was
+  // painting a black frame. Showing the video element directly + keeping it
+  // mounted in the DOM (just visually hidden when idle) is the most reliable
+  // way to get a real preview frame on every hover.
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
-  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const seekRafRef = useRef<number | null>(null);
   const [hover, setHover] = useState<{ ms: number; xPx: number; barWidth: number } | null>(null);
+  const [previewReady, setPreviewReady] = useState(false);
 
-  // Throttled seek of the preview video to the hovered timestamp. We coalesce
-  // mousemove → one seek per animation frame so we don't thrash the decoder.
+  // Throttled seek to the hovered timestamp. rAF-coalesced so dragging the
+  // cursor across the bar doesn't queue up a backlog of seeks.
   useEffect(() => {
     if (!hover || !previewVideoRef.current) return;
     if (seekRafRef.current != null) cancelAnimationFrame(seekRafRef.current);
@@ -42,7 +49,6 @@ export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek, vi
       const v = previewVideoRef.current;
       if (!v) return;
       const t = hover.ms / 1000;
-      // Some browsers throw if currentTime is set before metadata loads.
       if (Number.isFinite(t) && v.readyState >= 1) {
         try { v.currentTime = t; } catch {}
       }
@@ -52,24 +58,19 @@ export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek, vi
     };
   }, [hover]);
 
-  // Repaint the canvas whenever the hidden video finishes seeking.
+  // Track readiness so we can fade in the video instead of flashing black on
+  // first hover (the very first hover may seek before the source has decoded
+  // any frames).
   useEffect(() => {
+    setPreviewReady(false);
     const v = previewVideoRef.current;
-    const c = previewCanvasRef.current;
-    if (!v || !c) return;
-    function paint() {
-      const v = previewVideoRef.current;
-      const c = previewCanvasRef.current;
-      if (!v || !c) return;
-      const ctx = c.getContext('2d');
-      if (!ctx) return;
-      try { ctx.drawImage(v, 0, 0, c.width, c.height); } catch {}
-    }
-    v.addEventListener('seeked', paint);
-    v.addEventListener('loadeddata', paint);
+    if (!v) return;
+    function onReady() { setPreviewReady(true); }
+    v.addEventListener('loadeddata', onReady);
+    v.addEventListener('seeked', onReady);
     return () => {
-      v.removeEventListener('seeked', paint);
-      v.removeEventListener('loadeddata', paint);
+      v.removeEventListener('loadeddata', onReady);
+      v.removeEventListener('seeked', onReady);
     };
   }, [videoUrl]);
 
@@ -171,34 +172,33 @@ export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek, vi
           />
         )}
 
-        {/* Hidden seekable <video> used purely as a frame source for the
-            preview canvas. Muted + preload=auto so seeks resolve quickly. */}
-        {videoUrl && (
-          <video
-            ref={previewVideoRef}
-            src={videoUrl}
-            muted
-            playsInline
-            preload="auto"
-            style={{ display: 'none' }}
-          />
-        )}
-
-        {/* Hover preview popup */}
-        {videoUrl && hover && durationMs > 0 && (() => {
+        {/* Hover preview popup. We always mount the preview <video> so
+            Chrome keeps decoding frames; CSS only switches its position +
+            opacity based on hover state. Rendering it directly (instead of
+            painting to a canvas) sidesteps the display:none-skips-decode
+            problem that produced black previews. */}
+        {videoUrl && (() => {
           const previewW = 160;
           const previewH = 90;
-          // Clamp horizontally so the popup doesn't overflow the bar.
-          const half = previewW / 2;
-          const left = Math.max(half, Math.min(hover.barWidth - half, hover.xPx));
+          let left = 0;
+          if (hover) {
+            const half = previewW / 2;
+            left = Math.max(half, Math.min(hover.barWidth - half, hover.xPx));
+          }
+          const visible = !!hover && durationMs > 0;
           return (
             <div
               className="absolute pointer-events-none"
               style={{
-                left,
+                // When hidden, park it just above the bar at left=0 with
+                // opacity 0 — keeps the element painted (so frames decode)
+                // without it being visible.
+                left: visible ? left : 0,
                 bottom: '24px',
                 transform: 'translateX(-50%)',
                 zIndex: 20,
+                opacity: visible && previewReady ? 1 : 0,
+                transition: visible ? 'opacity 80ms ease-out' : 'none',
               }}
             >
               <div
@@ -211,11 +211,13 @@ export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek, vi
                   height: previewH,
                 }}
               >
-                <canvas
-                  ref={previewCanvasRef}
-                  width={previewW}
-                  height={previewH}
-                  style={{ width: '100%', height: '100%', display: 'block' }}
+                <video
+                  ref={previewVideoRef}
+                  src={videoUrl}
+                  muted
+                  playsInline
+                  preload="auto"
+                  style={{ width: '100%', height: '100%', display: 'block', objectFit: 'cover' }}
                 />
               </div>
               <div
@@ -228,7 +230,7 @@ export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek, vi
                   color: '#fff',
                 }}
               >
-                {formatTime(hover.ms)}
+                {hover ? formatTime(hover.ms) : ''}
               </div>
             </div>
           );
