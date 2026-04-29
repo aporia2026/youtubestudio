@@ -56,6 +56,7 @@ interface ReviewLink {
 
 interface Assignment {
   id: string;
+  project_id: string;
   project_title: string;
   status: string;
   share_token: string;
@@ -579,20 +580,36 @@ export default function TeamPage() {
                                   {expandedData.reviewLinks.map(link => {
                                     const pc = PERM_COLORS[link.permission] || PERM_COLORS['view-only'];
                                     return (
-                                      <div key={link.id} className="flex items-center gap-2 p-2 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
+                                      <a
+                                        key={link.id}
+                                        href={`/review/${link.token}`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="flex items-center gap-2 p-2 rounded-lg hover:bg-white/5 transition-colors"
+                                        style={{ background: 'var(--bg-primary)' }}
+                                        title="Open review (preview what this collaborator sees)"
+                                      >
                                         <span className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>{link.project_title}</span>
                                         {link.label && <span className="text-[10px] italic truncate" style={{ color: 'var(--text-muted)' }}>{link.label}</span>}
                                         <span className="text-[10px] px-1.5 py-0.5 rounded-full shrink-0" style={{ background: pc.bg, color: pc.text }}>{link.permission}</span>
                                         <span className="text-[10px] ml-auto shrink-0" style={{ color: 'var(--text-muted)' }}>
                                           {link.access_count > 0 ? `${link.access_count} views — ${timeAgo(link.last_accessed_at)}` : 'Never accessed'}
                                         </span>
-                                        <button onClick={() => copyLink('review', link.token)} className="p-1 rounded hover:bg-white/5" title="Copy link">
+                                        <button
+                                          onClick={e => { e.preventDefault(); e.stopPropagation(); copyLink('review', link.token); }}
+                                          className="p-1 rounded hover:bg-white/5"
+                                          title="Copy link"
+                                        >
                                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)' }}><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
                                         </button>
-                                        <button onClick={() => handleDeleteLink(link.id, link.project_id)} className="p-1 rounded hover:bg-red-500/10" title="Revoke this link">
+                                        <button
+                                          onClick={e => { e.preventDefault(); e.stopPropagation(); handleDeleteLink(link.id, link.project_id); }}
+                                          className="p-1 rounded hover:bg-red-500/10"
+                                          title="Revoke this link"
+                                        >
                                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)' }}><path d="M18 6L6 18M6 6l12 12" /></svg>
                                         </button>
-                                      </div>
+                                      </a>
                                     );
                                   })}
                                 </div>
@@ -607,21 +624,33 @@ export default function TeamPage() {
                                   {expandedData.assignments.map(a => {
                                     const progress = a.total_sections > 0 ? Math.round((a.approved_sections / a.total_sections) * 100) : 0;
                                     return (
-                                      <div key={a.id} className="p-2 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
+                                      <a
+                                        key={a.id}
+                                        href={a.project_id ? `/projects/${a.project_id}?tab=narration` : `/narrate/${a.share_token}`}
+                                        target={a.project_id ? undefined : '_blank'}
+                                        rel={a.project_id ? undefined : 'noreferrer'}
+                                        className="block p-2 rounded-lg hover:bg-white/5 transition-colors"
+                                        style={{ background: 'var(--bg-primary)' }}
+                                        title={a.project_id ? 'Open project narration tab' : 'Open narrator view'}
+                                      >
                                         <div className="flex items-center gap-2 mb-1">
                                           <span className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>{a.project_title}</span>
                                           <span className="text-[10px] px-1.5 py-0.5 rounded-full capitalize shrink-0" style={{ background: `${STATUS_COLORS[a.status] || '#666'}22`, color: STATUS_COLORS[a.status] || '#666' }}>{a.status}</span>
                                           <span className="text-[10px] ml-auto shrink-0" style={{ color: 'var(--text-muted)' }}>
                                             {a.approved_sections}/{a.total_sections} sections — {a.access_count > 0 ? timeAgo(a.last_accessed_at) : 'Never accessed'}
                                           </span>
-                                          <button onClick={() => copyLink('narrate', a.share_token)} className="p-1 rounded hover:bg-white/5" title="Copy link">
+                                          <button
+                                            onClick={e => { e.preventDefault(); e.stopPropagation(); copyLink('narrate', a.share_token); }}
+                                            className="p-1 rounded hover:bg-white/5"
+                                            title="Copy link"
+                                          >
                                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)' }}><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
                                           </button>
                                         </div>
                                         <div className="h-1 rounded-full" style={{ background: 'rgba(255,255,255,0.05)' }}>
                                           <div className="h-full rounded-full" style={{ width: `${progress}%`, background: '#22c55e' }} />
                                         </div>
-                                      </div>
+                                      </a>
                                     );
                                   })}
                                 </div>

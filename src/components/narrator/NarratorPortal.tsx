@@ -70,6 +70,17 @@ const SECTION_STATUS: Record<string, { label: string; color: string }> = {
   retake: { label: 'Retake Requested', color: '#ef4444' },
 };
 
+type ViewMode = 'sections' | 'plain';
+
+/**
+ * Strip production cues like [VISUAL CUE: ...], [SFX: ...], [B-ROLL ...]
+ * from a narration line so the plain reading view shows only what the
+ * narrator actually says. Mirrors the teleprompter's plain-mode logic.
+ */
+function stripCues(text: string): string {
+  return text.replace(/\[[^\]]+\]/g, '').replace(/\s+/g, ' ').trim();
+}
+
 export function NarratorPortal({ token }: { token: string }) {
   const [assignment, setAssignment] = useState<Assignment | null>(null);
   const [sections, setSections] = useState<Section[]>([]);
@@ -80,6 +91,7 @@ export function NarratorPortal({ token }: { token: string }) {
   const [uploading, setUploading] = useState<string | null>(null);
   const [showTeleprompter, setShowTeleprompter] = useState(false);
   const [commentText, setCommentText] = useState('');
+  const [viewMode, setViewMode] = useState<ViewMode>('sections');
 
   useEffect(() => { loadData(); }, [token]);
 
@@ -256,6 +268,24 @@ export function NarratorPortal({ token }: { token: string }) {
               {assignment.status === 'assigned' && (
                 <button onClick={handleReceive} className="px-3 py-1.5 rounded-lg text-xs font-medium text-white" style={{ background: '#06b6d4' }}>Mark as Received</button>
               )}
+              {/* View toggle — Sections (default expandable list with upload + takes)
+                  vs Plain (continuous narration text only, for read-through). */}
+              <div className="flex items-center gap-0.5 rounded-lg p-0.5" style={{ background: 'rgba(255,255,255,0.05)' }}>
+                {(['sections', 'plain'] as ViewMode[]).map(m => (
+                  <button
+                    key={m}
+                    onClick={() => setViewMode(m)}
+                    className="px-2.5 py-1 rounded text-[11px] capitalize transition-colors"
+                    style={{
+                      background: viewMode === m ? 'rgba(124,58,237,0.25)' : 'transparent',
+                      color: viewMode === m ? '#a78bfa' : 'var(--text-muted)',
+                    }}
+                    title={m === 'plain' ? 'Plain text — continuous narration with production cues stripped' : 'Section list with takes + upload controls'}
+                  >
+                    {m === 'plain' ? 'Plain' : 'Sections'}
+                  </button>
+                ))}
+              </div>
               <button onClick={() => setShowTeleprompter(true)} className="px-3 py-1.5 rounded-lg text-xs font-medium" style={{ background: 'rgba(124,58,237,0.15)', color: '#7c3aed' }}>
                 Teleprompter
               </button>
@@ -285,8 +315,37 @@ export function NarratorPortal({ token }: { token: string }) {
           )}
         </header>
 
+        {/* Plain text view — flowing narration with production cues stripped.
+            Useful for a read-through without the per-section UI clutter.
+            Switches back to Sections via the header toggle. */}
+        {viewMode === 'plain' ? (
+          <div className="rounded-xl p-6" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+            {(() => {
+              const visible = sections.filter(s => stripCues(s.script_text).length > 0);
+              if (visible.length === 0) {
+                return <p className="text-sm text-center py-8" style={{ color: 'var(--text-muted)' }}>No narration text yet.</p>;
+              }
+              return (
+                <div className="space-y-6">
+                  {visible.map(section => (
+                    <div key={section.id}>
+                      <p className="text-[11px] uppercase tracking-wider mb-2" style={{ color: '#a78bfa' }}>
+                        {section.label || `Section ${section.section_number}`}
+                        {section.estimated_duration_seconds ? ` · ~${Math.round(section.estimated_duration_seconds)}s` : ''}
+                      </p>
+                      <p className="text-base leading-relaxed whitespace-pre-wrap" style={{ color: 'var(--text-primary)', fontFamily: 'Georgia, serif', lineHeight: 1.8 }}>
+                        {stripCues(section.script_text)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+        ) : null}
+
         {/* Sections */}
-        <div className="space-y-4">
+        <div className="space-y-4" style={{ display: viewMode === 'sections' ? undefined : 'none' }}>
           {sections.map(section => {
             const sectionStatus = SECTION_STATUS[section.status] || SECTION_STATUS.pending;
             const isExpanded = expandedSection === section.id;
