@@ -189,7 +189,21 @@ export async function getCollaboratorWithAccess(id: string) {
     ORDER BY a.updated_at DESC
   `;
 
-  return { ...collaborator, reviewLinks, assignments };
+  // Get editor assignments (only fetched if the editor_assignments table exists yet)
+  let editorAssignments: Array<{ id: string; project_id: string; project_title: string; status: string; deadline: string | null; last_accessed_at: string | null; updated_at: string }> = [];
+  try {
+    const { rows } = await sql`
+      SELECT ea.id, ea.project_id, ea.status, ea.deadline, ea.last_accessed_at, ea.updated_at,
+        p.title AS project_title
+      FROM editor_assignments ea
+      LEFT JOIN projects p ON p.id = ea.project_id
+      WHERE ea.editor_id = ${id}
+      ORDER BY ea.updated_at DESC
+    `;
+    editorAssignments = rows as typeof editorAssignments;
+  } catch {} // Table may not exist yet on a fresh DB
+
+  return { ...collaborator, reviewLinks, assignments, editorAssignments };
 }
 
 export async function getTeamOverview() {

@@ -12,11 +12,22 @@ interface Collaborator {
   color: string;
   specialties: string[];
   notes: string | null;
+  personal_token?: string | null;
   created_at: string;
   // From overview endpoint
   review_link_count?: number;
   assignment_count?: number;
   last_activity?: string | null;
+}
+
+interface EditorAssignment {
+  id: string;
+  project_id: string;
+  project_title: string;
+  status: string;
+  deadline: string | null;
+  last_accessed_at: string | null;
+  updated_at: string;
 }
 
 interface ReviewLink {
@@ -47,6 +58,7 @@ interface Assignment {
 interface CollaboratorDetail extends Collaborator {
   reviewLinks: ReviewLink[];
   assignments: Assignment[];
+  editorAssignments?: EditorAssignment[];
 }
 
 const ROLES = ['all', 'editor', 'narrator', 'reviewer', 'client'] as const;
@@ -315,6 +327,50 @@ export default function TeamPage() {
                           </div>
                         ) : (
                           <>
+                            {/* Personal dashboard link — narrators and editors get a single
+                                URL that lists ALL their assignments. Surface it prominently
+                                so the owner can copy & send it directly from this page. */}
+                            {(expandedData.role === 'narrator' || expandedData.role === 'editor') && expandedData.personal_token && (
+                              <div className="pt-3">
+                                <div className="flex items-center justify-between gap-3 p-2.5 rounded-lg" style={{ background: 'rgba(124,58,237,0.08)', border: '1px solid rgba(124,58,237,0.25)' }}>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-xs font-medium" style={{ color: '#a78bfa' }}>
+                                      🎯 {expandedData.role === 'narrator' ? 'Narrator' : 'Editor'} dashboard
+                                    </p>
+                                    <p className="text-[11px] truncate font-mono" style={{ color: 'var(--text-muted)' }}>
+                                      /{expandedData.role}/{expandedData.personal_token!.slice(0, 12)}…
+                                    </p>
+                                  </div>
+                                  <button
+                                    onClick={() => {
+                                      const url = `${window.location.origin}/${expandedData.role}/${expandedData.personal_token}`;
+                                      navigator.clipboard.writeText(url);
+                                      toast.success('Dashboard link copied');
+                                    }}
+                                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium cursor-pointer flex items-center gap-1 shrink-0"
+                                    style={{ background: 'linear-gradient(135deg, #7c3aed, #06b6d4)', color: 'white' }}
+                                  >
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                                    Copy link
+                                  </button>
+                                  <a
+                                    href={`/${expandedData.role}/${expandedData.personal_token}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium cursor-pointer flex items-center gap-1 shrink-0"
+                                    style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+                                    title="Open in new tab"
+                                  >
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                                    Preview
+                                  </a>
+                                </div>
+                                <p className="text-[10px] mt-1.5" style={{ color: 'var(--text-muted)' }}>
+                                  Share this single link with {expandedData.name} — they&apos;ll see {expandedData.role === 'narrator' ? 'every script you assign to them' : 'every project you assign to them with scripts, references, thumbnails, and an upload button'}.
+                                </p>
+                              </div>
+                            )}
+
                             {/* Review links */}
                             {expandedData.reviewLinks.length > 0 && (
                               <div className="pt-3">
@@ -372,7 +428,30 @@ export default function TeamPage() {
                               </div>
                             )}
 
-                            {expandedData.reviewLinks.length === 0 && expandedData.assignments.length === 0 && (
+                            {/* Editor assignments */}
+                            {(expandedData.editorAssignments?.length ?? 0) > 0 && (
+                              <div className="pt-2">
+                                <p className="text-xs font-medium mb-2" style={{ color: 'var(--text-primary)' }}>Editor Assignments</p>
+                                <div className="space-y-1.5">
+                                  {expandedData.editorAssignments!.map(a => (
+                                    <a
+                                      key={a.id}
+                                      href={`/projects/${a.project_id}?tab=editor`}
+                                      className="flex items-center gap-2 p-2 rounded-lg hover:bg-white/5 transition-colors"
+                                      style={{ background: 'var(--bg-primary)' }}
+                                    >
+                                      <span className="text-xs font-medium truncate flex-1" style={{ color: 'var(--text-primary)' }}>{a.project_title}</span>
+                                      <span className="text-[10px] px-1.5 py-0.5 rounded-full capitalize shrink-0" style={{ background: `${STATUS_COLORS[a.status] || '#666'}22`, color: STATUS_COLORS[a.status] || '#666' }}>{a.status}</span>
+                                      <span className="text-[10px] shrink-0" style={{ color: 'var(--text-muted)' }}>
+                                        {a.last_accessed_at ? `viewed ${timeAgo(a.last_accessed_at)}` : 'Never accessed'}
+                                      </span>
+                                    </a>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {expandedData.reviewLinks.length === 0 && expandedData.assignments.length === 0 && (expandedData.editorAssignments?.length ?? 0) === 0 && (
                               <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>No active access — assign a review or narration project</p>
                             )}
                           </>
