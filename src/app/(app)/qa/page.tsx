@@ -336,19 +336,50 @@ function QAPage() {
         }),
       });
 
-      if (!res.ok) throw new Error('Apply fixes failed');
+      if (!res.ok) {
+        // Surface the actual server error so we don't have to guess. The
+        // route returns JSON `{ error: "..." }` on failure, but fall back
+        // to plain text + status code if that parse fails.
+        let detail = `HTTP ${res.status}`;
+        try {
+          const ct = res.headers.get('content-type') || '';
+          if (ct.includes('application/json')) {
+            const body = await res.json();
+            if (body?.error) detail = body.error;
+          } else {
+            const text = await res.text();
+            if (text) detail = text.slice(0, 200);
+          }
+        } catch {}
+        throw new Error(`Apply fixes failed: ${detail}`);
+      }
 
       const reader = res.body?.getReader();
       const decoder = new TextDecoder();
-      if (!reader) throw new Error('No stream');
+      if (!reader) throw new Error('No stream from server');
 
       let full = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        full += decoder.decode(value, { stream: true });
-        setFixedScript(full);
-        fixedScriptRef.current?.scrollTo({ top: fixedScriptRef.current.scrollHeight });
+      let streamError: unknown = null;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          full += decoder.decode(value, { stream: true });
+          setFixedScript(full);
+          fixedScriptRef.current?.scrollTo({ top: fixedScriptRef.current.scrollHeight });
+        }
+      } catch (e) {
+        streamError = e;
+      }
+      // The server may error mid-stream (the AI provider hangs up, the
+      // function hits maxDuration, etc). If we got partial content, keep
+      // it; otherwise surface the failure.
+      if (streamError && full.length === 0) {
+        const msg = streamError instanceof Error ? streamError.message : 'streaming failed';
+        throw new Error(`Apply fixes failed mid-stream: ${msg}`);
+      }
+      if (streamError) {
+        toast.error('Stream cut off — using partial result');
       }
 
       // Persist the improved script so it survives navigation:
