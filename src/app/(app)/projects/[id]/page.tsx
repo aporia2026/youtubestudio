@@ -6,9 +6,10 @@ import { toast } from 'sonner';
 import { useParams } from 'next/navigation';
 import { formatBytes, countWords, estimateDuration, formatDuration } from '@/lib/utils';
 import { ScriptVoiceoverPanel } from '@/components/ui/ScriptVoiceoverPanel';
+import { NarrationTab } from '@/components/narrator/NarrationTab';
 import Link from 'next/link';
 
-type TabId = 'script' | 'voiceover' | 'media' | 'references';
+type TabId = 'script' | 'voiceover' | 'media' | 'references' | 'narration';
 
 interface Project {
   id: string;
@@ -194,6 +195,7 @@ export default function ProjectDetailPage() {
     { id: 'voiceover', label: '🎙️ Voiceover' },
     { id: 'media', label: '🎬 Media', count: media.length },
     { id: 'references', label: '🔗 References', count: refs.length },
+    { id: 'narration', label: '🎤 Narration' },
   ];
 
   return (
@@ -487,6 +489,16 @@ export default function ProjectDetailPage() {
             </button>
           </div>
         </div>
+      )}
+
+      {/* Narration Tab */}
+      {activeTab === 'narration' && (
+        <NarrationTab
+          projectId={project!.id}
+          scriptId={activeScript?.id || ''}
+          scriptText={activeScript?.content || ''}
+          scriptVersion={activeScript?.version || 1}
+        />
       )}
     </div>
   );

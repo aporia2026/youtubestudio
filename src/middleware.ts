@@ -14,11 +14,19 @@ const COOKIE_NAME = 'yt_studio_session';
 
 const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/logout', '/api/auth/google/callback'];
 
+// Paths that bypass auth entirely (public review pages + their API endpoints)
+const PUBLIC_PREFIXES = ['/review/', '/narrate/'];
+
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   // Allow public paths (exact match or startsWith for /login page)
   if (PUBLIC_PATHS.some(p => pathname === p || pathname.startsWith(p + '/'))) {
+    return NextResponse.next();
+  }
+
+  // Allow public review pages and their token-based API endpoints
+  if (PUBLIC_PREFIXES.some(p => pathname.startsWith(p))) {
     return NextResponse.next();
   }
 

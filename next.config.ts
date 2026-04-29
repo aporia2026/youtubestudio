@@ -23,6 +23,8 @@ const nextConfig: NextConfig = {
       // Kie.ai CDN images (used as Remotion <Img> src during rendering)
       { protocol: 'https', hostname: '*.kie.ai' },
       { protocol: 'https', hostname: 'kie.ai' },
+      // Cloudflare R2 (video review thumbnails)
+      { protocol: 'https', hostname: '*.r2.dev' },
     ],
   },
   // Empty turbopack config silences the "webpack config ignored" warning

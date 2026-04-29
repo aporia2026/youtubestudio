@@ -1,0 +1,58 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createVersion, getProject, updateVersion } from '@/lib/review-db';
+import { buildR2Key, getUploadPresignedUrl } from '@/lib/r2';
+
+/** POST: Generate a presigned upload URL and create a version row. */
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id: projectId } = await params;
+    const project = await getProject(projectId);
+    if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+
+    const { fileName, contentType, fileSize } = await req.json();
+    if (!fileName || !contentType) {
+      return NextResponse.json({ error: 'fileName and contentType are required' }, { status: 400 });
+    }
+
+    // Validate content type is a video format
+    const ALLOWED_VIDEO_TYPES = ['video/mp4', 'video/webm', 'video/quicktime', 'video/mpeg', 'video/x-msvideo', 'video/x-matroska'];
+    if (!ALLOWED_VIDEO_TYPES.includes(contentType)) {
+      return NextResponse.json({ error: `Invalid video type: ${contentType}. Allowed: ${ALLOWED_VIDEO_TYPES.join(', ')}` }, { status: 400 });
+    }
+
+    // Create version row first to get version_number
+    const version = await createVersion(projectId, '', 'owner', fileSize);
+    const r2Key = buildR2Key(projectId, version.version_number, fileName);
+
+    // Update the version row with the real r2_key
+    await updateVersion(version.id, { video_url: '' });
+    // We need to update r2_key directly since updateVersion doesn't cover it
+    const { sql } = await import('@vercel/postgres');
+    await sql`UPDATE review_versions SET r2_key = ${r2Key} WHERE id = ${version.id}`;
+
+    const uploadUrl = await getUploadPresignedUrl(r2Key, contentType);
+
+    return NextResponse.json({
+      uploadUrl,
+      versionId: version.id,
+      versionNumber: version.version_number,
+      r2Key,
+    }, { status: 201 });
+  } catch (err) {
+    console.error('POST /api/review/projects/[id]/versions error:', err);
+    return NextResponse.json({ error: 'Failed to create version' }, { status: 500 });
+  }
+}
+
+/** PATCH: Update version metadata (thumbnail, duration, dimensions) after upload completes. */
+export async function PATCH(req: NextRequest) {
+  try {
+    const { versionId, thumbnail_url, duration_ms, width, height } = await req.json();
+    if (!versionId) return NextResponse.json({ error: 'versionId required' }, { status: 400 });
+    const version = await updateVersion(versionId, { thumbnail_url, duration_ms, width, height });
+    return NextResponse.json(version);
+  } catch (err) {
+    console.error('PATCH versions error:', err);
+    return NextResponse.json({ error: 'Failed to update version' }, { status: 500 });
+  }
+}
