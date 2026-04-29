@@ -303,6 +303,7 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId }: ReviewPa
           <CommentPanel
             commentsUrl={commentsUrl}
             commentItemUrl={commentItemUrl}
+            isOwner={isOwner}
             comments={versionComments}
             activeVersionId={activeVersionId || ''}
             permission={data.permission}

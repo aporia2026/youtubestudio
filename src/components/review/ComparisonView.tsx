@@ -69,14 +69,14 @@ export function ComparisonView({ mode, version1, version2, onTimeUpdate }: Compa
             <span className="absolute top-2 left-2 px-2 py-0.5 rounded text-xs font-medium text-white z-10" style={{ background: 'rgba(0,0,0,0.6)' }}>
               v{version1.version_number}
             </span>
-            <video ref={v1Ref} src={version1.video_url || undefined} onTimeUpdate={handleTimeUpdate} onClick={togglePlay} className="max-w-full max-h-full" playsInline />
+            <video ref={v1Ref} src={version1.video_url || undefined} onTimeUpdate={handleTimeUpdate} onClick={togglePlay} className="max-w-full max-h-full" crossOrigin="anonymous" playsInline />
           </div>
           <div className="w-px shrink-0" style={{ background: 'rgba(255,255,255,0.2)' }} />
           <div className="flex-1 relative flex items-center justify-center">
             <span className="absolute top-2 left-2 px-2 py-0.5 rounded text-xs font-medium text-white z-10" style={{ background: 'rgba(0,0,0,0.6)' }}>
               v{version2.version_number}
             </span>
-            <video ref={v2Ref} src={version2.video_url || undefined} onClick={togglePlay} className="max-w-full max-h-full" playsInline muted />
+            <video ref={v2Ref} src={version2.video_url || undefined} onClick={togglePlay} className="max-w-full max-h-full" crossOrigin="anonymous" playsInline muted />
           </div>
         </div>
         <ComparisonControls playing={playing} onTogglePlay={togglePlay} />
@@ -88,13 +88,14 @@ export function ComparisonView({ mode, version1, version2, onTimeUpdate }: Compa
     return (
       <div className="flex-1 flex flex-col bg-black">
         <div className="flex-1 relative flex items-center justify-center min-h-0">
-          <video ref={v1Ref} src={version1.video_url || undefined} onTimeUpdate={handleTimeUpdate} onClick={togglePlay} className="max-w-full max-h-full" playsInline />
+          <video ref={v1Ref} src={version1.video_url || undefined} onTimeUpdate={handleTimeUpdate} onClick={togglePlay} className="max-w-full max-h-full" crossOrigin="anonymous" playsInline />
           <video
             ref={v2Ref}
             src={version2.video_url || undefined}
             onClick={togglePlay}
             className="absolute max-w-full max-h-full"
             style={{ opacity }}
+            crossOrigin="anonymous"
             playsInline muted
           />
           <span className="absolute top-2 left-2 px-2 py-0.5 rounded text-xs text-white z-10" style={{ background: 'rgba(0,0,0,0.6)' }}>
@@ -120,13 +121,14 @@ export function ComparisonView({ mode, version1, version2, onTimeUpdate }: Compa
   return (
     <div className="flex-1 flex flex-col bg-black">
       <div ref={containerRef} className="flex-1 relative flex items-center justify-center min-h-0 select-none">
-        <video ref={v1Ref} src={version1.video_url || undefined} onTimeUpdate={handleTimeUpdate} onClick={togglePlay} className="max-w-full max-h-full" playsInline />
+        <video ref={v1Ref} src={version1.video_url || undefined} onTimeUpdate={handleTimeUpdate} onClick={togglePlay} className="max-w-full max-h-full" crossOrigin="anonymous" playsInline />
         <video
           ref={v2Ref}
           src={version2.video_url || undefined}
           onClick={togglePlay}
           className="absolute max-w-full max-h-full"
           style={{ clipPath: `inset(0 ${100 - swipePos}% 0 0)` }}
+          crossOrigin="anonymous"
           playsInline muted
         />
         {/* Divider line */}

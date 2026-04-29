@@ -97,6 +97,7 @@ export const ReviewPlayer = forwardRef<HTMLVideoElement, ReviewPlayerProps>(
         <video
           ref={videoRef}
           src={src}
+          crossOrigin="anonymous"
           onTimeUpdate={handleTimeUpdate}
           onLoadedMetadata={handleLoadedMetadata}
           onPlay={() => setPlaying(true)}

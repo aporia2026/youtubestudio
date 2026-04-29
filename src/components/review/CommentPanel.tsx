@@ -10,6 +10,8 @@ interface CommentPanelProps {
   commentsUrl: string;
   /** Builds the endpoint to PATCH a specific comment */
   commentItemUrl: (commentId: string) => string;
+  /** Whether this view is the project owner (can resolve comments) */
+  isOwner: boolean;
   comments: ReviewComment[];
   activeVersionId: string;
   permission: 'view-only' | 'can-comment' | 'can-annotate';
@@ -27,7 +29,7 @@ interface CommentPanelProps {
 type Filter = 'all' | 'unresolved' | 'resolved';
 
 export function CommentPanel({
-  commentsUrl, commentItemUrl, comments, activeVersionId, permission, author, currentTimeMs,
+  commentsUrl, commentItemUrl, isOwner, comments, activeVersionId, permission, author, currentTimeMs,
   onSeek, onCommentAdded, onCommentResolved, showAllVersions, onToggleAllVersions,
   pendingDrawing, onClearDrawing,
 }: CommentPanelProps) {
@@ -128,7 +130,7 @@ export function CommentPanel({
                     if (res.ok) onCommentResolved(comment.id, resolved, author?.name);
                   } catch {}
                 }}
-                canResolve={permission !== 'view-only'}
+                canResolve={isOwner}
               />
               {/* Replies */}
               {replies(comment.id).map(reply => (

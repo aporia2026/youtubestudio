@@ -214,23 +214,46 @@ export function CanvasOverlay({ videoRef, isActive, videoDims, onComplete }: Can
     const canvas = canvasRef.current;
     if (!canvas || objects.length === 0) return;
 
-    // Composite: draw video frame + annotations
+    // Build the thumbnail. Try compositing the video frame + annotations first;
+    // if the canvas is tainted (cross-origin video without proper CORS), fall
+    // back to just the annotation overlay on a transparent background.
     const compositeCanvas = document.createElement('canvas');
     compositeCanvas.width = videoDims.width || canvasDims.width;
     compositeCanvas.height = videoDims.height || canvasDims.height;
     const ctx = compositeCanvas.getContext('2d');
     if (!ctx) return;
 
-    // Draw video frame
-    if (videoRef.current) {
-      ctx.drawImage(videoRef.current, 0, 0, compositeCanvas.width, compositeCanvas.height);
+    let thumbnail = '';
+    let withVideo = false;
+    try {
+      if (videoRef.current && videoRef.current.crossOrigin === 'anonymous') {
+        ctx.drawImage(videoRef.current, 0, 0, compositeCanvas.width, compositeCanvas.height);
+        withVideo = true;
+      }
+      ctx.drawImage(canvas, 0, 0, compositeCanvas.width, compositeCanvas.height);
+      thumbnail = compositeCanvas.toDataURL('image/png');
+    } catch (e) {
+      // Tainted canvas — fall back to annotation-only thumbnail
+      console.warn('[CanvasOverlay] Composite failed (likely CORS taint), using annotation-only thumbnail:', e);
+      try {
+        const annOnly = document.createElement('canvas');
+        annOnly.width = canvas.width;
+        annOnly.height = canvas.height;
+        const annCtx = annOnly.getContext('2d');
+        if (!annCtx) throw new Error('canvas 2d context unavailable');
+        // Draw a translucent dark backdrop so strokes are visible against any background
+        annCtx.fillStyle = 'rgba(0,0,0,0.4)';
+        annCtx.fillRect(0, 0, annOnly.width, annOnly.height);
+        annCtx.drawImage(canvas, 0, 0);
+        thumbnail = annOnly.toDataURL('image/png');
+      } catch (e2) {
+        console.error('[CanvasOverlay] Annotation-only export also failed:', e2);
+        // Last resort: an empty 1x1 PNG so the comment can still be saved without a preview
+        thumbnail = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+      }
     }
 
-    // Draw annotation canvas scaled to composite size
-    ctx.drawImage(canvas, 0, 0, compositeCanvas.width, compositeCanvas.height);
-
-    const thumbnail = compositeCanvas.toDataURL('image/png');
-    const drawingData = { objects, videoDims };
+    const drawingData = { objects, videoDims, withVideo };
 
     onComplete(drawingData, thumbnail);
     setObjects([]);
