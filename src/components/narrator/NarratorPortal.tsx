@@ -400,12 +400,33 @@ export function NarratorPortal({ token }: { token: string }) {
                     {/* Comments */}
                     {sectionComments.length > 0 && (
                       <div className="space-y-1.5 pt-2" style={{ borderTop: '1px solid var(--border)' }}>
-                        {sectionComments.map(c => (
-                          <div key={c.id} className="flex gap-2 text-xs">
-                            <span className="font-medium shrink-0" style={{ color: c.author_role === 'owner' ? '#06b6d4' : '#7c3aed' }}>{c.author_name}:</span>
-                            <span style={{ color: 'var(--text-secondary)' }}>{c.text}</span>
-                          </div>
-                        ))}
+                        {sectionComments.map(c => {
+                          // The narrator can delete their own comments — never owner's.
+                          // Author identity in this portal is the narrator on the assignment.
+                          const myName = assignment?.narrator_name;
+                          const canDelete = c.author_role === 'narrator' && !!myName && myName === c.author_name;
+                          return (
+                            <div key={c.id} className="group flex gap-2 text-xs items-start">
+                              <span className="font-medium shrink-0" style={{ color: c.author_role === 'owner' ? '#06b6d4' : '#7c3aed' }}>{c.author_name}:</span>
+                              <span className="flex-1" style={{ color: 'var(--text-secondary)' }}>{c.text}</span>
+                              {canDelete && (
+                                <button
+                                  onClick={async () => {
+                                    if (!confirm('Delete your comment?')) return;
+                                    try {
+                                      const res = await fetch(`/api/narrate/${token}/comments/${c.id}?author_name=${encodeURIComponent(myName!)}`, { method: 'DELETE' });
+                                      if (res.ok) setComments(prev => prev.filter(x => x.id !== c.id));
+                                    } catch {}
+                                  }}
+                                  className="opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer p-0.5"
+                                  title="Delete comment"
+                                >
+                                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: '#ef4444' }}><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
 

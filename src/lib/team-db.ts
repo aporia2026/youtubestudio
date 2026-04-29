@@ -166,8 +166,21 @@ export async function deleteCollaborator(id: string) {
 
 export async function getCollaboratorWithAccess(id: string) {
   await ensureTeamSchema();
-  const collaborator = await getCollaborator(id);
+  let collaborator = await getCollaborator(id);
   if (!collaborator) return null;
+
+  // Self-heal: if the personal_token column was added but the SQL backfill
+  // didn't run (pgcrypto missing, etc.), the row may have personal_token=NULL.
+  // Generate one in app code now so the dashboard link works on next render.
+  if (!collaborator.personal_token) {
+    const token = Array.from({ length: 6 }, () => Math.random().toString(16).slice(2, 10)).join('');
+    try {
+      const { rows } = await sql`
+        UPDATE collaborators SET personal_token = ${token} WHERE id = ${id} AND personal_token IS NULL RETURNING *
+      `;
+      if (rows[0]) collaborator = rows[0];
+    } catch (e) { console.warn('personal_token backfill on read failed:', e); }
+  }
 
   // Get review links assigned to this collaborator
   const { rows: reviewLinks } = await sql`

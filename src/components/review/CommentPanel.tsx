@@ -10,7 +10,7 @@ interface CommentPanelProps {
   commentsUrl: string;
   /** Builds the endpoint to PATCH a specific comment */
   commentItemUrl: (commentId: string) => string;
-  /** Whether this view is the project owner (can resolve comments) */
+  /** Whether this view is the project owner (can resolve + delete any comment) */
   isOwner: boolean;
   comments: ReviewComment[];
   activeVersionId: string;
@@ -20,6 +20,8 @@ interface CommentPanelProps {
   onSeek: (ms: number) => void;
   onCommentAdded: (comment: ReviewComment) => void;
   onCommentResolved: (commentId: string, resolved: boolean, resolvedBy?: string) => void;
+  /** Called locally after a successful delete so the panel can drop the row. */
+  onCommentDeleted?: (commentId: string) => void;
   showAllVersions: boolean;
   onToggleAllVersions: () => void;
   pendingDrawing: { data: unknown; thumbnail: string } | null;
@@ -30,9 +32,23 @@ type Filter = 'all' | 'unresolved' | 'resolved';
 
 export function CommentPanel({
   commentsUrl, commentItemUrl, isOwner, comments, activeVersionId, permission, author, currentTimeMs,
-  onSeek, onCommentAdded, onCommentResolved, showAllVersions, onToggleAllVersions,
+  onSeek, onCommentAdded, onCommentResolved, onCommentDeleted, showAllVersions, onToggleAllVersions,
   pendingDrawing, onClearDrawing,
 }: CommentPanelProps) {
+
+  // Owner uses PATCH/DELETE on the same itemUrl. Token-side delete is the
+  // same endpoint but with ?author_name=… so the server can verify ownership.
+  async function deleteComment(commentId: string, authorName: string) {
+    let url = commentItemUrl(commentId);
+    if (!isOwner) {
+      const sep = url.includes('?') ? '&' : '?';
+      url = `${url}${sep}author_name=${encodeURIComponent(authorName)}`;
+    }
+    try {
+      const res = await fetch(url, { method: 'DELETE' });
+      if (res.ok) onCommentDeleted?.(commentId);
+    } catch {}
+  }
   const [filter, setFilter] = useState<Filter>('all');
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -130,6 +146,13 @@ export function CommentPanel({
                     if (res.ok) onCommentResolved(comment.id, resolved, author?.name);
                   } catch {}
                 }}
+                onDelete={
+                  // Owner can delete any comment; non-owner can only delete
+                  // their own (server enforces this).
+                  isOwner || (author && author.name === comment.author_name)
+                    ? () => deleteComment(comment.id, comment.author_name)
+                    : undefined
+                }
                 canResolve={isOwner}
               />
               {/* Replies */}

@@ -58,6 +58,9 @@ export async function ensureReviewSchema() {
       )
     `;
     try { await sql`CREATE INDEX IF NOT EXISTS idx_review_comments_version ON review_comments(version_id)`; } catch {}
+    // Range comments: when end_timestamp_ms is set, the comment applies from
+    // timestamp_ms .. end_timestamp_ms (inclusive). NULL = point-in-time comment.
+    try { await sql`ALTER TABLE review_comments ADD COLUMN IF NOT EXISTS end_timestamp_ms INTEGER`; } catch {}
 
     await sql`
       CREATE TABLE IF NOT EXISTS review_share_links (
@@ -192,6 +195,8 @@ export async function updateVersion(versionId: string, fields: { thumbnail_url?:
 export async function createComment(fields: {
   version_id: string;
   timestamp_ms: number;
+  /** When set, this is a RANGE comment applying from timestamp_ms..end_timestamp_ms. */
+  end_timestamp_ms?: number | null;
   text: string;
   author_name: string;
   author_color: string;
@@ -200,11 +205,18 @@ export async function createComment(fields: {
   parent_id?: string;
 }) {
   await ensureReviewSchema();
+  // Validate range — end must be >= start. Silently coerce to null if reversed
+  // so weird input doesn't end up as a hidden bug in the DB.
+  let endMs: number | null = null;
+  if (typeof fields.end_timestamp_ms === 'number' && fields.end_timestamp_ms > fields.timestamp_ms) {
+    endMs = fields.end_timestamp_ms;
+  }
   const { rows } = await sql`
-    INSERT INTO review_comments (version_id, timestamp_ms, text, author_name, author_color, drawing_data, drawing_thumbnail_url, parent_id)
+    INSERT INTO review_comments (version_id, timestamp_ms, end_timestamp_ms, text, author_name, author_color, drawing_data, drawing_thumbnail_url, parent_id)
     VALUES (
       ${fields.version_id},
       ${fields.timestamp_ms},
+      ${endMs},
       ${fields.text},
       ${fields.author_name},
       ${fields.author_color},

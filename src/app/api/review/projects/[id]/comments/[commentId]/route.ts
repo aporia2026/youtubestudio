@@ -58,3 +58,25 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     return NextResponse.json({ error: 'Failed to update comment' }, { status: 500 });
   }
 }
+
+/** Owner-side delete — removes the comment and any threaded replies via FK CASCADE. */
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string; commentId: string }> }) {
+  try {
+    const { id: projectId, commentId } = await params;
+    // Verify the comment belongs to this project before deleting
+    const { rows } = await sql`
+      SELECT 1 FROM review_comments c
+      JOIN review_versions v ON v.id = c.version_id
+      WHERE c.id = ${commentId} AND v.project_id = ${projectId}
+      LIMIT 1
+    `;
+    if (rows.length === 0) {
+      return NextResponse.json({ error: 'Comment not found in this project' }, { status: 403 });
+    }
+    await sql`DELETE FROM review_comments WHERE id = ${commentId}`;
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error('DELETE owner comment error:', err);
+    return NextResponse.json({ error: 'Failed to delete comment' }, { status: 500 });
+  }
+}

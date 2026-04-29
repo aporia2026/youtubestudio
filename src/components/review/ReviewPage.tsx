@@ -24,6 +24,9 @@ export interface ReviewComment {
   version_id: string;
   version_number?: number;
   timestamp_ms: number;
+  /** When set, this is a RANGE comment from timestamp_ms..end_timestamp_ms.
+   *  When null, the comment is point-in-time at timestamp_ms (existing behavior). */
+  end_timestamp_ms: number | null;
   text: string;
   author_name: string;
   author_color: string;
@@ -175,6 +178,18 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId }: ReviewPa
     });
   }, []);
 
+  const handleCommentDeleted = useCallback((commentId: string) => {
+    setData(prev => {
+      if (!prev) return prev;
+      // Drop the comment AND any replies that pointed at it (server CASCADEs;
+      // mirror that on the client so we don't show ghost rows until refresh).
+      return {
+        ...prev,
+        comments: prev.comments.filter(c => c.id !== commentId && c.parent_id !== commentId),
+      };
+    });
+  }, []);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -312,6 +327,7 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId }: ReviewPa
             onSeek={handleSeek}
             onCommentAdded={handleCommentAdded}
             onCommentResolved={handleCommentResolved}
+            onCommentDeleted={handleCommentDeleted}
             showAllVersions={showAllVersionComments}
             onToggleAllVersions={() => setShowAllVersionComments(v => !v)}
             pendingDrawing={pendingDrawing}

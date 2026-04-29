@@ -7,6 +7,8 @@ interface CommentItemProps {
   highlighted: boolean;
   onSeek: () => void;
   onResolve: (resolved: boolean) => void;
+  /** Called when the user clicks the trash icon. Hide the button entirely if undefined. */
+  onDelete?: () => void;
   canResolve: boolean;
   isReply?: boolean;
 }
@@ -29,11 +31,12 @@ function timeAgo(dateStr: string) {
   return `${days}d ago`;
 }
 
-export function CommentItem({ comment, highlighted, onSeek, onResolve, canResolve, isReply }: CommentItemProps) {
+export function CommentItem({ comment, highlighted, onSeek, onResolve, onDelete, canResolve, isReply }: CommentItemProps) {
+  const isRange = comment.end_timestamp_ms != null && comment.end_timestamp_ms > comment.timestamp_ms;
   return (
     <div
       data-comment-id={comment.id}
-      className="p-2.5 rounded-lg transition-all"
+      className="group p-2.5 rounded-lg transition-all"
       style={{
         background: highlighted ? 'rgba(124,58,237,0.1)' : 'var(--bg-primary)',
         border: highlighted ? '1px solid rgba(124,58,237,0.3)' : '1px solid transparent',
@@ -59,16 +62,38 @@ export function CommentItem({ comment, highlighted, onSeek, onResolve, canResolv
         <span className="text-[10px] ml-auto shrink-0" style={{ color: 'var(--text-muted)' }}>
           {timeAgo(comment.created_at)}
         </span>
+        {/* Delete button — hover to reveal */}
+        {onDelete && !isReply && (
+          <button
+            onClick={() => { if (confirm('Delete this comment?')) onDelete(); }}
+            className="opacity-0 group-hover:opacity-100 p-0.5 rounded cursor-pointer transition-opacity hover:bg-red-500/10"
+            title="Delete comment"
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: '#ef4444' }}>
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            </svg>
+          </button>
+        )}
       </div>
 
-      {/* Timestamp badge */}
+      {/* Timestamp / range badge */}
       {!isReply && (
         <button
           onClick={onSeek}
-          className="text-[10px] font-mono px-1.5 py-0.5 rounded mb-1.5 transition-colors hover:bg-purple-500/20"
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded mb-1.5 transition-colors hover:bg-purple-500/20 cursor-pointer flex items-center gap-1"
           style={{ background: 'rgba(124,58,237,0.1)', color: '#a78bfa' }}
+          title={isRange ? 'Jump to start of range' : 'Jump to this moment'}
         >
-          {formatTime(comment.timestamp_ms)}
+          {isRange ? (
+            <>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M5 12h14M5 12l3-3M5 12l3 3M19 12l-3-3M19 12l-3 3" />
+              </svg>
+              {formatTime(comment.timestamp_ms)} – {formatTime(comment.end_timestamp_ms!)}
+            </>
+          ) : (
+            formatTime(comment.timestamp_ms)
+          )}
         </button>
       )}
 
@@ -95,7 +120,7 @@ export function CommentItem({ comment, highlighted, onSeek, onResolve, canResolv
         <div className="flex items-center justify-end mt-1.5">
           <button
             onClick={() => onResolve(!comment.resolved)}
-            className="text-[10px] flex items-center gap-1 transition-colors"
+            className="text-[10px] flex items-center gap-1 transition-colors cursor-pointer"
             style={{ color: comment.resolved ? '#22c55e' : 'var(--text-muted)' }}
           >
             {comment.resolved ? (

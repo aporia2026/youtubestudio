@@ -30,14 +30,33 @@ export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek }: 
 
   const progress = durationMs > 0 ? (currentTimeMs / durationMs) * 100 : 0;
 
-  // Deduplicate markers that are very close together
-  const markers = comments.map(c => ({
-    id: c.id,
-    pct: durationMs > 0 ? (c.timestamp_ms / durationMs) * 100 : 0,
-    color: c.author_color,
-    hasDrawing: !!c.drawing_data,
-    resolved: c.resolved,
-  }));
+  // Top-level (non-reply) comments visualised on the timeline:
+  //  - point comments → small dot at timestamp_ms
+  //  - range comments → translucent bar from timestamp_ms..end_timestamp_ms
+  // Stacked vertically when overlapping so they're all clickable.
+  const topLevel = comments.filter(c => !c.parent_id);
+  const ranges = topLevel
+    .filter(c => c.end_timestamp_ms != null && c.end_timestamp_ms > c.timestamp_ms)
+    .map((c, i) => ({
+      id: c.id,
+      startPct: durationMs > 0 ? (c.timestamp_ms / durationMs) * 100 : 0,
+      endPct: durationMs > 0 ? (c.end_timestamp_ms! / durationMs) * 100 : 0,
+      color: c.author_color,
+      resolved: c.resolved,
+      lane: i % 3, // up to 3 visual lanes so overlapping ranges don't all stack
+      timestampMs: c.timestamp_ms,
+      endMs: c.end_timestamp_ms!,
+    }));
+  const points = topLevel
+    .filter(c => c.end_timestamp_ms == null || c.end_timestamp_ms <= c.timestamp_ms)
+    .map(c => ({
+      id: c.id,
+      pct: durationMs > 0 ? (c.timestamp_ms / durationMs) * 100 : 0,
+      color: c.author_color,
+      hasDrawing: !!c.drawing_data,
+      resolved: c.resolved,
+      timestampMs: c.timestamp_ms,
+    }));
 
   return (
     <div className="px-4 py-3 shrink-0" style={{ background: 'var(--bg-secondary)', borderTop: '1px solid var(--border)' }}>
@@ -47,6 +66,29 @@ export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek }: 
         <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>{formatTime(durationMs)}</span>
       </div>
 
+      {/* Range comment bars — sit just above the scrub bar so they don't fight
+          for click events with the bar itself. Hover/click jumps to start. */}
+      {ranges.length > 0 && (
+        <div className="relative h-3 mb-1">
+          {ranges.map(r => (
+            <button
+              key={r.id}
+              onClick={() => onSeek(r.timestampMs)}
+              className="absolute h-1 rounded-full transition-opacity hover:opacity-100 cursor-pointer"
+              style={{
+                left: `${r.startPct}%`,
+                width: `${Math.max(1, r.endPct - r.startPct)}%`,
+                top: r.lane * 4,
+                background: r.color,
+                opacity: r.resolved ? 0.25 : 0.7,
+                boxShadow: r.resolved ? 'none' : `0 0 6px ${r.color}55`,
+              }}
+              title={`Range comment ${formatTime(r.timestampMs)}–${formatTime(r.endMs)} — click to jump to start`}
+            />
+          ))}
+        </div>
+      )}
+
       {/* Progress bar */}
       <div
         ref={barRef}
@@ -54,26 +96,23 @@ export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek }: 
         className="relative h-2 rounded-full cursor-pointer group"
         style={{ background: 'rgba(255,255,255,0.1)' }}
       >
-        {/* Progress fill */}
         <div
           className="absolute inset-y-0 left-0 rounded-full"
           style={{ width: `${progress}%`, background: 'linear-gradient(90deg, #7c3aed, #06b6d4)' }}
         />
-
-        {/* Playhead */}
         <div
           className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-white shadow-lg"
-          style={{ left: `${progress}%`, transform: `translate(-50%, -50%)`, background: '#7c3aed' }}
+          style={{ left: `${progress}%`, transform: 'translate(-50%, -50%)', background: '#7c3aed' }}
         />
 
-        {/* Comment markers */}
-        {markers.map(marker => (
+        {/* Point markers */}
+        {points.map(marker => (
           <button
             key={marker.id}
-            onClick={e => { e.stopPropagation(); onSeek(Math.round((marker.pct / 100) * durationMs)); }}
-            className="absolute top-1/2 -translate-y-1/2 transition-transform hover:scale-150"
+            onClick={e => { e.stopPropagation(); onSeek(marker.timestampMs); }}
+            className="absolute top-1/2 -translate-y-1/2 transition-transform hover:scale-150 cursor-pointer"
             style={{ left: `${marker.pct}%`, transform: 'translate(-50%, -50%)' }}
-            title={`Comment at ${formatTime(Math.round((marker.pct / 100) * durationMs))}`}
+            title={`Comment at ${formatTime(marker.timestampMs)}`}
           >
             {marker.hasDrawing ? (
               <svg width="10" height="10" viewBox="0 0 24 24" fill={marker.resolved ? 'rgba(255,255,255,0.3)' : marker.color} stroke="none">

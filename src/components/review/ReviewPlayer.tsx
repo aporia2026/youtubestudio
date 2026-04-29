@@ -97,7 +97,14 @@ export const ReviewPlayer = forwardRef<HTMLVideoElement, ReviewPlayerProps>(
         <video
           ref={videoRef}
           src={src}
-          crossOrigin="anonymous"
+          // NOTE: no crossOrigin attribute. Setting it to "anonymous" requires
+          // the R2 bucket to return matching Access-Control-Allow-Origin headers
+          // on byte-range GETs, and a misconfiguration silently blocks playback
+          // (you get duration metadata + a black frame). Without crossOrigin,
+          // playback works regardless of CORS. Trade-off: the canvas annotation
+          // Done button can't composite the video frame into the saved
+          // thumbnail — CanvasOverlay already falls back to an annotation-only
+          // thumbnail on a translucent dark backdrop in that case.
           onTimeUpdate={handleTimeUpdate}
           onLoadedMetadata={handleLoadedMetadata}
           onPlay={() => setPlaying(true)}
