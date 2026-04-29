@@ -9,6 +9,9 @@ interface Collaborator {
   name: string;
   email: string | null;
   role: string;
+  /** Multi-role array. Older rows may have only `role` set; we treat
+   *  `roles` as authoritative when present, falling back to [role]. */
+  roles?: string[] | null;
   color: string;
   specialties: string[];
   notes: string | null;
@@ -18,6 +21,14 @@ interface Collaborator {
   review_link_count?: number;
   assignment_count?: number;
   last_activity?: string | null;
+}
+
+const ALL_ROLES = ['editor', 'narrator', 'reviewer', 'client'] as const;
+type RoleKey = typeof ALL_ROLES[number];
+
+/** Authoritative role list for a collaborator. Falls back to legacy `role`. */
+function getRoles(c: Collaborator): string[] {
+  return Array.isArray(c.roles) && c.roles.length > 0 ? c.roles : [c.role];
 }
 
 interface EditorAssignment {
@@ -103,8 +114,14 @@ export default function TeamPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState('');
   const [newEmail, setNewEmail] = useState('');
-  const [newRole, setNewRole] = useState('reviewer');
+  const [newRoles, setNewRoles] = useState<string[]>(['reviewer']);
   const [revoking, setRevoking] = useState<string | null>(null);
+
+  // Edit-in-place state. We hold the draft in a single object so toggling a
+  // role checkbox or typing in a field doesn't reset other in-flight edits.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<{ name: string; email: string; color: string; roles: string[]; notes: string } | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
 
   useEffect(() => { loadOverview(); }, []);
 
@@ -117,21 +134,70 @@ export default function TeamPage() {
 
   async function handleAdd() {
     if (!newName.trim()) return;
+    const roles = newRoles.length > 0 ? newRoles : ['reviewer'];
     try {
       const res = await fetch('/api/team/collaborators', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newName.trim(), email: newEmail.trim() || undefined, role: newRole, color: PALETTE[collaborators.length % PALETTE.length] }),
+        body: JSON.stringify({
+          name: newName.trim(),
+          email: newEmail.trim() || undefined,
+          roles,
+          color: PALETTE[collaborators.length % PALETTE.length],
+        }),
       });
       if (res.ok) {
         toast.success('Collaborator added');
         setShowAdd(false);
         setNewName('');
         setNewEmail('');
-        setNewRole('reviewer');
+        setNewRoles(['reviewer']);
         loadOverview();
       }
     } catch { toast.error('Failed to add'); }
+  }
+
+  // Open inline editor for a row, seeded with current values.
+  function startEdit(c: Collaborator) {
+    setEditingId(c.id);
+    setEditDraft({
+      name: c.name,
+      email: c.email ?? '',
+      color: c.color,
+      roles: getRoles(c),
+      notes: c.notes ?? '',
+    });
+  }
+  function cancelEdit() {
+    setEditingId(null);
+    setEditDraft(null);
+  }
+  async function saveEdit() {
+    if (!editingId || !editDraft) return;
+    if (!editDraft.name.trim()) { toast.error('Name is required'); return; }
+    if (editDraft.roles.length === 0) { toast.error('Pick at least one role'); return; }
+    setSavingEdit(true);
+    try {
+      const res = await fetch(`/api/team/collaborators/${editingId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: editDraft.name.trim(),
+          email: editDraft.email.trim() || null,
+          color: editDraft.color,
+          roles: editDraft.roles,
+          notes: editDraft.notes.trim() || null,
+        }),
+      });
+      if (!res.ok) throw new Error('save failed');
+      toast.success('Saved');
+      cancelEdit();
+      loadOverview();
+    } catch {
+      toast.error('Failed to save');
+    } finally {
+      setSavingEdit(false);
+    }
   }
 
   async function handleDelete(id: string) {
@@ -194,7 +260,9 @@ export default function TeamPage() {
     } catch { toast.error('Failed'); }
   }
 
-  const filtered = roleFilter === 'all' ? collaborators : collaborators.filter(c => c.role === roleFilter);
+  const filtered = roleFilter === 'all'
+    ? collaborators
+    : collaborators.filter(c => getRoles(c).includes(roleFilter));
 
   if (loading) {
     return (
@@ -229,7 +297,7 @@ export default function TeamPage() {
               color: roleFilter === role ? '#a78bfa' : 'var(--text-muted)',
             }}
           >
-            {role === 'all' ? `All (${collaborators.length})` : `${role}s (${collaborators.filter(c => c.role === role).length})`}
+            {role === 'all' ? `All (${collaborators.length})` : `${role}s (${collaborators.filter(c => getRoles(c).includes(role)).length})`}
           </button>
         ))}
       </div>
@@ -240,22 +308,39 @@ export default function TeamPage() {
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="mb-6 overflow-hidden">
             <div className="p-5 rounded-xl" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
               <h3 className="text-sm font-semibold mb-3" style={{ color: 'var(--text-primary)' }}>Add Collaborator</h3>
-              <div className="grid grid-cols-3 gap-3 mb-3">
+              <div className="grid grid-cols-2 gap-3 mb-3">
                 <input autoFocus placeholder="Name" value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAdd()}
                   className="px-3 py-2 rounded-lg text-sm" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
                 <input placeholder="Email (optional)" value={newEmail} onChange={e => setNewEmail(e.target.value)}
                   className="px-3 py-2 rounded-lg text-sm" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
-                <select value={newRole} onChange={e => setNewRole(e.target.value)}
-                  className="px-3 py-2 rounded-lg text-sm" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}>
-                  <option value="editor">Editor</option>
-                  <option value="narrator">Narrator</option>
-                  <option value="reviewer">Reviewer</option>
-                  <option value="client">Client</option>
-                </select>
+              </div>
+              <div className="mb-3">
+                <p className="text-[11px] uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>Roles (pick one or more)</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {ALL_ROLES.map(r => {
+                    const checked = newRoles.includes(r);
+                    const rc = ROLE_COLORS[r];
+                    return (
+                      <button
+                        key={r}
+                        type="button"
+                        onClick={() => setNewRoles(prev => checked ? prev.filter(x => x !== r) : [...prev, r])}
+                        className="px-2.5 py-1 rounded-full text-xs font-medium capitalize transition-all"
+                        style={{
+                          background: checked ? rc.bg : 'transparent',
+                          color: checked ? rc.text : 'var(--text-muted)',
+                          border: `1px solid ${checked ? rc.text : 'var(--border)'}`,
+                        }}
+                      >
+                        {r}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
               <div className="flex gap-2 justify-end">
-                <button onClick={() => { setShowAdd(false); setNewName(''); setNewEmail(''); }} className="px-3 py-1.5 text-sm" style={{ color: 'var(--text-muted)' }}>Cancel</button>
-                <button onClick={handleAdd} disabled={!newName.trim()} className="px-4 py-1.5 rounded-lg text-sm font-medium text-white disabled:opacity-50" style={{ background: '#7c3aed' }}>Add</button>
+                <button onClick={() => { setShowAdd(false); setNewName(''); setNewEmail(''); setNewRoles(['reviewer']); }} className="px-3 py-1.5 text-sm" style={{ color: 'var(--text-muted)' }}>Cancel</button>
+                <button onClick={handleAdd} disabled={!newName.trim() || newRoles.length === 0} className="px-4 py-1.5 rounded-lg text-sm font-medium text-white disabled:opacity-50" style={{ background: '#7c3aed' }}>Add</button>
               </div>
             </div>
           </motion.div>
@@ -272,21 +357,27 @@ export default function TeamPage() {
       ) : (
         <div className="space-y-3">
           {filtered.map(collab => {
-            const rc = ROLE_COLORS[collab.role] || ROLE_COLORS.reviewer;
+            const collabRoles = getRoles(collab);
             const isExpanded = expandedId === collab.id;
+            const isEditing = editingId === collab.id;
             const totalAccess = (collab.review_link_count || 0) + (collab.assignment_count || 0);
 
             return (
               <div key={collab.id} className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
                 {/* Collaborator row */}
-                <div className="flex items-center gap-4 p-4 cursor-pointer" onClick={() => toggleExpand(collab.id)}>
+                <div className="flex items-center gap-4 p-4 cursor-pointer" onClick={() => !isEditing && toggleExpand(collab.id)}>
                   <div className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold text-white shrink-0" style={{ background: collab.color }}>
                     {(collab.name || '?')[0].toUpperCase()}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>{collab.name}</span>
-                      <span className="text-[10px] px-2 py-0.5 rounded-full font-medium capitalize" style={{ background: rc.bg, color: rc.text }}>{collab.role}</span>
+                      {collabRoles.map(r => {
+                        const rc = ROLE_COLORS[r] || ROLE_COLORS.reviewer;
+                        return (
+                          <span key={r} className="text-[10px] px-2 py-0.5 rounded-full font-medium capitalize" style={{ background: rc.bg, color: rc.text }}>{r}</span>
+                        );
+                      })}
                     </div>
                     <div className="flex items-center gap-3 mt-0.5">
                       {collab.email && <span className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>{collab.email}</span>}
@@ -295,6 +386,13 @@ export default function TeamPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
+                    <button
+                      onClick={e => { e.stopPropagation(); isEditing ? cancelEdit() : startEdit(collab); }}
+                      className="px-2 py-1 rounded text-[10px] font-medium transition-colors"
+                      style={{ color: isEditing ? '#a78bfa' : 'var(--text-muted)', background: isEditing ? 'rgba(124,58,237,0.15)' : 'rgba(255,255,255,0.05)' }}
+                    >
+                      {isEditing ? 'Editing…' : 'Edit'}
+                    </button>
                     <button
                       onClick={e => { e.stopPropagation(); handleRevokeAll(collab.id); }}
                       disabled={revoking === collab.id || totalAccess === 0}
@@ -316,6 +414,107 @@ export default function TeamPage() {
                   </div>
                 </div>
 
+                {/* Inline edit form */}
+                <AnimatePresence>
+                  {isEditing && editDraft && (
+                    <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+                      <div className="px-4 pb-4 pt-3 space-y-3" style={{ borderTop: '1px solid var(--border)', background: 'rgba(124,58,237,0.04)' }}>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <p className="text-[11px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>Name</p>
+                            <input
+                              autoFocus
+                              value={editDraft.name}
+                              onChange={e => setEditDraft(d => d && { ...d, name: e.target.value })}
+                              className="w-full px-3 py-2 rounded-lg text-sm"
+                              style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                            />
+                          </div>
+                          <div>
+                            <p className="text-[11px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>Email</p>
+                            <input
+                              value={editDraft.email}
+                              onChange={e => setEditDraft(d => d && { ...d, email: e.target.value })}
+                              placeholder="optional"
+                              className="w-full px-3 py-2 rounded-lg text-sm"
+                              style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <p className="text-[11px] uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>Roles</p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {ALL_ROLES.map(r => {
+                              const checked = editDraft.roles.includes(r);
+                              const rc = ROLE_COLORS[r];
+                              return (
+                                <button
+                                  key={r}
+                                  type="button"
+                                  onClick={() => setEditDraft(d => d && { ...d, roles: checked ? d.roles.filter(x => x !== r) : [...d.roles, r] })}
+                                  className="px-2.5 py-1 rounded-full text-xs font-medium capitalize transition-all"
+                                  style={{
+                                    background: checked ? rc.bg : 'transparent',
+                                    color: checked ? rc.text : 'var(--text-muted)',
+                                    border: `1px solid ${checked ? rc.text : 'var(--border)'}`,
+                                  }}
+                                >
+                                  {r}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        <div>
+                          <p className="text-[11px] uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>Color</p>
+                          <div className="flex gap-1.5">
+                            {PALETTE.map(c => (
+                              <button
+                                key={c}
+                                type="button"
+                                onClick={() => setEditDraft(d => d && { ...d, color: c })}
+                                className="w-7 h-7 rounded-full transition-transform"
+                                style={{
+                                  background: c,
+                                  border: editDraft.color === c ? '2px solid white' : '2px solid transparent',
+                                  transform: editDraft.color === c ? 'scale(1.1)' : 'scale(1)',
+                                }}
+                                title={c}
+                              />
+                            ))}
+                          </div>
+                        </div>
+
+                        <div>
+                          <p className="text-[11px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>Notes</p>
+                          <textarea
+                            value={editDraft.notes}
+                            onChange={e => setEditDraft(d => d && { ...d, notes: e.target.value })}
+                            rows={2}
+                            placeholder="Anything you want to remember about this person..."
+                            className="w-full px-3 py-2 rounded-lg text-sm resize-y"
+                            style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                          />
+                        </div>
+
+                        <div className="flex justify-end gap-2 pt-1">
+                          <button onClick={cancelEdit} className="px-3 py-1.5 text-sm" style={{ color: 'var(--text-muted)' }}>Cancel</button>
+                          <button
+                            onClick={saveEdit}
+                            disabled={savingEdit || !editDraft.name.trim() || editDraft.roles.length === 0}
+                            className="px-4 py-1.5 rounded-lg text-sm font-medium text-white disabled:opacity-50"
+                            style={{ background: 'linear-gradient(135deg, #7c3aed, #06b6d4)' }}
+                          >
+                            {savingEdit ? 'Saving…' : 'Save changes'}
+                          </button>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
                 {/* Expanded detail */}
                 <AnimatePresence>
                   {isExpanded && (
@@ -327,23 +526,24 @@ export default function TeamPage() {
                           </div>
                         ) : (
                           <>
-                            {/* Personal dashboard link — narrators and editors get a single
-                                URL that lists ALL their assignments. Surface it prominently
-                                so the owner can copy & send it directly from this page. */}
-                            {(expandedData.role === 'narrator' || expandedData.role === 'editor') && expandedData.personal_token && (
-                              <div className="pt-3">
+                            {/* Personal dashboard links — narrators and editors get a single
+                                URL that lists ALL their assignments. A person with both roles
+                                gets one banner per role (the routes are different even though
+                                the underlying token is shared). */}
+                            {expandedData.personal_token && getRoles(expandedData).filter(r => r === 'narrator' || r === 'editor').map(roleSlug => (
+                              <div key={roleSlug} className="pt-3">
                                 <div className="flex items-center justify-between gap-3 p-2.5 rounded-lg" style={{ background: 'rgba(124,58,237,0.08)', border: '1px solid rgba(124,58,237,0.25)' }}>
                                   <div className="min-w-0 flex-1">
                                     <p className="text-xs font-medium" style={{ color: '#a78bfa' }}>
-                                      🎯 {expandedData.role === 'narrator' ? 'Narrator' : 'Editor'} dashboard
+                                      🎯 {roleSlug === 'narrator' ? 'Narrator' : 'Editor'} dashboard
                                     </p>
                                     <p className="text-[11px] truncate font-mono" style={{ color: 'var(--text-muted)' }}>
-                                      /{expandedData.role}/{expandedData.personal_token!.slice(0, 12)}…
+                                      /{roleSlug}/{expandedData.personal_token!.slice(0, 12)}…
                                     </p>
                                   </div>
                                   <button
                                     onClick={() => {
-                                      const url = `${window.location.origin}/${expandedData.role}/${expandedData.personal_token}`;
+                                      const url = `${window.location.origin}/${roleSlug}/${expandedData.personal_token}`;
                                       navigator.clipboard.writeText(url);
                                       toast.success('Dashboard link copied');
                                     }}
@@ -354,7 +554,7 @@ export default function TeamPage() {
                                     Copy link
                                   </button>
                                   <a
-                                    href={`/${expandedData.role}/${expandedData.personal_token}`}
+                                    href={`/${roleSlug}/${expandedData.personal_token}`}
                                     target="_blank"
                                     rel="noreferrer"
                                     className="px-2.5 py-1.5 rounded-lg text-xs font-medium cursor-pointer flex items-center gap-1 shrink-0"
@@ -366,10 +566,10 @@ export default function TeamPage() {
                                   </a>
                                 </div>
                                 <p className="text-[10px] mt-1.5" style={{ color: 'var(--text-muted)' }}>
-                                  Share this single link with {expandedData.name} — they&apos;ll see {expandedData.role === 'narrator' ? 'every script you assign to them' : 'every project you assign to them with scripts, references, thumbnails, and an upload button'}.
+                                  Share this link with {expandedData.name} — they&apos;ll see {roleSlug === 'narrator' ? 'every script you assign to them' : 'every project you assign to them with scripts, references, thumbnails, and an upload button'}.
                                 </p>
                               </div>
-                            )}
+                            ))}
 
                             {/* Review links */}
                             {expandedData.reviewLinks.length > 0 && (
