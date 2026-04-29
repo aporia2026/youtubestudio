@@ -1024,12 +1024,18 @@ function GeneratorPage() {
                     <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Custom exclusions (one per line — e.g. &quot;no pop-culture refs&quot;)</label>
                     <textarea
                       value={(constraints.custom || []).join('\n')}
-                      onChange={e => setConstraints(c => ({ ...c, custom: e.target.value.split('\n').map(s => s.trim()).filter(Boolean) }))}
+                      // Don't trim or filter on every keystroke — that strips spaces
+                      // mid-word and prevents typing multiple lines. Server-side
+                      // applyScriptConstraints() does the cleanup before use.
+                      onChange={e => setConstraints(c => ({ ...c, custom: e.target.value.split('\n') }))}
                       onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) e.stopPropagation(); }}
-                      placeholder="One rule per line…"
+                      placeholder="One rule per line — saves automatically"
                       className="input-field w-full"
                       style={{ fontSize: 12, minHeight: 60 }}
                     />
+                    <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                      Saved automatically. Used the next time you generate or refine a script.
+                    </p>
                   </div>
                 </div>
               )}

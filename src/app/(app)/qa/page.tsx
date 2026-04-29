@@ -709,11 +709,16 @@ function QAPage() {
                   </label>
                   <textarea
                     value={(constraints.custom || []).join('\n')}
-                    onChange={e => setConstraints(c => ({ ...c, custom: e.target.value.split('\n').map(s => s.trim()).filter(Boolean) }))}
-                    placeholder="One rule per line…"
+                    // Don't trim/filter on every keystroke — that strips spaces
+                    // and breaks typing. Server-side cleans the array before use.
+                    onChange={e => setConstraints(c => ({ ...c, custom: e.target.value.split('\n') }))}
+                    placeholder="One rule per line — saves automatically"
                     className="input-field w-full"
                     style={{ fontSize: 12, minHeight: 60 }}
                   />
+                  <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                    Saved automatically. Applied to the next QA pass.
+                  </p>
                 </div>
               </div>
             </div>
