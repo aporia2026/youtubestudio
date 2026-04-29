@@ -33,6 +33,7 @@
     "@remotion/player": "^4.0.448",
     "@remotion/renderer": "^4.0.448",
     "@remotion/transitions": "^4.0.448",
+    "@sendgrid/mail": "^8.1.6",
     "@vercel/blob": "^2.3.3",
     "@vercel/postgres": "^0.10.0",
     "class-variance-authority": "^0.7.1",

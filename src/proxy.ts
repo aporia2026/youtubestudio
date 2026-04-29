@@ -16,6 +16,8 @@ const PUBLIC_PATHS = [
   '/login', '/api/auth/login', '/api/auth/logout', '/api/auth/google/callback',
   // Public schedule share tokens — readable without session when a valid token is provided.
   '/share', '/api/public',
+  // Public unsubscribe link from emails (token-based)
+  '/unsubscribe', '/api/notifications/unsubscribe',
 ];
 
 // Paths that bypass auth entirely (public review pages + their API endpoints)

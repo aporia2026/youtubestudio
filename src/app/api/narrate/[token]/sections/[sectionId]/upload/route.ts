@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { put } from '@vercel/blob';
 import { getAssignmentByToken, createTake, updateAssignment } from '@/lib/narrator-db';
+import { notifyNarratorTake } from '@/lib/notify';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -51,6 +52,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
     if (assignment.status === 'received' || assignment.status === 'assigned') {
       await updateAssignment(assignment.id, { status: 'recording' });
     }
+
+    // Fire-and-forget: notify owner of new take
+    sql`SELECT label FROM narrator_sections WHERE id = ${sectionId}`.then(r => {
+      const sectionLabel = r.rows[0]?.label || 'a section';
+      notifyNarratorTake({
+        narratorName: assignment.narrator_name || 'Narrator',
+        projectId: assignment.project_id,
+        projectTitle: assignment.project_title || 'project',
+        sectionLabel,
+        takeNumber: take.take_number,
+      }).catch(e => console.error('notifyNarratorTake failed:', e));
+    }).catch(() => {});
 
     return NextResponse.json(take, { status: 201 });
   } catch (err) {

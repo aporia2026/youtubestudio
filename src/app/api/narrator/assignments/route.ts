@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { sql } from '@vercel/postgres';
 import { createAssignment, createSection, listAllAssignments } from '@/lib/narrator-db';
 import { splitScriptIntoSections } from '@/lib/narrator-utils';
+import { notifyAssignmentReceived } from '@/lib/notify';
 
 export async function GET() {
   try {
@@ -49,6 +51,24 @@ export async function POST(req: NextRequest) {
         estimated_duration_seconds: s.estimated_duration_seconds,
       });
     }
+
+    // Fire-and-forget: notify narrator with portal link
+    sql`
+      SELECT c.name AS narrator_name, p.title AS project_title
+      FROM collaborators c, projects p
+      WHERE c.id = ${narrator_id} AND p.id = ${project_id}
+    `.then(r => {
+      const row = r.rows[0];
+      if (!row) return;
+      notifyAssignmentReceived({
+        narratorId: narrator_id,
+        narratorName: row.narrator_name || 'Narrator',
+        projectTitle: row.project_title || 'project',
+        shareToken: assignment.share_token,
+        sectionCount: sectionData.length,
+        deadline,
+      }).catch(e => console.error('notifyAssignmentReceived failed:', e));
+    }).catch(() => {});
 
     return NextResponse.json({ assignment, sectionCount: sectionData.length }, { status: 201 });
   } catch (err) {

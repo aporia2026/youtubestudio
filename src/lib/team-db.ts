@@ -44,6 +44,13 @@ export async function ensureTeamSchema() {
     try { await sql`ALTER TABLE narrator_assignments ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ`; } catch {}
     try { await sql`ALTER TABLE narrator_assignments ADD COLUMN IF NOT EXISTS access_count INTEGER NOT NULL DEFAULT 0`; } catch {}
 
+    // Notification columns on collaborators
+    try { await sql`ALTER TABLE collaborators ADD COLUMN IF NOT EXISTS notifications_enabled BOOLEAN NOT NULL DEFAULT true`; } catch {}
+    try { await sql`ALTER TABLE collaborators ADD COLUMN IF NOT EXISTS unsubscribe_token TEXT`; } catch {}
+    // Backfill missing tokens
+    try { await sql`UPDATE collaborators SET unsubscribe_token = encode(gen_random_bytes(24), 'hex') WHERE unsubscribe_token IS NULL`; } catch {}
+    try { await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_collaborators_unsubscribe_token ON collaborators(unsubscribe_token)`; } catch {}
+
     teamMigrated = true;
   } catch (err) {
     console.error('ensureTeamSchema error:', err);
@@ -63,9 +70,11 @@ export async function createCollaborator(fields: {
   notes?: string;
 }) {
   await ensureTeamSchema();
+  // Generate a long unsubscribe token (48-char hex)
+  const unsubscribeToken = Array.from({ length: 6 }, () => Math.random().toString(16).slice(2, 10)).join('');
   const { rows } = await sql`
-    INSERT INTO collaborators (name, email, role, color, specialties, notes)
-    VALUES (${fields.name}, ${fields.email ?? null}, ${fields.role ?? 'reviewer'}, ${fields.color ?? '#7c3aed'}, ${JSON.stringify(fields.specialties || [])}, ${fields.notes ?? null})
+    INSERT INTO collaborators (name, email, role, color, specialties, notes, unsubscribe_token)
+    VALUES (${fields.name}, ${fields.email ?? null}, ${fields.role ?? 'reviewer'}, ${fields.color ?? '#7c3aed'}, ${JSON.stringify(fields.specialties || [])}, ${fields.notes ?? null}, ${unsubscribeToken})
     RETURNING *
   `;
 

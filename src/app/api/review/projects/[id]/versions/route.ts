@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { sql } from '@vercel/postgres';
 import { createVersion, getProject, updateVersion } from '@/lib/review-db';
 import { buildR2Key, getUploadPresignedUrl } from '@/lib/r2';
+import { notifyVersionUploaded } from '@/lib/notify';
 
 /** POST: Generate a presigned upload URL and create a version row. */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -34,7 +36,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const r2Key = buildR2Key(projectId, version.version_number, fileName);
 
     // Update the version row with the real r2_key
-    const { sql } = await import('@vercel/postgres');
     await sql`UPDATE review_versions SET r2_key = ${r2Key} WHERE id = ${version.id}`;
 
     let uploadUrl: string;
@@ -66,6 +67,22 @@ export async function PATCH(req: NextRequest) {
     const { versionId, thumbnail_url, duration_ms, width, height } = await req.json();
     if (!versionId) return NextResponse.json({ error: 'versionId required' }, { status: 400 });
     const version = await updateVersion(versionId, { thumbnail_url, duration_ms, width, height });
+
+    // Fire-and-forget: notify all collaborators that a new version is ready
+    if (version) {
+      sql`SELECT title FROM review_projects WHERE id = ${version.project_id}`
+        .then(r => {
+          const title = r.rows[0]?.title;
+          if (!title) return;
+          notifyVersionUploaded({
+            projectId: version.project_id,
+            projectTitle: title,
+            versionId: version.id,
+            versionNumber: version.version_number,
+          }).catch(e => console.error('notifyVersionUploaded failed:', e));
+        }).catch(() => {});
+    }
+
     return NextResponse.json(version);
   } catch (err) {
     console.error('PATCH versions error:', err);

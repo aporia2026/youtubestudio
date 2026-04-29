@@ -30,7 +30,7 @@ export default function SettingsPage() {
   const [newNicheDesc, setNewNicheDesc] = useState('');
   const [newNicheKeywords, setNewNicheKeywords] = useState('');
   const [addingNiche, setAddingNiche] = useState(false);
-  const [activeSection, setActiveSection] = useState<'niches' | 'api' | 'models' | 'about'>('niches');
+  const [activeSection, setActiveSection] = useState<'niches' | 'api' | 'models' | 'notifications' | 'about'>('niches');
   const [featureModels, setFeatureModels] = useState<Record<AppFeature, string>>(DEFAULT_FEATURE_MODELS);
   const [keyStatus, setKeyStatus] = useState<KeyStatus>({});
   const [keyStatusLoading, setKeyStatusLoading] = useState(true);
@@ -39,6 +39,86 @@ export default function SettingsPage() {
   const [perplexityKeyInput, setPerplexityKeyInput] = useState('');
   const [perplexityKeySaving, setPerplexityKeySaving] = useState(false);
   const [perplexityKeyClearing, setPerplexityKeyClearing] = useState(false);
+
+  // ── Notification settings state ───────────────────────────────────────────
+  const [notifSettings, setNotifSettings] = useState<{
+    owner_email: string;
+    enabled: boolean;
+    on_review_comment: boolean;
+    on_version_uploaded: boolean;
+    on_status_changed: boolean;
+    on_narrator_take: boolean;
+    on_narrator_comment: boolean;
+    on_assignment_received: boolean;
+    on_comment_resolved: boolean;
+    on_retake_requested: boolean;
+  }>({
+    owner_email: '',
+    enabled: true,
+    on_review_comment: true,
+    on_version_uploaded: true,
+    on_status_changed: true,
+    on_narrator_take: true,
+    on_narrator_comment: true,
+    on_assignment_received: true,
+    on_comment_resolved: true,
+    on_retake_requested: true,
+  });
+  const [notifLoading, setNotifLoading] = useState(false);
+  const [notifSaving, setNotifSaving] = useState(false);
+  const [notifTesting, setNotifTesting] = useState(false);
+
+  useEffect(() => {
+    if (activeSection !== 'notifications') return;
+    setNotifLoading(true);
+    fetch('/api/notifications/settings')
+      .then(r => r.json())
+      .then(data => setNotifSettings(prev => ({ ...prev, ...data, owner_email: data.owner_email || '' })))
+      .catch(() => {})
+      .finally(() => setNotifLoading(false));
+  }, [activeSection]);
+
+  async function saveNotifSettings() {
+    setNotifSaving(true);
+    try {
+      const res = await fetch('/api/notifications/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(notifSettings),
+      });
+      if (!res.ok) throw new Error('Failed');
+      toast.success('Notification settings saved');
+    } catch {
+      toast.error('Failed to save');
+    } finally {
+      setNotifSaving(false);
+    }
+  }
+
+  async function sendTestEmail() {
+    setNotifTesting(true);
+    try {
+      // Save first so the latest email is used
+      await fetch('/api/notifications/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner_email: notifSettings.owner_email }),
+      });
+      const res = await fetch('/api/notifications/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const data = await res.json();
+      if (data.sent) {
+        toast.success(`Test email sent to ${data.to} — check your inbox`);
+      } else if (data.skipped) {
+        toast.error(data.message || 'Email skipped', { duration: 8000 });
+      } else {
+        toast.error(data.error || 'Failed to send', { duration: 8000 });
+      }
+    } catch {
+      toast.error('Failed to send test email');
+    } finally {
+      setNotifTesting(false);
+    }
+  }
   const [googleAccount, setGoogleAccount] = useState<{ connected: boolean; email?: string } | null>(null);
   const [googleDisconnecting, setGoogleDisconnecting] = useState(false);
 
@@ -180,6 +260,7 @@ export default function SettingsPage() {
     { id: 'niches' as const, label: '🎯 Niches' },
     { id: 'api' as const, label: '🔑 API Keys' },
     { id: 'models' as const, label: '🤖 Model Defaults' },
+    { id: 'notifications' as const, label: '📧 Notifications' },
     { id: 'about' as const, label: 'ℹ️ About' },
   ];
 
@@ -546,6 +627,117 @@ export default function SettingsPage() {
                     </div>
                   ))}
                 </div>
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'notifications' && (
+            <div className="space-y-4">
+              <div className="glass rounded-xl p-6">
+                <h2 className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>Email Notifications</h2>
+                <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
+                  Get notified when collaborators comment, narrators submit takes, statuses change, etc. Powered by SendGrid.
+                </p>
+
+                {notifLoading ? (
+                  <div className="py-6 text-center"><div className="w-5 h-5 border-2 border-t-transparent rounded-full animate-spin mx-auto" style={{ borderColor: '#7c3aed', borderTopColor: 'transparent' }} /></div>
+                ) : (
+                  <>
+                    {/* Owner email */}
+                    <div className="mb-4">
+                      <label className="text-xs block mb-1" style={{ color: 'var(--text-muted)' }}>Your email</label>
+                      <input
+                        type="email"
+                        value={notifSettings.owner_email}
+                        onChange={e => setNotifSettings(s => ({ ...s, owner_email: e.target.value }))}
+                        placeholder="you@example.com"
+                        className="w-full px-3 py-2 rounded-lg text-sm"
+                        style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                      />
+                    </div>
+
+                    {/* Master toggle */}
+                    <div className="flex items-center justify-between p-3 rounded-lg mb-3" style={{ background: 'var(--bg-secondary)' }}>
+                      <div>
+                        <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>All notifications</p>
+                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Master switch — turn off to disable everything</p>
+                      </div>
+                      <button
+                        onClick={() => setNotifSettings(s => ({ ...s, enabled: !s.enabled }))}
+                        className="relative w-10 h-5 rounded-full transition-colors cursor-pointer"
+                        style={{ background: notifSettings.enabled ? '#7c3aed' : 'var(--border)' }}
+                      >
+                        <span className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all" style={{ left: notifSettings.enabled ? '20px' : '2px' }} />
+                      </button>
+                    </div>
+
+                    {/* Per-event toggles */}
+                    <div className="space-y-2 mb-5">
+                      {([
+                        { key: 'on_review_comment', label: 'New comment on a review', sub: 'When a collaborator leaves a comment' },
+                        { key: 'on_version_uploaded', label: 'Version uploaded', sub: 'When you upload a new cut (notifies collaborators, not you)' },
+                        { key: 'on_status_changed', label: 'Project status changed', sub: 'In review → needs changes → approved' },
+                        { key: 'on_narrator_take', label: 'Narrator uploaded a take', sub: 'When the narrator submits audio' },
+                        { key: 'on_narrator_comment', label: 'Narrator comment', sub: 'When the narrator leaves a comment' },
+                        { key: 'on_comment_resolved', label: 'Comment resolved', sub: 'Notifies the original commenter (not you)' },
+                        { key: 'on_retake_requested', label: 'Retake requested', sub: 'Notifies the narrator (not you)' },
+                        { key: 'on_assignment_received', label: 'Assignment created', sub: 'Notifies the narrator with portal link (not you)' },
+                      ] as const).map(item => (
+                        <div key={item.key} className="flex items-center justify-between p-2.5 rounded-lg" style={{ background: 'var(--bg-secondary)', opacity: notifSettings.enabled ? 1 : 0.5 }}>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm" style={{ color: 'var(--text-primary)' }}>{item.label}</p>
+                            <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{item.sub}</p>
+                          </div>
+                          <button
+                            disabled={!notifSettings.enabled}
+                            onClick={() => setNotifSettings(s => ({ ...s, [item.key]: !s[item.key] }))}
+                            className="relative w-8 h-4 rounded-full transition-colors cursor-pointer disabled:cursor-not-allowed shrink-0 ml-3"
+                            style={{ background: notifSettings[item.key] ? '#7c3aed' : 'var(--border)' }}
+                          >
+                            <span className="absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all" style={{ left: notifSettings[item.key] ? '17px' : '2px' }} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button
+                        onClick={saveNotifSettings}
+                        disabled={notifSaving}
+                        className="px-4 py-2 rounded-lg text-sm font-medium text-white disabled:opacity-50 cursor-pointer"
+                        style={{ background: '#7c3aed' }}
+                      >
+                        {notifSaving ? 'Saving...' : 'Save preferences'}
+                      </button>
+                      <button
+                        onClick={sendTestEmail}
+                        disabled={notifTesting || !notifSettings.owner_email}
+                        className="px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50 cursor-pointer"
+                        style={{ background: 'rgba(124,58,237,0.15)', color: '#a78bfa', border: '1px solid rgba(124,58,237,0.3)' }}
+                      >
+                        {notifTesting ? 'Sending…' : 'Send test email'}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* SendGrid setup helper */}
+              <div className="glass rounded-xl p-5">
+                <h3 className="text-sm font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>SendGrid setup</h3>
+                <ol className="text-xs space-y-1.5 list-decimal pl-4" style={{ color: 'var(--text-secondary)' }}>
+                  <li>Sign up at <a href="https://sendgrid.com" target="_blank" rel="noreferrer" className="underline" style={{ color: '#a78bfa' }}>sendgrid.com</a> (free, no card)</li>
+                  <li>Settings → Sender Authentication → <strong>Single Sender Verification</strong> → verify your email (yoavm7@gmail.com)</li>
+                  <li>Settings → API Keys → Create API Key → <strong>Full Access</strong></li>
+                  <li>In Vercel project → Environment Variables, add:<br />
+                    <code className="block mt-1 px-2 py-1 rounded font-mono text-[11px]" style={{ background: 'var(--bg-primary)' }}>SENDGRID_API_KEY=SG.xxxxx</code>
+                    <code className="block mt-1 px-2 py-1 rounded font-mono text-[11px]" style={{ background: 'var(--bg-primary)' }}>SENDGRID_FROM_EMAIL=yoavm7@gmail.com</code>
+                  </li>
+                  <li>Redeploy, then click <strong>Send test email</strong> above</li>
+                </ol>
+                <p className="text-[11px] mt-3" style={{ color: 'var(--text-muted)' }}>
+                  Free tier: 100 emails/day forever. No domain required — emails go from your verified gmail to anyone.
+                </p>
               </div>
             </div>
           )}

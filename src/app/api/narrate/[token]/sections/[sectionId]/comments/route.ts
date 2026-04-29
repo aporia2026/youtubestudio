@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getAssignmentByToken, createNarratorComment } from '@/lib/narrator-db';
+import { notifyNarratorComment } from '@/lib/notify';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ token: string; sectionId: string }> }) {
   try {
@@ -28,6 +29,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
       author_name: author_name.trim(),
       author_role: 'narrator',
     });
+
+    // Fire-and-forget: notify owner
+    notifyNarratorComment({
+      narratorName: author_name.trim(),
+      projectId: assignment.project_id,
+      projectTitle: assignment.project_title || 'project',
+      text: text.trim(),
+    }).catch(e => console.error('notifyNarratorComment failed:', e));
 
     return NextResponse.json(comment, { status: 201 });
   } catch (err) {

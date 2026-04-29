@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getProject, updateProject, deleteProject, getVersions } from '@/lib/review-db';
 import { deleteR2Object } from '@/lib/r2';
+import { notifyStatusChanged } from '@/lib/notify';
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -19,8 +20,21 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   try {
     const { id } = await params;
     const fields = await req.json();
+    // Capture old status for change detection
+    const before = await getProject(id);
     const project = await updateProject(id, fields);
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+
+    // Fire-and-forget: notify collaborators if status actually changed
+    if (before && fields.status && before.status !== project.status) {
+      notifyStatusChanged({
+        projectId: id,
+        projectTitle: project.title,
+        oldStatus: before.status,
+        newStatus: project.status,
+      }).catch(e => console.error('notifyStatusChanged failed:', e));
+    }
+
     return NextResponse.json(project);
   } catch (err) {
     console.error('PATCH /api/review/projects/[id] error:', err);

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getShareLinkByToken, createComment, getComments } from '@/lib/review-db';
+import { notifyReviewComment } from '@/lib/notify';
 
 /** Verify a version belongs to the token's project */
 async function verifyVersionOwnership(versionId: string, projectId: string): Promise<boolean> {
@@ -68,6 +69,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
       drawing_thumbnail_url,
       parent_id,
     });
+
+    // Fire-and-forget email to the owner
+    if (!parent_id) {
+      // Look up project title + version number for the email
+      sql`
+        SELECT p.title AS project_title, v.version_number
+        FROM review_versions v JOIN review_projects p ON p.id = v.project_id
+        WHERE v.id = ${version_id}
+      `.then(r => {
+        const row = r.rows[0];
+        if (!row) return;
+        notifyReviewComment({
+          projectId: link.project_id,
+          projectTitle: row.project_title,
+          versionId: version_id,
+          versionNumber: row.version_number,
+          authorName: author_name.trim(),
+          text: text.trim(),
+          timestampMs: timestamp_ms,
+          drawingThumbnailUrl: drawing_thumbnail_url,
+        }).catch(e => console.error('notifyReviewComment failed:', e));
+      }).catch(() => {});
+    }
 
     return NextResponse.json(comment, { status: 201 });
   } catch (err) {
