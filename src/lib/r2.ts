@@ -22,45 +22,55 @@ function getR2Client() {
   return _r2Client;
 }
 
-function getBucket(): string {
+// ---------------------------------------------------------------------------
+// Generic bucket-aware helpers
+// ---------------------------------------------------------------------------
+
+export function isR2Configured(): boolean {
+  return !!(process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY);
+}
+
+export async function getUploadUrlForBucket(bucket: string, key: string, contentType: string): Promise<string> {
+  const client = getR2Client();
+  const command = new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType });
+  return getSignedUrl(client, command, { expiresIn: 3600 });
+}
+
+export async function getDownloadUrlForBucket(bucket: string, key: string, publicBaseUrl?: string): Promise<string> {
+  if (publicBaseUrl) {
+    return `${publicBaseUrl.replace(/\/$/, '')}/${key}`;
+  }
+  const client = getR2Client();
+  const command = new GetObjectCommand({ Bucket: bucket, Key: key });
+  return getSignedUrl(client, command, { expiresIn: 86400 });
+}
+
+export async function deleteFromBucket(bucket: string, key: string): Promise<void> {
+  const client = getR2Client();
+  await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+}
+
+// ---------------------------------------------------------------------------
+// Review videos bucket (existing behaviour, kept for back-compat)
+// ---------------------------------------------------------------------------
+
+function getReviewBucket(): string {
   return process.env.R2_BUCKET_NAME || 'review-videos';
 }
 
 /** Generate a presigned PUT URL for direct browser → R2 upload (1-hour expiry). */
 export async function getUploadPresignedUrl(key: string, contentType: string): Promise<string> {
-  const client = getR2Client();
-  const command = new PutObjectCommand({
-    Bucket: getBucket(),
-    Key: key,
-    ContentType: contentType,
-  });
-  return getSignedUrl(client, command, { expiresIn: 3600 });
+  return getUploadUrlForBucket(getReviewBucket(), key, contentType);
 }
 
 /** Generate a presigned GET URL for video playback (24-hour expiry). */
 export async function getDownloadPresignedUrl(key: string): Promise<string> {
-  // If a public R2 URL is configured, use it directly (no signing needed)
-  const publicUrl = process.env.R2_PUBLIC_URL;
-  if (publicUrl) {
-    return `${publicUrl.replace(/\/$/, '')}/${key}`;
-  }
-
-  const client = getR2Client();
-  const command = new GetObjectCommand({
-    Bucket: getBucket(),
-    Key: key,
-  });
-  return getSignedUrl(client, command, { expiresIn: 86400 });
+  return getDownloadUrlForBucket(getReviewBucket(), key, process.env.R2_PUBLIC_URL);
 }
 
-/** Delete an object from R2. */
+/** Delete an object from the review videos bucket. */
 export async function deleteR2Object(key: string): Promise<void> {
-  const client = getR2Client();
-  const command = new DeleteObjectCommand({
-    Bucket: getBucket(),
-    Key: key,
-  });
-  await client.send(command);
+  return deleteFromBucket(getReviewBucket(), key);
 }
 
 /** Build a consistent R2 key for review videos. */
@@ -68,4 +78,33 @@ export function buildR2Key(projectId: string, versionNumber: number, fileName: s
   const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
   const timestamp = Date.now();
   return `reviews/${projectId}/v${versionNumber}/${timestamp}-${sanitized}`;
+}
+
+// ---------------------------------------------------------------------------
+// Narration bucket — separate bucket for narrator audio takes
+// ---------------------------------------------------------------------------
+
+function getNarrationBucket(): string {
+  return process.env.R2_NARRATION_BUCKET_NAME || 'narration';
+}
+
+/** Presigned PUT URL for direct browser → R2 upload to the narration bucket. */
+export async function getNarrationUploadUrl(key: string, contentType: string): Promise<string> {
+  return getUploadUrlForBucket(getNarrationBucket(), key, contentType);
+}
+
+/** Presigned GET URL for audio playback from the narration bucket (24h expiry). */
+export async function getNarrationDownloadUrl(key: string): Promise<string> {
+  return getDownloadUrlForBucket(getNarrationBucket(), key, process.env.R2_NARRATION_PUBLIC_URL);
+}
+
+/** Delete a narration audio object from R2. */
+export async function deleteNarrationObject(key: string): Promise<void> {
+  return deleteFromBucket(getNarrationBucket(), key);
+}
+
+/** Build a consistent R2 key for a narrator take. */
+export function buildNarrationKey(assignmentId: string, sectionId: string, takeNumber: number, fileName: string): string {
+  const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return `assignments/${assignmentId}/sections/${sectionId}/take-${takeNumber}-${Date.now()}-${sanitized}`;
 }

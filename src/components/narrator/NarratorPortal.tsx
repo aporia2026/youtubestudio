@@ -104,15 +104,76 @@ export function NarratorPortal({ token }: { token: string }) {
     if (!file.type.startsWith('audio/')) return;
     setUploading(sectionId);
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const res = await fetch(`/api/narrate/${token}/sections/${sectionId}/upload`, { method: 'POST', body: formData });
-      if (res.ok) {
-        const take = await res.json();
-        setSections(prev => prev.map(s => s.id === sectionId ? { ...s, takes: [take, ...(s.takes || [])], status: 'submitted' } : s));
-        setAssignment(prev => prev ? { ...prev, status: prev.status === 'received' || prev.status === 'assigned' ? 'recording' : prev.status } : prev);
+      // Probe duration locally before reserving the take row
+      let durationSeconds: number | undefined;
+      try {
+        const audioEl = document.createElement('audio');
+        audioEl.preload = 'metadata';
+        const objectUrl = URL.createObjectURL(file);
+        audioEl.src = objectUrl;
+        await new Promise<void>(resolve => {
+          audioEl.onloadedmetadata = () => resolve();
+          audioEl.onerror = () => resolve();
+        });
+        if (isFinite(audioEl.duration)) durationSeconds = Math.round(audioEl.duration);
+        URL.revokeObjectURL(objectUrl);
+      } catch {}
+
+      // 1. Reserve a take + get a presigned R2 upload URL
+      const reserveRes = await fetch(`/api/narrate/${token}/sections/${sectionId}/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileName: file.name,
+          contentType: file.type,
+          fileSize: file.size,
+          durationSeconds,
+        }),
+      });
+      if (!reserveRes.ok) {
+        const err = await reserveRes.json().catch(() => ({}));
+        throw new Error(err.error || `Server returned ${reserveRes.status}`);
       }
-    } catch {}
+      const { uploadUrl, takeId, takeNumber, audioUrl } = await reserveRes.json();
+
+      // 2. Upload directly to R2
+      const putRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type },
+        body: file,
+      });
+      if (!putRes.ok) {
+        throw new Error(`R2 rejected the upload (HTTP ${putRes.status}). Check bucket CORS configuration.`);
+      }
+
+      // 3. Confirm with metadata
+      await fetch(`/api/narrate/${token}/sections/${sectionId}/upload`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ takeId, durationSeconds, fileSize: file.size }),
+      }).catch(() => {});
+
+      // 4. Surface the new take in the UI
+      const take = {
+        id: takeId,
+        take_number: takeNumber,
+        audio_url: audioUrl,
+        duration_seconds: durationSeconds ?? null,
+        narrator_notes: null,
+        owner_notes: null,
+        rating: null,
+        is_selected: false,
+        created_at: new Date().toISOString(),
+      };
+      setSections(prev => prev.map(s => s.id === sectionId ? { ...s, takes: [take, ...(s.takes || [])], status: 'submitted' } : s));
+      setAssignment(prev => prev ? { ...prev, status: prev.status === 'received' || prev.status === 'assigned' ? 'recording' : prev.status } : prev);
+    } catch (e) {
+      // Surface the error so the narrator knows what to fix (CORS, R2 setup, etc.)
+      const msg = e instanceof Error ? e.message : 'Upload failed';
+      // Use console + alert as a low-dep fallback (this component lives outside the app shell)
+      console.error('Take upload failed:', e);
+      alert(`Upload failed: ${msg}`);
+    }
     finally { setUploading(null); }
   }, [token]);
 

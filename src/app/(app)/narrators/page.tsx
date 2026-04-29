@@ -11,6 +11,7 @@ interface NarratorProfile {
   color: string;
   specialties: string[];
   notes: string | null;
+  personal_token: string | null;
   created_at: string;
 }
 
@@ -19,6 +20,7 @@ interface Assignment {
   project_title: string;
   narrator_name: string;
   narrator_color: string;
+  narrator_personal_token?: string | null;
   status: string;
   total_sections: number;
   approved_sections: number;
@@ -161,7 +163,20 @@ export default function NarratorsPage() {
                     <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{p.name}</p>
                     {p.email && <p className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>{p.email}</p>}
                   </div>
-                  <button onClick={() => handleDelete(p.id)} className="p-1.5 rounded hover:bg-red-500/10 transition-colors" style={{ color: 'var(--text-muted)' }}>
+                  {p.personal_token && (
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(`${window.location.origin}/narrator/${p.personal_token}`);
+                        toast.success('Dashboard link copied');
+                      }}
+                      className="text-[10px] px-2 py-1 rounded transition-colors hover:bg-purple-500/10 cursor-pointer"
+                      style={{ color: '#a78bfa', background: 'rgba(124,58,237,0.1)' }}
+                      title="Copy this narrator's dashboard link — one URL with all their assignments"
+                    >
+                      📋 Dashboard link
+                    </button>
+                  )}
+                  <button onClick={() => handleDelete(p.id)} className="p-1.5 rounded hover:bg-red-500/10 transition-colors cursor-pointer" style={{ color: 'var(--text-muted)' }} title="Remove narrator">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
                   </button>
                 </div>

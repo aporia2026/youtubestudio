@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { put } from '@vercel/blob';
 import { sql } from '@vercel/postgres';
 import { getAssignment, getSectionsForAssignment } from '@/lib/narrator-db';
+import { getNarrationDownloadUrl } from '@/lib/r2';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -18,37 +19,48 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
 
     const sections = await getSectionsForAssignment(id);
 
-    // Collect audio URLs for approved takes (or selected takes)
+    // Collect audio URLs for approved/selected/latest take in each section.
+    // For R2-backed takes we regenerate a fresh presigned URL from r2_key
+    // (the stored audio_url may have expired).
     const audioUrls: string[] = [];
     for (const section of sections) {
       const takes = section.takes || [];
-      // Priority: approved_take_id > is_selected > latest take
-      let takeUrl: string | null = null;
+      type Take = { id: string; audio_url: string; r2_key?: string | null; is_selected: boolean };
+      let take: Take | null = null;
       if (section.approved_take_id) {
-        const approved = takes.find((t: { id: string }) => t.id === section.approved_take_id);
-        if (approved) takeUrl = approved.audio_url;
+        take = takes.find((t: Take) => t.id === section.approved_take_id) || null;
       }
-      if (!takeUrl) {
-        const selected = takes.find((t: { is_selected: boolean }) => t.is_selected);
-        if (selected) takeUrl = selected.audio_url;
+      if (!take) take = takes.find((t: Take) => t.is_selected) || null;
+      if (!take && takes.length > 0) take = takes[0]; // Latest (sorted desc)
+      if (!take) continue;
+      // Prefer regenerating from r2_key; fall back to the stored URL for legacy Vercel Blob takes.
+      if (take.r2_key) {
+        try {
+          audioUrls.push(await getNarrationDownloadUrl(take.r2_key));
+        } catch {
+          if (take.audio_url) audioUrls.push(take.audio_url);
+        }
+      } else if (take.audio_url) {
+        audioUrls.push(take.audio_url);
       }
-      if (!takeUrl && takes.length > 0) {
-        takeUrl = takes[0].audio_url; // Latest take (sorted desc)
-      }
-      if (takeUrl) audioUrls.push(takeUrl);
     }
 
     if (audioUrls.length === 0) {
       return NextResponse.json({ error: 'No takes to stitch' }, { status: 400 });
     }
 
-    // Download all audio files (validate URLs are from Vercel Blob only)
-    const ALLOWED_HOSTS = ['blob.vercel-storage.com'];
+    // Download all audio files. Accept both Vercel Blob (legacy takes) and
+    // Cloudflare R2 (new takes from the narration bucket).
+    const ALLOWED_HOST_SUFFIXES = ['blob.vercel-storage.com', 'r2.cloudflarestorage.com', 'r2.dev'];
+    const customR2Public = process.env.R2_NARRATION_PUBLIC_URL;
+    if (customR2Public) {
+      try { ALLOWED_HOST_SUFFIXES.push(new URL(customR2Public).hostname); } catch {}
+    }
     const audioBuffers: ArrayBuffer[] = [];
     for (const url of audioUrls) {
       try {
         const parsed = new URL(url);
-        if (!ALLOWED_HOSTS.some(h => parsed.hostname.endsWith(h))) {
+        if (!ALLOWED_HOST_SUFFIXES.some(h => parsed.hostname.endsWith(h))) {
           return NextResponse.json({ error: `Invalid audio source: ${parsed.hostname}` }, { status: 400 });
         }
       } catch {

@@ -52,6 +52,27 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // If a schedule item exists for this script, mark it as recording and
+    // record the assignment id in custom_fields so the schedule UI can show
+    // a "→ Narrator" badge that deep-links to the right portal.
+    try {
+      await sql`
+        UPDATE schedule_items
+        SET status = CASE WHEN status IN ('idea', 'scripting') THEN 'recording' ELSE status END,
+            custom_fields = COALESCE(custom_fields, '{}'::jsonb) || jsonb_build_object(
+              'narrator_assignment_id', ${assignment.id}::text,
+              'narrator_id', ${narrator_id}::text,
+              'narrator_share_token', ${assignment.share_token}::text
+            ),
+            updated_at = NOW(),
+            stage_entered_at = CASE WHEN status IN ('idea', 'scripting') THEN NOW() ELSE stage_entered_at END
+        WHERE script_id = ${script_id}
+      `;
+    } catch (e) {
+      // Schedule integration is optional — never block assignment creation
+      console.warn('schedule_items update on assignment create failed:', e);
+    }
+
     // Fire-and-forget: notify narrator with portal link
     sql`
       SELECT c.name AS narrator_name, p.title AS project_title

@@ -21,7 +21,7 @@ const PUBLIC_PATHS = [
 ];
 
 // Paths that bypass auth entirely (public review pages + their API endpoints)
-const PUBLIC_PREFIXES = ['/review/', '/narrate/'];
+const PUBLIC_PREFIXES = ['/review/', '/narrate/', '/narrator/', '/api/narrator-dashboard/'];
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;

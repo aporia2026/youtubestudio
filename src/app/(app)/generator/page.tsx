@@ -83,6 +83,9 @@ function GeneratorPage() {
   const [script, setScript] = useState('');
   // saving/projectTitle removed — handled by SaveAsProject component
   const [showSave, setShowSave] = useState(false);
+  // Track saved project + script id so post-save actions (e.g. Send to Narrator)
+  // can deep-link straight to the right project.
+  const [savedProjectId, setSavedProjectId] = useState<string | null>(null);
   const scriptRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -1294,6 +1297,7 @@ function GeneratorPage() {
                     topic={topic}
                     modelId={modelId}
                     onSaved={(projectId, scriptId) => {
+                      setSavedProjectId(projectId);
                       if (scheduleItemId) {
                         writeBackToSchedule(
                           scheduleItemId,
@@ -1303,6 +1307,56 @@ function GeneratorPage() {
                       }
                     }}
                   />
+
+                  {/* Mark this script ready for narration. If unsaved, save it
+                      first (using the topic as the project title), then jump
+                      straight to the project's Narration tab where the
+                      AssignDialog opens automatically. */}
+                  <button
+                    onClick={async () => {
+                      if (savedProjectId) {
+                        window.location.href = `/projects/${savedProjectId}?tab=narration&assign=1`;
+                        return;
+                      }
+                      if (!script || !topic.trim()) {
+                        toast.error('Generate a script first');
+                        return;
+                      }
+                      try {
+                        const res = await fetch('/api/projects', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            title: topic.trim(),
+                            niche: niche || 'General',
+                            topic: topic.trim(),
+                            script,
+                            modelId,
+                          }),
+                        });
+                        if (!res.ok) throw new Error('Save failed');
+                        const data = await res.json();
+                        const projectId = data.project?.id || data.id;
+                        if (!projectId) throw new Error('No project id returned');
+                        setSavedProjectId(projectId);
+                        if (scheduleItemId) {
+                          writeBackToSchedule(
+                            scheduleItemId,
+                            { project_id: projectId, ...(data.script?.id ? { script_id: data.script.id } : {}) },
+                            { autoAdvanceTo: 'scripting', advanceLabel: 'Scripting' },
+                          );
+                        }
+                        window.location.href = `/projects/${projectId}?tab=narration&assign=1`;
+                      } catch {
+                        toast.error('Could not save project');
+                      }
+                    }}
+                    disabled={!script}
+                    className="btn-secondary text-sm disabled:opacity-50"
+                    title={savedProjectId ? 'Open the Narration tab' : 'Save as project and pick a narrator'}
+                  >
+                    🎤 Send to Narrator
+                  </button>
                   {/* Symmetric entry point: if this generation wasn't launched
                       from a schedule item, offer to park it in the schedule
                       right now. Hidden once a link is active. */}

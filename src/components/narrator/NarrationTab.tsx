@@ -63,6 +63,23 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
 
   useEffect(() => { loadAssignments(); }, [projectId]);
 
+  // Auto-open the assign dialog when arriving via ?assign=1 (e.g. from the
+  // Script Generator's "Send to Narrator" button) — but only after data has
+  // loaded so we don't pop a dialog over a loading skeleton, and only when
+  // there's no existing assignment (otherwise we'd offer to create a duplicate).
+  useEffect(() => {
+    if (typeof window === 'undefined' || loading) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('assign') !== '1') return;
+    if (!activeAssignment && scriptText) {
+      setShowAssign(true);
+    }
+    // Clean the param so refresh doesn't reopen
+    params.delete('assign');
+    const newSearch = params.toString();
+    window.history.replaceState({}, '', `${window.location.pathname}${newSearch ? '?' + newSearch : ''}`);
+  }, [loading, activeAssignment, scriptText]);
+
   async function loadAssignments() {
     try {
       const res = await fetch(`/api/narrator/assignments`);

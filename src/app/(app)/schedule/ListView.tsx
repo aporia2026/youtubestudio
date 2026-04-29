@@ -182,11 +182,25 @@ export function ListView({ items, statuses, channels, onSelect, onPatch, onDelet
                   <div className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>
                     {item.title || <span style={{ color: 'var(--text-muted)' }}>Untitled</span>}
                   </div>
-                  <div className="text-xs flex items-center gap-2 mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  <div className="text-xs flex items-center gap-2 mt-0.5 flex-wrap" style={{ color: 'var(--text-muted)' }}>
                     <span>{formatWhen(item.scheduled_for)}</span>
                     {item.recurrence && <span>· recurring</span>}
                     {item.script_id && <span>· has script</span>}
                     {item.idea_id && <span>· from idea</span>}
+                    {(() => {
+                      const cf = item.custom_fields as Record<string, string> | undefined;
+                      const assignmentId = cf?.narrator_assignment_id;
+                      if (!assignmentId) return null;
+                      return (
+                        <span
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-medium"
+                          style={{ background: 'rgba(124,58,237,0.15)', color: '#a78bfa' }}
+                          title="Assigned to a narrator"
+                        >
+                          🎤 Narrator
+                        </span>
+                      );
+                    })()}
                   </div>
                 </div>
 

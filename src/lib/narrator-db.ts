@@ -80,6 +80,8 @@ export async function ensureNarratorSchema() {
     `;
     try { await sql`CREATE INDEX IF NOT EXISTS idx_narrator_takes_section ON narrator_takes(section_id)`; } catch {}
     try { await sql`ALTER TABLE narrator_takes ADD CONSTRAINT narrator_takes_section_take_unique UNIQUE (section_id, take_number)`; } catch {}
+    // R2 narration bucket migration — old takes lived on Vercel Blob; new ones go to R2
+    try { await sql`ALTER TABLE narrator_takes ADD COLUMN IF NOT EXISTS r2_key TEXT`; } catch {}
 
     await sql`
       CREATE TABLE IF NOT EXISTS narrator_comments (
@@ -217,7 +219,7 @@ export async function getAssignmentsForProject(projectId: string) {
 export async function listAllAssignments() {
   await ensureNarratorSchema();
   const { rows } = await sql`
-    SELECT a.*, n.name AS narrator_name, n.color AS narrator_color, p.title AS project_title,
+    SELECT a.*, n.name AS narrator_name, n.color AS narrator_color, n.personal_token AS narrator_personal_token, p.title AS project_title,
       (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id) AS total_sections,
       (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id AND s.status = 'approved') AS approved_sections
     FROM narrator_assignments a
@@ -307,6 +309,9 @@ export async function updateSection(sectionId: string, fields: {
 export async function createTake(fields: {
   section_id: string;
   audio_url: string;
+  /** R2 key when stored in the narration bucket (preferred) */
+  r2_key?: string;
+  /** Vercel Blob pathname (legacy uploads) */
   blob_pathname?: string;
   duration_seconds?: number;
   file_size?: number;
@@ -315,11 +320,12 @@ export async function createTake(fields: {
   await ensureNarratorSchema();
   // Atomic take_number increment via subquery
   const { rows } = await sql`
-    INSERT INTO narrator_takes (section_id, take_number, audio_url, blob_pathname, duration_seconds, file_size, narrator_notes)
+    INSERT INTO narrator_takes (section_id, take_number, audio_url, r2_key, blob_pathname, duration_seconds, file_size, narrator_notes)
     VALUES (
       ${fields.section_id},
       (SELECT COALESCE(MAX(take_number), 0) + 1 FROM narrator_takes WHERE section_id = ${fields.section_id}),
       ${fields.audio_url},
+      ${fields.r2_key ?? null},
       ${fields.blob_pathname ?? null},
       ${fields.duration_seconds ?? null},
       ${fields.file_size ?? null},

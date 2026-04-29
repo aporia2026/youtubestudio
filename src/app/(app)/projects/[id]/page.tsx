@@ -58,7 +58,12 @@ export default function ProjectDetailPage() {
   const [scripts, setScripts] = useState<Script[]>([]);
   const [media, setMedia] = useState<MediaAsset[]>([]);
   const [refs, setRefs] = useState<YoutubeRef[]>([]);
-  const [activeTab, setActiveTab] = useState<TabId>('script');
+  const [activeTab, setActiveTab] = useState<TabId>(() => {
+    if (typeof window === 'undefined') return 'script';
+    const tab = new URLSearchParams(window.location.search).get('tab');
+    if (tab === 'narration' || tab === 'voiceover' || tab === 'media' || tab === 'references' || tab === 'script') return tab;
+    return 'script';
+  });
   const [loading, setLoading] = useState(true);
   const [editingScript, setEditingScript] = useState(false);
   const [scriptContent, setScriptContent] = useState('');

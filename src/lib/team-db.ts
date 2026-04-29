@@ -51,6 +51,11 @@ export async function ensureTeamSchema() {
     try { await sql`UPDATE collaborators SET unsubscribe_token = encode(gen_random_bytes(24), 'hex') WHERE unsubscribe_token IS NULL`; } catch {}
     try { await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_collaborators_unsubscribe_token ON collaborators(unsubscribe_token)`; } catch {}
 
+    // Personal token for narrator dashboard (one URL = all their assignments)
+    try { await sql`ALTER TABLE collaborators ADD COLUMN IF NOT EXISTS personal_token TEXT`; } catch {}
+    try { await sql`UPDATE collaborators SET personal_token = encode(gen_random_bytes(24), 'hex') WHERE personal_token IS NULL`; } catch {}
+    try { await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_collaborators_personal_token ON collaborators(personal_token)`; } catch {}
+
     teamMigrated = true;
   } catch (err) {
     console.error('ensureTeamSchema error:', err);
@@ -70,11 +75,12 @@ export async function createCollaborator(fields: {
   notes?: string;
 }) {
   await ensureTeamSchema();
-  // Generate a long unsubscribe token (48-char hex)
+  // Generate long random tokens (48-char hex). Used in unsubscribe + dashboard URLs.
   const unsubscribeToken = Array.from({ length: 6 }, () => Math.random().toString(16).slice(2, 10)).join('');
+  const personalToken = Array.from({ length: 6 }, () => Math.random().toString(16).slice(2, 10)).join('');
   const { rows } = await sql`
-    INSERT INTO collaborators (name, email, role, color, specialties, notes, unsubscribe_token)
-    VALUES (${fields.name}, ${fields.email ?? null}, ${fields.role ?? 'reviewer'}, ${fields.color ?? '#7c3aed'}, ${JSON.stringify(fields.specialties || [])}, ${fields.notes ?? null}, ${unsubscribeToken})
+    INSERT INTO collaborators (name, email, role, color, specialties, notes, unsubscribe_token, personal_token)
+    VALUES (${fields.name}, ${fields.email ?? null}, ${fields.role ?? 'reviewer'}, ${fields.color ?? '#7c3aed'}, ${JSON.stringify(fields.specialties || [])}, ${fields.notes ?? null}, ${unsubscribeToken}, ${personalToken})
     RETURNING *
   `;
 
@@ -207,6 +213,20 @@ export async function getTeamOverview() {
 // ---------------------------------------------------------------------------
 // Bulk Revoke
 // ---------------------------------------------------------------------------
+
+/**
+ * Look up a collaborator by their personal token, used for the narrator
+ * dashboard at /narrator/[token]. Returns null if not found or not a narrator.
+ */
+export async function getNarratorByPersonalToken(token: string) {
+  await ensureTeamSchema();
+  const { rows } = await sql`
+    SELECT id, name, email, color, role, personal_token, notifications_enabled
+    FROM collaborators WHERE personal_token = ${token} AND role = 'narrator'
+    LIMIT 1
+  `;
+  return rows[0] || null;
+}
 
 export async function revokeAllAccess(collaboratorId: string) {
   await ensureTeamSchema();
