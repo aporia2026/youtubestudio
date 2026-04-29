@@ -21,8 +21,23 @@ interface ShareLink {
   id: string;
   token: string;
   permission: string;
+  label: string | null;
+  collaborator_id: string | null;
+  collaborator_name: string | null;
+  collaborator_role: string | null;
+  collaborator_color: string | null;
+  last_accessed_at: string | null;
+  access_count: number;
   expires_at: string | null;
   created_at: string;
+}
+
+interface Collaborator {
+  id: string;
+  name: string;
+  email: string | null;
+  role: string;
+  color: string;
 }
 
 interface Project {
@@ -53,20 +68,27 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
   const [project, setProject] = useState<Project | null>(null);
   const [versions, setVersions] = useState<Version[]>([]);
   const [shareLinks, setShareLinks] = useState<ShareLink[]>([]);
+  const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [showShareDialog, setShowShareDialog] = useState(false);
+  const [showAddPerson, setShowAddPerson] = useState(false);
+  const [pickedCollaboratorId, setPickedCollaboratorId] = useState('');
+  const [newName, setNewName] = useState('');
+  const [newEmail, setNewEmail] = useState('');
+  const [newRole, setNewRole] = useState('reviewer');
   const [newPerm, setNewPerm] = useState('can-comment');
+  const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => { loadData(); }, [id]);
 
   async function loadData() {
     try {
-      const [projRes, linksRes] = await Promise.all([
+      const [projRes, linksRes, collabRes] = await Promise.all([
         fetch(`/api/review/projects/${id}`),
         fetch(`/api/review/projects/${id}/share`),
+        fetch(`/api/team/collaborators`),
       ]);
       if (projRes.ok) {
         const data = await projRes.json();
@@ -74,6 +96,7 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
         setVersions(data.versions);
       }
       if (linksRes.ok) setShareLinks(await linksRes.json());
+      if (collabRes.ok) setCollaborators(await collabRes.json());
     } catch (err) {
       console.error(err);
       toast.error('Failed to load project');
@@ -101,7 +124,10 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fileName: file.name, contentType: file.type, fileSize: file.size }),
       });
-      if (!presignRes.ok) throw new Error('Failed to get upload URL');
+      if (!presignRes.ok) {
+        const errBody = await presignRes.json().catch(() => ({}));
+        throw new Error(errBody.error || `Server returned ${presignRes.status}`);
+      }
       const { uploadUrl, versionId } = await presignRes.json();
 
       // 2. Upload directly to R2 with progress
@@ -112,9 +138,9 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
         });
         xhr.addEventListener('load', () => {
           if (xhr.status >= 200 && xhr.status < 300) resolve();
-          else reject(new Error(`Upload failed: ${xhr.status}`));
+          else reject(new Error(`R2 rejected upload (HTTP ${xhr.status}). Check bucket CORS and credentials.`));
         });
-        xhr.addEventListener('error', () => reject(new Error('Upload failed')));
+        xhr.addEventListener('error', () => reject(new Error('Network error uploading to R2 — check bucket CORS configuration')));
         xhr.open('PUT', uploadUrl);
         xhr.setRequestHeader('Content-Type', file.type);
         xhr.send(file);
@@ -177,7 +203,8 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
       loadData();
     } catch (err) {
       console.error(err);
-      toast.error('Upload failed');
+      const msg = err instanceof Error ? err.message : 'Upload failed';
+      toast.error(msg, { duration: 8000 });
     } finally {
       setUploading(false);
       setUploadProgress(0);
@@ -201,25 +228,82 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
     }
   }
 
-  async function handleCreateLink() {
+  async function handleAddPerson() {
+    setAdding(true);
     try {
-      const res = await fetch(`/api/review/projects/${id}/share`, {
+      let collaboratorId = pickedCollaboratorId;
+      let collaboratorName = '';
+
+      // Path A: Picked an existing collaborator
+      if (pickedCollaboratorId) {
+        const c = collaborators.find(c => c.id === pickedCollaboratorId);
+        collaboratorName = c?.name || 'Person';
+      }
+      // Path B: New collaborator inline
+      else if (newName.trim()) {
+        const palette = ['#7c3aed', '#06b6d4', '#f59e0b', '#ef4444', '#22c55e', '#ec4899', '#8b5cf6', '#14b8a6'];
+        const cRes = await fetch('/api/team/collaborators', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: newName.trim(),
+            email: newEmail.trim() || undefined,
+            role: newRole,
+            color: palette[collaborators.length % palette.length],
+          }),
+        });
+        if (!cRes.ok) {
+          const err = await cRes.json().catch(() => ({}));
+          throw new Error(err.error || 'Failed to create collaborator');
+        }
+        const c = await cRes.json();
+        collaboratorId = c.id;
+        collaboratorName = c.name;
+        setCollaborators(prev => [...prev, c]);
+      } else {
+        toast.error('Pick a person or enter a name');
+        return;
+      }
+
+      // Create the share link tied to this collaborator
+      const linkRes = await fetch(`/api/review/projects/${id}/share`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ permission: newPerm }),
+        body: JSON.stringify({
+          permission: newPerm,
+          collaboratorId,
+          label: `For ${collaboratorName}`,
+        }),
       });
-      if (res.ok) {
-        const link = await res.json();
-        setShareLinks(prev => [link, ...prev]);
-        setShowShareDialog(false);
-        toast.success('Share link created');
+      if (!linkRes.ok) {
+        const err = await linkRes.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to create link');
       }
-    } catch {
-      toast.error('Failed to create link');
+      // Reload to get joined collaborator info
+      const refresh = await fetch(`/api/review/projects/${id}/share`);
+      if (refresh.ok) setShareLinks(await refresh.json());
+
+      // Auto-copy the link
+      const link = await linkRes.json();
+      navigator.clipboard.writeText(`${window.location.origin}/review/${link.token}`).catch(() => {});
+      toast.success(`${collaboratorName} added — link copied`);
+
+      // Reset form
+      setShowAddPerson(false);
+      setPickedCollaboratorId('');
+      setNewName('');
+      setNewEmail('');
+      setNewRole('reviewer');
+      setNewPerm('can-comment');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to add person');
+    } finally {
+      setAdding(false);
     }
   }
 
-  async function handleDeleteLink(linkId: string) {
+  async function handleRevokeAccess(linkId: string, name: string) {
+    if (!confirm(`Revoke ${name}'s access? Their link will stop working immediately.`)) return;
     try {
       await fetch(`/api/review/projects/${id}/share`, {
         method: 'DELETE',
@@ -227,9 +311,9 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
         body: JSON.stringify({ linkId }),
       });
       setShareLinks(prev => prev.filter(l => l.id !== linkId));
-      toast.success('Link deleted');
+      toast.success('Access revoked');
     } catch {
-      toast.error('Failed to delete link');
+      toast.error('Failed to revoke');
     }
   }
 
@@ -263,6 +347,17 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
     const m = Math.floor(s / 60);
     const sec = s % 60;
     return `${m}:${sec.toString().padStart(2, '0')}`;
+  }
+
+  function timeAgo(dateStr: string) {
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    return `${days}d ago`;
   }
 
   if (loading) {
@@ -402,43 +497,115 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
           )}
         </div>
 
-        {/* Share links section */}
+        {/* People with access section */}
         <div className="rounded-xl p-5" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Share Links</h2>
+          <div className="flex items-center justify-between mb-1">
+            <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>People with access</h2>
             <button
-              onClick={() => setShowShareDialog(true)}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium"
+              onClick={() => setShowAddPerson(true)}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors hover:opacity-90"
               style={{ background: 'rgba(124,58,237,0.15)', color: '#7c3aed' }}
             >
-              + New Link
+              + Add Person
             </button>
           </div>
+          <p className="text-[11px] mb-4" style={{ color: 'var(--text-muted)' }}>
+            Each person gets their own link. Revoking removes their access only — others keep working.
+          </p>
 
-          {/* Create link dialog */}
+          {/* Add person dialog */}
           <AnimatePresence>
-            {showShareDialog && (
+            {showAddPerson && (
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
                 className="mb-4 overflow-hidden"
               >
-                <div className="p-3 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
-                  <label className="text-xs block mb-2" style={{ color: 'var(--text-muted)' }}>Permission Level</label>
-                  <select
-                    value={newPerm}
-                    onChange={e => setNewPerm(e.target.value)}
-                    className="w-full px-3 py-1.5 rounded-lg text-sm mb-3"
-                    style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-                  >
-                    <option value="view-only">View Only</option>
-                    <option value="can-comment">Can Comment</option>
-                    <option value="can-annotate">Can Annotate (draw on frames)</option>
-                  </select>
+                <div className="p-3 rounded-lg space-y-3" style={{ background: 'var(--bg-primary)' }}>
+                  {/* Pick existing collaborator */}
+                  {collaborators.length > 0 && (
+                    <div>
+                      <label className="text-xs block mb-1" style={{ color: 'var(--text-muted)' }}>Existing person</label>
+                      <select
+                        value={pickedCollaboratorId}
+                        onChange={e => { setPickedCollaboratorId(e.target.value); if (e.target.value) { setNewName(''); setNewEmail(''); } }}
+                        className="w-full px-3 py-1.5 rounded-lg text-sm cursor-pointer"
+                        style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                      >
+                        <option value="">— Select someone —</option>
+                        {collaborators
+                          .filter(c => !shareLinks.some(l => l.collaborator_id === c.id))
+                          .map(c => <option key={c.id} value={c.id}>{c.name} {c.email ? `· ${c.email}` : ''} · {c.role}</option>)}
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Or create new */}
+                  {!pickedCollaboratorId && (
+                    <div className="space-y-2">
+                      {collaborators.length > 0 && (
+                        <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Or add someone new</div>
+                      )}
+                      <div className="grid grid-cols-2 gap-2">
+                        <input
+                          placeholder="Name"
+                          value={newName}
+                          onChange={e => setNewName(e.target.value)}
+                          className="px-3 py-1.5 rounded-lg text-sm"
+                          style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                        />
+                        <input
+                          placeholder="Email (optional)"
+                          value={newEmail}
+                          onChange={e => setNewEmail(e.target.value)}
+                          className="px-3 py-1.5 rounded-lg text-sm"
+                          style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                        />
+                      </div>
+                      <select
+                        value={newRole}
+                        onChange={e => setNewRole(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-lg text-sm cursor-pointer"
+                        style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                      >
+                        <option value="editor">Editor</option>
+                        <option value="reviewer">Reviewer</option>
+                        <option value="client">Client</option>
+                        <option value="narrator">Narrator</option>
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Permission */}
+                  <div>
+                    <label className="text-xs block mb-1" style={{ color: 'var(--text-muted)' }}>What can they do?</label>
+                    <select
+                      value={newPerm}
+                      onChange={e => setNewPerm(e.target.value)}
+                      className="w-full px-3 py-1.5 rounded-lg text-sm cursor-pointer"
+                      style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                    >
+                      <option value="view-only">View only</option>
+                      <option value="can-comment">Can comment</option>
+                      <option value="can-annotate">Can comment + draw on frames</option>
+                    </select>
+                  </div>
+
                   <div className="flex gap-2 justify-end">
-                    <button onClick={() => setShowShareDialog(false)} className="px-3 py-1 text-xs" style={{ color: 'var(--text-muted)' }}>Cancel</button>
-                    <button onClick={handleCreateLink} className="px-3 py-1 rounded-lg text-xs font-medium text-white" style={{ background: '#7c3aed' }}>Create</button>
+                    <button
+                      onClick={() => { setShowAddPerson(false); setPickedCollaboratorId(''); setNewName(''); setNewEmail(''); }}
+                      className="px-3 py-1.5 text-xs cursor-pointer transition-colors hover:text-white"
+                      style={{ color: 'var(--text-muted)' }}
+                    >Cancel</button>
+                    <button
+                      onClick={handleAddPerson}
+                      disabled={adding || (!pickedCollaboratorId && !newName.trim())}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium text-white disabled:opacity-50 cursor-pointer transition-opacity hover:opacity-90"
+                      style={{ background: '#7c3aed' }}
+                    >
+                      {adding ? 'Adding...' : 'Add & generate link'}
+                    </button>
                   </div>
                 </div>
               </motion.div>
@@ -447,41 +614,61 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
 
           {shareLinks.length === 0 ? (
             <div className="py-8 text-center">
-              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No share links yet</p>
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No one has access yet — add someone above</p>
             </div>
           ) : (
-            <div className="space-y-3">
-              {shareLinks.map(link => (
-                <div key={link.id} className="flex items-center gap-3 p-3 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-xs font-medium px-2 py-0.5 rounded-full"
-                        style={{
-                          background: link.permission === 'can-annotate' ? 'rgba(124,58,237,0.15)' :
-                                     link.permission === 'can-comment' ? 'rgba(6,182,212,0.15)' : 'rgba(255,255,255,0.05)',
-                          color: link.permission === 'can-annotate' ? '#7c3aed' :
-                                 link.permission === 'can-comment' ? '#06b6d4' : 'var(--text-muted)',
-                        }}
-                      >
-                        {PERM_LABELS[link.permission]}
-                      </span>
+            <div className="space-y-2">
+              {shareLinks.map(link => {
+                const lastSeen = link.access_count > 0 && link.last_accessed_at
+                  ? `Last viewed ${timeAgo(link.last_accessed_at)} · ${link.access_count} view${link.access_count !== 1 ? 's' : ''}`
+                  : 'Never accessed';
+                const personName = link.collaborator_name || 'Anonymous link';
+                const initial = ((link.collaborator_name || '?')[0] || '?').toUpperCase();
+                const color = link.collaborator_color || '#64748b';
+                return (
+                  <div key={link.id} className="flex items-center gap-3 p-2.5 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
+                    <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0" style={{ background: color }}>
+                      {initial}
                     </div>
-                    <p className="text-xs font-mono truncate" style={{ color: 'var(--text-muted)' }}>
-                      /review/{link.token.slice(0, 8)}...
-                    </p>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>{personName}</span>
+                        {link.collaborator_role && (
+                          <span className="text-[10px] capitalize" style={{ color: 'var(--text-muted)' }}>{link.collaborator_role}</span>
+                        )}
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full ml-auto shrink-0"
+                          style={{
+                            background: link.permission === 'can-annotate' ? 'rgba(124,58,237,0.15)' :
+                                       link.permission === 'can-comment' ? 'rgba(6,182,212,0.15)' : 'rgba(255,255,255,0.05)',
+                            color: link.permission === 'can-annotate' ? '#a78bfa' :
+                                   link.permission === 'can-comment' ? '#06b6d4' : 'var(--text-muted)',
+                          }}>
+                          {PERM_LABELS[link.permission]}
+                        </span>
+                      </div>
+                      <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{lastSeen}</p>
+                    </div>
+                    <button
+                      onClick={() => copyLink(link.token)}
+                      className="p-1.5 rounded-lg cursor-pointer transition-colors hover:bg-white/10"
+                      title={`Copy ${personName}'s link`}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)' }}>
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                      </svg>
+                    </button>
+                    <button
+                      onClick={() => handleRevokeAccess(link.id, personName)}
+                      className="p-1.5 rounded-lg cursor-pointer transition-colors hover:bg-red-500/10"
+                      title="Revoke access"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)' }}>
+                        <path d="M18 6L6 18M6 6l12 12" />
+                      </svg>
+                    </button>
                   </div>
-                  <button onClick={() => copyLink(link.token)} className="p-1.5 rounded-lg transition-colors hover:bg-white/5" title="Copy link">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)' }}>
-                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                    </svg>
-                  </button>
-                  <button onClick={() => handleDeleteLink(link.id)} className="p-1.5 rounded-lg transition-colors hover:bg-red-500/10" title="Delete link">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)' }}>
-                      <path d="M18 6L6 18M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

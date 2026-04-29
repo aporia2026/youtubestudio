@@ -20,17 +20,32 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: `Invalid video type: ${contentType}. Allowed: ${ALLOWED_VIDEO_TYPES.join(', ')}` }, { status: 400 });
     }
 
+    // Verify R2 is configured before creating any DB rows — fail fast with a
+    // clear setup message if env vars are missing.
+    if (!process.env.R2_ACCOUNT_ID || !process.env.R2_ACCESS_KEY_ID || !process.env.R2_SECRET_ACCESS_KEY) {
+      return NextResponse.json({
+        error: 'Cloudflare R2 storage is not configured. Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_BUCKET_NAME in your environment.',
+        code: 'R2_NOT_CONFIGURED',
+      }, { status: 503 });
+    }
+
     // Create version row first to get version_number
     const version = await createVersion(projectId, '', 'owner', fileSize);
     const r2Key = buildR2Key(projectId, version.version_number, fileName);
 
     // Update the version row with the real r2_key
-    await updateVersion(version.id, { video_url: '' });
-    // We need to update r2_key directly since updateVersion doesn't cover it
     const { sql } = await import('@vercel/postgres');
     await sql`UPDATE review_versions SET r2_key = ${r2Key} WHERE id = ${version.id}`;
 
-    const uploadUrl = await getUploadPresignedUrl(r2Key, contentType);
+    let uploadUrl: string;
+    try {
+      uploadUrl = await getUploadPresignedUrl(r2Key, contentType);
+    } catch (e) {
+      // Roll back the version row if presigning fails
+      await sql`DELETE FROM review_versions WHERE id = ${version.id}`;
+      const msg = e instanceof Error ? e.message : 'Unknown R2 error';
+      return NextResponse.json({ error: `R2 presign failed: ${msg}`, code: 'R2_PRESIGN_FAILED' }, { status: 502 });
+    }
 
     return NextResponse.json({
       uploadUrl,
@@ -40,7 +55,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }, { status: 201 });
   } catch (err) {
     console.error('POST /api/review/projects/[id]/versions error:', err);
-    return NextResponse.json({ error: 'Failed to create version' }, { status: 500 });
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    return NextResponse.json({ error: `Failed to create version: ${msg}` }, { status: 500 });
   }
 }
 

@@ -272,7 +272,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       <Link key={item.href} href={item.href}>
         <motion.div
           whileHover={{ x: 2 }}
-          className="flex items-center gap-3 px-3 py-2 rounded-lg transition-all relative"
+          className="flex items-center gap-3 px-3 py-2 rounded-lg transition-all relative cursor-pointer"
           style={{
             background: active ? 'rgba(124,58,237,0.15)' : 'transparent',
             color: active ? 'var(--accent-purple-bright)' : 'var(--text-secondary)',
@@ -342,7 +342,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         </AnimatePresence>
         <button
           onClick={onToggle}
-          className="ml-auto p-1.5 rounded-md transition-colors hover:bg-white/5"
+          className="ml-auto p-1.5 rounded-md transition-colors hover:bg-white/5 cursor-pointer"
           style={{ color: 'var(--text-muted)' }}
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
@@ -358,7 +358,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       {!collapsed && (
         <button
           onClick={() => window.dispatchEvent(new CustomEvent('open-command-palette'))}
-          className="mx-2 mt-3 mb-1 flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs transition-colors hover:bg-white/5"
+          className="mx-2 mt-3 mb-1 flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs transition-colors hover:bg-white/5 cursor-pointer"
           style={{ background: 'var(--bg-primary)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -389,8 +389,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             <div key={section.label} className="pt-3">
               <button
                 onClick={() => toggleSection(section.label)}
-                className="w-full flex items-center justify-between px-3 py-1 text-[10px] uppercase tracking-wider transition-colors hover:text-white"
-                style={{ color: 'var(--text-muted)' }}
+                className="w-full flex items-center justify-between px-3 py-1.5 text-[11px] uppercase tracking-widest font-bold transition-colors cursor-pointer rounded hover:bg-white/5"
+                style={{ color: '#a8a8d0' }}
               >
                 <span>{section.label}</span>
                 <motion.svg
@@ -431,7 +431,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         <button
           onClick={handleLogout}
           disabled={loggingOut}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all"
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all cursor-pointer disabled:cursor-not-allowed"
           style={{ color: 'var(--text-muted)' }}
           onMouseEnter={e => (e.currentTarget.style.color = '#ef4444')}
           onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-muted)')}

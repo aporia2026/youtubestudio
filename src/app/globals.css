@@ -32,6 +32,18 @@
   box-sizing: border-box;
 }
 
+/* All enabled buttons get a pointer cursor by default */
+button:not(:disabled), [role="button"]:not(:disabled), a {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+}
+/* Native form controls that are interactive */
+select:not(:disabled), summary {
+  cursor: pointer;
+}
+
 html {
   scroll-behavior: smooth;
 }
