@@ -200,6 +200,17 @@ export default function ChannelNamingPage() {
     const thisBatch = batchNum + 1;
     setBatchNum(thisBatch);
     try {
+      // Pass every name/handle we've seen this session — both candidates
+      // currently shown AND saved entries from previous sessions — so the
+      // server never returns duplicates.
+      const existingNames = [
+        ...candidates.map(c => c.name).filter((s): s is string => !!s),
+        ...saved.map(s => s.name).filter((s): s is string => !!s),
+      ];
+      const existingHandles = [
+        ...candidates.map(c => c.handle).filter((s): s is string => !!s),
+        ...saved.map(s => s.handle).filter((s): s is string => !!s),
+      ];
       const res = await fetch('/api/channel-naming/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -210,6 +221,8 @@ export default function ChannelNamingPage() {
           referenceVideoUrls: refVideos,
           referenceImages: refImages.map(i => ({ base64: i.base64, mimeType: i.mimeType })),
           count,
+          existingNames,
+          existingHandles,
         }),
       });
       const data = await res.json();

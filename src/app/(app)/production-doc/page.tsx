@@ -190,12 +190,24 @@ function exportToCsv(doc: ProductionDoc, rowImages: RowImageState[]) {
     r.notes,
   ].map(escapeCsvCell).join(','));
 
+  // Editors often want the full script as one continuous block at the
+  // bottom — the row-by-row table is great for production but bad for
+  // reading the narrative end-to-end. Append it as a comment-prefixed
+  // section so spreadsheet apps still parse the table cleanly.
+  const fullScript = doc.rows
+    .map(r => r.script_text?.trim())
+    .filter(Boolean)
+    .join('\n\n');
+
   const csv = [
     `# Production Document: ${doc.title}`,
     `# Niche: ${doc.niche} | Duration: ${doc.total_duration} | ${doc.total_words} words @ ${doc.speaking_pace_wpm} wpm`,
     '',
     headers.join(','),
     ...rows,
+    '',
+    '# ─── FULL SCRIPT (continuous, for reading) ───',
+    ...fullScript.split('\n').map(line => `# ${line}`),
   ].join('\n');
 
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -1726,6 +1738,24 @@ export default function ProductionDocPage() {
                   renderProgress={renderProgress}
                   outputUrl={renderOutputUrl || undefined}
                 />
+
+                {/* Dev-only: send to local Video Studio for advanced editing */}
+                {process.env.NODE_ENV !== 'production' && (
+                  <button
+                    onClick={() => {
+                      const config = productionDocToVideoConfig(doc, rowImages, voiceoverUrl || undefined, undefined, brandKit);
+                      sessionStorage.setItem('video-studio:bridge', JSON.stringify({
+                        config,
+                        brief: `Production doc: ${doc.title} (niche: ${doc.niche})`,
+                      }));
+                      window.location.href = '/video-studio';
+                    }}
+                    className="w-full text-xs px-3 py-2 rounded border border-purple-500/40 hover:bg-purple-500/10 transition-colors"
+                    style={{ color: 'var(--accent-purple-bright)' }}
+                  >
+                    → Send to Video Studio (local editor)
+                  </button>
+                )}
 
                 {renderStatus === 'error' && (
                   <p className="text-xs" style={{ color: '#f87171' }}>

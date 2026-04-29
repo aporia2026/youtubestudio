@@ -31,6 +31,12 @@ function sanitizeHandle(h: string): string {
   return h.replace(/^@/, '').toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 30);
 }
 
+// Normalize a display name for exclusion matching: lowercase, strip
+// non-alphanumerics so "My Channel!" === "mychannel".
+function normalizeName(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 export async function POST(req: NextRequest) {
   const { limited } = checkRateLimit(`channel-naming:${getClientIP(req)}`, 5, 60_000);
   if (limited) return NextResponse.json({ error: 'Rate limited' }, { status: 429 });
@@ -42,12 +48,19 @@ export async function POST(req: NextRequest) {
     referenceVideoUrls?: string[];
     referenceImages?: { base64: string; mimeType: string }[];
     count?: number;
+    /** Names + handles already generated in earlier sessions — excluded
+     *  from the LLM context AND filtered out of the response so users
+     *  never see the same suggestion twice. */
+    existingNames?: string[];
+    existingHandles?: string[];
   };
   try { body = await req.json(); } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { modelId, niche, freeText, referenceVideoUrls = [], referenceImages = [], count = 20 } = body;
+  const { modelId, niche, freeText, referenceVideoUrls = [], referenceImages = [], count = 20, existingNames = [], existingHandles = [] } = body;
+  const excludedNameSet = new Set<string>(existingNames.map(n => normalizeName(n)).filter(Boolean));
+  const excludedHandleSet = new Set<string>(existingHandles.map(h => h.toLowerCase().replace(/^@/, '').trim()).filter(Boolean));
   if (!modelId) return NextResponse.json({ error: 'modelId required' }, { status: 400 });
 
   const model = getModelById(modelId);
@@ -127,14 +140,24 @@ export async function POST(req: NextRequest) {
       ? refVideoData.map((v, i) => `${i + 1}. "${v.title}" by ${v.channelTitle}${v.tags.length ? ` [tags: ${v.tags.slice(0, 6).join(', ')}]` : ''}`).join('\n')
       : '';
 
-    // 2) Build prompt
+    // 2) Build prompt — append the exclusion list to freeText so the LLM
+    // sees what NOT to suggest. Server still post-filters as a safety net.
     const clampedCount = Math.min(40, Math.max(10, Number(count) || 20));
+    const exclusionNote = (existingNames.length + existingHandles.length) > 0
+      ? `\n\nALREADY-GENERATED NAMES — DO NOT REPEAT THESE OR ANY CLOSE VARIANTS:\n${
+          [...new Set([...existingNames, ...existingHandles.map(h => `@${h.replace(/^@/, '')}`)])]
+            .slice(0, 200)
+            .map(n => `- ${n}`)
+            .join('\n')
+        }\nReturn entirely fresh names that don't repeat any of the above.`
+      : '';
     const { system, user } = channelNamingPrompt({
       niche: niche || '',
-      freeText: freeText || '',
+      freeText: (freeText || '') + exclusionNote,
       referenceVideosSummary: refSummary,
       hasImages: referenceImages.length > 0,
-      count: clampedCount,
+      // Ask for a few extra candidates so post-filter dedupe doesn't leave us short.
+      count: clampedCount + Math.min(10, Math.ceil(clampedCount * 0.2)),
     });
 
     // 3) Generate candidates. Only pass ONE image (most providers support one-at-a-time
@@ -175,12 +198,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Model returned no candidates' }, { status: 500 });
     }
 
-    // 4) Dedupe + sanitize handles
+    // 4) Dedupe + sanitize handles + filter against history exclusion sets
     const seen = new Set<string>();
     const clean: Candidate[] = [];
     for (const c of rawCandidates) {
       const handle = sanitizeHandle(c.handle || '');
       if (!handle || handle.length < 3 || seen.has(handle)) continue;
+      // Exclusion: previously-generated handle (case-insensitive, no @).
+      if (excludedHandleSet.has(handle.toLowerCase())) continue;
+      // Exclusion: previously-generated NAME (normalized — strips spaces /
+      // punctuation / case so "MyChannel" matches "my channel").
+      if (excludedNameSet.has(normalizeName(c.name || ''))) continue;
       seen.add(handle);
       clean.push({ ...c, handle });
     }

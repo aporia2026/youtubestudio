@@ -28,6 +28,19 @@ export interface GenerateOptions {
   temperature?: number;
   /** Optional image for multimodal analysis (e.g. video thumbnail) */
   image?: { base64: string; mimeType: string };
+  /** Apply Anthropic prompt caching to the system prompt. Safe to set
+   *  anywhere — ignored by non-Anthropic providers. Anthropic requires
+   *  ≥1024 tokens (≥2048 on Haiku) to activate the cache; below that
+   *  it's a silent no-op, not an error. */
+  cache?: boolean;
+  /** When set AND `cache` is true, the Anthropic branch sends user content
+   *  as two text blocks: `[{text: userCachePrefix, cache_control}, {text: prompt}]`.
+   *  Use this when the stable portion of the user message (e.g. charter + script
+   *  on a convergence run) sits in front of per-call varying tail (feedback,
+   *  iteration-specific drafts). Non-Anthropic providers receive
+   *  `userCachePrefix + prompt` concatenated — identical semantics, no cache
+   *  mechanic, so callers don't need to branch on provider. */
+  userCachePrefix?: string;
 }
 
 // --- Kie.ai helpers ---
@@ -55,7 +68,7 @@ async function kieGeminiFetch(kieModelId: string, prompt: string, systemPrompt?:
   });
 }
 
-async function kieClaudeFetch(kieModelId: string, prompt: string, systemPrompt?: string, maxTokens = 4000, stream = false) {
+async function kieClaudeFetch(kieModelId: string, prompt: string, systemPrompt?: string, maxTokens = 4000, stream = false, cache = false) {
   const apiKey = requireKieKey();
   const url = `${KIE_BASE}/claude/v1/messages`;
   const body: Record<string, unknown> = {
@@ -64,7 +77,17 @@ async function kieClaudeFetch(kieModelId: string, prompt: string, systemPrompt?:
     messages: [{ role: 'user', content: prompt }],
     stream,
   };
-  if (systemPrompt) body.system = systemPrompt;
+  if (systemPrompt) {
+    // Note: `cache` is accepted but NOT applied for Kie's Claude pass-through.
+    // Kie's /claude/v1/messages may or may not forward Anthropic cache_control
+    // markers verbatim — attempted to smoke-test on 2026-04-18 but the Kie
+    // Claude endpoint was in maintenance (500s); Gemini endpoint responded
+    // normally. Until a clean test confirms array-form `system` is accepted,
+    // we stay on string-form here.
+    // TODO: re-run smoke test when Kie Claude endpoint is healthy and flip on.
+    void cache;
+    body.system = systemPrompt;
+  }
 
   return fetch(url, {
     method: 'POST',
@@ -127,7 +150,7 @@ async function kieRetry(fn: () => Promise<Response>, attempts = 3): Promise<Resp
 
 // --- Non-streaming ---
 
-async function kieGenerateText(modelId: string, prompt: string, systemPrompt?: string, maxTokens = 4000): Promise<string> {
+async function kieGenerateText(modelId: string, prompt: string, systemPrompt?: string, maxTokens = 4000, cache = false): Promise<string> {
   const config = KIE_MODEL_MAP[modelId];
   if (!config) throw new Error(`Unknown Kie model: ${modelId}`);
 
@@ -139,7 +162,7 @@ async function kieGenerateText(modelId: string, prompt: string, systemPrompt?: s
   }
 
   if (config.endpointType === 'claude') {
-    const res = await kieRetry(() => kieClaudeFetch(config.kieModelId, prompt, systemPrompt, maxTokens, false));
+    const res = await kieRetry(() => kieClaudeFetch(config.kieModelId, prompt, systemPrompt, maxTokens, false, cache));
     if (!res.ok) throw new Error(await kieErrorMessage(res));
     const data = await res.json();
     // Find the text block — skip thinking blocks
@@ -171,7 +194,7 @@ async function kieGenerateText(modelId: string, prompt: string, systemPrompt?: s
 
 // --- Streaming ---
 
-async function* kieStreamText(modelId: string, prompt: string, systemPrompt?: string, maxTokens = 4000): AsyncGenerator<string> {
+async function* kieStreamText(modelId: string, prompt: string, systemPrompt?: string, maxTokens = 4000, cache = false): AsyncGenerator<string> {
   const config = KIE_MODEL_MAP[modelId];
   if (!config) throw new Error(`Unknown Kie model: ${modelId}`);
 
@@ -180,7 +203,7 @@ async function* kieStreamText(modelId: string, prompt: string, systemPrompt?: st
   if (config.endpointType === 'gemini') {
     res = await kieRetry(() => kieGeminiFetch(config.kieModelId, prompt, systemPrompt, true, maxTokens));
   } else if (config.endpointType === 'claude') {
-    res = await kieRetry(() => kieClaudeFetch(config.kieModelId, prompt, systemPrompt, maxTokens, true));
+    res = await kieRetry(() => kieClaudeFetch(config.kieModelId, prompt, systemPrompt, maxTokens, true, cache));
   } else if (config.endpointType === 'gpt-responses') {
     res = await kieRetry(() => kieGptResponsesFetch(config.kieModelId, prompt, systemPrompt, true, maxTokens));
   } else {
@@ -235,13 +258,33 @@ async function* kieStreamText(modelId: string, prompt: string, systemPrompt?: st
 
 // --- Shared multimodal helpers ---
 
+/** Build Anthropic user-message content. When `userCachePrefix` is provided,
+ *  emits it as its own text block with `cache_control: ephemeral` so the
+ *  stable portion of the user message hits Anthropic's prompt cache
+ *  independently of the varying tail in `prompt`. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildAnthropicContent(prompt: string, image?: { base64: string; mimeType: string }): any {
-  if (!image) return prompt;
+function buildAnthropicContent(
+  prompt: string,
+  image?: { base64: string; mimeType: string },
+  userCachePrefix?: string,
+): any {
+  const prefixBlock = userCachePrefix
+    ? [{ type: 'text' as const, text: userCachePrefix, cache_control: { type: 'ephemeral' as const } }]
+    : [];
+  if (!image && !userCachePrefix) return prompt;
+  if (!image) return [...prefixBlock, { type: 'text' as const, text: prompt }];
   return [
     { type: 'image' as const, source: { type: 'base64' as const, media_type: image.mimeType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp', data: image.base64 } },
+    ...prefixBlock,
     { type: 'text' as const, text: prompt },
   ];
+}
+
+/** Non-Anthropic providers don't get a cache breakpoint in user content —
+ *  fold the prefix into the prompt so the message is semantically identical
+ *  and callers don't need to branch on provider. */
+function mergeUserCachePrefix(prompt: string, userCachePrefix?: string): string {
+  return userCachePrefix ? `${userCachePrefix}\n\n${prompt}` : prompt;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -266,17 +309,21 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
   const model = getModelById(opts.modelId);
   if (!model) throw new Error(`Unknown model: ${opts.modelId}`);
 
-  const { prompt, systemPrompt, maxTokens = 4000, temperature = 0.7 } = opts;
+  const { systemPrompt, maxTokens = 4000, temperature = 0.7 } = opts;
+  // Non-Anthropic providers don't get a user-content cache breakpoint — we fold
+  // the prefix into the prompt so the message is semantically identical. The
+  // Anthropic branch below takes the raw prompt + prefix separately.
+  const effectivePrompt = mergeUserCachePrefix(opts.prompt, opts.userCachePrefix);
 
   if (model.provider === 'kie') {
-    return kieGenerateText(opts.modelId, prompt, systemPrompt, maxTokens);
+    return kieGenerateText(opts.modelId, effectivePrompt, systemPrompt, maxTokens, opts.cache);
   }
 
   if (model.provider === 'perplexity') {
     const perplexityKey = await getPerplexityKey();
     const messages: { role: string; content: string }[] = [];
     if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
-    messages.push({ role: 'user', content: prompt });
+    messages.push({ role: 'user', content: effectivePrompt });
     // Reasoning + deep-research variants are sensitive to high temperature — lock them low
     const isReasoning = model.id.includes('reasoning') || model.id.includes('deep-research');
     const effectiveTemp = isReasoning ? Math.min(0.1, temperature) : temperature;
@@ -294,12 +341,20 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
     const Anthropic = (await import('@anthropic-ai/sdk')).default;
     if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY environment variable is not configured');
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const msgContent = buildAnthropicContent(prompt, opts.image);
+    // Only emit the user-content cache prefix block when cache is actually on.
+    const msgContent = buildAnthropicContent(opts.prompt, opts.image, opts.cache ? opts.userCachePrefix : undefined);
+    // Promote `system` to blocks form with cache_control when opts.cache is set —
+    // identical system prompts across calls (e.g. same critic across a convergence
+    // run) hit the ephemeral prompt cache. Reads bill at ~10% of input, writes at
+    // ~125%. Prompts under ~1024 tokens (~2048 on Haiku) silently don't cache.
+    const systemParam = (systemPrompt && opts.cache)
+      ? [{ type: 'text' as const, text: systemPrompt, cache_control: { type: 'ephemeral' as const } }]
+      : systemPrompt;
     const response = await client.messages.create({
       model: model.id,
       max_tokens: maxTokens,
       temperature,
-      system: systemPrompt,
+      system: systemParam,
       messages: [{ role: 'user', content: msgContent }],
     });
     const block = response.content[0];
@@ -311,7 +366,7 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
     const OpenAI = (await import('openai')).default;
     if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY environment variable is not configured');
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const msgs = buildOpenAIMessages(prompt, systemPrompt, opts.image);
+    const msgs = buildOpenAIMessages(effectivePrompt, systemPrompt, opts.image);
     const response = await client.chat.completions.create({
       model: model.id,
       messages: msgs,
@@ -326,7 +381,7 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
     if (!process.env.GOOGLE_AI_API_KEY) throw new Error('GOOGLE_AI_API_KEY environment variable is not configured');
     const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
     const gemini = genAI.getGenerativeModel({ model: model.id, generationConfig: { temperature, maxOutputTokens: maxTokens } });
-    const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
+    const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${effectivePrompt}` : effectivePrompt;
     if (opts.image) {
       const result = await gemini.generateContent([
         fullPrompt,
@@ -441,10 +496,11 @@ export async function* generateTextStream(opts: GenerateOptions): AsyncGenerator
   const model = getModelById(opts.modelId);
   if (!model) throw new Error(`Unknown model: ${opts.modelId}`);
 
-  const { prompt, systemPrompt, maxTokens = 4000, temperature = 0.7 } = opts;
+  const { systemPrompt, maxTokens = 4000, temperature = 0.7 } = opts;
+  const effectivePrompt = mergeUserCachePrefix(opts.prompt, opts.userCachePrefix);
 
   if (model.provider === 'kie') {
-    yield* kieStreamText(opts.modelId, prompt, systemPrompt, maxTokens);
+    yield* kieStreamText(opts.modelId, effectivePrompt, systemPrompt, maxTokens, opts.cache);
     return;
   }
 
@@ -452,7 +508,7 @@ export async function* generateTextStream(opts: GenerateOptions): AsyncGenerator
     const perplexityKey = await getPerplexityKey();
     const messages: { role: string; content: string }[] = [];
     if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
-    messages.push({ role: 'user', content: prompt });
+    messages.push({ role: 'user', content: effectivePrompt });
     const res = await fetch('https://api.perplexity.ai/chat/completions', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${perplexityKey}`, 'Content-Type': 'application/json' },
@@ -494,12 +550,15 @@ export async function* generateTextStream(opts: GenerateOptions): AsyncGenerator
     const Anthropic = (await import('@anthropic-ai/sdk')).default;
     if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY environment variable is not configured');
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const msgContent = buildAnthropicContent(prompt, opts.image);
+    const msgContent = buildAnthropicContent(opts.prompt, opts.image, opts.cache ? opts.userCachePrefix : undefined);
+    const systemParam = (systemPrompt && opts.cache)
+      ? [{ type: 'text' as const, text: systemPrompt, cache_control: { type: 'ephemeral' as const } }]
+      : systemPrompt;
     const stream = client.messages.stream({
       model: model.id,
       max_tokens: maxTokens,
       temperature,
-      system: systemPrompt,
+      system: systemParam,
       messages: [{ role: 'user', content: msgContent }],
     });
     for await (const event of stream) {
@@ -514,7 +573,7 @@ export async function* generateTextStream(opts: GenerateOptions): AsyncGenerator
     const OpenAI = (await import('openai')).default;
     if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY environment variable is not configured');
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const msgs = buildOpenAIMessages(prompt, systemPrompt, opts.image);
+    const msgs = buildOpenAIMessages(effectivePrompt, systemPrompt, opts.image);
     const stream = await client.chat.completions.create({
       model: model.id,
       messages: msgs,
@@ -534,7 +593,7 @@ export async function* generateTextStream(opts: GenerateOptions): AsyncGenerator
     if (!process.env.GOOGLE_AI_API_KEY) throw new Error('GOOGLE_AI_API_KEY environment variable is not configured');
     const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
     const gemini = genAI.getGenerativeModel({ model: model.id, generationConfig: { temperature, maxOutputTokens: maxTokens } });
-    const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
+    const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${effectivePrompt}` : effectivePrompt;
     if (opts.image) {
       const result = await gemini.generateContentStream([
         fullPrompt,
