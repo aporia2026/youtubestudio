@@ -81,6 +81,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
     // Existing review versions (if a review project is linked) + latest comments count
     let reviewVersions: Array<{ id: string; version_number: number; thumbnail_url: string | null; duration_ms: number | null; created_at: string; comment_count: number }> = [];
     let reviewProjectId: string | null = assignment.review_project_id || null;
+    let reviewShareToken: string | null = null;
     if (reviewProjectId) {
       const { rows } = await sql`
         SELECT v.id, v.version_number, v.thumbnail_url, v.duration_ms, v.created_at,
@@ -90,6 +91,31 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
         ORDER BY v.version_number DESC
       `;
       reviewVersions = rows as typeof reviewVersions;
+
+      // Find or auto-create a review share link tied to this editor on this
+      // review project. Without one, the editor has no path to the actual
+      // review UI (player + comments + resolve). Permission `can-comment`
+      // gives them full feedback abilities without drawing tools.
+      try {
+        const { rows: linkRows } = await sql`
+          SELECT token FROM review_share_links
+          WHERE project_id = ${reviewProjectId} AND collaborator_id = ${editor.id}
+          ORDER BY created_at DESC
+          LIMIT 1
+        `;
+        if (linkRows[0]?.token) {
+          reviewShareToken = linkRows[0].token as string;
+        } else {
+          const newToken = crypto.randomUUID();
+          await sql`
+            INSERT INTO review_share_links (project_id, token, permission, collaborator_id, label)
+            VALUES (${reviewProjectId}, ${newToken}, 'can-comment', ${editor.id}, 'Editor auto-link')
+          `;
+          reviewShareToken = newToken;
+        }
+      } catch (e) {
+        console.warn('auto-create editor share link failed:', e);
+      }
     }
 
     return NextResponse.json({
@@ -104,6 +130,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
       ytRefs,
       reviewProjectId,
       reviewVersions,
+      reviewShareToken,
     });
   } catch (err) {
     console.error('GET editor project error:', err);

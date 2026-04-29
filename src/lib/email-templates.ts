@@ -126,17 +126,27 @@ export function commentResolvedTemplate(ctx: BaseCtx & {
   projectTitle: string;
   text: string;
   reviewLinkPath: string;
+  /** When set, the email is framed as "the resolver took action on the
+   *  owner's comment" rather than "your comment was resolved". The body
+   *  copy adapts so a single template covers both directions. */
+  audience?: 'owner' | 'commenter';
 }) {
   const url = `${ctx.appUrl}${ctx.reviewLinkPath}`;
-  const subject = `Your comment was resolved on ${ctx.projectTitle}`;
+  const audience = ctx.audience ?? 'commenter';
+  const subject = audience === 'owner'
+    ? `${ctx.resolverName} resolved a comment on ${ctx.projectTitle}`
+    : `Your comment was resolved on ${ctx.projectTitle}`;
+  const lead = audience === 'owner'
+    ? `<strong>${escapeHtml(ctx.resolverName)}</strong> marked one of your comments as resolved on <strong>${escapeHtml(ctx.projectTitle)}</strong>:`
+    : `<strong>${escapeHtml(ctx.resolverName)}</strong> resolved your comment on <strong>${escapeHtml(ctx.projectTitle)}</strong>:`;
   const body = `
-    <p style="margin:0 0 12px 0;"><strong>${escapeHtml(ctx.resolverName)}</strong> resolved your comment on <strong>${escapeHtml(ctx.projectTitle)}</strong>:</p>
+    <p style="margin:0 0 12px 0;">${lead}</p>
     <blockquote style="margin:12px 0;padding:12px 16px;background:#0a0a14;border-left:3px solid #22c55e;border-radius:6px;color:#94a3b8;font-style:italic;">${escapeHtml(ctx.text)}</blockquote>
   `;
   return {
     subject,
     html: layout({
-      preheader: `${ctx.resolverName} resolved your comment`,
+      preheader: audience === 'owner' ? `${ctx.resolverName} marked it resolved` : `${ctx.resolverName} resolved your comment`,
       heading: subject,
       body,
       ctaLabel: 'View project',

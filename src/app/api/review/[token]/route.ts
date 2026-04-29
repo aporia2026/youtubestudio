@@ -25,6 +25,26 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
       }))
     );
 
+    // Look up the linked collaborator's role(s) so the client can decide
+    // whether the resolve button should be available. Editors and narrators
+    // get to mark comments as fixed; reviewers/clients should reply instead.
+    let canResolve = false;
+    let collaboratorName: string | null = null;
+    if (link.collaborator_id) {
+      try {
+        const { rows: collab } = await sql`
+          SELECT name, role, roles FROM collaborators WHERE id = ${link.collaborator_id} LIMIT 1
+        `;
+        if (collab[0]) {
+          collaboratorName = collab[0].name as string;
+          const roles: string[] = Array.isArray(collab[0].roles) && collab[0].roles.length > 0
+            ? collab[0].roles
+            : (collab[0].role ? [collab[0].role] : []);
+          canResolve = roles.includes('editor') || roles.includes('narrator');
+        }
+      } catch {}
+    }
+
     return NextResponse.json({
       project: {
         id: link.project_id,
@@ -33,6 +53,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
         status: link.project_status,
       },
       permission: link.permission,
+      canResolve,
+      collaboratorName,
       versions: versionsWithUrls,
       comments,
     });

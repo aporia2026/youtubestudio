@@ -61,6 +61,13 @@ export async function ensureReviewSchema() {
     // Range comments: when end_timestamp_ms is set, the comment applies from
     // timestamp_ms .. end_timestamp_ms (inclusive). NULL = point-in-time comment.
     try { await sql`ALTER TABLE review_comments ADD COLUMN IF NOT EXISTS end_timestamp_ms INTEGER`; } catch {}
+    // Fix-note linkage: when an editor uploads a corrected version they can
+    // attach a "what I fixed" note per original feedback comment. The note
+    // is stored as a regular comment on the NEW version, with this column
+    // pointing back to the original comment from the previous version. The
+    // owner can then see the fix note alongside their original feedback on
+    // the v2 timeline.
+    try { await sql`ALTER TABLE review_comments ADD COLUMN IF NOT EXISTS fix_for_comment_id UUID REFERENCES review_comments(id) ON DELETE SET NULL`; } catch {}
 
     await sql`
       CREATE TABLE IF NOT EXISTS review_share_links (

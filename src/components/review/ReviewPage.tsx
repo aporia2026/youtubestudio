@@ -35,12 +35,22 @@ export interface ReviewComment {
   resolved: boolean;
   resolved_by: string | null;
   parent_id: string | null;
+  /** When set, this comment is an editor's "what I fixed" note posted on a
+   *  newer version, linking back to the original feedback comment from a
+   *  previous version. */
+  fix_for_comment_id: string | null;
   created_at: string;
 }
 
 export interface ReviewData {
   project: { id: string; title: string; description: string | null; status: string };
   permission: 'view-only' | 'can-comment' | 'can-annotate';
+  /** Token-side only: server-decided flag indicating whether the linked
+   *  collaborator may resolve comments (editors + narrators yes, anyone
+   *  else no). Owner mode always treats this as true. */
+  canResolve?: boolean;
+  /** Token-side: collaborator's display name (used to seed the author UI). */
+  collaboratorName?: string | null;
   versions: ReviewVersion[];
   comments: ReviewComment[];
 }
@@ -324,6 +334,7 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId }: ReviewPa
             commentsUrl={commentsUrl}
             commentItemUrl={commentItemUrl}
             isOwner={isOwner}
+            canResolve={isOwner || !!data.canResolve}
             comments={versionComments}
             activeVersionId={activeVersionId || ''}
             permission={data.permission}

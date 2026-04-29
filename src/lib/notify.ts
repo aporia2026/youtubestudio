@@ -64,6 +64,36 @@ export async function notifyCommentResolved(args: {
   return sendEmail({ to: recipient.email, subject: t.subject, html: t.html });
 }
 
+/**
+ * Editor/narrator resolved a comment on the owner's review project — notify
+ * the owner. Uses the same `on_comment_resolved` toggle as the existing
+ * commenter-side notification (the toggle is symmetric: if the owner doesn't
+ * want resolution emails, neither direction fires).
+ */
+export async function notifyCommentResolvedToOwner(args: {
+  projectId: string;
+  projectTitle: string;
+  resolverName: string;
+  commentText: string;
+  versionNumber: number;
+  versionId: string;
+  timestampMs: number;
+}) {
+  const { email, should } = await ownerWantsEvent('on_comment_resolved');
+  if (!should || !email) return;
+  // Reuse the existing commentResolvedTemplate so we don't double-maintain
+  // visual style; the framing reads naturally with the resolver's name.
+  const t = tpl.commentResolvedTemplate({
+    appUrl: getAppUrl(),
+    resolverName: args.resolverName,
+    projectTitle: args.projectTitle,
+    text: args.commentText,
+    reviewLinkPath: `/reviews/${args.projectId}/play?v=${args.versionId}`,
+    audience: 'owner',
+  });
+  return sendEmail({ to: email, subject: t.subject, html: t.html });
+}
+
 export async function notifyVersionUploaded(args: {
   projectId: string;
   projectTitle: string;

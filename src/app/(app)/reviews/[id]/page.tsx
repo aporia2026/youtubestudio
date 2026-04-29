@@ -613,6 +613,19 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
                       <span>{new Date(v.created_at).toLocaleDateString()}</span>
                     </div>
                   </div>
+                  {v.video_url && (
+                    <a
+                      href={v.video_url}
+                      download={`v${v.version_number}.mp4`}
+                      onClick={e => e.stopPropagation()}
+                      className="p-1.5 rounded-lg transition-colors hover:bg-white/10 cursor-pointer opacity-0 group-hover:opacity-100"
+                      title="Download this version"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)' }}>
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+                      </svg>
+                    </a>
+                  )}
                   <button
                     onClick={e => { e.stopPropagation(); handleDeleteVersion(v.id, v.version_number); }}
                     className="p-1.5 rounded-lg transition-colors hover:bg-red-500/10 cursor-pointer opacity-0 group-hover:opacity-100"

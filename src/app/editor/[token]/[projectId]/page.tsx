@@ -16,6 +16,9 @@ interface ProjectData {
   ytRefs: Array<{ id: string; youtube_url: string; title: string | null; channel: string | null; thumbnail_url: string | null; notes: string | null }>;
   reviewProjectId: string | null;
   reviewVersions: Array<{ id: string; version_number: number; thumbnail_url: string | null; duration_ms: number | null; created_at: string; comment_count: number }>;
+  /** Auto-created share-link token for this editor's collaborator id, so the
+   *  editor can open the full review UI (player + comments + resolve). */
+  reviewShareToken: string | null;
 }
 
 function formatDuration(s: number | null): string {
@@ -40,6 +43,17 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
     return window.localStorage?.getItem('skipVideoCompression') === '1';
   });
   const [uploadNote, setUploadNote] = useState('');
+
+  // Fix-notes modal state — opens after a successful upload when there are
+  // unresolved comments on the previous version. The editor writes a short
+  // "what I fixed" message per comment; submitting them creates fix-note
+  // comments on the new version and (optionally) marks the originals
+  // resolved. Owner sees the fix notes on the new version's timeline.
+  type PrevComment = { id: string; timestamp_ms: number; end_timestamp_ms: number | null; text: string; author_name: string; author_color: string; drawing_thumbnail_url: string | null };
+  const [fixNotesVersionId, setFixNotesVersionId] = useState<string | null>(null);
+  const [fixNotesPrevious, setFixNotesPrevious] = useState<{ versionNumber: number; comments: PrevComment[] } | null>(null);
+  const [fixNotesDrafts, setFixNotesDrafts] = useState<Record<string, { text: string; resolveOriginal: boolean }>>({});
+  const [fixNotesSaving, setFixNotesSaving] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -161,6 +175,23 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
 
       setUploadNote('');
       await load();
+
+      // After the upload + thumbnail PATCH land, fetch unresolved comments
+      // from the previous version. If any exist, open the fix-notes modal
+      // so the editor can describe what they changed for each.
+      try {
+        const r = await fetch(`/api/editor/${token}/projects/${projectId}/previous-comments?versionId=${versionId}`);
+        if (r.ok) {
+          const body = await r.json();
+          if (body.previousVersion && Array.isArray(body.comments) && body.comments.length > 0) {
+            setFixNotesVersionId(versionId);
+            setFixNotesPrevious({ versionNumber: body.previousVersion.version_number, comments: body.comments });
+            const initial: Record<string, { text: string; resolveOriginal: boolean }> = {};
+            for (const c of body.comments) initial[c.id] = { text: '', resolveOriginal: true };
+            setFixNotesDrafts(initial);
+          }
+        }
+      } catch {}
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Upload failed';
       alert(`Upload failed: ${msg}`);
@@ -270,27 +301,62 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
         {/* Uploaded video versions */}
         {data.reviewVersions.length > 0 && (
           <Section title="Uploaded for review" subtitle={`${data.reviewVersions.length} version${data.reviewVersions.length === 1 ? '' : 's'}`}>
-            <div className="space-y-2">
-              {data.reviewVersions.map(v => (
-                <div key={v.id} className="p-2 rounded-lg flex items-center gap-3" style={{ background: 'var(--bg-primary)' }}>
-                  {v.thumbnail_url ? (
-                    <img src={v.thumbnail_url} alt="" className="w-16 h-9 object-cover rounded" />
-                  ) : (
-                    <div className="w-16 h-9 rounded flex items-center justify-center" style={{ background: 'var(--bg-secondary)' }}>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)' }}><polygon points="5 3 19 12 5 21 5 3" /></svg>
-                    </div>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>v{v.version_number}</p>
-                    <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{new Date(v.created_at).toLocaleDateString()}</p>
-                  </div>
-                  {v.comment_count > 0 && (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full font-medium" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>
-                      💬 {v.comment_count} unresolved
-                    </span>
-                  )}
+            {/* Prominent CTA — opens the full review UI in a new tab so the
+                editor gets the pro player, comments panel, and resolve
+                buttons. Without this they had no way to play the video at
+                all from this dashboard. */}
+            {data.reviewShareToken && (
+              <a
+                href={`/review/${data.reviewShareToken}`}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-3 p-3 mb-3 rounded-lg transition-transform hover:translate-y-[-1px]"
+                style={{ background: 'linear-gradient(135deg, rgba(124,58,237,0.18), rgba(6,182,212,0.18))', border: '1px solid rgba(124,58,237,0.4)' }}
+              >
+                <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'linear-gradient(135deg, #7c3aed, #06b6d4)' }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="white"><polygon points="5 3 19 12 5 21 5 3" /></svg>
                 </div>
-              ))}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Watch + address comments</p>
+                  <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    Full player, see all timestamped feedback, and mark items as resolved when you've fixed them.
+                  </p>
+                </div>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)' }}><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              </a>
+            )}
+            <div className="space-y-2">
+              {data.reviewVersions.map(v => {
+                const Tile = data.reviewShareToken ? 'a' : 'div';
+                const tileProps = data.reviewShareToken
+                  ? { href: `/review/${data.reviewShareToken}`, target: '_blank' as const, rel: 'noreferrer' }
+                  : {};
+                return (
+                  <Tile
+                    key={v.id}
+                    {...tileProps}
+                    className="p-2 rounded-lg flex items-center gap-3 transition-colors hover:bg-white/5"
+                    style={{ background: 'var(--bg-primary)' }}
+                  >
+                    {v.thumbnail_url ? (
+                      <img src={v.thumbnail_url} alt="" className="w-16 h-9 object-cover rounded" />
+                    ) : (
+                      <div className="w-16 h-9 rounded flex items-center justify-center" style={{ background: 'var(--bg-secondary)' }}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)' }}><polygon points="5 3 19 12 5 21 5 3" /></svg>
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>v{v.version_number}</p>
+                      <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{new Date(v.created_at).toLocaleDateString()}</p>
+                    </div>
+                    {v.comment_count > 0 && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full font-medium" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>
+                        💬 {v.comment_count} unresolved
+                      </span>
+                    )}
+                  </Tile>
+                );
+              })}
             </div>
           </Section>
         )}
@@ -364,6 +430,112 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
           </>
         )}
       </div>
+
+      {/* Fix-notes modal — shown after a successful upload of a corrected
+          version. Lists each unresolved comment from the previous version
+          so the editor can describe what they changed for that piece of
+          feedback. Notes get posted as comments on the new version with a
+          link back to the original. */}
+      {fixNotesVersionId && fixNotesPrevious && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.7)' }}
+          onClick={() => { setFixNotesVersionId(null); setFixNotesPrevious(null); }}
+        >
+          <div
+            className="rounded-xl max-w-2xl w-full max-h-[85vh] flex flex-col"
+            style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="p-5 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
+              <h3 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>What did you fix?</h3>
+              <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                Write a short note next to each comment from v{fixNotesPrevious.versionNumber}. The owner will see your notes on the timeline of this new version, alongside their original feedback.
+              </p>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-3">
+              {fixNotesPrevious.comments.map(c => {
+                const draft = fixNotesDrafts[c.id] ?? { text: '', resolveOriginal: true };
+                const min = Math.floor(c.timestamp_ms / 60000);
+                const sec = Math.floor((c.timestamp_ms % 60000) / 1000).toString().padStart(2, '0');
+                const tsLabel = `${min}:${sec}`;
+                return (
+                  <div key={c.id} className="rounded-lg p-3" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}>
+                    <div className="flex items-start gap-3">
+                      {c.drawing_thumbnail_url && (
+                        <img src={c.drawing_thumbnail_url} alt="" className="w-16 h-9 object-cover rounded shrink-0" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-[11px] font-mono px-1.5 py-0.5 rounded" style={{ background: 'rgba(124,58,237,0.15)', color: '#a78bfa' }}>{tsLabel}</span>
+                          <span className="text-xs font-medium" style={{ color: c.author_color }}>{c.author_name}</span>
+                        </div>
+                        <p className="text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>{c.text}</p>
+                        <textarea
+                          value={draft.text}
+                          onChange={e => setFixNotesDrafts(d => ({ ...d, [c.id]: { ...draft, text: e.target.value } }))}
+                          placeholder="Describe what you changed for this one… (leave empty to skip)"
+                          rows={2}
+                          className="w-full px-2.5 py-1.5 rounded text-xs resize-y"
+                          style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                        />
+                        <label className="flex items-center gap-2 mt-1.5 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                          <input
+                            type="checkbox"
+                            checked={draft.resolveOriginal}
+                            onChange={e => setFixNotesDrafts(d => ({ ...d, [c.id]: { ...draft, resolveOriginal: e.target.checked } }))}
+                          />
+                          Mark this comment as resolved
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="p-5 flex justify-between items-center shrink-0" style={{ borderTop: '1px solid var(--border)' }}>
+              <button
+                onClick={() => { setFixNotesVersionId(null); setFixNotesPrevious(null); }}
+                className="text-xs"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                Skip — I'll explain later
+              </button>
+              <button
+                disabled={fixNotesSaving}
+                onClick={async () => {
+                  const notes = Object.entries(fixNotesDrafts)
+                    .filter(([, d]) => d.text.trim().length > 0)
+                    .map(([commentId, d]) => ({ commentId, text: d.text.trim(), resolveOriginal: d.resolveOriginal }));
+                  if (notes.length === 0) {
+                    setFixNotesVersionId(null);
+                    setFixNotesPrevious(null);
+                    return;
+                  }
+                  setFixNotesSaving(true);
+                  try {
+                    await fetch(`/api/editor/${token}/projects/${projectId}/fix-notes`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ versionId: fixNotesVersionId, notes }),
+                    });
+                  } catch {}
+                  setFixNotesSaving(false);
+                  setFixNotesVersionId(null);
+                  setFixNotesPrevious(null);
+                  await load();
+                }}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-white disabled:opacity-50"
+                style={{ background: 'linear-gradient(135deg, #7c3aed, #06b6d4)' }}
+              >
+                {fixNotesSaving ? 'Saving…' : 'Submit fix notes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

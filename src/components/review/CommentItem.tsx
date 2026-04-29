@@ -11,6 +11,10 @@ interface CommentItemProps {
   onDelete?: () => void;
   canResolve: boolean;
   isReply?: boolean;
+  /** When this comment is an editor's fix-note, the original feedback it
+   *  responds to (looked up by parent). Renders inline as "Fixes: …" so
+   *  the owner sees what the editor was responding to without scrolling. */
+  fixForComment?: { author_name: string; text: string; version_number?: number | null } | null;
 }
 
 function formatTime(ms: number) {
@@ -31,15 +35,19 @@ function timeAgo(dateStr: string) {
   return `${days}d ago`;
 }
 
-export function CommentItem({ comment, highlighted, onSeek, onResolve, onDelete, canResolve, isReply }: CommentItemProps) {
+export function CommentItem({ comment, highlighted, onSeek, onResolve, onDelete, canResolve, isReply, fixForComment }: CommentItemProps) {
   const isRange = comment.end_timestamp_ms != null && comment.end_timestamp_ms > comment.timestamp_ms;
+  const isFixNote = !!comment.fix_for_comment_id;
   return (
     <div
       data-comment-id={comment.id}
       className="group p-2.5 rounded-lg transition-all"
       style={{
+        // Fix-note comments get a green left border so the owner can scan
+        // the panel and immediately see "this is the editor responding".
         background: highlighted ? 'rgba(124,58,237,0.1)' : 'var(--bg-primary)',
         border: highlighted ? '1px solid rgba(124,58,237,0.3)' : '1px solid transparent',
+        borderLeft: isFixNote ? '3px solid #22c55e' : undefined,
         opacity: comment.resolved ? 0.5 : 1,
       }}
     >
@@ -107,6 +115,19 @@ export function CommentItem({ comment, highlighted, onSeek, onResolve, onDelete,
             style={{ borderColor: 'var(--border)' }}
             onClick={onSeek}
           />
+        </div>
+      )}
+
+      {/* Fix-note context — shows the original feedback this comment is in
+          response to. Only renders when the comment carries fix_for_comment_id
+          and we found the linked original. */}
+      {isFixNote && fixForComment && (
+        <div className="mb-1.5 px-2 py-1.5 rounded text-[11px]" style={{ background: 'rgba(34,197,94,0.08)', borderLeft: '2px solid rgba(34,197,94,0.5)' }}>
+          <p className="text-[10px] uppercase tracking-wider mb-0.5" style={{ color: '#22c55e' }}>
+            ✓ Fix for {fixForComment.author_name}
+            {fixForComment.version_number != null ? ` · v${fixForComment.version_number}` : ''}
+          </p>
+          <p style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>&ldquo;{fixForComment.text}&rdquo;</p>
         </div>
       )}
 

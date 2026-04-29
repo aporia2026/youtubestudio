@@ -12,6 +12,9 @@ interface CommentPanelProps {
   commentItemUrl: (commentId: string) => string;
   /** Whether this view is the project owner (can resolve + delete any comment) */
   isOwner: boolean;
+  /** Whether this user can resolve/unresolve comments. Owners always can;
+   *  for token users the server flips this on for editors and narrators. */
+  canResolve?: boolean;
   comments: ReviewComment[];
   activeVersionId: string;
   permission: 'view-only' | 'can-comment' | 'can-annotate';
@@ -31,10 +34,13 @@ interface CommentPanelProps {
 type Filter = 'all' | 'unresolved' | 'resolved';
 
 export function CommentPanel({
-  commentsUrl, commentItemUrl, isOwner, comments, activeVersionId, permission, author, currentTimeMs,
+  commentsUrl, commentItemUrl, isOwner, canResolve, comments, activeVersionId, permission, author, currentTimeMs,
   onSeek, onCommentAdded, onCommentResolved, onCommentDeleted, showAllVersions, onToggleAllVersions,
   pendingDrawing, onClearDrawing,
 }: CommentPanelProps) {
+  // Effective resolve permission: owner always can; token side respects
+  // the server's per-collaborator decision (editors + narrators yes).
+  const effectiveCanResolve = isOwner || !!canResolve;
 
   // Owner uses PATCH/DELETE on the same itemUrl. Token-side delete is the
   // same endpoint but with ?author_name=… so the server can verify ownership.
@@ -130,10 +136,17 @@ export function CommentPanel({
             </p>
           </div>
         ) : (
-          filtered.map(comment => (
+          filtered.map(comment => {
+            // For fix-note comments, look up the original feedback so the
+            // CommentItem can render the "Fix for…" badge inline.
+            const fixForOriginal = comment.fix_for_comment_id
+              ? comments.find(c => c.id === comment.fix_for_comment_id)
+              : null;
+            return (
             <div key={comment.id}>
               <CommentItem
                 comment={comment}
+                fixForComment={fixForOriginal ? { author_name: fixForOriginal.author_name, text: fixForOriginal.text, version_number: fixForOriginal.version_number ?? null } : null}
                 highlighted={highlightedId === comment.id}
                 onSeek={() => handleSeekToComment(comment.id, comment.timestamp_ms)}
                 onResolve={async (resolved) => {
@@ -153,7 +166,7 @@ export function CommentPanel({
                     ? () => deleteComment(comment.id, comment.author_name)
                     : undefined
                 }
-                canResolve={isOwner}
+                canResolve={effectiveCanResolve}
               />
               {/* Replies */}
               {replies(comment.id).map(reply => (
@@ -169,7 +182,8 @@ export function CommentPanel({
                 </div>
               ))}
             </div>
-          ))
+            );
+          })
         )}
       </div>
 
