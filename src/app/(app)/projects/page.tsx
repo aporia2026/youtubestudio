@@ -31,6 +31,12 @@ export default function ProjectsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  // Inline rename state. Using a single editing-id rather than a flag per
+  // row keeps the UX exclusive: only one card is editable at a time, and
+  // entering edit mode on a different card cancels the previous draft.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState('');
+  const [savingId, setSavingId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchProjects();
@@ -45,6 +51,56 @@ export default function ProjectsPage() {
       toast.error('Failed to load projects');
     } finally {
       setLoading(false);
+    }
+  }
+
+  function startRename(project: Project) {
+    setEditingId(project.id);
+    setEditingTitle(project.title);
+  }
+  function cancelRename() {
+    setEditingId(null);
+    setEditingTitle('');
+  }
+  async function saveRename(project: Project) {
+    const next = editingTitle.trim();
+    if (!next) { toast.error('Title cannot be empty'); return; }
+    if (next === project.title) { cancelRename(); return; }
+    setSavingId(project.id);
+    // Optimistic update — flip the card text immediately, revert on failure.
+    setProjects(prev => prev.map(p => p.id === project.id ? { ...p, title: next } : p));
+    try {
+      const res = await fetch(`/api/projects/${project.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: next }),
+      });
+      if (!res.ok) throw new Error('rename failed');
+      toast.success('Renamed');
+      cancelRename();
+    } catch {
+      // Rollback by re-fetching since we don't keep the original title client-side.
+      toast.error('Failed to rename');
+      fetchProjects();
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  async function deleteProject(project: Project) {
+    if (!confirm(`Delete "${project.title}"? This permanently removes the project, its scripts, and all linked media. Cannot be undone.`)) return;
+    setSavingId(project.id);
+    // Optimistic remove from the grid; if the request fails we re-fetch.
+    setProjects(prev => prev.filter(p => p.id !== project.id));
+    try {
+      const res = await fetch(`/api/projects/${project.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('delete failed');
+      toast.success('Project deleted');
+    } catch {
+      toast.error('Failed to delete');
+      fetchProjects();
+    } finally {
+      setSavingId(null);
     }
   }
 
@@ -140,36 +196,108 @@ export default function ProjectsPage() {
         >
           {filtered.map(project => {
             const statusStyle = STATUS_STYLES[project.status] || STATUS_STYLES.draft;
+            const isEditing = editingId === project.id;
+            const isBusy = savingId === project.id;
+            // When editing or hovering action buttons, the card itself is no
+            // longer a click-through — wrapping the whole thing in <Link>
+            // would steal click events from the rename input + buttons.
+            const cardInner = (
+              <div
+                className="glass rounded-xl p-5 transition-all h-full group relative"
+                style={{ border: '1px solid var(--border)', cursor: isEditing ? 'default' : 'pointer' }}
+                onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-bright)'}
+                onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border)'}
+              >
+                <div className="flex items-start justify-between mb-3 gap-2">
+                  <span className="badge text-xs" style={{ background: statusStyle.bg, color: statusStyle.color, border: 'none' }}>
+                    {statusStyle.label}
+                  </span>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{timeAgo(project.updated_at)}</span>
+                    {/* Action buttons. Hidden until hover so they don't clutter
+                        the list, but always visible mid-edit so the user can
+                        see what's happening. */}
+                    {!isEditing && (
+                      <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 ml-1">
+                        <button
+                          onClick={e => { e.preventDefault(); e.stopPropagation(); startRename(project); }}
+                          className="p-1 rounded hover:bg-white/10"
+                          title="Rename"
+                          disabled={isBusy}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)' }}>
+                            <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+                          </svg>
+                        </button>
+                        <button
+                          onClick={e => { e.preventDefault(); e.stopPropagation(); deleteProject(project); }}
+                          className="p-1 rounded hover:bg-red-500/15"
+                          title="Delete"
+                          disabled={isBusy}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: '#ef4444' }}>
+                            <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                          </svg>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                {isEditing ? (
+                  <div className="mb-1" onClick={e => e.preventDefault()}>
+                    <input
+                      autoFocus
+                      value={editingTitle}
+                      onChange={e => setEditingTitle(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') { e.preventDefault(); saveRename(project); }
+                        if (e.key === 'Escape') { e.preventDefault(); cancelRename(); }
+                      }}
+                      onClick={e => { e.preventDefault(); e.stopPropagation(); }}
+                      className="w-full px-2 py-1.5 rounded text-sm font-semibold"
+                      style={{ background: 'var(--bg-primary)', border: '1px solid var(--accent-purple)', color: 'var(--text-primary)' }}
+                    />
+                    <div className="flex justify-end gap-2 mt-2">
+                      <button
+                        onClick={e => { e.preventDefault(); e.stopPropagation(); cancelRename(); }}
+                        className="text-xs"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={e => { e.preventDefault(); e.stopPropagation(); saveRename(project); }}
+                        disabled={isBusy || !editingTitle.trim()}
+                        className="text-xs px-2 py-1 rounded font-medium text-white disabled:opacity-50"
+                        style={{ background: 'var(--accent-purple)' }}
+                      >
+                        {isBusy ? 'Saving…' : 'Save'}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <h3 className="font-semibold mb-1 line-clamp-2" style={{ color: 'var(--text-primary)' }}>
+                    {project.title}
+                  </h3>
+                )}
+                {!isEditing && project.niche && (
+                  <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>{project.niche}</p>
+                )}
+                {!isEditing && (
+                  <div className="flex items-center gap-3 text-xs" style={{ color: 'var(--text-muted)' }}>
+                    <span>📝 {project.script_count || 0} scripts</span>
+                    <span>🎬 {project.media_count || 0} media</span>
+                  </div>
+                )}
+              </div>
+            );
             return (
               <motion.div
                 key={project.id}
                 variants={{ hidden: { opacity: 0, y: 15 }, show: { opacity: 1, y: 0 } }}
-                whileHover={{ y: -4 }}
+                whileHover={isEditing ? undefined : { y: -4 }}
               >
-                <Link href={`/projects/${project.id}`}>
-                  <div className="glass rounded-xl p-5 cursor-pointer transition-all h-full"
-                    style={{ border: '1px solid var(--border)' }}
-                    onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-bright)'}
-                    onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border)'}
-                  >
-                    <div className="flex items-start justify-between mb-3">
-                      <span className="badge text-xs" style={{ background: statusStyle.bg, color: statusStyle.color, border: 'none' }}>
-                        {statusStyle.label}
-                      </span>
-                      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{timeAgo(project.updated_at)}</span>
-                    </div>
-                    <h3 className="font-semibold mb-1 line-clamp-2" style={{ color: 'var(--text-primary)' }}>
-                      {project.title}
-                    </h3>
-                    {project.niche && (
-                      <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>{project.niche}</p>
-                    )}
-                    <div className="flex items-center gap-3 text-xs" style={{ color: 'var(--text-muted)' }}>
-                      <span>📝 {project.script_count || 0} scripts</span>
-                      <span>🎬 {project.media_count || 0} media</span>
-                    </div>
-                  </div>
-                </Link>
+                {isEditing ? cardInner : <Link href={`/projects/${project.id}`}>{cardInner}</Link>}
               </motion.div>
             );
           })}
