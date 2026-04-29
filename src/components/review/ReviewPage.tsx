@@ -49,7 +49,24 @@ interface Author {
 
 const AUTHOR_COLORS = ['#7c3aed', '#06b6d4', '#f59e0b', '#ef4444', '#22c55e', '#ec4899', '#8b5cf6', '#14b8a6'];
 
-export function ReviewPage({ token }: { token: string }) {
+export interface ReviewPageProps {
+  /** Token for public review (collaborator). Uses /api/review/[token]/* */
+  token?: string;
+  /** Project ID for owner playback. Uses /api/review/projects/[id]/* */
+  ownerProjectId?: string;
+  /** Optional initial version to focus when opened (e.g. ?v=<id>) */
+  initialVersionId?: string;
+}
+
+export function ReviewPage({ token, ownerProjectId, initialVersionId }: ReviewPageProps) {
+  // Build API endpoints based on mode (token = collaborator, projectId = owner)
+  const isOwner = !!ownerProjectId;
+  const dataUrl = isOwner ? `/api/review/projects/${ownerProjectId}/playback` : `/api/review/${token}`;
+  const commentsUrl = isOwner ? `/api/review/projects/${ownerProjectId}/comments` : `/api/review/${token}/comments`;
+  const commentsListUrl = (versionId: string) =>
+    isOwner ? `/api/review/projects/${ownerProjectId}/comments?versionId=${versionId}` : `/api/review/${token}/comments?versionId=${versionId}`;
+  const commentItemUrl = (commentId: string) =>
+    isOwner ? `/api/review/projects/${ownerProjectId}/comments/${commentId}` : `/api/review/${token}/comments/${commentId}`;
   const [data, setData] = useState<ReviewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -65,8 +82,12 @@ export function ReviewPage({ token }: { token: string }) {
   const [isDrawing, setIsDrawing] = useState(false);
   const [pendingDrawing, setPendingDrawing] = useState<{ data: unknown; thumbnail: string } | null>(null);
 
-  // Load author from localStorage
+  // Load author from localStorage. Owner mode skips the prompt.
   useEffect(() => {
+    if (isOwner) {
+      setAuthor({ name: 'Owner', color: '#7c3aed' });
+      return;
+    }
     try {
       const saved = localStorage.getItem('review_author');
       if (saved) {
@@ -77,16 +98,17 @@ export function ReviewPage({ token }: { token: string }) {
     } catch {
       setShowAuthorSetup(true);
     }
-  }, []);
+  }, [isOwner]);
 
   // Load review data
   useEffect(() => {
     loadData();
-  }, [token]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataUrl]);
 
   async function loadData() {
     try {
-      const res = await fetch(`/api/review/${token}`);
+      const res = await fetch(dataUrl);
       if (!res.ok) {
         setError(res.status === 404 ? 'expired' : 'error');
         return;
@@ -94,7 +116,8 @@ export function ReviewPage({ token }: { token: string }) {
       const reviewData: ReviewData = await res.json();
       setData(reviewData);
       if (!activeVersionId && reviewData.versions.length > 0) {
-        setActiveVersionId(reviewData.versions[reviewData.versions.length - 1].id);
+        const initial = initialVersionId && reviewData.versions.find(v => v.id === initialVersionId);
+        setActiveVersionId((initial || reviewData.versions[reviewData.versions.length - 1]).id);
       }
     } catch {
       setError('error');
@@ -108,7 +131,7 @@ export function ReviewPage({ token }: { token: string }) {
     if (!activeVersionId) return;
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/review/${token}/comments?versionId=${activeVersionId}`);
+        const res = await fetch(commentsListUrl(activeVersionId));
         if (res.ok) {
           const freshComments = await res.json();
           setData(prev => prev ? { ...prev, comments: freshComments } : prev);
@@ -116,7 +139,8 @@ export function ReviewPage({ token }: { token: string }) {
       } catch {}
     }, 30000);
     return () => clearInterval(interval);
-  }, [token, activeVersionId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataUrl, activeVersionId]);
 
   const handleAuthorSave = useCallback((name: string) => {
     const color = AUTHOR_COLORS[Math.floor(Math.random() * AUTHOR_COLORS.length)];
@@ -277,7 +301,8 @@ export function ReviewPage({ token }: { token: string }) {
 
           {/* Comment panel */}
           <CommentPanel
-            token={token}
+            commentsUrl={commentsUrl}
+            commentItemUrl={commentItemUrl}
             comments={versionComments}
             activeVersionId={activeVersionId || ''}
             permission={data.permission}

@@ -6,7 +6,10 @@ import { CommentInput } from './CommentInput';
 import type { ReviewComment } from './ReviewPage';
 
 interface CommentPanelProps {
-  token: string;
+  /** Endpoint to POST a new comment to */
+  commentsUrl: string;
+  /** Builds the endpoint to PATCH a specific comment */
+  commentItemUrl: (commentId: string) => string;
   comments: ReviewComment[];
   activeVersionId: string;
   permission: 'view-only' | 'can-comment' | 'can-annotate';
@@ -24,7 +27,7 @@ interface CommentPanelProps {
 type Filter = 'all' | 'unresolved' | 'resolved';
 
 export function CommentPanel({
-  token, comments, activeVersionId, permission, author, currentTimeMs,
+  commentsUrl, commentItemUrl, comments, activeVersionId, permission, author, currentTimeMs,
   onSeek, onCommentAdded, onCommentResolved, showAllVersions, onToggleAllVersions,
   pendingDrawing, onClearDrawing,
 }: CommentPanelProps) {
@@ -117,7 +120,7 @@ export function CommentPanel({
                 onSeek={() => handleSeekToComment(comment.id, comment.timestamp_ms)}
                 onResolve={async (resolved) => {
                   try {
-                    const res = await fetch(`/api/review/${token}/comments/${comment.id}`, {
+                    const res = await fetch(commentItemUrl(comment.id), {
                       method: 'PATCH',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ resolved, author_name: author?.name }),
@@ -148,7 +151,7 @@ export function CommentPanel({
       {/* Comment input */}
       {permission !== 'view-only' && author && (
         <CommentInput
-          token={token}
+          postUrl={commentsUrl}
           activeVersionId={activeVersionId}
           author={author}
           currentTimeMs={currentTimeMs}

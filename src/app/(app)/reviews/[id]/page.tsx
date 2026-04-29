@@ -317,6 +317,21 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
     }
   }
 
+  async function handleDeleteVersion(versionId: string, versionNumber: number) {
+    if (!confirm(`Delete v${versionNumber}? The video will be removed permanently from R2 storage and all comments on this version will be deleted. This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`/api/review/projects/${id}/versions/${versionId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Server returned ${res.status}`);
+      }
+      setVersions(prev => prev.filter(v => v.id !== versionId));
+      toast.success(`v${versionNumber} deleted`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete version');
+    }
+  }
+
   async function handleDelete() {
     if (!confirm('Delete this review project and all its versions?')) return;
     setDeleting(true);
@@ -473,16 +488,27 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
           ) : (
             <div className="space-y-3">
               {versions.map(v => (
-                <div key={v.id} className="flex items-center gap-3 p-3 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
-                  {v.thumbnail_url ? (
-                    <img src={v.thumbnail_url} alt="" className="w-20 h-12 object-cover rounded" />
-                  ) : (
-                    <div className="w-20 h-12 rounded flex items-center justify-center" style={{ background: 'var(--bg-secondary)' }}>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)' }}>
-                        <polygon points="5 3 19 12 5 21 5 3" />
-                      </svg>
+                <div
+                  key={v.id}
+                  className="group flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-colors hover:bg-white/5"
+                  style={{ background: 'var(--bg-primary)' }}
+                  onClick={() => router.push(`/reviews/${id}/play?v=${v.id}`)}
+                >
+                  <div className="relative shrink-0">
+                    {v.thumbnail_url ? (
+                      <img src={v.thumbnail_url} alt="" className="w-20 h-12 object-cover rounded" />
+                    ) : (
+                      <div className="w-20 h-12 rounded flex items-center justify-center" style={{ background: 'var(--bg-secondary)' }}>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)' }}>
+                          <polygon points="5 3 19 12 5 21 5 3" />
+                        </svg>
+                      </div>
+                    )}
+                    {/* Play overlay on hover */}
+                    <div className="absolute inset-0 flex items-center justify-center rounded transition-opacity opacity-0 group-hover:opacity-100" style={{ background: 'rgba(0,0,0,0.5)' }}>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><polygon points="5 3 19 12 5 21 5 3" /></svg>
                     </div>
-                  )}
+                  </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>v{v.version_number}</p>
                     <div className="flex gap-3 text-xs" style={{ color: 'var(--text-muted)' }}>
@@ -491,6 +517,15 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
                       <span>{new Date(v.created_at).toLocaleDateString()}</span>
                     </div>
                   </div>
+                  <button
+                    onClick={e => { e.stopPropagation(); handleDeleteVersion(v.id, v.version_number); }}
+                    className="p-1.5 rounded-lg transition-colors hover:bg-red-500/10 cursor-pointer opacity-0 group-hover:opacity-100"
+                    title="Delete this version"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: '#ef4444' }}>
+                      <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </button>
                 </div>
               ))}
             </div>

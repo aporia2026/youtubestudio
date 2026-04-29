@@ -4,7 +4,7 @@ import { useState, useRef } from 'react';
 import type { ReviewComment } from './ReviewPage';
 
 interface CommentInputProps {
-  token: string;
+  postUrl: string;
   activeVersionId: string;
   author: { name: string; color: string };
   currentTimeMs: number;
@@ -21,7 +21,7 @@ function formatTime(ms: number) {
 }
 
 export function CommentInput({
-  token, activeVersionId, author, currentTimeMs,
+  postUrl, activeVersionId, author, currentTimeMs,
   onCommentAdded, pendingDrawing, onClearDrawing,
 }: CommentInputProps) {
   const [text, setText] = useState('');
@@ -49,7 +49,7 @@ export function CommentInput({
         } catch {}
       }
 
-      const res = await fetch(`/api/review/${token}/comments`, {
+      const res = await fetch(postUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
