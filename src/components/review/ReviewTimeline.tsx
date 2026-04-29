@@ -29,48 +29,60 @@ export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek, vi
   // Frame-preview state. We render the preview <video> element directly in
   // the popup (no canvas) and seek it to the hover timestamp.
   //
-  // IMPORTANT: the previous implementation painted the frame to a canvas and
-  // hid the source video with `display:none`. Browsers (especially Chrome)
-  // skip decoding for `display:none` videos to save power, so drawImage was
-  // painting a black frame. Showing the video element directly + keeping it
-  // mounted in the DOM (just visually hidden when idle) is the most reliable
-  // way to get a real preview frame on every hover.
+  // Two prior bugs we're guarding against:
+  //   1. `display:none` videos are skipped from decoding by Chrome — fixed
+  //      by rendering the <video> in-place and toggling visibility via
+  //      opacity instead of display.
+  //   2. The popup was gating visibility on a `previewReady` flag that
+  //      flipped true on the FIRST `loadeddata` (which fires at t=0). So it
+  //      proudly displayed the 0:00 frame even while a seek to 2:53 was
+  //      still in-flight. Now we track the *actual seeked-to time* and only
+  //      show the frame when it matches the hover target (within tolerance).
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
-  const seekRafRef = useRef<number | null>(null);
   const [hover, setHover] = useState<{ ms: number; xPx: number; barWidth: number } | null>(null);
-  const [previewReady, setPreviewReady] = useState(false);
+  // Last time the browser confirmed (via `seeked`) the video had landed at.
+  // ms-precision so we can compare against `hover.ms`.
+  const [seekedAtMs, setSeekedAtMs] = useState<number | null>(null);
 
-  // Throttled seek to the hovered timestamp. rAF-coalesced so dragging the
-  // cursor across the bar doesn't queue up a backlog of seeks.
+  // Force the source to start loading the moment the URL is available, even
+  // before the user hovers — that way the first hover doesn't have to wait
+  // on a cold cache for metadata.
   useEffect(() => {
-    if (!hover || !previewVideoRef.current) return;
-    if (seekRafRef.current != null) cancelAnimationFrame(seekRafRef.current);
-    seekRafRef.current = requestAnimationFrame(() => {
-      const v = previewVideoRef.current;
-      if (!v) return;
-      const t = hover.ms / 1000;
-      if (Number.isFinite(t) && v.readyState >= 1) {
-        try { v.currentTime = t; } catch {}
-      }
-    });
-    return () => {
-      if (seekRafRef.current != null) cancelAnimationFrame(seekRafRef.current);
-    };
-  }, [hover]);
+    const v = previewVideoRef.current;
+    if (!v || !videoUrl) return;
+    try { v.load(); } catch {}
+  }, [videoUrl]);
 
-  // Track readiness so we can fade in the video instead of flashing black on
-  // first hover (the very first hover may seek before the source has decoded
-  // any frames).
+  // Set currentTime as soon as the hover changes. We deliberately do NOT
+  // gate on readyState — browsers tolerate currentTime= before metadata
+  // loads and queue the seek. We also don't rAF-coalesce; modern browsers
+  // already merge rapid seeks, and rAF was hiding seeks behind a one-frame
+  // delay that compounded the "stale frame" bug.
   useEffect(() => {
-    setPreviewReady(false);
+    if (!hover) return;
     const v = previewVideoRef.current;
     if (!v) return;
-    function onReady() { setPreviewReady(true); }
-    v.addEventListener('loadeddata', onReady);
-    v.addEventListener('seeked', onReady);
+    const t = hover.ms / 1000;
+    if (!Number.isFinite(t)) return;
+    try { v.currentTime = t; } catch {}
+  }, [hover]);
+
+  // Track when each seek actually completes. Used to keep the popup hidden
+  // until the displayed frame matches what the cursor is hovering over.
+  useEffect(() => {
+    setSeekedAtMs(null);
+    const v = previewVideoRef.current;
+    if (!v) return;
+    function onSeeked() {
+      const v = previewVideoRef.current;
+      if (!v) return;
+      setSeekedAtMs(Math.round(v.currentTime * 1000));
+    }
+    v.addEventListener('seeked', onSeeked);
+    v.addEventListener('loadeddata', onSeeked);
     return () => {
-      v.removeEventListener('loadeddata', onReady);
-      v.removeEventListener('seeked', onReady);
+      v.removeEventListener('seeked', onSeeked);
+      v.removeEventListener('loadeddata', onSeeked);
     };
   }, [videoUrl]);
 
@@ -172,11 +184,14 @@ export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek, vi
           />
         )}
 
-        {/* Hover preview popup. We always mount the preview <video> so
-            Chrome keeps decoding frames; CSS only switches its position +
-            opacity based on hover state. Rendering it directly (instead of
-            painting to a canvas) sidesteps the display:none-skips-decode
-            problem that produced black previews. */}
+        {/* Hover preview popup. The <video> is always mounted (so the browser
+            keeps decoding frames), and we toggle visibility via opacity +
+            position based on hover state.
+
+            Frame-vs-hover sync: we hide the actual <video> behind a spinner
+            until the browser confirms the seek landed near the hover target.
+            Without this, the popup would show whatever frame was last
+            decoded — typically 0:00 on first hover. */}
         {videoUrl && (() => {
           const previewW = 160;
           const previewH = 90;
@@ -186,23 +201,26 @@ export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek, vi
             left = Math.max(half, Math.min(hover.barWidth - half, hover.xPx));
           }
           const visible = !!hover && durationMs > 0;
+          // 350ms tolerance: browsers snap to the nearest keyframe when
+          // seeking, so the seeked time can lag the request by a chunk.
+          const frameMatchesHover = visible && seekedAtMs != null && Math.abs(seekedAtMs - hover!.ms) < 350;
           return (
             <div
               className="absolute pointer-events-none"
               style={{
-                // When hidden, park it just above the bar at left=0 with
-                // opacity 0 — keeps the element painted (so frames decode)
-                // without it being visible.
+                // When idle, park it at left=0 (off to the side after the
+                // -50% transform) with opacity 0. The video element stays
+                // mounted so the browser keeps it decoding-eligible.
                 left: visible ? left : 0,
                 bottom: '24px',
                 transform: 'translateX(-50%)',
                 zIndex: 20,
-                opacity: visible && previewReady ? 1 : 0,
+                opacity: visible ? 1 : 0,
                 transition: visible ? 'opacity 80ms ease-out' : 'none',
               }}
             >
               <div
-                className="rounded-md overflow-hidden"
+                className="rounded-md overflow-hidden relative"
                 style={{
                   background: '#000',
                   border: '1px solid rgba(255,255,255,0.18)',
@@ -217,8 +235,30 @@ export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek, vi
                   muted
                   playsInline
                   preload="auto"
-                  style={{ width: '100%', height: '100%', display: 'block', objectFit: 'cover' }}
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    display: 'block',
+                    objectFit: 'cover',
+                    // Hide the video's pixels until the seek catches up so
+                    // we never flash a stale frame from a previous hover.
+                    opacity: frameMatchesHover ? 1 : 0,
+                    transition: 'opacity 60ms linear',
+                  }}
                 />
+                {/* Loading spinner shown while the seek is in flight. */}
+                {!frameMatchesHover && visible && (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div
+                      className="w-6 h-6 rounded-full border-2 border-t-transparent"
+                      style={{
+                        borderColor: 'rgba(167,139,250,0.8)',
+                        borderTopColor: 'transparent',
+                        animation: 'reviewPreviewSpin 0.8s linear infinite',
+                      }}
+                    />
+                  </div>
+                )}
               </div>
               <div
                 className="text-[10px] font-mono text-center mt-1 px-1.5 py-0.5 rounded inline-block"
@@ -270,6 +310,12 @@ export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek, vi
           </button>
         ))}
       </div>
+
+      <style jsx>{`
+        @keyframes reviewPreviewSpin {
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
     </div>
   );
 }
