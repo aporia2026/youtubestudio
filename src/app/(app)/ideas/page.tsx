@@ -1,11 +1,16 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { Suspense, useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
+import type { ScheduleItem } from '@/lib/schedule';
+import { getScheduleLinkId, fetchScheduleItem, loadFullContextForItem } from '@/lib/schedule-link';
+import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId, getModelById } from '@/lib/ai-models';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
+import { SeriesPicker } from '@/components/ui/SeriesPicker';
 import { getIdeasHistory, saveIdeas, deleteIdeasEntry, clearIdeasHistory, type IdeasHistoryEntry } from '@/lib/history';
 
 // Collect every previously-generated title across all history entries —
@@ -124,7 +129,20 @@ interface RedditPost {
   subreddit: string;
 }
 
-export default function IdeasPage() {
+export default function IdeasPageWrapper() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>}>
+      <IdeasPage />
+    </Suspense>
+  );
+}
+
+function IdeasPage() {
+  const search = useSearchParams();
+  const scheduleItemId = getScheduleLinkId(search);
+  const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
+  const [schedulePrefilled, setSchedulePrefilled] = useState(false);
+
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('idea-generator'));
   const [niche, setNiche] = useState('');
   const [niches, setNiches] = useState<{ id: string; name: string }[]>([]);
@@ -136,6 +154,12 @@ export default function IdeasPage() {
   const [generating, setGenerating] = useState(false);
   const [ideas, setIdeas] = useState<VideoIdea[]>([]);
   const [savedIds, setSavedIds] = useState<Set<number>>(new Set());
+  // Series linkage — optional. When set, generated ideas/selected-idea will be
+  // tagged with series_id/part_number so the Script Generator can pick up the
+  // series context when this idea is promoted.
+  const [seriesId, setSeriesId] = useState<string | null>(null);
+  const [seriesTitle, setSeriesTitle] = useState<string>('');
+  const [partNumber, setPartNumber] = useState<number>(1);
 
   // Saved Ideas Library (persisted across sessions via /api/ideas GET)
   interface SavedIdeaRow {
@@ -170,13 +194,33 @@ export default function IdeasPage() {
   function restoreIdeas(id: string) {
     const entry = ideasHistoryItems.find(e => e.id === id);
     if (!entry) return;
+    if (ideas.length > 0 && typeof window !== 'undefined' &&
+        !confirm('Replace the current ideas list with this restored entry?')) {
+      return;
+    }
     setNiche(entry.niche);
     setFocus(entry.focus);
     setVideoType(entry.videoType || 'any');
     if (getModelById(entry.modelId)) setModelId(entry.modelId);
     setCount(entry.count);
     setIdeas(entry.ideas as unknown as VideoIdea[]);
-    toast.success('Ideas restored from history');
+    // Rehydrate the input context so the "why these ideas" is clear on restore.
+    if (entry.audience !== undefined) setAudience(entry.audience);
+    if (typeof entry.usedReddit === 'boolean') setUseReddit(entry.usedReddit);
+    if (entry.refs && entry.refs.length) {
+      setRefs(entry.refs.map((r, i) => ({
+        id: `restored-${i}-${Date.now()}`,
+        url: r.url,
+        title: r.title,
+        channelTitle: r.channelTitle || '',
+        viewCount: r.viewCount || 0,
+        thumbnailUrl: '',
+        styleAnalysis: null,
+        analysis: null,
+        loading: false,
+      })));
+    }
+    toast.success(`Ideas restored — ${entry.ideas.length} ideas`);
   }
 
   function handleDeleteIdeas(id: string) {
@@ -192,9 +236,45 @@ export default function IdeasPage() {
   useEffect(() => {
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
-      if (data.niches?.length) setNiche(data.niches[0].name);
+      // Functional setter so a parallel schedule-link prefill that resolved
+      // first isn't clobbered by the default-first-niche.
+      if (data.niches?.length) setNiche(curr => curr || data.niches[0].name);
     }).catch(() => {});
   }, []);
+
+  // Tracks whether the user has manually changed `partNumber` since mount.
+  // Without this, a fast schedule fetch could overwrite a value the user just
+  // typed (initial state `1` is indistinguishable from "user typed 1").
+  const partNumberDirtyRef = useRef(false);
+
+  // Schedule-link preload: when launched from a schedule item (typically a
+  // "next part of this series" intent), seed the niche and series linkage so
+  // generated ideas slot directly into the existing arc. Skips the script
+  // fetch — Ideas never uses the script body.
+  useEffect(() => {
+    if (!scheduleItemId || schedulePrefilled) return;
+    let cancelled = false;
+    (async () => {
+      const item = await fetchScheduleItem(scheduleItemId);
+      if (cancelled || !item) return;
+      setScheduleItem(item);
+      setSchedulePrefilled(true);
+      const ctx = await loadFullContextForItem(item, { withScript: false });
+      if (cancelled) return;
+      if (ctx.niche) setNiche(curr => curr || ctx.niche);
+      if (ctx.series) {
+        setSeriesId(curr => curr || ctx.series!.id);
+        setSeriesTitle(curr => curr || ctx.series!.title);
+        // Suggest the *next* part as the starting number — an idea generated
+        // from a series item is almost always a continuation. Only auto-set
+        // if the user hasn't touched the field (dirty ref guards against the
+        // race where the user typed during the fetch).
+        if (!partNumberDirtyRef.current) setPartNumber(ctx.series.partNumber + 1);
+      }
+      toast.message(`Loaded context from "${item.title || 'schedule item'}"`);
+    })();
+    return () => { cancelled = true; };
+  }, [scheduleItemId, schedulePrefilled]);
 
   // Load the persisted idea library
   useEffect(() => {
@@ -376,13 +456,28 @@ export default function IdeasPage() {
       const generatedIdeas = data.ideas || [];
       setIdeas(generatedIdeas);
       if (generatedIdeas.length > 0) {
-        saveIdeas({ niche, focus, videoType, modelId, count, ideas: generatedIdeas });
+        // Save history with the full input context so restore brings it all back.
+        saveIdeas({
+          niche, focus, videoType, modelId, count, ideas: generatedIdeas,
+          audience: audience || undefined,
+          usedReddit: useReddit,
+          refs: refs.filter(r => !r.loading).map(r => ({
+            url: r.url, title: r.title, channelTitle: r.channelTitle, viewCount: r.viewCount,
+          })),
+        });
         setIdeasHistoryItems(getIdeasHistory());
-        // Auto-persist all generated ideas to the database so they survive browser resets
+        // Auto-persist all generated ideas to the database. If this generation is
+        // linked to a series, tag the ideas with series_id + part_number so the
+        // Script Generator can later pick up the right continuity context.
         fetch('/api/ideas/batch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ideas: generatedIdeas, niche }),
+          body: JSON.stringify({
+            ideas: generatedIdeas,
+            niche,
+            seriesId: seriesId || undefined,
+            partNumber: seriesId ? partNumber : undefined,
+          }),
         }).then(r => r.json()).then(result => {
           if (result.inserted > 0) setSavedIds(new Set(generatedIdeas.map((_: unknown, i: number) => i)));
         }).catch(() => { /* best-effort */ });
@@ -492,6 +587,7 @@ export default function IdeasPage() {
 
   return (
     <div className="p-8 max-w-7xl mx-auto">
+      {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Idea Generator" />}
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">
@@ -783,6 +879,26 @@ export default function IdeasPage() {
               <input value={redditSubs} onChange={e => setRedditSubs(e.target.value)}
                 placeholder="Subreddits (optional, e.g. cybersecurity, netsec)"
                 className="input-field mt-3" style={{ fontSize: 12, padding: '6px 10px' }} />
+            )}
+          </div>
+
+          {/* Series linkage — tag generated ideas as parts of a named series. */}
+          <div className="glass rounded-xl p-4">
+            <SeriesPicker
+              seriesId={seriesId}
+              partNumber={partNumber}
+              niche={niche}
+              onChange={({ seriesId: id, seriesTitle: t, partNumber: p }) => {
+                setSeriesId(id);
+                if (t !== undefined) setSeriesTitle(t);
+                if (p !== partNumber) partNumberDirtyRef.current = true;
+                setPartNumber(p);
+              }}
+            />
+            {seriesId && (
+              <p className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
+                Ideas generated here will be saved as Parts {partNumber}–{partNumber + count - 1} of &quot;{seriesTitle}&quot;.
+              </p>
             )}
           </div>
 

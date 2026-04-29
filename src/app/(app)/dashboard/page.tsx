@@ -185,21 +185,26 @@ export default function DashboardPage() {
         className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10"
       >
         {[
-          { label: 'Projects', value: stats.projects, icon: '📁', color: 'var(--accent-purple-bright)' },
-          { label: 'Scripts', value: stats.scripts, icon: '📝', color: 'var(--accent-cyan-bright)' },
-          { label: 'Ideas Saved', value: stats.ideas, icon: '💡', color: 'var(--accent-green)' },
-          { label: 'QA Runs', value: stats.qaRuns, icon: '🔬', color: 'var(--accent-pink)' },
+          { label: 'Projects', value: stats.projects, icon: '📁', color: 'var(--accent-purple-bright)', href: '/projects' },
+          { label: 'Scripts', value: stats.scripts, icon: '📝', color: 'var(--accent-cyan-bright)', href: '/generator' },
+          { label: 'Ideas Saved', value: stats.ideas, icon: '💡', color: 'var(--accent-green)', href: '/ideas' },
+          { label: 'QA Runs', value: stats.qaRuns, icon: '🔬', color: 'var(--accent-pink)', href: '/qa' },
         ].map(stat => (
-          <motion.div
-            key={stat.label}
-            variants={itemVariants}
-            className="glass rounded-xl p-5"
-          >
-            <div className="text-2xl mb-2">{stat.icon}</div>
-            <div className="text-2xl font-bold" style={{ color: stat.color }}>
-              {loading ? '—' : stat.value}
-            </div>
-            <div className="text-sm" style={{ color: 'var(--text-muted)' }}>{stat.label}</div>
+          <motion.div key={stat.label} variants={itemVariants} whileHover={{ y: -3 }}>
+            <Link href={stat.href}>
+              <div
+                className="glass rounded-xl p-5 cursor-pointer transition-all"
+                style={{ border: '1px solid var(--border)' }}
+                onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-bright)'}
+                onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border)'}
+              >
+                <div className="text-2xl mb-2">{stat.icon}</div>
+                <div className="text-2xl font-bold" style={{ color: stat.color }}>
+                  {loading ? '—' : stat.value}
+                </div>
+                <div className="text-sm" style={{ color: 'var(--text-muted)' }}>{stat.label}</div>
+              </div>
+            </Link>
           </motion.div>
         ))}
       </motion.div>

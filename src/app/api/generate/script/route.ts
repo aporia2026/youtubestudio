@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext, previousScripts } = await req.json();
+    const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext, previousScripts, seriesContext, constraints } = await req.json();
 
     if (!topic || !niche) {
       return NextResponse.json({ error: 'topic and niche are required' }, { status: 400 });
@@ -32,6 +32,16 @@ export async function POST(req: NextRequest) {
       ? `\n\nPREVIOUSLY GENERATED SCRIPTS — DO NOT REPEAT THESE HOOKS, OPENINGS, OR ANGLES:\n${priors.map((s, i) => `--- Prior #${i + 1} (first 400 chars) ---\n${s.slice(0, 400)}`).join('\n\n')}\nWrite a fundamentally different angle.`
       : '';
 
+    // Series continuity — the client has already budgeted the prior parts
+    // (via /api/series/:id/parts) and built this block. It overrides the
+    // no-repeat rule: for a series, the next part SHOULD reference prior
+    // parts, so seriesContext goes first and the dedup note is suppressed
+    // when series mode is active.
+    const seriesBlock = typeof seriesContext === 'string' && seriesContext.trim() ? `\n\n${seriesContext.trim()}` : '';
+    const additionalContext = seriesBlock
+      ? (context || '') + seriesBlock
+      : (context || '') + dedupNote;
+
     const { system, user } = scriptGenerationPrompt({
       topic,
       niche,
@@ -39,8 +49,9 @@ export async function POST(req: NextRequest) {
       tone,
       style,
       targetAudience: audience,
-      additionalContext: (context || '') + dedupNote,
+      additionalContext,
       referenceContext,
+      constraints,
     });
 
     // Stream response

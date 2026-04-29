@@ -1,8 +1,13 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { Suspense, useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
+import type { ScheduleItem } from '@/lib/schedule';
+import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadFullContextForItem, buildContextNotesFromItem, SCHEDULE_LINK_PARAM } from '@/lib/schedule-link';
+import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
+import { AddToScheduleButton } from '@/components/ui/AddToScheduleButton';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { ScriptVoiceoverPanel } from '@/components/ui/ScriptVoiceoverPanel';
 import { getFeatureDefaultModelId, getModelById } from '@/lib/ai-models';
@@ -12,6 +17,9 @@ import { SaveAsProject } from '@/components/ui/SaveAsProject';
 import { ExportScript } from '@/components/ui/ExportScript';
 import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { DraftsBanner } from '@/components/ui/DraftsBanner';
+import { SeriesPicker } from '@/components/ui/SeriesPicker';
+import { fetchPriorParts, formatPriorPartsForPrompt, saveSeriesPart } from '@/lib/series';
+import { EMPTY_CONSTRAINTS, type ScriptConstraints } from '@/lib/script-options';
 import { getScriptHistory, saveScript as saveScriptToHistory, deleteScriptEntry, clearScriptHistory, getRecentTopics, type ScriptHistoryEntry } from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
@@ -47,7 +55,20 @@ interface VideoRef {
   loading: boolean;
 }
 
-export default function GeneratorPage() {
+export default function GeneratorPageWrapper() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>}>
+      <GeneratorPage />
+    </Suspense>
+  );
+}
+
+function GeneratorPage() {
+  const search = useSearchParams();
+  const scheduleItemId = getScheduleLinkId(search);
+  const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
+  const [schedulePrefilled, setSchedulePrefilled] = useState(false);
+
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('script-generator'));
   const [topic, setTopic] = useState('');
   const [topicHints, setTopicHints] = useState<string[]>([]);
@@ -106,7 +127,40 @@ export default function GeneratorPage() {
   const [historyItems, setHistoryItems] = useState<ScriptHistoryEntry[]>(() => getScriptHistory());
   const [draftId, setDraftId] = useState<string | null>(() => getActiveDraft()?.id || null);
 
-  function resumeDraft(draft: WorkflowDraft) {
+  // Series linkage (optional). If set, generate() fetches prior parts as
+  // continuity context and saves the new script as the next series part.
+  const [seriesId, setSeriesId] = useState<string | null>(null);
+  const [seriesTitle, setSeriesTitle] = useState<string>('');
+  const [partNumber, setPartNumber] = useState<number>(1);
+  // Tracks whether the user has manually changed `partNumber` since mount.
+  // Without this, a fast schedule fetch could overwrite a value the user just
+  // typed (initial state `1` is indistinguishable from "user typed 1").
+  const partNumberDirtyRef = useRef(false);
+
+  // User-authored script constraints — skip hook, skip CTA, custom rules.
+  // These ride with every generate + QA call so the reviewer doesn't flag
+  // intentional omissions as issues. Default to empty (all off).
+  const [constraints, setConstraints] = useState<ScriptConstraints>(EMPTY_CONSTRAINTS);
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const [customRuleInput, setCustomRuleInput] = useState('');
+
+  // Post-generation refinement UI state.
+  const [refining, setRefining] = useState(false);
+  const [refineOpen, setRefineOpen] = useState(false);
+  const [refineNotes, setRefineNotes] = useState('');
+  const [previousScriptSnapshot, setPreviousScriptSnapshot] = useState<string | null>(null);
+  const refineAbortRef = useRef<AbortController | null>(null);
+  const [seriesTokenBudget, setSeriesTokenBudget] = useState<number>(() => {
+    if (typeof window === 'undefined') return 15000;
+    const v = Number(localStorage.getItem('series:token-budget'));
+    return Number.isFinite(v) && v > 0 ? v : 15000;
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem('series:token-budget', String(seriesTokenBudget));
+  }, [seriesTokenBudget]);
+
+  function resumeDraft(draft: WorkflowDraft, options?: { silent?: boolean }) {
     // Abort any in-progress generation
     if (generating) {
       abortRef.current?.abort();
@@ -125,13 +179,112 @@ export default function GeneratorPage() {
         toast.warning('This draft\'s script was truncated for storage. You may need to regenerate.');
       }
     }
+    if (draft.constraints) {
+      setConstraints({ ...EMPTY_CONSTRAINTS, ...draft.constraints });
+      setOptionsOpen(true);
+    }
+    if (draft.seriesId) {
+      setSeriesId(draft.seriesId);
+      setSeriesTitle(draft.seriesTitle || '');
+      setPartNumber(draft.partNumber || 1);
+    }
     setDraftId(draft.id);
-    toast.success('Draft resumed');
+    if (!options?.silent) toast.success('Draft resumed');
+  }
+
+  /** Post-generation refinement: stream an edited version of the current
+   *  script using the user's notes, preserving constraints. On success the
+   *  edited text replaces `script`; the prior version is stashed so the
+   *  "Undo" button can bring it back without a round-trip. */
+  async function refineScript() {
+    const notes = refineNotes.trim();
+    if (!notes) { toast.error('Describe what to improve first.'); return; }
+    if (!script.trim()) { toast.error('Generate a script first.'); return; }
+    setRefining(true);
+    setPreviousScriptSnapshot(script);
+    const prevScript = script;
+    setScript('');
+    refineAbortRef.current = new AbortController();
+    try {
+      const res = await fetch('/api/generate/script/refine', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          modelId,
+          originalScript: prevScript,
+          refinementInstructions: notes,
+          topic,
+          niche,
+          constraints,
+        }),
+        signal: refineAbortRef.current.signal,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Refine failed' }));
+        throw new Error(err.error || 'Refine failed');
+      }
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      if (!reader) throw new Error('No response stream');
+      let refined = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        refined += decoder.decode(value, { stream: true });
+        setScript(refined);
+        scriptRef.current?.scrollTo({ top: scriptRef.current.scrollHeight, behavior: 'smooth' });
+      }
+      // Save the refined version as a new history entry so both versions are recoverable.
+      saveScriptToHistory({
+        topic, niche, tone, style, duration, modelId,
+        script: refined, wordCount: countWords(refined),
+        audience: audience || undefined,
+        context: (context ? context + '\n\n' : '') + `[Refined: ${notes}]`,
+        refs: refs.filter(r => !r.loading).map(r => ({
+          url: r.url, title: r.title, channelTitle: r.channelTitle,
+          viewCount: r.viewCount, thumbnailUrl: r.thumbnailUrl,
+        })),
+        constraints,
+        seriesId: seriesId || undefined,
+        seriesTitle: seriesTitle || undefined,
+        partNumber: seriesId ? partNumber : undefined,
+      });
+      setHistoryItems(getScriptHistory());
+      // Update draft too — the current script is now the refined one.
+      const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: refined, wordCount: countWords(refined), constraints, seriesId: seriesId || undefined, seriesTitle: seriesTitle || undefined, partNumber: seriesId ? partNumber : undefined });
+      setDraftId(draft.id);
+      setRefineNotes('');
+      setRefineOpen(false);
+      toast.success('Script refined — click Undo to revert.');
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        setScript(prevScript); // bring the prior version back if user cancelled mid-stream
+        setPreviousScriptSnapshot(null); // clear the snapshot so no spurious "Undo" button appears
+        return;
+      }
+      // Restore prior version on any error
+      setScript(prevScript);
+      setPreviousScriptSnapshot(null);
+      toast.error(err instanceof Error ? err.message : 'Refine failed');
+    } finally {
+      setRefining(false);
+    }
+  }
+
+  function undoRefine() {
+    if (!previousScriptSnapshot) return;
+    setScript(previousScriptSnapshot);
+    setPreviousScriptSnapshot(null);
+    toast.message('Reverted to the previous version.');
   }
 
   function restoreScript(id: string) {
     const entry = historyItems.find(e => e.id === id);
     if (!entry) return;
+    if (script && typeof window !== 'undefined' &&
+        !confirm('Replace the current script with this restored entry?')) {
+      return;
+    }
     setTopic(entry.topic);
     setNiche(entry.niche);
     setTone(entry.tone);
@@ -140,6 +293,37 @@ export default function GeneratorPage() {
     // Only restore model if it still exists
     if (getModelById(entry.modelId)) setModelId(entry.modelId);
     setScript(entry.script);
+    // Rehydrate the full input context if the entry has it.
+    if (entry.audience !== undefined) setAudience(entry.audience);
+    if (entry.context !== undefined) setContext(entry.context);
+    if (entry.refs && entry.refs.length) {
+      // Reconstruct VideoRef shape; the deep styleAnalysis/analysis blobs were
+      // too large to keep in history — user can re-analyze if they want them.
+      setRefs(entry.refs.map((r, i) => ({
+        id: `restored-${i}-${Date.now()}`,
+        url: r.url,
+        title: r.title,
+        channelTitle: r.channelTitle || '',
+        viewCount: r.viewCount || 0,
+        thumbnailUrl: r.thumbnailUrl || '',
+        styleAnalysis: null,
+        analysis: null,
+        loading: false,
+      })));
+      setShowRefs(true);
+    } else {
+      setRefs([]);
+    }
+    // Rehydrate constraints + series linkage.
+    if (entry.constraints) {
+      setConstraints({ ...EMPTY_CONSTRAINTS, ...entry.constraints });
+      setOptionsOpen(true);
+    }
+    if (entry.seriesId) {
+      setSeriesId(entry.seriesId);
+      setSeriesTitle(entry.seriesTitle || '');
+      setPartNumber(entry.partNumber || 1);
+    }
     setShowSave(true);
     toast.success('Script restored from history');
   }
@@ -191,6 +375,40 @@ export default function GeneratorPage() {
     }
   }
 
+  // Load the linked schedule item once, then prefill empty fields from it so
+  // the user doesn't retype the title / topic / context they already captured
+  // in the schedule. Manual edits made after the first prefill win.
+  useEffect(() => {
+    if (!scheduleItemId || schedulePrefilled) return;
+    let cancelled = false;
+    (async () => {
+      const item = await fetchScheduleItem(scheduleItemId);
+      if (cancelled || !item) return;
+      setScheduleItem(item);
+      setSchedulePrefilled(true);
+      const ctx = await loadFullContextForItem(item);
+      if (cancelled) return;
+      setTopic(curr => curr || ctx.topic);
+      setNiche(curr => curr || ctx.niche);
+      // Compose the freeform context from notes + series + tags + checklist,
+      // not just notes — gives the script generator everything the schedule
+      // item already knows about this video.
+      const composed = buildContextNotesFromItem(ctx);
+      if (composed) setContext(curr => curr || composed);
+      // Auto-link the series so part-N continuity context is fetched at
+      // generate time. Series picker picks this up via its prop sync effect.
+      // Only auto-set partNumber if the user hasn't touched it (dirty ref
+      // guards against the race where the user typed during the fetch).
+      if (ctx.series) {
+        setSeriesId(curr => curr || ctx.series!.id);
+        setSeriesTitle(curr => curr || ctx.series!.title);
+        if (!partNumberDirtyRef.current) setPartNumber(ctx.series.partNumber);
+      }
+      toast.message(`Loaded context from "${item.title || 'schedule item'}"`);
+    })();
+    return () => { cancelled = true; };
+  }, [scheduleItemId, schedulePrefilled]);
+
   useEffect(() => {
     setTopicHints(getRecentTopics());
     // Read prefill FIRST (before async fetch can overwrite)
@@ -200,23 +418,46 @@ export default function GeneratorPage() {
       if (prefill) {
         localStorage.removeItem('generator_prefill');
         const data = JSON.parse(prefill);
-        if (data.topic) setTopic(data.topic);
-        if (data.niche) { setNiche(data.niche); prefillNiche = data.niche; }
-        if (data.audience) setAudience(data.audience);
-        if (data.context) setContext(data.context);
+        // Functional setters so a schedule-link prefill that resolved first
+        // (`?scheduleItemId=…`) isn't clobbered by stale localStorage from a
+        // prior session.
+        if (data.topic) setTopic(curr => curr || data.topic);
+        if (data.niche) { setNiche(curr => curr || data.niche); prefillNiche = data.niche; }
+        if (data.audience) setAudience(curr => curr || data.audience);
+        if (data.context) setContext(curr => curr || data.context);
         if (data.style && STYLES.includes(data.style)) setStyle(data.style);
         if (data.refs && Array.isArray(data.refs)) {
-          setRefs(data.refs);
+          setRefs(prev => prev.length ? prev : data.refs);
           setShowRefs(true);
         }
       }
     } catch {}
 
+    // When arriving from QA, auto-resume the active draft so the QA-improved script
+    // is shown immediately instead of requiring a manual click on the drafts banner.
+    // Silent mode: the arrival itself is the confirmation — no toast needed.
+    // Also strip ?from=qa from the URL so a bookmark/share doesn't re-trigger this path.
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get('from') === 'qa') {
+        const active = getActiveDraft();
+        if (active?.script) {
+          resumeDraft(active, { silent: true });
+          if (!prefillNiche && active.niche) prefillNiche = active.niche;
+        }
+        url.searchParams.delete('from');
+        window.history.replaceState({}, '', url.pathname + (url.search || ''));
+      }
+    } catch {}
+
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
-      // Only set default niche if no prefill was applied
-      if (!prefillNiche && data.niches?.length) setNiche(data.niches[0].name);
+      // Only set default niche if no prefill was applied. Functional setter
+      // also covers the schedule-link race: if the schedule prefill effect
+      // resolved first and set a niche, this won't clobber it.
+      if (!prefillNiche && data.niches?.length) setNiche(curr => curr || data.niches[0].name);
     }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function generateScript() {
@@ -239,6 +480,24 @@ export default function GeneratorPage() {
     // Cap at ~6 recent entries to keep the prompt compact.
     const previousScripts = getScriptHistory().slice(0, 6).map(e => e.script).filter(Boolean);
 
+    // Series continuity: if this script is Part >= 2 of a linked series, fetch
+    // budgeted prior-parts context. The server handles truncation/summaries to
+    // stay within `seriesTokenBudget`. On failure (offline etc.) we continue
+    // without continuity rather than blocking the user from generating.
+    let seriesContext = '';
+    if (seriesId && partNumber > 1) {
+      try {
+        const parts = await fetchPriorParts(seriesId, { before: partNumber, maxTokens: seriesTokenBudget });
+        if (parts.length > 0) {
+          seriesContext = formatPriorPartsForPrompt(parts, seriesTitle || 'Series', partNumber);
+          toast.info(`Series continuity loaded — ${parts.length} prior part${parts.length === 1 ? '' : 's'} used as context`);
+        }
+      } catch (err) {
+        console.warn('Series context fetch failed:', err);
+        toast.warning('Could not load prior series parts — generating without continuity context');
+      }
+    }
+
     try {
       if (selfQA) {
         // Non-streaming validated path. Round-trips once per attempt; can
@@ -252,6 +511,8 @@ export default function GeneratorPage() {
             referenceContext: refContext || undefined,
             threshold: qaThreshold,
             previousScripts,
+            seriesContext: seriesContext || undefined,
+            constraints,
           }),
           signal: abortRef.current.signal,
         });
@@ -294,10 +555,29 @@ export default function GeneratorPage() {
         });
         setShowSave(true);
         const finalScript = data.script ?? '';
-        saveScriptToHistory({ topic, niche, tone, style, duration, modelId, script: finalScript, wordCount: countWords(finalScript) });
+        saveScriptToHistory({
+          topic, niche, tone, style, duration, modelId,
+          script: finalScript, wordCount: countWords(finalScript),
+          audience: audience || undefined,
+          context: context || undefined,
+          refs: refs.filter(r => !r.loading).map(r => ({
+            url: r.url, title: r.title, channelTitle: r.channelTitle,
+            viewCount: r.viewCount, thumbnailUrl: r.thumbnailUrl,
+          })),
+          constraints,
+          seriesId: seriesId || undefined,
+          seriesTitle: seriesTitle || undefined,
+          partNumber: seriesId ? partNumber : undefined,
+        });
         setHistoryItems(getScriptHistory());
-        const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: finalScript, wordCount: countWords(finalScript) });
+        const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: finalScript, wordCount: countWords(finalScript), constraints, seriesId: seriesId || undefined, seriesTitle: seriesTitle || undefined, partNumber: seriesId ? partNumber : undefined });
         setDraftId(draft.id);
+        // If this is a series part, persist it to the series so cross-device Part N+1 can pull it.
+        if (seriesId && finalScript) {
+          saveSeriesPart(seriesId, { content: finalScript, partNumber, modelId })
+            .then(r => { if (r) toast.success(`Saved as Part ${partNumber} of "${seriesTitle}"`); })
+            .catch(() => { /* best-effort */ });
+        }
         toast.success(`Self-QA passed in ${data.attempts ?? 1} attempt${(data.attempts ?? 1) === 1 ? '' : 's'} — score ${data.qa?.overall_score ?? '?'}/100`);
         return;
       }
@@ -305,7 +585,7 @@ export default function GeneratorPage() {
       const res = await fetch('/api/generate/script', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ modelId, topic, niche, duration, tone, style, audience, context, referenceContext: refContext || undefined, previousScripts }),
+        body: JSON.stringify({ modelId, topic, niche, duration, tone, style, audience, context, referenceContext: refContext || undefined, previousScripts, seriesContext: seriesContext || undefined, constraints }),
         signal: abortRef.current.signal,
       });
 
@@ -329,12 +609,32 @@ export default function GeneratorPage() {
       }
 
       setShowSave(true);
-      // Auto-save to history
-      saveScriptToHistory({ topic, niche, tone, style, duration, modelId, script: full, wordCount: countWords(full) });
+      // Auto-save to history — include audience/context/refs/constraints/series
+      // so restoring brings back the full input context, not just the output.
+      saveScriptToHistory({
+        topic, niche, tone, style, duration, modelId,
+        script: full, wordCount: countWords(full),
+        audience: audience || undefined,
+        context: context || undefined,
+        refs: refs.filter(r => !r.loading).map(r => ({
+          url: r.url, title: r.title, channelTitle: r.channelTitle,
+          viewCount: r.viewCount, thumbnailUrl: r.thumbnailUrl,
+        })),
+        constraints,
+        seriesId: seriesId || undefined,
+        seriesTitle: seriesTitle || undefined,
+        partNumber: seriesId ? partNumber : undefined,
+      });
       setHistoryItems(getScriptHistory());
       // Auto-save draft
-      const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: full, wordCount: countWords(full) });
+      const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: full, wordCount: countWords(full), constraints, seriesId: seriesId || undefined, seriesTitle: seriesTitle || undefined, partNumber: seriesId ? partNumber : undefined });
       setDraftId(draft.id);
+      // Persist to series if linked — cross-device continuity for the next part.
+      if (seriesId && full) {
+        saveSeriesPart(seriesId, { content: full, partNumber, modelId })
+          .then(r => { if (r) toast.success(`Saved as Part ${partNumber} of "${seriesTitle}"`); })
+          .catch(() => { /* best-effort */ });
+      }
       toast.success('Script generated!');
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') return;
@@ -349,6 +649,7 @@ export default function GeneratorPage() {
 
   return (
     <div className="p-8 max-w-6xl mx-auto">
+      {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Script Generator" />}
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">
@@ -686,6 +987,85 @@ export default function GeneratorPage() {
               )}
             </div>
 
+            {/* Script Options — user-authored exclusions that ride with both
+                generation AND the QA review, so intentionally-omitted elements
+                (hook, CTA, links) aren't later flagged as issues. Collapsed by
+                default; all three toggles plus a free-form custom-rules list. */}
+            <div>
+              <button
+                type="button"
+                onClick={() => setOptionsOpen(v => !v)}
+                className="w-full flex items-center justify-between text-xs font-semibold uppercase tracking-wider px-3 py-2 rounded-lg"
+                style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+              >
+                <span>⚙️ Script Options {constraints.skipHook || constraints.skipSubscribeCTA || constraints.skipClickableLinks || (constraints.custom && constraints.custom.length) ? <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(124,58,237,0.2)', color: 'var(--accent-purple-bright)' }}>active</span> : null}</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ transform: optionsOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </button>
+              {optionsOpen && (
+                <div className="mt-2 p-3 rounded-lg space-y-2" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                  <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    These rules apply to both the generation and the QA review — flagged omissions won&apos;t be treated as issues.
+                  </p>
+                  <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                    <input type="checkbox" checked={!!constraints.skipHook} onChange={e => setConstraints(c => ({ ...c, skipHook: e.target.checked }))} />
+                    Zero hook — open directly in-scene / with the story
+                  </label>
+                  <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                    <input type="checkbox" checked={!!constraints.skipSubscribeCTA} onChange={e => setConstraints(c => ({ ...c, skipSubscribeCTA: e.target.checked }))} />
+                    No subscribe / like / bell CTAs
+                  </label>
+                  <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                    <input type="checkbox" checked={!!constraints.skipClickableLinks} onChange={e => setConstraints(c => ({ ...c, skipClickableLinks: e.target.checked }))} />
+                    No &quot;link in description&quot; / promo links
+                  </label>
+                  <div>
+                    <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Custom exclusions (one per line — e.g. &quot;no pop-culture refs&quot;)</label>
+                    <textarea
+                      value={(constraints.custom || []).join('\n')}
+                      onChange={e => setConstraints(c => ({ ...c, custom: e.target.value.split('\n').map(s => s.trim()).filter(Boolean) }))}
+                      onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) e.stopPropagation(); }}
+                      placeholder="One rule per line…"
+                      className="input-field w-full"
+                      style={{ fontSize: 12, minHeight: 60 }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Series linkage — optional. If enabled and partNumber > 1, the
+                generator pulls prior parts as continuity context. */}
+            <div>
+              <SeriesPicker
+                seriesId={seriesId}
+                partNumber={partNumber}
+                niche={niche}
+                onChange={({ seriesId: id, seriesTitle: t, partNumber: p }) => {
+                  setSeriesId(id);
+                  if (t !== undefined) setSeriesTitle(t);
+                  if (p !== partNumber) partNumberDirtyRef.current = true;
+                  setPartNumber(p);
+                }}
+              />
+              {seriesId && partNumber > 1 && (
+                <div className="mt-2 px-3 py-2 rounded-lg flex items-center gap-2 flex-wrap" style={{ background: 'rgba(124,58,237,0.08)', border: '1px solid rgba(124,58,237,0.2)' }}>
+                  <label className="text-xs" style={{ color: 'var(--text-muted)' }}>Continuity budget:</label>
+                  <input
+                    type="number" min={2000} max={60000} step={1000}
+                    value={seriesTokenBudget}
+                    onChange={e => setSeriesTokenBudget(Math.max(2000, Math.min(60000, parseInt(e.target.value) || 15000)))}
+                    className="input-field"
+                    style={{ width: 90, fontSize: 12, padding: '4px 8px' }}
+                  />
+                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                    tokens — prev part full, older parts summarized.
+                  </span>
+                </div>
+              )}
+            </div>
+
             <button
               onClick={generating ? () => abortRef.current?.abort() : generateScript}
               disabled={!topic.trim() || !niche.trim()}
@@ -702,7 +1082,7 @@ export default function GeneratorPage() {
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
                   </svg>
-                  Generate Script
+                  {seriesId && partNumber > 1 ? `Generate Part ${partNumber}` : 'Generate Script'}
                 </>
               )}
             </button>
@@ -849,17 +1229,98 @@ export default function GeneratorPage() {
                 exit={{ opacity: 0 }}
                 className="space-y-3"
               >
-                {/* Save as Project */}
-                <SaveAsProject script={script} niche={niche} topic={topic} modelId={modelId} />
+                {/* ✨ Refine — post-generation improvement loop. User describes
+                    what to change; the server returns an edited version streaming
+                    in place of the current script. Previous version is stashed
+                    for one-click Undo. */}
+                <div className="glass rounded-xl p-4 space-y-2" style={{ border: '1px solid rgba(124,58,237,0.25)' }}>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>✨ Refine this script</h3>
+                    <div className="flex gap-2">
+                      {previousScriptSnapshot && !refining && (
+                        <button onClick={undoRefine} className="btn-secondary text-xs px-3 py-1">↶ Undo</button>
+                      )}
+                      <button
+                        onClick={() => setRefineOpen(v => !v)}
+                        className="btn-secondary text-xs px-3 py-1"
+                      >
+                        {refineOpen ? 'Hide' : 'Open'}
+                      </button>
+                    </div>
+                  </div>
+                  {refineOpen && (
+                    <div className="space-y-2">
+                      <textarea
+                        value={refineNotes}
+                        onChange={e => setRefineNotes(e.target.value)}
+                        placeholder="What should be improved? e.g. 'Make the second section snappier', 'Replace the ColonialPipeline example with Equifax', 'Tighten the middle — it drags'."
+                        className="input-field w-full"
+                        style={{ minHeight: 80, fontSize: 13 }}
+                        disabled={refining}
+                      />
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={refining ? () => refineAbortRef.current?.abort() : refineScript}
+                          disabled={!refining && !refineNotes.trim()}
+                          className={refining ? 'btn-danger text-sm flex-1 justify-center' : 'btn-primary text-sm flex-1 justify-center'}
+                          style={{ justifyContent: 'center' }}
+                        >
+                          {refining ? (
+                            <><div className="spinner" style={{ width: 14, height: 14 }} /> Stop</>
+                          ) : (
+                            <>✨ Apply refinement</>
+                          )}
+                        </button>
+                      </div>
+                      <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                        Constraints (skip hook / CTA / links) are respected — the refine won&apos;t re-add anything you opted out of.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Save as Project — also write back to the linked schedule item
+                    (script_id / project_id / status idea → scripting). */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <SaveAsProject
+                    script={script}
+                    niche={niche}
+                    topic={topic}
+                    modelId={modelId}
+                    onSaved={(projectId, scriptId) => {
+                      if (scheduleItemId) {
+                        writeBackToSchedule(
+                          scheduleItemId,
+                          { project_id: projectId, ...(scriptId ? { script_id: scriptId } : {}) },
+                          { autoAdvanceTo: 'scripting', advanceLabel: 'Scripting' },
+                        );
+                      }
+                    }}
+                  />
+                  {/* Symmetric entry point: if this generation wasn't launched
+                      from a schedule item, offer to park it in the schedule
+                      right now. Hidden once a link is active. */}
+                  {!scheduleItemId && (
+                    <AddToScheduleButton
+                      title={topic}
+                      notes={context || undefined}
+                      pillar={niche || undefined}
+                      initialStatus="scripting"
+                    />
+                  )}
+                </div>
 
                 {/* Next steps */}
                 <div className="flex gap-2">
                   <button
                     onClick={() => {
                       // Update draft to QA step
-                      if (draftId) saveDraft({ id: draftId, title: topic, niche, step: 'qa', topic, tone, style, duration, modelId, script, wordCount: countWords(script) });
-                      localStorage.setItem('qa_prefill', JSON.stringify({ script, niche }));
-                      window.location.href = '/qa?from=generator';
+                      if (draftId) saveDraft({ id: draftId, title: topic, niche, step: 'qa', topic, tone, style, duration, modelId, script, wordCount: countWords(script), constraints });
+                      // Include constraints in the prefill so QA honors the same exclusions.
+                      // `topic` rides along so QA can show the user which script/title they're working on.
+                      localStorage.setItem('qa_prefill', JSON.stringify({ script, niche, constraints, topic }));
+                      const sched = scheduleItemId ? `&${SCHEDULE_LINK_PARAM}=${scheduleItemId}` : '';
+                      window.location.href = `/qa?from=generator${sched}`;
                     }}
                     className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center"
                     style={{ justifyContent: 'center' }}
@@ -869,7 +1330,8 @@ export default function GeneratorPage() {
                   <button
                     onClick={() => {
                       localStorage.setItem('voiceover_prefill', JSON.stringify({ script, niche }));
-                      window.location.href = '/voiceover?from=generator';
+                      const sched = scheduleItemId ? `&${SCHEDULE_LINK_PARAM}=${scheduleItemId}` : '';
+                      window.location.href = `/voiceover?from=generator${sched}`;
                     }}
                     className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center"
                     style={{ justifyContent: 'center' }}
@@ -879,7 +1341,8 @@ export default function GeneratorPage() {
                   <button
                     onClick={() => {
                       localStorage.setItem('seo_prefill', JSON.stringify({ topic, niche, script }));
-                      window.location.href = '/seo?from=generator';
+                      const sched = scheduleItemId ? `&${SCHEDULE_LINK_PARAM}=${scheduleItemId}` : '';
+                      window.location.href = `/seo?from=generator${sched}`;
                     }}
                     className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
                   >
@@ -888,7 +1351,8 @@ export default function GeneratorPage() {
                   <button
                     onClick={() => {
                       localStorage.setItem('thumbnails_prefill', JSON.stringify({ title: topic, niche, description: script?.slice(0, 500) }));
-                      window.location.href = '/thumbnails?from=generator';
+                      const sched = scheduleItemId ? `&${SCHEDULE_LINK_PARAM}=${scheduleItemId}` : '';
+                      window.location.href = `/thumbnails?from=generator${sched}`;
                     }}
                     className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
                   >

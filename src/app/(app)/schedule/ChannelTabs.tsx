@@ -2,15 +2,18 @@
 
 import { motion } from 'framer-motion';
 import type { Channel } from './types';
+export { UNASSIGNED_CHANNEL_ID } from '@/lib/schedule-constants';
+import { UNASSIGNED_CHANNEL_ID } from '@/lib/schedule-constants';
 
 type Props = {
   channels: Channel[];
-  selectedId: string | null;       // null = "All channels"
-  counts: Record<string, number>;  // channel id → count, key "__all" for total
+  selectedId: string | null;       // null = "All channels", "__unassigned" = orphans
+  counts: Record<string, number>;  // channel id → count, "__all" for total, "__unassigned" for orphans
   onSelect: (id: string | null) => void;
 };
 
 export function ChannelTabs({ channels, selectedId, counts, onSelect }: Props) {
+  const unassignedCount = counts[UNASSIGNED_CHANNEL_ID] ?? 0;
   return (
     <div className="flex items-center gap-1 mb-4 overflow-x-auto pb-1" style={{ scrollbarWidth: 'thin' }}>
       <Tab
@@ -31,17 +34,28 @@ export function ChannelTabs({ channels, selectedId, counts, onSelect }: Props) {
           count={counts[c.id] ?? 0}
         />
       ))}
+      {unassignedCount > 0 && (
+        <Tab
+          active={selectedId === UNASSIGNED_CHANNEL_ID}
+          onClick={() => onSelect(UNASSIGNED_CHANNEL_ID)}
+          color="#f59e0b"
+          label="Unassigned"
+          count={unassignedCount}
+          unassigned
+        />
+      )}
     </div>
   );
 }
 
-function Tab({ active, onClick, color, label, count, allMode }: {
+function Tab({ active, onClick, color, label, count, allMode, unassigned }: {
   active: boolean;
   onClick: () => void;
   color: string;
   label: string;
   count: number;
   allMode?: boolean;
+  unassigned?: boolean;
 }) {
   return (
     <button
@@ -52,8 +66,9 @@ function Tab({ active, onClick, color, label, count, allMode }: {
         color: active ? color : 'var(--text-secondary)',
         border: `1px solid ${active ? color + '55' : 'var(--border)'}`,
       }}
+      title={unassigned ? 'Items not assigned to any channel yet — bulk-assign from the list view' : undefined}
     >
-      {!allMode && (
+      {!allMode && !unassigned && (
         <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
       )}
       {allMode && (
@@ -62,6 +77,12 @@ function Tab({ active, onClick, color, label, count, allMode }: {
           <rect x="14" y="3" width="7" height="7" rx="1"/>
           <rect x="3" y="14" width="7" height="7" rx="1"/>
           <rect x="14" y="14" width="7" height="7" rx="1"/>
+        </svg>
+      )}
+      {unassigned && (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
         </svg>
       )}
       <span>{label}</span>

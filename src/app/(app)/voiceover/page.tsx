@@ -5,11 +5,16 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
+import type { ScheduleItem } from '@/lib/schedule';
+import { getScheduleLinkId, fetchScheduleItem, loadFullContextForItem } from '@/lib/schedule-link';
+import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ELEVENLABS_MODELS } from '@/lib/elevenlabs';
 import { cleanScriptForVoiceover } from '@/lib/voiceover-presets';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
-import { getVoiceoverHistory, deleteVoiceoverEntry, saveVoiceover, type VoiceoverHistoryEntry } from '@/lib/history';
+import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
+import { getVoiceoverHistory, saveVoiceover, deleteVoiceoverEntry, type VoiceoverHistoryEntry } from '@/lib/history';
+import { saveDraft, getActiveDraft } from '@/lib/drafts';
 
 interface ElevenVoice {
   voice_id: string;
@@ -30,6 +35,9 @@ interface VoiceoverSettings {
 function VoiceoverStudio() {
   const searchParams = useSearchParams();
   const projectId = searchParams.get('projectId');
+  const scheduleItemId = getScheduleLinkId(searchParams);
+  const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
+  const [schedulePrefilled, setSchedulePrefilled] = useState(false);
   const [apiKey, setApiKey] = useState('');
   const [keyInput, setKeyInput] = useState('');
   const [voices, setVoices] = useState<ElevenVoice[]>([]);
@@ -55,19 +63,31 @@ function VoiceoverStudio() {
   function restoreVoiceover(id: string) {
     const entry = voHistoryItems.find(e => e.id === id);
     if (!entry) return;
+    if ((audioUrl || text) && typeof window !== 'undefined' &&
+        !confirm('Replace the current voiceover state with this restored entry?')) {
+      return;
+    }
     setAudioUrl(entry.audioUrl);
-    setText(entry.textPreview);
-    toast.success('Voiceover restored from history');
+    // Prefer full text when it was saved; fall back to the preview for legacy entries.
+    setText(entry.text ?? entry.textPreview ?? '');
+    if (entry.voiceId) setSelectedVoice(entry.voiceId);
+    if (entry.settings) setSettings(entry.settings);
+    if (entry.text) {
+      toast.success(`Voiceover restored — ${entry.charCount.toLocaleString()} chars, voice "${entry.voiceName}"`);
+    } else {
+      toast.info('Older entry — only preview was saved. Audio still plays; paste or re-enter the full text to regenerate.');
+    }
   }
 
   useEffect(() => {
-    // Check for prefill from QA page
+    // Check for prefill from QA page. Functional setter so a schedule-link
+    // prefill that resolved first isn't clobbered by stale localStorage.
     try {
       const prefill = localStorage.getItem('voiceover_prefill');
       if (prefill) {
         localStorage.removeItem('voiceover_prefill');
         const data = JSON.parse(prefill);
-        if (data.script) setText(cleanScriptForVoiceover(data.script));
+        if (data.script) setText(curr => curr || cleanScriptForVoiceover(data.script));
       }
     } catch {}
 
@@ -80,6 +100,25 @@ function VoiceoverStudio() {
       }).catch(() => {});
     }
   }, []);
+
+  // Schedule-link preload: pull the active script from the linked item's
+  // project so the user doesn't have to paste it. Cleaned for voiceover (SSML
+  // markers, stage directions stripped) before being placed in the textarea.
+  useEffect(() => {
+    if (!scheduleItemId || schedulePrefilled) return;
+    let cancelled = false;
+    (async () => {
+      const item = await fetchScheduleItem(scheduleItemId);
+      if (cancelled || !item) return;
+      setScheduleItem(item);
+      setSchedulePrefilled(true);
+      const ctx = await loadFullContextForItem(item);
+      if (cancelled) return;
+      if (ctx.script) setText(curr => curr || cleanScriptForVoiceover(ctx.script!));
+      toast.message(`Loaded context from "${item.title || 'schedule item'}"`);
+    })();
+    return () => { cancelled = true; };
+  }, [scheduleItemId, schedulePrefilled]);
 
   async function loadVoices(key: string) {
     try {
@@ -135,18 +174,37 @@ function VoiceoverStudio() {
       }
       const data = await res.json();
       setAudioUrl(data.url);
-      // Save to history so Video Studio can pick up the latest URL
-      const entry = saveVoiceover({
-        voiceName: voices.find(v => v.voice_id === selectedVoice)?.name || selectedVoice,
+      // Save to history with the full text + settings so clicking a past entry
+      // rehydrates everything (text, voice, sliders, model) — not just audio+preview.
+      const voiceName = voices.find(v => v.voice_id === selectedVoice)?.name || 'Unknown';
+      saveVoiceover({
+        voiceName,
         voiceId: selectedVoice,
         modelId: settings.model_id,
-        textPreview: text.slice(0, 2000),
+        textPreview: text.slice(0, 300),
         charCount: text.length,
         audioUrl: data.url,
         tone: '',
         style: '',
+        text,
+        settings: { ...settings },
       });
-      setVoHistoryItems(prev => [entry, ...prev]);
+      setVoHistoryItems(getVoiceoverHistory());
+      // Save draft so leaving the page doesn't lose the voiceover.
+      try {
+        const active = getActiveDraft();
+        saveDraft({
+          id: active?.id,
+          title: active?.title || voiceName || 'Voiceover',
+          niche: active?.niche || '',
+          step: 'voiceover',
+          topic: active?.topic,
+          modelId: settings.model_id,
+          script: text,
+          voiceoverUrl: data.url,
+          voiceName,
+        });
+      } catch {}
       toast.success('Voiceover generated!');
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Failed to generate voiceover');
@@ -197,6 +255,7 @@ function VoiceoverStudio() {
 
   return (
     <div className="p-8 max-w-7xl mx-auto">
+      {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Voiceover Studio" />}
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">
@@ -341,11 +400,19 @@ function VoiceoverStudio() {
           <div className="space-y-4">
             {/* Text input */}
             <div className="glass rounded-xl p-5">
-              <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
                 <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Script / Text</h2>
-                <span className="text-xs" style={{ color: charCount > 5000 ? '#ef4444' : 'var(--text-muted)' }}>
-                  {charCount.toLocaleString()} chars
-                </span>
+                <div className="flex items-center gap-2">
+                  {text.trim().length > 0 && (
+                    <>
+                      <CopyForElevenLabs script={text} version="v2" />
+                      <CopyForElevenLabs script={text} version="v3" />
+                    </>
+                  )}
+                  <span className="text-xs" style={{ color: charCount > 5000 ? '#ef4444' : 'var(--text-muted)' }}>
+                    {charCount.toLocaleString()} chars
+                  </span>
+                </div>
               </div>
               <textarea
                 value={text}

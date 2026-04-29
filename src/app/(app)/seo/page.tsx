@@ -1,8 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { Suspense, useState, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
+import type { ScheduleItem } from '@/lib/schedule';
+import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadFullContextForItem } from '@/lib/schedule-link';
+import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { DraftsBanner } from '@/components/ui/DraftsBanner';
@@ -58,7 +62,20 @@ interface SeoResult {
   seo_analysis: SeoAnalysis;
 }
 
-export default function SeoPage() {
+export default function SeoPageWrapper() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>}>
+      <SeoPage />
+    </Suspense>
+  );
+}
+
+function SeoPage() {
+  const search = useSearchParams();
+  const scheduleItemId = getScheduleLinkId(search);
+  const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
+  const [schedulePrefilled, setSchedulePrefilled] = useState(false);
+
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('seo-optimizer'));
   const [topic, setTopic] = useState('');
   const [topicHints, setTopicHints] = useState<string[]>([]);
@@ -74,11 +91,42 @@ export default function SeoPage() {
   const [historyItems, setHistoryItems] = useState<SeoHistoryEntry[]>(() => getSeoHistory());
   const [draftId, setDraftId] = useState<string | null>(() => getActiveDraft()?.id || null);
 
+  // Schedule-link preload: pull topic / niche / script + carry over any prior
+  // SEO outputs already stamped on the item (yt_tags, freeform tags) as a
+  // keyword seed so a re-run can refine instead of starting from scratch.
+  useEffect(() => {
+    if (!scheduleItemId || schedulePrefilled) return;
+    let cancelled = false;
+    (async () => {
+      const item = await fetchScheduleItem(scheduleItemId);
+      if (cancelled || !item) return;
+      setScheduleItem(item);
+      setSchedulePrefilled(true);
+      const ctx = await loadFullContextForItem(item);
+      if (cancelled) return;
+      setTopic(curr => curr || ctx.topic);
+      setNiche(curr => curr || ctx.niche);
+      setExistingTitle(curr => curr || ctx.topic);
+      if (ctx.script) setScript(prev => prev || ctx.script!);
+      // Seed target keywords from the user's freeform schedule tags only —
+      // *not* from `prevTags` (yt_tags), which are the AI's own previous
+      // output. Reseeding from past output would create a self-reinforcement
+      // loop where the LLM treats its prior suggestions as the target.
+      const seedTags = Array.from(new Set(ctx.freeformTags)).slice(0, 12);
+      if (seedTags.length) setTargetKeywords(curr => curr || seedTags.join(', '));
+      toast.message(`Loaded context from "${item.title || 'schedule item'}"`);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scheduleItemId, schedulePrefilled]);
+
   useEffect(() => {
     setTopicHints(getRecentTopics());
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
-      if (data.niches?.length) setNiche(data.niches[0].name);
+      // Functional setter so a schedule-link or other prefill that already set
+      // niche isn't overwritten by the default-first-niche on slow networks.
+      if (data.niches?.length) setNiche(curr => curr || data.niches[0].name);
     }).catch(() => {});
 
     try {
@@ -86,9 +134,9 @@ export default function SeoPage() {
       if (prefill) {
         localStorage.removeItem('seo_prefill');
         const data = JSON.parse(prefill);
-        if (data.topic) setTopic(data.topic);
-        if (data.niche) setNiche(data.niche);
-        if (data.script) setScript(data.script);
+        if (data.topic) setTopic(curr => curr || data.topic);
+        if (data.niche) setNiche(curr => curr || data.niche);
+        if (data.script) setScript(curr => curr || data.script);
       }
     } catch {}
   }, []);
@@ -119,22 +167,56 @@ export default function SeoPage() {
       setResult(data.result);
       setActiveTab('titles');
       toast.success('SEO optimization complete!');
-      // Save to history
-      const titles = (data.result as any).titles || [];
-      const bestTitle = [...titles].sort((a: any, b: any) => (b.score || 0) - (a.score || 0))[0];
+      // Save to history — include the full result + original inputs so clicking
+      // a past entry fully rehydrates the results panel, not just the form.
+      const titles = (data.result as { titles?: Array<{ title?: string; score?: number }> }).titles || [];
+      const bestTitle = [...titles].sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+
+      // Write back to the linked schedule item — stamp the generated description
+      // and tags onto the item so the publish step can copy them straight through.
+      // Title is only updated when the user explicitly picks one (see below),
+      // never auto-overwritten from the top-ranked suggestion.
+      if (scheduleItemId) {
+        const desc = (data.result as { description?: { full_description?: string; above_fold?: string } }).description;
+        const fullDesc = desc?.full_description || desc?.above_fold || '';
+        const tagStrings: string[] = ((data.result as { tags?: Array<{ tag?: string }> }).tags ?? [])
+          .map(t => t.tag)
+          .filter((t): t is string => !!t);
+        // Only send fields that actually have values — sending `yt_tags: []`
+        // would wipe the user's existing tags on the item.
+        const patch: Record<string, unknown> = {};
+        if (fullDesc) patch.yt_description = fullDesc;
+        if (tagStrings.length) patch.yt_tags = tagStrings;
+        writeBackToSchedule(scheduleItemId, patch, {
+          customFieldsMerge: {
+            latest_seo: {
+              best_title: bestTitle?.title ?? null,
+              best_score: bestTitle?.score ?? null,
+              titles_count: titles.length,
+              tags_count: tagStrings.length,
+              ran_at: new Date().toISOString(),
+              model_id: modelId,
+            },
+          },
+        });
+      }
       saveSeoEntry({
         topic, niche, modelId,
         titlesCount: titles.length,
         bestTitle: bestTitle?.title || topic,
         bestScore: bestTitle?.score || 0,
-        tagsCount: ((data.result as any).tags || []).length,
+        tagsCount: ((data.result as { tags?: unknown[] }).tags || []).length,
+        result: data.result,
+        script: script.trim() || undefined,
+        targetKeywords: targetKeywords.trim() || undefined,
+        existingTitle: existingTitle.trim() || undefined,
       });
       setHistoryItems(getSeoHistory());
       // Save draft
       const draft = saveDraft({
         id: draftId || undefined, title: topic, niche, step: 'seo',
         topic, modelId, seoTitle: bestTitle?.title,
-        seoDescription: (data.result as any).description?.above_fold,
+        seoDescription: (data.result as { description?: { above_fold?: string } }).description?.above_fold,
       });
       setDraftId(draft.id);
     } catch (e: unknown) {
@@ -183,6 +265,7 @@ export default function SeoPage() {
 
   return (
     <div className="p-8 max-w-6xl mx-auto">
+      {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="SEO Optimizer" />}
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">
@@ -372,6 +455,18 @@ export default function SeoPage() {
                       <div key={i} className="glass rounded-xl p-4">
                         <div className="flex items-start justify-between gap-3 mb-2">
                           <p className="text-base font-semibold flex-1" style={{ color: 'var(--text-primary)' }}>{t.title}</p>
+                          {scheduleItemId && (
+                            <button
+                              className="btn-secondary text-xs px-2 py-1 shrink-0"
+                              onClick={() => {
+                                writeBackToSchedule(scheduleItemId, { title: t.title });
+                                toast.success('Title saved to schedule item');
+                              }}
+                              title="Use this title on the linked schedule item"
+                            >
+                              Use title
+                            </button>
+                          )}
                           <button
                             className="btn-secondary text-xs px-2 py-1 shrink-0"
                             onClick={() => copyText(t.title, 'Title copied!')}
@@ -627,7 +722,24 @@ export default function SeoPage() {
         }))}
         onRestore={(id) => {
           const entry = historyItems.find(e => e.id === id);
-          if (entry) { setTopic(entry.topic || entry.bestTitle); setNiche(entry.niche); toast.success('Restored from history'); }
+          if (!entry) return;
+          if (result && typeof window !== 'undefined' &&
+              !confirm('Replace current SEO results with this restored entry?')) {
+            return;
+          }
+          setTopic(entry.topic || entry.bestTitle);
+          setNiche(entry.niche);
+          if (entry.modelId) setModelId(entry.modelId);
+          if (entry.script !== undefined) setScript(entry.script);
+          if (entry.targetKeywords !== undefined) setTargetKeywords(entry.targetKeywords);
+          if (entry.existingTitle !== undefined) setExistingTitle(entry.existingTitle);
+          if (entry.result) {
+            setResult(entry.result as SeoResult);
+            setActiveTab('titles');
+            toast.success(`Restored — ${entry.titlesCount} titles, best ${entry.bestScore}/100`);
+          } else {
+            toast.info('Older entry — only metadata was saved. Click Generate to re-run with these inputs.');
+          }
         }}
         onDelete={(id) => { deleteSeoEntry(id); setHistoryItems(getSeoHistory()); }}
         onClearAll={() => { clearSeoHistory(); setHistoryItems([]); }}

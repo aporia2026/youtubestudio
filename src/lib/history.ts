@@ -11,6 +11,26 @@ export interface ScriptHistoryEntry {
   modelId: string;
   script: string;
   wordCount: number;
+  // Optional richer payload so restoring an entry brings back the full input
+  // context, not just the script output.
+  audience?: string;
+  context?: string;
+  /** Minimal reference-video metadata — not the full deep-analysis payload
+   * (too large), but enough to show "these were the inspirations". */
+  refs?: Array<{ url: string; title: string; channelTitle?: string; viewCount?: number; thumbnailUrl?: string }>;
+  /** User-authored exclusions (skip hook, skip CTA, custom) used for this
+   * generation. Restored so the toggles come back on click. Typed loosely
+   * here to avoid a circular import with lib/script-options. */
+  constraints?: {
+    skipHook?: boolean;
+    skipSubscribeCTA?: boolean;
+    skipClickableLinks?: boolean;
+    custom?: string[];
+  };
+  /** Series linkage when this script was generated as part of a named series. */
+  seriesId?: string;
+  seriesTitle?: string;
+  partNumber?: number;
 }
 
 export interface IdeasHistoryEntry {
@@ -22,6 +42,10 @@ export interface IdeasHistoryEntry {
   modelId: string;
   count: number;
   ideas: Array<Record<string, unknown>>;
+  audience?: string;
+  usedReddit?: boolean;
+  /** Reference videos that were sent to the model when generating these ideas. */
+  refs?: Array<{ url: string; title: string; channelTitle?: string; viewCount?: number }>;
 }
 
 export interface VoiceoverHistoryEntry {
@@ -35,6 +59,18 @@ export interface VoiceoverHistoryEntry {
   audioUrl: string;
   tone: string;
   style: string;
+  /** Full source text — so restoring brings back the script that was spoken,
+   * not just a 300-char preview. */
+  text?: string;
+  /** TTS settings used for this generation so the sliders/voice selection
+   * come back on restore. */
+  settings?: {
+    stability: number;
+    similarity_boost: number;
+    style: number;
+    use_speaker_boost: boolean;
+    model_id: string;
+  };
 }
 
 export interface SeoHistoryEntry {
@@ -47,6 +83,13 @@ export interface SeoHistoryEntry {
   bestTitle: string;
   bestScore: number;
   tagsCount: number;
+  /** Full optimizer output so restore rehydrates the results panel (all
+   * titles with scores, descriptions, tags, chapters, analysis). */
+  result?: unknown;
+  /** The inputs used for this run so they come back on restore. */
+  script?: string;
+  targetKeywords?: string;
+  existingTitle?: string;
 }
 
 export interface ThumbnailHistoryEntry {
@@ -59,6 +102,14 @@ export interface ThumbnailHistoryEntry {
   bestConceptName: string;
   bestScore: number;
   generatedImageUrl?: string;
+  /** Full concept-generation output so restore rehydrates the concepts panel. */
+  result?: unknown;
+  /** Map of conceptIndex → generated image URL. */
+  generatedImages?: Record<number, string>;
+  /** Inputs used to produce these concepts. */
+  script?: string;
+  description?: string;
+  imageModel?: string;
 }
 
 const SCRIPT_KEY = 'script_history';
@@ -219,6 +270,14 @@ export function saveThumbnailEntry(entry: Omit<ThumbnailHistoryEntry, 'id' | 'ti
   return full;
 }
 
+/** Merge new fields into an existing thumbnail history entry (e.g. adding a
+ * generatedImages map as images get created after the initial concept save). */
+export function updateThumbnailEntry(id: string, patch: Partial<ThumbnailHistoryEntry>): void {
+  if (typeof window === 'undefined') return;
+  const history = getThumbnailHistory().map(e => e.id === id ? { ...e, ...patch } : e);
+  safeSave(THUMBNAIL_KEY, JSON.stringify(history));
+}
+
 export function deleteThumbnailEntry(id: string): void {
   if (typeof window === 'undefined') return;
   safeSave(THUMBNAIL_KEY, JSON.stringify(getThumbnailHistory().filter(e => e.id !== id)));
@@ -240,6 +299,13 @@ export interface QAHistoryEntry {
   overallScore: number;
   verdict: string;
   passCount: number;
+  // Full payload for session restore. Older entries written before these
+  // fields existed are metadata-only — restore falls back to scriptPreview.
+  script?: string;
+  results?: unknown[];
+  /** @deprecated Singular field from an earlier partial fix; kept so entries
+   * saved with just the latest pass still restore as a 1-result session. */
+  result?: unknown;
 }
 
 const QA_KEY = 'qa_history';
@@ -279,6 +345,12 @@ export interface ProductionDocHistoryEntry {
   totalDuration: string;
   totalWords: number;
   stylePreset: string;
+  /** Full production document so restore rehydrates the rows grid. */
+  doc?: unknown;
+  /** The source script that produced this doc. */
+  script?: string;
+  /** Map of row index → generated image URL. */
+  rowImages?: Record<number, string>;
 }
 
 const PROD_DOC_KEY = 'production_doc_history';
@@ -296,6 +368,14 @@ export function saveProductionDocEntry(entry: Omit<ProductionDocHistoryEntry, 'i
   if (history.length > MAX_PROD_DOC_ENTRIES) history.length = MAX_PROD_DOC_ENTRIES;
   safeSave(PROD_DOC_KEY, JSON.stringify(history));
   return full;
+}
+
+/** Merge new fields into an existing production-doc entry (e.g. attaching
+ * generated row images after the initial save completes). */
+export function updateProductionDocEntry(id: string, patch: Partial<ProductionDocHistoryEntry>): void {
+  if (typeof window === 'undefined') return;
+  const history = getProductionDocHistory().map(e => e.id === id ? { ...e, ...patch } : e);
+  safeSave(PROD_DOC_KEY, JSON.stringify(history));
 }
 
 export function deleteProductionDocEntry(id: string): void {

@@ -43,6 +43,37 @@ body {
   overflow-x: hidden;
 }
 
+/* Schedule density — compact mode tightens the whole page's spacing.
+   Cards get smaller padding + less vertical rhythm. */
+[data-density="compact"] .rounded-lg { border-radius: 6px; }
+[data-density="compact"] .py-2\.5 { padding-top: 0.375rem; padding-bottom: 0.375rem; }
+[data-density="compact"] .py-3 { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+[data-density="compact"] .p-2\.5 { padding: 0.375rem; }
+[data-density="compact"] .gap-3 { gap: 0.5rem; }
+[data-density="compact"] .space-y-1\.5 > * + * { margin-top: 0.25rem; }
+[data-density="compact"] .space-y-2 > * + * { margin-top: 0.375rem; }
+[data-density="compact"] .mb-4 { margin-bottom: 0.5rem; }
+
+/* Native select dropdowns — the browser uses the OS default for the popup
+   list, which makes pale text-on-white invisible in our dark theme. Force
+   dark-bg + bright-fg on every <option> so the dropdown is readable. */
+select {
+  color-scheme: dark;
+}
+option,
+optgroup {
+  background-color: var(--bg-card);
+  color: var(--text-primary);
+}
+option:checked,
+option:hover {
+  background-color: var(--accent-purple);
+  color: #ffffff;
+}
+option:disabled {
+  color: var(--text-muted);
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

@@ -1,14 +1,20 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { Suspense, useState, useRef, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
+import type { ScheduleItem } from '@/lib/schedule';
+import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadFullContextForItem } from '@/lib/schedule-link';
+import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
 import { ExportScript } from '@/components/ui/ExportScript';
+import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { ScoreRing } from '@/components/ui/ScoreRing';
 import { saveDraft, getActiveDraft } from '@/lib/drafts';
+import { EMPTY_CONSTRAINTS, hasAnyConstraint, type ScriptConstraints } from '@/lib/script-options';
 import { scoreLabel } from '@/lib/utils';
 import { saveQAEntry, getQAHistory, deleteQAEntry, clearQAHistory, getRecentNiches, type QAHistoryEntry } from '@/lib/history';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
@@ -78,9 +84,26 @@ const CATEGORY_LABELS: Record<string, { label: string; emoji: string }> = {
   logic_coherence: { label: 'Logic & Flow', emoji: '🔗' },
 };
 
-export default function QAPage() {
+export default function QAPageWrapper() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>}>
+      <QAPage />
+    </Suspense>
+  );
+}
+
+function QAPage() {
+  const search = useSearchParams();
+  const scheduleItemId = getScheduleLinkId(search);
+  const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
+  const [schedulePrefilled, setSchedulePrefilled] = useState(false);
+
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('qa-engine'));
   const [script, setScript] = useState('');
+  // The video title/topic this QA session is for. Surfaced in the header so the user
+  // always knows which script they're reviewing. Set from generator handoff, schedule
+  // link, active draft, or session backup.
+  const [topic, setTopic] = useState('');
   const [niche, setNiche] = useState('Cybersecurity & Antivirus');
   const [aggressiveness, setAggressiveness] = useState<Aggressiveness>('brutal');
   const [running, setRunning] = useState(false);
@@ -94,20 +117,159 @@ export default function QAPage() {
   const fixedScriptRef = useRef<HTMLDivElement>(null);
   const [qaHistory, setQaHistory] = useState<QAHistoryEntry[]>(() => getQAHistory());
   const [nicheHints, setNicheHints] = useState<string[]>([]);
+  // Linked project + script (set when "Save as Project" is used, or carried from an active draft).
+  // When present, QA sessions and fixed-script revisions are persisted to the projects/scripts/qa_sessions tables.
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [scriptId, setScriptId] = useState<string | null>(null);
+  // Persisted-to-project flag so "Save as Project" toasts land once even if the user re-runs fixes.
+  const [savingProject, setSavingProject] = useState(false);
+  // Constraints inherited from the Script Generator (skip hook, skip CTA, custom
+  // exclusions). Passed to /api/qa/analyze so the reviewer doesn't penalize
+  // intentionally-omitted elements. User can view/toggle them on this page too.
+  const [constraints, setConstraints] = useState<ScriptConstraints>(EMPTY_CONSTRAINTS);
 
-  // Load prefill from Script Generator
+  // Load prefill from Script Generator. Also restore any previously-backed-up session
+  // so a refresh or HMR cycle doesn't wipe a multi-pass QA run.
+  //
+  // All restore writes use functional setters (prev => prev || backup) so that:
+  //   (a) a fresh qa_prefill set earlier in the same effect wins over a stale backup, and
+  //   (b) Fast-Refresh re-runs of this mount effect can't clobber in-memory state that
+  //       was accumulated after the original mount — the closure's initial `script`/`results`
+  //       are stale, but the functional-setter `prev` is always current.
+  // Schedule-link preload: if launched with ?scheduleItemId, pull the linked
+  // item's script (via its project) so the QA screen starts populated. Also
+  // links the active project so QA results write back to the right script
+  // version.
+  useEffect(() => {
+    if (!scheduleItemId || schedulePrefilled) return;
+    let cancelled = false;
+    (async () => {
+      const item = await fetchScheduleItem(scheduleItemId);
+      if (cancelled || !item) return;
+      setScheduleItem(item);
+      setSchedulePrefilled(true);
+      const ctx = await loadFullContextForItem(item);
+      if (cancelled) return;
+      if (ctx.niche) setNiche(curr => curr || ctx.niche);
+      if (ctx.topic) setTopic(curr => curr || ctx.topic);
+      if (ctx.script) setScript(prev => prev || ctx.script!);
+      // Carry forward the project linkage so saved QA sessions and applied
+      // fixes land on the same script row that the schedule item points to.
+      if (item.project_id) setProjectId(curr => curr || item.project_id);
+      if (item.script_id) setScriptId(curr => curr || item.script_id);
+      toast.message(`Loaded context from "${item.title || 'schedule item'}"`);
+    })();
+    return () => { cancelled = true; };
+    // `script` intentionally omitted from deps — we only peek at its initial value on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scheduleItemId, schedulePrefilled]);
+
   useEffect(() => {
     setNicheHints(getRecentNiches());
+    let hadPrefill = false;
     try {
       const prefill = localStorage.getItem('qa_prefill');
       if (prefill) {
         localStorage.removeItem('qa_prefill');
         const data = JSON.parse(prefill);
-        if (data.script) setScript(data.script);
+        if (data.script) { setScript(data.script); hadPrefill = true; }
         if (data.niche) setNiche(data.niche);
+        if (data.topic) setTopic(data.topic);
+        if (data.constraints) setConstraints({ ...EMPTY_CONSTRAINTS, ...data.constraints });
       }
     } catch {}
+    // Sending a fresh script from the generator (qa_prefill) OR arriving via a
+    // schedule-link (?scheduleItemId=…) is an explicit "new session" intent —
+    // drop the prior backup so stale results / fixedScript / project linkage
+    // don't bleed into the new context. Without this guard, clicking
+    // "Send to QA" on a schedule item restores a 24h-old unrelated session.
+    const hasScheduleLink = typeof window !== 'undefined'
+      && new URLSearchParams(window.location.search).has('scheduleItemId');
+    if (hadPrefill || hasScheduleLink) {
+      try { localStorage.removeItem('qa_session_backup'); } catch {}
+    } else {
+      try {
+        const backup = localStorage.getItem('qa_session_backup');
+        if (backup) {
+          const s = JSON.parse(backup) as {
+            script?: string;
+            niche?: string;
+            topic?: string;
+            aggressiveness?: Aggressiveness;
+            results?: QAResult[];
+            activeResult?: number;
+            fixedScript?: string;
+            passNumber?: number;
+            projectId?: string | null;
+            scriptId?: string | null;
+            constraints?: ScriptConstraints;
+            ts?: number;
+          };
+          // 24h freshness cap — beyond that, don't auto-restore (stale).
+          if (s && s.ts && Date.now() - s.ts < 24 * 60 * 60 * 1000) {
+            if (s.script) setScript(prev => prev || s.script!);
+            if (s.niche) setNiche(prev => prev || s.niche!);
+            if (s.topic) setTopic(prev => prev || s.topic!);
+            if (s.aggressiveness) setAggressiveness(prev => prev === 'brutal' ? s.aggressiveness! : prev);
+            if (s.results?.length) {
+              setResults(prev => prev.length ? prev : s.results!);
+              setActiveResult(prev => prev || (s.activeResult ?? s.results!.length - 1));
+              setPassNumber(prev => prev > 1 ? prev : (s.passNumber ?? s.results!.length + 1));
+            }
+            if (s.fixedScript) setFixedScript(prev => prev || s.fixedScript!);
+            if (s.projectId) setProjectId(prev => prev || s.projectId!);
+            if (s.scriptId) setScriptId(prev => prev || s.scriptId!);
+            // Functional setter so we don't clobber constraints the prefill
+            // block (a few lines up) just set synchronously — the `constraints`
+            // closure here is the stale initial EMPTY_CONSTRAINTS value.
+            if (s.constraints) {
+              setConstraints(prev => hasAnyConstraint(prev) ? prev : { ...EMPTY_CONSTRAINTS, ...s.constraints });
+            }
+          }
+        }
+      } catch {}
+    }
+    // If an active draft is linked to a project, inherit the project/script ids so
+    // QA runs persist to the right place.
+    try {
+      const active = getActiveDraft();
+      if (active?.projectId) setProjectId(prev => prev || active.projectId!);
+      const draftTitle = active?.title || active?.topic;
+      if (draftTitle) setTopic(prev => prev || draftTitle);
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Back up the QA session to localStorage so it survives refresh/HMR.
+  // Debounced 800ms — typing in the script textarea triggers this effect on every keystroke,
+  // and JSON.stringify(results) for a 9-pass session is ~100 KB. Without the debounce we'd
+  // burn CPU and hit the quota much faster.
+  useEffect(() => {
+    if (!script && results.length === 0 && !fixedScript) return;
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem('qa_session_backup', JSON.stringify({
+          script, niche, topic, aggressiveness,
+          results, activeResult, fixedScript, passNumber,
+          projectId, scriptId, constraints,
+          ts: Date.now(),
+        }));
+      } catch {
+        // Quota exceeded — drop older passes to make room. This is the only meaningful
+        // thing to trim; the script/fixedScript together are usually <50 KB.
+        try {
+          localStorage.setItem('qa_session_backup', JSON.stringify({
+            script, niche, topic, aggressiveness,
+            results: results.slice(-3),
+            activeResult: Math.min(activeResult, 2),
+            fixedScript, passNumber, projectId, scriptId, constraints,
+            ts: Date.now(),
+          }));
+        } catch { /* give up — in-memory state is still intact */ }
+      }
+    }, 800);
+    return () => clearTimeout(t);
+  }, [script, niche, topic, aggressiveness, results, activeResult, fixedScript, passNumber, projectId, scriptId, constraints]);
 
   function toggleFix(key: string) {
     setApprovedFixes(prev => {
@@ -170,6 +332,7 @@ export default function QAPage() {
             ...(currentResult.strengths?.length ? [`\nStrengths to Preserve: ${currentResult.strengths.join(', ')}`] : []),
           ].filter(Boolean).join('\n'),
           approvedFixes: fixes,
+          constraints: hasAnyConstraint(constraints) ? constraints : undefined,
         }),
       });
 
@@ -188,12 +351,131 @@ export default function QAPage() {
         fixedScriptRef.current?.scrollTo({ top: fixedScriptRef.current.scrollHeight });
       }
 
-      toast.success('Fixed script generated!');
+      // Persist the improved script so it survives navigation:
+      //   1. Active draft gets `fixedScript` + `script` updated to the new version
+      //      (Generator's resume reads `draft.script`, so future navigation prefills the fixed text).
+      //   2. If linked to a project, POST a new version to /api/projects/:id/scripts.
+      try {
+        const active = getActiveDraft();
+        const draftTitle = active?.title || niche || 'QA-improved script';
+        const draft = saveDraft({
+          id: active?.id,
+          title: draftTitle,
+          niche,
+          step: 'qa',
+          topic: active?.topic,
+          modelId,
+          script: full,
+          fixedScript: full,
+          qaScore: currentResult.overall_score,
+          qaVerdict: currentResult.verdict,
+          projectId: projectId || active?.projectId,
+        });
+        // If we had an untracked projectId previously, carry it forward
+        if (!projectId && draft.projectId) setProjectId(draft.projectId);
+      } catch {}
+
+      if (projectId) {
+        // Fire-and-forget version bump — keepalive so it survives a subsequent
+        // handoff-navigation that would otherwise abort the fetch.
+        fetch(`/api/projects/${projectId}/scripts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: full, modelId }),
+          keepalive: true,
+        })
+          .then(r => r.ok ? r.json() : null)
+          .then(data => { if (data?.script?.id) setScriptId(data.script.id); })
+          .catch(() => { /* best-effort */ });
+      }
+
+      toast.success('Fixed script generated and saved to your draft!');
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Failed to apply fixes');
     } finally {
       setApplyingFixes(false);
     }
+  }
+
+  // Save the current (best) script as a new project and link it.
+  // Called from the Next-Steps CTA bar so users don't have to scroll to the Apply Fixes tab.
+  async function saveAsProjectQuick(title?: string): Promise<string | null> {
+    const contentToSave = fixedScript || script;
+    if (!contentToSave.trim()) { toast.error('Nothing to save yet'); return null; }
+    const resolvedTitle = (title || niche || 'Untitled video').trim();
+    setSavingProject(true);
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: resolvedTitle,
+          niche: niche || 'General',
+          topic: resolvedTitle,
+          script: contentToSave,
+          modelId,
+        }),
+      });
+      if (!res.ok) throw new Error('Save failed');
+      const data = await res.json();
+      const id = data.project?.id || data.id;
+      if (id) {
+        setProjectId(id);
+        // Write the linkage back to the active draft.
+        try {
+          const active = getActiveDraft();
+          saveDraft({
+            id: active?.id,
+            title: resolvedTitle,
+            niche: niche || '',
+            step: 'qa',
+            topic: active?.topic,
+            modelId,
+            script: contentToSave,
+            fixedScript: fixedScript || undefined,
+            projectId: id,
+            qaScore: currentResult?.overall_score,
+            qaVerdict: currentResult?.verdict,
+          });
+        } catch {}
+        toast.success('Saved to project — QA history is now tied to it');
+        return id;
+      }
+      return null;
+    } catch {
+      toast.error('Failed to save project');
+      return null;
+    } finally {
+      setSavingProject(false);
+    }
+  }
+
+  // Update the active draft's script field with the "best" script we have,
+  // then navigate to the given route. Used by all CTA handoffs so the destination
+  // page resumes with the improved script — not the pre-QA version.
+  function handoffWithBestScript(path: string, prefillKey?: string, prefillValue?: unknown) {
+    const best = fixedScript || script;
+    if (!best.trim()) { toast.error('No script to carry forward yet'); return; }
+    try {
+      const active = getActiveDraft();
+      saveDraft({
+        id: active?.id,
+        title: active?.title || niche || 'QA-improved script',
+        niche,
+        step: 'qa',
+        topic: active?.topic,
+        modelId,
+        script: best,
+        fixedScript: fixedScript || undefined,
+        projectId: projectId || active?.projectId,
+        qaScore: currentResult?.overall_score,
+        qaVerdict: currentResult?.verdict,
+      });
+    } catch {}
+    if (prefillKey) {
+      try { localStorage.setItem(prefillKey, JSON.stringify(prefillValue)); } catch {}
+    }
+    window.location.href = path;
   }
 
   async function runQA() {
@@ -232,6 +514,9 @@ export default function QAPage() {
           aggressiveness,
           passNumber,
           previousFeedback,
+          projectId: projectId || undefined,
+          scriptId: scriptId || undefined,
+          constraints: hasAnyConstraint(constraints) ? constraints : undefined,
         }),
       });
 
@@ -245,7 +530,11 @@ export default function QAPage() {
       setResults(newResults);
       setActiveResult(newResults.length - 1);
       setPassNumber(p => p + 1);
-      // Save to QA history
+      // Save to QA history — includes the full script + the full results array up to
+      // this pass so clicking a history entry can fully rehydrate the session
+      // (Next-Steps CTA, score rings, tabs, EL buttons all reappear).
+      // Entries written before this field existed will only have scriptPreview and
+      // restore via a metadata-only fallback with an informational toast.
       saveQAEntry({
         niche,
         aggressiveness,
@@ -254,6 +543,8 @@ export default function QAPage() {
         overallScore: data.result.overall_score,
         verdict: data.result.verdict || '',
         passCount: newResults.length,
+        script,
+        results: newResults,
       });
       setQaHistory(getQAHistory());
       // Auto-save draft
@@ -262,6 +553,23 @@ export default function QAPage() {
         saveDraft({ ...activeDraft, step: 'qa', qaScore: data.result.overall_score, qaVerdict: data.result.verdict });
       }
       toast.success(`QA Pass ${passNumber} complete! Score: ${data.result.overall_score}/100`);
+
+      // Write back to the linked schedule item so the card surfaces the latest
+      // QA score + verdict. QA is advisory so no status auto-advance.
+      if (scheduleItemId) {
+        writeBackToSchedule(scheduleItemId, {}, {
+          customFieldsMerge: {
+            latest_qa: {
+              score: data.result.overall_score,
+              verdict: data.result.verdict,
+              pass_count: newResults.length,
+              ran_at: new Date().toISOString(),
+              model_id: modelId,
+              aggressiveness,
+            },
+          },
+        });
+      }
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'QA analysis failed');
     } finally {
@@ -278,10 +586,36 @@ export default function QAPage() {
     setActiveTab('scores');
   }
 
+  /** Wipe the entire QA page back to a blank slate — script, results, fixed
+   * script, approved fixes, project/script linkage, and the localStorage
+   * backup. Niche/aggressiveness/model stay because those are usually the
+   * user's preferences, not session state. */
+  function startNewSession() {
+    const hasWork = script.trim().length > 0 || results.length > 0 || fixedScript.length > 0;
+    if (hasWork && typeof window !== 'undefined' &&
+        !confirm('Start a new QA session? The current script and all pass results will be cleared from this page. (Past runs remain in QA History below.)')) {
+      return;
+    }
+    setScript('');
+    setTopic('');
+    setResults([]);
+    setPassNumber(1);
+    setActiveResult(0);
+    setApprovedFixes(new Set());
+    setFixedScript('');
+    setActiveTab('scores');
+    setProjectId(null);
+    setScriptId(null);
+    setConstraints(EMPTY_CONSTRAINTS);
+    try { localStorage.removeItem('qa_session_backup'); } catch {}
+    toast.success('New QA session — paste a script to get started.');
+  }
+
   const currentResult = results[activeResult];
 
   return (
     <div className="p-8 max-w-7xl mx-auto">
+      {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="QA Engine" />}
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">
@@ -293,10 +627,35 @@ export default function QAPage() {
           </div>
           <span className="badge badge-pink">Multi-Pass QA Engine</span>
         </div>
-        <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>Script QA Engine</h1>
-        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
-          Brutally critique your script — as many passes as needed
-        </p>
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="min-w-0 flex-1">
+            <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>Script QA Engine</h1>
+            <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
+              Brutally critique your script — as many passes as needed
+            </p>
+            {topic && (
+              <div
+                className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg max-w-full"
+                style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+                title={topic}
+              >
+                <span className="text-[10px] uppercase tracking-wider font-semibold shrink-0" style={{ color: 'var(--text-muted)' }}>
+                  Reviewing
+                </span>
+                <span className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+                  {topic}
+                </span>
+              </div>
+            )}
+          </div>
+          <button
+            onClick={startNewSession}
+            className="btn-secondary text-sm shrink-0"
+            title="Clear the current script and all passes — keep niche/aggressiveness/model. Past runs stay in QA History."
+          >
+            ✨ New QA Session
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-6">
@@ -315,6 +674,48 @@ export default function QAPage() {
                 suggestions={nicheHints}
                 placeholder="e.g. Cybersecurity & Antivirus"
               />
+            </div>
+
+            {/* QA Review Exclusions — the reviewer won't flag anything on this
+                list as an issue, and won't suggest adding anything on it. Works
+                for scripts sent from the Generator (constraints inherited via
+                qa_prefill) AND for standalone manual QA runs on a pasted script. */}
+            <div>
+              <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
+                QA Review Exclusions
+                {hasAnyConstraint(constraints) && (
+                  <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(124,58,237,0.2)', color: 'var(--accent-purple-bright)' }}>active</span>
+                )}
+              </label>
+              <div className="p-3 rounded-lg space-y-2" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  Tell the reviewer what NOT to check. Absent items on this list won&apos;t be flagged as issues and won&apos;t appear in rewrite suggestions.
+                </p>
+                <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                  <input type="checkbox" checked={!!constraints.skipHook} onChange={e => setConstraints(c => ({ ...c, skipHook: e.target.checked }))} />
+                  Don&apos;t judge the hook / opening grab
+                </label>
+                <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                  <input type="checkbox" checked={!!constraints.skipSubscribeCTA} onChange={e => setConstraints(c => ({ ...c, skipSubscribeCTA: e.target.checked }))} />
+                  Don&apos;t expect subscribe / like / bell CTAs
+                </label>
+                <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                  <input type="checkbox" checked={!!constraints.skipClickableLinks} onChange={e => setConstraints(c => ({ ...c, skipClickableLinks: e.target.checked }))} />
+                  Don&apos;t expect &quot;link in description&quot; / promo links
+                </label>
+                <div className="pt-1">
+                  <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>
+                    Custom exclusions (one per line — e.g. &quot;don&apos;t flag casual profanity&quot;, &quot;don&apos;t suggest adding humor&quot;)
+                  </label>
+                  <textarea
+                    value={(constraints.custom || []).join('\n')}
+                    onChange={e => setConstraints(c => ({ ...c, custom: e.target.value.split('\n').map(s => s.trim()).filter(Boolean) }))}
+                    placeholder="One rule per line…"
+                    className="input-field w-full"
+                    style={{ fontSize: 12, minHeight: 60 }}
+                  />
+                </div>
+              </div>
             </div>
 
             {/* Aggressiveness selector */}
@@ -436,7 +837,87 @@ export default function QAPage() {
 
         {/* RIGHT PANEL - Results */}
         <div>
-          {!currentResult && !running && (
+          {/* Smart empty state: if no QA has been run but there is a script in the textarea
+              (either typed by the user or restored from a metadata-only history entry),
+              surface the same handoff + EL-format affordances so the script is still useful
+              — you can ship it to Voiceover / Production Doc / Script Generator, or format
+              it for ElevenLabs, without being forced to run a QA pass first. */}
+          {!currentResult && !running && script.trim().length >= 50 && (
+            <div className="glass rounded-xl p-6 space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  📋 Script loaded — {script.trim().split(/\s+/).length} words
+                </h3>
+                <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                  Run QA for detailed critique, or use this script directly in the rest of the workflow.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                <button
+                  onClick={() => handoffWithBestScript('/voiceover?from=qa', 'voiceover_prefill', { script, niche })}
+                  className="btn-primary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                >
+                  🎙️ Voiceover
+                </button>
+                <button
+                  onClick={() => {
+                    const topicLine = script.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
+                    handoffWithBestScript('/production-doc?from=qa', 'prodoc_prefill', { script, niche, topic: topicLine });
+                  }}
+                  className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                >
+                  🎬 Production Doc
+                </button>
+                <button
+                  onClick={() => {
+                    const titleLine = script.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
+                    handoffWithBestScript('/thumbnails?from=qa', 'thumbnails_prefill', { title: titleLine, niche, description: script.slice(0, 500) });
+                  }}
+                  className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                >
+                  🎨 Thumbnails
+                </button>
+                <button
+                  onClick={() => {
+                    const topicLine = script.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
+                    handoffWithBestScript('/seo?from=qa', 'seo_prefill', { topic: topicLine, niche, script });
+                  }}
+                  className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                >
+                  🔍 SEO
+                </button>
+                <button
+                  onClick={() => handoffWithBestScript('/generator?from=qa')}
+                  className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                  title="Saves this script to your active draft and opens Script Generator resumed on it."
+                >
+                  📝 Script Generator
+                </button>
+                <button
+                  onClick={() => saveAsProjectQuick()}
+                  disabled={savingProject}
+                  className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                >
+                  {savingProject ? '💾 Saving…' : '💾 Save as Project'}
+                </button>
+              </div>
+
+              <div className="pt-3 flex items-center gap-2 flex-wrap" style={{ borderTop: '1px solid var(--border)' }}>
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Export for TTS:</span>
+                <CopyForElevenLabs script={script} version="v2" />
+                <CopyForElevenLabs script={script} version="v3" voiceContext={niche} />
+                <button
+                  onClick={() => { navigator.clipboard.writeText(script); toast.success('Script copied!'); }}
+                  className="btn-secondary text-xs px-3 py-1.5 ml-auto"
+                >
+                  Copy script
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!currentResult && !running && script.trim().length < 50 && (
             <div className="glass rounded-xl h-full min-h-96 flex items-center justify-center" style={{ color: 'var(--text-muted)' }}>
               <div className="text-center">
                 <div className="text-5xl mb-4">🔬</div>
@@ -480,9 +961,11 @@ export default function QAPage() {
                     <p className="text-lg font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
                       {currentResult.verdict}
                     </p>
-                    <p className="text-sm" style={{ color: currentResult.will_it_perform.toLowerCase().startsWith('yes') ? '#10b981' : currentResult.will_it_perform.toLowerCase().startsWith('maybe') ? '#f59e0b' : '#ef4444' }}>
-                      Performance Outlook: {currentResult.will_it_perform}
-                    </p>
+                    {currentResult.will_it_perform && (
+                      <p className="text-sm" style={{ color: currentResult.will_it_perform.toLowerCase().startsWith('yes') ? '#10b981' : currentResult.will_it_perform.toLowerCase().startsWith('maybe') ? '#f59e0b' : '#ef4444' }}>
+                        Performance Outlook: {currentResult.will_it_perform}
+                      </p>
+                    )}
                   </div>
                 </div>
 
@@ -495,6 +978,111 @@ export default function QAPage() {
                     <span className="text-xs ml-2" style={{ color: 'var(--text-secondary)' }}>{currentResult.next_pass_focus}</span>
                   </div>
                 )}
+              </div>
+
+              {/* Persistent Next-Steps CTA — visible from every tab so the "what now?" is always answered.
+                  Uses the fixed script if one has been generated, otherwise the original (for high-scoring scripts
+                  that don't need Apply Fixes). */}
+              <div className="glass rounded-xl p-5" style={{
+                background: currentResult.overall_score >= 85
+                  ? 'linear-gradient(135deg, rgba(16,185,129,0.08), rgba(124,58,237,0.08))'
+                  : undefined,
+                border: currentResult.overall_score >= 85 ? '1px solid rgba(16,185,129,0.3)' : undefined,
+              }}>
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                      {fixedScript ? '✨ Continue with your QA-improved script' : currentResult.overall_score >= 85 ? '✅ Your script is ready — what\'s next?' : '🚀 Next Steps'}
+                    </h3>
+                    <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                      {fixedScript
+                        ? 'The fixed script is auto-saved to your draft. Pick where to go next:'
+                        : currentResult.overall_score >= 85
+                          ? 'Use the current script as-is, or refine further via Apply Fixes.'
+                          : 'Apply fixes first, or continue with the current script if you\'re happy with it.'}
+                    </p>
+                  </div>
+                  {projectId && (
+                    <span className="text-xs px-2 py-1 rounded-full shrink-0" style={{ background: 'rgba(16,185,129,0.15)', color: '#10b981' }}>
+                      🔗 Linked to project
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                  <button
+                    onClick={() => handoffWithBestScript('/voiceover?from=qa', 'voiceover_prefill', { script: fixedScript || script, niche })}
+                    className="btn-primary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                  >
+                    🎙️ Voiceover
+                  </button>
+                  <button
+                    onClick={() => {
+                      const best = fixedScript || script;
+                      const topicLine = best.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
+                      handoffWithBestScript('/production-doc?from=qa', 'prodoc_prefill', { script: best, niche, topic: topicLine });
+                    }}
+                    className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                  >
+                    🎬 Production Doc
+                  </button>
+                  <button
+                    onClick={() => {
+                      const best = fixedScript || script;
+                      const titleLine = best.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
+                      handoffWithBestScript('/thumbnails?from=qa', 'thumbnails_prefill', { title: titleLine, niche, description: best.slice(0, 500) });
+                    }}
+                    className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                  >
+                    🎨 Thumbnails
+                  </button>
+                  <button
+                    onClick={() => {
+                      const best = fixedScript || script;
+                      const topicLine = best.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
+                      handoffWithBestScript('/seo?from=qa', 'seo_prefill', { topic: topicLine, niche, script: best });
+                    }}
+                    className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                  >
+                    🔍 SEO
+                  </button>
+                  <button
+                    onClick={() => handoffWithBestScript('/generator?from=qa')}
+                    className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                    title="Updates your active draft with the QA-improved script, then opens Script Generator so you can resume there."
+                  >
+                    📝 Script Generator
+                  </button>
+                  {!projectId ? (
+                    <button
+                      onClick={() => saveAsProjectQuick()}
+                      disabled={savingProject}
+                      className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center' }}
+                    >
+                      {savingProject ? '💾 Saving…' : '💾 Save as Project'}
+                    </button>
+                  ) : (
+                    <a
+                      href={`/projects/${projectId}`}
+                      className="btn-secondary text-xs px-3 py-2 justify-center" style={{ justifyContent: 'center', textDecoration: 'none' }}
+                    >
+                      📁 Open Project
+                    </a>
+                  )}
+                </div>
+
+                {/* ElevenLabs formats — the user wants these wherever the new script is surfaced. */}
+                <div className="mt-3 pt-3 flex items-center gap-2 flex-wrap" style={{ borderTop: '1px solid var(--border)' }}>
+                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Export for TTS:</span>
+                  <CopyForElevenLabs script={fixedScript || script} version="v2" />
+                  <CopyForElevenLabs script={fixedScript || script} version="v3" voiceContext={niche} />
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(fixedScript || script); toast.success('Script copied!'); }}
+                    className="btn-secondary text-xs px-3 py-1.5 ml-auto"
+                  >
+                    Copy script
+                  </button>
+                </div>
               </div>
 
               {/* Tabs */}
@@ -743,9 +1331,11 @@ export default function QAPage() {
                     )}
                     {fixedScript && !applyingFixes && (
                       <div className="glass rounded-xl overflow-hidden">
-                        <div className="flex items-center justify-between px-5 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
+                        <div className="flex items-center justify-between px-5 py-3 flex-wrap gap-2" style={{ borderBottom: '1px solid var(--border)' }}>
                           <span className="text-sm font-semibold" style={{ color: 'var(--accent-green)' }}>✅ Fixed Script</span>
-                          <div className="flex gap-2">
+                          <div className="flex gap-2 items-center flex-wrap">
+                            <CopyForElevenLabs script={fixedScript} version="v2" />
+                            <CopyForElevenLabs script={fixedScript} version="v3" voiceContext={niche} />
                             <button onClick={() => { navigator.clipboard.writeText(fixedScript); toast.success('Copied!'); }}
                               className="btn-secondary text-xs px-3 py-1.5">Copy</button>
                             <button onClick={() => {
@@ -764,20 +1354,15 @@ export default function QAPage() {
                           </pre>
                         </div>
                         <div className="px-5 py-3 flex gap-2" style={{ borderTop: '1px solid var(--border)' }}>
-                          <button onClick={() => {
-                            localStorage.setItem('voiceover_prefill', JSON.stringify({ script: fixedScript, niche }));
-                            window.location.href = '/voiceover?from=qa';
-                          }} className="btn-primary text-sm flex-1 justify-center" style={{ justifyContent: 'center' }}>
+                          <button
+                            onClick={() => handoffWithBestScript('/voiceover?from=qa', 'voiceover_prefill', { script: fixedScript, niche })}
+                            className="btn-primary text-sm flex-1 justify-center" style={{ justifyContent: 'center' }}>
                             🎙️ Generate Voiceover
                           </button>
-                          <button onClick={() => {
-                            localStorage.setItem('generator_prefill', JSON.stringify({
-                              topic: niche,
-                              niche,
-                              context: `Post-QA fixed script (score: ${currentResult?.overall_score}/100):\n${fixedScript.slice(0, 3000)}`,
-                            }));
-                            window.location.href = '/generator?from=qa';
-                          }} className="btn-secondary text-sm flex-1 justify-center" style={{ justifyContent: 'center' }}>
+                          <button
+                            onClick={() => handoffWithBestScript('/generator?from=qa')}
+                            className="btn-secondary text-sm flex-1 justify-center" style={{ justifyContent: 'center' }}
+                            title="Updates your active draft with this fixed script and opens the Script Generator resumed on it.">
                             📝 Back to Script Generator
                           </button>
                         </div>
@@ -786,8 +1371,7 @@ export default function QAPage() {
                             onClick={() => {
                               const s = fixedScript || script;
                               const topicLine = s.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
-                              localStorage.setItem('seo_prefill', JSON.stringify({ topic: topicLine, niche, script: s }));
-                              window.location.href = '/seo?from=qa';
+                              handoffWithBestScript('/seo?from=qa', 'seo_prefill', { topic: topicLine, niche, script: s });
                             }}
                             className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
                           >
@@ -797,8 +1381,7 @@ export default function QAPage() {
                             onClick={() => {
                               const s2 = fixedScript || script;
                               const titleLine = s2.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
-                              localStorage.setItem('thumbnails_prefill', JSON.stringify({ title: titleLine, niche, description: s2.slice(0, 500) }));
-                              window.location.href = '/thumbnails?from=qa';
+                              handoffWithBestScript('/thumbnails?from=qa', 'thumbnails_prefill', { title: titleLine, niche, description: s2.slice(0, 500) });
                             }}
                             className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
                           >
@@ -808,8 +1391,7 @@ export default function QAPage() {
                             onClick={() => {
                               const s3 = fixedScript || script;
                               const topicLine3 = s3.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim().slice(0, 100) || niche;
-                              localStorage.setItem('prodoc_prefill', JSON.stringify({ script: s3, niche, topic: topicLine3 }));
-                              window.location.href = '/production-doc?from=qa';
+                              handoffWithBestScript('/production-doc?from=qa', 'prodoc_prefill', { script: s3, niche, topic: topicLine3 });
                             }}
                             className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
                           >
@@ -817,7 +1399,30 @@ export default function QAPage() {
                           </button>
                         </div>
                         <div className="flex gap-2">
-                          <SaveAsProject script={fixedScript} niche={niche} topic="" variant="secondary" className="flex-1" />
+                          <SaveAsProject
+                            script={fixedScript}
+                            niche={niche}
+                            topic=""
+                            variant="secondary"
+                            className="flex-1"
+                            onSaved={id => {
+                              setProjectId(id);
+                              // Also persist the linkage onto the active draft so that
+                              // closing the tab here (without hitting another handoff) doesn't leave
+                              // the draft row unlinked locally.
+                              try {
+                                const active = getActiveDraft();
+                                if (active) {
+                                  saveDraft({
+                                    ...active,
+                                    projectId: id,
+                                    fixedScript,
+                                    script: fixedScript || active.script,
+                                  });
+                                }
+                              } catch {}
+                            }}
+                          />
                           <ExportScript title={niche} script={fixedScript} niche={niche} />
                         </div>
                       </div>
@@ -844,12 +1449,69 @@ export default function QAPage() {
         }))}
         onRestore={id => {
           const entry = qaHistory.find(e => e.id === id);
-          if (entry) {
-            setNiche(entry.niche);
-            const validAgg: Aggressiveness[] = ['standard', 'brutal', 'nuclear'];
-            if (validAgg.includes(entry.aggressiveness as Aggressiveness)) {
-              setAggressiveness(entry.aggressiveness as Aggressiveness);
-            }
+          if (!entry) return;
+
+          // Protect in-progress work: if the user has unsaved results in memory,
+          // confirm before replacing. Backup is still in localStorage either way,
+          // but this avoids silent surprise.
+          if (results.length > 0 && typeof window !== 'undefined' &&
+              !confirm(`Replace your current ${results.length}-pass session with "${entry.niche}" (${entry.passCount} pass${entry.passCount === 1 ? '' : 'es'}, score ${entry.overallScore}/100)?`)) {
+            return;
+          }
+
+          // Basic config.
+          setNiche(entry.niche);
+          const validAgg: Aggressiveness[] = ['standard', 'brutal', 'nuclear'];
+          if (validAgg.includes(entry.aggressiveness as Aggressiveness)) {
+            setAggressiveness(entry.aggressiveness as Aggressiveness);
+          }
+          if (entry.modelId) setModelId(entry.modelId);
+
+          // Script: newer entries carry the full text; older entries only have
+          // the 300-char preview — still useful as a starting point for EL
+          // formatting or a voiceover handoff, but flag it clearly.
+          const hasFullScript = Boolean(entry.script);
+          if (entry.script) {
+            setScript(entry.script);
+          } else if (entry.scriptPreview) {
+            setScript(entry.scriptPreview);
+          }
+
+          // Results can be stored in two shapes:
+          //   - `results: QAResult[]`  — full multi-pass history (current format).
+          //   - `result: QAResult`     — single latest pass (earlier format, fc6762a).
+          // Normalize both to an array so restore works either way.
+          const resultsArr: QAResult[] | null =
+            Array.isArray(entry.results) && entry.results.length > 0
+              ? (entry.results as QAResult[])
+              : entry.result
+                ? [entry.result as QAResult]
+                : null;
+
+          if (resultsArr && resultsArr.length > 0) {
+            setResults(resultsArr);
+            setActiveResult(resultsArr.length - 1);
+            setPassNumber(resultsArr.length + 1);
+          } else {
+            // Legacy metadata-only entry — clear any stale results view. The
+            // smart empty-state (below) will let the user still format/copy/
+            // hand off whatever script text we did recover.
+            setResults([]);
+            setActiveResult(0);
+            setPassNumber(Math.max(entry.passCount + 1, 1));
+          }
+          const hasFullResults = Boolean(resultsArr && resultsArr.length > 0);
+          setApprovedFixes(new Set());
+          setFixedScript('');
+          setActiveTab('scores');
+
+          if (hasFullResults && resultsArr) {
+            const n = resultsArr.length;
+            toast.success(`Session restored — ${n} pass${n === 1 ? '' : 'es'}, score ${entry.overallScore}/100`);
+          } else if (hasFullScript) {
+            toast.info('Script restored — QA details were not saved on this entry. Re-run QA to regenerate them.');
+          } else {
+            toast.info('Older entry — only a 300-char preview was saved. Use it as a starting point, or paste the full script to re-run QA.');
           }
         }}
         onDelete={id => {

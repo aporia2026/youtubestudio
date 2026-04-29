@@ -42,17 +42,20 @@ export async function POST(req: NextRequest) {
     const project = projResult.rows[0];
 
     // If a script is provided, save it
+    let savedScript: { id: string; version: number } | null = null;
     if (script) {
       const words = countWords(script);
       const duration = estimateDuration(words);
-      await sql`
+      const scriptResult = await sql`
         INSERT INTO scripts (project_id, version, content, word_count, estimated_duration_seconds, ai_model, is_active)
         VALUES (${project.id}, 1, ${script}, ${words}, ${duration}, ${modelId || null}, true)
+        RETURNING id, version
       `;
+      savedScript = scriptResult.rows[0] as { id: string; version: number };
       await sql`UPDATE projects SET status = 'in_progress', updated_at = NOW() WHERE id = ${project.id}`;
     }
 
-    return NextResponse.json({ project });
+    return NextResponse.json({ project, script: savedScript });
   } catch (err: unknown) {
     console.error(err);
     return NextResponse.json({ error: 'Failed to create project' }, { status: 500 });

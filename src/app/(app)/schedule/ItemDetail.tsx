@@ -1,22 +1,31 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
-import type { ScheduleItem, ScheduleStatus, RecurrenceRule } from '@/lib/schedule';
+import type { ScheduleItem, ScheduleStatus, RecurrenceRule, ChecklistItem } from '@/lib/schedule';
 import { statusColor } from '@/lib/schedule';
+import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import type { Channel } from './types';
 import { RecurrenceEditor } from './RecurrenceEditor';
+import { ChecklistSection } from './ChecklistSection';
+import { ThumbnailSlots } from './ThumbnailSlots';
+import { DependenciesSection } from './DependenciesSection';
+import { SeriesPicker } from '@/components/ui/SeriesPicker';
+import { EditorPicker } from './EditorPicker';
+import { SCHEDULE_LINK_PARAM } from '@/lib/schedule-link';
 
 type Props = {
   item: ScheduleItem;
   channels: Channel[];
   statuses: ScheduleStatus[];
+  allItems: ScheduleItem[];
   onClose: () => void;
   onPatch: (id: string, patch: Partial<ScheduleItem> & { channel_ids?: string[] }) => void;
   onDelete: (id: string, alsoChildren?: boolean) => void;
   onRefresh: () => void;
+  onSelectItem: (id: string) => void;
 };
 
 type ScriptRow = {
@@ -36,7 +45,7 @@ function dtLocal(iso: string | null): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-export function ItemDetail({ item, channels, statuses, onClose, onPatch, onDelete, onRefresh }: Props) {
+export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatch, onDelete, onRefresh, onSelectItem }: Props) {
   const [tab, setTab] = useState<'details' | 'script' | 'recurrence'>('details');
   const [scripts, setScripts] = useState<ScriptRow[]>([]);
   const [scriptDraft, setScriptDraft] = useState('');
@@ -111,6 +120,61 @@ export function ItemDetail({ item, channels, statuses, onClose, onPatch, onDelet
   }
 
   const channelIds = new Set((item.channels ?? []).map(c => c.id));
+  // Memoise the linked-channels array by stable identity so EditorPicker's
+  // effect doesn't refetch the roster on every parent rerender (keystrokes
+  // in the title input triggered N /api/channels/{id}/editors fetches).
+  const linkedChannels = useMemo(
+    () => (item.channels ?? []).map(c => ({ id: c.id, name: c.name, account_color: c.account_color })),
+    // Item identity from the server is stable per render; channel set only
+    // changes when channel_ids is patched, in which case we do want to refetch.
+    [item.channels?.map(c => c.id).join(',')],
+  );
+  const [titleSuggestions, setTitleSuggestions] = useState<Array<{ title: string; angle: string; ctr_hint: string }> | null>(null);
+  const [suggestingTitles, setSuggestingTitles] = useState(false);
+
+  async function suggestTitles() {
+    setSuggestingTitles(true);
+    try {
+      const res = await fetch('/api/schedule/ai/title-from-script', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          item_id: item.id,
+          modelId: getFeatureDefaultModelId('schedule-title'),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed');
+      setTitleSuggestions(data.titles || []);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'AI failed');
+    } finally {
+      setSuggestingTitles(false);
+    }
+  }
+
+  async function prepareForYouTube() {
+    const lines = [
+      `Title: ${item.title || 'Untitled'}`,
+      '',
+      'Description:',
+      item.yt_description || item.notes || '',
+      '',
+      `Tags: ${(item.yt_tags ?? item.tags ?? []).join(', ')}`,
+      '',
+      item.scheduled_for ? `Scheduled publish: ${new Date(item.scheduled_for).toLocaleString()}` : 'No scheduled date',
+    ];
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      // Single open — the action button on the toast used to double-open a
+      // tab because the line below it also eagerly called window.open.
+      toast.success('Copied to clipboard', {
+        action: { label: 'Open YouTube Studio', onClick: () => window.open('https://studio.youtube.com/channel/UC/videos/upload', '_blank') },
+      });
+    } catch {
+      toast.error('Could not copy to clipboard');
+    }
+  }
 
   return (
     <AnimatePresence>
@@ -152,7 +216,16 @@ export function ItemDetail({ item, channels, statuses, onClose, onPatch, onDelet
             className="flex-1 bg-transparent text-lg font-semibold outline-none"
             style={{ color: 'var(--text-primary)' }}
           />
-          <button onClick={() => { onDelete(item.id, !!item.recurrence); }} title="Delete"
+          <button
+            onClick={() => {
+              // Recurrence parents cascade their children; warn about that in the prompt
+              // so a one-click tap doesn't silently nuke the whole series.
+              const msg = item.recurrence
+                ? `Delete "${item.title || 'Untitled'}" and every recurrence child? This cannot be undone.`
+                : `Delete "${item.title || 'Untitled'}"? This cannot be undone.`;
+              if (window.confirm(msg)) onDelete(item.id, !!item.recurrence);
+            }}
+            title="Delete"
             className="p-1.5 rounded"
             style={{ color: 'var(--text-muted)' }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -165,6 +238,64 @@ export function ItemDetail({ item, channels, statuses, onClose, onPatch, onDelet
             </svg>
           </button>
         </div>
+
+        {/* Quick actions row */}
+        <div className="flex items-center gap-2 px-4 pt-2 pb-1 text-xs">
+          <button onClick={suggestTitles} disabled={suggestingTitles || !item.project_id}
+            title={item.project_id ? 'AI title candidates from the linked script' : 'Add a script first'}
+            className="flex items-center gap-1 px-2 py-1 rounded"
+            style={{
+              background: 'rgba(124,58,237,0.1)',
+              color: item.project_id ? '#7c3aed' : 'var(--text-muted)',
+              opacity: item.project_id ? 1 : 0.5,
+              border: '1px solid rgba(124,58,237,0.3)',
+            }}>
+            ✨ {suggestingTitles ? 'Thinking…' : 'AI titles'}
+          </button>
+          <button onClick={prepareForYouTube}
+            className="flex items-center gap-1 px-2 py-1 rounded"
+            style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}>
+            📺 Prepare for YouTube
+          </button>
+        </div>
+
+        {/* Send to another feature — propagates the scheduleItemId so the
+            target page can preload context and write back on completion. */}
+        <div className="flex items-center gap-1 px-4 pt-2 pb-1 text-xs overflow-x-auto"
+          style={{ borderBottom: '1px solid var(--border)' }}>
+          <span className="text-[10px] uppercase tracking-wider font-semibold shrink-0 mr-1" style={{ color: 'var(--text-muted)' }}>
+            Send to
+          </span>
+          <SendToButton label="💡 Ideas" href={`/ideas?${SCHEDULE_LINK_PARAM}=${item.id}`}
+            title={item.series_id ? 'Generate next ideas in this series' : 'Open Idea Generator seeded with this niche'} />
+          <SendToButton label="🧠 Script" href={`/generator?${SCHEDULE_LINK_PARAM}=${item.id}`} />
+          <SendToButton label="🔬 QA"     href={`/qa?${SCHEDULE_LINK_PARAM}=${item.id}`} disabled={!item.project_id}
+            title={item.project_id ? 'Open QA Engine with this item linked' : 'Generate or paste a script first'} />
+          <SendToButton label="🎬 Production Doc" href={`/production-doc?${SCHEDULE_LINK_PARAM}=${item.id}`} />
+          <SendToButton label="🔍 SEO" href={`/seo?${SCHEDULE_LINK_PARAM}=${item.id}`} />
+          <SendToButton label="🎙️ Voiceover" href={`/voiceover?${SCHEDULE_LINK_PARAM}=${item.id}`} disabled={!item.project_id}
+            title={item.project_id ? 'Open Voiceover with this item linked' : 'Link a script first'} />
+          <SendToButton label="🎨 Thumbnail" href={`/thumbnails?${SCHEDULE_LINK_PARAM}=${item.id}`} />
+        </div>
+
+        {titleSuggestions && (
+          <div className="px-4 pt-2 pb-2 space-y-1" style={{ borderBottom: '1px solid var(--border)' }}>
+            <div className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: 'var(--text-muted)' }}>
+              AI title candidates
+            </div>
+            {titleSuggestions.map((t, i) => (
+              <button key={i} onClick={() => { onPatch(item.id, { title: t.title }); toast.success('Title updated'); setTitleSuggestions(null); }}
+                className="w-full text-left px-2 py-1.5 rounded text-xs"
+                style={{ background: 'var(--bg-tertiary)' }}>
+                <div className="font-medium" style={{ color: 'var(--text-primary)' }}>{t.title}</div>
+                <div style={{ color: 'var(--text-muted)' }}>{t.angle} · {t.ctr_hint}</div>
+              </button>
+            ))}
+            <button onClick={() => setTitleSuggestions(null)} className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              Dismiss
+            </button>
+          </div>
+        )}
 
         {/* Tabs */}
         <div className="flex gap-1 px-4 pt-3" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -227,18 +358,78 @@ export function ItemDetail({ item, channels, statuses, onClose, onPatch, onDelet
                 </div>
               </Field>
 
-              <Field label="Tags">
-                <input
-                  defaultValue={(item.tags ?? []).join(', ')}
-                  placeholder="tag, tag, tag"
-                  onBlur={e => {
-                    const tags = e.currentTarget.value.split(',').map(t => t.trim()).filter(Boolean);
-                    onPatch(item.id, { tags });
-                  }}
-                  className="w-full px-3 py-2 rounded-md text-sm"
-                  style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+              <Field label="Editor">
+                <EditorPicker
+                  linkedChannels={linkedChannels}
+                  selectedEditorId={item.editor_id ?? null}
+                  onChange={editorId => onPatch(item.id, { editor_id: editorId })}
+                  // Bubble a refresh to the parent so deleting an editor from
+                  // the roster flushes denormalised editor_name off every
+                  // card (FK cascades server-side, but items state is stale).
+                  onRosterChanged={onRefresh}
                 />
               </Field>
+
+              <Field label="Series">
+                <SeriesPicker
+                  seriesId={item.series_id ?? null}
+                  partNumber={item.part_number ?? 1}
+                  onChange={({ seriesId, seriesTitle, partNumber }) => {
+                    // Forward series_title into the optimistic patch too so the
+                    // card badge updates immediately; PATCH server-side ignores
+                    // it (no column update for series_title — it's derived).
+                    onPatch(item.id, {
+                      series_id: seriesId,
+                      part_number: seriesId ? partNumber : null,
+                      series_title: seriesId ? (seriesTitle ?? null) : null,
+                    });
+                  }}
+                  compact
+                />
+              </Field>
+
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Pillar (content bucket)">
+                  <input
+                    defaultValue={item.pillar ?? ''}
+                    placeholder="e.g. tutorials, reviews, deep-dive"
+                    onBlur={e => {
+                      const v = e.currentTarget.value.trim();
+                      onPatch(item.id, { pillar: v || null });
+                    }}
+                    className="w-full px-3 py-2 rounded-md text-sm"
+                    style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+                  />
+                </Field>
+                <Field label="Tags">
+                  <input
+                    defaultValue={(item.tags ?? []).join(', ')}
+                    placeholder="tag, tag, tag"
+                    onBlur={e => {
+                      const tags = e.currentTarget.value.split(',').map(t => t.trim()).filter(Boolean);
+                      onPatch(item.id, { tags });
+                    }}
+                    className="w-full px-3 py-2 rounded-md text-sm"
+                    style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+                  />
+                </Field>
+              </div>
+
+              <ChecklistSection
+                items={(item.checklist ?? []) as ChecklistItem[]}
+                onChange={next => onPatch(item.id, { checklist: next })}
+              />
+
+              <ThumbnailSlots
+                item={item}
+                onPatch={patch => onPatch(item.id, patch)}
+              />
+
+              <DependenciesSection
+                itemId={item.id}
+                allItems={allItems}
+                onSelectItem={onSelectItem}
+              />
 
               <Field label="Notes">
                 <textarea
@@ -248,6 +439,63 @@ export function ItemDetail({ item, channels, statuses, onClose, onPatch, onDelet
                   className="w-full px-3 py-2 rounded-md text-sm resize-y"
                   style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
                 />
+              </Field>
+
+              <Field label="YouTube URL (after publishing)">
+                <div className="flex gap-2">
+                  <input
+                    defaultValue={item.youtube_url ?? ''}
+                    placeholder="https://www.youtube.com/watch?v=…"
+                    onBlur={e => {
+                      const v = e.currentTarget.value.trim() || null;
+                      if (v !== (item.youtube_url ?? null)) onPatch(item.id, { youtube_url: v });
+                    }}
+                    className="flex-1 px-3 py-2 rounded-md text-sm"
+                    style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+                  />
+                  <button
+                    onClick={async () => {
+                      if (!item.youtube_url) { toast.error('Save a YouTube URL first'); return; }
+                      toast.message('Pulling from YouTube…');
+                      const res = await fetch(`/api/schedule/${item.id}/pull-youtube-metadata`, { method: 'POST' });
+                      const data: {
+                        error?: string;
+                        applied?: { title: string; description: string; tags: string[] };
+                        wrote?: { title: boolean; description: boolean; tags: boolean };
+                      } = await res.json();
+                      if (!res.ok) { toast.error(data.error || 'Pull failed'); return; }
+                      // Server preserves user-curated fields; only sync what it
+                      // actually wrote so the optimistic patch matches.
+                      if (data.applied) {
+                        onPatch(item.id, {
+                          title: data.applied.title,
+                          yt_description: data.applied.description,
+                          yt_tags: data.applied.tags,
+                        });
+                      }
+                      const wrote = data.wrote ?? { title: false, description: false, tags: false };
+                      const writtenParts = [
+                        wrote.title && 'title',
+                        wrote.description && 'description',
+                        wrote.tags && 'tags',
+                      ].filter(Boolean);
+                      if (writtenParts.length === 0) {
+                        toast.message('Already up to date — your curated fields were preserved');
+                      } else {
+                        toast.success(`Pulled ${writtenParts.join(', ')} from YouTube`);
+                      }
+                    }}
+                    disabled={!item.youtube_url}
+                    className="text-xs px-3 py-2 rounded-md whitespace-nowrap"
+                    style={{
+                      background: item.youtube_url ? 'rgba(239,68,68,0.15)' : 'var(--bg-tertiary)',
+                      color: item.youtube_url ? '#ef4444' : 'var(--text-muted)',
+                      border: `1px solid ${item.youtube_url ? 'rgba(239,68,68,0.3)' : 'var(--border)'}`,
+                      opacity: item.youtube_url ? 1 : 0.6,
+                    }}>
+                    Pull metadata
+                  </button>
+                </div>
               </Field>
 
               <Field label="Links">
@@ -329,6 +577,25 @@ export function ItemDetail({ item, channels, statuses, onClose, onPatch, onDelet
       </motion.aside>
     </AnimatePresence>
   );
+}
+
+function SendToButton({ label, href, disabled, title }: { label: string; href: string; disabled?: boolean; title?: string }) {
+  const body = (
+    <span
+      className="flex items-center gap-1 px-2 py-1 rounded shrink-0 whitespace-nowrap"
+      style={{
+        background: disabled ? 'var(--bg-tertiary)' : 'rgba(124,58,237,0.08)',
+        color: disabled ? 'var(--text-muted)' : 'var(--accent-purple-bright)',
+        border: `1px solid ${disabled ? 'var(--border)' : 'rgba(124,58,237,0.25)'}`,
+        opacity: disabled ? 0.55 : 1,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+      }}
+    >
+      {label}
+    </span>
+  );
+  if (disabled) return <span title={title}>{body}</span>;
+  return <Link href={href} title={title}>{body}</Link>;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

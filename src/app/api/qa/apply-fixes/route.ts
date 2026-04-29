@@ -6,7 +6,7 @@ export const maxDuration = 120;
 
 export async function POST(req: NextRequest) {
   try {
-    const { modelId, script, qaFeedback, approvedFixes } = await req.json();
+    const { modelId, script, qaFeedback, approvedFixes, constraints } = await req.json();
 
     if (!script || !approvedFixes?.length) {
       return NextResponse.json({ error: 'script and approvedFixes required' }, { status: 400 });
@@ -16,6 +16,7 @@ export async function POST(req: NextRequest) {
       script,
       qaFeedback: qaFeedback || '',
       approvedFixes,
+      constraints,
     });
 
     const encoder = new TextEncoder();

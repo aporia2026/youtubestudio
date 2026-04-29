@@ -12,6 +12,13 @@ export type RecurrenceRule = {
   until?: string;
 };
 
+export type ChecklistItem = {
+  id: string;
+  text: string;
+  done: boolean;
+  stage?: string; // the status this item was added for
+};
+
 export type ScheduleItem = {
   id: string;
   title: string;
@@ -29,7 +36,62 @@ export type ScheduleItem = {
   created_at: string;
   updated_at: string;
   channels?: Array<{ id: string; name: string; account_color: string | null }>;
+  // Extended
+  stage_entered_at?: string;
+  pillar?: string | null;
+  checklist?: ChecklistItem[];
+  thumbnail_a_url?: string | null;
+  thumbnail_b_url?: string | null;
+  thumbnail_winner?: 'a' | 'b' | null;
+  yt_description?: string | null;
+  yt_tags?: string[];
+  // Series linkage — items belonging to the same narrative arc. The title
+  // is denormalized onto the row so the UI can render badges without a join.
+  series_id?: string | null;
+  series_title?: string | null;
+  part_number?: number | null;
+  // Assigned editor (picked from one of the linked channels' rosters).
+  // editor_name is denormalized onto the row so card chips don't need a join.
+  editor_id?: string | null;
+  editor_name?: string | null;
+  editor_channel_id?: string | null;
+  // Once published, the YouTube URL lets us pull title/description back.
+  youtube_url?: string | null;
 };
+
+export type ChannelEditor = {
+  id: string;
+  channel_id: string;
+  name: string;
+  email: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/** How long the item has been stuck in its current stage, or null if no stage_entered_at. */
+export function daysInStage(item: ScheduleItem, now = new Date()): number | null {
+  if (!item.stage_entered_at) return null;
+  const entered = new Date(item.stage_entered_at);
+  return Math.max(0, Math.floor((now.getTime() - entered.getTime()) / 86_400_000));
+}
+
+/** Default days-until-stuck per stage key. Tuned for a solo creator cadence. */
+export const DEFAULT_STUCK_THRESHOLDS: Record<string, number> = {
+  idea: 21,
+  scripting: 10,
+  recording: 7,
+  editing: 14,
+  ready: 7,
+  published: Infinity,
+};
+
+export function isStuck(item: ScheduleItem, thresholds = DEFAULT_STUCK_THRESHOLDS): boolean {
+  const d = daysInStage(item);
+  if (d == null) return false;
+  const limit = thresholds[item.status] ?? Infinity;
+  return d > limit;
+}
 
 const DAY_INDEX: Record<NonNullable<RecurrenceRule['byday']>[number], number> = {
   SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6,

@@ -4,6 +4,13 @@ import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { AI_MODELS, APP_FEATURES, type AppFeature } from '@/lib/ai-models';
+
+// Build the default-model map from APP_FEATURES so adding a feature later
+// doesn't require a second edit here.
+const DEFAULT_FEATURE_MODELS: Record<AppFeature, string> = APP_FEATURES.reduce(
+  (acc, f) => { acc[f.id] = AI_MODELS[0].id; return acc; },
+  {} as Record<AppFeature, string>,
+);
 import { ModelSelector } from '@/components/ui/ModelSelector';
 
 interface Niche {
@@ -24,15 +31,7 @@ export default function SettingsPage() {
   const [newNicheKeywords, setNewNicheKeywords] = useState('');
   const [addingNiche, setAddingNiche] = useState(false);
   const [activeSection, setActiveSection] = useState<'niches' | 'api' | 'models' | 'about'>('niches');
-  const [featureModels, setFeatureModels] = useState<Record<AppFeature, string>>({
-    'script-generator': AI_MODELS[0].id,
-    'qa-engine': AI_MODELS[0].id,
-    'idea-generator': AI_MODELS[0].id,
-    'competitor-analysis': AI_MODELS[0].id,
-    'channel-naming': AI_MODELS[0].id,
-    'seo-optimizer': AI_MODELS[0].id,
-    'production-doc': AI_MODELS[0].id,
-  });
+  const [featureModels, setFeatureModels] = useState<Record<AppFeature, string>>(DEFAULT_FEATURE_MODELS);
   const [keyStatus, setKeyStatus] = useState<KeyStatus>({});
   const [keyStatusLoading, setKeyStatusLoading] = useState(true);
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});

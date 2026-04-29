@@ -78,11 +78,20 @@ export async function POST(req: NextRequest) {
     maxAttempts?: number;
     /** Previously-generated scripts (hooks/topics) to avoid repeating. */
     previousScripts?: string[];
+    /** Pre-built series-continuity block (from lib/series.ts formatPriorPartsForPrompt). */
+    seriesContext?: string;
+    /** User-authored script constraints (skip hook / skip CTA / custom). */
+    constraints?: {
+      skipHook?: boolean;
+      skipSubscribeCTA?: boolean;
+      skipClickableLinks?: boolean;
+      custom?: string[];
+    };
   };
   try { body = await req.json(); }
   catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }); }
 
-  const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext, previousScripts = [] } = body;
+  const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext, previousScripts = [], seriesContext, constraints } = body;
   if (!topic || !niche) return NextResponse.json({ error: 'topic and niche are required' }, { status: 400 });
   if (!modelId) return NextResponse.json({ error: 'modelId is required' }, { status: 400 });
   const model = getModelById(modelId);
@@ -96,6 +105,10 @@ export async function POST(req: NextRequest) {
   const dedupNote = previousScripts.length > 0
     ? `\n\nPREVIOUSLY GENERATED SCRIPTS — DO NOT REPEAT THESE HOOKS, OPENINGS, OR ANGLES:\n${previousScripts.slice(0, 6).map((s, i) => `--- Prior #${i + 1} (first 400 chars) ---\n${s.slice(0, 400)}`).join('\n\n')}\nWrite a fundamentally different angle.`
     : '';
+
+  // Series continuity block (client-budgeted). When present, it overrides the
+  // dedup note — the next part SHOULD reference the prior parts.
+  const seriesBlock = typeof seriesContext === 'string' && seriesContext.trim() ? `\n\n${seriesContext.trim()}` : '';
 
   const attempts: Array<{ script: string; qa: QAResult; score: number }> = [];
   let lastFeedback: string | undefined;
@@ -113,8 +126,9 @@ export async function POST(req: NextRequest) {
       tone,
       style,
       targetAudience: audience,
-      additionalContext: (context || '') + dedupNote + retryNote,
+      additionalContext: (context || '') + (seriesBlock || dedupNote) + retryNote,
       referenceContext,
+      constraints,
     });
 
     let script: string;
@@ -139,13 +153,15 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
-    // 2) QA the script.
+    // 2) QA the script. Pass the same constraints so the reviewer doesn't
+    // penalize intentionally-omitted elements (hook, CTA, links).
     const { system: qaSystem, user: qaUser } = scriptQAPrompt({
       script,
       niche,
       passNumber: attempt,
       previousFeedback: lastFeedback,
       aggressiveness: 'brutal',
+      constraints,
     });
 
     let qa: QAResult = {};

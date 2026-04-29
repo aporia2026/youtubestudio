@@ -1,12 +1,27 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { Suspense, useState, useEffect, useRef, useCallback } from 'react';
+import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
+import type { ScheduleItem } from '@/lib/schedule';
+import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadFullContextForItem, buildContextNotesFromItem } from '@/lib/schedule-link';
+import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
-import { saveProductionDocEntry, getRecentNiches, getRecentTopics } from '@/lib/history';
+import {
+  saveProductionDocEntry,
+  getProductionDocHistory,
+  updateProductionDocEntry,
+  deleteProductionDocEntry,
+  clearProductionDocHistory,
+  getRecentNiches,
+  getRecentTopics,
+  type ProductionDocHistoryEntry,
+} from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
+import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
+import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { productionDocToVideoConfig } from '@/remotion/utils';
 import type { BrandKit } from '@/remotion/types';
 
@@ -431,7 +446,20 @@ function ImageCell({ state, onRetry }: { state: RowImageState; onRetry: () => vo
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
-export default function ProductionDocPage() {
+export default function ProductionDocPageWrapper() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>}>
+      <ProductionDocPage />
+    </Suspense>
+  );
+}
+
+function ProductionDocPage() {
+  const search = useSearchParams();
+  const scheduleItemId = getScheduleLinkId(search);
+  const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
+  const [schedulePrefilled, setSchedulePrefilled] = useState(false);
+
   // — Inputs
   const [script, setScript] = useState('');
   const [niche, setNiche] = useState('');
@@ -463,6 +491,11 @@ export default function ProductionDocPage() {
   const [doc, setDoc] = useState<ProductionDoc | null>(null);
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
+  const [historyItems, setHistoryItems] = useState<ProductionDocHistoryEntry[]>(() => getProductionDocHistory());
+  // Track which history entry the current on-screen doc belongs to, so row-image
+  // generations (fire-and-forget after the doc is saved) can patch back onto the
+  // same entry instead of being lost.
+  const [historyEntryId, setHistoryEntryId] = useState<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   // — Image generation (declared before effects that reference it)
@@ -474,8 +507,49 @@ export default function ProductionDocPage() {
     return () => { mountedRef.current = false; };
   }, []);
 
-  // Restore last result from localStorage after mount (useEffect so SSR is unaffected)
+  // Schedule-link preload: pull every relevant field off the linked item so
+  // the user doesn't retype context they already captured upstream. Functional
+  // setters (curr => curr || ctx.x) keep manual edits made before the async
+  // resolves from being clobbered.
   useEffect(() => {
+    if (!scheduleItemId || schedulePrefilled) return;
+    let cancelled = false;
+    (async () => {
+      const item = await fetchScheduleItem(scheduleItemId);
+      if (cancelled || !item) return;
+      setScheduleItem(item);
+      setSchedulePrefilled(true);
+      const ctx = await loadFullContextForItem(item);
+      if (cancelled) return;
+      setTopic(curr => curr || ctx.topic);
+      setNiche(curr => curr || ctx.niche);
+      if (ctx.script) setScript(prev => prev || ctx.script!);
+      // Seed the creative brief with the item's accumulated narrative context
+      // (notes, series part, prior published description, editor, open
+      // checklist) — the prod-doc generator will weight these as scene-shaping
+      // hints. User can still wipe / edit before generating.
+      const briefSeed = [buildContextNotesFromItem(ctx), ctx.prevDescription]
+        .filter(Boolean)
+        .join('\n\n');
+      if (briefSeed) setCreativeBrief(curr => curr || briefSeed);
+      toast.message(`Loaded context from "${item.title || 'schedule item'}"`);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scheduleItemId, schedulePrefilled]);
+
+  // Restore last result from localStorage after mount (useEffect so SSR is unaffected).
+  // Skip restore on a handoff (schedule-link, generator, QA) so the new script
+  // starts a fresh session — and discard the saved draft so it doesn't resurface.
+  useEffect(() => {
+    const fromHandoff = !!scheduleItemId
+      || search.get('from') === 'generator'
+      || search.get('from') === 'qa'
+      || !!localStorage.getItem('prodoc_prefill');
+    if (fromHandoff) {
+      try { localStorage.removeItem('prodoc_last_result'); } catch { /* ignore */ }
+      return;
+    }
     try {
       const saved = localStorage.getItem('prodoc_last_result');
       if (!saved) return;
@@ -486,6 +560,7 @@ export default function ProductionDocPage() {
       const ago = parsed.savedAt ? Math.round((Date.now() - parsed.savedAt) / 60000) : null;
       toast.success(`Previous session restored${ago !== null ? ` (saved ${ago < 1 ? 'just now' : `${ago}m ago`})` : ''}`, { duration: 4000 });
     } catch { /* corrupt storage — ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Persist doc + images together whenever either changes
@@ -494,7 +569,15 @@ export default function ProductionDocPage() {
     try {
       localStorage.setItem('prodoc_last_result', JSON.stringify({ doc, rowImages, savedAt: Date.now() }));
     } catch { /* storage full — ignore */ }
-  }, [doc, rowImages]);
+    // Also patch the current history entry so row-image URLs survive on restore.
+    if (historyEntryId && rowImages.length > 0) {
+      const imgMap: Record<number, string> = {};
+      rowImages.forEach((r, i) => { if (r?.imageUrl) imgMap[i] = r.imageUrl; });
+      if (Object.keys(imgMap).length > 0) {
+        updateProductionDocEntry(historyEntryId, { rowImages: imgMap });
+      }
+    }
+  }, [doc, rowImages, historyEntryId]);
 
   // Auto-scroll log to bottom when new entries are added
   useEffect(() => {
@@ -535,7 +618,9 @@ export default function ProductionDocPage() {
     } catch { /* ignore */ }
   }, []);
 
-  // Load prefill from generator / QA pages
+  // Load prefill from generator / QA pages. Functional setters so a
+  // schedule-link prefill that resolved first isn't clobbered by stale
+  // localStorage from an earlier handoff.
   useEffect(() => {
     setNicheHints(getRecentNiches());
     setTopicHints(getRecentTopics());
@@ -544,9 +629,9 @@ export default function ProductionDocPage() {
       if (raw) {
         localStorage.removeItem('prodoc_prefill');
         const data = JSON.parse(raw);
-        if (data.script) setScript(data.script);
-        if (data.niche)  setNiche(data.niche);
-        if (data.topic)  setTopic(data.topic);
+        if (data.script) setScript(curr => curr || data.script);
+        if (data.niche)  setNiche(curr => curr || data.niche);
+        if (data.topic)  setTopic(curr => curr || data.topic);
       }
     } catch { /* ignore */ }
   }, []);
@@ -584,15 +669,15 @@ export default function ProductionDocPage() {
           const tag = `[YouTube ref "${label}": ${data.styleDescription}]`;
           return prev ? `${prev}\n\n${tag}` : tag;
         });
-        toast.success('Visual style extracted from YouTube thumbnail');
+        toast.success('Visual style extracted from YouTube video');
       }
-    } catch {
+    } catch (err) {
       setVisualRefs(prev => {
         const next = [...prev];
         next[idx] = { ...next[idx], analyzing: false, analysisFailed: true };
         return next;
       });
-      // Best-effort — the ref stays in the list but won't contribute to the brief
+      toast.error(err instanceof Error ? err.message : 'YouTube style analysis failed');
     }
   }
 
@@ -834,7 +919,8 @@ export default function ProductionDocPage() {
       appendLog(`Script: ${totalWords} words · Style: ${stylePreset}${analyzedCount > 0 ? ` · ${analyzedCount} visual ref(s) analyzed` : ''}`);
 
       // ── Chunked generation — split long scripts to avoid 504 timeouts ──────────
-      const MAX_CHUNK_WORDS = 1000;
+      // 700 words ≈ 35–50 rows per chunk, comfortably within the API's 16k output cap.
+      const MAX_CHUNK_WORDS = 700;
       const chunks = splitScriptIntoChunks(script.trim(), MAX_CHUNK_WORDS);
       const isMultiChunk = chunks.length > 1;
       if (isMultiChunk) {
@@ -899,7 +985,7 @@ export default function ProductionDocPage() {
       }
 
       setDoc(result);
-      saveProductionDocEntry({
+      const savedEntry = saveProductionDocEntry({
         title: result.title || topic || niche,
         niche: result.niche || niche,
         topic,
@@ -908,9 +994,31 @@ export default function ProductionDocPage() {
         totalDuration: result.total_duration,
         totalWords: result.total_words,
         stylePreset,
+        doc: result,
+        script: script.trim() || undefined,
       });
+      setHistoryEntryId(savedEntry.id);
+      setHistoryItems(getProductionDocHistory());
       appendLog(`✓ ${result.rows.length} shots generated`);
       toast.success(`Production doc ready — ${result.rows.length} shots`);
+
+      // Write back to the linked schedule item so the schedule surfaces that a
+      // production doc exists (history is localStorage-scoped; the history
+      // entry ID here lets the card round-trip back to this doc).
+      if (scheduleItemId) {
+        writeBackToSchedule(scheduleItemId, {}, {
+          customFieldsMerge: {
+            latest_production_doc: {
+              history_entry_id: savedEntry.id,
+              shot_count: result.rows.length,
+              total_duration: result.total_duration,
+              style_preset: stylePreset,
+              generated_at: new Date().toISOString(),
+              model_id: modelId,
+            },
+          },
+        });
+      }
       setTimeout(() => tableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
 
       // Fire-and-forget image generation — passes the same abort signal so Stop also cancels images
@@ -1070,6 +1178,7 @@ export default function ProductionDocPage() {
 
   return (
     <div className="p-6 max-w-full">
+      {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Production Doc" />}
 
       {/* ── Header */}
       <div className="mb-6">
@@ -1323,13 +1432,21 @@ export default function ProductionDocPage() {
 
         {/* Script textarea */}
         <div>
-          <div className="flex items-center justify-between mb-1.5">
+          <div className="flex items-center justify-between mb-1.5 flex-wrap gap-2">
             <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>Script *</label>
-            {wordCount > 0 && (
-              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                {wordCount.toLocaleString()} words
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              {script.trim().length > 0 && (
+                <>
+                  <CopyForElevenLabs script={script} version="v2" />
+                  <CopyForElevenLabs script={script} version="v3" />
+                </>
+              )}
+              {wordCount > 0 && (
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  {wordCount.toLocaleString()} words
+                </span>
+              )}
+            </div>
           </div>
           <textarea
             value={script}
@@ -1784,6 +1901,53 @@ export default function ProductionDocPage() {
           </div>
         </div>
       )}
+
+      <HistoryPanel
+        title="Production Doc History"
+        icon="🎬"
+        items={historyItems.map(e => ({
+          id: e.id,
+          timestamp: e.timestamp,
+          label: e.title,
+          sublabel: `${e.niche} · ${e.shotCount} shots · ${e.totalDuration} · ${e.stylePreset}`,
+        }))}
+        onRestore={(id) => {
+          const entry = historyItems.find(e => e.id === id);
+          if (!entry) return;
+          if (doc && typeof window !== 'undefined' &&
+              !confirm('Replace the current production doc with this restored entry?')) {
+            return;
+          }
+          setNiche(entry.niche);
+          setTopic(entry.topic);
+          if (entry.modelId) setModelId(entry.modelId);
+          if (entry.stylePreset) setStylePreset(entry.stylePreset);
+          if (entry.script) setScript(entry.script);
+          if (entry.doc) {
+            const restoredDoc = entry.doc as ProductionDoc;
+            setDoc(restoredDoc);
+            // Rebuild rowImages from the saved map
+            if (entry.rowImages && restoredDoc.rows?.length) {
+              const restoredImages: RowImageState[] = restoredDoc.rows.map((_row, i) => {
+                const url = entry.rowImages?.[i];
+                return url ? { status: 'done', imageUrl: url } : { status: 'idle' };
+              });
+              setRowImages(restoredImages);
+            } else {
+              setRowImages([]);
+            }
+            setHistoryEntryId(entry.id);
+            toast.success(`Restored — ${entry.shotCount} shots, ${entry.totalDuration}`);
+          } else {
+            setDoc(null);
+            setRowImages([]);
+            setHistoryEntryId(null);
+            toast.info('Older entry — only metadata was saved. Re-generate to produce the doc.');
+          }
+        }}
+        onDelete={(id) => { deleteProductionDocEntry(id); setHistoryItems(getProductionDocHistory()); }}
+        onClearAll={() => { clearProductionDocHistory(); setHistoryItems([]); }}
+      />
     </div>
   );
 }

@@ -39,6 +39,21 @@ export interface WorkflowDraft {
 
   // Project
   projectId?: string;
+
+  // User-authored generation constraints (skip hook, skip CTA, etc.). Kept in
+  // the draft so leaving and returning preserves the user's checkboxes.
+  constraints?: {
+    skipHook?: boolean;
+    skipSubscribeCTA?: boolean;
+    skipClickableLinks?: boolean;
+    custom?: string[];
+  };
+
+  // Series linkage — so the Script Generator remembers which series this
+  // draft is Part N of when resumed from the drafts banner.
+  seriesId?: string;
+  seriesTitle?: string;
+  partNumber?: number;
 }
 
 const DRAFTS_KEY = 'workflow_drafts';
@@ -100,15 +115,21 @@ function writeToLocalStorage(drafts: WorkflowDraft[]): void {
 // ─── DB sync (fire-and-forget) ────────────────────────────────────────────────
 
 function syncToDb(draft: WorkflowDraft): void {
+  // keepalive ensures the request completes even if the user navigates away
+  // immediately after saving (e.g. from a QA → Voiceover handoff). Without it,
+  // the browser aborts the fetch on unload and the DB never receives the update,
+  // so the stale DB version wins on next hydrateDraftsFromDb call.
+  // Browser cap is ~64 KB per keepalive request, which comfortably fits a script.
   fetch('/api/drafts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(draft),
+    keepalive: true,
   }).catch(() => { /* best-effort */ });
 }
 
 function deleteFromDb(id: string): void {
-  fetch(`/api/drafts/${id}`, { method: 'DELETE' })
+  fetch(`/api/drafts/${id}`, { method: 'DELETE', keepalive: true })
     .catch(() => { /* best-effort */ });
 }
 
