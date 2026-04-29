@@ -712,13 +712,27 @@ function QAPage() {
                     // Don't trim/filter on every keystroke — that strips spaces
                     // and breaks typing. Server-side cleans the array before use.
                     onChange={e => setConstraints(c => ({ ...c, custom: e.target.value.split('\n') }))}
-                    placeholder="One rule per line — saves automatically"
+                    // Stop ALL keystrokes from bubbling so global shortcuts
+                    // (Cmd/Ctrl+K palette, etc.) don't swallow characters.
+                    onKeyDown={e => e.stopPropagation()}
+                    onKeyUp={e => e.stopPropagation()}
+                    placeholder={'don\'t flag casual profanity\ndon\'t suggest adding humor'}
                     className="input-field w-full"
-                    style={{ fontSize: 12, minHeight: 60 }}
+                    style={{ fontSize: 12, minHeight: 80, fontFamily: 'inherit', whiteSpace: 'pre-wrap' }}
+                    spellCheck
+                    wrap="soft"
                   />
-                  <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
-                    Saved automatically. Applied to the next QA pass.
-                  </p>
+                  <div className="text-[10px] mt-1 flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
+                    <span>
+                      Saved automatically — applied to the next QA pass.
+                      {(constraints.custom?.filter(s => s.trim()).length ?? 0) > 0 && (
+                        <span style={{ color: '#22c55e', marginLeft: 6 }}>
+                          {constraints.custom!.filter(s => s.trim()).length} rule{constraints.custom!.filter(s => s.trim()).length === 1 ? '' : 's'} active
+                        </span>
+                      )}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>

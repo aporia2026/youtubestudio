@@ -1027,18 +1027,33 @@ function GeneratorPage() {
                     <label className="text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>Custom exclusions (one per line — e.g. &quot;no pop-culture refs&quot;)</label>
                     <textarea
                       value={(constraints.custom || []).join('\n')}
-                      // Don't trim or filter on every keystroke — that strips spaces
-                      // mid-word and prevents typing multiple lines. Server-side
-                      // applyScriptConstraints() does the cleanup before use.
+                      // Don't trim or filter on every keystroke — that strips
+                      // spaces mid-word and prevents typing multiple lines.
+                      // Server-side applyScriptConstraints() does the cleanup
+                      // before sending to the LLM.
                       onChange={e => setConstraints(c => ({ ...c, custom: e.target.value.split('\n') }))}
-                      onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) e.stopPropagation(); }}
-                      placeholder="One rule per line — saves automatically"
+                      // Stop ALL keystrokes from bubbling so nothing higher up
+                      // (e.g. Cmd/Ctrl+K palette, page shortcuts) can swallow
+                      // characters typed inside the textarea.
+                      onKeyDown={e => e.stopPropagation()}
+                      onKeyUp={e => e.stopPropagation()}
+                      placeholder={'no pop-culture refs\nno celebrity names\nno specific dates'}
                       className="input-field w-full"
-                      style={{ fontSize: 12, minHeight: 60 }}
+                      style={{ fontSize: 12, minHeight: 80, fontFamily: 'inherit', whiteSpace: 'pre-wrap' }}
+                      spellCheck
+                      wrap="soft"
                     />
-                    <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
-                      Saved automatically. Used the next time you generate or refine a script.
-                    </p>
+                    <div className="text-[10px] mt-1 flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
+                      <span>
+                        Saved automatically — used the next time you generate or refine.
+                        {(constraints.custom?.filter(s => s.trim()).length ?? 0) > 0 && (
+                          <span style={{ color: '#22c55e', marginLeft: 6 }}>
+                            {constraints.custom!.filter(s => s.trim()).length} rule{constraints.custom!.filter(s => s.trim()).length === 1 ? '' : 's'} active
+                          </span>
+                        )}
+                      </span>
+                    </div>
                   </div>
                 </div>
               )}
