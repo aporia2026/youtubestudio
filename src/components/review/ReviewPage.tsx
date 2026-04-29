@@ -77,6 +77,7 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId }: ReviewPa
   const [showAuthorSetup, setShowAuthorSetup] = useState(false);
   const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
+  const [bufferedPct, setBufferedPct] = useState(0);
   const [showAllVersionComments, setShowAllVersionComments] = useState(false);
   const [compareMode, setCompareMode] = useState<'off' | 'side-by-side' | 'onion-skin' | 'swipe'>('off');
   const [compareVersionId, setCompareVersionId] = useState<string | null>(null);
@@ -292,6 +293,7 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId }: ReviewPa
                   ref={videoRef}
                   src={activeVersion.video_url}
                   onTimeUpdate={setCurrentTimeMs}
+                  onBufferedChange={setBufferedPct}
                   isDrawing={isDrawing}
                   onDrawingToggle={setIsDrawing}
                   onDrawingComplete={(drawingData, thumbnail) => {
@@ -299,6 +301,7 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId }: ReviewPa
                     setIsDrawing(false);
                   }}
                   canAnnotate={data.permission === 'can-annotate'}
+                  commentTimestamps={versionComments.filter(c => !c.parent_id).map(c => c.timestamp_ms)}
                 />
                 <ReviewTimeline
                   currentTimeMs={currentTimeMs}
@@ -306,6 +309,7 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId }: ReviewPa
                   comments={versionComments}
                   onSeek={handleSeek}
                   videoUrl={activeVersion.video_url}
+                  bufferedPct={bufferedPct}
                 />
               </>
             ) : (

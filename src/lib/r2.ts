@@ -42,7 +42,12 @@ export async function getDownloadUrlForBucket(bucket: string, key: string, publi
   }
   const client = getR2Client();
   const command = new GetObjectCommand({ Bucket: bucket, Key: key });
-  return getSignedUrl(client, command, { expiresIn: 86400 });
+  // 7 days. R2/S3 presigned URLs sign individual byte-range GETs, but the
+  // browser holds onto the URL across an entire review session and will
+  // start failing range requests the moment the URL expires — surfaced as
+  // mid-playback stalls. A 24h TTL frequently expires inside a single
+  // workday (URL minted in the morning, video opened that evening).
+  return getSignedUrl(client, command, { expiresIn: 60 * 60 * 24 * 7 });
 }
 
 export async function deleteFromBucket(bucket: string, key: string): Promise<void> {

@@ -10,6 +10,10 @@ interface ReviewTimelineProps {
   onSeek: (ms: number) => void;
   /** Optional: when provided, a YouTube-style frame preview pops up on hover. */
   videoUrl?: string | null;
+  /** Optional: percent of the video the browser has buffered (0–100). Renders a
+   *  YouTube-style "downloaded" track behind the progress fill so the user can
+   *  see how much is ready to play. */
+  bufferedPct?: number;
 }
 
 function formatTime(ms: number) {
@@ -19,7 +23,7 @@ function formatTime(ms: number) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek, videoUrl }: ReviewTimelineProps) {
+export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek, videoUrl, bufferedPct }: ReviewTimelineProps) {
   const barRef = useRef<HTMLDivElement>(null);
 
   // Frame-preview state. Hidden <video> seeks to the hover time; a popup
@@ -158,6 +162,15 @@ export function ReviewTimeline({ currentTimeMs, durationMs, comments, onSeek, vi
         className="relative h-2 rounded-full cursor-pointer group"
         style={{ background: 'rgba(255,255,255,0.1)' }}
       >
+        {/* Buffered fill — sits beneath the progress gradient so the viewer
+            sees how much of the video is ready ahead of the playhead. */}
+        {typeof bufferedPct === 'number' && bufferedPct > 0 && (
+          <div
+            className="absolute inset-y-0 left-0 rounded-full pointer-events-none"
+            style={{ width: `${Math.min(100, bufferedPct)}%`, background: 'rgba(255,255,255,0.18)' }}
+          />
+        )}
+
         {/* Hidden seekable <video> used purely as a frame source for the
             preview canvas. Muted + preload=auto so seeks resolve quickly. */}
         {videoUrl && (
