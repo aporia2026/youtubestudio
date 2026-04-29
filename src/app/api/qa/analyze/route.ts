@@ -85,25 +85,46 @@ export async function POST(req: NextRequest) {
       constraints,
     });
 
-    let raw: string;
-    try {
-      raw = await generateText({
+    /**
+     * Provider-call wrapper that handles two real failure modes:
+     *   1. The provider throws (rate limit, expired key, etc) — surface verbatim.
+     *   2. The provider returns 200 + empty body (some providers do this
+     *      silently when `maxTokens` exceeds the model's per-completion
+     *      cap, e.g. asking GPT-4 Turbo for 9000 tokens). We retry once
+     *      with a conservative maxTokens before giving up.
+     */
+    async function callProvider(maxTokens: number): Promise<string> {
+      return generateText({
         modelId,
         prompt: user,
         systemPrompt: system,
-        // Bumped 6000 → 9000. On pass 3+ with previousFeedback the prompt is
-        // larger and verbose models (Opus, Sonnet) sometimes hit the cap and
-        // truncate mid-JSON, which then fails extraction below.
-        maxTokens: 9000,
+        maxTokens,
         temperature: 0.3,
       });
+    }
+
+    let raw = '';
+    try {
+      // Default 6000 — the value that's been stable in production. Bumping
+      // it caused some providers (notably the GPT-4 Turbo family with a
+      // 4096 hard cap on completions) to silently return empty.
+      raw = await callProvider(6000);
+      // Empty 200 — retry once at a conservative 4000.
+      if (!raw || !raw.trim()) {
+        console.warn('QA: provider returned empty at 6000 tokens, retrying at 4000');
+        raw = await callProvider(4000);
+      }
     } catch (e) {
-      // Surface the provider error verbatim — usually rate limit, expired
-      // key, or model-doesn't-exist. Without this the catch below would
-      // wrap it in "QA analysis failed" and we'd lose the signal.
       const msg = e instanceof Error ? e.message : 'AI provider call failed';
       console.error('QA generateText failed:', e);
       return NextResponse.json({ error: `AI provider error: ${msg}` }, { status: 502 });
+    }
+
+    if (!raw || !raw.trim()) {
+      return NextResponse.json(
+        { error: 'Model returned an empty response after a retry. The provider likely failed silently — try a different model.' },
+        { status: 502 },
+      );
     }
 
     const result = extractJson(raw);
@@ -112,10 +133,10 @@ export async function POST(req: NextRequest) {
       // failed (e.g. model wrote prose instead of JSON, or got cut off mid-
       // sentence). 200 chars is enough to spot the pattern without turning
       // the toast into a wall of text.
-      const snippet = (raw || '').slice(0, 200).replace(/\s+/g, ' ').trim();
+      const snippet = raw.slice(0, 200).replace(/\s+/g, ' ').trim();
       console.error('QA JSON parse failed. Raw start:', snippet);
       return NextResponse.json(
-        { error: `Model returned non-JSON output. Try a different model or re-run. Snippet: ${snippet}` },
+        { error: `Model returned non-JSON output. Try a different model or re-run. Snippet: ${snippet || '(no content)'}` },
         { status: 502 },
       );
     }
