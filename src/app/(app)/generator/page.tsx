@@ -15,6 +15,7 @@ import { countWords, estimateDuration, formatDuration } from '@/lib/utils';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
 import { ExportScript } from '@/components/ui/ExportScript';
+import { ExportForNarrator } from '@/components/ui/ExportForNarrator';
 import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { DraftsBanner } from '@/components/ui/DraftsBanner';
 import { SeriesPicker } from '@/components/ui/SeriesPicker';
@@ -1214,6 +1215,7 @@ function GeneratorPage() {
                   <CopyForElevenLabs script={script} version="v3" />
                   <CopyForElevenLabs script={script} version="v2" />
                   <ExportScript title={topic} script={script} niche={niche} duration={formatDuration(estimateDuration(wordCount))} />
+                  <ExportForNarrator title={topic} script={script} niche={niche} duration={formatDuration(estimateDuration(wordCount))} />
                 </div>
               )}
             </div>

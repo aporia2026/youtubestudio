@@ -471,6 +471,14 @@ export async function ensureScheduleSchema() {
     try { await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS editor_id UUID REFERENCES channel_editors(id) ON DELETE SET NULL`; } catch {}
     try { await sql`CREATE INDEX IF NOT EXISTS idx_schedule_items_editor ON schedule_items(editor_id)`; } catch {}
 
+    // Team-based assignments — pick from /team collaborators directly. Wrapped
+    // in try/catch in case the collaborators table doesn't exist on a fresh DB
+    // (it's created by ensureTeamSchema()).
+    try { await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS editor_collaborator_id UUID REFERENCES collaborators(id) ON DELETE SET NULL`; } catch {}
+    try { await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS narrator_collaborator_id UUID REFERENCES collaborators(id) ON DELETE SET NULL`; } catch {}
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_schedule_items_editor_collab ON schedule_items(editor_collaborator_id)`; } catch {}
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_schedule_items_narrator_collab ON schedule_items(narrator_collaborator_id)`; } catch {}
+
     // Stage-transition checklist templates (per channel + status).
     await sql`
       CREATE TABLE IF NOT EXISTS schedule_checklist_templates (

@@ -14,6 +14,7 @@ import { ThumbnailSlots } from './ThumbnailSlots';
 import { DependenciesSection } from './DependenciesSection';
 import { SeriesPicker } from '@/components/ui/SeriesPicker';
 import { EditorPicker } from './EditorPicker';
+import { TeamMemberPicker } from './TeamMemberPicker';
 import { SCHEDULE_LINK_PARAM } from '@/lib/schedule-link';
 
 type Props = {
@@ -276,6 +277,81 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
           <SendToButton label="🎙️ Voiceover" href={`/voiceover?${SCHEDULE_LINK_PARAM}=${item.id}`} disabled={!item.project_id}
             title={item.project_id ? 'Open Voiceover with this item linked' : 'Link a script first'} />
           <SendToButton label="🎨 Thumbnail" href={`/thumbnails?${SCHEDULE_LINK_PARAM}=${item.id}`} />
+
+          {/* Start a video review — creates a review_project and jumps straight
+              to its detail page where you can upload the cut + share with the
+              editor. The review project's id is stored in custom_fields so a
+              subsequent click reuses the same review project instead of
+              creating a duplicate. */}
+          <ActionButton
+            label="🎞️ Video Review"
+            onClick={async () => {
+              const cf = item.custom_fields as Record<string, string> | undefined;
+              const existing = cf?.review_project_id;
+              if (existing) { window.location.href = `/reviews/${existing}`; return; }
+              try {
+                const res = await fetch('/api/review/projects', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ title: item.title || 'Untitled', description: item.notes || undefined }),
+                });
+                if (!res.ok) throw new Error('Failed to create review project');
+                const { project } = await res.json();
+                // Persist the link so future clicks deep-link directly + the
+                // ListView badge can pick it up. custom_fields_merge does a
+                // jsonb || merge server-side instead of replacing the whole field.
+                await fetch(`/api/schedule/${item.id}`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ custom_fields_merge: { review_project_id: project.id } }),
+                });
+                window.location.href = `/reviews/${project.id}`;
+              } catch { toast.error('Could not start video review'); }
+            }}
+          />
+
+          {/* Start a narration review — needs a script + a Team narrator
+              picked above. Creates the narrator_assignment and lands on the
+              project's Narration tab where takes can be reviewed as they're
+              submitted. */}
+          <ActionButton
+            label="🎤 Narration Review"
+            disabled={!item.project_id || !item.script_id || !item.narrator_collaborator_id}
+            title={
+              !item.project_id || !item.script_id ? 'Save a script to a project first' :
+              !item.narrator_collaborator_id ? 'Pick a Narrator (from Team) above first' :
+              'Create the narrator assignment + open the review tab'
+            }
+            onClick={async () => {
+              if (!item.project_id || !item.script_id || !item.narrator_collaborator_id) return;
+              try {
+                // Fetch the script content to pass to the assignment splitter
+                const scriptRes = await fetch(`/api/projects/${item.project_id}/scripts`);
+                if (!scriptRes.ok) throw new Error('Failed to load script');
+                const scriptsData = await scriptRes.json();
+                const scripts = Array.isArray(scriptsData) ? scriptsData : (scriptsData.scripts || []);
+                const script = scripts.find((s: { id: string }) => s.id === item.script_id) || scripts[0];
+                if (!script?.content) throw new Error('Script content empty');
+                const res = await fetch('/api/narrator/assignments', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    project_id: item.project_id,
+                    script_id: item.script_id,
+                    narrator_id: item.narrator_collaborator_id,
+                    script_text: script.content,
+                    script_version: script.version,
+                  }),
+                });
+                if (!res.ok) {
+                  const err = await res.json().catch(() => ({}));
+                  throw new Error(err.error || 'Failed to create assignment');
+                }
+                toast.success('Narrator assigned — opening review');
+                window.location.href = `/projects/${item.project_id}?tab=narration`;
+              } catch (e) { toast.error(e instanceof Error ? e.message : 'Could not start narration review'); }
+            }}
+          />
         </div>
 
         {titleSuggestions && (
@@ -358,14 +434,33 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
                 </div>
               </Field>
 
-              <Field label="Editor">
+              <Field label="Editor (from Team)">
+                <TeamMemberPicker
+                  role="editor"
+                  selectedId={item.editor_collaborator_id ?? null}
+                  selectedName={item.editor_collaborator_name ?? null}
+                  selectedColor={item.editor_collaborator_color ?? null}
+                  selectedToken={item.editor_collaborator_token ?? null}
+                  onChange={id => onPatch(item.id, { editor_collaborator_id: id })}
+                />
+              </Field>
+
+              <Field label="Narrator (from Team)">
+                <TeamMemberPicker
+                  role="narrator"
+                  selectedId={item.narrator_collaborator_id ?? null}
+                  selectedName={item.narrator_collaborator_name ?? null}
+                  selectedColor={item.narrator_collaborator_color ?? null}
+                  selectedToken={item.narrator_collaborator_token ?? null}
+                  onChange={id => onPatch(item.id, { narrator_collaborator_id: id })}
+                />
+              </Field>
+
+              <Field label="Channel-roster editor (legacy)">
                 <EditorPicker
                   linkedChannels={linkedChannels}
                   selectedEditorId={item.editor_id ?? null}
                   onChange={editorId => onPatch(item.id, { editor_id: editorId })}
-                  // Bubble a refresh to the parent so deleting an editor from
-                  // the roster flushes denormalised editor_name off every
-                  // card (FK cascades server-side, but items state is stale).
                   onRosterChanged={onRefresh}
                 />
               </Field>
@@ -596,6 +691,34 @@ function SendToButton({ label, href, disabled, title }: { label: string; href: s
   );
   if (disabled) return <span title={title}>{body}</span>;
   return <Link href={href} title={title}>{body}</Link>;
+}
+
+/** Like SendToButton but invokes an async handler instead of navigating —
+ *  used for "Start video review" / "Start narration review" which create
+ *  resources before redirecting. */
+function ActionButton({ label, onClick, disabled, title }: { label: string; onClick: () => void | Promise<void>; disabled?: boolean; title?: string }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      type="button"
+      title={title}
+      disabled={disabled || busy}
+      onClick={async () => {
+        if (busy || disabled) return;
+        setBusy(true);
+        try { await onClick(); } finally { setBusy(false); }
+      }}
+      className="flex items-center gap-1 px-2 py-1 rounded shrink-0 whitespace-nowrap cursor-pointer disabled:cursor-not-allowed"
+      style={{
+        background: disabled ? 'var(--bg-tertiary)' : 'rgba(124,58,237,0.08)',
+        color: disabled ? 'var(--text-muted)' : 'var(--accent-purple-bright)',
+        border: `1px solid ${disabled ? 'var(--border)' : 'rgba(124,58,237,0.25)'}`,
+        opacity: disabled ? 0.55 : 1,
+      }}
+    >
+      {busy ? '⏳ Starting…' : label}
+    </button>
+  );
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

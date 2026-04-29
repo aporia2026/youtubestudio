@@ -55,6 +55,17 @@ export type ScheduleItem = {
   editor_id?: string | null;
   editor_name?: string | null;
   editor_channel_id?: string | null;
+  // Team-based picks (collaborators table, role=editor / role=narrator).
+  // These reference /team people and are independent of the per-channel
+  // editor_id roster.
+  editor_collaborator_id?: string | null;
+  editor_collaborator_name?: string | null;
+  editor_collaborator_color?: string | null;
+  editor_collaborator_token?: string | null;
+  narrator_collaborator_id?: string | null;
+  narrator_collaborator_name?: string | null;
+  narrator_collaborator_color?: string | null;
+  narrator_collaborator_token?: string | null;
   // Once published, the YouTube URL lets us pull title/description back.
   youtube_url?: string | null;
 };

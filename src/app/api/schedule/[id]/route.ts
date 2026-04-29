@@ -23,6 +23,12 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       SELECT si.*,
              ed.name AS editor_name,
              ed.channel_id AS editor_channel_id,
+             ec.name AS editor_collaborator_name,
+             ec.color AS editor_collaborator_color,
+             ec.personal_token AS editor_collaborator_token,
+             nc.name AS narrator_collaborator_name,
+             nc.color AS narrator_collaborator_color,
+             nc.personal_token AS narrator_collaborator_token,
              COALESCE(
                (SELECT json_agg(json_build_object('id', c.id, 'name', c.name, 'account_color', c.account_color))
                 FROM schedule_item_channels sic
@@ -32,6 +38,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
              ) AS channels
       FROM schedule_items si
       LEFT JOIN channel_editors ed ON ed.id = si.editor_id
+      LEFT JOIN collaborators ec ON ec.id = si.editor_collaborator_id
+      LEFT JOIN collaborators nc ON nc.id = si.narrator_collaborator_id
       WHERE si.id = ${id}
     `;
     if (!result.rows.length) return NextResponse.json({ error: 'Not found' }, { status: 404 });
@@ -194,6 +202,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         series_id        = CASE WHEN ${hasField('series_id')}     THEN ${patch.series_id ?? null}::uuid ELSE series_id END,
         part_number      = CASE WHEN ${hasField('part_number')}   THEN ${patch.part_number ?? null}   ELSE part_number END,
         editor_id        = CASE WHEN ${hasField('editor_id')}     THEN ${patch.editor_id ?? null}::uuid ELSE editor_id END,
+        editor_collaborator_id   = CASE WHEN ${hasField('editor_collaborator_id')}   THEN ${patch.editor_collaborator_id ?? null}::uuid   ELSE editor_collaborator_id END,
+        narrator_collaborator_id = CASE WHEN ${hasField('narrator_collaborator_id')} THEN ${patch.narrator_collaborator_id ?? null}::uuid ELSE narrator_collaborator_id END,
         updated_at       = NOW()
       WHERE id = ${id}
     `;

@@ -71,6 +71,12 @@ export async function GET(req: NextRequest) {
               s.title AS series_title,
               ed.name AS editor_name,
               ed.channel_id AS editor_channel_id,
+              ec.name AS editor_collaborator_name,
+              ec.color AS editor_collaborator_color,
+              ec.personal_token AS editor_collaborator_token,
+              nc.name AS narrator_collaborator_name,
+              nc.color AS narrator_collaborator_color,
+              nc.personal_token AS narrator_collaborator_token,
               COALESCE(
                 (SELECT json_agg(json_build_object('id', c.id, 'name', c.name, 'account_color', c.account_color))
                  FROM schedule_item_channels sic
@@ -81,6 +87,8 @@ export async function GET(req: NextRequest) {
        FROM schedule_items si
        LEFT JOIN series s ON s.id = si.series_id
        LEFT JOIN channel_editors ed ON ed.id = si.editor_id
+       LEFT JOIN collaborators ec ON ec.id = si.editor_collaborator_id
+       LEFT JOIN collaborators nc ON nc.id = si.narrator_collaborator_id
        ${where}
        ORDER BY si.scheduled_for NULLS LAST, si.position, si.created_at DESC`,
       values,
