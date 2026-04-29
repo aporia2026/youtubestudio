@@ -25,6 +25,8 @@ const PUBLIC_PREFIXES = [
   '/review/',
   '/narrate/',
   '/narrator/',
+  '/api/narrate/',
+  '/api/narrator/',
   '/api/narrator-dashboard/',
   '/editor/',
   '/api/editor-dashboard/',
@@ -41,6 +43,15 @@ export async function proxy(req: NextRequest) {
 
   // Allow public review pages and their token-based API endpoints
   if (PUBLIC_PREFIXES.some(p => pathname.startsWith(p))) {
+    return NextResponse.next();
+  }
+
+  // Token-side review API routes (`/api/review/<token>/...`) are public —
+  // they authenticate via the share-link token, not a session cookie.
+  // BUT `/api/review/projects/<id>/...` is the owner-side admin surface and
+  // MUST stay auth-gated. The two namespaces share a prefix, so we match
+  // on the second path segment instead of relying on a flat prefix list.
+  if (pathname.startsWith('/api/review/') && !pathname.startsWith('/api/review/projects/')) {
     return NextResponse.next();
   }
 
