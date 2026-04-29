@@ -108,3 +108,38 @@ export function buildNarrationKey(assignmentId: string, sectionId: string, takeN
   const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
   return `assignments/${assignmentId}/sections/${sectionId}/take-${takeNumber}-${Date.now()}-${sanitized}`;
 }
+
+// ---------------------------------------------------------------------------
+// Images bucket — image references + thumbnails (and any other static images)
+// ---------------------------------------------------------------------------
+
+export function getImagesBucket(): string {
+  return process.env.R2_IMAGES_BUCKET_NAME || 'images';
+}
+
+/** Presigned PUT URL for direct browser → R2 upload to the images bucket. */
+export async function getImagesUploadUrl(key: string, contentType: string): Promise<string> {
+  return getUploadUrlForBucket(getImagesBucket(), key, contentType);
+}
+
+/** Presigned GET URL for image download from the images bucket (24h expiry). */
+export async function getImagesDownloadUrl(key: string): Promise<string> {
+  return getDownloadUrlForBucket(getImagesBucket(), key, process.env.R2_IMAGES_PUBLIC_URL);
+}
+
+/** Delete an image object from R2 images bucket. */
+export async function deleteImagesObject(key: string): Promise<void> {
+  return deleteFromBucket(getImagesBucket(), key);
+}
+
+/** Build an R2 key for a project image reference. */
+export function buildImageRefKey(projectId: string, fileName: string): string {
+  const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return `references/${projectId}/${Date.now()}-${sanitized}`;
+}
+
+/** Build an R2 key for a project thumbnail (lives in the thumbnails/ prefix). */
+export function buildThumbnailKey(projectId: string, fileName: string): string {
+  const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return `thumbnails/${projectId}/${Date.now()}-${sanitized}`;
+}

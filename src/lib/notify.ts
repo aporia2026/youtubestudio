@@ -178,6 +178,30 @@ export async function notifyRetakeRequested(args: {
   return sendEmail({ to: recipient.email, subject: t.subject, html: t.html });
 }
 
+export async function notifyEditorAssigned(args: {
+  editorId: string;
+  projectTitle: string;
+  editorNotes?: string | null;
+  deadline?: string | null;
+}) {
+  const recipient = await getCollaboratorEmailIfWantsNotifications(args.editorId);
+  if (!recipient) return;
+  // We need the editor's personal_token to build the dashboard URL
+  const { rows } = await sql`SELECT name, personal_token FROM collaborators WHERE id = ${args.editorId}`;
+  const row = rows[0];
+  if (!row?.personal_token) return;
+  const t = tpl.editorAssignmentTemplate({
+    appUrl: getAppUrl(),
+    editorName: row.name || 'Editor',
+    projectTitle: args.projectTitle,
+    editorNotes: args.editorNotes,
+    deadline: args.deadline,
+    dashboardUrl: `${getAppUrl()}/editor/${row.personal_token}`,
+    unsubscribeUrl: buildUnsubscribeUrl(recipient.unsubscribeToken),
+  });
+  return sendEmail({ to: recipient.email, subject: t.subject, html: t.html });
+}
+
 export async function notifyAssignmentReceived(args: {
   narratorId: string;
   narratorName: string;

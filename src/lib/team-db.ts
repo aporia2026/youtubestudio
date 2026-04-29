@@ -228,6 +228,17 @@ export async function getNarratorByPersonalToken(token: string) {
   return rows[0] || null;
 }
 
+/** Look up an editor by their personal token (used for /editor/[token]). */
+export async function getEditorByPersonalToken(token: string) {
+  await ensureTeamSchema();
+  const { rows } = await sql`
+    SELECT id, name, email, color, role, personal_token, notifications_enabled
+    FROM collaborators WHERE personal_token = ${token} AND role = 'editor'
+    LIMIT 1
+  `;
+  return rows[0] || null;
+}
+
 export async function revokeAllAccess(collaboratorId: string) {
   await ensureTeamSchema();
 

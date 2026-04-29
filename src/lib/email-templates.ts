@@ -293,6 +293,34 @@ export function assignmentReceivedTemplate(ctx: BaseCtx & {
   };
 }
 
+export function editorAssignmentTemplate(ctx: BaseCtx & {
+  editorName: string;
+  projectTitle: string;
+  editorNotes?: string | null;
+  deadline?: string | null;
+  dashboardUrl: string;
+}) {
+  const subject = `New video editing assignment: ${ctx.projectTitle}`;
+  const body = `
+    <p style="margin:0 0 12px 0;">Hi ${escapeHtml(ctx.editorName)},</p>
+    <p style="margin:0 0 12px 0;">You've been assigned to edit <strong>${escapeHtml(ctx.projectTitle)}</strong>.</p>
+    ${ctx.editorNotes ? `<blockquote style="margin:12px 0;padding:12px 16px;background:#0a0a14;border-left:3px solid #06b6d4;border-radius:6px;color:#e2e8f0;">${escapeHtml(ctx.editorNotes)}</blockquote>` : ''}
+    ${ctx.deadline ? `<p style="margin:0 0 12px 0;">Deadline: <strong>${escapeHtml(new Date(ctx.deadline).toLocaleDateString())}</strong></p>` : ''}
+    <p style="margin:0;">Open your dashboard to see the script, image references, thumbnails, and upload your finished video for review.</p>
+  `;
+  return {
+    subject,
+    html: layout({
+      preheader: ctx.editorNotes ? ctx.editorNotes.slice(0, 80) : `Open your editor dashboard`,
+      heading: subject,
+      body,
+      ctaLabel: 'Open editor dashboard',
+      ctaHref: ctx.dashboardUrl,
+      unsubscribeUrl: ctx.unsubscribeUrl,
+    }),
+  };
+}
+
 export function testEmailTemplate(ctx: BaseCtx) {
   const subject = '✅ YT Studio email notifications are working';
   const body = `

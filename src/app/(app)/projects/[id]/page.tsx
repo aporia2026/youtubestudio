@@ -7,9 +7,10 @@ import { useParams } from 'next/navigation';
 import { formatBytes, countWords, estimateDuration, formatDuration } from '@/lib/utils';
 import { ScriptVoiceoverPanel } from '@/components/ui/ScriptVoiceoverPanel';
 import { NarrationTab } from '@/components/narrator/NarrationTab';
+import { EditorTab } from '@/components/editor/EditorTab';
 import Link from 'next/link';
 
-type TabId = 'script' | 'voiceover' | 'media' | 'references' | 'narration';
+type TabId = 'script' | 'voiceover' | 'media' | 'references' | 'narration' | 'editor';
 
 interface Project {
   id: string;
@@ -61,7 +62,7 @@ export default function ProjectDetailPage() {
   const [activeTab, setActiveTab] = useState<TabId>(() => {
     if (typeof window === 'undefined') return 'script';
     const tab = new URLSearchParams(window.location.search).get('tab');
-    if (tab === 'narration' || tab === 'voiceover' || tab === 'media' || tab === 'references' || tab === 'script') return tab;
+    if (tab === 'narration' || tab === 'voiceover' || tab === 'media' || tab === 'references' || tab === 'script' || tab === 'editor') return tab;
     return 'script';
   });
   const [loading, setLoading] = useState(true);
@@ -201,6 +202,7 @@ export default function ProjectDetailPage() {
     { id: 'media', label: '🎬 Media', count: media.length },
     { id: 'references', label: '🔗 References', count: refs.length },
     { id: 'narration', label: '🎤 Narration' },
+    { id: 'editor', label: '🎬 Editor' },
   ];
 
   return (
@@ -504,6 +506,11 @@ export default function ProjectDetailPage() {
           scriptText={activeScript?.content || ''}
           scriptVersion={activeScript?.version || 1}
         />
+      )}
+
+      {/* Editor Tab */}
+      {activeTab === 'editor' && project && (
+        <EditorTab projectId={project.id} />
       )}
     </div>
   );
