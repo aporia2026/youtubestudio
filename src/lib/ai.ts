@@ -51,6 +51,51 @@ function requireKieKey(): string {
   return key;
 }
 
+/**
+ * Extract assistant text from a Kie Gemini chat-completions response.
+ * Robust to multiple shapes the gateway has returned across model
+ * versions:
+ *   - choices[0].message.content as a plain string (OpenAI standard)
+ *   - choices[0].message.content as an array of {type, text} blocks
+ *     (the gemini-3.x request shape — some versions echo the same shape
+ *     in responses)
+ *   - choices[0].message.reasoning_content (defense in depth — visible
+ *     content can land here when include_thoughts isn't honored)
+ *   - choices[0].text (legacy completions fallback)
+ */
+function extractKieGeminiContent(data: unknown): string {
+  if (!data || typeof data !== 'object') return '';
+  const obj = data as Record<string, unknown>;
+  const choices = obj.choices as unknown[] | undefined;
+  if (!Array.isArray(choices) || choices.length === 0) return '';
+  const first = choices[0] as Record<string, unknown>;
+  const message = first.message as Record<string, unknown> | undefined;
+  const messageContent = message?.content;
+  if (typeof messageContent === 'string' && messageContent.length > 0) {
+    return messageContent;
+  }
+  if (Array.isArray(messageContent)) {
+    const parts: string[] = [];
+    for (const block of messageContent) {
+      if (block && typeof block === 'object') {
+        const b = block as Record<string, unknown>;
+        if (typeof b.text === 'string') parts.push(b.text);
+        else if (typeof b.content === 'string') parts.push(b.content);
+      } else if (typeof block === 'string') {
+        parts.push(block);
+      }
+    }
+    if (parts.length > 0) return parts.join('');
+  }
+  // Some configurations route visible output to reasoning_content when
+  // include_thoughts is on. Fall back to it so we don't return empty.
+  if (typeof message?.reasoning_content === 'string') {
+    return message.reasoning_content as string;
+  }
+  if (typeof first.text === 'string') return first.text as string;
+  return '';
+}
+
 async function kieGeminiFetch(kieModelId: string, prompt: string, systemPrompt?: string, stream = false, maxTokens = 4000) {
   const apiKey = requireKieKey();
   const url = `${KIE_BASE}/${kieModelId}/v1/chat/completions`;
@@ -58,21 +103,26 @@ async function kieGeminiFetch(kieModelId: string, prompt: string, systemPrompt?:
   // Kie's gemini-3.x routes (gemini-3-flash, gemini-3-pro, gemini-3.1-pro)
   // require `content` to be an ARRAY of content blocks, not a plain string.
   // Older 2.x routes accept both, but 3.x silently 200s with an empty body
-  // when given the legacy string form — exact symptom we saw before this
-  // fix (Script Generated! toast over an empty editor). Sending the array
-  // form universally is OpenAI-compatible and works on every Kie route.
+  // when given the legacy string form. Sending the array form universally
+  // is OpenAI-compatible and works on every Kie route.
   // Ref: https://docs.kie.ai/market/gemini/gemini-3-1-pro
   type ContentBlock = { type: 'text'; text: string };
   const messages: { role: string; content: ContentBlock[] }[] = [];
   if (systemPrompt) messages.push({ role: 'system', content: [{ type: 'text', text: systemPrompt }] });
   messages.push({ role: 'user', content: [{ type: 'text', text: prompt }] });
 
-  // Gemini 3.x supports a `reasoning_effort` knob — set to 'high' on the
-  // pro tiers so the model actually engages its reasoning loop instead of
-  // returning a thin/empty response. No-op for routes that don't recognize it.
   const body: Record<string, unknown> = { messages, stream, max_tokens: maxTokens };
-  if (kieModelId.startsWith('gemini-3') && (kieModelId.includes('pro') || kieModelId.includes('thinking'))) {
-    body.reasoning_effort = 'high';
+
+  // Gemini 3.x defaults `include_thoughts` to TRUE on Kie's gateway. With
+  // thoughts on, the model burns most of its token budget reasoning and
+  // returns a thin (or empty) final message — the exact failure we kept
+  // hitting on 3.1-pro: 200 OK, message.content empty, script-validated
+  // bails with "All generation attempts failed". We never read the thoughts
+  // anywhere in this app, so disabling them frees the full max_tokens for
+  // actual output. No effect on routes that don't recognize the field.
+  // Ref: https://docs.kie.ai/market/gemini/gemini-3-1-pro
+  if (kieModelId.startsWith('gemini-3')) {
+    body.include_thoughts = false;
   }
 
   return fetch(url, {
@@ -175,7 +225,7 @@ async function kieGenerateText(modelId: string, prompt: string, systemPrompt?: s
     const res = await kieRetry(() => kieGeminiFetch(config.kieModelId, prompt, systemPrompt, false, maxTokens));
     if (!res.ok) throw new Error(await kieErrorMessage(res));
     const data = await res.json();
-    return data.choices?.[0]?.message?.content || '';
+    return extractKieGeminiContent(data);
   }
 
   if (config.endpointType === 'claude') {
