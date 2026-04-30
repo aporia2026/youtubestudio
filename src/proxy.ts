@@ -62,7 +62,21 @@ export async function proxy(req: NextRequest) {
 
   const token = req.cookies.get(COOKIE_NAME)?.value;
 
+  // For API routes, return a JSON 401 instead of a 30x redirect to /login.
+  // fetch() transparently follows the redirect — the browser then sees 200 OK
+  // with the login page HTML, and our streaming/JSON consumers happily parse
+  // login HTML as if it were data. A 401 with a clear error body lets the
+  // client surface 'session expired' and stop trying to read the body as
+  // script content.
+  const isApi = pathname.startsWith('/api/');
+
   if (!token) {
+    if (isApi) {
+      return NextResponse.json(
+        { error: 'Session expired. Refresh the page and sign in again.' },
+        { status: 401 },
+      );
+    }
     return NextResponse.redirect(new URL('/login', req.url));
   }
 
@@ -70,6 +84,14 @@ export async function proxy(req: NextRequest) {
     await jwtVerify(token, getSecret());
     return NextResponse.next();
   } catch {
+    if (isApi) {
+      const response = NextResponse.json(
+        { error: 'Session expired. Refresh the page and sign in again.' },
+        { status: 401 },
+      );
+      response.cookies.delete(COOKIE_NAME);
+      return response;
+    }
     const response = NextResponse.redirect(new URL('/login', req.url));
     response.cookies.delete(COOKIE_NAME);
     return response;

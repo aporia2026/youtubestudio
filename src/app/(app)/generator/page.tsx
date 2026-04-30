@@ -545,6 +545,14 @@ function GeneratorPage() {
           }),
           signal: abortRef.current.signal,
         });
+        // Same session-expired guard as the streaming path — middleware
+        // redirects to /login when the cookie is bad, fetch transparently
+        // follows, response is 200 + HTML.
+        const sqaUrl = res.url || '';
+        const sqaCt = res.headers.get('content-type') || '';
+        if (sqaUrl.includes('/login') || sqaCt.includes('text/html')) {
+          throw new Error('Your session expired. Refresh the page (Ctrl/Cmd+Shift+R) and sign in again.');
+        }
         // Vercel returns an HTML/text error page (not JSON) when a serverless
         // function crashes or hits FUNCTION_INVOCATION_TIMEOUT. Parse the body
         // as text first so we can surface a readable message instead of a
@@ -555,6 +563,9 @@ function GeneratorPage() {
         catch {
           if (res.status === 504 || /timeout|FUNCTION_INVOCATION_TIMEOUT/i.test(rawBody)) {
             throw new Error('Self-QA timed out on the server (Vercel 300s cap). Lower the threshold or try a faster model.');
+          }
+          if (/<!doctype html|<html|<body/i.test(rawBody.slice(0, 500))) {
+            throw new Error('Your session expired. Refresh the page (Ctrl/Cmd+Shift+R) and sign in again.');
           }
           throw new Error(`Self-QA server error (${res.status}). The function likely crashed — check the Vercel dashboard for this deployment's runtime logs.`);
         }
@@ -618,6 +629,19 @@ function GeneratorPage() {
         signal: abortRef.current.signal,
       });
 
+      // Auth-expired detection (covers the "fails in one Chrome profile,
+      // works in another" symptom). When the session cookie is invalid the
+      // middleware redirects POST /api/generate/script → /login. fetch
+      // follows the redirect transparently, the final response is 200 OK
+      // with the login HTML, and without this guard we'd happily stream
+      // HTML markup into the script editor. Detect it via the redirected
+      // URL or an HTML content-type and surface a clear, actionable error.
+      const finalUrl = res.url || '';
+      const ct = res.headers.get('content-type') || '';
+      if (finalUrl.includes('/login') || ct.includes('text/html')) {
+        throw new Error('Your session expired. Refresh the page (Ctrl/Cmd+Shift+R) and sign in again.');
+      }
+
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.error || 'Generation failed');
@@ -635,6 +659,15 @@ function GeneratorPage() {
         full += chunk;
         setScript(full);
         scriptRef.current?.scrollTo({ top: scriptRef.current.scrollHeight, behavior: 'smooth' });
+      }
+
+      // Belt-and-braces: HTML markup leaking into the stream means we
+      // somehow got a redirect we didn't catch above. Surface the same
+      // session-expired error rather than presenting login HTML as a
+      // script.
+      if (/<!doctype html|<html|<body/i.test(full.slice(0, 500))) {
+        setScript('');
+        throw new Error('Your session expired. Refresh the page (Ctrl/Cmd+Shift+R) and sign in again.');
       }
 
       // Server signals an empty-provider-response with this sentinel after
