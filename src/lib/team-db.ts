@@ -228,11 +228,24 @@ export async function updateCollaborator(id: string, fields: {
 
 export async function deleteCollaborator(id: string) {
   await ensureTeamSchema();
-  // Clear collaborator references from share links before deleting
+  // Clear collaborator references from share links before deleting.
   try { await sql`UPDATE review_share_links SET collaborator_id = NULL WHERE collaborator_id = ${id}`; } catch (e) { console.warn('share link cleanup:', e); }
-  // Deactivate narrator assignments before removing profile (avoids FK violations)
-  try { await sql`UPDATE narrator_assignments SET status = 'completed' WHERE narrator_id = ${id} AND status != 'completed'`; } catch (e) { console.warn('assignment deactivation:', e); }
+
+  // Hard-delete narrator assignments. This cascades to narrator_sections,
+  // narrator_takes, and narrator_comments via ON DELETE CASCADE.
+  //
+  // Why hard-delete: the FK narrator_assignments.narrator_id REFERENCES
+  // narrator_profiles(id) has no ON DELETE clause, so leaving the rows
+  // around (the previous "soft-deactivate" approach) made the subsequent
+  // DELETE FROM narrator_profiles silently fail with an FK violation.
+  // The narrator_profiles row would then survive, and on the next Lambda
+  // cold start the team-schema migration would re-import it into the
+  // collaborators table — the deleted person would visibly come back.
+  // The "Revoke All" action is the soft alternative; Delete means delete.
+  try { await sql`DELETE FROM narrator_assignments WHERE narrator_id = ${id}`; } catch (e) { console.warn('narrator_assignments cleanup:', e); }
+
   try { await sql`DELETE FROM narrator_profiles WHERE id = ${id}`; } catch (e) { console.warn('narrator_profiles cleanup:', e); }
+  // editor_assignments cascades automatically via FK ON DELETE CASCADE.
   await sql`DELETE FROM collaborators WHERE id = ${id}`;
 }
 
