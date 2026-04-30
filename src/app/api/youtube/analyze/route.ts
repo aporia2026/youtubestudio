@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchYouTubeVideoData } from '@/lib/youtube';
+import { fetchYouTubeVideoData, extractVideoId } from '@/lib/youtube';
 import { fetchTranscript, buildTimestampedTranscript, extractHookTranscript, computePacingStats } from '@/lib/youtube-transcript';
 import { generateText } from '@/lib/ai';
 import { deepVideoAnalysisPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { getCachedReference, upsertCachedReference, touchReference } from '@/lib/reference-cache-db';
 
 export const maxDuration = 300; // 5 minutes — deep analysis takes time
 
@@ -37,8 +38,52 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { url, modelId } = await req.json();
+    const { url, modelId, force } = await req.json();
     if (!url) return NextResponse.json({ error: 'URL required' }, { status: 400 });
+
+    // ── Cache check ──────────────────────────────────────────────────
+    // Deep analysis costs a transcript fetch + a multi-thousand-token AI
+    // round-trip per add. Anytime the same YouTube video has been added
+    // before — even on a different project — we can serve the prior
+    // analysis instantly. ?force=true bypasses the cache (e.g. user
+    // wants to re-run with a stronger model).
+    //
+    // Keyed by video_id so http://youtu.be/X, https://youtube.com/watch?v=X,
+    // and shorts links all hit the same row.
+    const videoId = extractVideoId(url);
+    if (videoId && !force) {
+      try {
+        const cached = await getCachedReference(videoId);
+        if (cached && cached.analysis) {
+          // Bump usage stats async so the library can sort by recency.
+          touchReference(videoId).catch(() => {});
+          return NextResponse.json({
+            metadata: {
+              id: videoId,
+              title: cached.title,
+              channelTitle: cached.channel_title,
+              viewCount: cached.view_count,
+              likeCount: cached.like_count ?? 0,
+              commentCount: cached.comment_count ?? 0,
+              duration: cached.duration_seconds ?? undefined,
+              thumbnailUrl: cached.thumbnail_url,
+              tags: cached.tags ?? [],
+              description: cached.description ?? '',
+            },
+            hasTranscript: cached.has_transcript,
+            transcriptWordCount: cached.transcript_word_count ?? 0,
+            transcriptDuration: cached.duration_seconds ?? 0,
+            analysis: cached.analysis,
+            styleAnalysis: cached.style_analysis,
+            warnings: [],
+            cached: true,
+            cachedAt: cached.created_at,
+          });
+        }
+      } catch (e) {
+        console.warn('reference cache lookup failed (proceeding to live analyze):', e);
+      }
+    }
 
     // Fetch metadata, transcript, and thumbnail in parallel
     const metadataPromise = fetchYouTubeVideoData(url);
@@ -137,6 +182,36 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // ── Cache write ─────────────────────────────────────────────────
+    // Persist the result so subsequent adds of the same video are
+    // instant. Only stash when we actually produced an analysis —
+    // partial/failed runs aren't worth keeping. Best-effort: a cache
+    // write failure must not break the response to the user.
+    if (analysis || styleAnalysis) {
+      try {
+        await upsertCachedReference({
+          youtube_id: metadata.id,
+          url,
+          title: metadata.title,
+          channel_title: metadata.channelTitle || '',
+          view_count: metadata.viewCount,
+          like_count: metadata.likeCount,
+          comment_count: metadata.commentCount || 0,
+          duration_seconds: typeof metadata.duration === 'number' ? metadata.duration : undefined,
+          thumbnail_url: metadata.thumbnailUrl,
+          description: metadata.description?.slice(0, 1000),
+          tags: metadata.tags?.slice(0, 30),
+          has_transcript: !!transcript,
+          transcript_word_count: transcript?.wordCount,
+          analysis,
+          style_analysis: styleAnalysis,
+          model_id: modelId ?? null,
+        });
+      } catch (e) {
+        console.warn('reference cache write failed:', e);
+      }
+    }
+
     return NextResponse.json({
       metadata: {
         id: metadata.id,
@@ -158,6 +233,7 @@ export async function POST(req: NextRequest) {
       // Readable summary (backward compatible)
       styleAnalysis,
       warnings,
+      cached: false,
     });
   } catch (err: unknown) {
     console.error('Video analyze error:', err);

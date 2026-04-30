@@ -20,6 +20,7 @@ import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { DraftsBanner } from '@/components/ui/DraftsBanner';
 import { SeriesPicker } from '@/components/ui/SeriesPicker';
 import { TemplateContextPicker, buildCombinedContext } from '@/components/ui/TemplateContextPicker';
+import { ReferenceLibraryPicker, type PickedReference } from '@/components/ui/ReferenceLibraryPicker';
 import { fetchPriorParts, formatPriorPartsForPrompt, saveSeriesPart } from '@/lib/series';
 import { EMPTY_CONSTRAINTS, type ScriptConstraints } from '@/lib/script-options';
 import { getScriptHistory, saveScript as saveScriptToHistory, deleteScriptEntry, clearScriptHistory, getRecentTopics, type ScriptHistoryEntry } from '@/lib/history';
@@ -127,6 +128,7 @@ function GeneratorPage() {
   // Reference videos
   const [refUrl, setRefUrl] = useState('');
   const [refs, setRefs] = useState<VideoRef[]>([]);
+  const [showLibrary, setShowLibrary] = useState(false);
   const [showRefs, setShowRefs] = useState(false);
 
   // History & drafts
@@ -374,7 +376,14 @@ function GeneratorPage() {
         analysis: data.analysis || null,
         loading: false,
       } : r));
-      toast.success(`Deep analysis complete: ${data.metadata.title.slice(0, 40)}...`);
+      // Cache-hit responses skip the AI round-trip — let the user know
+      // they got an instant answer from the saved library.
+      const titleSlice = data.metadata.title.slice(0, 40);
+      if (data.cached) {
+        toast.success(`📚 Reused from library: ${titleSlice}...`);
+      } else {
+        toast.success(`Deep analysis complete: ${titleSlice}... (saved to library)`);
+      }
     } catch {
       setRefs(prev => prev.filter(r => r.id !== refId));
       toast.error('Failed to analyze video');
@@ -830,6 +839,17 @@ function GeneratorPage() {
                           className="input-field flex-1" style={{ fontSize: 12, padding: '6px 10px' }}
                           onKeyDown={e => e.key === 'Enter' && addReference()} />
                         <button onClick={addReference} disabled={!refUrl.trim()} className="btn-primary text-xs px-3 py-1.5">Add</button>
+                        {/* Pick from saved library — every previously analyzed video
+                            is cached server-side and instantly re-attachable here
+                            without scraping or re-running deep analysis. */}
+                        <button
+                          type="button"
+                          onClick={() => setShowLibrary(true)}
+                          className="btn-secondary text-xs px-3 py-1.5"
+                          title="Browse previously analyzed videos and reuse them without re-scraping"
+                        >
+                          📚 From Library
+                        </button>
                       </div>
                       {refs.map(ref => (
                         <div key={ref.id} className="p-2 rounded-lg" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
@@ -1503,6 +1523,38 @@ function GeneratorPage() {
         onRestore={restoreScript}
         onDelete={handleDeleteScript}
         onClearAll={handleClearScripts}
+      />
+
+      {/* Reference library — opens via the "📚 From Library" button in the
+          Reference Videos section. Pulls a previously-cached deep analysis
+          and appends it to the refs array as if it had just been analyzed.
+          excludeYoutubeIds prevents re-adding what's already on the page. */}
+      <ReferenceLibraryPicker
+        open={showLibrary}
+        onClose={() => setShowLibrary(false)}
+        excludeYoutubeIds={refs
+          .map(r => {
+            const m = r.url.match(/(?:v=|youtu\.be\/|shorts\/)([A-Za-z0-9_-]{11})/);
+            return m ? m[1] : null;
+          })
+          .filter((id): id is string => !!id)}
+        onPick={(picked: PickedReference) => {
+          const refId = `lib-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          setRefs(prev => [
+            ...prev,
+            {
+              id: refId,
+              url: picked.url,
+              title: picked.title,
+              channelTitle: picked.channelTitle,
+              viewCount: picked.viewCount,
+              thumbnailUrl: picked.thumbnailUrl || '',
+              styleAnalysis: picked.styleAnalysis,
+              analysis: (picked.analysis as VideoAnalysis | null) || null,
+              loading: false,
+            },
+          ]);
+        }}
       />
     </div>
   );
