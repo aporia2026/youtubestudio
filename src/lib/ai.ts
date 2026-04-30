@@ -52,6 +52,32 @@ function requireKieKey(): string {
 }
 
 /**
+ * Detect Kie's "HTTP 200 with error envelope" response. Confirmed live
+ * during a gemini-3.1-pro outage:
+ *   { "code": 500, "msg": "The server is currently being maintained, ..." }
+ * The HTTP status is 200, so res.ok and kieRetry both think it succeeded.
+ * Without this check we'd extract empty content and the script-validated
+ * path would silently loop until "All generation attempts failed".
+ *
+ * Throws a useful error when the body carries a non-OK code so the caller
+ * surfaces Kie's actual message to the user.
+ */
+function throwIfKieBodyError(data: unknown): void {
+  if (!data || typeof data !== 'object') return;
+  const obj = data as Record<string, unknown>;
+  // Only treat as an error when there's a `code` field AND no `choices`.
+  // Successful chat-completions responses sometimes carry a code/status
+  // field that's safe to ignore as long as the assistant message exists.
+  if ('code' in obj && !('choices' in obj)) {
+    const code = obj.code;
+    const msg = (obj.msg ?? obj.message ?? 'Kie returned an error envelope') as string;
+    if (code != null && code !== 0 && code !== 200) {
+      throw new Error(`Kie gateway error (code ${code}): ${msg}`);
+    }
+  }
+}
+
+/**
  * Extract assistant text from a Kie Gemini chat-completions response.
  * Robust to multiple shapes the gateway has returned across model
  * versions:
@@ -225,6 +251,7 @@ async function kieGenerateText(modelId: string, prompt: string, systemPrompt?: s
     const res = await kieRetry(() => kieGeminiFetch(config.kieModelId, prompt, systemPrompt, false, maxTokens));
     if (!res.ok) throw new Error(await kieErrorMessage(res));
     const data = await res.json();
+    throwIfKieBodyError(data);
     return extractKieGeminiContent(data);
   }
 
@@ -279,6 +306,23 @@ async function* kieStreamText(modelId: string, prompt: string, systemPrompt?: st
 
   if (!res.ok) throw new Error(await kieErrorMessage(res));
   if (!res.body) throw new Error('No response body from Kie.ai');
+
+  // Detect Kie's "200 + error envelope" trick on stream requests too —
+  // when a model is in maintenance the gateway sometimes returns a plain
+  // JSON body (not SSE) on a route the client asked to stream. Without
+  // this peek we'd consume zero SSE events and yield nothing, leaving
+  // the caller to think the model returned empty.
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('application/json') && !contentType.includes('event-stream')) {
+    const errBody = await res.text();
+    try {
+      const parsed = JSON.parse(errBody);
+      throwIfKieBodyError(parsed);
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith('Kie gateway error')) throw e;
+    }
+    throw new Error(`Kie returned a non-stream response on a stream request: ${errBody.slice(0, 300)}`);
+  }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
