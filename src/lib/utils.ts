@@ -22,8 +22,22 @@ export function estimateDuration(wordCount: number): number {
   return Math.round((wordCount / 140) * 60);
 }
 
+/**
+ * Strip bracketed production cues from a script — anything in square
+ * brackets including [VISUAL CUE: ...], [SFX: ...], [B-ROLL: ...],
+ * performance tags like [excited] / [pause] / [whisper], inline
+ * directions like [PAUSE], etc. None of these are spoken aloud, so
+ * none of them should count toward word totals or duration estimates
+ * anywhere in the app. The single source of truth lives here so the
+ * generator, project page, narrator dashboard, exports, and section
+ * splitter all agree on what "a word the narrator says" means.
+ */
+export function stripProductionCues(text: string): string {
+  return text.replace(/\[[^\]]+\]/g, '');
+}
+
 export function countWords(text: string): number {
-  return text.trim().split(/\s+/).filter(Boolean).length;
+  return stripProductionCues(text).trim().split(/\s+/).filter(Boolean).length;
 }
 
 export function formatBytes(bytes: number): string {

@@ -41,10 +41,17 @@ export function parseEmphasisMarkers(text: string): EmphasisMarker[] {
 }
 
 /**
- * Count words in text (excluding tags).
+ * Count words a narrator would actually say. Strips every bracketed cue
+ * (production directions like [VISUAL CUE: ...] AND performance tags
+ * like [excited], [pause], [whisper]) plus markdown punctuation, then
+ * counts whitespace-separated tokens.
+ *
+ * Wider than the previous TAG_REGEX-only strip so section sizing
+ * matches what the rest of the app considers "spoken". Mirrors
+ * stripProductionCues() in lib/utils.ts.
  */
 function countWords(text: string): number {
-  const clean = text.replace(TAG_REGEX, '').replace(/[#*_\-—]/g, ' ');
+  const clean = text.replace(/\[[^\]]+\]/g, '').replace(/[#*_\-—]/g, ' ');
   return clean.split(/\s+/).filter(w => w.length > 0).length;
 }
 
