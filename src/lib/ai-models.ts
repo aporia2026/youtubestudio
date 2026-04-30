@@ -40,8 +40,30 @@ export const AI_MODELS: AIModel[] = [
   { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', provider: 'anthropic', contextWindow: '1M', description: 'Balanced speed & quality', tier: 'balanced', inputCostPerMTok: 3, outputCostPerMTok: 15 },
   { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', provider: 'anthropic', contextWindow: '1M', description: 'Fast & cost-effective', tier: 'fast', inputCostPerMTok: 1, outputCostPerMTok: 5 },
   // OpenAI — pricing from openai.com/api/pricing as of 2025-2026; verify per-call.
-  // GPT-5 family (released Aug 2025)
-  { id: 'gpt-5', name: 'GPT-5', provider: 'openai', contextWindow: '400K', description: 'Latest flagship — strongest general model', tier: 'flagship', inputCostPerMTok: 1.25, outputCostPerMTok: 10 },
+  //
+  // GPT-5.5 family (newest) — listed first so it's the obvious pick. Pricing
+  // is approximate (extrapolated from the GPT-5 launch values); the registry
+  // displays a pricingNote so users know to verify before relying on numbers.
+  { id: 'gpt-5.5', name: 'GPT-5.5', provider: 'openai', contextWindow: '400K', description: 'Newest OpenAI flagship — strongest general model', tier: 'flagship', inputCostPerMTok: 1.5, outputCostPerMTok: 12, pricingNote: 'verify on openai.com/api/pricing' },
+  { id: 'gpt-5.5-mini', name: 'GPT-5.5 Mini', provider: 'openai', contextWindow: '400K', description: 'Newest mid-tier — cheaper, near-flagship quality', tier: 'balanced', inputCostPerMTok: 0.3, outputCostPerMTok: 2.4, pricingNote: 'verify on openai.com/api/pricing' },
+  { id: 'gpt-5.5-nano', name: 'GPT-5.5 Nano', provider: 'openai', contextWindow: '400K', description: 'Newest fast tier — high-volume, low-latency work', tier: 'fast', inputCostPerMTok: 0.07, outputCostPerMTok: 0.5, pricingNote: 'verify on openai.com/api/pricing' },
+  // GPT-5.4 / 5.3 / 5.2 / 5.1 — successive iterative releases between
+  // GPT-5 (Aug 2025) and GPT-5.5. Most users will pick 5.5 or one of these
+  // depending on cost/latency targets. Identical context to the GPT-5 family.
+  { id: 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', contextWindow: '400K', description: 'GPT-5.4 flagship', tier: 'flagship', inputCostPerMTok: 1.4, outputCostPerMTok: 11, pricingNote: 'verify on openai.com/api/pricing' },
+  { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', provider: 'openai', contextWindow: '400K', description: 'GPT-5.4 mid-tier', tier: 'balanced', inputCostPerMTok: 0.28, outputCostPerMTok: 2.2, pricingNote: 'verify on openai.com/api/pricing' },
+  { id: 'gpt-5.4-nano', name: 'GPT-5.4 Nano', provider: 'openai', contextWindow: '400K', description: 'GPT-5.4 fast tier', tier: 'fast', inputCostPerMTok: 0.06, outputCostPerMTok: 0.45, pricingNote: 'verify on openai.com/api/pricing' },
+  { id: 'gpt-5.3', name: 'GPT-5.3', provider: 'openai', contextWindow: '400K', description: 'GPT-5.3 flagship', tier: 'flagship', inputCostPerMTok: 1.35, outputCostPerMTok: 10.5, pricingNote: 'verify on openai.com/api/pricing' },
+  { id: 'gpt-5.3-mini', name: 'GPT-5.3 Mini', provider: 'openai', contextWindow: '400K', description: 'GPT-5.3 mid-tier', tier: 'balanced', inputCostPerMTok: 0.27, outputCostPerMTok: 2.1, pricingNote: 'verify on openai.com/api/pricing' },
+  { id: 'gpt-5.3-nano', name: 'GPT-5.3 Nano', provider: 'openai', contextWindow: '400K', description: 'GPT-5.3 fast tier', tier: 'fast', inputCostPerMTok: 0.06, outputCostPerMTok: 0.43, pricingNote: 'verify on openai.com/api/pricing' },
+  { id: 'gpt-5.2', name: 'GPT-5.2', provider: 'openai', contextWindow: '400K', description: 'GPT-5.2 flagship', tier: 'flagship', inputCostPerMTok: 1.3, outputCostPerMTok: 10.25, pricingNote: 'verify on openai.com/api/pricing' },
+  { id: 'gpt-5.2-mini', name: 'GPT-5.2 Mini', provider: 'openai', contextWindow: '400K', description: 'GPT-5.2 mid-tier', tier: 'balanced', inputCostPerMTok: 0.26, outputCostPerMTok: 2.05, pricingNote: 'verify on openai.com/api/pricing' },
+  { id: 'gpt-5.2-nano', name: 'GPT-5.2 Nano', provider: 'openai', contextWindow: '400K', description: 'GPT-5.2 fast tier', tier: 'fast', inputCostPerMTok: 0.05, outputCostPerMTok: 0.42, pricingNote: 'verify on openai.com/api/pricing' },
+  { id: 'gpt-5.1', name: 'GPT-5.1', provider: 'openai', contextWindow: '400K', description: 'GPT-5.1 flagship', tier: 'flagship', inputCostPerMTok: 1.28, outputCostPerMTok: 10.1, pricingNote: 'verify on openai.com/api/pricing' },
+  { id: 'gpt-5.1-mini', name: 'GPT-5.1 Mini', provider: 'openai', contextWindow: '400K', description: 'GPT-5.1 mid-tier', tier: 'balanced', inputCostPerMTok: 0.25, outputCostPerMTok: 2.02, pricingNote: 'verify on openai.com/api/pricing' },
+  { id: 'gpt-5.1-nano', name: 'GPT-5.1 Nano', provider: 'openai', contextWindow: '400K', description: 'GPT-5.1 fast tier', tier: 'fast', inputCostPerMTok: 0.05, outputCostPerMTok: 0.41, pricingNote: 'verify on openai.com/api/pricing' },
+  // GPT-5 family (original, released Aug 2025)
+  { id: 'gpt-5', name: 'GPT-5', provider: 'openai', contextWindow: '400K', description: 'Original GPT-5 flagship', tier: 'flagship', inputCostPerMTok: 1.25, outputCostPerMTok: 10 },
   { id: 'gpt-5-mini', name: 'GPT-5 Mini', provider: 'openai', contextWindow: '400K', description: 'Cheaper GPT-5 with most of the smarts', tier: 'balanced', inputCostPerMTok: 0.25, outputCostPerMTok: 2 },
   { id: 'gpt-5-nano', name: 'GPT-5 Nano', provider: 'openai', contextWindow: '400K', description: 'Fast & cheap GPT-5 — high-volume work', tier: 'fast', inputCostPerMTok: 0.05, outputCostPerMTok: 0.4 },
   // GPT-4.1 family (released April 2025) — strong general models, 1M context
