@@ -31,6 +31,9 @@ const PUBLIC_PREFIXES = [
   '/editor/',
   '/api/editor-dashboard/',
   '/api/editor/',
+  // Personal-token-authenticated endpoints used from collaborator dashboards.
+  '/api/activity/',
+  '/api/collaborator-prefs/',
 ];
 
 export async function proxy(req: NextRequest) {

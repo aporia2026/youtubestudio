@@ -8,6 +8,7 @@ import { sql } from '@vercel/postgres';
 import { ownerWantsEvent, getCollaboratorEmailIfWantsNotifications } from './notifications-db';
 import { sendEmail, getAppUrl } from './email';
 import * as tpl from './email-templates';
+import { logActivity } from './activity-feed';
 
 function buildUnsubscribeUrl(token: string | undefined): string | undefined {
   if (!token) return undefined;
@@ -28,6 +29,27 @@ export async function notifyReviewComment(args: {
   timestampMs: number;
   drawingThumbnailUrl?: string | null;
 }) {
+  // Log to bell for every collaborator linked to this project so the
+  // editor / narrator see new viewer comments without an email.
+  try {
+    const { rows: collabs } = await sql`
+      SELECT DISTINCT s.token, c.id
+      FROM review_share_links s
+      JOIN collaborators c ON c.id = s.collaborator_id
+      WHERE s.project_id = ${args.projectId}
+    `;
+    for (const r of collabs) {
+      logActivity({
+        recipientCollaboratorId: r.id as string,
+        type: 'review_comment',
+        title: `${args.authorName} commented on "${args.projectTitle}"`,
+        body: args.text.slice(0, 200),
+        projectId: args.projectId,
+        linkPath: `/review/${r.token}`,
+        metadata: { versionId: args.versionId, versionNumber: args.versionNumber, timestampMs: args.timestampMs },
+      }).catch(() => {});
+    }
+  } catch {}
   const { email, should } = await ownerWantsEvent('on_review_comment');
   if (!should || !email) return;
   const t = tpl.reviewCommentTemplate({
@@ -51,6 +73,16 @@ export async function notifyCommentResolved(args: {
   resolverName: string;
 }) {
   if (!args.collaboratorId) return;
+  // In-app feed entry — independent of email opt-in / delivery success.
+  logActivity({
+    recipientCollaboratorId: args.collaboratorId,
+    type: 'comment_resolved',
+    title: `${args.resolverName} resolved your comment`,
+    body: args.commentText.slice(0, 200),
+    projectId: args.projectId,
+    linkPath: `/reviews/${args.projectId}`,
+    metadata: { resolver: args.resolverName },
+  }).catch(() => {});
   const recipient = await getCollaboratorEmailIfWantsNotifications(args.collaboratorId);
   if (!recipient) return;
   const t = tpl.commentResolvedTemplate({
@@ -101,15 +133,25 @@ export async function notifyVersionUploaded(args: {
   versionNumber: number;
 }) {
   // Send to every collaborator with an active link on this project
-  const { rows } = await sql`
+  // Log to every collaborator with a link on this project — even those
+  // who've disabled email; they should still see this in their bell.
+  const { rows: allCollabs } = await sql`
     SELECT DISTINCT s.token, c.id, c.email, c.notifications_enabled, c.unsubscribe_token
     FROM review_share_links s
     JOIN collaborators c ON c.id = s.collaborator_id
     WHERE s.project_id = ${args.projectId}
-      AND c.email IS NOT NULL
-      AND c.notifications_enabled = true
   `;
-  for (const r of rows) {
+  for (const r of allCollabs) {
+    logActivity({
+      recipientCollaboratorId: r.id as string,
+      type: 'version_uploaded',
+      title: `New version v${args.versionNumber} of "${args.projectTitle}" is ready to review`,
+      projectId: args.projectId,
+      linkPath: `/review/${r.token}`,
+      metadata: { versionId: args.versionId, versionNumber: args.versionNumber },
+    }).catch(() => {});
+  }
+  for (const r of allCollabs.filter(r => r.email && r.notifications_enabled)) {
     const t = tpl.versionUploadedTemplate({
       appUrl: getAppUrl(),
       projectTitle: args.projectTitle,
@@ -127,15 +169,25 @@ export async function notifyStatusChanged(args: {
   oldStatus: string;
   newStatus: string;
 }) {
-  const { rows } = await sql`
-    SELECT DISTINCT s.token, c.email, c.unsubscribe_token
+  // Log to bell first (works regardless of email opt-in)
+  const { rows: allCollabs } = await sql`
+    SELECT DISTINCT s.token, c.id, c.email, c.notifications_enabled, c.unsubscribe_token
     FROM review_share_links s
     JOIN collaborators c ON c.id = s.collaborator_id
     WHERE s.project_id = ${args.projectId}
-      AND c.email IS NOT NULL
-      AND c.notifications_enabled = true
   `;
-  for (const r of rows) {
+  for (const r of allCollabs) {
+    logActivity({
+      recipientCollaboratorId: r.id as string,
+      type: 'status_changed',
+      title: `"${args.projectTitle}" moved to ${args.newStatus}`,
+      body: `Was: ${args.oldStatus}`,
+      projectId: args.projectId,
+      linkPath: `/review/${r.token}`,
+      metadata: { oldStatus: args.oldStatus, newStatus: args.newStatus },
+    }).catch(() => {});
+  }
+  for (const r of allCollabs.filter(r => r.email && r.notifications_enabled)) {
     const t = tpl.statusChangedTemplate({
       appUrl: getAppUrl(),
       projectTitle: args.projectTitle,
@@ -196,6 +248,14 @@ export async function notifyRetakeRequested(args: {
   sectionLabel: string;
   notes?: string;
 }) {
+  logActivity({
+    recipientCollaboratorId: args.narratorId,
+    type: 'retake_requested',
+    title: `Retake requested on ${args.sectionLabel}`,
+    body: args.notes,
+    linkPath: `/narrate/${args.shareToken}`,
+    metadata: { sectionLabel: args.sectionLabel },
+  }).catch(() => {});
   const recipient = await getCollaboratorEmailIfWantsNotifications(args.narratorId);
   if (!recipient) return;
   const t = tpl.retakeRequestedTemplate({
@@ -210,10 +270,19 @@ export async function notifyRetakeRequested(args: {
 
 export async function notifyEditorAssigned(args: {
   editorId: string;
+  projectId?: string;
   projectTitle: string;
   editorNotes?: string | null;
   deadline?: string | null;
 }) {
+  logActivity({
+    recipientCollaboratorId: args.editorId,
+    type: 'editor_assigned',
+    title: `New project assigned: "${args.projectTitle}"`,
+    body: args.editorNotes ?? undefined,
+    projectId: args.projectId,
+    metadata: { deadline: args.deadline ?? null },
+  }).catch(() => {});
   const recipient = await getCollaboratorEmailIfWantsNotifications(args.editorId);
   if (!recipient) return;
   // We need the editor's personal_token to build the dashboard URL
@@ -240,6 +309,14 @@ export async function notifyAssignmentReceived(args: {
   sectionCount: number;
   deadline?: string | null;
 }) {
+  logActivity({
+    recipientCollaboratorId: args.narratorId,
+    type: 'narrator_assigned',
+    title: `New narration assigned: "${args.projectTitle}"`,
+    body: `${args.sectionCount} sections to record`,
+    linkPath: `/narrate/${args.shareToken}`,
+    metadata: { sectionCount: args.sectionCount, deadline: args.deadline ?? null },
+  }).catch(() => {});
   const recipient = await getCollaboratorEmailIfWantsNotifications(args.narratorId);
   if (!recipient) return;
   const t = tpl.assignmentReceivedTemplate({

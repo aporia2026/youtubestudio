@@ -56,6 +56,20 @@ export async function ensureTeamSchema() {
     try { await sql`UPDATE collaborators SET personal_token = encode(gen_random_bytes(24), 'hex') WHERE personal_token IS NULL`; } catch {}
     try { await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_collaborators_personal_token ON collaborators(personal_token)`; } catch {}
 
+    // Availability the collaborator self-reports — surfaced to the owner on
+    // the team page and to the dashboards. Free-form status_note for a one
+    // line "out till Friday" / "deep in editing". Defaults intentionally
+    // null so existing rows don't get a fake "available" badge.
+    try { await sql`ALTER TABLE collaborators ADD COLUMN IF NOT EXISTS availability TEXT`; } catch {}
+    try { await sql`ALTER TABLE collaborators ADD COLUMN IF NOT EXISTS status_note TEXT`; } catch {}
+    try { await sql`ALTER TABLE collaborators ADD COLUMN IF NOT EXISTS availability_updated_at TIMESTAMPTZ`; } catch {}
+
+    // Per-collaborator notification preferences. Granular event-type opt-outs
+    // beyond the global notifications_enabled toggle. Stored as a jsonb blob
+    // so we can add new event keys without further migrations. Empty object
+    // = receive everything; explicit false on a key = mute that event type.
+    try { await sql`ALTER TABLE collaborators ADD COLUMN IF NOT EXISTS notification_prefs JSONB NOT NULL DEFAULT '{}'::jsonb`; } catch {}
+
     // Multi-role support — `role` (singular) stays as the legacy "primary"
     // role for back-compat with existing queries. `roles` is the new source
     // of truth (an array). Backfill it from `role` for any rows where it's
@@ -353,6 +367,46 @@ export async function getEditorByPersonalToken(token: string) {
     LIMIT 1
   `;
   return rows[0] || null;
+}
+
+/**
+ * Role-agnostic lookup. The same personal_token serves whichever role(s)
+ * a collaborator has, so any "this person's account" endpoint (activity
+ * feed, preferences, availability) should accept the token without
+ * requiring a specific role.
+ */
+export async function getCollaboratorByPersonalToken(token: string) {
+  await ensureTeamSchema();
+  const { rows } = await sql`
+    SELECT id, name, email, color, role, roles, personal_token, notifications_enabled,
+           availability, status_note, availability_updated_at, notification_prefs
+    FROM collaborators WHERE personal_token = ${token}
+    LIMIT 1
+  `;
+  return rows[0] || null;
+}
+
+/** Update self-reported availability + free-form status note. */
+export async function updateCollaboratorAvailability(id: string, fields: { availability?: string | null; status_note?: string | null }) {
+  await ensureTeamSchema();
+  await sql`
+    UPDATE collaborators
+    SET availability = COALESCE(${fields.availability ?? null}, availability),
+        status_note = ${fields.status_note ?? null},
+        availability_updated_at = NOW()
+    WHERE id = ${id}
+  `;
+}
+
+/** Update notification_prefs jsonb. Caller passes a partial patch object;
+ *  we shallow-merge it with the existing blob via jsonb || jsonb. */
+export async function updateCollaboratorNotificationPrefs(id: string, patch: Record<string, unknown>) {
+  await ensureTeamSchema();
+  await sql`
+    UPDATE collaborators
+    SET notification_prefs = COALESCE(notification_prefs, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb
+    WHERE id = ${id}
+  `;
 }
 
 export async function revokeAllAccess(collaboratorId: string) {
