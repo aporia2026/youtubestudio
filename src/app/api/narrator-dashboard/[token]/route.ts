@@ -47,6 +47,26 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
         a.updated_at DESC
     `;
 
+    // Compute spoken word counts per assignment. SUM of words across all
+    // sections AFTER stripping bracketed cues (production directions like
+    // [VISUAL CUE: ...] and performance tags like [excited] alike — neither
+    // is actually spoken). Done in JS so the regex stays in sync with the
+    // teleprompter's stripCues helper. Single query, then map.
+    const assignmentIds = assignments.map(a => a.id as string);
+    const wordCounts = new Map<string, number>();
+    if (assignmentIds.length > 0) {
+      const { rows: sections } = await sql.query<{ assignment_id: string; script_text: string }>(
+        `SELECT assignment_id, script_text FROM narrator_sections WHERE assignment_id = ANY($1::uuid[])`,
+        [assignmentIds],
+      );
+      for (const sec of sections) {
+        const spoken = (sec.script_text || '').replace(/\[[^\]]+\]/g, '');
+        const words = spoken.split(/\s+/).filter(w => w.length > 0).length;
+        wordCounts.set(sec.assignment_id, (wordCounts.get(sec.assignment_id) || 0) + words);
+      }
+    }
+    const enriched = assignments.map(a => ({ ...a, total_words: wordCounts.get(a.id as string) || 0 }));
+
     return NextResponse.json({
       narrator: {
         id: narrator.id,
@@ -54,7 +74,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
         email: narrator.email,
         color: narrator.color,
       },
-      assignments,
+      assignments: enriched,
     });
   } catch (err) {
     console.error('GET narrator dashboard error:', err);

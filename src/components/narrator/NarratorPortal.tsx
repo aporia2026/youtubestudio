@@ -15,6 +15,9 @@ interface Assignment {
   wpm: number;
   deadline: string | null;
   share_token: string;
+  /** The narrator's personal_token, if available, so we can render a
+   *  "Back to dashboard" link from any single-assignment view. */
+  narrator_personal_token?: string | null;
 }
 
 interface Take {
@@ -353,6 +356,13 @@ export function NarratorPortal({ token }: { token: string }) {
   const progress = sections.length > 0 ? Math.round((uploadedCount / sections.length) * 100) : 0;
   const assignmentStatus = STATUS_LABELS[assignment.status] || STATUS_LABELS.assigned;
   const totalDuration = sections.reduce((acc, s) => acc + (s.estimated_duration_seconds || 0), 0);
+  // Spoken word count — sums words in every section after stripping any
+  // bracketed cue ([VISUAL CUE: …], [excited], [pause], etc.). What the
+  // narrator will literally read aloud, not the raw script length.
+  const totalWords = sections.reduce((acc, s) => {
+    const spoken = (s.script_text || '').replace(/\[[^\]]+\]/g, '');
+    return acc + spoken.split(/\s+/).filter(w => w.length > 0).length;
+  }, 0);
 
   return (
     <>
@@ -365,6 +375,24 @@ export function NarratorPortal({ token }: { token: string }) {
       )}
 
       <div className="max-w-4xl mx-auto px-6 py-8">
+        {/* Back-to-dashboard breadcrumb. Only renders when this assignment
+            actually belongs to a narrator with a personal dashboard token —
+            otherwise the link would 404. Visible above the project title so
+            it's the first thing the eye lands on after coming in from a
+            specific assignment. */}
+        {assignment.narrator_personal_token && (
+          <a
+            href={`/narrator/${assignment.narrator_personal_token}`}
+            className="inline-flex items-center gap-1.5 text-xs mb-4 transition-colors hover:text-purple-400"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M15 18l-6-6 6-6" />
+            </svg>
+            All assignments
+          </a>
+        )}
+
         {/* Header */}
         <header className="mb-8">
           <div className="flex items-start justify-between">
@@ -500,7 +528,7 @@ export function NarratorPortal({ token }: { token: string }) {
           <div className="mt-4">
             <div className="flex items-center justify-between text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
               <span>{uploadedCount}/{sections.length} sections uploaded</span>
-              <span>~{Math.round(totalDuration / 60)}:{(totalDuration % 60).toString().padStart(2, '0')} total</span>
+              <span>{totalWords.toLocaleString()} words · ~{Math.round(totalDuration / 60)}:{(totalDuration % 60).toString().padStart(2, '0')} total</span>
             </div>
             <div className="h-2 rounded-full" style={{ background: 'rgba(255,255,255,0.05)' }}>
               <div className="h-full rounded-full transition-all" style={{ width: `${progress}%`, background: 'linear-gradient(90deg, #7c3aed, #06b6d4)' }} />

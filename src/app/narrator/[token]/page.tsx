@@ -18,6 +18,9 @@ interface Assignment {
   retake_sections: number;
   pending_sections: number;
   unread_owner_comments: number;
+  /** Sum of words in script_text across all sections, after stripping
+   *  bracketed cues. The actual amount of speech the narrator records. */
+  total_words: number;
 }
 
 interface NarratorInfo {
@@ -193,6 +196,9 @@ function AssignmentCard({ a, compact }: { a: Assignment; compact?: boolean }) {
             </div>
 
             <div className="flex items-center gap-3 flex-wrap text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              {a.total_words > 0 && (
+                <span title="Spoken word count (production cues stripped)">📝 {a.total_words.toLocaleString()} words</span>
+              )}
               {a.retake_sections > 0 && (
                 <span style={{ color: '#ef4444' }}>● {a.retake_sections} retake{a.retake_sections === 1 ? '' : 's'} requested</span>
               )}

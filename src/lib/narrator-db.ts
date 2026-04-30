@@ -196,7 +196,7 @@ export async function getAssignment(id: string) {
 export async function getAssignmentByToken(token: string) {
   await ensureNarratorSchema();
   const { rows } = await sql`
-    SELECT a.*, n.name AS narrator_name, n.color AS narrator_color, p.title AS project_title
+    SELECT a.*, n.name AS narrator_name, n.color AS narrator_color, n.personal_token AS narrator_personal_token, p.title AS project_title
     FROM narrator_assignments a
     LEFT JOIN collaborators n ON n.id = a.narrator_id
     LEFT JOIN projects p ON p.id = a.project_id
