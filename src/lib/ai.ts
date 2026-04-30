@@ -382,18 +382,40 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
     const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
     const gemini = genAI.getGenerativeModel({ model: model.id, generationConfig: { temperature, maxOutputTokens: maxTokens } });
     const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${effectivePrompt}` : effectivePrompt;
-    if (opts.image) {
-      const result = await gemini.generateContent([
-        fullPrompt,
-        { inlineData: { mimeType: opts.image.mimeType, data: opts.image.base64 } },
-      ]);
+    try {
+      if (opts.image) {
+        const result = await gemini.generateContent([
+          fullPrompt,
+          { inlineData: { mimeType: opts.image.mimeType, data: opts.image.base64 } },
+        ]);
+        return result.response.text();
+      }
+      const result = await gemini.generateContent(fullPrompt);
       return result.response.text();
+    } catch (err) {
+      throw rewriteGoogleError(err, model.id);
     }
-    const result = await gemini.generateContent(fullPrompt);
-    return result.response.text();
   }
 
   throw new Error(`Unsupported provider: ${model.provider}`);
+}
+
+/**
+ * Google's GoogleGenerativeAI SDK throws a verbose error that buries the
+ * actionable bit ("models/X is not found for API version v1beta") in a
+ * long URL string. When the model literally doesn't exist on Google's
+ * public API (e.g. anything we listed speculatively before Google shipped
+ * the corresponding 3.x release), rewrite the error so the toast tells the
+ * user to pick a different model instead of a wall of URL noise.
+ */
+function rewriteGoogleError(err: unknown, modelId: string): Error {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/\b404\b|not found|is not supported for/i.test(msg)) {
+    return new Error(
+      `Google's API doesn't have "${modelId}" available right now. This usually means the model was listed before Google shipped it, or it was renamed/removed. Pick a different model — gemini-2.5-pro and the kie-* variants are known-good fallbacks.`,
+    );
+  }
+  return err instanceof Error ? err : new Error(String(err));
 }
 
 // ============================================================
@@ -594,21 +616,25 @@ export async function* generateTextStream(opts: GenerateOptions): AsyncGenerator
     const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
     const gemini = genAI.getGenerativeModel({ model: model.id, generationConfig: { temperature, maxOutputTokens: maxTokens } });
     const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${effectivePrompt}` : effectivePrompt;
-    if (opts.image) {
-      const result = await gemini.generateContentStream([
-        fullPrompt,
-        { inlineData: { mimeType: opts.image.mimeType, data: opts.image.base64 } },
-      ]);
-      for await (const chunk of result.stream) {
-        const text = chunk.text();
-        if (text) yield text;
+    try {
+      if (opts.image) {
+        const result = await gemini.generateContentStream([
+          fullPrompt,
+          { inlineData: { mimeType: opts.image.mimeType, data: opts.image.base64 } },
+        ]);
+        for await (const chunk of result.stream) {
+          const text = chunk.text();
+          if (text) yield text;
+        }
+      } else {
+        const result = await gemini.generateContentStream(fullPrompt);
+        for await (const chunk of result.stream) {
+          const text = chunk.text();
+          if (text) yield text;
+        }
       }
-    } else {
-      const result = await gemini.generateContentStream(fullPrompt);
-      for await (const chunk of result.stream) {
-        const text = chunk.text();
-        if (text) yield text;
-      }
+    } catch (err) {
+      throw rewriteGoogleError(err, model.id);
     }
     return;
   }
