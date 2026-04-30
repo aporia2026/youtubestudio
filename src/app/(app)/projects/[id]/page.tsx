@@ -8,6 +8,7 @@ import { formatBytes, countWords, estimateDuration, formatDuration } from '@/lib
 import { ScriptVoiceoverPanel } from '@/components/ui/ScriptVoiceoverPanel';
 import { NarrationTab } from '@/components/narrator/NarrationTab';
 import { EditorTab } from '@/components/editor/EditorTab';
+import { YouTubeDescriptionPanel } from '@/components/ui/YouTubeDescriptionPanel';
 import Link from 'next/link';
 
 type TabId = 'script' | 'voiceover' | 'media' | 'references' | 'narration' | 'editor';
@@ -18,6 +19,7 @@ interface Project {
   niche: string;
   topic: string;
   status: string;
+  youtube_description?: string | null;
 }
 
 interface Script {
@@ -263,6 +265,7 @@ export default function ProjectDetailPage() {
 
       {/* Script Tab */}
       {activeTab === 'script' && (
+        <div className="space-y-4">
         <div className="glass rounded-xl overflow-hidden">
           <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
             <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
@@ -310,6 +313,20 @@ export default function ProjectDetailPage() {
               </pre>
             )}
           </div>
+        </div>
+
+        {/* YouTube description — shown after a script exists. Generate, edit,
+            and save a SEO-tuned, human-voice description per project. */}
+        {activeScript && project && (
+          <YouTubeDescriptionPanel
+            projectId={project.id}
+            title={project.title}
+            niche={project.niche}
+            topic={project.topic}
+            scriptContent={activeScript.content}
+            initialDescription={project.youtube_description}
+          />
+        )}
         </div>
       )}
 

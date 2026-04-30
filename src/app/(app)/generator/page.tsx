@@ -19,6 +19,7 @@ import { ExportForNarrator } from '@/components/ui/ExportForNarrator';
 import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { DraftsBanner } from '@/components/ui/DraftsBanner';
 import { SeriesPicker } from '@/components/ui/SeriesPicker';
+import { TemplateContextPicker, buildCombinedContext } from '@/components/ui/TemplateContextPicker';
 import { fetchPriorParts, formatPriorPartsForPrompt, saveSeriesPart } from '@/lib/series';
 import { EMPTY_CONSTRAINTS, type ScriptConstraints } from '@/lib/script-options';
 import { getScriptHistory, saveScript as saveScriptToHistory, deleteScriptEntry, clearScriptHistory, getRecentTopics, type ScriptHistoryEntry } from '@/lib/history';
@@ -80,6 +81,7 @@ function GeneratorPage() {
   const [style, setStyle] = useState(STYLES[0]);
   const [audience, setAudience] = useState('');
   const [context, setContext] = useState('');
+  const [templateId, setTemplateId] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [script, setScript] = useState('');
   // saving/projectTitle removed — handled by SaveAsProject component
@@ -484,6 +486,20 @@ function GeneratorPage() {
     // Cap at ~6 recent entries to keep the prompt compact.
     const previousScripts = getScriptHistory().slice(0, 6).map(e => e.script).filter(Boolean);
 
+    // Resolve the picked style template (if any) and merge with the freeform
+    // "extra context" textarea. The merged string takes the place of the old
+    // single context field in the API payload — the script route is unchanged.
+    let mergedContext = context;
+    if (templateId) {
+      try {
+        const tplRes = await fetch(`/api/templates/${templateId}`);
+        if (tplRes.ok) {
+          const { template } = await tplRes.json();
+          mergedContext = buildCombinedContext(template?.content, context);
+        }
+      } catch {}
+    }
+
     // Series continuity: if this script is Part >= 2 of a linked series, fetch
     // budgeted prior-parts context. The server handles truncation/summaries to
     // stay within `seriesTokenBudget`. On failure (offline etc.) we continue
@@ -511,7 +527,7 @@ function GeneratorPage() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            modelId, topic, niche, duration, tone, style, audience, context,
+            modelId, topic, niche, duration, tone, style, audience, context: mergedContext,
             referenceContext: refContext || undefined,
             threshold: qaThreshold,
             previousScripts,
@@ -589,7 +605,7 @@ function GeneratorPage() {
       const res = await fetch('/api/generate/script', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ modelId, topic, niche, duration, tone, style, audience, context, referenceContext: refContext || undefined, previousScripts, seriesContext: seriesContext || undefined, constraints }),
+        body: JSON.stringify({ modelId, topic, niche, duration, tone, style, audience, context: mergedContext, referenceContext: refContext || undefined, previousScripts, seriesContext: seriesContext || undefined, constraints }),
         signal: abortRef.current.signal,
       });
 
@@ -763,17 +779,18 @@ function GeneratorPage() {
               />
             </div>
 
-            {/* Additional context */}
+            {/* Style template + per-call extra context. Lets the user
+                save reusable creative directions ("Fast & engaging — cut to
+                the chase", "Documentary tone", etc.) and just tweak what's
+                different per video. Manage templates in Settings → Templates. */}
             <div>
-              <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
-                Additional Context <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
-              </label>
-              <textarea
-                value={context}
-                onChange={e => setContext(e.target.value)}
-                placeholder="Key points to include, competitors to mention, specific angle..."
-                className="input-field"
-                style={{ minHeight: 80 }}
+              <TemplateContextPicker
+                fieldType="script"
+                templateId={templateId}
+                onTemplateChange={setTemplateId}
+                context={context}
+                onContextChange={setContext}
+                label="Script style template"
               />
             </div>
 

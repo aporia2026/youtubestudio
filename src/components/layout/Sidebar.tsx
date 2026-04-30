@@ -16,6 +16,15 @@ interface NavSection {
   items: NavItem[];
 }
 
+// Per-section header tint. Each section gets a brand-aligned color so the
+// nav reads as a coherent map of the product's three "modes" rather than
+// three identical grey labels. Colors picked from the existing site palette.
+const SECTION_COLORS: Record<string, string> = {
+  Create: '#a78bfa',      // brand purple — generative work
+  Collaborate: '#06b6d4', // cyan — communication / sharing
+  Grow: '#22c55e',        // green — analytics / growth
+};
+
 // Always-visible top items
 const PINNED_TOP: NavItem[] = [
   {
@@ -390,7 +399,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               <button
                 onClick={() => toggleSection(section.label)}
                 className="w-full flex items-center justify-between px-3 py-1.5 text-[11px] uppercase tracking-widest font-bold transition-colors cursor-pointer rounded hover:bg-white/5"
-                style={{ color: '#a8a8d0' }}
+                style={{ color: SECTION_COLORS[section.label] || '#a8a8d0' }}
               >
                 <span>{section.label}</span>
                 <motion.svg

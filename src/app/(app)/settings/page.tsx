@@ -12,6 +12,7 @@ const DEFAULT_FEATURE_MODELS: Record<AppFeature, string> = APP_FEATURES.reduce(
   {} as Record<AppFeature, string>,
 );
 import { ModelSelector } from '@/components/ui/ModelSelector';
+import { TemplatesPanel } from '@/components/settings/TemplatesPanel';
 
 interface Niche {
   id: string;
@@ -30,7 +31,7 @@ export default function SettingsPage() {
   const [newNicheDesc, setNewNicheDesc] = useState('');
   const [newNicheKeywords, setNewNicheKeywords] = useState('');
   const [addingNiche, setAddingNiche] = useState(false);
-  const [activeSection, setActiveSection] = useState<'niches' | 'api' | 'models' | 'notifications' | 'about'>('niches');
+  const [activeSection, setActiveSection] = useState<'niches' | 'api' | 'models' | 'templates' | 'notifications' | 'about'>('niches');
   const [featureModels, setFeatureModels] = useState<Record<AppFeature, string>>(DEFAULT_FEATURE_MODELS);
   const [keyStatus, setKeyStatus] = useState<KeyStatus>({});
   const [keyStatusLoading, setKeyStatusLoading] = useState(true);
@@ -260,6 +261,7 @@ export default function SettingsPage() {
     { id: 'niches' as const, label: '🎯 Niches' },
     { id: 'api' as const, label: '🔑 API Keys' },
     { id: 'models' as const, label: '🤖 Model Defaults' },
+    { id: 'templates' as const, label: '📋 Templates' },
     { id: 'notifications' as const, label: '📧 Notifications' },
     { id: 'about' as const, label: 'ℹ️ About' },
   ];
@@ -741,6 +743,8 @@ export default function SettingsPage() {
               </div>
             </div>
           )}
+
+          {activeSection === 'templates' && <TemplatesPanel />}
 
           {activeSection === 'about' && (
             <div className="glass rounded-xl p-6">
