@@ -161,6 +161,7 @@ export function scriptQAPrompt({
   niche,
   aggressiveness,
   constraints,
+  additionalContext,
 }: {
   script: string;
   passNumber: number;
@@ -168,6 +169,12 @@ export function scriptQAPrompt({
   niche: string;
   aggressiveness: 'standard' | 'brutal' | 'nuclear';
   constraints?: ScriptConstraints;
+  /** Reviewer-side direction merged from a saved template + per-call extra
+   *  context. Surfaced near the top of the user prompt so the reviewer
+   *  applies the user's recurring critique style (e.g. "be brutally
+   *  direct, flag every passive sentence") on top of the aggressiveness
+   *  setting. Skipped when empty. */
+  additionalContext?: string;
 }): { system: string; user: string } {
   const aggressivenessInstructions = {
     standard: 'Be thorough and constructive. Point out all issues clearly.',
@@ -209,6 +216,7 @@ ${humanAuthenticityNote}
 Your analysis must always be actionable — for every problem you find, provide a specific fix.`,
 
     user: `Perform a ${aggressiveness.toUpperCase()} QA review of this YouTube script. This is Pass #${passNumber}.
+${additionalContext && additionalContext.trim() ? `\n## Reviewer Direction (from saved template + per-call context):\n${additionalContext.trim()}\n` : ''}
 ${buildQAConstraintsPromptBlock(constraints)}
 ${previousFeedback ? `## Previous QA Feedback (Pass ${passNumber - 1}):\n${previousFeedback}\n\nIMPORTANT SCORING RULES FOR FOLLOW-UP PASSES:
 - If previous issues were FIXED, the score for those categories MUST increase significantly (at least +15-25 points per fixed category)

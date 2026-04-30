@@ -3,6 +3,7 @@ import { generateText, getModelById } from '@/lib/ai';
 import { scriptQAPrompt } from '@/lib/prompts';
 import { sql } from '@/lib/db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { getTemplate } from '@/lib/templates-db';
 
 export const maxDuration = 300;
 
@@ -67,7 +68,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { modelId, script, niche, aggressiveness, passNumber, previousFeedback, scriptId, projectId, constraints } = await req.json();
+    const { modelId, script, niche, aggressiveness, passNumber, previousFeedback, scriptId, projectId, constraints, templateId, context } = await req.json();
 
     if (!script || script.length < 50) {
       return NextResponse.json({ error: 'Script too short (min 50 chars)' }, { status: 400 });
@@ -76,6 +77,21 @@ export async function POST(req: NextRequest) {
     const model = getModelById(modelId);
     if (!model) return NextResponse.json({ error: 'Invalid model' }, { status: 400 });
 
+    // Merge a saved QA template (if picked) with the per-call context box
+    // into a single reviewer-direction block. Mirrors the same pattern the
+    // script generator and YouTube description routes use.
+    let templateContent = '';
+    if (templateId) {
+      try {
+        const t = await getTemplate(templateId);
+        if (t && t.field_type === 'qa') templateContent = t.content;
+      } catch {}
+    }
+    const ctxParts: string[] = [];
+    if (templateContent.trim()) ctxParts.push(`STYLE / DIRECTION (from saved template):\n${templateContent.trim()}`);
+    if (typeof context === 'string' && context.trim()) ctxParts.push(`ADDITIONAL CONTEXT FOR THIS PASS:\n${context.trim()}`);
+    const additionalContext = ctxParts.join('\n\n');
+
     const { system, user } = scriptQAPrompt({
       script,
       niche: niche || 'General',
@@ -83,6 +99,7 @@ export async function POST(req: NextRequest) {
       previousFeedback,
       aggressiveness: aggressiveness || 'brutal',
       constraints,
+      additionalContext: additionalContext || undefined,
     });
 
     /**

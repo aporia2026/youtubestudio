@@ -19,6 +19,7 @@ import { scoreLabel } from '@/lib/utils';
 import { saveQAEntry, getQAHistory, deleteQAEntry, clearQAHistory, getRecentNiches, type QAHistoryEntry } from '@/lib/history';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
+import { TemplateContextPicker } from '@/components/ui/TemplateContextPicker';
 
 type Aggressiveness = 'standard' | 'brutal' | 'nuclear';
 
@@ -106,6 +107,11 @@ function QAPage() {
   const [topic, setTopic] = useState('');
   const [niche, setNiche] = useState('Cybersecurity & Antivirus');
   const [aggressiveness, setAggressiveness] = useState<Aggressiveness>('brutal');
+  // Saved-template + per-call context for the reviewer. Mirrors the
+  // pattern in the script generator. The default QA template (if any)
+  // is auto-selected by TemplateContextPicker on mount.
+  const [qaTemplateId, setQaTemplateId] = useState<string | null>(null);
+  const [qaContext, setQaContext] = useState('');
   const [running, setRunning] = useState(false);
   const [passNumber, setPassNumber] = useState(1);
   const [results, setResults] = useState<QAResult[]>([]);
@@ -548,6 +554,8 @@ function QAPage() {
           projectId: projectId || undefined,
           scriptId: scriptId || undefined,
           constraints: hasAnyConstraint(constraints) ? constraints : undefined,
+          templateId: qaTemplateId || undefined,
+          context: qaContext || undefined,
         }),
       });
 
@@ -766,6 +774,21 @@ function QAPage() {
                   </div>
                 </div>
               </div>
+            </div>
+
+            {/* Saved reviewer template + per-call extra context. Picks
+                from /api/templates filtered by field_type=qa. The default
+                QA template (if any) is auto-selected on mount. */}
+            <div>
+              <TemplateContextPicker
+                fieldType="qa"
+                templateId={qaTemplateId}
+                onTemplateChange={setQaTemplateId}
+                context={qaContext}
+                onContextChange={setQaContext}
+                label="Reviewer template"
+                compact
+              />
             </div>
 
             {/* Aggressiveness selector */}
