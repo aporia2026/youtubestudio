@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
 import { countWords, estimateDuration } from '@/lib/utils';
-import { splitScriptIntoSections } from '@/lib/narrator-utils';
-import { createSection } from '@/lib/narrator-db';
+import { resyncAssignmentSectionsIfStale } from '@/lib/narrator-db';
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -43,54 +42,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     await sql`UPDATE projects SET updated_at = NOW() WHERE id = ${id}`;
 
-    // Re-sync narrator assignments for this project so the narrator's
-    // teleprompter / sections reflect the edited script. Only safe to
-    // rebuild sections that have NO uploaded takes — otherwise blowing
-    // them away would orphan the audio. Assignments past 'recording'
-    // are left alone so we don't yank the floor out from under work in
-    // progress; the owner can manually re-assign if they really want
-    // the new script applied.
+    // Re-sync any narrator assignments for this project against the freshly
+    // saved script. The helper handles guardrails (skip if takes exist, skip
+    // if past recording) and is also called lazily on the narrator-portal
+    // load — calling it here just gets the update in front of the owner
+    // immediately on the Narration tab without waiting for the next portal
+    // visit.
     try {
-      const newScript = result.rows[0];
-      const { rows: resyncable } = await sql`
-        SELECT a.id, a.wpm
-        FROM narrator_assignments a
-        WHERE a.project_id = ${id}
-          AND a.status IN ('assigned', 'received', 'recording')
-          AND NOT EXISTS (
-            SELECT 1 FROM narrator_sections s
-            JOIN narrator_takes t ON t.section_id = s.id
-            WHERE s.assignment_id = a.id
-          )
+      const { rows: assignments } = await sql`
+        SELECT id FROM narrator_assignments
+        WHERE project_id = ${id}
+          AND status IN ('assigned', 'received', 'recording')
       `;
-      for (const a of resyncable) {
-        // Split per-assignment so each narrator's wpm is reflected in the
-        // estimated_duration_seconds. Section boundaries themselves don't
-        // depend on wpm — only the per-section timing does.
-        const sections = splitScriptIntoSections(content, a.wpm || 150);
-        sections.forEach((s, i) => {
-          if (!s.label) s.label = i === 0 ? 'Hook' : i === sections.length - 1 ? 'Outro' : `Section ${i + 1}`;
-        });
-        await sql`DELETE FROM narrator_sections WHERE assignment_id = ${a.id}`;
-        await sql`
-          UPDATE narrator_assignments
-          SET script_id = ${newScript.id}, script_version = ${nextVersion}, updated_at = NOW()
-          WHERE id = ${a.id}
-        `;
-        for (let i = 0; i < sections.length; i++) {
-          const s = sections[i];
-          await createSection({
-            assignment_id: a.id,
-            section_number: i + 1,
-            label: s.label,
-            script_text: s.script_text,
-            emphasis_markers: s.emphasis_markers,
-            estimated_duration_seconds: s.estimated_duration_seconds,
-          });
-        }
+      for (const a of assignments) {
+        await resyncAssignmentSectionsIfStale(a.id);
       }
     } catch (e) {
-      // Resync is a nice-to-have; never block the script save itself.
       console.warn('narrator section resync on script save failed:', e);
     }
 

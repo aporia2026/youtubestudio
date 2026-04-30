@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAssignment, updateAssignment, getSectionsForAssignment, getCommentsForAssignment } from '@/lib/narrator-db';
+import { getAssignment, updateAssignment, getSectionsForAssignment, getCommentsForAssignment, resyncAssignmentSectionsIfStale } from '@/lib/narrator-db';
 import { getNarrationDownloadUrl } from '@/lib/r2';
 
 interface TakeRow { id: string; r2_key?: string | null; audio_url?: string | null; [key: string]: unknown }
@@ -23,6 +23,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     const { id } = await params;
     const assignment = await getAssignment(id);
     if (!assignment) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    // Lazy resync against the latest active script (no-op if unchanged or unsafe).
+    await resyncAssignmentSectionsIfStale(id);
     const sections = await getSectionsForAssignment(id);
     const comments = await getCommentsForAssignment(id);
     const sectionsWithFreshUrls = await refreshTakeUrls(sections as SectionRow[]);

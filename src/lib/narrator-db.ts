@@ -1,4 +1,5 @@
 import { sql } from '@vercel/postgres';
+import { splitScriptIntoSections } from './narrator-utils';
 
 // ---------------------------------------------------------------------------
 // Schema migration (idempotent)
@@ -277,6 +278,109 @@ export async function getSectionsForAssignment(assignmentId: string) {
     ORDER BY s.section_number ASC
   `;
   return rows;
+}
+
+/**
+ * Rebuild a single assignment's sections from the project's currently-active
+ * script if it's safe to do so. "Safe" means:
+ *   - No takes have been uploaded yet (otherwise rebuilding orphans audio).
+ *   - The assignment is not already submitted/approved/completed.
+ *   - The assignment's recorded script_id/version differs from the project's
+ *     current active script (i.e. the owner edited the script since the
+ *     assignment was created or last synced).
+ *
+ * This runs lazily on the narrator-portal data load so the narrator always
+ * reads from the latest script even if the script-POST hook was missed
+ * (e.g. edit happened before the auto-sync feature shipped).
+ *
+ * Returns true when sections were rebuilt, false otherwise.
+ */
+export async function resyncAssignmentSectionsIfStale(assignmentId: string): Promise<boolean> {
+  await ensureNarratorSchema();
+  try {
+    const { rows: assignmentRows } = await sql`
+      SELECT a.id, a.project_id, a.script_id, a.script_version, a.status, a.wpm
+      FROM narrator_assignments a
+      WHERE a.id = ${assignmentId}
+      LIMIT 1
+    `;
+    const assignment = assignmentRows[0];
+    if (!assignment) return false;
+    if (!['assigned', 'received', 'recording'].includes(assignment.status)) return false;
+
+    // Skip if any take exists — rebuilding sections would orphan audio.
+    const { rows: takeRows } = await sql`
+      SELECT 1 FROM narrator_takes t
+      JOIN narrator_sections s ON s.id = t.section_id
+      WHERE s.assignment_id = ${assignmentId}
+      LIMIT 1
+    `;
+    if (takeRows.length > 0) return false;
+
+    // Look up the currently-active script for this project.
+    const { rows: scriptRows } = await sql`
+      SELECT id, version, content
+      FROM scripts
+      WHERE project_id = ${assignment.project_id} AND is_active = true
+      ORDER BY version DESC
+      LIMIT 1
+    `;
+    const activeScript = scriptRows[0];
+    if (!activeScript || !activeScript.content) return false;
+
+    // Only proceed when we have a clear staleness signal: either the script
+    // version is older than the active version, or the section text doesn't
+    // match what splitting the active script produces. Avoids spurious
+    // rebuilds on assignments with legacy NULL script_version.
+    const candidate = splitScriptIntoSections(activeScript.content, assignment.wpm || 150);
+    candidate.forEach((s, i) => {
+      if (!s.label) s.label = i === 0 ? 'Hook' : i === candidate.length - 1 ? 'Outro' : `Section ${i + 1}`;
+    });
+
+    const versionStale =
+      typeof assignment.script_version === 'number' &&
+      typeof activeScript.version === 'number' &&
+      assignment.script_version < activeScript.version;
+
+    if (!versionStale) {
+      // Compare the existing sections' text to what we'd build from the
+      // active script. If they match, the assignment is already in sync.
+      const { rows: existing } = await sql`
+        SELECT script_text FROM narrator_sections
+        WHERE assignment_id = ${assignmentId}
+        ORDER BY section_number ASC
+      `;
+      const existingTexts = existing.map(r => (r.script_text as string).trim());
+      const candidateTexts = candidate.map(s => s.script_text.trim());
+      const same =
+        existingTexts.length === candidateTexts.length &&
+        existingTexts.every((t, i) => t === candidateTexts[i]);
+      if (same) return false;
+    }
+
+    const sections = candidate;
+    await sql`DELETE FROM narrator_sections WHERE assignment_id = ${assignmentId}`;
+    await sql`
+      UPDATE narrator_assignments
+      SET script_id = ${activeScript.id}, script_version = ${activeScript.version}, updated_at = NOW()
+      WHERE id = ${assignmentId}
+    `;
+    for (let i = 0; i < sections.length; i++) {
+      const s = sections[i];
+      await createSection({
+        assignment_id: assignmentId,
+        section_number: i + 1,
+        label: s.label,
+        script_text: s.script_text,
+        emphasis_markers: s.emphasis_markers,
+        estimated_duration_seconds: s.estimated_duration_seconds,
+      });
+    }
+    return true;
+  } catch (e) {
+    console.warn('resyncAssignmentSectionsIfStale failed:', e);
+    return false;
+  }
 }
 
 export async function updateSection(sectionId: string, fields: {
