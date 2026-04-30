@@ -39,10 +39,23 @@ export const AI_MODELS: AIModel[] = [
   { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic', contextWindow: '1M', description: 'Most capable — best for complex analysis', tier: 'flagship', inputCostPerMTok: 15, outputCostPerMTok: 75 },
   { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', provider: 'anthropic', contextWindow: '1M', description: 'Balanced speed & quality', tier: 'balanced', inputCostPerMTok: 3, outputCostPerMTok: 15 },
   { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', provider: 'anthropic', contextWindow: '1M', description: 'Fast & cost-effective', tier: 'fast', inputCostPerMTok: 1, outputCostPerMTok: 5 },
-  // OpenAI
-  { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', contextWindow: '128K', description: 'OpenAI flagship multimodal', tier: 'flagship', inputCostPerMTok: 2.5, outputCostPerMTok: 10 },
-  { id: 'gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai', contextWindow: '128K', description: 'Fast & affordable OpenAI', tier: 'fast', inputCostPerMTok: 0.15, outputCostPerMTok: 0.6 },
-  { id: 'o3', name: 'o3', provider: 'openai', contextWindow: '200K', description: 'Best reasoning model', tier: 'flagship', inputCostPerMTok: 2, outputCostPerMTok: 8 },
+  // OpenAI — pricing from openai.com/api/pricing as of 2025-2026; verify per-call.
+  // GPT-5 family (released Aug 2025)
+  { id: 'gpt-5', name: 'GPT-5', provider: 'openai', contextWindow: '400K', description: 'Latest flagship — strongest general model', tier: 'flagship', inputCostPerMTok: 1.25, outputCostPerMTok: 10 },
+  { id: 'gpt-5-mini', name: 'GPT-5 Mini', provider: 'openai', contextWindow: '400K', description: 'Cheaper GPT-5 with most of the smarts', tier: 'balanced', inputCostPerMTok: 0.25, outputCostPerMTok: 2 },
+  { id: 'gpt-5-nano', name: 'GPT-5 Nano', provider: 'openai', contextWindow: '400K', description: 'Fast & cheap GPT-5 — high-volume work', tier: 'fast', inputCostPerMTok: 0.05, outputCostPerMTok: 0.4 },
+  // GPT-4.1 family (released April 2025) — strong general models, 1M context
+  { id: 'gpt-4.1', name: 'GPT-4.1', provider: 'openai', contextWindow: '1M', description: 'Strong general model — 1M context, great instruction following', tier: 'flagship', inputCostPerMTok: 2, outputCostPerMTok: 8 },
+  { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini', provider: 'openai', contextWindow: '1M', description: 'Mid-tier 4.1 — good balance', tier: 'balanced', inputCostPerMTok: 0.4, outputCostPerMTok: 1.6 },
+  { id: 'gpt-4.1-nano', name: 'GPT-4.1 Nano', provider: 'openai', contextWindow: '1M', description: 'Cheapest 4.1 — high volume', tier: 'fast', inputCostPerMTok: 0.1, outputCostPerMTok: 0.4 },
+  // GPT-4o (legacy multimodal) — kept for compatibility with older saved settings
+  { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', contextWindow: '128K', description: 'Legacy multimodal — superseded by GPT-5', tier: 'balanced', inputCostPerMTok: 2.5, outputCostPerMTok: 10 },
+  { id: 'gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai', contextWindow: '128K', description: 'Legacy — superseded by GPT-5 Mini', tier: 'fast', inputCostPerMTok: 0.15, outputCostPerMTok: 0.6 },
+  // o-series reasoning models — use max_completion_tokens, fixed temperature.
+  // The provider branch in ai.ts auto-detects these via model.id prefix.
+  { id: 'o3', name: 'o3', provider: 'openai', contextWindow: '200K', description: 'Best general reasoning model', tier: 'flagship', inputCostPerMTok: 2, outputCostPerMTok: 8 },
+  { id: 'o3-mini', name: 'o3 Mini', provider: 'openai', contextWindow: '200K', description: 'Cheap reasoning — good for QA / analysis', tier: 'balanced', inputCostPerMTok: 1.1, outputCostPerMTok: 4.4 },
+  { id: 'o4-mini', name: 'o4 Mini', provider: 'openai', contextWindow: '200K', description: 'Newer compact reasoning model', tier: 'balanced', inputCostPerMTok: 1.1, outputCostPerMTok: 4.4 },
   // Google — pricing for 3.x is approximate; verify on https://ai.google.dev/pricing
   { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', provider: 'google', contextWindow: '1M', description: 'Fast & capable — supports native video input', tier: 'balanced', inputCostPerMTok: 0.1, outputCostPerMTok: 0.4 },
   { id: 'gemini-2.0-flash-thinking-exp', name: 'Gemini 2.0 Flash Thinking', provider: 'google', contextWindow: '1M', description: 'Reasoning model — supports native video input', tier: 'flagship', inputCostPerMTok: 0.1, outputCostPerMTok: 0.4 },

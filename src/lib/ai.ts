@@ -414,6 +414,41 @@ function buildOpenAIMessages(prompt: string, systemPrompt?: string, image?: { ba
   return msgs;
 }
 
+/**
+ * Build chat-completions params per OpenAI model family.
+ *
+ *  - o3 / o3-mini / o4-mini / future o-series: REASONING models. They
+ *    require `max_completion_tokens` (the older `max_tokens` is rejected)
+ *    and forbid non-default temperature ("Only the default (1) value is
+ *    supported"). Passing temperature on these models 400s the request.
+ *
+ *  - gpt-5 / gpt-5-mini / gpt-5-nano: chat models that prefer the new
+ *    `max_completion_tokens` param (max_tokens still works for now but
+ *    is deprecated). Temperature is honored.
+ *
+ *  - gpt-4.1 / gpt-4o / earlier: legacy `max_tokens` + `temperature`.
+ *
+ * Without this branching, every o-series pick fails at the API level —
+ * which is what was happening before this fix.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildOpenAIChatParams(modelId: string, messages: any[], maxTokens: number, temperature: number, stream: boolean): any {
+  const isReasoning = /^o[0-9]/.test(modelId); // o3, o3-mini, o4-mini, future o5...
+  const isGpt5 = modelId.startsWith('gpt-5');
+  const useCompletionTokens = isReasoning || isGpt5;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const params: any = { model: modelId, messages, stream };
+  if (useCompletionTokens) {
+    params.max_completion_tokens = maxTokens;
+  } else {
+    params.max_tokens = maxTokens;
+  }
+  if (!isReasoning) {
+    params.temperature = temperature;
+  }
+  return params;
+}
+
 // --- Main exports ---
 
 export async function generateText(opts: GenerateOptions): Promise<string> {
@@ -478,12 +513,9 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
     if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY environment variable is not configured');
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const msgs = buildOpenAIMessages(effectivePrompt, systemPrompt, opts.image);
-    const response = await client.chat.completions.create({
-      model: model.id,
-      messages: msgs,
-      max_tokens: maxTokens,
-      temperature,
-    });
+    const response = await client.chat.completions.create(
+      buildOpenAIChatParams(model.id, msgs, maxTokens, temperature, false),
+    );
     return response.choices[0].message.content || '';
   }
 
@@ -707,13 +739,12 @@ export async function* generateTextStream(opts: GenerateOptions): AsyncGenerator
     if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY environment variable is not configured');
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const msgs = buildOpenAIMessages(effectivePrompt, systemPrompt, opts.image);
-    const stream = await client.chat.completions.create({
-      model: model.id,
-      messages: msgs,
-      max_tokens: maxTokens,
-      temperature,
-      stream: true,
-    });
+    // The SDK picks its return type from the literal shape of the params
+    // object; building params dynamically loses that, so cast through
+    // unknown to the streaming async iterable.
+    const stream = await client.chat.completions.create(
+      buildOpenAIChatParams(model.id, msgs, maxTokens, temperature, true),
+    ) as unknown as AsyncIterable<{ choices: Array<{ delta?: { content?: string } }> }>;
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta?.content;
       if (delta) yield delta;
