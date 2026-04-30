@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateTextStream, getModelById } from '@/lib/ai';
+import { generateText, generateTextStream, getModelById } from '@/lib/ai';
 import { scriptGenerationPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 
@@ -54,11 +54,26 @@ export async function POST(req: NextRequest) {
       constraints,
     });
 
-    // Stream response
+    // Stream response.
+    //
+    // Some providers (notably GPT-4 Turbo via OpenAI, certain Kie-routed
+    // models) silently return 200 with an empty body when max_tokens
+    // exceeds their per-completion cap. Symptom: the stream closes with
+    // zero chunks, the client shows "Script generated!" with no content.
+    // Same root cause we patched in /api/qa/analyze (commit 64fc7fc).
+    //
+    // Mitigation: count chars as we stream. If the first pass produces
+    // <100 chars, retry once non-streaming at a more conservative cap
+    // (4000) that no current provider rejects, and enqueue the result.
+    // If THAT also comes back empty, send a tagged error sentinel the
+    // client can detect and surface as a real failure instead of a
+    // misleading success.
     const encoder = new TextEncoder();
+    const EMPTY_SENTINEL = '__EMPTY_RESPONSE__';
     const stream = new ReadableStream({
       async start(controller) {
         try {
+          let total = 0;
           for await (const chunk of generateTextStream({
             modelId,
             prompt: user,
@@ -66,7 +81,27 @@ export async function POST(req: NextRequest) {
             maxTokens: 8000,
             temperature: 0.8,
           })) {
+            total += chunk.length;
             controller.enqueue(encoder.encode(chunk));
+          }
+          if (total < 100) {
+            try {
+              const retry = await generateText({
+                modelId,
+                prompt: user,
+                systemPrompt: system,
+                maxTokens: 4000,
+                temperature: 0.8,
+              });
+              if (retry && retry.trim().length >= 100) {
+                controller.enqueue(encoder.encode(retry));
+              } else {
+                controller.enqueue(encoder.encode(EMPTY_SENTINEL));
+              }
+            } catch (retryErr) {
+              const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+              controller.enqueue(encoder.encode(`${EMPTY_SENTINEL}: retry failed (${msg})`));
+            }
           }
           controller.close();
         } catch (err) {

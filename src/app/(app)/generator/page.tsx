@@ -628,6 +628,17 @@ function GeneratorPage() {
         scriptRef.current?.scrollTo({ top: scriptRef.current.scrollHeight, behavior: 'smooth' });
       }
 
+      // Server signals an empty-provider-response with this sentinel after
+      // its own retry already failed. Treat as an error, not a success.
+      const EMPTY_SENTINEL = '__EMPTY_RESPONSE__';
+      if (full.includes(EMPTY_SENTINEL) || full.trim().length < 100) {
+        const detail = full.startsWith(EMPTY_SENTINEL) ? full.slice(EMPTY_SENTINEL.length).replace(/^[:\s]+/, '') : '';
+        setScript('');
+        throw new Error(
+          `The model returned no content${detail ? ` (${detail})` : ''}. Try a different model — some providers (GPT-4 Turbo, certain Kie routes) silently cap output and return empty when the prompt is heavy.`,
+        );
+      }
+
       setShowSave(true);
       // Auto-save to history — include audience/context/refs/constraints/series
       // so restoring brings back the full input context, not just the output.
