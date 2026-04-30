@@ -81,6 +81,122 @@ function stripCues(text: string): string {
   return text.replace(/\[[^\]]+\]/g, '').replace(/\s+/g, ' ').trim();
 }
 
+function sanitizeFilename(name: string): string {
+  return name.replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, '-').slice(0, 60).toLowerCase() || 'narration';
+}
+
+function downloadBlob(content: string | Blob, filename: string, mimeType: string) {
+  const blob = typeof content === 'string' ? new Blob([content], { type: mimeType }) : content;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+interface PortalSectionLite {
+  section_number: number;
+  label: string | null;
+  script_text: string;
+  estimated_duration_seconds: number | null;
+}
+
+function exportTxt(title: string, sections: PortalSectionLite[], withLabels: boolean) {
+  const lines: string[] = [title, '='.repeat(Math.max(title.length, 8)), ''];
+  const visible = sections.filter(s => stripCues(s.script_text).length > 0);
+  if (withLabels) {
+    for (const s of visible) {
+      const label = s.label || `Section ${s.section_number}`;
+      const dur = s.estimated_duration_seconds ? ` (~${Math.round(s.estimated_duration_seconds)}s)` : '';
+      lines.push(`-- ${label}${dur} --`);
+      lines.push('');
+      lines.push(stripCues(s.script_text));
+      lines.push('');
+      lines.push('');
+    }
+  } else {
+    lines.push(visible.map(s => stripCues(s.script_text)).join('\n\n'));
+  }
+  downloadBlob(lines.join('\n'), `${sanitizeFilename(title)}-narration.txt`, 'text/plain');
+}
+
+function exportDoc(title: string, sections: PortalSectionLite[], withLabels: boolean) {
+  // Word will open .doc files that are valid HTML with the right MIME type.
+  // Avoids pulling in a docx dep just for a save-as option.
+  const visible = sections.filter(s => stripCues(s.script_text).length > 0);
+  const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const body = withLabels
+    ? visible.map(s => {
+        const label = escape(s.label || `Section ${s.section_number}`);
+        const dur = s.estimated_duration_seconds ? ` <span style="color:#777">(~${Math.round(s.estimated_duration_seconds)}s)</span>` : '';
+        return `<h2 style="color:#7c3aed;margin-top:18pt;">${label}${dur}</h2><p>${escape(stripCues(s.script_text))}</p>`;
+      }).join('\n')
+    : `<p>${escape(visible.map(s => stripCues(s.script_text)).join('\n\n'))}</p>`;
+  const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><title>${escape(title)}</title></head><body style="font-family:Georgia,serif;font-size:13pt;line-height:1.6;"><h1>${escape(title)}</h1>${body}</body></html>`;
+  downloadBlob(html, `${sanitizeFilename(title)}-narration.doc`, 'application/msword');
+}
+
+async function exportPdf(title: string, sections: PortalSectionLite[], withLabels: boolean) {
+  const { jsPDF } = await import('jspdf');
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 20;
+  const contentWidth = pageWidth - margin * 2;
+  let y = margin;
+
+  doc.setFontSize(18);
+  doc.setFont('helvetica', 'bold');
+  const titleLines = doc.splitTextToSize(title, contentWidth);
+  for (const tl of titleLines) {
+    doc.text(tl, margin, y);
+    y += 8;
+  }
+  y += 4;
+
+  const visible = sections.filter(s => stripCues(s.script_text).length > 0);
+  doc.setFont('times', 'normal');
+  doc.setFontSize(13);
+  doc.setTextColor(15, 15, 15);
+  const lineHeight = 6;
+
+  function writeParagraph(text: string) {
+    const lines = doc.splitTextToSize(text, contentWidth);
+    for (const line of lines) {
+      if (y + lineHeight > pageHeight - margin) {
+        doc.addPage();
+        y = margin;
+      }
+      doc.text(line, margin, y);
+      y += lineHeight;
+    }
+    y += 3;
+  }
+
+  if (withLabels) {
+    for (const s of visible) {
+      if (y > pageHeight - 40) { doc.addPage(); y = margin; }
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      doc.setTextColor(124, 58, 237);
+      const label = s.label || `Section ${s.section_number}`;
+      const dur = s.estimated_duration_seconds ? ` · ~${Math.round(s.estimated_duration_seconds)}s` : '';
+      doc.text(`${label}${dur}`.toUpperCase(), margin, y);
+      y += 7;
+      doc.setFont('times', 'normal');
+      doc.setFontSize(13);
+      doc.setTextColor(15, 15, 15);
+      writeParagraph(stripCues(s.script_text));
+      y += 2;
+    }
+  } else {
+    writeParagraph(visible.map(s => stripCues(s.script_text)).join('\n\n'));
+  }
+
+  doc.save(`${sanitizeFilename(title)}-narration.pdf`);
+}
+
 export function NarratorPortal({ token }: { token: string }) {
   const [assignment, setAssignment] = useState<Assignment | null>(null);
   const [sections, setSections] = useState<Section[]>([]);
@@ -92,6 +208,9 @@ export function NarratorPortal({ token }: { token: string }) {
   const [showTeleprompter, setShowTeleprompter] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('sections');
+  const [showLabels, setShowLabels] = useState(true);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => { loadData(); }, [token]);
 
@@ -286,6 +405,88 @@ export function NarratorPortal({ token }: { token: string }) {
                   </button>
                 ))}
               </div>
+              {/* In plain mode, allow hiding the section labels for a 100%
+                  uninterrupted read. Toggle doubles as the default for the
+                  Export dropdown's "Include section labels" option. */}
+              {viewMode === 'plain' && (
+                <button
+                  onClick={() => setShowLabels(s => !s)}
+                  className="px-2.5 py-1 rounded-lg text-[11px] transition-colors"
+                  style={{
+                    background: showLabels ? 'rgba(124,58,237,0.15)' : 'rgba(255,255,255,0.05)',
+                    color: showLabels ? '#a78bfa' : 'var(--text-muted)',
+                  }}
+                  title={showLabels ? 'Hide HOOK / SECTION labels' : 'Show HOOK / SECTION labels'}
+                >
+                  {showLabels ? 'Labels: on' : 'Labels: off'}
+                </button>
+              )}
+              {/* Export dropdown — narrator-friendly downloads of the
+                  current script. The "Include section labels" checkbox
+                  inherits the on-screen Labels toggle but can be flipped
+                  per-export. */}
+              <div className="relative">
+                <button
+                  onClick={() => setExportOpen(o => !o)}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1"
+                  style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+                  title="Export narration as PDF, Word doc, or plain text"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+                  Export
+                </button>
+                {exportOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setExportOpen(false)} />
+                    <div
+                      className="absolute right-0 top-full mt-1 z-50 rounded-lg overflow-hidden"
+                      style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', minWidth: 240, boxShadow: '0 10px 30px rgba(0,0,0,0.4)' }}
+                    >
+                      <label className="flex items-center gap-2 px-3 py-2.5 text-[11px]" style={{ color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>
+                        <input
+                          type="checkbox"
+                          checked={showLabels}
+                          onChange={e => setShowLabels(e.target.checked)}
+                          className="accent-purple-500"
+                        />
+                        Include section labels (Hook / Section N)
+                      </label>
+                      {([
+                        { key: 'pdf', label: '📕 Download PDF', hint: 'Print-ready' },
+                        { key: 'doc', label: '📄 Download .doc', hint: 'Opens in Word / Docs' },
+                        { key: 'txt', label: '📝 Download .txt', hint: 'Plain text' },
+                      ] as const).map(opt => (
+                        <button
+                          key={opt.key}
+                          disabled={exporting}
+                          onClick={async () => {
+                            setExporting(true);
+                            try {
+                              const title = assignment.project_title;
+                              if (opt.key === 'pdf') await exportPdf(title, sections, showLabels);
+                              else if (opt.key === 'doc') exportDoc(title, sections, showLabels);
+                              else exportTxt(title, sections, showLabels);
+                            } catch (err) {
+                              console.error('Narrator export failed:', err);
+                              alert('Export failed — please try again.');
+                            } finally {
+                              setExporting(false);
+                              setExportOpen(false);
+                            }
+                          }}
+                          className="w-full text-left px-3 py-2.5 text-sm flex items-center gap-2 transition-colors disabled:opacity-50"
+                          style={{ color: 'var(--text-primary)' }}
+                          onMouseEnter={e => { if (!exporting) e.currentTarget.style.background = 'rgba(124,58,237,0.08)'; }}
+                          onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                        >
+                          <span>{opt.label}</span>
+                          <span className="ml-auto text-[10px]" style={{ color: 'var(--text-muted)' }}>{opt.hint}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
               <button onClick={() => setShowTeleprompter(true)} className="px-3 py-1.5 rounded-lg text-xs font-medium" style={{ background: 'rgba(124,58,237,0.15)', color: '#7c3aed' }}>
                 Teleprompter
               </button>
@@ -316,14 +517,21 @@ export function NarratorPortal({ token }: { token: string }) {
         </header>
 
         {/* Plain text view — flowing narration with production cues stripped.
-            Useful for a read-through without the per-section UI clutter.
-            Switches back to Sections via the header toggle. */}
+            "Labels: on" keeps HOOK / SECTION dividers; "Labels: off" merges
+            everything into one uninterrupted read. */}
         {viewMode === 'plain' ? (
           <div className="rounded-xl p-6" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
             {(() => {
               const visible = sections.filter(s => stripCues(s.script_text).length > 0);
               if (visible.length === 0) {
                 return <p className="text-sm text-center py-8" style={{ color: 'var(--text-muted)' }}>No narration text yet.</p>;
+              }
+              if (!showLabels) {
+                return (
+                  <p className="text-base leading-relaxed whitespace-pre-wrap" style={{ color: 'var(--text-primary)', fontFamily: 'Georgia, serif', lineHeight: 1.8 }}>
+                    {visible.map(s => stripCues(s.script_text)).join('\n\n')}
+                  </p>
+                );
               }
               return (
                 <div className="space-y-6">
