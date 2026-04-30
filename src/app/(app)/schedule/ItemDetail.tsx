@@ -452,7 +452,53 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
                   selectedName={item.narrator_collaborator_name ?? null}
                   selectedColor={item.narrator_collaborator_color ?? null}
                   selectedToken={item.narrator_collaborator_token ?? null}
-                  onChange={id => onPatch(item.id, { narrator_collaborator_id: id })}
+                  onChange={async id => {
+                    // Always update the pointer first so the UI reflects the pick.
+                    onPatch(item.id, { narrator_collaborator_id: id });
+
+                    // Auto-create the actual narrator_assignment so the picked
+                    // person sees the project in their dashboard immediately —
+                    // previously this required a separate "🎤 Narration Review"
+                    // button click and was easy to miss. Conditions:
+                    //   - we're picking someone (not clearing)
+                    //   - the schedule item already has project_id + script_id
+                    //   - no assignment for this (project, narrator) exists yet
+                    // Failures are intentionally silent — if the script isn't
+                    // ready or the assignment can't be built, the manual button
+                    // is still there as the explicit path.
+                    if (!id || !item.project_id || !item.script_id) return;
+                    try {
+                      const existingRes = await fetch('/api/narrator/assignments');
+                      if (existingRes.ok) {
+                        const all: Array<{ project_id?: string; narrator_id?: string }> = await existingRes.json();
+                        const dup = all.find(a => a.project_id === item.project_id && a.narrator_id === id);
+                        if (dup) return; // assignment already exists, nothing to do
+                      }
+                      const scriptsRes = await fetch(`/api/projects/${item.project_id}/scripts`);
+                      if (!scriptsRes.ok) return;
+                      const scriptsData = await scriptsRes.json();
+                      const scripts = Array.isArray(scriptsData) ? scriptsData : (scriptsData.scripts || []);
+                      const script = scripts.find((s: { id: string }) => s.id === item.script_id) || scripts[0];
+                      if (!script?.content) return;
+                      const created = await fetch('/api/narrator/assignments', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          project_id: item.project_id,
+                          script_id: item.script_id,
+                          narrator_id: id,
+                          script_text: script.content,
+                          script_version: script.version,
+                        }),
+                      });
+                      if (created.ok) {
+                        toast.success('Narrator assigned, sections sent to their dashboard');
+                      }
+                    } catch {
+                      // Silent — pointer is saved, user can retry via the
+                      // 🎤 Narration Review action button.
+                    }
+                  }}
                 />
               </Field>
 
