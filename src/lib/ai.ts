@@ -54,9 +54,26 @@ function requireKieKey(): string {
 async function kieGeminiFetch(kieModelId: string, prompt: string, systemPrompt?: string, stream = false, maxTokens = 4000) {
   const apiKey = requireKieKey();
   const url = `${KIE_BASE}/${kieModelId}/v1/chat/completions`;
-  const messages: { role: string; content: string }[] = [];
-  if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
-  messages.push({ role: 'user', content: prompt });
+
+  // Kie's gemini-3.x routes (gemini-3-flash, gemini-3-pro, gemini-3.1-pro)
+  // require `content` to be an ARRAY of content blocks, not a plain string.
+  // Older 2.x routes accept both, but 3.x silently 200s with an empty body
+  // when given the legacy string form — exact symptom we saw before this
+  // fix (Script Generated! toast over an empty editor). Sending the array
+  // form universally is OpenAI-compatible and works on every Kie route.
+  // Ref: https://docs.kie.ai/market/gemini/gemini-3-1-pro
+  type ContentBlock = { type: 'text'; text: string };
+  const messages: { role: string; content: ContentBlock[] }[] = [];
+  if (systemPrompt) messages.push({ role: 'system', content: [{ type: 'text', text: systemPrompt }] });
+  messages.push({ role: 'user', content: [{ type: 'text', text: prompt }] });
+
+  // Gemini 3.x supports a `reasoning_effort` knob — set to 'high' on the
+  // pro tiers so the model actually engages its reasoning loop instead of
+  // returning a thin/empty response. No-op for routes that don't recognize it.
+  const body: Record<string, unknown> = { messages, stream, max_tokens: maxTokens };
+  if (kieModelId.startsWith('gemini-3') && (kieModelId.includes('pro') || kieModelId.includes('thinking'))) {
+    body.reasoning_effort = 'high';
+  }
 
   return fetch(url, {
     method: 'POST',
@@ -64,7 +81,7 @@ async function kieGeminiFetch(kieModelId: string, prompt: string, systemPrompt?:
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ messages, stream, max_tokens: maxTokens }),
+    body: JSON.stringify(body),
   });
 }
 
