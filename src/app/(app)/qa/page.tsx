@@ -5,8 +5,9 @@ import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import type { ScheduleItem } from '@/lib/schedule';
-import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadFullContextForItem } from '@/lib/schedule-link';
+import { getScheduleLinkId, fetchScheduleItem, loadFullContextForItem } from '@/lib/schedule-link';
 import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
+import { ScheduleLinkProvider, ScheduleSaverRegistration } from '@/components/ui/ScheduleLinkContext';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
 import { ExportScript } from '@/components/ui/ExportScript';
@@ -133,6 +134,10 @@ function QAPage() {
   // exclusions). Passed to /api/qa/analyze so the reviewer doesn't penalize
   // intentionally-omitted elements. User can view/toggle them on this page too.
   const [constraints, setConstraints] = useState<ScriptConstraints>(EMPTY_CONSTRAINTS);
+  // Tracks which QA pass (by runKey) was last explicitly saved via the banner.
+  // When the latest pass's runKey diverges from this, the Save button shows a
+  // dirty-dot indicator.
+  const [lastSavedQaRunKey, setLastSavedQaRunKey] = useState<string | null>(null);
 
   // Load prefill from Script Generator. Also restore any previously-backed-up session
   // so a refresh or HMR cycle doesn't wipe a multi-pass QA run.
@@ -167,7 +172,7 @@ function QAPage() {
     })();
     return () => { cancelled = true; };
     // `script` intentionally omitted from deps — we only peek at its initial value on mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [scheduleItemId, schedulePrefilled]);
 
   useEffect(() => {
@@ -243,7 +248,7 @@ function QAPage() {
       const draftTitle = active?.title || active?.topic;
       if (draftTitle) setTopic(prev => prev || draftTitle);
     } catch {}
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   // Back up the QA session to localStorage so it survives refresh/HMR.
@@ -593,22 +598,14 @@ function QAPage() {
       }
       toast.success(`QA Pass ${passNumber} complete! Score: ${data.result.overall_score}/100`);
 
-      // Write back to the linked schedule item so the card surfaces the latest
-      // QA score + verdict. QA is advisory so no status auto-advance.
-      if (scheduleItemId) {
-        writeBackToSchedule(scheduleItemId, {}, {
-          customFieldsMerge: {
-            latest_qa: {
-              score: data.result.overall_score,
-              verdict: data.result.verdict,
-              pass_count: newResults.length,
-              ran_at: new Date().toISOString(),
-              model_id: modelId,
-              aggressiveness,
-            },
-          },
-        });
-      }
+      // Schedule writeback now goes through the saver registration:
+      //   - <ScheduleSaverRegistration autoStamp={...}> silently stamps
+      //     `latest_qa` after each pass, so the schedule grid shows the latest
+      //     score without any user action.
+      //   - The banner's "Save QA report" button re-pushes the same metadata
+      //     with a confirmation toast for users who want explicit feedback
+      //     that the linked item was updated.
+      // QA is advisory; no automatic status auto-advance.
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'QA analysis failed');
     } finally {
@@ -652,7 +649,60 @@ function QAPage() {
 
   const currentResult = results[activeResult];
 
+  // Saver derived values: the latest pass's score + verdict are what we
+  // surface to the schedule grid. The "report" itself isn't pushed back
+  // (it's persisted in the project's `qa_sessions` table and in
+  // localStorage); the schedule item just needs the fingerprint.
+  const latestQaResult = results.length > 0 ? results[results.length - 1] : null;
+  const latestQaScore = latestQaResult?.overall_score ?? null;
+  const qaIsReady = !!latestQaResult;
+  const qaRunKey = latestQaResult
+    ? `${results.length}:${latestQaScore ?? 'null'}:${latestQaResult.verdict ?? ''}`
+    : null;
+
   return (
+    <ScheduleLinkProvider item={scheduleItem}>
+      <ScheduleSaverRegistration
+        handle={{
+          artifactLabel: 'QA report',
+          isReady: qaIsReady,
+          // Each new pass shifts the runKey, which we use as a stable
+          // identity for "what's been saved". When runKey doesn't match
+          // lastSavedQaRunKey (tracked in the onSaved callback), dirty.
+          isDirty: qaIsReady && qaRunKey !== lastSavedQaRunKey,
+          notReadyReason: 'Run a QA pass first',
+          buildPatch: () => ({
+            patch: {},
+            customFieldsMerge: {
+              latest_qa: {
+                score: latestQaResult!.overall_score,
+                verdict: latestQaResult!.verdict,
+                pass_count: results.length,
+                ran_at: new Date().toISOString(),
+                model_id: modelId,
+                aggressiveness,
+              },
+            },
+          }),
+          describeSaved: () =>
+            latestQaResult
+              ? `${latestQaResult.overall_score}/100 · ${latestQaResult.verdict || 'verdict pending'}`
+              : '',
+          onSaved: () => setLastSavedQaRunKey(qaRunKey),
+        }}
+        autoStamp={{
+          key: 'latest_qa',
+          value: () => latestQaResult ? {
+            score: latestQaResult.overall_score,
+            verdict: latestQaResult.verdict,
+            pass_count: results.length,
+            ran_at: new Date().toISOString(),
+            model_id: modelId,
+            aggressiveness,
+          } : null,
+          runKey: qaRunKey,
+        }}
+      />
     <div className="p-8 max-w-7xl mx-auto">
       {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="QA Engine" />}
       {/* Header */}
@@ -1597,5 +1647,6 @@ function QAPage() {
         }}
       />
     </div>
+    </ScheduleLinkProvider>
   );
 }

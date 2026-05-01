@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import type { ScheduleItem } from '@/lib/schedule';
 import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadFullContextForItem, buildContextNotesFromItem, SCHEDULE_LINK_PARAM } from '@/lib/schedule-link';
 import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
+import { ScheduleLinkProvider, ScheduleSaverRegistration } from '@/components/ui/ScheduleLinkContext';
 import { AddToScheduleButton } from '@/components/ui/AddToScheduleButton';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { ScriptVoiceoverPanel } from '@/components/ui/ScriptVoiceoverPanel';
@@ -90,6 +91,9 @@ function GeneratorPage() {
   // Track saved project + script id so post-save actions (e.g. Send to Narrator)
   // can deep-link straight to the right project.
   const [savedProjectId, setSavedProjectId] = useState<string | null>(null);
+  // The exact script content last pushed to the linked schedule item (or saved
+  // as a project). Drives the banner's dirty indicator: dirty = script !== lastSavedScript.
+  const [lastSavedScript, setLastSavedScript] = useState<string>('');
   const scriptRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -735,7 +739,101 @@ function GeneratorPage() {
   const wordCount = countWords(script);
   const estSeconds = estimateDuration(wordCount);
 
+  // Build the saver registration handle for the banner's "Save" button. The
+  // hook reads function fields through a ref each invocation, so the closures
+  // here always see the latest state without re-registering on every render.
+  const trimmedScript = script.trim();
+  const wordCountForSaver = countWords(script);
+
   return (
+    <ScheduleLinkProvider item={scheduleItem}>
+      <ScheduleSaverRegistration
+        handle={{
+          artifactLabel: 'script',
+          isReady: trimmedScript.length > 0,
+          isDirty: trimmedScript.length > 0 && script !== lastSavedScript,
+          notReadyReason: 'Generate a script first',
+          // Once we save a script, advancing the schedule item from "idea" →
+          // "scripting" is the natural next step. Server enforces strict
+          // forward-only ordering, so this is a no-op when the item is
+          // already past scripting.
+          nextStatus: { key: 'scripting', label: 'Scripting' },
+          buildPatch: async () => {
+            const currentScript = script;
+            const currentTopic = topic.trim() || scheduleItem?.title || 'Untitled';
+            const currentNiche = niche || 'General';
+            // Update-in-place: if the linked item already references a project,
+            // append a new script version to that project. Otherwise create a
+            // fresh project + initial script.
+            const existingProjectId = scheduleItem?.project_id ?? savedProjectId;
+            let projectId: string | null = existingProjectId ?? null;
+            let scriptId: string | null = null;
+            try {
+              if (existingProjectId) {
+                const r = await fetch(`/api/projects/${existingProjectId}/scripts`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ content: currentScript, modelId }),
+                });
+                if (!r.ok) throw new Error('Failed to save script revision');
+                const data = await r.json();
+                scriptId = data.script?.id ?? null;
+              } else {
+                const r = await fetch('/api/projects', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    title: currentTopic,
+                    niche: currentNiche,
+                    topic: currentTopic,
+                    script: currentScript,
+                    modelId,
+                  }),
+                });
+                if (!r.ok) throw new Error('Failed to create project');
+                const data = await r.json();
+                projectId = data.project?.id ?? data.id ?? null;
+                scriptId = data.script?.id ?? null;
+                if (projectId) setSavedProjectId(projectId);
+              }
+            } catch (err) {
+              toast.error(err instanceof Error ? err.message : 'Could not save the script');
+              throw err;
+            }
+            const patch: Record<string, unknown> = {};
+            if (projectId) patch.project_id = projectId;
+            if (scriptId) patch.script_id = scriptId;
+            return {
+              patch,
+              customFieldsMerge: {
+                latest_script: {
+                  word_count: wordCountForSaver,
+                  model_id: modelId,
+                  saved_at: new Date().toISOString(),
+                },
+              },
+            };
+          },
+          describeSaved: () => `${wordCountForSaver} words`,
+          onSaved: () => setLastSavedScript(script),
+        }}
+        autoStamp={{
+          key: 'latest_script',
+          // Fingerprint stamped silently the moment a script generation
+          // completes so the schedule grid can show "has script" without the
+          // user having to click Save first.
+          value: () => trimmedScript ? {
+            word_count: wordCountForSaver,
+            model_id: modelId,
+            generated_at: new Date().toISOString(),
+            preview: script.slice(0, 200),
+          } : null,
+          // Re-stamp whenever the script content changes meaningfully — the
+          // hook dedupes by exact runKey value, so identical scripts won't
+          // re-stamp.
+          runKey: trimmedScript ? `${trimmedScript.length}:${trimmedScript.slice(0, 64)}` : null,
+        }}
+      />
     <div className="p-8 max-w-6xl mx-auto">
       {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Script Generator" />}
       {/* Header */}
@@ -1411,6 +1509,7 @@ function GeneratorPage() {
                     modelId={modelId}
                     onSaved={(projectId, scriptId) => {
                       setSavedProjectId(projectId);
+                      setLastSavedScript(script);
                       if (scheduleItemId) {
                         writeBackToSchedule(
                           scheduleItemId,
@@ -1452,6 +1551,7 @@ function GeneratorPage() {
                         const projectId = data.project?.id || data.id;
                         if (!projectId) throw new Error('No project id returned');
                         setSavedProjectId(projectId);
+                        setLastSavedScript(script);
                         if (scheduleItemId) {
                           writeBackToSchedule(
                             scheduleItemId,
@@ -1605,5 +1705,6 @@ function GeneratorPage() {
         }}
       />
     </div>
+    </ScheduleLinkProvider>
   );
 }

@@ -8,6 +8,7 @@ import { Suspense } from 'react';
 import type { ScheduleItem } from '@/lib/schedule';
 import { getScheduleLinkId, fetchScheduleItem, loadFullContextForItem } from '@/lib/schedule-link';
 import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
+import { ScheduleLinkProvider, ScheduleSaverRegistration } from '@/components/ui/ScheduleLinkContext';
 import { ELEVENLABS_MODELS } from '@/lib/elevenlabs';
 import { cleanScriptForVoiceover } from '@/lib/voiceover-presets';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
@@ -50,6 +51,14 @@ function VoiceoverStudio() {
   const [generating, setGenerating] = useState(false);
   const [audioUrl, setAudioUrl] = useState('');
   const [savedToProject, setSavedToProject] = useState(false);
+  // Tracks which voiceover (by runKey) was last explicitly saved via the
+  // banner. Drives the dirty indicator.
+  const [lastSavedVoRunKey, setLastSavedVoRunKey] = useState<string | null>(null);
+  // Snapshot of `text.length` at the moment the audio was generated.
+  // Without this, post-generation textarea edits would skew the
+  // `char_count` we stamp onto the schedule item — the audio still ties
+  // to the *original* text, not whatever the user typed afterwards.
+  const [audioTextCharCount, setAudioTextCharCount] = useState<number>(0);
   const [voiceSearch, setVoiceSearch] = useState('');
   const [voiceCategory, setVoiceCategory] = useState('all');
   const [subscription, setSubscription] = useState<{ character_count: number; character_limit: number } | null>(null);
@@ -70,6 +79,9 @@ function VoiceoverStudio() {
     setAudioUrl(entry.audioUrl);
     // Prefer full text when it was saved; fall back to the preview for legacy entries.
     setText(entry.text ?? entry.textPreview ?? '');
+    // Restore the canonical char count for the audio (history snapshot wins
+    // over current textarea contents — same reasoning as live generation).
+    setAudioTextCharCount(entry.charCount ?? (entry.text?.length ?? 0));
     if (entry.voiceId) setSelectedVoice(entry.voiceId);
     if (entry.settings) setSettings(entry.settings);
     if (entry.text) {
@@ -174,6 +186,10 @@ function VoiceoverStudio() {
       }
       const data = await res.json();
       setAudioUrl(data.url);
+      // Snapshot the text length the audio was generated from so the
+      // schedule-side metadata stays consistent even if the user edits the
+      // textarea afterwards.
+      setAudioTextCharCount(text.length);
       // Save to history with the full text + settings so clicking a past entry
       // rehydrates everything (text, voice, sliders, model) — not just audio+preview.
       const voiceName = voices.find(v => v.voice_id === selectedVoice)?.name || 'Unknown';
@@ -253,7 +269,59 @@ function VoiceoverStudio() {
 
   const charCount = text.length;
 
+  // Saver derived values. Voiceover artifact is a single audio URL +
+  // associated metadata (voice, model, char count). Pushed under
+  // `custom_fields_merge.latest_voiceover` since there's no dedicated
+  // column on schedule_items. runKey is the audio URL alone — each
+  // generation produces a new URL, so this is naturally unique per
+  // artifact and stable against textarea edits.
+  const voOutputReady = !!audioUrl;
+  const voSelectedVoiceName = voices.find(v => v.voice_id === selectedVoice)?.name ?? null;
+  const voRunKey = audioUrl || null;
+
   return (
+    <ScheduleLinkProvider item={scheduleItem}>
+      <ScheduleSaverRegistration
+        handle={{
+          artifactLabel: 'voiceover',
+          isReady: voOutputReady,
+          isDirty: voOutputReady && voRunKey !== lastSavedVoRunKey,
+          notReadyReason: 'Generate a voiceover first',
+          // Voiceover done → editing is the next pipeline step. Save itself
+          // never advances; the banner offers "Mark as Editing" as a
+          // follow-up action after the save lands.
+          nextStatus: { key: 'editing', label: 'Editing' },
+          buildPatch: () => ({
+            patch: {},
+            customFieldsMerge: {
+              latest_voiceover: {
+                audio_url: audioUrl,
+                voice_id: selectedVoice,
+                voice_name: voSelectedVoiceName,
+                model_id: settings.model_id,
+                char_count: audioTextCharCount,
+                saved_at: new Date().toISOString(),
+              },
+            },
+          }),
+          describeSaved: () => voSelectedVoiceName
+            ? `${voSelectedVoiceName} · ${audioTextCharCount.toLocaleString()} chars`
+            : `${audioTextCharCount.toLocaleString()} chars`,
+          onSaved: () => setLastSavedVoRunKey(voRunKey),
+        }}
+        autoStamp={{
+          key: 'latest_voiceover',
+          value: () => audioUrl ? {
+            audio_url: audioUrl,
+            voice_id: selectedVoice,
+            voice_name: voSelectedVoiceName,
+            model_id: settings.model_id,
+            char_count: audioTextCharCount,
+            generated_at: new Date().toISOString(),
+          } : null,
+          runKey: voRunKey,
+        }}
+      />
     <div className="p-8 max-w-7xl mx-auto">
       {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Voiceover Studio" />}
       {/* Header */}
@@ -566,6 +634,7 @@ function VoiceoverStudio() {
         onClearAll={() => { localStorage.removeItem('voiceover_history'); setVoHistoryItems([]); }}
       />
     </div>
+    </ScheduleLinkProvider>
   );
 }
 

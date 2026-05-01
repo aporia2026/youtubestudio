@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import type { ScheduleItem } from '@/lib/schedule';
 import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadFullContextForItem } from '@/lib/schedule-link';
 import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
+import { ScheduleLinkProvider, ScheduleSaverRegistration } from '@/components/ui/ScheduleLinkContext';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { DraftsBanner } from '@/components/ui/DraftsBanner';
@@ -90,6 +91,9 @@ function SeoPage() {
   const [expandedTitle, setExpandedTitle] = useState<number | null>(null);
   const [historyItems, setHistoryItems] = useState<SeoHistoryEntry[]>(() => getSeoHistory());
   const [draftId, setDraftId] = useState<string | null>(() => getActiveDraft()?.id || null);
+  // Identity of the last result that was successfully pushed to the schedule
+  // item via the banner button. Drives the dirty indicator.
+  const [lastSavedResultRef, setLastSavedResultRef] = useState<SeoResult | null>(null);
 
   // Schedule-link preload: pull topic / niche / script + carry over any prior
   // SEO outputs already stamped on the item (yt_tags, freeform tags) as a
@@ -117,7 +121,7 @@ function SeoPage() {
       toast.message(`Loaded context from "${item.title || 'schedule item'}"`);
     })();
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [scheduleItemId, schedulePrefilled]);
 
   useEffect(() => {
@@ -172,10 +176,13 @@ function SeoPage() {
       const titles = (data.result as { titles?: Array<{ title?: string; score?: number }> }).titles || [];
       const bestTitle = [...titles].sort((a, b) => (b.score || 0) - (a.score || 0))[0];
 
-      // Write back to the linked schedule item — stamp the generated description
-      // and tags onto the item so the publish step can copy them straight through.
-      // Title is only updated when the user explicitly picks one (see below),
-      // never auto-overwritten from the top-ranked suggestion.
+      // Silent auto-write — pushes the generated description + tags + metadata
+      // straight onto the linked schedule item the moment the run finishes.
+      // Coexists with the banner's explicit "Save SEO bundle" button, which
+      // re-pushes the same payload with a confirmation toast for users who
+      // want loud feedback. Title is *not* auto-written; the per-title
+      // "Use title" button below handles that explicitly so the top-ranked
+      // suggestion never silently overwrites a manually-chosen headline.
       if (scheduleItemId) {
         const desc = (data.result as { description?: { full_description?: string; above_fold?: string } }).description;
         const fullDesc = desc?.full_description || desc?.above_fold || '';
@@ -183,7 +190,7 @@ function SeoPage() {
           .map(t => t.tag)
           .filter((t): t is string => !!t);
         // Only send fields that actually have values — sending `yt_tags: []`
-        // would wipe the user's existing tags on the item.
+        // would wipe the user's existing tags.
         const patch: Record<string, unknown> = {};
         if (fullDesc) patch.yt_description = fullDesc;
         if (tagStrings.length) patch.yt_tags = tagStrings;
@@ -263,7 +270,61 @@ function SeoPage() {
     { key: 'tags' as const, label: 'Tags & Chapters', count: result?.tags?.length },
   ];
 
+  // Saver derived values. Memoized inline because hooks read functions
+  // through a ref; primitive flags drive re-registration.
+  const seoBestTitle = result?.titles?.length
+    ? [...result.titles].sort((a, b) => (b.score || 0) - (a.score || 0))[0]
+    : null;
+  const seoFullDesc = result?.description?.full_description || result?.description?.above_fold || '';
+  const seoTagStrings: string[] = (result?.tags ?? [])
+    .map(t => t.tag)
+    .filter((t): t is string => !!t);
+  const seoIsReady = !!result && (!!seoFullDesc || seoTagStrings.length > 0);
+  const seoIsDirty = seoIsReady && result !== lastSavedResultRef;
+
   return (
+    <ScheduleLinkProvider item={scheduleItem}>
+      <ScheduleSaverRegistration
+        handle={{
+          artifactLabel: 'SEO bundle',
+          isReady: seoIsReady,
+          isDirty: seoIsDirty,
+          notReadyReason: 'Run SEO optimization first',
+          // SEO is a polish step that can run at multiple stages — no
+          // automatic next-stage advance.
+          buildPatch: () => {
+            const patch: Record<string, unknown> = {};
+            if (seoFullDesc) patch.yt_description = seoFullDesc;
+            // Only send tags when we have them — sending `[]` would wipe the
+            // user's existing tags.
+            if (seoTagStrings.length) patch.yt_tags = seoTagStrings;
+            return {
+              patch,
+              customFieldsMerge: {
+                latest_seo: {
+                  best_title: seoBestTitle?.title ?? null,
+                  best_score: seoBestTitle?.score ?? null,
+                  titles_count: result?.titles?.length ?? 0,
+                  tags_count: seoTagStrings.length,
+                  ran_at: new Date().toISOString(),
+                  model_id: modelId,
+                },
+              },
+            };
+          },
+          describeSaved: () => {
+            const parts: string[] = [];
+            if (seoFullDesc) parts.push('description');
+            if (seoTagStrings.length) parts.push(`${seoTagStrings.length} tags`);
+            return parts.length ? parts.join(' + ') : 'metadata';
+          },
+          onSaved: () => setLastSavedResultRef(result),
+        }}
+        // No autoStamp here — the inline writeBackToSchedule in
+        // handleGenerate (above) already pushes desc/tags + metadata
+        // silently on each run. Adding an autoStamp would just fire a
+        // duplicate metadata-only PATCH for no extra value.
+      />
     <div className="p-8 max-w-6xl mx-auto">
       {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="SEO Optimizer" />}
       {/* Header */}
@@ -745,5 +806,6 @@ function SeoPage() {
         onClearAll={() => { clearSeoHistory(); setHistoryItems([]); }}
       />
     </div>
+    </ScheduleLinkProvider>
   );
 }

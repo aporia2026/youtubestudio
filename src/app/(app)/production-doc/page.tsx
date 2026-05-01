@@ -5,8 +5,9 @@ import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
 import type { ScheduleItem } from '@/lib/schedule';
-import { getScheduleLinkId, fetchScheduleItem, writeBackToSchedule, loadFullContextForItem, buildContextNotesFromItem } from '@/lib/schedule-link';
+import { getScheduleLinkId, fetchScheduleItem, loadFullContextForItem, buildContextNotesFromItem } from '@/lib/schedule-link';
 import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
+import { ScheduleLinkProvider, ScheduleSaverRegistration } from '@/components/ui/ScheduleLinkContext';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import {
@@ -22,6 +23,7 @@ import {
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
+import { StyleManagerDialog, type StyleSummary } from './StyleManagerDialog';
 import { productionDocToVideoConfig } from '@/remotion/utils';
 import type { BrandKit } from '@/remotion/types';
 
@@ -104,6 +106,10 @@ interface ProductionRow {
   visual_description: string;
   stock_search_terms: string;
   ai_image_prompt: string;
+  /** Optional editor-composite asset to overlay on top of the AI visual.
+   *  Only populated when the chosen style has `allow_overlay_stock` and
+   *  the model decides this row warrants a real-world reference. */
+  overlay_stock_terms?: string;
   on_screen_text: string;
   notes: string;
 }
@@ -142,15 +148,15 @@ interface VisualRef {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const STYLE_PRESETS = [
-  { id: 'cinematic',    label: 'Cinematic' },
-  { id: 'animation_2d', label: '2D Animation' },
-  { id: 'animation_3d', label: '3D Animation' },
-  { id: 'documentary', label: 'Documentary' },
-  { id: 'stock',       label: 'Stock Photo' },
-  { id: 'tech',        label: 'Tech / SaaS' },
-  { id: 'viral',       label: 'Viral / Trendy' },
-  { id: 'whiteboard',  label: 'Whiteboard' },
+/**
+ * Fallback style picker entries shown while the workspace's full style
+ * list (built-ins + saved) is still loading from /api/production-doc/styles.
+ * Keeps the UI from flashing empty on a slow cold start.
+ */
+const FALLBACK_BUILT_IN_STYLES: StyleSummary[] = [
+  { id: 'cinematic', label: 'Cinematic', ai_image_suffix: '', allow_overlay_stock: false, origin: 'built-in' },
+  { id: 'animation_2d', label: '2D Animation', ai_image_suffix: '', allow_overlay_stock: false, origin: 'built-in' },
+  { id: 'doodle_explainer', label: 'Doodle Explainer', ai_image_suffix: '', allow_overlay_stock: true, origin: 'built-in' },
 ];
 
 const VISUAL_TYPE_COLORS: Record<string, { bg: string; color: string }> = {
@@ -187,9 +193,15 @@ function escapeCsvCell(value: string): string {
 }
 
 function exportToCsv(doc: ProductionDoc, rowImages: RowImageState[]) {
+  // Only include the Overlay column when at least one row uses it —
+  // keeps CSVs from styles that don't support overlays exactly the
+  // same shape they were before this feature.
+  const hasOverlay = doc.rows.some((r) => r.overlay_stock_terms?.trim());
   const headers = [
     'Timecode', 'Script Text', 'Visual Type', 'Visual Description',
-    'Stock Search Terms', 'AI Image Prompt', 'Image URL', 'Stock Search URL',
+    'Stock Search Terms',
+    ...(hasOverlay ? ['Overlay Stock Terms'] : []),
+    'AI Image Prompt', 'Image URL', 'Stock Search URL',
     'On-Screen Text', 'Notes',
   ];
   const rows = doc.rows.map((r, i) => [
@@ -198,6 +210,7 @@ function exportToCsv(doc: ProductionDoc, rowImages: RowImageState[]) {
     r.visual_type,
     r.visual_description,
     r.stock_search_terms,
+    ...(hasOverlay ? [r.overlay_stock_terms || ''] : []),
     r.ai_image_prompt,
     rowImages[i]?.imageUrl || '',
     rowImages[i]?.searchUrl || '',
@@ -479,6 +492,46 @@ function ProductionDocPage() {
   const [actualDuration, setActualDuration] = useState(''); // "mm:ss" of actual voiceover recording
   const [stylePreset, setStylePreset] = useState('cinematic');
   const [creativeBrief, setCreativeBrief] = useState('');
+  const [availableStyles, setAvailableStyles] = useState<StyleSummary[]>(FALLBACK_BUILT_IN_STYLES);
+  const [stylesLoaded, setStylesLoaded] = useState(false);
+  const [styleManagerOpen, setStyleManagerOpen] = useState(false);
+
+  /**
+   * Load the full universe of styles (built-ins + workspace-saved) once
+   * on mount. The endpoint is cheap (one SELECT against an indexed
+   * workspace_id) so we don't bother with stale-while-revalidate; we
+   * just refetch after every mutation in the dialog.
+   */
+  const loadStyles = useCallback(async () => {
+    try {
+      const res = await fetch('/api/production-doc/styles');
+      if (!res.ok) {
+        // Stay on the fallback list — the picker will still work for built-ins.
+        setStylesLoaded(true);
+        return;
+      }
+      const data = await res.json();
+      const list: StyleSummary[] = Array.isArray(data?.styles) ? data.styles : [];
+      if (list.length > 0) setAvailableStyles(list);
+      setStylesLoaded(true);
+    } catch {
+      setStylesLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadStyles();
+  }, [loadStyles]);
+
+  // If the currently-selected style id disappears (e.g. user deleted the
+  // saved style they had picked), fall back to the first built-in so the
+  // picker doesn't end up with no active selection.
+  useEffect(() => {
+    if (!stylesLoaded) return;
+    if (availableStyles.some((s) => s.id === stylePreset)) return;
+    const fallback = availableStyles.find((s) => s.origin === 'built-in') ?? availableStyles[0];
+    if (fallback) setStylePreset(fallback.id);
+  }, [availableStyles, stylesLoaded, stylePreset]);
   const [ytRefInput, setYtRefInput] = useState('');
   const [visualRefs, setVisualRefs] = useState<VisualRef[]>([]);
   const screenshotInputRef = useRef<HTMLInputElement>(null);
@@ -497,6 +550,9 @@ function ProductionDocPage() {
   // same entry instead of being lost.
   const [historyEntryId, setHistoryEntryId] = useState<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
+  // Tracks which production doc (by runKey) was last explicitly saved via
+  // the banner button. Drives the dirty indicator.
+  const [lastSavedProdDocRunKey, setLastSavedProdDocRunKey] = useState<string | null>(null);
 
   // — Image generation (declared before effects that reference it)
   const [rowImages, setRowImages] = useState<RowImageState[]>([]);
@@ -535,7 +591,7 @@ function ProductionDocPage() {
       toast.message(`Loaded context from "${item.title || 'schedule item'}"`);
     })();
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [scheduleItemId, schedulePrefilled]);
 
   // Restore last result from localStorage after mount (useEffect so SSR is unaffected).
@@ -1002,23 +1058,12 @@ function ProductionDocPage() {
       appendLog(`✓ ${result.rows.length} shots generated`);
       toast.success(`Production doc ready — ${result.rows.length} shots`);
 
-      // Write back to the linked schedule item so the schedule surfaces that a
-      // production doc exists (history is localStorage-scoped; the history
-      // entry ID here lets the card round-trip back to this doc).
-      if (scheduleItemId) {
-        writeBackToSchedule(scheduleItemId, {}, {
-          customFieldsMerge: {
-            latest_production_doc: {
-              history_entry_id: savedEntry.id,
-              shot_count: result.rows.length,
-              total_duration: result.total_duration,
-              style_preset: stylePreset,
-              generated_at: new Date().toISOString(),
-              model_id: modelId,
-            },
-          },
-        });
-      }
+      // Schedule writeback now goes through the saver registration:
+      //   - <ScheduleSaverRegistration autoStamp={...}> silently stamps the
+      //     `latest_production_doc` fingerprint as soon as the doc is parsed.
+      //   - The banner's "Save production doc" button re-pushes the same
+      //     metadata with a confirmation toast and offers an optional
+      //     advance to "Recording".
       setTimeout(() => tableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
 
       // Fire-and-forget image generation — passes the same abort signal so Stop also cancels images
@@ -1174,9 +1219,57 @@ function ProductionDocPage() {
     return () => { if (renderPollRef.current) clearInterval(renderPollRef.current); };
   }, []);
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ── Saver registration ────────────────────────────────────────────────────
+  // Production doc's primary artifact is a row-list (`doc.rows`) with timing
+  // metadata. Schedule-side we only stamp the fingerprint — the full doc
+  // lives in localStorage history (linked via `history_entry_id`).
+  const prodDocReady = !!doc && (doc.rows?.length ?? 0) > 0;
+  const prodDocRunKey = doc && historyEntryId
+    ? `${historyEntryId}:${doc.rows?.length ?? 0}`
+    : null;
 
   return (
+    <ScheduleLinkProvider item={scheduleItem}>
+      <ScheduleSaverRegistration
+        handle={{
+          artifactLabel: 'production doc',
+          isReady: prodDocReady,
+          isDirty: prodDocReady && prodDocRunKey !== lastSavedProdDocRunKey,
+          notReadyReason: 'Generate a production doc first',
+          // Production doc → recording is a clean pipeline transition: once
+          // the shot list exists, the user can start filming.
+          nextStatus: { key: 'recording', label: 'Recording' },
+          buildPatch: () => ({
+            patch: {},
+            customFieldsMerge: {
+              latest_production_doc: {
+                history_entry_id: historyEntryId,
+                shot_count: doc!.rows?.length ?? 0,
+                total_duration: doc!.total_duration,
+                style_preset: stylePreset,
+                generated_at: new Date().toISOString(),
+                model_id: modelId,
+              },
+            },
+          }),
+          describeSaved: () => doc
+            ? `${doc.rows?.length ?? 0} shots${doc.total_duration ? ` · ${doc.total_duration}` : ''}`
+            : '',
+          onSaved: () => setLastSavedProdDocRunKey(prodDocRunKey),
+        }}
+        autoStamp={{
+          key: 'latest_production_doc',
+          value: () => doc ? {
+            history_entry_id: historyEntryId,
+            shot_count: doc.rows?.length ?? 0,
+            total_duration: doc.total_duration,
+            style_preset: stylePreset,
+            generated_at: new Date().toISOString(),
+            model_id: modelId,
+          } : null,
+          runKey: prodDocRunKey,
+        }}
+      />
     <div className="p-6 max-w-full">
       {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Production Doc" />}
 
@@ -1273,24 +1366,58 @@ function ProductionDocPage() {
 
           {/* Style preset buttons */}
           <div>
-            <label className="block text-xs font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
-              Visual Style
-            </label>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                Visual Style
+              </label>
+              <button
+                onClick={() => setStyleManagerOpen(true)}
+                className="text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded"
+                style={{ background: 'rgba(124,58,237,0.12)', color: 'var(--accent-purple-bright)', border: '1px solid rgba(124,58,237,0.3)' }}
+                title="Create, edit, and delete saved styles"
+              >
+                Manage styles
+              </button>
+            </div>
             <div className="flex flex-wrap gap-2">
-              {STYLE_PRESETS.map(p => (
-                <button
-                  key={p.id}
-                  onClick={() => setStylePreset(p.id)}
-                  className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
-                  style={{
-                    background: stylePreset === p.id ? 'rgba(124,58,237,0.25)' : 'rgba(255,255,255,0.05)',
-                    color: stylePreset === p.id ? '#a78bfa' : 'var(--text-secondary)',
-                    border: stylePreset === p.id ? '1px solid rgba(124,58,237,0.4)' : '1px solid var(--border)',
-                  }}
-                >
-                  {p.label}
-                </button>
-              ))}
+              {availableStyles.map(p => {
+                const active = stylePreset === p.id;
+                const isSaved = p.origin === 'saved';
+                const supportsOverlay = p.allow_overlay_stock;
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => setStylePreset(p.id)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5"
+                    style={{
+                      background: active ? 'rgba(124,58,237,0.25)' : 'rgba(255,255,255,0.05)',
+                      color: active ? '#a78bfa' : 'var(--text-secondary)',
+                      border: active ? '1px solid rgba(124,58,237,0.4)' : '1px solid var(--border)',
+                    }}
+                    title={p.description || (isSaved ? 'Saved style' : 'Built-in style')}
+                  >
+                    <span>{p.label}</span>
+                    {isSaved && (
+                      <span
+                        className="text-[9px] px-1 rounded"
+                        style={{ background: 'rgba(34,211,238,0.15)', color: '#22d3ee' }}
+                        title="Workspace-saved style"
+                      >
+                        Saved
+                      </span>
+                    )}
+                    {supportsOverlay && (
+                      <span
+                        className="text-[9px] px-1 rounded"
+                        style={{ background: 'rgba(245,158,11,0.15)', color: '#fbbf24' }}
+                        title="Mixes AI visuals with real-image overlays"
+                      >
+                        Mixed
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -1537,7 +1664,12 @@ function ProductionDocPage() {
       )}
 
       {/* ── Results */}
-      {doc && (
+      {doc && (() => {
+        // The Overlay column / pill only appear when at least one row in
+        // this doc carries an `overlay_stock_terms` value. Pure-doodle and
+        // pure-cinematic docs render exactly as they did before.
+        const showOverlayColumn = doc.rows.some((r) => r.overlay_stock_terms?.trim());
+        return (
         <div ref={tableRef}>
           {/* Doc header */}
           <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
@@ -1591,12 +1723,25 @@ function ProductionDocPage() {
           </div>
 
           {/* Legend */}
-          <div className="flex flex-wrap gap-2 mb-4">
+          <div className="flex flex-wrap gap-2 mb-4 items-center">
             {Object.entries(VISUAL_TYPE_COLORS).map(([type, { bg, color }]) => (
               <span key={type} className="text-xs px-2 py-0.5 rounded-full" style={{ background: bg, color }}>
                 {type}
               </span>
             ))}
+            {(() => {
+              const overlayCount = doc.rows.filter((r) => r.overlay_stock_terms?.trim()).length;
+              if (overlayCount === 0) return null;
+              return (
+                <span
+                  className="text-xs px-2 py-0.5 rounded-full"
+                  style={{ background: 'rgba(245,158,11,0.15)', color: '#fbbf24' }}
+                  title={`${overlayCount} row(s) flagged for editor-composited real-image overlays`}
+                >
+                  ✦ {overlayCount} overlay{overlayCount === 1 ? '' : 's'}
+                </span>
+              );
+            })()}
           </div>
 
           {/* ── Desktop table */}
@@ -1605,7 +1750,12 @@ function ProductionDocPage() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
                 <thead>
                   <tr style={{ background: 'var(--bg-card)', borderBottom: '1px solid var(--border)' }}>
-                    {['#', 'Time', 'Script Text', 'Visual Type', 'Visual Description', 'Stock Terms', 'Image', 'AI Prompt', 'On-Screen Text', 'Notes'].map(h => (
+                    {(() => {
+                      const headerList = ['#', 'Time', 'Script Text', 'Visual Type', 'Visual Description', 'Stock Terms', 'Image', 'AI Prompt'];
+                      if (showOverlayColumn) headerList.push('Overlay');
+                      headerList.push('On-Screen Text', 'Notes');
+                      return headerList;
+                    })().map(h => (
                       <th key={h} style={{
                         padding: '10px 12px', textAlign: 'left', fontWeight: 600,
                         color: 'var(--text-secondary)', whiteSpace: 'nowrap',
@@ -1684,6 +1834,25 @@ function ProductionDocPage() {
                             <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>—</span>
                           )}
                         </td>
+                        {/* Overlay (real-image composite) */}
+                        {showOverlayColumn && (
+                          <td style={{ padding: '8px 12px', maxWidth: 140, borderRight: '1px solid var(--border)' }}>
+                            {row.overlay_stock_terms?.trim() ? (
+                              <a
+                                href={`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(row.overlay_stock_terms)}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs"
+                                style={{ background: 'rgba(245,158,11,0.15)', color: '#fbbf24' }}
+                                title="Click to find a real image to composite onto the AI-generated visual"
+                              >
+                                ✦ {row.overlay_stock_terms}
+                              </a>
+                            ) : (
+                              <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>—</span>
+                            )}
+                          </td>
+                        )}
                         {/* On-screen text */}
                         <td style={{ padding: '8px 12px', borderRight: '1px solid var(--border)' }}>
                           {row.on_screen_text ? (
@@ -1756,6 +1925,20 @@ function ProductionDocPage() {
                           <p className="text-xs font-semibold mb-0.5" style={{ color: 'var(--text-muted)' }}>Stock Terms</p>
                           <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>{row.stock_search_terms}</p>
                         </div>
+                        {row.overlay_stock_terms?.trim() && (
+                          <div>
+                            <p className="text-xs font-semibold mb-0.5" style={{ color: '#fbbf24' }}>✦ Real-image overlay</p>
+                            <a
+                              href={`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(row.overlay_stock_terms)}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-xs underline"
+                              style={{ color: '#fbbf24' }}
+                            >
+                              {row.overlay_stock_terms}
+                            </a>
+                          </div>
+                        )}
                         {row.on_screen_text && (
                           <div>
                             <p className="text-xs font-semibold mb-0.5" style={{ color: 'var(--text-muted)' }}>On-Screen Text</p>
@@ -1900,7 +2083,8 @@ function ProductionDocPage() {
             </button>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       <HistoryPanel
         title="Production Doc History"
@@ -1948,6 +2132,15 @@ function ProductionDocPage() {
         onDelete={(id) => { deleteProductionDocEntry(id); setHistoryItems(getProductionDocHistory()); }}
         onClearAll={() => { clearProductionDocHistory(); setHistoryItems([]); }}
       />
+
+      {styleManagerOpen && (
+        <StyleManagerDialog
+          styles={availableStyles}
+          onChanged={() => { void loadStyles(); }}
+          onClose={() => setStyleManagerOpen(false)}
+        />
+      )}
     </div>
+    </ScheduleLinkProvider>
   );
 }

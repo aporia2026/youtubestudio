@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import type { ScheduleItem } from '@/lib/schedule';
 import { getScheduleLinkId, fetchScheduleItem, loadFullContextForItem } from '@/lib/schedule-link';
 import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
+import { ScheduleLinkProvider, ScheduleSaverRegistration } from '@/components/ui/ScheduleLinkContext';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
@@ -148,6 +149,9 @@ function ThumbnailsPage() {
   // generations (which happen after the concept-save) can be patched back onto
   // the same entry instead of creating a new one or being lost on navigation.
   const [historyEntryId, setHistoryEntryId] = useState<string | null>(null);
+  // Tracks which thumbnail set (by runKey) was last explicitly saved via
+  // the banner. Drives the dirty indicator.
+  const [lastSavedThumbRunKey, setLastSavedThumbRunKey] = useState<string | null>(null);
 
   // Image generation
   const [imageGenEnabled, setImageGenEnabled] = useState(false);
@@ -413,7 +417,62 @@ function ThumbnailsPage() {
     navigator.clipboard.writeText(prompt).then(() => toast.success('Prompt copied to clipboard'));
   }
 
+  // Saver derived values. We push the first two generated images as
+  // thumbnail_a_url / thumbnail_b_url. If only one is present, only A is
+  // pushed and B is left untouched. Winner picking happens elsewhere
+  // (the schedule item detail panel) — we never overwrite an existing
+  // winner with null, so the page stays safe to re-save.
+  const generatedImageEntries = Object.entries(generatedImages).sort(([a], [b]) => Number(a) - Number(b));
+  const thumbAUrl = generatedImageEntries[0]?.[1] ?? null;
+  const thumbBUrl = generatedImageEntries[1]?.[1] ?? null;
+  const thumbsReady = !!thumbAUrl;
+  const thumbRunKey = thumbsReady
+    ? `${thumbAUrl ?? ''}::${thumbBUrl ?? ''}`
+    : null;
+
   return (
+    <ScheduleLinkProvider item={scheduleItem}>
+      <ScheduleSaverRegistration
+        handle={{
+          artifactLabel: 'thumbnails',
+          isReady: thumbsReady,
+          isDirty: thumbsReady && thumbRunKey !== lastSavedThumbRunKey,
+          notReadyReason: 'Generate at least one thumbnail image first',
+          // Thumbnail iteration spans multiple stages (A/B testing, post-
+          // launch swaps). No automatic pipeline advance.
+          buildPatch: () => {
+            const patch: Record<string, unknown> = {};
+            if (thumbAUrl) patch.thumbnail_a_url = thumbAUrl;
+            if (thumbBUrl) patch.thumbnail_b_url = thumbBUrl;
+            return {
+              patch,
+              customFieldsMerge: {
+                latest_thumbnails: {
+                  history_entry_id: historyEntryId,
+                  count: generatedImageEntries.length,
+                  saved_at: new Date().toISOString(),
+                  model_id: imageModel,
+                },
+              },
+            };
+          },
+          describeSaved: () => {
+            const n = generatedImageEntries.length;
+            return `${n} image${n === 1 ? '' : 's'}`;
+          },
+          onSaved: () => setLastSavedThumbRunKey(thumbRunKey),
+        }}
+        autoStamp={{
+          key: 'latest_thumbnails',
+          value: () => thumbsReady ? {
+            history_entry_id: historyEntryId,
+            count: generatedImageEntries.length,
+            generated_at: new Date().toISOString(),
+            model_id: imageModel,
+          } : null,
+          runKey: thumbRunKey,
+        }}
+      />
     <div className="p-8 max-w-6xl mx-auto">
       {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Thumbnail Studio" />}
       {/* Header */}
@@ -938,5 +997,6 @@ function ThumbnailsPage() {
         onClearAll={() => { clearThumbnailHistory(); setHistoryItems([]); }}
       />
     </div>
+    </ScheduleLinkProvider>
   );
 }
