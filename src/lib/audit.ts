@@ -50,10 +50,15 @@ export async function writeAudit(params: WriteAuditParams): Promise<void> {
          ${params.ipAddress ?? null})
     `;
   } catch (err) {
-    logger.error('audit write failed', {
+    // Loud, structured. The route handler completed successfully but the
+    // action is now UNRECORDED — flag it explicitly so support can see
+    // the gap when chasing "who deleted X" later.
+    logger.error('AUDIT_WRITE_FAILED — action is unrecorded; investigate', {
       detail: err instanceof Error ? err.message : String(err),
       action: params.action,
-      actor: params.actorUserId,
+      actor_user_id: params.actorUserId,
+      target_user_id: params.targetUserId ?? null,
+      target_workspace_id: params.targetWorkspaceId ?? null,
     });
   }
 }

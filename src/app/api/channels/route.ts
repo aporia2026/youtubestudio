@@ -49,10 +49,10 @@ export const POST = apiRoute.authed(async (session, req) => {
     const name = channelData?.title || url;
     const credentials = accountApiKey ? JSON.stringify({ youtube_api_key: accountApiKey }) : '{}';
 
-    // The (channel_id) UNIQUE index from the legacy schema is GLOBAL — two
-    // workspaces can't add the same external channel even though they
-    // conceptually should be able to. PR #5 leaves that as-is; revisit when
-    // we onboard a second tenant who hits the conflict.
+    // ON CONFLICT target matches migration 0019's compound UNIQUE
+    // (workspace_id, channel_id). Different workspaces can each add the same
+    // external channel; only collisions WITHIN a workspace trigger the
+    // upsert path, so we never leak data across the tenant boundary.
     const result = await sql`
       INSERT INTO channels (channel_id, name, handle, description, subscriber_count, video_count, niche, thumbnail_url, account_label, account_email, account_color, notes, api_credentials, workspace_id)
       VALUES (
@@ -71,7 +71,7 @@ export const POST = apiRoute.authed(async (session, req) => {
         ${credentials},
         ${session.ws}::uuid
       )
-      ON CONFLICT (channel_id) DO UPDATE SET
+      ON CONFLICT (workspace_id, channel_id) DO UPDATE SET
         name = EXCLUDED.name,
         subscriber_count = EXCLUDED.subscriber_count,
         video_count = EXCLUDED.video_count,

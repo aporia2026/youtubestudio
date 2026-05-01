@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { findUserByEmail, verifyPassword, markLoginSuccess } from '@/lib/users';
 import { findPrimaryWorkspaceForUser } from '@/lib/workspaces';
 import { createSession, SESSION_COOKIE_NAME } from '@/lib/session';
-import { checkAndIncrementRateLimit, rateLimitHeaders } from '@/lib/rate-limit-db';
+import {
+  checkAndIncrementRateLimit,
+  pruneOldRateLimitBuckets,
+  rateLimitHeaders,
+} from '@/lib/rate-limit-db';
 import { extractIp } from '@/lib/audit';
 
 /**
@@ -36,6 +40,13 @@ export async function POST(req: NextRequest) {
       { status: 429, headers: rateLimitHeaders(rl) },
     );
   }
+
+  // Best-effort cleanup of stale rate-limit buckets. Cheap (one DELETE per
+  // request) and prevents the table from growing unboundedly under heavy
+  // traffic; pruneOldRateLimitBuckets never throws so a slow DELETE can't
+  // block the login. Buckets older than 7 days are well past the 5-minute
+  // window — safe to drop.
+  void pruneOldRateLimitBuckets(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
 
   let body: unknown;
   try {

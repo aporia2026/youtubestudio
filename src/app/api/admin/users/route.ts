@@ -10,6 +10,7 @@ import {
 } from '@/lib/users';
 import { sendInviteEmail } from '@/lib/email-magic-link';
 import { extractIp, writeAudit } from '@/lib/audit';
+import { userIsMember } from '@/lib/workspaces';
 
 const ALLOWED_WORKSPACE_ROLES = new Set([
   'owner',
@@ -108,6 +109,23 @@ export const POST = apiRoute.admin(async (session, req: NextRequest) => {
       { error: 'Provide either send_invite or initial_password, not both' },
       { status: 400 },
     );
+  }
+
+  // Defense-in-depth: even system_role='admin' can't add users to a workspace
+  // they aren't a member of. The session.ws default is always safe (the admin
+  // is a member by definition), but if the body explicitly names a different
+  // workspace_id, we verify membership before letting the INSERT through.
+  if (workspaceIdRaw && workspaceIdRaw !== session.ws) {
+    const isMember = await userIsMember(session.uid, workspaceIdRaw);
+    if (!isMember) {
+      return NextResponse.json(
+        {
+          error:
+            'You are not a member of that workspace. Add yourself first or pick your own workspace.',
+        },
+        { status: 403 },
+      );
+    }
   }
 
   const existing = await findUserByEmail(email);
