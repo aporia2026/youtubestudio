@@ -94,6 +94,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ assignment, sectionCount: sectionData.length }, { status: 201 });
   } catch (err) {
     console.error('POST assignment error:', err);
-    return NextResponse.json({ error: 'Failed to create assignment' }, { status: 500 });
+    const message = err instanceof Error ? err.message : 'Failed to create assignment';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

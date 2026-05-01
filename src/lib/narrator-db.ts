@@ -241,11 +241,17 @@ export async function createAssignment(fields: {
 }) {
   await ensureNarratorSchema();
   const token = crypto.randomUUID();
+  // workspace_id is NOT NULL on narrator_assignments since migration 0013;
+  // copy it from the parent project so callers don't need session context.
   const { rows } = await sql`
-    INSERT INTO narrator_assignments (project_id, script_id, narrator_id, director_notes, wpm, script_version, deadline, share_token)
-    VALUES (${fields.project_id}, ${fields.script_id}, ${fields.narrator_id}, ${fields.director_notes ?? null}, ${fields.wpm ?? 150}, ${fields.script_version ?? null}, ${fields.deadline ?? null}, ${token})
+    INSERT INTO narrator_assignments (project_id, script_id, narrator_id, director_notes, wpm, script_version, deadline, share_token, workspace_id)
+    SELECT ${fields.project_id}::uuid, ${fields.script_id}::uuid, ${fields.narrator_id}::uuid, ${fields.director_notes ?? null}, ${fields.wpm ?? 150}, ${fields.script_version ?? null}, ${fields.deadline ?? null}, ${token}, p.workspace_id
+      FROM projects p WHERE p.id = ${fields.project_id}::uuid
     RETURNING *
   `;
+  if (rows.length === 0) {
+    throw new Error(`Project ${fields.project_id} not found — cannot create narrator assignment`);
+  }
   return rows[0];
 }
 
@@ -330,11 +336,17 @@ export async function createSection(fields: {
   estimated_duration_seconds?: number;
 }) {
   await ensureNarratorSchema();
+  // workspace_id is NOT NULL on narrator_sections since migration 0013;
+  // copy it from the parent assignment so callers don't need session context.
   const { rows } = await sql`
-    INSERT INTO narrator_sections (assignment_id, section_number, label, script_text, director_notes, pronunciation_notes, emphasis_markers, estimated_duration_seconds)
-    VALUES (${fields.assignment_id}, ${fields.section_number}, ${fields.label ?? null}, ${fields.script_text}, ${fields.director_notes ?? null}, ${JSON.stringify(fields.pronunciation_notes || [])}, ${JSON.stringify(fields.emphasis_markers || [])}, ${fields.estimated_duration_seconds ?? null})
+    INSERT INTO narrator_sections (assignment_id, section_number, label, script_text, director_notes, pronunciation_notes, emphasis_markers, estimated_duration_seconds, workspace_id)
+    SELECT ${fields.assignment_id}::uuid, ${fields.section_number}, ${fields.label ?? null}, ${fields.script_text}, ${fields.director_notes ?? null}, ${JSON.stringify(fields.pronunciation_notes || [])}::jsonb, ${JSON.stringify(fields.emphasis_markers || [])}::jsonb, ${fields.estimated_duration_seconds ?? null}, a.workspace_id
+      FROM narrator_assignments a WHERE a.id = ${fields.assignment_id}::uuid
     RETURNING *
   `;
+  if (rows.length === 0) {
+    throw new Error(`Narrator assignment ${fields.assignment_id} not found — cannot create section`);
+  }
   return rows[0];
 }
 
