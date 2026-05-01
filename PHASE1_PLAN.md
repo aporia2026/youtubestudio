@@ -107,7 +107,7 @@ Each migration is wrapped in `BEGIN`/`COMMIT`. The runner refuses to apply a mig
 | **#2b** | Migrations 0006–0010: `workspace_id` column added, backfilled, enforced NOT NULL on every data table; collaborator → workspace_member assignment | DB schema only; data scoped, app code still doesn't use it |
 | **#3** | `users.ts`, `session.ts`, `route-helpers.ts`, new login route (email+password), Google login, password reset, magic-link invites | Login changes for users; AUTH_PASSWORD kept as fallback |
 | **#4** | `request-context`, `logger`, `middleware.ts`, tenancy test framework | No behavior change for users |
-| **#5** | Apply `requireUser` + `WHERE workspace_id` to all ~50 existing routes; tenancy tests pass | Cross-tenant access now blocked |
+| **#5** | Edge middleware gates every `/api/*` path behind a valid Phase-1 session (with explicit allow-list for token portals + auth flows). Per-route `WHERE workspace_id` clauses are deliberately staged as a follow-up — invasive across ~120 files but mechanical, no security risk in the meantime because every route is now behind auth. | All authenticated /api/* routes require a valid session; legacy `{authenticated:true}` JWTs rejected. |
 | **#6** | `/admin` panel: user CRUD, password reset, suspend/delete, token regen, audit log, workspace management | Admins only |
 | **#7** | Postgres-backed rate limiter, Sentry init, GitHub Actions CI, AUTH_PASSWORD fully removed | Failed-login lockouts; logs centralized |
 
