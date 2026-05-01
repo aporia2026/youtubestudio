@@ -17,6 +17,7 @@ import migration0017 from './0017_create_messages';
 import migration0018 from './0018_create_video_analytics';
 import migration0019 from './0019_channels_workspace_unique';
 import migration0020 from './0020_create_dubbed_voiceovers';
+import migration0021 from './0021_create_shorts';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -42,6 +43,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0018,
   migration0019,
   migration0020,
+  migration0021,
 ]);
 
 /**
