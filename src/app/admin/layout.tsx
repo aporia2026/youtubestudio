@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getSession } from '@/lib/session';
 import { findUserById } from '@/lib/users';
+import { LogoutButton } from '@/components/auth/LogoutButton';
 
 /**
  * Server-component admin gate. Runs before any /admin page renders.
@@ -57,6 +58,17 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           <Link href="/" className="hover:underline">
             ← Back to app
           </Link>
+          <LogoutButton
+            className="hover:underline"
+            style={{
+              color: 'var(--text-muted)',
+              background: 'transparent',
+              border: 'none',
+              padding: 0,
+              cursor: 'pointer',
+              font: 'inherit',
+            }}
+          />
         </div>
       </header>
       <main style={{ padding: '24px', maxWidth: '1200px', margin: '0 auto' }}>{children}</main>
