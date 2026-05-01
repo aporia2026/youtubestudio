@@ -26,12 +26,34 @@ const migration: Migration = {
   async up(client) {
     // Belt-and-braces: narrator_takes is currently created lazily by
     // ensureNarratorSchema(). On a fresh DB the FK below would fail before
-    // that helper runs, so create the minimum shell here. Real columns are
-    // added by ensureNarratorSchema().
+    // that helper runs, so create the minimum shell here.
+    //
+    // The shell MUST mirror the real schema's section_id constraints
+    // (NOT NULL + FK to narrator_sections ON DELETE CASCADE). Otherwise
+    // ensureNarratorSchema's `CREATE TABLE IF NOT EXISTS narrator_takes`
+    // would no-op against this shell, leaving narrator_takes with a
+    // nullable, FK-less section_id forever — orphan takes become
+    // insertable, and section deletes don't cascade to their takes.
+    //
+    // narrator_sections is also pre-created (without FK to narrator_assignments
+    // because that table may not exist yet in this migration's window).
+    // ensureNarratorSchema's later CREATE TABLE IF NOT EXISTS will no-op,
+    // and the assignment-FK is then added via an idempotent ALTER there.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS narrator_sections (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        assignment_id UUID,
+        section_number INTEGER NOT NULL,
+        label TEXT,
+        script_text TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
     await client.query(`
       CREATE TABLE IF NOT EXISTS narrator_takes (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        section_id UUID,
+        section_id UUID NOT NULL REFERENCES narrator_sections(id) ON DELETE CASCADE,
         take_number INTEGER NOT NULL,
         audio_url TEXT NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

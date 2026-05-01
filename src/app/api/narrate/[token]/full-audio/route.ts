@@ -6,21 +6,30 @@ import {
   ensureFullAudioSection,
   setAssignmentFullAudio,
   updateAssignment,
+  getCurrentFullAudio,
+  deleteTake,
 } from '@/lib/narrator-db';
 import {
   isR2Configured,
   buildNarrationKey,
   getNarrationUploadUrl,
   getNarrationDownloadUrl,
+  deleteNarrationObject,
 } from '@/lib/r2';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-const MAX_FILE_SIZE = 500 * 1024 * 1024;
+// Whole-script uploads can be ~90min stereo WAV (~900MB). Per-section uploads
+// stay capped at 500MB; this path needs more headroom because the narrator may
+// not transcode before submitting.
+const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
+// Browsers vary on the mime they emit for mp3 (`audio/mpeg` is normative; iOS
+// Safari and a couple of older builds emit `audio/mp3`). Including both
+// avoids silent rejections.
 const ALLOWED_AUDIO_TYPES = [
-  'audio/mpeg', 'audio/mp4', 'audio/x-m4a', 'audio/wav', 'audio/wave',
-  'audio/x-wav', 'audio/webm', 'audio/ogg', 'audio/flac', 'audio/aac',
+  'audio/mpeg', 'audio/mp3', 'audio/mp4', 'audio/x-m4a', 'audio/wav', 'audio/wave',
+  'audio/x-wav', 'audio/webm', 'audio/ogg', 'audio/flac', 'audio/x-flac', 'audio/aac',
 ];
 
 /**
@@ -59,12 +68,47 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
 
     const sectionId = await ensureFullAudioSection(assignment.id);
 
+    // "Replace" semantics: when a previous full-audio take exists, hard-delete
+    // it (and its R2 object + cascaded comments) before reserving a new one.
+    // Without this, the previous take row + storage leak forever, and any
+    // owner comments on the old take become invisible (the UI loads comments
+    // for the *current* full_audio_take_id only). Comment loss is the
+    // documented Replace semantic — the alternative is take history with a
+    // version selector, which is heavier than this v1 needs.
+    const prior = await getCurrentFullAudio(assignment.id);
+    if (prior) {
+      // R2 cleanup is best-effort: a stale object is just storage cost, not
+      // a correctness issue. The DB delete is the load-bearing operation.
+      if (prior.r2_key) {
+        try { await deleteNarrationObject(prior.r2_key); } catch (e) {
+          console.warn('full-audio replace: failed to delete prior R2 object', e);
+        }
+      }
+      try { await deleteTake(prior.take_id); } catch (e) {
+        console.warn('full-audio replace: failed to delete prior take row', e);
+      }
+    }
+
     const take = await createTake({
       section_id: sectionId,
       audio_url: '',
       duration_seconds: typeof durationSeconds === 'number' ? durationSeconds : undefined,
       file_size: typeof fileSize === 'number' ? fileSize : undefined,
     });
+
+    // The shared createTake() helper doesn't yet supply workspace_id (Phase 1
+    // retrofit pending). Backfill it from the assignment row so post-0013
+    // (NOT NULL) databases accept this row. The assignment carries the
+    // workspace via 0011/0012; this is just a one-off copy. Best-effort —
+    // the column may not exist pre-0011, hence the swallow.
+    try {
+      await sql`
+        UPDATE narrator_takes t
+        SET workspace_id = a.workspace_id
+        FROM narrator_assignments a
+        WHERE t.id = ${take.id} AND a.id = ${assignment.id} AND t.workspace_id IS NULL
+      `;
+    } catch {}
 
     const r2Key = buildNarrationKey(assignment.id, sectionId, take.take_number, fileName);
     let uploadUrl: string;

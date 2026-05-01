@@ -34,8 +34,18 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ to
   }
 }
 
-/** Token-side: narrator can only delete comments they themselves authored. */
-export async function DELETE(req: NextRequest, { params }: { params: Promise<{ token: string; commentId: string }> }) {
+/**
+ * Token-side: narrator can delete narrator-authored comments on takes in
+ * their own assignment. We deliberately *don't* match on display name —
+ * if the collaborator was renamed in admin, every old comment under the
+ * previous name would otherwise become undeletable. The token already
+ * proves narrator identity for this assignment, so role-based scoping
+ * is sufficient.
+ *
+ * Owner-authored comments stay protected (deletable only via the
+ * owner-side route).
+ */
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ token: string; commentId: string }> }) {
   try {
     const { token, commentId } = await params;
     const assignment = await getAssignmentByToken(token);
@@ -46,8 +56,8 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ t
       return NextResponse.json({ error: 'Comment not in this assignment' }, { status: 403 });
     }
 
-    if (scope.author_role !== 'narrator' || scope.author_name !== assignment.narrator_name) {
-      return NextResponse.json({ error: 'You can only delete your own comments' }, { status: 403 });
+    if (scope.author_role !== 'narrator') {
+      return NextResponse.json({ error: 'Only owner-side can delete owner comments' }, { status: 403 });
     }
 
     await deleteTakeComment(commentId);

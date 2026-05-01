@@ -441,6 +441,20 @@ export function NarratorPortal({ token }: { token: string }) {
         body: JSON.stringify({ takeId, durationSeconds, fileSize: file.size }),
       }).catch(() => {});
 
+      // Refresh from the server so we capture a freshly-issued presigned URL
+      // (the one the upload route returned has a TTL — relying on it for
+      // a long review session is fragile). Falls back to the optimistic
+      // update if the refetch fails so the UI still reflects the upload.
+      try {
+        const res = await fetch(`/api/narrate/${token}`);
+        if (res.ok) {
+          const data = await res.json();
+          setAssignment(data.assignment);
+          setSections(data.sections || []);
+          setComments(data.comments || []);
+          return;
+        }
+      } catch {}
       setAssignment(prev => prev ? {
         ...prev,
         full_audio_take_id: takeId,
@@ -517,7 +531,10 @@ export function NarratorPortal({ token }: { token: string }) {
     <>
       {showTeleprompter && (
         <TeleprompterMode
-          sections={sections}
+          // Pass realSections so the synthetic full-audio section 0 (which
+          // has empty script_text) doesn't render a blank panel between
+          // real ones in the teleprompter.
+          sections={realSections}
           wpm={assignment.wpm}
           onClose={() => setShowTeleprompter(false)}
         />
@@ -641,7 +658,7 @@ export function NarratorPortal({ token }: { token: string }) {
               </>
             )}
           </div>
-          {uploadedCount === realSections.length && realSections.length > 0 && assignment.status !== 'submitted' && assignment.status !== 'approved' && (
+          {((uploadedCount === realSections.length && realSections.length > 0) || !!assignment.full_audio_take_id) && assignment.status !== 'submitted' && assignment.status !== 'approved' && (
             <HeroAction
               tone="green"
               icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>}

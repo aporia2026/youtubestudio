@@ -297,8 +297,9 @@ export async function getCollaboratorWithAccess(id: string) {
   // Get narrator assignments (via narrator_id matching collaborator id)
   const { rows: assignments } = await sql`
     SELECT a.*, p.title AS project_title,
-      (SELECT COUNT(*)::int FROM narrator_sections ns WHERE ns.assignment_id = a.id) AS total_sections,
-      (SELECT COUNT(*)::int FROM narrator_sections ns WHERE ns.assignment_id = a.id AND ns.status = 'approved') AS approved_sections
+      -- Exclude section 0 (the synthetic holder for full-script audio).
+      (SELECT COUNT(*)::int FROM narrator_sections ns WHERE ns.assignment_id = a.id AND ns.section_number != 0) AS total_sections,
+      (SELECT COUNT(*)::int FROM narrator_sections ns WHERE ns.assignment_id = a.id AND ns.section_number != 0 AND ns.status = 'approved') AS approved_sections
     FROM narrator_assignments a
     LEFT JOIN projects p ON p.id = a.project_id
     WHERE a.narrator_id = ${id}

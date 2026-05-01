@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import { WaveformPlayer, type WaveformPlayerHandle, type TakeCommentMarker } from './WaveformPlayer';
 import { ScriptFollow } from './ScriptFollow';
 
@@ -91,6 +92,13 @@ export function TakeReview({
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Track the marker-highlight clear-timer in a ref so rapid clicks don't
+  // queue overlapping timers, and so unmount mid-window doesn't trigger a
+  // setState-on-unmounted-component warning.
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+  }, []);
 
   // Initial fetch — and refetch on takeId change.
   useEffect(() => {
@@ -129,7 +137,11 @@ export function TakeReview({
   function handleMarkerClick(commentId: string, ms: number) {
     seek(ms);
     setHighlightedId(commentId);
-    setTimeout(() => setHighlightedId(null), 2000);
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => {
+      setHighlightedId(null);
+      highlightTimerRef.current = null;
+    }, 2000);
   }
 
   // Scroll the highlighted comment into view inside the list.
@@ -155,12 +167,18 @@ export function TakeReview({
   async function submit() {
     if (!text.trim() || submitting) return;
     setSubmitting(true);
+    // Read the live playhead from the wavesurfer ref rather than the React
+    // state — between a click on the waveform and the audioprocess/seeking
+    // event handler firing setState, currentMs is one frame stale. The
+    // server-side timestamp must reflect where the user actually is now,
+    // not where they were on the previous render.
+    const liveMs = playerRef.current?.getCurrentMs() ?? currentMs;
     try {
-      const isRange = rangeStartMs !== null && rangeStartMs < currentMs;
+      const isRange = rangeStartMs !== null && rangeStartMs < liveMs;
       const timestamp_ms = replyTo
-        ? (comments.find(c => c.id === replyTo)?.timestamp_ms ?? currentMs)
-        : (isRange ? rangeStartMs! : currentMs);
-      const end_timestamp_ms = !replyTo && isRange ? currentMs : null;
+        ? (comments.find(c => c.id === replyTo)?.timestamp_ms ?? liveMs)
+        : (isRange ? rangeStartMs! : liveMs);
+      const end_timestamp_ms = !replyTo && isRange ? liveMs : null;
 
       const res = await fetch(listUrl, {
         method: 'POST',
@@ -174,7 +192,10 @@ export function TakeReview({
           parent_id: replyTo,
         }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as { error?: string }).error || `HTTP ${res.status}`);
+      }
       const created: TakeComment = await res.json();
       setComments(prev => [...prev, created]);
       setText('');
@@ -183,13 +204,19 @@ export function TakeReview({
       textareaRef.current?.focus();
     } catch (err) {
       console.error('Failed to post take comment:', err);
+      toast.error(err instanceof Error ? err.message : 'Failed to post comment');
+      // Leave the user's text in place so they don't lose their thought.
     } finally {
       setSubmitting(false);
     }
   }
 
   async function toggleResolved(commentId: string, resolved: boolean) {
-    // Optimistic update
+    // Snapshot prior state for rollback. Without this, a network/server
+    // failure would leave the UI showing "Resolved" while the DB stays
+    // unresolved — silent divergence between two clients.
+    const prior = comments.find(c => c.id === commentId);
+    if (!prior) return;
     setComments(prev => prev.map(c => c.id === commentId ? {
       ...c,
       resolved,
@@ -197,12 +224,17 @@ export function TakeReview({
       resolved_at: resolved ? new Date().toISOString() : null,
     } : c));
     try {
-      await fetch(itemUrl(commentId), {
+      const res = await fetch(itemUrl(commentId), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ resolved, author_name: author.name }),
       });
-    } catch {}
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      // Roll back the optimistic update.
+      setComments(prev => prev.map(c => c.id === commentId ? prior : c));
+      toast.error(err instanceof Error ? err.message : 'Failed to update — please try again');
+    }
   }
 
   async function deleteComment(commentId: string) {
@@ -215,8 +247,15 @@ export function TakeReview({
     }
     try {
       const res = await fetch(url, { method: 'DELETE' });
-      if (res.ok) setComments(prev => prev.filter(c => c.id !== commentId && c.parent_id !== commentId));
-    } catch {}
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as { error?: string }).error || `HTTP ${res.status}`);
+      }
+      // The server cascades replies via FK; mirror that locally.
+      setComments(prev => prev.filter(c => c.id !== commentId && c.parent_id !== commentId));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete comment');
+    }
   }
 
   const isRangeActive = rangeStartMs !== null;
@@ -305,7 +344,14 @@ export function TakeReview({
                   highlighted={highlightedId === c.id}
                   onSeek={() => handleMarkerClick(c.id, c.timestamp_ms)}
                   onResolve={() => toggleResolved(c.id, !c.resolved)}
-                  onReply={() => { setReplyTo(c.id); textareaRef.current?.focus(); }}
+                  onReply={() => {
+                    setReplyTo(c.id);
+                    // Replies anchor to the parent's timestamp, not a range —
+                    // clear any pending range so the user isn't confused by
+                    // the lingering banner / silently dropped range on submit.
+                    setRangeStartMs(null);
+                    textareaRef.current?.focus();
+                  }}
                   onDelete={canDelete ? () => deleteComment(c.id) : undefined}
                 />
                 {myReplies.map(r => (
@@ -482,6 +528,11 @@ function CommentRow({
           >
             Reply
           </button>
+          {c.resolved && c.resolved_by && (
+            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              by {c.resolved_by}
+            </span>
+          )}
           <button
             onClick={onResolve}
             className="text-[10px] flex items-center gap-1 transition-colors cursor-pointer ml-auto"

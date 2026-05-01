@@ -33,6 +33,12 @@ interface ScriptFollowProps {
 export function ScriptFollow({ scriptText, currentMs, durationMs, onSeek }: ScriptFollowProps) {
   const [mode, setMode] = useState<FollowMode>('teleprompter');
   const containerRef = useRef<HTMLDivElement>(null);
+  // Suspend the auto-scroll-to-active-word for ~3s after the user manually
+  // scrolls (or wheels). Without this, an owner who scrolls ahead to read
+  // the next line is yanked back every audioprocess tick. Re-engage by
+  // hitting the "Re-sync" button or by waiting out the window.
+  const userScrollAtRef = useRef<number>(0);
+  const [followLocked, setFollowLocked] = useState(false);
 
   // Strip production cues that aren't meant to be spoken.
   const spokenText = useMemo(() => {
@@ -56,10 +62,12 @@ export function ScriptFollow({ scriptText, currentMs, durationMs, onSeek }: Scri
 
   // Auto-scroll the active word into view in teleprompter mode. We aim for a
   // gentle "third from top" position (vs centre) so the reader can see what's
-  // coming next.
+  // coming next. Skipped when the user has scrolled manually within the last
+  // 3s — they're reading ahead and don't want us yanking the view back.
   useEffect(() => {
     if (mode !== 'teleprompter') return;
     if (activeIdx < 0) return;
+    if (followLocked) return;
     const container = containerRef.current;
     if (!container) return;
     const el = container.querySelector<HTMLSpanElement>(`[data-word="${activeIdx}"]`);
@@ -74,7 +82,38 @@ export function ScriptFollow({ scriptText, currentMs, durationMs, onSeek }: Scri
     if (Math.abs(delta) > 8) {
       container.scrollBy({ top: delta, behavior: 'smooth' });
     }
-  }, [activeIdx, mode]);
+  }, [activeIdx, mode, followLocked]);
+
+  // Watch for user-initiated scroll. We can't directly distinguish a user
+  // scroll from our own scrollBy(), so use the heuristic: any wheel/touch
+  // event from the user counts; programmatic scrolls do not generate those.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const onUserScroll = () => {
+      userScrollAtRef.current = Date.now();
+      setFollowLocked(true);
+    };
+    container.addEventListener('wheel', onUserScroll, { passive: true });
+    container.addEventListener('touchmove', onUserScroll, { passive: true });
+    return () => {
+      container.removeEventListener('wheel', onUserScroll);
+      container.removeEventListener('touchmove', onUserScroll);
+    };
+  }, []);
+
+  // Auto-release the follow lock once 3s have passed since the last user
+  // scroll. Polling is cheaper than starting/cancelling a timer on every
+  // wheel tick, and the granularity is fine for a 3s window.
+  useEffect(() => {
+    if (!followLocked) return;
+    const interval = setInterval(() => {
+      if (Date.now() - userScrollAtRef.current > 3000) {
+        setFollowLocked(false);
+      }
+    }, 500);
+    return () => clearInterval(interval);
+  }, [followLocked]);
 
   function handleWordClick(i: number) {
     if (!onSeek || !durationMs || words.length === 0) return;
@@ -96,7 +135,17 @@ export function ScriptFollow({ scriptText, currentMs, durationMs, onSeek }: Scri
         <span className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
           Script
         </span>
-        <div className="flex gap-1">
+        <div className="flex gap-1 items-center">
+          {mode === 'teleprompter' && followLocked && (
+            <button
+              onClick={() => { userScrollAtRef.current = 0; setFollowLocked(false); }}
+              className="text-[10px] px-2 py-0.5 rounded transition-colors cursor-pointer"
+              style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.3)' }}
+              title="Re-engage auto-follow"
+            >
+              ↻ Re-sync
+            </button>
+          )}
           {(['plain', 'teleprompter'] as FollowMode[]).map(m => (
             <button
               key={m}

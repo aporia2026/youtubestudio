@@ -23,11 +23,15 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
         a.created_at,
         a.updated_at,
         p.title AS project_title,
-        (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id) AS total_sections,
-        (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id AND s.status = 'approved') AS approved_sections,
-        (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id AND s.status = 'submitted') AS submitted_sections,
-        (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id AND s.status = 'retake') AS retake_sections,
-        (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id AND s.status = 'pending') AS pending_sections,
+        -- Filter out section 0 — the synthetic holder for full-script
+        -- single-file uploads. It would otherwise sit permanently 'pending'
+        -- and inflate every count by 1 on assignments that used the full
+        -- upload path.
+        (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id AND s.section_number != 0) AS total_sections,
+        (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id AND s.section_number != 0 AND s.status = 'approved') AS approved_sections,
+        (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id AND s.section_number != 0 AND s.status = 'submitted') AS submitted_sections,
+        (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id AND s.section_number != 0 AND s.status = 'retake') AS retake_sections,
+        (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id AND s.section_number != 0 AND s.status = 'pending') AS pending_sections,
         (SELECT COUNT(*)::int FROM narrator_comments c WHERE c.assignment_id = a.id AND c.author_role = 'owner' AND c.created_at > a.last_accessed_at) AS unread_owner_comments
       FROM narrator_assignments a
       LEFT JOIN projects p ON p.id = a.project_id
@@ -56,7 +60,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
     const wordCounts = new Map<string, number>();
     if (assignmentIds.length > 0) {
       const { rows: sections } = await sql.query<{ assignment_id: string; script_text: string }>(
-        `SELECT assignment_id, script_text FROM narrator_sections WHERE assignment_id = ANY($1::uuid[])`,
+        // Filter out section 0 (full-audio holder) — its empty script_text
+        // would zero-out a sum but it's still cheaper not to fetch it.
+        `SELECT assignment_id, script_text FROM narrator_sections WHERE assignment_id = ANY($1::uuid[]) AND section_number != 0`,
         [assignmentIds],
       );
       for (const sec of sections) {

@@ -84,6 +84,27 @@ export async function ensureNarratorSchema() {
     // R2 narration bucket migration — old takes lived on Vercel Blob; new ones go to R2
     try { await sql`ALTER TABLE narrator_takes ADD COLUMN IF NOT EXISTS r2_key TEXT`; } catch {}
 
+    // Workspace tenancy backstop — these columns are formally added by
+    // migration 0011 across every tenant-scoped table. Adding them here
+    // too means INSERTs that supply workspace_id (createTakeComment,
+    // ensureFullAudioSection) work even on a database that hasn't yet
+    // run the migration suite. NOT NULL is enforced later by 0013.
+    try { await sql`ALTER TABLE narrator_assignments ADD COLUMN IF NOT EXISTS workspace_id UUID`; } catch {}
+    try { await sql`ALTER TABLE narrator_sections ADD COLUMN IF NOT EXISTS workspace_id UUID`; } catch {}
+    try { await sql`ALTER TABLE narrator_takes ADD COLUMN IF NOT EXISTS workspace_id UUID`; } catch {}
+    try { await sql`ALTER TABLE narrator_comments ADD COLUMN IF NOT EXISTS workspace_id UUID`; } catch {}
+
+    // Corrective ALTERs for databases that ran an early version of migration
+    // 0006 which created a `narrator_takes` shell with nullable, FK-less
+    // section_id. Idempotent — no-op when the constraints already exist.
+    try { await sql`ALTER TABLE narrator_takes ALTER COLUMN section_id SET NOT NULL`; } catch {}
+    try { await sql`ALTER TABLE narrator_takes ADD CONSTRAINT narrator_takes_section_fk FOREIGN KEY (section_id) REFERENCES narrator_sections(id) ON DELETE CASCADE`; } catch {}
+    // Same for narrator_sections.assignment_id — early 0006 created the
+    // section table without the assignment FK because narrator_assignments
+    // may not have existed yet in that migration's window.
+    try { await sql`ALTER TABLE narrator_sections ALTER COLUMN assignment_id SET NOT NULL`; } catch {}
+    try { await sql`ALTER TABLE narrator_sections ADD CONSTRAINT narrator_sections_assignment_fk FOREIGN KEY (assignment_id) REFERENCES narrator_assignments(id) ON DELETE CASCADE`; } catch {}
+
     await sql`
       CREATE TABLE IF NOT EXISTS narrator_comments (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -116,11 +137,20 @@ export async function ensureNarratorSchema() {
         resolved_at TIMESTAMPTZ,
         parent_id UUID REFERENCES narration_take_comments(id) ON DELETE CASCADE,
         fix_for_comment_id UUID REFERENCES narration_take_comments(id) ON DELETE SET NULL,
+        workspace_id UUID,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `;
     try { await sql`CREATE INDEX IF NOT EXISTS idx_narration_take_comments_take ON narration_take_comments(take_id)`; } catch {}
     try { await sql`CREATE INDEX IF NOT EXISTS idx_narration_take_comments_parent ON narration_take_comments(parent_id)`; } catch {}
+    // Backstop the workspace_id column for databases that created the
+    // table via an earlier version of this ensure block. Migration 0011
+    // also runs ADD COLUMN IF NOT EXISTS on the same column, so the two
+    // paths converge.
+    try { await sql`ALTER TABLE narration_take_comments ADD COLUMN IF NOT EXISTS workspace_id UUID`; } catch {}
+    // Filter-by-resolved is the most common list query (the panel defaults
+    // to "unresolved"). Partial index keeps it cheap.
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_narration_take_comments_unresolved ON narration_take_comments(take_id) WHERE resolved = false`; } catch {}
 
     // Access tracking columns
     try { await sql`ALTER TABLE narrator_assignments ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ`; } catch {}
@@ -134,6 +164,10 @@ export async function ensureNarratorSchema() {
     try { await sql`ALTER TABLE narrator_assignments ADD COLUMN IF NOT EXISTS full_audio_url TEXT`; } catch {}
     try { await sql`ALTER TABLE narrator_assignments ADD COLUMN IF NOT EXISTS full_audio_r2_key TEXT`; } catch {}
     try { await sql`ALTER TABLE narrator_assignments ADD COLUMN IF NOT EXISTS full_audio_duration_seconds NUMERIC`; } catch {}
+    // Tie full_audio_take_id to its take row so a hard-deleted take doesn't
+    // leave the assignment pointing at nothing. SET NULL (not CASCADE) so the
+    // assignment row survives a take cleanup.
+    try { await sql`ALTER TABLE narrator_assignments ADD CONSTRAINT narrator_assignments_full_audio_take_fk FOREIGN KEY (full_audio_take_id) REFERENCES narrator_takes(id) ON DELETE SET NULL`; } catch {}
 
     narratorMigrated = true;
   } catch (err) {
@@ -255,8 +289,10 @@ export async function listAllAssignments() {
   await ensureNarratorSchema();
   const { rows } = await sql`
     SELECT a.*, n.name AS narrator_name, n.color AS narrator_color, n.personal_token AS narrator_personal_token, p.title AS project_title,
-      (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id) AS total_sections,
-      (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id AND s.status = 'approved') AS approved_sections
+      -- Exclude section 0 (the synthetic holder for full-script audio).
+      -- Counting it would inflate "X/Y approved" totals on dashboards.
+      (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id AND s.section_number != 0) AS total_sections,
+      (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id AND s.section_number != 0 AND s.status = 'approved') AS approved_sections
     FROM narrator_assignments a
     LEFT JOIN collaborators n ON n.id = a.narrator_id
     LEFT JOIN projects p ON p.id = a.project_id
@@ -315,6 +351,25 @@ export async function getSectionsForAssignment(assignmentId: string) {
 }
 
 /**
+ * Like {@link getSectionsForAssignment} but excludes the synthetic
+ * `section_number = 0` row that backs the full-script audio upload. Use this
+ * for stitching, count subqueries, dashboards — anywhere "real sections" are
+ * meant. The full-audio take is surfaced separately via the assignment row's
+ * `full_audio_*` columns and its own card in the UI.
+ */
+export async function getRealSectionsForAssignment(assignmentId: string) {
+  await ensureNarratorSchema();
+  const { rows } = await sql`
+    SELECT s.*,
+      (SELECT json_agg(t ORDER BY t.take_number DESC) FROM narrator_takes t WHERE t.section_id = s.id) AS takes
+    FROM narrator_sections s
+    WHERE s.assignment_id = ${assignmentId} AND s.section_number != 0
+    ORDER BY s.section_number ASC
+  `;
+  return rows;
+}
+
+/**
  * Rebuild a single assignment's sections from the project's currently-active
  * script if it's safe to do so. "Safe" means:
  *   - No takes have been uploaded yet (otherwise rebuilding orphans audio).
@@ -342,11 +397,13 @@ export async function resyncAssignmentSectionsIfStale(assignmentId: string): Pro
     if (!assignment) return false;
     if (!['assigned', 'received', 'recording'].includes(assignment.status)) return false;
 
-    // Skip if any take exists — rebuilding sections would orphan audio.
+    // Skip if any REAL-section take exists — rebuilding those sections
+    // would orphan audio. The full-audio take in section 0 is fine: we
+    // don't touch section 0 during resync, so its take + comments survive.
     const { rows: takeRows } = await sql`
       SELECT 1 FROM narrator_takes t
       JOIN narrator_sections s ON s.id = t.section_id
-      WHERE s.assignment_id = ${assignmentId}
+      WHERE s.assignment_id = ${assignmentId} AND s.section_number != 0
       LIMIT 1
     `;
     if (takeRows.length > 0) return false;
@@ -379,9 +436,12 @@ export async function resyncAssignmentSectionsIfStale(assignmentId: string): Pro
     if (!versionStale) {
       // Compare the existing sections' text to what we'd build from the
       // active script. If they match, the assignment is already in sync.
+      // Section 0 is the synthetic full-audio holder — it has empty
+      // script_text and isn't part of the candidate split, so excluding it
+      // here is required for the lengths to compare meaningfully.
       const { rows: existing } = await sql`
         SELECT script_text FROM narrator_sections
-        WHERE assignment_id = ${assignmentId}
+        WHERE assignment_id = ${assignmentId} AND section_number != 0
         ORDER BY section_number ASC
       `;
       const existingTexts = existing.map(r => (r.script_text as string).trim());
@@ -393,7 +453,11 @@ export async function resyncAssignmentSectionsIfStale(assignmentId: string): Pro
     }
 
     const sections = candidate;
-    await sql`DELETE FROM narrator_sections WHERE assignment_id = ${assignmentId}`;
+    // Wipe ONLY the real sections — section 0 (the synthetic full-audio
+    // holder) carries the take + comments for any single-file upload and
+    // must survive a script edit. Without this filter, every script edit
+    // would cascade-delete the full audio and all its comments.
+    await sql`DELETE FROM narrator_sections WHERE assignment_id = ${assignmentId} AND section_number != 0`;
     await sql`
       UPDATE narrator_assignments
       SET script_id = ${activeScript.id}, script_version = ${activeScript.version}, updated_at = NOW()
@@ -578,9 +642,17 @@ export async function createTakeComment(fields: {
   if (typeof fields.end_timestamp_ms === 'number' && fields.end_timestamp_ms > fields.timestamp_ms) {
     endMs = fields.end_timestamp_ms;
   }
+  // Resolve workspace_id from the take's assignment so post-migration-0013
+  // INSERTs satisfy the NOT NULL constraint without requiring every caller
+  // to thread it through. Pre-migration-0011 the parent rows don't have
+  // workspace_id at all → the lookup returns undefined → INSERT NULL,
+  // which matches every other write in this file. Post-0012's backfill,
+  // narrator_takes.workspace_id is populated for every existing row, so
+  // the lookup succeeds for any take a comment can be posted on.
+  const ws = await resolveWorkspaceIdForTake(fields.take_id);
   const { rows } = await sql`
     INSERT INTO narration_take_comments
-      (take_id, timestamp_ms, end_timestamp_ms, text, author_name, author_color, author_role, parent_id, fix_for_comment_id)
+      (take_id, timestamp_ms, end_timestamp_ms, text, author_name, author_color, author_role, parent_id, fix_for_comment_id, workspace_id)
     VALUES (
       ${fields.take_id},
       ${Math.max(0, Math.round(fields.timestamp_ms))},
@@ -590,11 +662,48 @@ export async function createTakeComment(fields: {
       ${fields.author_color || '#7c3aed'},
       ${fields.author_role},
       ${fields.parent_id ?? null},
-      ${fields.fix_for_comment_id ?? null}
+      ${fields.fix_for_comment_id ?? null},
+      ${ws}
     )
     RETURNING *
   `;
   return rows[0] as NarrationTakeComment;
+}
+
+/**
+ * Look up `workspace_id` from a take's parent chain. Used by INSERTs that
+ * need to satisfy the multi-tenant NOT NULL constraint added by
+ * migration 0013. Returns null on databases pre-0011 where the column
+ * doesn't exist (the catch swallows the missing-column error), which the
+ * INSERT then treats as NULL — same as every existing write today.
+ */
+async function resolveWorkspaceIdForTake(takeId: string): Promise<string | null> {
+  try {
+    const { rows } = await sql`
+      SELECT t.workspace_id AS via_take, s.workspace_id AS via_section, a.workspace_id AS via_assignment
+      FROM narrator_takes t
+      JOIN narrator_sections s ON s.id = t.section_id
+      JOIN narrator_assignments a ON a.id = s.assignment_id
+      WHERE t.id = ${takeId}
+      LIMIT 1
+    `;
+    const r = rows[0];
+    if (!r) return null;
+    // Prefer the take's own workspace_id; fall back through the chain so
+    // a partially-backfilled DB still yields a value.
+    return (r.via_take as string) || (r.via_section as string) || (r.via_assignment as string) || null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveWorkspaceIdForAssignment(assignmentId: string): Promise<string | null> {
+  try {
+    const { rows } = await sql`SELECT workspace_id FROM narrator_assignments WHERE id = ${assignmentId} LIMIT 1`;
+    return (rows[0]?.workspace_id as string) || null;
+  } catch {
+    return null;
+  }
 }
 
 export async function getTakeComments(takeId: string) {
@@ -693,12 +802,17 @@ export async function ensureFullAudioSection(assignmentId: string): Promise<stri
   `;
   if (existing.length > 0) return existing[0].id as string;
 
+  // Resolve workspace_id from the assignment so the synthetic section
+  // satisfies migration 0013's NOT NULL once it runs. Pre-0011 returns
+  // null → INSERT NULL, which matches the rest of the legacy create path.
+  const ws = await resolveWorkspaceIdForAssignment(assignmentId);
+
   // Create the synthetic section. UNIQUE(assignment_id, section_number) will
   // protect against the race where two requests try to create it at once.
   try {
     const { rows } = await sql`
-      INSERT INTO narrator_sections (assignment_id, section_number, label, script_text, status, estimated_duration_seconds)
-      VALUES (${assignmentId}, 0, 'Full narration', '', 'pending', NULL)
+      INSERT INTO narrator_sections (assignment_id, section_number, label, script_text, status, estimated_duration_seconds, workspace_id)
+      VALUES (${assignmentId}, 0, 'Full narration', '', 'pending', NULL, ${ws})
       RETURNING id
     `;
     return rows[0].id as string;
@@ -730,6 +844,37 @@ export async function setAssignmentFullAudio(fields: {
         updated_at = NOW()
     WHERE id = ${fields.assignment_id}
   `;
+}
+
+/**
+ * Read the assignment's current full-audio take id and r2 key so the route
+ * layer can clean up the previous take + R2 object before writing a new one.
+ * Returns null when no full audio exists yet.
+ */
+export async function getCurrentFullAudio(assignmentId: string) {
+  await ensureNarratorSchema();
+  const { rows } = await sql`
+    SELECT full_audio_take_id, full_audio_r2_key
+    FROM narrator_assignments
+    WHERE id = ${assignmentId}
+    LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row || !row.full_audio_take_id) return null;
+  return {
+    take_id: row.full_audio_take_id as string,
+    r2_key: (row.full_audio_r2_key as string | null) ?? null,
+  };
+}
+
+/**
+ * Hard-delete a take row. Cascades to {@link narration_take_comments} via
+ * the FK on `take_id`. Caller is responsible for removing the R2 object —
+ * we don't import the R2 client here to keep this module stateless.
+ */
+export async function deleteTake(takeId: string) {
+  await ensureNarratorSchema();
+  await sql`DELETE FROM narrator_takes WHERE id = ${takeId}`;
 }
 
 /** Lookup helper for posting a comment: confirm a take belongs to an assignment. */

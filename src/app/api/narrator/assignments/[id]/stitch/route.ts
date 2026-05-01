@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { put } from '@vercel/blob';
 import { sql } from '@vercel/postgres';
-import { getAssignment, getSectionsForAssignment } from '@/lib/narrator-db';
+import { getAssignment, getRealSectionsForAssignment } from '@/lib/narrator-db';
 import { getNarrationDownloadUrl } from '@/lib/r2';
 
 export const runtime = 'nodejs';
@@ -17,7 +17,10 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     const assignment = await getAssignment(id);
     if (!assignment) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-    const sections = await getSectionsForAssignment(id);
+    // Real sections only — the synthetic section 0 is the holder for the
+    // single-file full-audio upload; including it here would prepend the
+    // entire narration to the stitched output, doubling the audio.
+    const sections = await getRealSectionsForAssignment(id);
 
     // Collect audio URLs for approved/selected/latest take in each section.
     // For R2-backed takes we regenerate a fresh presigned URL from r2_key

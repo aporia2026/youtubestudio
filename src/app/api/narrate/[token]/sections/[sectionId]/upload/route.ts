@@ -8,7 +8,9 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500MB hard cap
-const ALLOWED_AUDIO_TYPES = ['audio/mpeg', 'audio/mp4', 'audio/x-m4a', 'audio/wav', 'audio/wave', 'audio/x-wav', 'audio/webm', 'audio/ogg', 'audio/flac', 'audio/aac'];
+// Browsers vary on the mime they emit for mp3 / flac. Accept the common
+// informal aliases to avoid silently rejecting valid audio.
+const ALLOWED_AUDIO_TYPES = ['audio/mpeg', 'audio/mp3', 'audio/mp4', 'audio/x-m4a', 'audio/wav', 'audio/wave', 'audio/x-wav', 'audio/webm', 'audio/ogg', 'audio/flac', 'audio/x-flac', 'audio/aac'];
 
 /**
  * Two-step upload to R2 narration bucket:
