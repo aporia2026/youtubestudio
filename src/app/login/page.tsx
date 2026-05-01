@@ -2,9 +2,11 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { motion } from 'framer-motion';
 
 export default function LoginPage() {
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -19,13 +21,15 @@ export default function LoginPage() {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ email: email.trim(), password }),
       });
 
       if (res.ok) {
         router.push('/');
+        router.refresh();
       } else {
-        setError('Invalid password. Try again.');
+        const data = await res.json().catch(() => ({}));
+        setError(data.error || 'Sign in failed. Try again.');
       }
     } catch {
       setError('Connection error. Please try again.');
@@ -36,7 +40,6 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center relative overflow-hidden cyber-grid">
-      {/* Background orbs */}
       <div className="absolute inset-0 pointer-events-none">
         <div className="absolute top-1/4 left-1/4 w-96 h-96 rounded-full opacity-20"
           style={{ background: 'radial-gradient(circle, #7c3aed, transparent)', filter: 'blur(60px)' }} />
@@ -51,7 +54,6 @@ export default function LoginPage() {
         className="relative z-10 w-full max-w-md mx-4"
       >
         <div className="gradient-border p-8">
-          {/* Logo */}
           <div className="text-center mb-8">
             <motion.div
               initial={{ scale: 0.8 }}
@@ -71,24 +73,43 @@ export default function LoginPage() {
               </div>
             </motion.div>
             <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-              Sign in to access your content workspace
+              Sign in to your workspace
             </p>
           </div>
 
-          {/* Form */}
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
-                Password
+                Email
               </label>
+              <input
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                className="input-field"
+                autoFocus
+                autoComplete="email"
+                required
+              />
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+                  Password
+                </label>
+                <Link href="/forgot-password" className="text-xs hover:underline" style={{ color: 'var(--text-muted)' }}>
+                  Forgot password?
+                </Link>
+              </div>
               <input
                 type="password"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 placeholder="Enter your password"
                 className="input-field"
-                autoFocus
                 autoComplete="current-password"
+                required
               />
             </div>
 
@@ -105,7 +126,7 @@ export default function LoginPage() {
 
             <button
               type="submit"
-              disabled={loading || !password}
+              disabled={loading || !email.trim() || !password}
               className="btn-primary w-full justify-center"
               style={{ width: '100%', justifyContent: 'center' }}
             >
@@ -125,9 +146,8 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Footer */}
           <div className="mt-6 text-center text-xs" style={{ color: 'var(--text-muted)' }}>
-            Secured workspace • Single user mode
+            Account access is managed by your administrator
           </div>
         </div>
       </motion.div>
