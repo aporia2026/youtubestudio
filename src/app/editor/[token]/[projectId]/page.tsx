@@ -3,6 +3,7 @@
 import { use, useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { compressVideo, isCompressionSupported } from '@/lib/compress-video';
+import { HeroAction } from '@/components/dashboard/HeroAction';
 
 interface ProjectData {
   editor: { id: string; name: string; color: string };
@@ -204,16 +205,77 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
   if (loading) return <div className="flex items-center justify-center min-h-screen"><div className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: '#7c3aed', borderTopColor: 'transparent' }} /></div>;
   if (error || !data) return <div className="flex items-center justify-center min-h-screen text-center"><div><h1 className="text-xl font-bold mb-2">{error || 'Not found'}</h1><Link href={`/editor/${token}`} className="text-sm" style={{ color: '#a78bfa' }}>← Back to dashboard</Link></div></div>;
 
+  // Status pill mapping for the editor's view of their assignment
+  const STATUS_LABELS: Record<string, { label: string; color: string }> = {
+    assigned:  { label: 'New',         color: '#eab308' },
+    editing:   { label: 'Editing',     color: '#a78bfa' },
+    submitted: { label: 'In review',   color: '#3b82f6' },
+    approved:  { label: 'Approved',    color: '#22c55e' },
+    completed: { label: 'Completed',   color: '#22c55e' },
+  };
+  const aStatus = STATUS_LABELS[data.assignment.status] || STATUS_LABELS.assigned;
+  const dl = (() => {
+    if (!data.assignment.deadline) return null;
+    const d = new Date(data.assignment.deadline);
+    const ms = d.getTime() - Date.now();
+    const days = Math.round(ms / (1000 * 60 * 60 * 24));
+    if (ms < 0) return { text: `Overdue · ${d.toLocaleDateString()}`, urgent: true };
+    if (days <= 1) return { text: days === 0 ? 'Due today' : 'Due tomorrow', urgent: true };
+    if (days <= 3) return { text: `Due in ${days} days`, soon: true };
+    return { text: `Due ${d.toLocaleDateString()}` };
+  })();
+  const unresolvedComments = data.reviewVersions.reduce((sum, v) => sum + v.comment_count, 0);
+
+  function scrollToUpload() {
+    document.getElementById('editor-upload-zone')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
   return (
     <div className="max-w-5xl mx-auto px-6 py-10">
-      <header className="mb-6">
+      <header className="mb-5">
         <Link href={`/editor/${token}`} className="text-xs mb-2 inline-flex items-center gap-1 transition-colors hover:text-purple-400" style={{ color: 'var(--text-muted)' }}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg>
           All projects
         </Link>
-        <h1 className="text-2xl font-bold mt-2" style={{ color: 'var(--text-primary)' }}>{data.project.title}</h1>
-        {data.project.topic && <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{data.project.topic}</p>}
+        <h1 className="text-3xl font-bold mt-2" style={{ color: 'var(--text-primary)' }}>{data.project.title}</h1>
+        <div className="flex items-center gap-3 flex-wrap mt-1.5">
+          {data.project.topic && <span className="text-sm" style={{ color: 'var(--text-muted)' }}>{data.project.topic}</span>}
+          <span className="px-2 py-0.5 rounded-full text-xs font-medium" style={{ background: `${aStatus.color}22`, color: aStatus.color }}>{aStatus.label}</span>
+          {dl && (
+            <span className="text-xs" style={{ color: dl.urgent ? '#ef4444' : dl.soon ? '#f97316' : 'var(--text-muted)', fontWeight: dl.urgent ? 600 : 400 }}>
+              {dl.urgent ? '⏰ ' : '📅 '}{dl.text}
+            </span>
+          )}
+        </div>
       </header>
+
+      {/* Hero action bar — primary CTAs above the fold */}
+      <div className="mb-5 flex items-center gap-2 flex-wrap">
+        {data.reviewShareToken && data.reviewVersions.length > 0 && (
+          <HeroAction
+            tone="purple"
+            primary
+            href={`/review/${data.reviewShareToken}`}
+            target="_blank"
+            icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>}
+            label="Open review"
+            hint={unresolvedComments > 0 ? `${unresolvedComments} unresolved comment${unresolvedComments === 1 ? '' : 's'}` : 'Player + comments'}
+          />
+        )}
+        <HeroAction
+          tone={data.reviewVersions.length === 0 ? 'cyan' : 'green'}
+          primary={data.reviewVersions.length === 0}
+          onClick={scrollToUpload}
+          icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>}
+          label={data.reviewVersions.length === 0 ? 'Upload first version' : 'Upload new version'}
+          hint={data.reviewVersions.length === 0 ? 'Send to owner for review' : `Replaces v${data.reviewVersions[0]?.version_number || 1}`}
+        />
+        {unresolvedComments > 0 && (
+          <span className="ml-auto text-xs px-2.5 py-1 rounded-full font-medium" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>
+            💬 {unresolvedComments} unresolved comment{unresolvedComments === 1 ? '' : 's'} to address
+          </span>
+        )}
+      </div>
 
       {data.assignment.editor_notes && (
         <div className="mb-6 p-4 rounded-xl" style={{ background: 'rgba(6,182,212,0.08)', border: '1px solid rgba(6,182,212,0.2)' }}>
@@ -363,7 +425,7 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
       </div>
 
       {/* Upload finished video */}
-      <div className="mt-6 rounded-xl p-5" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+      <div id="editor-upload-zone" className="mt-6 rounded-xl p-5 scroll-mt-6" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
         <h3 className="text-sm font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>📤 Upload finished video for review</h3>
         <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
           The owner will review your video and leave timestamped comments. Upload a new version anytime to incorporate feedback.

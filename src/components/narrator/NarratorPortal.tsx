@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { EmphasisBadge } from './EmphasisBadge';
 import { AudioPlayer } from './AudioPlayer';
 import { TeleprompterMode } from './TeleprompterMode';
+import { HeroAction } from '@/components/dashboard/HeroAction';
 
 interface Assignment {
   id: string;
@@ -73,7 +74,61 @@ const SECTION_STATUS: Record<string, { label: string; color: string }> = {
   retake: { label: 'Retake Requested', color: '#ef4444' },
 };
 
-type ViewMode = 'sections' | 'plain';
+type ViewMode = 'sections' | 'recording' | 'plain';
+
+interface BulkMapping {
+  file: File;
+  sectionId: string | null;
+  status: 'pending' | 'uploading' | 'done' | 'error';
+  error?: string;
+}
+
+/**
+ * Try to match an audio filename to a section by:
+ *  1. Leading number → section_number  (e.g. "01-intro.mp3" → section 1)
+ *  2. Word-level keyword match against section label
+ *     (e.g. "phishing-social.mp3" → "Phishing & Social Engineering")
+ *
+ * Word-level matching is intentionally strict: substring matching on cleaned
+ * strings was too permissive and could mis-map files (e.g. "intro.mp3" hitting
+ * any section whose label happened to share 4 chars). Now we only count word
+ * tokens of length ≥3 that actually appear in both filename and label.
+ *
+ * Returns null if there's no confident match — caller picks via dropdown.
+ */
+function autoMatchFileToSection(
+  fileName: string,
+  sections: Array<{ id: string; section_number: number; label: string | null }>,
+): string | null {
+  const base = fileName.toLowerCase().replace(/\.[^.]+$/, '');
+
+  // Strategy 1: leading number — most reliable, return immediately.
+  const num = base.match(/^\s*(\d{1,3})\b/);
+  if (num) {
+    const n = parseInt(num[1], 10);
+    const m = sections.find(s => s.section_number === n);
+    if (m) return m.id;
+  }
+
+  // Strategy 2: word-token overlap. Score = sum of matched word lengths.
+  // Require minimum score of 4 (e.g. one 4-letter word, or two 3-letter words
+  // share-prefixed) to count as a match. Tie-broken by highest score.
+  const fileWords = new Set(base.split(/[^a-z0-9]+/).filter(w => w.length >= 3));
+  if (fileWords.size === 0) return null;
+
+  let best: { id: string; score: number } | null = null;
+  for (const s of sections) {
+    if (!s.label) continue;
+    const labelWords = s.label.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length >= 3);
+    if (labelWords.length === 0) continue;
+    let score = 0;
+    for (const lw of labelWords) {
+      if (fileWords.has(lw)) score += lw.length;
+    }
+    if (score >= 4 && (!best || score > best.score)) best = { id: s.id, score };
+  }
+  return best?.id || null;
+}
 
 /**
  * Strip production cues like [VISUAL CUE: ...], [SFX: ...], [B-ROLL ...]
@@ -234,8 +289,14 @@ export function NarratorPortal({ token }: { token: string }) {
     setAssignment(prev => prev ? { ...prev, status: 'received' } : prev);
   }, [token]);
 
-  const handleUpload = useCallback(async (sectionId: string, file: File) => {
-    if (!file.type.startsWith('audio/')) return;
+  const handleUpload = useCallback(async (sectionId: string, file: File, opts?: { silent?: boolean }) => {
+    // `silent: true` propagates the error back to the caller (used by BulkUploadZone
+    // so each row can show its own error state). Default behaviour shows an alert
+    // for one-off per-section uploads since this component lives outside the app shell.
+    if (!file.type.startsWith('audio/')) {
+      if (opts?.silent) throw new Error('Not an audio file');
+      return;
+    }
     setUploading(sectionId);
     try {
       // Probe duration locally before reserving the take row
@@ -304,8 +365,8 @@ export function NarratorPortal({ token }: { token: string }) {
     } catch (e) {
       // Surface the error so the narrator knows what to fix (CORS, R2 setup, etc.)
       const msg = e instanceof Error ? e.message : 'Upload failed';
-      // Use console + alert as a low-dep fallback (this component lives outside the app shell)
       console.error('Take upload failed:', e);
+      if (opts?.silent) throw e;
       alert(`Upload failed: ${msg}`);
     }
     finally { setUploading(null); }
@@ -393,156 +454,169 @@ export function NarratorPortal({ token }: { token: string }) {
           </a>
         )}
 
-        {/* Header */}
-        <header className="mb-8">
-          <div className="flex items-start justify-between">
-            <div>
-              <h1 className="text-2xl font-bold mb-1" style={{ color: 'var(--text-primary)' }}>{assignment.project_title}</h1>
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-1.5">
-                  <div className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white" style={{ background: assignment.narrator_color }}>
-                    {(assignment.narrator_name || '?')[0].toUpperCase()}
-                  </div>
-                  <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{assignment.narrator_name}</span>
-                </div>
-                <span className="px-2 py-0.5 rounded-full text-xs font-medium" style={{ background: `${assignmentStatus.color}22`, color: assignmentStatus.color }}>{assignmentStatus.label}</span>
-                {assignment.deadline && (
-                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Due: {new Date(assignment.deadline).toLocaleDateString()}</span>
-                )}
+        {/* Header — title + narrator + status. Action toolbar lives below. */}
+        <header className="mb-5">
+          <h1 className="text-3xl font-bold mb-2" style={{ color: 'var(--text-primary)' }}>{assignment.project_title}</h1>
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-1.5">
+              <div className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white" style={{ background: assignment.narrator_color }}>
+                {(assignment.narrator_name || '?')[0].toUpperCase()}
               </div>
+              <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{assignment.narrator_name}</span>
             </div>
-            <div className="flex items-center gap-2">
-              {assignment.status === 'assigned' && (
-                <button onClick={handleReceive} className="px-3 py-1.5 rounded-lg text-xs font-medium text-white" style={{ background: '#06b6d4' }}>Mark as Received</button>
-              )}
-              {/* View toggle — Sections (default expandable list with upload + takes)
-                  vs Plain (continuous narration text only, for read-through). */}
-              <div className="flex items-center gap-0.5 rounded-lg p-0.5" style={{ background: 'rgba(255,255,255,0.05)' }}>
-                {(['sections', 'plain'] as ViewMode[]).map(m => (
-                  <button
-                    key={m}
-                    onClick={() => setViewMode(m)}
-                    className="px-2.5 py-1 rounded text-[11px] capitalize transition-colors"
-                    style={{
-                      background: viewMode === m ? 'rgba(124,58,237,0.25)' : 'transparent',
-                      color: viewMode === m ? '#a78bfa' : 'var(--text-muted)',
-                    }}
-                    title={m === 'plain' ? 'Plain text — continuous narration with production cues stripped' : 'Section list with takes + upload controls'}
-                  >
-                    {m === 'plain' ? 'Plain' : 'Sections'}
-                  </button>
-                ))}
-              </div>
-              {/* In plain mode, allow hiding the section labels for a 100%
-                  uninterrupted read. Toggle doubles as the default for the
-                  Export dropdown's "Include section labels" option. */}
-              {viewMode === 'plain' && (
-                <button
-                  onClick={() => setShowLabels(s => !s)}
-                  className="px-2.5 py-1 rounded-lg text-[11px] transition-colors"
-                  style={{
-                    background: showLabels ? 'rgba(124,58,237,0.15)' : 'rgba(255,255,255,0.05)',
-                    color: showLabels ? '#a78bfa' : 'var(--text-muted)',
-                  }}
-                  title={showLabels ? 'Hide HOOK / SECTION labels' : 'Show HOOK / SECTION labels'}
-                >
-                  {showLabels ? 'Labels: on' : 'Labels: off'}
-                </button>
-              )}
-              {/* Export dropdown — narrator-friendly downloads of the
-                  current script. The "Include section labels" checkbox
-                  inherits the on-screen Labels toggle but can be flipped
-                  per-export. */}
-              <div className="relative">
-                <button
-                  onClick={() => setExportOpen(o => !o)}
-                  className="px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1"
-                  style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
-                  title="Export narration as PDF, Word doc, or plain text"
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
-                  Export
-                </button>
-                {exportOpen && (
-                  <>
-                    <div className="fixed inset-0 z-40" onClick={() => setExportOpen(false)} />
-                    <div
-                      className="absolute right-0 top-full mt-1 z-50 rounded-lg overflow-hidden"
-                      style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', minWidth: 240, boxShadow: '0 10px 30px rgba(0,0,0,0.4)' }}
-                    >
-                      <label className="flex items-center gap-2 px-3 py-2.5 text-[11px]" style={{ color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>
-                        <input
-                          type="checkbox"
-                          checked={showLabels}
-                          onChange={e => setShowLabels(e.target.checked)}
-                          className="accent-purple-500"
-                        />
-                        Include section labels (Hook / Section N)
-                      </label>
-                      {([
-                        { key: 'pdf', label: '📕 Download PDF', hint: 'Print-ready' },
-                        { key: 'doc', label: '📄 Download .doc', hint: 'Opens in Word / Docs' },
-                        { key: 'txt', label: '📝 Download .txt', hint: 'Plain text' },
-                      ] as const).map(opt => (
-                        <button
-                          key={opt.key}
-                          disabled={exporting}
-                          onClick={async () => {
-                            setExporting(true);
-                            try {
-                              const title = assignment.project_title;
-                              if (opt.key === 'pdf') await exportPdf(title, sections, showLabels);
-                              else if (opt.key === 'doc') exportDoc(title, sections, showLabels);
-                              else exportTxt(title, sections, showLabels);
-                            } catch (err) {
-                              console.error('Narrator export failed:', err);
-                              alert('Export failed — please try again.');
-                            } finally {
-                              setExporting(false);
-                              setExportOpen(false);
-                            }
-                          }}
-                          className="w-full text-left px-3 py-2.5 text-sm flex items-center gap-2 transition-colors disabled:opacity-50"
-                          style={{ color: 'var(--text-primary)' }}
-                          onMouseEnter={e => { if (!exporting) e.currentTarget.style.background = 'rgba(124,58,237,0.08)'; }}
-                          onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                        >
-                          <span>{opt.label}</span>
-                          <span className="ml-auto text-[10px]" style={{ color: 'var(--text-muted)' }}>{opt.hint}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-              <button onClick={() => setShowTeleprompter(true)} className="px-3 py-1.5 rounded-lg text-xs font-medium" style={{ background: 'rgba(124,58,237,0.15)', color: '#7c3aed' }}>
-                Teleprompter
-              </button>
-              {uploadedCount === sections.length && assignment.status !== 'submitted' && assignment.status !== 'approved' && (
-                <button onClick={handleSubmit} className="px-3 py-1.5 rounded-lg text-xs font-medium text-white" style={{ background: '#22c55e' }}>Submit All</button>
-              )}
-            </div>
+            <span className="px-2 py-0.5 rounded-full text-xs font-medium" style={{ background: `${assignmentStatus.color}22`, color: assignmentStatus.color }}>{assignmentStatus.label}</span>
+            {assignment.deadline && (
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>📅 Due {new Date(assignment.deadline).toLocaleDateString()}</span>
+            )}
+            <span className="text-xs ml-auto" style={{ color: 'var(--text-muted)' }}>
+              {totalWords.toLocaleString()} words · ~{Math.round(totalDuration / 60)}:{(totalDuration % 60).toString().padStart(2, '0')} total
+            </span>
           </div>
-
-          {/* Progress bar */}
-          <div className="mt-4">
-            <div className="flex items-center justify-between text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
-              <span>{uploadedCount}/{sections.length} sections uploaded</span>
-              <span>{totalWords.toLocaleString()} words · ~{Math.round(totalDuration / 60)}:{(totalDuration % 60).toString().padStart(2, '0')} total</span>
-            </div>
-            <div className="h-2 rounded-full" style={{ background: 'rgba(255,255,255,0.05)' }}>
-              <div className="h-full rounded-full transition-all" style={{ width: `${progress}%`, background: 'linear-gradient(90deg, #7c3aed, #06b6d4)' }} />
-            </div>
-          </div>
-
-          {/* Director's general notes */}
-          {assignment.director_notes && (
-            <div className="mt-4 p-3 rounded-lg" style={{ background: 'rgba(6,182,212,0.08)', border: '1px solid rgba(6,182,212,0.2)' }}>
-              <p className="text-xs font-medium mb-1" style={{ color: '#06b6d4' }}>Director's Notes</p>
-              <p className="text-sm whitespace-pre-wrap" style={{ color: 'var(--text-secondary)' }}>{assignment.director_notes}</p>
-            </div>
-          )}
         </header>
+
+        {/* Hero action bar — primary actions live here, large + visible. */}
+        <div className="mb-5 flex items-center gap-2 flex-wrap">
+          {assignment.status === 'assigned' && (
+            <HeroAction
+              tone="cyan"
+              icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>}
+              label="Mark as Received"
+              hint="Let the owner know you've started"
+              onClick={handleReceive}
+              primary
+            />
+          )}
+          <HeroAction
+            tone="purple"
+            icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>}
+            label="Teleprompter"
+            hint="Full-screen scrolling read-along"
+            onClick={() => setShowTeleprompter(true)}
+          />
+          <div className="relative">
+            <HeroAction
+              tone="slate"
+              icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>}
+              label="Export"
+              hint="PDF · Word · TXT"
+              onClick={() => setExportOpen(o => !o)}
+            />
+            {exportOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setExportOpen(false)} />
+                <div
+                  className="absolute left-0 top-full mt-1 z-50 rounded-lg overflow-hidden"
+                  style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', minWidth: 260, boxShadow: '0 10px 30px rgba(0,0,0,0.4)' }}
+                >
+                  <label className="flex items-center gap-2 px-3 py-2.5 text-[11px]" style={{ color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>
+                    <input
+                      type="checkbox"
+                      checked={showLabels}
+                      onChange={e => setShowLabels(e.target.checked)}
+                      className="accent-purple-500"
+                    />
+                    Include section labels (Hook / Section N)
+                  </label>
+                  {([
+                    { key: 'pdf', label: '📕 Download PDF', hint: 'Print-ready' },
+                    { key: 'doc', label: '📄 Download .doc', hint: 'Opens in Word / Docs' },
+                    { key: 'txt', label: '📝 Download .txt', hint: 'Plain text' },
+                  ] as const).map(opt => (
+                    <button
+                      key={opt.key}
+                      disabled={exporting}
+                      onClick={async () => {
+                        setExporting(true);
+                        try {
+                          const title = assignment.project_title;
+                          if (opt.key === 'pdf') await exportPdf(title, sections, showLabels);
+                          else if (opt.key === 'doc') exportDoc(title, sections, showLabels);
+                          else exportTxt(title, sections, showLabels);
+                        } catch (err) {
+                          console.error('Narrator export failed:', err);
+                          alert('Export failed — please try again.');
+                        } finally {
+                          setExporting(false);
+                          setExportOpen(false);
+                        }
+                      }}
+                      className="w-full text-left px-3 py-2.5 text-sm flex items-center gap-2 transition-colors disabled:opacity-50"
+                      style={{ color: 'var(--text-primary)' }}
+                      onMouseEnter={e => { if (!exporting) e.currentTarget.style.background = 'rgba(124,58,237,0.08)'; }}
+                      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                    >
+                      <span>{opt.label}</span>
+                      <span className="ml-auto text-[10px]" style={{ color: 'var(--text-muted)' }}>{opt.hint}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+          {uploadedCount === sections.length && sections.length > 0 && assignment.status !== 'submitted' && assignment.status !== 'approved' && (
+            <HeroAction
+              tone="green"
+              icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>}
+              label="Submit All"
+              hint="Send to owner for review"
+              onClick={handleSubmit}
+              primary
+            />
+          )}
+        </div>
+
+        {/* Progress bar */}
+        <div className="mb-5">
+          <div className="flex items-center justify-between text-xs mb-1.5" style={{ color: 'var(--text-muted)' }}>
+            <span>
+              <span style={{ color: progress >= 100 ? '#22c55e' : 'var(--text-primary)', fontWeight: 600 }}>{uploadedCount}</span>
+              {' / '}{sections.length} sections uploaded
+            </span>
+            <span>{progress}%</span>
+          </div>
+          <div className="h-2 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.05)' }}>
+            <div className="h-full rounded-full transition-all" style={{ width: `${progress}%`, background: progress >= 100 ? '#22c55e' : 'linear-gradient(90deg, #7c3aed, #06b6d4)' }} />
+          </div>
+        </div>
+
+        {/* Director's general notes */}
+        {assignment.director_notes && (
+          <div className="mb-5 p-3 rounded-lg" style={{ background: 'rgba(6,182,212,0.08)', border: '1px solid rgba(6,182,212,0.2)' }}>
+            <p className="text-xs font-medium mb-1" style={{ color: '#06b6d4' }}>Director's Notes</p>
+            <p className="text-sm whitespace-pre-wrap" style={{ color: 'var(--text-secondary)' }}>{assignment.director_notes}</p>
+          </div>
+        )}
+
+        {/* View tabs — three clearly-labelled modes for navigating the script */}
+        <div className="mb-4 flex items-center gap-2 flex-wrap">
+          <ViewTab active={viewMode === 'sections'} onClick={() => setViewMode('sections')} icon="📋" label="Sections" hint="Expandable cards with full context" />
+          <ViewTab active={viewMode === 'recording'} onClick={() => setViewMode('recording')} icon="🎙️" label="Recording" hint="Flat row-per-section — fastest to upload" />
+          <ViewTab active={viewMode === 'plain'} onClick={() => setViewMode('plain')} icon="📖" label="Plain text" hint="Continuous read-through, no clutter" />
+          {viewMode === 'plain' && (
+            <button
+              onClick={() => setShowLabels(s => !s)}
+              className="px-2.5 py-1.5 rounded-lg text-[11px] transition-colors ml-auto"
+              style={{
+                background: showLabels ? 'rgba(124,58,237,0.15)' : 'rgba(255,255,255,0.05)',
+                color: showLabels ? '#a78bfa' : 'var(--text-muted)',
+              }}
+              title={showLabels ? 'Hide HOOK / SECTION labels' : 'Show HOOK / SECTION labels'}
+            >
+              {showLabels ? '🏷️ Labels: on' : '🏷️ Labels: off'}
+            </button>
+          )}
+        </div>
+
+        {/* Bulk-upload drop zone — visible in Sections + Recording modes only.
+            Lets the narrator drop a folder of audio files at once and have
+            them auto-mapped to sections by filename. Uses silent mode so each
+            row's error state shows in the mapping panel instead of an alert. */}
+        {viewMode !== 'plain' && (
+          <BulkUploadZone
+            sections={sections}
+            onUpload={(sectionId, file) => handleUpload(sectionId, file, { silent: true })}
+          />
+        )}
 
         {/* Plain text view — flowing narration with production cues stripped.
             "Labels: on" keeps HOOK / SECTION dividers; "Labels: off" merges
@@ -579,6 +653,16 @@ export function NarratorPortal({ token }: { token: string }) {
             })()}
           </div>
         ) : null}
+
+        {/* Recording mode — flat row-per-section view, fastest path to upload */}
+        {viewMode === 'recording' && (
+          <RecordingModeView
+            sections={sections}
+            comments={comments}
+            uploading={uploading}
+            onUpload={handleUpload}
+          />
+        )}
 
         {/* Sections */}
         <div className="space-y-4" style={{ display: viewMode === 'sections' ? undefined : 'none' }}>
@@ -827,4 +911,327 @@ function renderScriptWithBadges(text: string, markers: Array<{ tag: string; posi
       </span>
     );
   });
+}
+
+// ─── View tab ──────────────────────────────────────────────────────────────
+
+function ViewTab({
+  active, onClick, icon, label, hint,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: string;
+  label: string;
+  hint: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all"
+      style={{
+        background: active ? 'rgba(124,58,237,0.18)' : 'var(--bg-secondary)',
+        color: active ? '#a78bfa' : 'var(--text-secondary)',
+        border: `1px solid ${active ? 'rgba(124,58,237,0.4)' : 'var(--border)'}`,
+      }}
+      title={hint}
+    >
+      <span>{icon}</span>
+      <span>{label}</span>
+    </button>
+  );
+}
+
+// ─── Bulk upload drop zone ─────────────────────────────────────────────────
+
+interface BulkSectionRef { id: string; section_number: number; label: string | null; status: string }
+
+function BulkUploadZone({
+  sections,
+  onUpload,
+}: {
+  sections: BulkSectionRef[];
+  onUpload: (sectionId: string, file: File) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [mappings, setMappings] = useState<BulkMapping[]>([]);
+  const [uploadingAll, setUploadingAll] = useState(false);
+
+  const acceptFiles = useCallback((files: FileList | File[]) => {
+    const audio = Array.from(files).filter(f => f.type.startsWith('audio/'));
+    if (audio.length === 0) return;
+    const next: BulkMapping[] = audio.map(f => ({
+      file: f,
+      sectionId: autoMatchFileToSection(f.name, sections),
+      status: 'pending',
+    }));
+    setMappings(prev => [...prev, ...next]);
+    setOpen(true);
+  }, [sections]);
+
+  const onDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    if (e.dataTransfer?.files) acceptFiles(e.dataTransfer.files);
+  }, [acceptFiles]);
+
+  const runUploads = useCallback(async () => {
+    setUploadingAll(true);
+    // Sequential to avoid overloading bandwidth + give clear per-row progress.
+    for (let i = 0; i < mappings.length; i++) {
+      const m = mappings[i];
+      if (!m.sectionId || m.status === 'done') continue;
+      setMappings(prev => prev.map((x, idx) => idx === i ? { ...x, status: 'uploading' } : x));
+      try {
+        await onUpload(m.sectionId, m.file);
+        setMappings(prev => prev.map((x, idx) => idx === i ? { ...x, status: 'done' } : x));
+      } catch (err) {
+        setMappings(prev => prev.map((x, idx) => idx === i ? { ...x, status: 'error', error: err instanceof Error ? err.message : 'Failed' } : x));
+      }
+    }
+    setUploadingAll(false);
+  }, [mappings, onUpload]);
+
+  const matchedCount = mappings.filter(m => m.sectionId).length;
+  const doneCount = mappings.filter(m => m.status === 'done').length;
+  const allDone = mappings.length > 0 && doneCount === mappings.length;
+
+  return (
+    <div
+      className="mb-5 rounded-xl overflow-hidden transition-colors"
+      style={{
+        background: dragOver ? 'rgba(124,58,237,0.10)' : 'var(--bg-secondary)',
+        border: `2px dashed ${dragOver ? 'rgba(124,58,237,0.6)' : 'var(--border)'}`,
+      }}
+      onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={onDrop}
+    >
+      <div className="px-4 py-3 flex items-center gap-3">
+        <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'rgba(124,58,237,0.15)' }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+            Bulk upload — drop a folder of audio files
+          </p>
+          <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            Files matched to sections by leading number (<code>01-…</code>) or label keyword. You can confirm before uploading.
+          </p>
+        </div>
+        <label className="px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors" style={{ background: 'rgba(124,58,237,0.18)', color: '#a78bfa', border: '1px solid rgba(124,58,237,0.3)' }}>
+          <input
+            type="file"
+            accept="audio/*"
+            multiple
+            className="hidden"
+            onChange={e => { if (e.target.files) acceptFiles(e.target.files); e.target.value = ''; }}
+          />
+          Choose files
+        </label>
+      </div>
+
+      {open && mappings.length > 0 && (
+        <div className="px-4 pb-4 space-y-2" style={{ borderTop: '1px solid var(--border)' }}>
+          <div className="flex items-center justify-between pt-3">
+            <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              {mappings.length} file{mappings.length === 1 ? '' : 's'} · {matchedCount} matched · {doneCount} uploaded
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => { setMappings([]); setOpen(false); }}
+                className="text-[11px] px-2 py-1 rounded transition-colors"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                Clear
+              </button>
+              <button
+                onClick={runUploads}
+                disabled={uploadingAll || matchedCount === 0 || allDone}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white disabled:opacity-40 transition-all"
+                style={{ background: allDone ? '#22c55e' : 'linear-gradient(135deg, #7c3aed, #06b6d4)' }}
+              >
+                {allDone ? '✓ All uploaded' : uploadingAll ? 'Uploading…' : `Upload ${matchedCount} file${matchedCount === 1 ? '' : 's'}`}
+              </button>
+            </div>
+          </div>
+          <div className="space-y-1.5 max-h-64 overflow-y-auto">
+            {mappings.map((m, i) => {
+              const sec = sections.find(s => s.id === m.sectionId);
+              const statusBadge = (() => {
+                if (m.status === 'done') return <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ background: 'rgba(34,197,94,0.18)', color: '#22c55e' }}>✓ Uploaded</span>;
+                if (m.status === 'uploading') return <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ background: 'rgba(124,58,237,0.18)', color: '#a78bfa' }}>Uploading…</span>;
+                if (m.status === 'error') return <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ background: 'rgba(239,68,68,0.18)', color: '#ef4444' }} title={m.error}>✕ Error</span>;
+                if (!m.sectionId) return <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ background: 'rgba(234,179,8,0.18)', color: '#eab308' }}>⚠️ Pick section</span>;
+                return <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>Ready</span>;
+              })();
+              return (
+                <div key={i} className="flex items-center gap-2 p-2 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
+                  <span className="text-base shrink-0">🎵</span>
+                  <span className="text-xs truncate flex-1 min-w-0" style={{ color: 'var(--text-primary)' }} title={m.file.name}>{m.file.name}</span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0" style={{ color: 'var(--text-muted)' }}>
+                    <path d="M5 12h14M13 5l7 7-7 7"/>
+                  </svg>
+                  <select
+                    value={m.sectionId || ''}
+                    onChange={e => setMappings(prev => prev.map((x, idx) => idx === i ? { ...x, sectionId: e.target.value || null } : x))}
+                    disabled={m.status === 'uploading' || m.status === 'done'}
+                    className="text-xs px-2 py-1 rounded shrink-0 max-w-[200px]"
+                    style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                  >
+                    <option value="">— Pick section —</option>
+                    {sections.map(s => (
+                      <option key={s.id} value={s.id}>
+                        {s.section_number}. {s.label || `Section ${s.section_number}`}
+                      </option>
+                    ))}
+                  </select>
+                  {statusBadge}
+                  {m.status !== 'uploading' && m.status !== 'done' && (
+                    <button
+                      onClick={() => setMappings(prev => prev.filter((_, idx) => idx !== i))}
+                      className="shrink-0 opacity-50 hover:opacity-100 transition-opacity"
+                      title="Remove"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)' }}>
+                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                      </svg>
+                    </button>
+                  )}
+                  {sec && m.status !== 'done' && (
+                    <span className="hidden lg:block text-[10px] truncate max-w-[120px]" style={{ color: 'var(--text-muted)' }}>
+                      → {sec.label || `Section ${sec.section_number}`}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Recording mode — flat row-per-section view ────────────────────────────
+
+interface RecordingModeSection {
+  id: string;
+  section_number: number;
+  label: string | null;
+  script_text: string;
+  estimated_duration_seconds: number | null;
+  status: string;
+  takes: Array<{ id: string; take_number: number; audio_url: string; is_selected: boolean; owner_notes: string | null }> | null;
+}
+
+function RecordingModeView({
+  sections,
+  comments,
+  uploading,
+  onUpload,
+}: {
+  sections: RecordingModeSection[];
+  comments: Array<{ section_id: string | null }>;
+  uploading: string | null;
+  onUpload: (sectionId: string, file: File) => Promise<void>;
+}) {
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr style={{ background: 'rgba(255,255,255,0.02)', borderBottom: '1px solid var(--border)' }}>
+              <th className="px-3 py-2.5 text-[10px] uppercase tracking-wider font-semibold text-left" style={{ color: 'var(--text-muted)', width: 50 }}>#</th>
+              <th className="px-3 py-2.5 text-[10px] uppercase tracking-wider font-semibold text-left" style={{ color: 'var(--text-muted)' }}>Section</th>
+              <th className="px-3 py-2.5 text-[10px] uppercase tracking-wider font-semibold text-left" style={{ color: 'var(--text-muted)', width: 100 }}>Status</th>
+              <th className="px-3 py-2.5 text-[10px] uppercase tracking-wider font-semibold text-left" style={{ color: 'var(--text-muted)' }}>Latest take</th>
+              <th className="px-3 py-2.5 text-[10px] uppercase tracking-wider font-semibold text-right" style={{ color: 'var(--text-muted)', width: 180 }}>Upload</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sections.map(s => {
+              const sectionStatus = SECTION_STATUS[s.status] || SECTION_STATUS.pending;
+              const latestTake = s.takes && s.takes.length > 0 ? s.takes[0] : null;
+              const isUploading = uploading === s.id;
+              const commentCount = comments.filter(c => c.section_id === s.id).length;
+              const wordCount = (s.script_text || '').replace(/\[[^\]]+\]/g, '').split(/\s+/).filter(w => w.length > 0).length;
+
+              const approved = s.status === 'approved';
+              return (
+                <tr key={s.id} style={{ borderBottom: '1px solid var(--border)', opacity: approved ? 0.55 : 1 }}>
+                  <td className="px-3 py-3 align-top">
+                    <span className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold" style={{ background: approved ? 'rgba(34,197,94,0.15)' : 'rgba(124,58,237,0.15)', color: approved ? '#22c55e' : '#7c3aed' }}>
+                      {s.section_number}
+                    </span>
+                  </td>
+                  <td className="px-3 py-3 align-top">
+                    <p className="font-semibold" style={{ color: 'var(--text-primary)' }}>{s.label || `Section ${s.section_number}`}</p>
+                    <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                      {wordCount} words · ~{s.estimated_duration_seconds ? `${Math.round(s.estimated_duration_seconds)}s` : '?'}
+                      {s.takes && s.takes.length > 0 && ` · ${s.takes.length} take${s.takes.length === 1 ? '' : 's'}`}
+                      {commentCount > 0 && ` · 💬 ${commentCount}`}
+                    </p>
+                  </td>
+                  <td className="px-3 py-3 align-top">
+                    <span className="text-[10px] px-2 py-0.5 rounded-full font-medium" style={{ background: `${sectionStatus.color}22`, color: sectionStatus.color }}>
+                      {sectionStatus.label}
+                    </span>
+                  </td>
+                  <td className="px-3 py-3 align-top">
+                    {latestTake ? (
+                      <div className="flex items-center gap-2 max-w-md">
+                        <AudioPlayer src={latestTake.audio_url} label={`Take ${latestTake.take_number}`} compact />
+                      </div>
+                    ) : (
+                      <span className="text-[11px]" style={{ color: 'var(--text-muted)', opacity: 0.5 }}>— no take yet —</span>
+                    )}
+                    {latestTake?.owner_notes && (
+                      <p className="text-[11px] mt-1.5 italic" style={{ color: '#f97316' }}>
+                        Owner: {latestTake.owner_notes}
+                      </p>
+                    )}
+                  </td>
+                  <td className="px-3 py-3 align-top text-right">
+                    {s.status !== 'approved' ? (
+                      <label
+                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors"
+                        style={{
+                          background: isUploading ? 'rgba(124,58,237,0.10)' : 'rgba(124,58,237,0.18)',
+                          color: '#a78bfa',
+                          border: '1px solid rgba(124,58,237,0.3)',
+                          opacity: isUploading ? 0.6 : 1,
+                        }}
+                      >
+                        <input
+                          type="file"
+                          accept="audio/*"
+                          className="hidden"
+                          disabled={isUploading}
+                          onChange={e => { const f = e.target.files?.[0]; if (f) onUpload(s.id, f); e.target.value = ''; }}
+                        />
+                        {isUploading ? (
+                          <>
+                            <span className="w-3 h-3 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: '#a78bfa', borderTopColor: 'transparent' }} />
+                            Uploading…
+                          </>
+                        ) : (
+                          <>
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                            {latestTake ? 'New take' : 'Upload'}
+                          </>
+                        )}
+                      </label>
+                    ) : (
+                      <span className="text-[11px]" style={{ color: '#22c55e' }}>✓ Approved</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
