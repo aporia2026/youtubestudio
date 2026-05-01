@@ -100,7 +100,7 @@ export default function ProjectDetailPage() {
       setScripts(sc.scripts || []);
       setMedia(med.assets || []);
       setRefs(ref.references || []);
-      const active = sc.scripts?.find((s: Script) => s.is_active);
+      const active = sc.scripts?.find((s: Script) => s.is_active) ?? sc.scripts?.[0];
       if (active) setScriptContent(active.content);
     } catch {
       toast.error('Failed to load project');
@@ -113,15 +113,19 @@ export default function ProjectDetailPage() {
     if (!scriptContent.trim()) return;
     setSavingScript(true);
     try {
-      await fetch(`/api/projects/${id}/scripts`, {
+      const res = await fetch(`/api/projects/${id}/scripts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: scriptContent }),
       });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error || `Save failed (${res.status})`);
+      }
       toast.success('Script saved');
       setEditingScript(false);
       fetchAll();
-    } catch { toast.error('Save failed'); }
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Save failed'); }
     finally { setSavingScript(false); }
   }
 
@@ -194,7 +198,11 @@ export default function ProjectDetailPage() {
     <div className="p-8 text-center" style={{ color: 'var(--text-muted)' }}>Project not found</div>
   );
 
-  const activeScript = scripts.find(s => s.is_active);
+  // Self-heal for projects whose rows all have is_active=false (a prior bug
+  // could leave the table in that state). Scripts are returned ORDER BY
+  // version DESC, so [0] is the latest version and is what the user almost
+  // certainly intended to see.
+  const activeScript = scripts.find(s => s.is_active) ?? scripts[0];
   const words = countWords(scriptContent || activeScript?.content || '');
   const estDuration = estimateDuration(words);
 

@@ -28,17 +28,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     `;
     const nextVersion = versionResult.rows[0].next_version;
 
-    // Deactivate previous scripts
-    await sql`UPDATE scripts SET is_active = false WHERE project_id = ${id}`;
-
     const words = countWords(content);
     const duration = estimateDuration(words);
 
+    // INSERT first, deactivate-others second. Order matters: if the second
+    // statement fails we briefly have two active rows (recoverable on the
+    // next save), but if we deactivated first and the INSERT failed we'd
+    // leave the project with zero active rows and the UI would render
+    // "(no script yet)" despite versions existing in the table.
     const result = await sql`
       INSERT INTO scripts (project_id, version, content, word_count, estimated_duration_seconds, ai_model, is_active)
       VALUES (${id}, ${nextVersion}, ${content}, ${words}, ${duration}, ${modelId || null}, true)
       RETURNING *
     `;
+    const newId = result.rows[0].id;
+    await sql`UPDATE scripts SET is_active = false WHERE project_id = ${id} AND id <> ${newId}`;
 
     await sql`UPDATE projects SET updated_at = NOW() WHERE id = ${id}`;
 
