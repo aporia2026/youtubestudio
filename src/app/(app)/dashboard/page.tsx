@@ -1,307 +1,345 @@
 'use client';
 
-import { motion } from 'framer-motion';
-import Link from 'next/link';
 import { useEffect, useState } from 'react';
-
-interface Stats {
-  projects: number;
-  scripts: number;
-  ideas: number;
-  qaRuns: number;
-}
-
-const QUICK_ACTIONS = [
-  {
-    label: 'Generate Script',
-    description: 'AI-powered script from topic & length',
-    href: '/generator',
-    icon: (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" />
-      </svg>
-    ),
-    gradient: 'linear-gradient(135deg, #7c3aed, #06b6d4)',
-    glow: 'rgba(124,58,237,0.3)',
-  },
-  {
-    label: 'QA a Script',
-    description: 'Brutally critique any script',
-    href: '/qa',
-    icon: (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" /><path d="M11 8v3l2 2" />
-      </svg>
-    ),
-    gradient: 'linear-gradient(135deg, #ec4899, #f59e0b)',
-    glow: 'rgba(236,72,153,0.3)',
-  },
-  {
-    label: 'Find Ideas',
-    description: 'Discover high-potential video ideas',
-    href: '/ideas',
-    icon: (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <path d="M9 18h6" /><path d="M10 22h4" />
-        <path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14" />
-      </svg>
-    ),
-    gradient: 'linear-gradient(135deg, #10b981, #06b6d4)',
-    glow: 'rgba(16,185,129,0.3)',
-  },
-  {
-    label: 'New Project',
-    description: 'Start a full video production',
-    href: '/projects/new',
-    icon: (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <path d="M12 5v14M5 12h14" />
-      </svg>
-    ),
-    gradient: 'linear-gradient(135deg, #f59e0b, #ec4899)',
-    glow: 'rgba(245,158,11,0.3)',
-  },
-];
-
-const FEATURE_CARDS = [
-  {
-    icon: '🎬',
-    title: 'Script Generator',
-    desc: 'Generate complete, publish-ready scripts with AI. Pick category, topic, length, tone, and get a full script with visual cues.',
-    href: '/generator',
-    badge: 'AI-Powered',
-  },
-  {
-    icon: '🔬',
-    title: 'Brutal QA Engine',
-    desc: 'Submit your script to the harshest AI critic. Multiple passes, category-by-category scoring, with exact rewrite suggestions.',
-    href: '/qa',
-    badge: 'Multi-Pass',
-  },
-  {
-    icon: '💡',
-    title: 'Idea Generator',
-    desc: 'Niche-aware AI brainstorms high-potential video ideas with trend analysis, audience targeting, and thumbnail concepts.',
-    href: '/ideas',
-    badge: 'Trending',
-  },
-  {
-    icon: '🎙️',
-    title: 'Voiceover Studio',
-    desc: 'Generate voiceovers with ElevenLabs Pro. Browse voices, tune style & stability, preview and approve before saving.',
-    href: '/projects',
-    badge: 'ElevenLabs',
-  },
-  {
-    icon: '📁',
-    title: 'Video Projects',
-    desc: 'Organize every video: scripts, voiceovers, media assets, YouTube references — all in one production workspace.',
-    href: '/projects',
-    badge: 'Full Suite',
-  },
-  {
-    icon: '📡',
-    title: 'Channel Integration',
-    desc: 'Connect your YouTube channel to analyze performance, identify content gaps, and get data-driven recommendations.',
-    href: '/channel',
-    badge: 'YouTube API',
-  },
-  {
-    icon: '🔍',
-    title: 'SEO Optimizer',
-    desc: 'Optimize titles, descriptions, and tags for maximum discoverability with AI-powered keyword analysis.',
-    href: '/seo',
-    badge: 'SEO',
-  },
-  {
-    icon: '🖼️',
-    title: 'Thumbnails',
-    desc: 'Design eye-catching thumbnails with text overlays, reference images, and AI-generated concepts.',
-    href: '/thumbnails',
-    badge: 'Visual',
-  },
-  {
-    icon: '📊',
-    title: 'Competitors',
-    desc: 'Track and analyze competitor channels to find content gaps and winning strategies in your niche.',
-    href: '/competitors',
-    badge: 'Analytics',
-  },
-];
-
-const containerVariants = {
-  hidden: {},
-  show: { transition: { staggerChildren: 0.07 } },
-};
-
-const itemVariants = {
-  hidden: { opacity: 0, y: 20 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.4 } },
-};
+import Link from 'next/link';
+import { motion } from 'framer-motion';
+import type { DashboardSummary } from '@/lib/dashboard-summary';
 
 export default function DashboardPage() {
-  const [stats, setStats] = useState<Stats>({ projects: 0, scripts: 0, ideas: 0, qaRuns: 0 });
+  const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  async function refresh() {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/dashboard/summary', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as DashboardSummary;
+      setSummary(data);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load dashboard');
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    fetch('/api/stats')
-      .then(r => r.json())
-      .then(data => setStats(data))
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    void refresh();
   }, []);
 
   return (
-    <div className="p-8 max-w-6xl mx-auto">
-      {/* Hero */}
-      <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5 }}
-        className="mb-10"
-      >
-        <div className="flex items-center gap-3 mb-2">
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center pulse-glow"
-            style={{ background: 'linear-gradient(135deg, #7c3aed, #06b6d4)' }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-              <path d="M8 5v14l11-7L8 5z" fill="white" />
-            </svg>
-          </div>
-          <span className="badge badge-purple">AI Content Engine</span>
+    <div style={{ padding: 24, maxWidth: 1280, margin: '0 auto' }}>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-bold gradient-text">Dashboard</h1>
+          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            What needs your attention today.
+          </p>
         </div>
-        <h1 className="text-4xl font-bold mb-2">
-          <span className="gradient-text">YouTube Studio</span>
-        </h1>
-        <p className="text-lg" style={{ color: 'var(--text-secondary)' }}>
-          Your end-to-end AI-powered content creation workspace.
-        </p>
-      </motion.div>
+        <button onClick={refresh} disabled={loading} className="btn-secondary text-sm">
+          {loading ? 'Refreshing…' : '↻ Refresh'}
+        </button>
+      </div>
 
-      {/* Stats Row */}
-      <motion.div
-        variants={containerVariants}
-        initial="hidden"
-        animate="show"
-        className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10"
-      >
-        {[
-          { label: 'Projects', value: stats.projects, icon: '📁', color: 'var(--accent-purple-bright)', href: '/projects' },
-          { label: 'Scripts', value: stats.scripts, icon: '📝', color: 'var(--accent-cyan-bright)', href: '/generator' },
-          { label: 'Ideas Saved', value: stats.ideas, icon: '💡', color: 'var(--accent-green)', href: '/ideas' },
-          { label: 'QA Runs', value: stats.qaRuns, icon: '🔬', color: 'var(--accent-pink)', href: '/qa' },
-        ].map(stat => (
-          <motion.div key={stat.label} variants={itemVariants} whileHover={{ y: -3 }}>
-            <Link href={stat.href}>
-              <div
-                className="glass rounded-xl p-5 cursor-pointer transition-all"
-                style={{ border: '1px solid var(--border)' }}
-                onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-bright)'}
-                onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border)'}
-              >
-                <div className="text-2xl mb-2">{stat.icon}</div>
-                <div className="text-2xl font-bold" style={{ color: stat.color }}>
-                  {loading ? '—' : stat.value}
-                </div>
-                <div className="text-sm" style={{ color: 'var(--text-muted)' }}>{stat.label}</div>
-              </div>
-            </Link>
-          </motion.div>
-        ))}
-      </motion.div>
-
-      {/* Quick Actions */}
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 0.2 }}
-        className="mb-10"
-      >
-        <h2 className="text-sm font-semibold uppercase tracking-wider mb-4" style={{ color: 'var(--text-muted)' }}>
-          Quick Actions
-        </h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {QUICK_ACTIONS.map((action, i) => (
-            <motion.div
-              key={action.href}
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ delay: 0.1 + i * 0.05 }}
-              whileHover={{ y: -4 }}
-            >
-              <Link href={action.href}>
-                <div
-                  className="p-5 rounded-xl cursor-pointer transition-all"
-                  style={{
-                    background: 'var(--bg-card)',
-                    border: '1px solid var(--border)',
-                  }}
-                  onMouseEnter={e => {
-                    (e.currentTarget as HTMLDivElement).style.border = '1px solid rgba(124,58,237,0.4)';
-                    (e.currentTarget as HTMLDivElement).style.boxShadow = `0 8px 30px ${action.glow}`;
-                  }}
-                  onMouseLeave={e => {
-                    (e.currentTarget as HTMLDivElement).style.border = '1px solid var(--border)';
-                    (e.currentTarget as HTMLDivElement).style.boxShadow = 'none';
-                  }}
-                >
-                  <div className="w-10 h-10 rounded-lg flex items-center justify-center mb-3"
-                    style={{ background: action.gradient }}>
-                    <span style={{ color: 'white' }}>{action.icon}</span>
-                  </div>
-                  <div className="font-semibold text-sm mb-1" style={{ color: 'var(--text-primary)' }}>
-                    {action.label}
-                  </div>
-                  <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                    {action.description}
-                  </div>
-                </div>
-              </Link>
-            </motion.div>
-          ))}
+      {error && (
+        <div
+          className="text-sm px-4 py-3 rounded-lg mb-4"
+          style={{
+            background: 'rgba(239,68,68,0.1)',
+            border: '1px solid rgba(239,68,68,0.3)',
+            color: '#ef4444',
+          }}
+        >
+          {error}
         </div>
-      </motion.div>
+      )}
 
-      {/* Feature Cards */}
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 0.3 }}
-      >
-        <h2 className="text-sm font-semibold uppercase tracking-wider mb-4" style={{ color: 'var(--text-muted)' }}>
-          All Features
-        </h2>
+      {summary && (
         <motion.div
-          variants={containerVariants}
           initial="hidden"
           animate="show"
-          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
+          variants={{ hidden: {}, show: { transition: { staggerChildren: 0.06 } } }}
+          style={{ display: 'flex', flexDirection: 'column', gap: 18 }}
         >
-          {FEATURE_CARDS.map(card => (
-            <motion.div key={card.title} variants={itemVariants} whileHover={{ y: -3 }}>
-              <Link href={card.href}>
-                <div className="glass rounded-xl p-6 h-full cursor-pointer group transition-all"
-                  style={{ border: '1px solid var(--border)' }}
-                  onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-bright)'}
-                  onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border)'}
-                >
-                  <div className="flex items-start justify-between mb-3">
-                    <span className="text-2xl">{card.icon}</span>
-                    <span className="badge badge-purple text-xs">{card.badge}</span>
-                  </div>
-                  <h3 className="font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>{card.title}</h3>
-                  <p className="text-sm leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{card.desc}</p>
-                  <div className="mt-4 flex items-center gap-1 text-xs font-medium" style={{ color: 'var(--accent-purple-bright)' }}>
-                    Open
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M5 12h14M12 5l7 7-7 7" />
-                    </svg>
-                  </div>
-                </div>
-              </Link>
-            </motion.div>
-          ))}
+          <Section title="Today's publishes" empty="Nothing scheduled for today.">
+            {summary.today_publishes.length > 0 ? (
+              <Table
+                head={['Title', 'Status', 'Channel', 'Editor', 'Narrator', 'Time']}
+                rows={summary.today_publishes.map(it => [
+                  <Link
+                    key={it.id}
+                    href={`/schedule?focus=${it.id}`}
+                    className="hover:underline"
+                    style={{ color: 'var(--text-primary)', fontWeight: 500 }}
+                  >
+                    {it.title}
+                  </Link>,
+                  <Pill key={`${it.id}-status`} text={it.status} />,
+                  it.channel_name ?? '—',
+                  it.editor_name ?? '—',
+                  it.narrator_name ?? '—',
+                  formatTime(it.scheduled_for),
+                ])}
+              />
+            ) : null}
+          </Section>
+
+          <Section title={`Stuck (${summary.stuck.length})`} empty="Nothing past its stage threshold. Nice.">
+            {summary.stuck.length > 0 ? (
+              <Table
+                head={['Title', 'Stage', 'Days in stage', 'Threshold', 'Channel']}
+                rows={summary.stuck.map(it => [
+                  <Link
+                    key={it.id}
+                    href={`/schedule?focus=${it.id}`}
+                    className="hover:underline"
+                    style={{ color: 'var(--text-primary)', fontWeight: 500 }}
+                  >
+                    {it.title}
+                  </Link>,
+                  <Pill key={`${it.id}-stage`} text={it.status} />,
+                  <span key={`${it.id}-days`} style={{ color: '#ef4444', fontWeight: 600 }}>
+                    {it.days_in_stage}d
+                  </span>,
+                  `${it.threshold_days}d`,
+                  it.channel_name ?? '—',
+                ])}
+              />
+            ) : null}
+          </Section>
+
+          <Section
+            title={`Underperformers (${summary.underperformers.length})`}
+            empty="No flagged underperformers in the last 14 days."
+          >
+            {summary.underperformers.length > 0 ? (
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+                  gap: 12,
+                }}
+              >
+                {summary.underperformers.map(u => (
+                  <UnderperformerCard key={u.youtube_video_id} item={u} />
+                ))}
+              </div>
+            ) : null}
+          </Section>
+
+          <Section title="Cadence — last 4 weeks" empty="No channels yet — add one in /channel.">
+            {summary.cadence.length > 0 ? (
+              <Table
+                head={['Channel', 'Target / week', 'Actual / week', 'Gap']}
+                rows={summary.cadence.map(c => [
+                  c.channel_name,
+                  c.target_per_week.toFixed(1),
+                  c.actual_per_week.toFixed(2),
+                  <span
+                    key={`${c.channel_id}-gap`}
+                    style={{
+                      color: c.gap > 0.5 ? '#ef4444' : c.gap > 0 ? '#f59e0b' : '#10b981',
+                      fontWeight: 600,
+                    }}
+                  >
+                    {c.gap > 0
+                      ? `behind by ${c.gap.toFixed(2)}/wk`
+                      : c.gap < 0
+                        ? `ahead by ${Math.abs(c.gap).toFixed(2)}/wk`
+                        : 'on target'}
+                  </span>,
+                ])}
+              />
+            ) : null}
+          </Section>
+
+          <p
+            style={{
+              fontSize: 11,
+              color: 'var(--text-muted)',
+              textAlign: 'right',
+              marginTop: 8,
+            }}
+          >
+            Generated {new Date(summary.generated_at).toLocaleString()}
+          </p>
         </motion.div>
-      </motion.div>
+      )}
     </div>
   );
+}
+
+function Section({
+  title,
+  empty,
+  children,
+}: {
+  title: string;
+  empty: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <motion.section
+      variants={{ hidden: { opacity: 0, y: 12 }, show: { opacity: 1, y: 0 } }}
+      style={{
+        background: 'rgba(255,255,255,0.02)',
+        border: '1px solid rgba(255,255,255,0.08)',
+        borderRadius: 12,
+        padding: 18,
+      }}
+    >
+      <h2 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 12 }}>
+        {title}
+      </h2>
+      {children ?? <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>{empty}</p>}
+    </motion.section>
+  );
+}
+
+function Table({ head, rows }: { head: string[]; rows: React.ReactNode[][] }) {
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <thead>
+          <tr>
+            {head.map(h => (
+              <th
+                key={h}
+                style={{
+                  textAlign: 'left',
+                  padding: '8px 12px',
+                  fontWeight: 500,
+                  fontSize: 11,
+                  textTransform: 'uppercase',
+                  color: 'var(--text-muted)',
+                  letterSpacing: 0.5,
+                  borderBottom: '1px solid rgba(255,255,255,0.06)',
+                }}
+              >
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+              {row.map((cell, j) => (
+                <td key={j} style={{ padding: '10px 12px', color: 'var(--text-secondary)' }}>
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Pill({ text }: { text: string }) {
+  const palette: Record<string, string> = {
+    idea: '#a78bfa',
+    scripting: '#06b6d4',
+    recording: '#f59e0b',
+    editing: '#ec4899',
+    ready: '#10b981',
+    published: '#64748b',
+  };
+  const color = palette[text] || '#64748b';
+  return (
+    <span
+      style={{
+        fontSize: 10,
+        padding: '2px 8px',
+        borderRadius: 999,
+        background: `${color}22`,
+        border: `1px solid ${color}66`,
+        color,
+        textTransform: 'uppercase',
+        letterSpacing: 0.5,
+      }}
+    >
+      {text}
+    </span>
+  );
+}
+
+function UnderperformerCard({
+  item,
+}: {
+  item: DashboardSummary['underperformers'][number];
+}) {
+  return (
+    <div
+      style={{
+        background: 'rgba(255,255,255,0.02)',
+        border: '1px solid rgba(255,255,255,0.08)',
+        borderRadius: 8,
+        overflow: 'hidden',
+      }}
+    >
+      {item.thumbnail_url && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={item.thumbnail_url}
+          alt={item.title || 'video thumbnail'}
+          style={{ width: '100%', display: 'block', aspectRatio: '16/9', objectFit: 'cover' }}
+        />
+      )}
+      <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', lineHeight: 1.3 }}>
+          {item.title || item.youtube_video_id}
+        </div>
+        <div style={{ display: 'flex', gap: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+          {item.views !== null && <span>{formatBig(item.views)} views</span>}
+          {item.ctr_percentage !== null && <span>CTR {item.ctr_percentage.toFixed(1)}%</span>}
+          {item.average_view_percentage !== null && (
+            <span>AVP {item.average_view_percentage.toFixed(1)}%</span>
+          )}
+        </div>
+        <ul
+          style={{
+            listStyle: 'none',
+            padding: 0,
+            margin: 0,
+            fontSize: 11,
+            color: '#ef4444',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+          }}
+        >
+          {item.reasons.map(r => (
+            <li key={r}>· {r}</li>
+          ))}
+        </ul>
+        {item.schedule_item_id && (
+          <Link
+            href={`/schedule?focus=${item.schedule_item_id}`}
+            className="hover:underline"
+            style={{ fontSize: 11, color: 'var(--text-secondary)' }}
+          >
+            Open schedule item →
+          </Link>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatTime(iso: string): string {
+  try {
+    return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return '—';
+  }
+}
+
+function formatBig(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`;
+  return n.toLocaleString();
 }
