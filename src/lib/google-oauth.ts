@@ -10,6 +10,10 @@ export const YOUTUBE_SCOPES = [
   'https://www.googleapis.com/auth/youtube.readonly',
   'https://www.googleapis.com/auth/youtube.upload',
   'https://www.googleapis.com/auth/youtube',
+  // Analytics API access — needed for impressions, CTR, AVD, retention curves.
+  // Channels OAuth-connected before PR #3 don't have this scope; they degrade
+  // to Data-API-only stats until the user re-runs the connect flow.
+  'https://www.googleapis.com/auth/yt-analytics.readonly',
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/drive.file',
