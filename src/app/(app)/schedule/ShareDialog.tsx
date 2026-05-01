@@ -35,7 +35,7 @@ export function ShareDialog({ channelId, channelName, onClose }: Props) {
     ));
     setLoading(false);
   }
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [channelId]);
+  useEffect(() => { load();   }, [channelId]);
 
   async function create() {
     setCreating(true);

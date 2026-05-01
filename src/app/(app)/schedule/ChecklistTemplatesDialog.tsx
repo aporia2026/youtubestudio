@@ -43,7 +43,7 @@ export function ChecklistTemplatesDialog({ channelId, channelName, statuses, onC
     setDrafts(next);
   }
 
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [channelId]);
+  useEffect(() => { load();   }, [channelId]);
 
   async function save(statusKey: string) {
     setSavingKey(statusKey);

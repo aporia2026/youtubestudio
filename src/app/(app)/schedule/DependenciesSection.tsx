@@ -38,7 +38,7 @@ export function DependenciesSection({ itemId, allItems, onSelectItem }: Props) {
     setOutgoing(data.outgoing || []);
     setIncoming(data.incoming || []);
   }
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [itemId]);
+  useEffect(() => { load();   }, [itemId]);
 
   async function add() {
     if (!pickingTarget) return;

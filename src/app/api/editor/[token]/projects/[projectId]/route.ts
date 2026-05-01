@@ -80,7 +80,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
 
     // Existing review versions (if a review project is linked) + latest comments count
     let reviewVersions: Array<{ id: string; version_number: number; thumbnail_url: string | null; duration_ms: number | null; created_at: string; comment_count: number }> = [];
-    let reviewProjectId: string | null = assignment.review_project_id || null;
+    const reviewProjectId: string | null = assignment.review_project_id || null;
     let reviewShareToken: string | null = null;
     if (reviewProjectId) {
       const { rows } = await sql`

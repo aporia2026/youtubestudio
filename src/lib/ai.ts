@@ -373,7 +373,7 @@ async function* kieStreamText(modelId: string, prompt: string, systemPrompt?: st
  *  emits it as its own text block with `cache_control: ephemeral` so the
  *  stable portion of the user message hits Anthropic's prompt cache
  *  independently of the varying tail in `prompt`. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 function buildAnthropicContent(
   prompt: string,
   image?: { base64: string; mimeType: string },
