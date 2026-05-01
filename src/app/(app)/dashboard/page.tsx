@@ -5,6 +5,103 @@ import Link from 'next/link';
 import { motion } from 'framer-motion';
 import type { DashboardSummary } from '@/lib/dashboard-summary';
 
+// -- Quick action shortcuts -------------------------------------------------
+// Six high-frequency actions surfaced as gradient cards above the operational
+// sections. Picked from the prior dashboard's QUICK_ACTIONS + the most-clicked
+// FEATURE_CARDS — the rest stay reachable via the sidebar / Cmd-K palette.
+const QUICK_ACTIONS: Array<{
+  label: string;
+  description: string;
+  href: string;
+  gradient: string;
+  glow: string;
+  icon: React.ReactNode;
+}> = [
+  {
+    label: 'Generate script',
+    description: 'AI from topic + length',
+    href: '/generator',
+    gradient: 'linear-gradient(135deg, #7c3aed, #06b6d4)',
+    glow: 'rgba(124,58,237,0.35)',
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <path d="M12 2L2 7l10 5 10-5-10-5z" />
+        <path d="M2 17l10 5 10-5" />
+        <path d="M2 12l10 5 10-5" />
+      </svg>
+    ),
+  },
+  {
+    label: 'QA a script',
+    description: 'Brutal multi-pass review',
+    href: '/qa',
+    gradient: 'linear-gradient(135deg, #ec4899, #f59e0b)',
+    glow: 'rgba(236,72,153,0.3)',
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <circle cx="11" cy="11" r="8" />
+        <path d="m21 21-4.35-4.35" />
+        <path d="M11 8v3l2 2" />
+      </svg>
+    ),
+  },
+  {
+    label: 'Find ideas',
+    description: 'Niche-aware brainstorm',
+    href: '/ideas',
+    gradient: 'linear-gradient(135deg, #10b981, #06b6d4)',
+    glow: 'rgba(16,185,129,0.3)',
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <path d="M9 18h6" />
+        <path d="M10 22h4" />
+        <path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14" />
+      </svg>
+    ),
+  },
+  {
+    label: 'New project',
+    description: 'Full video production',
+    href: '/projects/new',
+    gradient: 'linear-gradient(135deg, #f59e0b, #ec4899)',
+    glow: 'rgba(245,158,11,0.3)',
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+    ),
+  },
+  {
+    label: 'Voiceover',
+    description: 'ElevenLabs studio',
+    href: '/voiceover',
+    gradient: 'linear-gradient(135deg, #6366f1, #ec4899)',
+    glow: 'rgba(99,102,241,0.3)',
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+        <line x1="12" y1="19" x2="12" y2="23" />
+        <line x1="8" y1="23" x2="16" y2="23" />
+      </svg>
+    ),
+  },
+  {
+    label: 'Thumbnails',
+    description: 'Concepts + A/B variants',
+    href: '/thumbnails',
+    gradient: 'linear-gradient(135deg, #06b6d4, #10b981)',
+    glow: 'rgba(6,182,212,0.3)',
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <circle cx="8.5" cy="8.5" r="1.5" />
+        <path d="m21 15-5-5L5 21" />
+      </svg>
+    ),
+  },
+];
+
 export default function DashboardPage() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -55,6 +152,9 @@ export default function DashboardPage() {
           {error}
         </div>
       )}
+
+      <QuickActions />
+
 
       {summary?.errors && summary.errors.length > 0 && (
         <div
@@ -181,6 +281,99 @@ export default function DashboardPage() {
         </motion.div>
       )}
     </div>
+  );
+}
+
+function QuickActions() {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.35 }}
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
+        gap: 12,
+        marginBottom: 24,
+      }}
+    >
+      {QUICK_ACTIONS.map((a, i) => (
+        <motion.div
+          key={a.href}
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.04 * i }}
+          whileHover={{ y: -2 }}
+        >
+          <Link
+            href={a.href}
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+              padding: '14px 16px',
+              borderRadius: 12,
+              background: 'rgba(255,255,255,0.02)',
+              border: '1px solid rgba(255,255,255,0.08)',
+              textDecoration: 'none',
+              transition: 'all 200ms ease',
+              position: 'relative',
+              overflow: 'hidden',
+              minHeight: 92,
+            }}
+            className="quick-action-card"
+            onMouseEnter={(e) => {
+              const target = e.currentTarget;
+              target.style.borderColor = 'rgba(255,255,255,0.18)';
+              target.style.boxShadow = `0 0 24px ${a.glow}`;
+            }}
+            onMouseLeave={(e) => {
+              const target = e.currentTarget;
+              target.style.borderColor = 'rgba(255,255,255,0.08)';
+              target.style.boxShadow = 'none';
+            }}
+          >
+            <div
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 10,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: a.gradient,
+                color: 'white',
+                flexShrink: 0,
+              }}
+            >
+              {a.icon}
+            </div>
+            <div>
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: 'var(--text-primary)',
+                  letterSpacing: -0.1,
+                }}
+              >
+                {a.label}
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: 'var(--text-muted)',
+                  marginTop: 2,
+                  lineHeight: 1.35,
+                }}
+              >
+                {a.description}
+              </div>
+            </div>
+          </Link>
+        </motion.div>
+      ))}
+    </motion.div>
   );
 }
 
