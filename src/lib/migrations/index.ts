@@ -10,6 +10,7 @@ import migration0010 from './0010_add_assignment_full_audio';
 import migration0011 from './0011_add_workspace_id_columns';
 import migration0012 from './0012_backfill_workspace_id';
 import migration0013 from './0013_enforce_workspace_id';
+import migration0014 from './0014_create_admin_audit_log';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -28,6 +29,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0011,
   migration0012,
   migration0013,
+  migration0014,
 ]);
 
 /**
