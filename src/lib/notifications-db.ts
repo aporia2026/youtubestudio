@@ -26,6 +26,12 @@ export async function ensureNotificationsSchema() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `;
+    // Take-comment notifications (owner direction). Idempotent ALTER for
+    // databases that pre-date this column.
+    try { await sql`ALTER TABLE notification_settings ADD COLUMN IF NOT EXISTS on_narrator_take_comment BOOLEAN NOT NULL DEFAULT true`; } catch {}
+    // Inner messaging — owner-direction notifications when a collaborator
+    // sends a chat message.
+    try { await sql`ALTER TABLE notification_settings ADD COLUMN IF NOT EXISTS on_message BOOLEAN NOT NULL DEFAULT true`; } catch {}
     migrated = true;
   } catch (err) {
     console.error('ensureNotificationsSchema error:', err);
@@ -44,6 +50,8 @@ export interface NotificationSettings {
   on_assignment_received: boolean;
   on_comment_resolved: boolean;
   on_retake_requested: boolean;
+  on_narrator_take_comment: boolean;
+  on_message: boolean;
 }
 
 export async function getNotificationSettings(): Promise<NotificationSettings> {
@@ -73,6 +81,8 @@ export async function updateNotificationSettings(fields: Partial<Omit<Notificati
       on_assignment_received = COALESCE(${fields.on_assignment_received ?? null}, on_assignment_received),
       on_comment_resolved = COALESCE(${fields.on_comment_resolved ?? null}, on_comment_resolved),
       on_retake_requested = COALESCE(${fields.on_retake_requested ?? null}, on_retake_requested),
+      on_narrator_take_comment = COALESCE(${fields.on_narrator_take_comment ?? null}, on_narrator_take_comment),
+      on_message = COALESCE(${fields.on_message ?? null}, on_message),
       updated_at = NOW()
     WHERE id = ${SINGLETON_ID}
     RETURNING *

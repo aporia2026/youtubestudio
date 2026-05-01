@@ -227,6 +227,79 @@ export function narratorTakeTemplate(ctx: BaseCtx & {
   };
 }
 
+/**
+ * Owner posted a Frame.io-style timestamped comment on a narrator's take.
+ * Goes to the narrator. The link drops them straight into their assignment
+ * portal with the offending take expanded.
+ */
+export function ownerTakeCommentTemplate(ctx: BaseCtx & {
+  ownerName: string;
+  projectTitle: string;
+  sectionLabel: string;
+  takeNumber: number;
+  timestampMs: number;
+  text: string;
+  isRange?: boolean;
+  endTimestampMs?: number | null;
+  portalUrl: string;
+}) {
+  const ts = formatTimestamp(ctx.timestampMs);
+  const tsLabel = ctx.isRange && ctx.endTimestampMs != null
+    ? `${ts} – ${formatTimestamp(ctx.endTimestampMs)}`
+    : ts;
+  const subject = `${ctx.ownerName} left feedback on ${ctx.projectTitle}`;
+  const body = `
+    <p style="margin:0 0 12px 0;"><strong>${escapeHtml(ctx.ownerName)}</strong> left timestamped feedback on <strong>${escapeHtml(ctx.projectTitle)}</strong> — ${escapeHtml(ctx.sectionLabel)} (Take ${ctx.takeNumber}) at <code style="background:#1a1a2e;padding:2px 6px;border-radius:4px;color:#a78bfa;">${tsLabel}</code>:</p>
+    <blockquote style="margin:12px 0;padding:12px 16px;background:#0a0a14;border-left:3px solid #7c3aed;border-radius:6px;color:#e2e8f0;font-style:italic;">${escapeHtml(ctx.text)}</blockquote>
+  `;
+  return {
+    subject,
+    html: layout({
+      preheader: `${ctx.ownerName} commented on ${ctx.sectionLabel} at ${tsLabel}`,
+      heading: subject,
+      body,
+      ctaLabel: 'Open the review',
+      ctaHref: ctx.portalUrl,
+      unsubscribeUrl: ctx.unsubscribeUrl,
+    }),
+  };
+}
+
+/**
+ * Narrator replied to or posted a Frame.io-style comment on a take. Goes
+ * to the owner.
+ */
+export function narratorTakeCommentTemplate(ctx: BaseCtx & {
+  narratorName: string;
+  projectTitle: string;
+  sectionLabel: string;
+  takeNumber: number;
+  timestampMs: number;
+  text: string;
+  isReply: boolean;
+  manageUrl: string;
+}) {
+  const ts = formatTimestamp(ctx.timestampMs);
+  const subject = ctx.isReply
+    ? `${ctx.narratorName} replied on ${ctx.projectTitle}`
+    : `${ctx.narratorName} commented on ${ctx.projectTitle}`;
+  const body = `
+    <p style="margin:0 0 12px 0;"><strong>${escapeHtml(ctx.narratorName)}</strong> ${ctx.isReply ? 'replied to a comment on' : 'left a comment on'} <strong>${escapeHtml(ctx.projectTitle)}</strong> — ${escapeHtml(ctx.sectionLabel)} (Take ${ctx.takeNumber}) at <code style="background:#1a1a2e;padding:2px 6px;border-radius:4px;color:#a78bfa;">${ts}</code>:</p>
+    <blockquote style="margin:12px 0;padding:12px 16px;background:#0a0a14;border-left:3px solid #06b6d4;border-radius:6px;color:#e2e8f0;font-style:italic;">${escapeHtml(ctx.text)}</blockquote>
+  `;
+  return {
+    subject,
+    html: layout({
+      preheader: `${ctx.narratorName} on ${ctx.sectionLabel} at ${ts}`,
+      heading: subject,
+      body,
+      ctaLabel: 'Open the project',
+      ctaHref: ctx.manageUrl,
+      unsubscribeUrl: ctx.unsubscribeUrl,
+    }),
+  };
+}
+
 export function narratorCommentTemplate(ctx: BaseCtx & {
   narratorName: string;
   projectTitle: string;
@@ -326,6 +399,36 @@ export function editorAssignmentTemplate(ctx: BaseCtx & {
       body,
       ctaLabel: 'Open editor dashboard',
       ctaHref: ctx.dashboardUrl,
+      unsubscribeUrl: ctx.unsubscribeUrl,
+    }),
+  };
+}
+
+/**
+ * 1:1 chat message arrived. Used for both directions (owner ↔ collaborator).
+ * The CTA always points at the recipient's view of the same thread.
+ */
+export function messageReceivedTemplate(ctx: BaseCtx & {
+  senderName: string;
+  text: string;
+  inboxUrl: string;
+  /** Audience flag — minor copy adjustment ("you" vs the workspace owner). */
+  audience: 'owner' | 'collaborator';
+}) {
+  const subject = `${ctx.senderName} sent you a message`;
+  const body = `
+    <p style="margin:0 0 12px 0;"><strong>${escapeHtml(ctx.senderName)}</strong> sent you a message:</p>
+    <blockquote style="margin:12px 0;padding:12px 16px;background:#0a0a14;border-left:3px solid #06b6d4;border-radius:6px;color:#e2e8f0;">${escapeHtml(ctx.text)}</blockquote>
+    <p style="margin:0;color:#94a3b8;font-size:13px;">Reply from your ${ctx.audience === 'owner' ? 'messages inbox' : 'dashboard'}:</p>
+  `;
+  return {
+    subject,
+    html: layout({
+      preheader: `${ctx.senderName}: ${ctx.text.slice(0, 80)}${ctx.text.length > 80 ? '…' : ''}`,
+      heading: subject,
+      body,
+      ctaLabel: 'Open the chat',
+      ctaHref: ctx.inboxUrl,
       unsubscribeUrl: ctx.unsubscribeUrl,
     }),
   };

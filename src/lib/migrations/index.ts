@@ -13,6 +13,7 @@ import migration0013 from './0013_enforce_workspace_id';
 import migration0014 from './0014_create_admin_audit_log';
 import migration0015 from './0015_create_rate_limits';
 import migration0016 from './0016_add_channel_brand_kit';
+import migration0017 from './0017_create_messages';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -34,6 +35,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0014,
   migration0015,
   migration0016,
+  migration0017,
 ]);
 
 /**

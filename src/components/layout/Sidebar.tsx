@@ -9,6 +9,9 @@ interface NavItem {
   label: string;
   href: string;
   icon: React.ReactNode;
+  /** Optional unread-count source — when set, renders a red pill badge
+   *  next to the label fed by the matching hook below. */
+  badge?: 'messages-unread';
 }
 
 interface NavSection {
@@ -57,6 +60,16 @@ const PINNED_TOP: NavItem[] = [
         <line x1="3" y1="10" x2="21" y2="10" />
       </svg>
     ),
+  },
+  {
+    label: 'Messages',
+    href: '/messages',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      </svg>
+    ),
+    badge: 'messages-unread',
   },
 ];
 
@@ -296,7 +309,14 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               style={{ background: 'var(--accent-purple-bright)' }}
             />
           )}
-          <span className="shrink-0">{item.icon}</span>
+          <span className="shrink-0 relative">
+            {item.icon}
+            {/* Mini-pill on the icon when collapsed — only render path
+                that needs to surface a count without the label. */}
+            {item.badge === 'messages-unread' && collapsed && (
+              <MessagesUnreadDot />
+            )}
+          </span>
           <AnimatePresence>
             {!collapsed && (
               <motion.span
@@ -304,9 +324,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.1 }}
-                className="text-sm font-medium whitespace-nowrap overflow-hidden"
+                className="text-sm font-medium whitespace-nowrap overflow-hidden flex items-center gap-2"
               >
                 {item.label}
+                {item.badge === 'messages-unread' && <MessagesUnreadBadge />}
               </motion.span>
             )}
           </AnimatePresence>
@@ -463,5 +484,56 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         </button>
       </div>
     </motion.aside>
+  );
+}
+
+/**
+ * Polls the owner-side unread-messages count and renders a red pill in
+ * the sidebar so the owner sees at a glance when a collaborator has
+ * pinged them. Polls every 30s, and on window focus, to stay current
+ * without flooding the API.
+ */
+function useMessagesUnread() {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    async function load() {
+      try {
+        const res = await fetch('/api/messages/unread', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (alive) setCount((data.unread as number) || 0);
+      } catch {}
+    }
+    load();
+    const id = setInterval(load, 30_000);
+    const onFocus = () => load();
+    window.addEventListener('focus', onFocus);
+    return () => { alive = false; clearInterval(id); window.removeEventListener('focus', onFocus); };
+  }, []);
+  return count;
+}
+
+function MessagesUnreadBadge() {
+  const count = useMessagesUnread();
+  if (count === 0) return null;
+  return (
+    <span
+      className="text-[10px] px-1.5 py-0.5 rounded-full font-bold ml-auto"
+      style={{ background: '#ef4444', color: '#fff', minWidth: 18, textAlign: 'center', lineHeight: '14px' }}
+    >
+      {count > 99 ? '99+' : count}
+    </span>
+  );
+}
+
+function MessagesUnreadDot() {
+  const count = useMessagesUnread();
+  if (count === 0) return null;
+  return (
+    <span
+      className="absolute -top-1 -right-1 rounded-full"
+      style={{ background: '#ef4444', width: 8, height: 8, border: '1.5px solid var(--bg-primary)' }}
+    />
   );
 }

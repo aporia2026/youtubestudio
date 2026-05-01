@@ -3,6 +3,7 @@
 import { use, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { NotificationBell } from '@/components/dashboard/NotificationBell';
+import { MessagesLink } from '@/components/messages/MessagesLink';
 import { AvailabilityToggle } from '@/components/dashboard/AvailabilityToggle';
 import { NotificationPrefsPanel } from '@/components/dashboard/NotificationPrefsPanel';
 import { ViewModeToggle, loadViewMode, saveViewMode, type AssignmentViewMode } from '@/components/dashboard/ViewModeToggle';
@@ -157,6 +158,7 @@ export default function EditorDashboard({ params }: { params: Promise<{ token: s
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <MessagesLink token={token} />
             <NotificationBell token={token} />
             <button
               onClick={() => setShowSettings(s => !s)}

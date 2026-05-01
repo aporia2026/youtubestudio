@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { sql } from '@vercel/postgres';
 import {
   getAssignmentByToken,
   getTakeAssignmentScope,
   getTakeComments,
   createTakeComment,
 } from '@/lib/narrator-db';
+import { notifyNarratorTakeComment } from '@/lib/notify';
 
 export const runtime = 'nodejs';
 
@@ -57,6 +59,33 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
       author_role: 'narrator',
       parent_id: parent_id || null,
     });
+
+    // Fire-and-forget: notify the owner so they see narrator replies / new
+    // narrator-side comments in their inbox without polling the project.
+    sql`
+      SELECT
+        s.label AS section_label,
+        s.section_number,
+        t.take_number
+      FROM narrator_takes t
+      JOIN narrator_sections s ON s.id = t.section_id
+      WHERE t.id = ${takeId}
+      LIMIT 1
+    `.then(r => {
+      const row = r.rows[0];
+      if (!row) return;
+      notifyNarratorTakeComment({
+        narratorName: assignment.narrator_name || 'Narrator',
+        projectId: assignment.project_id,
+        projectTitle: assignment.project_title || 'project',
+        sectionLabel: (row.section_label as string | null) || `Section ${row.section_number}`,
+        takeNumber: row.take_number as number,
+        timestampMs: comment.timestamp_ms,
+        text: comment.text,
+        isReply: !!parent_id,
+      }).catch(e => console.error('notifyNarratorTakeComment failed:', e));
+    }).catch(() => {});
+
     return NextResponse.json(comment, { status: 201 });
   } catch (err) {
     console.error('POST token take comment error:', err);

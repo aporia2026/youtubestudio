@@ -301,6 +301,163 @@ export async function notifyEditorAssigned(args: {
   return sendEmail({ to: recipient.email, subject: t.subject, html: t.html });
 }
 
+// ---------------------------------------------------------------------------
+// Inner messaging
+// ---------------------------------------------------------------------------
+
+/**
+ * 1:1 chat message arrived. Bidirectional dispatch:
+ *   - To owner: gated by `on_message` notification setting toggle.
+ *   - To collaborator: gated by their `notifications_enabled` opt-in.
+ *
+ * Either party not having an email configured gracefully no-ops.
+ */
+export async function notifyMessage(args: {
+  /** Who sent the message. */
+  fromName: string;
+  /** Who should be notified. Drives gating + the email link target. */
+  recipientRole: 'owner' | 'collaborator';
+  /** Recipient's collaborator id when role === 'collaborator'. Used to
+   *  resolve email + unsubscribe + personal_token. */
+  recipientCollaboratorId?: string;
+  /** The message text. Truncated to a reasonable length in the email. */
+  text: string;
+}) {
+  const text = args.text.length > 2000 ? args.text.slice(0, 2000) + '…' : args.text;
+
+  if (args.recipientRole === 'owner') {
+    const { email, should } = await ownerWantsEvent('on_message');
+    if (!should || !email) return;
+    const t = tpl.messageReceivedTemplate({
+      appUrl: getAppUrl(),
+      senderName: args.fromName,
+      text,
+      inboxUrl: `${getAppUrl()}/messages`,
+      audience: 'owner',
+    });
+    return sendEmail({ to: email, subject: t.subject, html: t.html });
+  }
+
+  // Recipient is a collaborator — log in-app + send email if opted in.
+  if (!args.recipientCollaboratorId) return;
+  logActivity({
+    recipientCollaboratorId: args.recipientCollaboratorId,
+    type: 'message',
+    title: `${args.fromName} sent you a message`,
+    body: text.slice(0, 200),
+  }).catch(() => {});
+  const recipient = await getCollaboratorEmailIfWantsNotifications(args.recipientCollaboratorId);
+  if (!recipient) return;
+  // Build the inbox link from the collaborator's personal_token. Without
+  // it we can't deep-link them anywhere useful — drop the email rather
+  // than send a broken CTA.
+  const { rows } = await sql`SELECT personal_token FROM collaborators WHERE id = ${args.recipientCollaboratorId}`;
+  const personalToken = rows[0]?.personal_token as string | undefined;
+  if (!personalToken) return;
+  const t = tpl.messageReceivedTemplate({
+    appUrl: getAppUrl(),
+    senderName: args.fromName,
+    text,
+    inboxUrl: `${getAppUrl()}/inbox/${personalToken}`,
+    audience: 'collaborator',
+    unsubscribeUrl: buildUnsubscribeUrl(recipient.unsubscribeToken),
+  });
+  return sendEmail({ to: recipient.email, subject: t.subject, html: t.html });
+}
+
+/**
+ * Owner posted a Frame.io-style timestamped comment on a narrator's take.
+ * Fires:
+ *   - In-app feed entry on the narrator's bell.
+ *   - Email to the narrator (gated by their `notifications_enabled` opt-in).
+ * Doesn't fire when the comment is the narrator commenting on their own
+ * take — only owner→narrator goes here.
+ */
+export async function notifyOwnerTakeComment(args: {
+  narratorId: string;
+  narratorPersonalToken?: string | null;
+  narratorShareToken?: string | null;
+  ownerName: string;
+  projectId?: string | null;
+  projectTitle: string;
+  sectionLabel: string;
+  takeNumber: number;
+  timestampMs: number;
+  endTimestampMs?: number | null;
+  text: string;
+}) {
+  // Prefer the assignment-specific share_token for the email link (drops
+  // them into the right project). Fall back to the personal dashboard if
+  // the share_token isn't available for some reason.
+  const portalPath = args.narratorShareToken
+    ? `/narrate/${args.narratorShareToken}`
+    : args.narratorPersonalToken
+      ? `/narrator/${args.narratorPersonalToken}`
+      : null;
+
+  logActivity({
+    recipientCollaboratorId: args.narratorId,
+    type: 'review_comment',
+    title: `${args.ownerName} left feedback on ${args.projectTitle}`,
+    body: args.text.slice(0, 200),
+    projectId: args.projectId ?? undefined,
+    linkPath: portalPath ?? undefined,
+    metadata: {
+      sectionLabel: args.sectionLabel,
+      takeNumber: args.takeNumber,
+      timestampMs: args.timestampMs,
+      endTimestampMs: args.endTimestampMs ?? null,
+    },
+  }).catch(() => {});
+
+  const recipient = await getCollaboratorEmailIfWantsNotifications(args.narratorId);
+  if (!recipient || !portalPath) return;
+  const t = tpl.ownerTakeCommentTemplate({
+    appUrl: getAppUrl(),
+    ownerName: args.ownerName,
+    projectTitle: args.projectTitle,
+    sectionLabel: args.sectionLabel,
+    takeNumber: args.takeNumber,
+    timestampMs: args.timestampMs,
+    endTimestampMs: args.endTimestampMs ?? null,
+    isRange: typeof args.endTimestampMs === 'number' && args.endTimestampMs > args.timestampMs,
+    text: args.text,
+    portalUrl: `${getAppUrl()}${portalPath}`,
+    unsubscribeUrl: buildUnsubscribeUrl(recipient.unsubscribeToken),
+  });
+  return sendEmail({ to: recipient.email, subject: t.subject, html: t.html });
+}
+
+/**
+ * Narrator replied to or posted a Frame.io-style comment on a take.
+ * Notifies the owner — gated by the `on_narrator_take_comment` toggle.
+ */
+export async function notifyNarratorTakeComment(args: {
+  narratorName: string;
+  projectId: string;
+  projectTitle: string;
+  sectionLabel: string;
+  takeNumber: number;
+  timestampMs: number;
+  text: string;
+  isReply: boolean;
+}) {
+  const { email, should } = await ownerWantsEvent('on_narrator_take_comment');
+  if (!should || !email) return;
+  const t = tpl.narratorTakeCommentTemplate({
+    appUrl: getAppUrl(),
+    narratorName: args.narratorName,
+    projectTitle: args.projectTitle,
+    sectionLabel: args.sectionLabel,
+    takeNumber: args.takeNumber,
+    timestampMs: args.timestampMs,
+    text: args.text,
+    isReply: args.isReply,
+    manageUrl: `${getAppUrl()}/projects/${args.projectId}`,
+  });
+  return sendEmail({ to: email, subject: t.subject, html: t.html });
+}
+
 export async function notifyAssignmentReceived(args: {
   narratorId: string;
   narratorName: string;

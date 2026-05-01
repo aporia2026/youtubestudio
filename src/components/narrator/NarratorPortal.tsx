@@ -1036,6 +1036,14 @@ export function NarratorPortal({ token }: { token: string }) {
                                         role: 'narrator',
                                       }}
                                       canDeleteAny={false}
+                                      // After fix → re-record → upload, all
+                                      // without scrolling away from the
+                                      // feedback. The handler is reused from
+                                      // the section-level upload path so
+                                      // section status / take_number / R2
+                                      // bookkeeping all stay consistent.
+                                      onUploadNewTake={(file) => handleUpload(section.id, file)}
+                                      uploadingNewTake={uploading === section.id}
                                     />
                                   </div>
                                 </div>
@@ -1302,6 +1310,9 @@ function FullNarrationCard({
           <div className="pt-3">
             <TakeReview
               takeId={assignment.full_audio_take_id}
+              onUploadNewTake={onUpload}
+              uploadingNewTake={uploading}
+              uploadButtonLabel="Replace full narration with fixes"
               audioUrl={`/api/narrate/${token}/takes/${assignment.full_audio_take_id}/audio`}
               scriptText={scriptText}
               initialDurationMs={assignment.full_audio_duration_seconds ? assignment.full_audio_duration_seconds * 1000 : null}

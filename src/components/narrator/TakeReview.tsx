@@ -44,6 +44,18 @@ interface TakeReviewProps {
   compactHeader?: boolean;
   /** Token-side narrators can only delete their own comments; owner can delete any. */
   canDeleteAny: boolean;
+  /** Optional re-record callback. When provided, renders a prominent
+   *  "Upload new take with fixes" CTA inside the panel so the narrator
+   *  can read feedback → mark resolved → upload — without leaving the
+   *  review surface. The wrapping component (NarratorPortal) supplies
+   *  the right handler for either per-section or full-audio context. */
+  onUploadNewTake?: (file: File) => Promise<void>;
+  /** True while a parent-driven upload is in flight; gates the button. */
+  uploadingNewTake?: boolean;
+  /** Optional copy override for the upload button — defaults to
+   *  "Upload new take with fixes" but full-audio context wants
+   *  "Replace full narration with fixes". */
+  uploadButtonLabel?: string;
 }
 
 type Filter = 'all' | 'unresolved' | 'resolved';
@@ -78,6 +90,7 @@ function timeAgo(dateStr: string) {
  */
 export function TakeReview({
   takeId, audioUrl, scriptText, initialDurationMs, listUrl, itemUrl, author, compactHeader, canDeleteAny,
+  onUploadNewTake, uploadingNewTake, uploadButtonLabel,
 }: TakeReviewProps) {
   const playerRef = useRef<WaveformPlayerHandle>(null);
   const [comments, setComments] = useState<TakeComment[]>([]);
@@ -325,6 +338,81 @@ export function TakeReview({
         </div>
       </div>
 
+      {/* Re-record CTA — only rendered when a parent supplies the upload
+          handler (narrator-side does, owner-side doesn't). Sits at the top
+          of the comment block so the narrator sees the call-to-action
+          immediately after reading feedback. Disabled while another
+          upload is in flight. */}
+      {onUploadNewTake && (
+        <label
+          className="flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-colors"
+          style={{
+            background: uploadingNewTake ? 'rgba(34,197,94,0.08)' : 'rgba(34,197,94,0.12)',
+            border: '1px solid rgba(34,197,94,0.4)',
+            opacity: uploadingNewTake ? 0.7 : 1,
+            cursor: uploadingNewTake ? 'wait' : 'pointer',
+          }}
+        >
+          <input
+            type="file"
+            accept="audio/*"
+            className="hidden"
+            disabled={uploadingNewTake}
+            onChange={async e => {
+              const f = e.target.files?.[0];
+              e.target.value = '';
+              if (f && onUploadNewTake) {
+                try { await onUploadNewTake(f); } catch {}
+              }
+            }}
+          />
+          {uploadingNewTake ? (
+            <>
+              <span
+                className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin shrink-0"
+                style={{ borderColor: '#22c55e', borderTopColor: 'transparent' }}
+              />
+              <span className="text-xs font-medium" style={{ color: '#22c55e' }}>Uploading…</span>
+            </>
+          ) : (
+            <>
+              <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0" style={{ background: 'rgba(34,197,94,0.18)' }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-semibold" style={{ color: '#22c55e' }}>
+                  {uploadButtonLabel || 'Upload new take with fixes'}
+                </p>
+                <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  After re-recording, drop the file here. The owner sees the new take alongside this one.
+                </p>
+              </div>
+            </>
+          )}
+        </label>
+      )}
+
+      {/* Workflow hint — visible to the narrator only, and only when there's
+          unresolved owner feedback. Tells them how to close out items as they
+          fix them. Disappears once everything's resolved (or on owner side). */}
+      {author.role === 'narrator' && comments.some(c => !c.parent_id && !c.resolved && c.author_role === 'owner') && (
+        <div
+          className="px-3 py-2 rounded-lg text-[11px] flex items-center gap-2"
+          style={{ background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.25)', color: 'var(--text-secondary)' }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" className="shrink-0">
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+          <span>
+            Click <strong style={{ color: '#22c55e' }}>“Mark as fixed”</strong> on each comment after you've addressed it. The owner sees what you've resolved and what's still pending.
+          </span>
+        </div>
+      )}
+
       {/* Comment list */}
       <div ref={listRef} className="space-y-2 max-h-72 overflow-y-auto">
         {loadingComments ? (
@@ -341,6 +429,7 @@ export function TakeReview({
               <div key={c.id} data-comment-id={c.id}>
                 <CommentRow
                   c={c}
+                  viewerRole={author.role}
                   highlighted={highlightedId === c.id}
                   onSeek={() => handleMarkerClick(c.id, c.timestamp_ms)}
                   onResolve={() => toggleResolved(c.id, !c.resolved)}
@@ -358,6 +447,7 @@ export function TakeReview({
                   <div key={r.id} className="ml-4 mt-1" data-comment-id={r.id}>
                     <CommentRow
                       c={r}
+                      viewerRole={author.role}
                       isReply
                       highlighted={highlightedId === r.id}
                       onSeek={() => {}}
@@ -462,9 +552,12 @@ export function TakeReview({
 }
 
 function CommentRow({
-  c, highlighted, isReply, onSeek, onResolve, onReply, onDelete,
+  c, viewerRole, highlighted, isReply, onSeek, onResolve, onReply, onDelete,
 }: {
   c: TakeComment;
+  /** Drives the resolve-button copy + tone. Narrators see "Mark as fixed"
+   *  framing on owner-authored comments; owners see plain "Resolve". */
+  viewerRole: 'owner' | 'narrator';
   highlighted: boolean;
   isReply?: boolean;
   onSeek: () => void;
@@ -519,29 +612,52 @@ function CommentRow({
 
       <p className="text-[12px] leading-relaxed whitespace-pre-wrap" style={{ color: 'var(--text-secondary)' }}>{c.text}</p>
 
-      {!isReply && (
-        <div className="flex items-center gap-2 mt-1">
-          <button
-            onClick={onReply}
-            className="text-[10px] cursor-pointer transition-colors"
-            style={{ color: 'var(--text-muted)' }}
-          >
-            Reply
-          </button>
-          {c.resolved && c.resolved_by && (
-            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-              by {c.resolved_by}
-            </span>
-          )}
-          <button
-            onClick={onResolve}
-            className="text-[10px] flex items-center gap-1 transition-colors cursor-pointer ml-auto"
-            style={{ color: c.resolved ? '#22c55e' : 'var(--text-muted)' }}
-          >
-            {c.resolved ? '✓ Resolved' : '○ Resolve'}
-          </button>
-        </div>
-      )}
+      {!isReply && (() => {
+        // The narrator's mental model is "I fixed it" — frame the action
+        // that way, with green tinting, so it doesn't read as "owner-only
+        // closing your own ticket". Owners see plain "Resolve".
+        const isFix = viewerRole === 'narrator' && c.author_role === 'owner';
+        const resolveLabel = c.resolved
+          ? (isFix ? '✓ Marked as fixed' : '✓ Resolved')
+          : (isFix ? '✓ Mark as fixed' : '○ Resolve');
+        const resolveTitle = c.resolved
+          ? 'Click to re-open'
+          : (isFix ? 'You addressed this — click to mark it fixed' : 'Mark this comment resolved');
+        return (
+          <div className="flex items-center gap-2 mt-2">
+            <button
+              onClick={onReply}
+              className="text-[11px] px-2 py-1 rounded cursor-pointer transition-colors"
+              style={{ color: 'var(--text-muted)', background: 'transparent', border: '1px solid transparent' }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.04)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+            >
+              ↩ Reply
+            </button>
+            {c.resolved && c.resolved_by && (
+              <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                by {c.resolved_by}
+              </span>
+            )}
+            <button
+              onClick={onResolve}
+              className="text-[11px] px-2.5 py-1 rounded font-medium cursor-pointer transition-colors ml-auto"
+              style={{
+                color: c.resolved ? '#22c55e' : (isFix ? '#22c55e' : '#a78bfa'),
+                background: c.resolved
+                  ? 'rgba(34,197,94,0.10)'
+                  : isFix ? 'rgba(34,197,94,0.12)' : 'rgba(124,58,237,0.10)',
+                border: `1px solid ${c.resolved
+                  ? 'rgba(34,197,94,0.25)'
+                  : isFix ? 'rgba(34,197,94,0.4)' : 'rgba(124,58,237,0.3)'}`,
+              }}
+              title={resolveTitle}
+            >
+              {resolveLabel}
+            </button>
+          </div>
+        );
+      })()}
     </div>
   );
 }
