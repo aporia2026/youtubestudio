@@ -730,6 +730,54 @@ export async function getTakeCommentsForAssignment(assignmentId: string) {
   return rows as NarrationTakeComment[];
 }
 
+export interface TakeCommentCounts {
+  /** Top-level comments only (replies excluded — they're shown nested in the panel). */
+  comment_count: number;
+  /** Top-level + unresolved. Drives the red "feedback waiting" badge. */
+  unresolved_count: number;
+  /** True when at least one comment on this take was authored by the owner.
+   *  Distinguishes "narrator left themselves a note" from "owner left feedback I need to address". */
+  has_owner_feedback: boolean;
+  /** True when at least one UNRESOLVED comment on this take was authored by
+   *  the owner — the narrator's call-to-action signal. */
+  has_unresolved_owner_feedback: boolean;
+}
+
+/**
+ * Bulk-fetch per-take comment counts for every take under an assignment.
+ * Returns a `takeId → counts` map. Single GROUP BY query so we don't fan
+ * out N requests for an assignment with N takes. Used by the narrate +
+ * narrator-assignment GET responses to enrich each take with the badges
+ * the UI needs to surface "feedback is waiting" without expanding every
+ * review panel.
+ */
+export async function getTakeCommentCountsForAssignment(assignmentId: string): Promise<Record<string, TakeCommentCounts>> {
+  await ensureNarratorSchema();
+  const { rows } = await sql`
+    SELECT
+      c.take_id,
+      COUNT(*) FILTER (WHERE c.parent_id IS NULL)::int AS comment_count,
+      COUNT(*) FILTER (WHERE c.parent_id IS NULL AND c.resolved = false)::int AS unresolved_count,
+      BOOL_OR(c.author_role = 'owner') AS has_owner_feedback,
+      BOOL_OR(c.author_role = 'owner' AND c.resolved = false) AS has_unresolved_owner_feedback
+    FROM narration_take_comments c
+    JOIN narrator_takes t ON t.id = c.take_id
+    JOIN narrator_sections s ON s.id = t.section_id
+    WHERE s.assignment_id = ${assignmentId}
+    GROUP BY c.take_id
+  `;
+  const out: Record<string, TakeCommentCounts> = {};
+  for (const r of rows) {
+    out[r.take_id as string] = {
+      comment_count: r.comment_count as number,
+      unresolved_count: r.unresolved_count as number,
+      has_owner_feedback: !!r.has_owner_feedback,
+      has_unresolved_owner_feedback: !!r.has_unresolved_owner_feedback,
+    };
+  }
+  return out;
+}
+
 export async function resolveTakeComment(commentId: string, resolvedBy: string) {
   await ensureNarratorSchema();
   const { rows } = await sql`

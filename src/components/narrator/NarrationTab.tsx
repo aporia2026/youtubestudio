@@ -20,6 +20,9 @@ interface Assignment {
   full_audio_take_id?: string | null;
   full_audio_url?: string | null;
   full_audio_duration_seconds?: number | null;
+  full_audio_comment_count?: number;
+  full_audio_unresolved_count?: number;
+  full_audio_has_unresolved_owner_feedback?: boolean;
 }
 
 interface Take {
@@ -31,6 +34,11 @@ interface Take {
   owner_notes: string | null;
   rating: number | null;
   is_selected: boolean;
+  /** Per-take comment counts embedded by the GET route. */
+  comment_count?: number;
+  unresolved_count?: number;
+  has_owner_feedback?: boolean;
+  has_unresolved_owner_feedback?: boolean;
 }
 
 interface Section {
@@ -261,7 +269,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
             </div>
             <button
               onClick={() => setReviewingTakeId(reviewingTakeId === activeAssignment.full_audio_take_id ? null : (activeAssignment.full_audio_take_id || null))}
-              className="text-[10px] px-2 py-0.5 rounded transition-colors cursor-pointer"
+              className="text-[10px] px-2 py-0.5 rounded transition-colors cursor-pointer flex items-center gap-1.5"
               style={{
                 background: reviewingTakeId === activeAssignment.full_audio_take_id ? 'rgba(124,58,237,0.25)' : 'rgba(124,58,237,0.1)',
                 color: '#a78bfa',
@@ -269,6 +277,14 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
               }}
             >
               {reviewingTakeId === activeAssignment.full_audio_take_id ? '▾ Hide review' : '▸ Review & comment'}
+              {reviewingTakeId !== activeAssignment.full_audio_take_id && (activeAssignment.full_audio_unresolved_count ?? 0) > 0 && (
+                <span
+                  className="text-[9px] px-1 py-0.5 rounded-full font-bold"
+                  style={{ background: 'rgba(167,139,250,0.5)', color: '#fff', minWidth: 14, textAlign: 'center' }}
+                >
+                  {activeAssignment.full_audio_unresolved_count}
+                </span>
+              )}
             </button>
           </div>
           {reviewingTakeId === activeAssignment.full_audio_take_id ? (
@@ -327,15 +343,28 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
                           </div>
                           <button
                             onClick={() => setReviewingTakeId(reviewing ? null : take.id)}
-                            className="text-[10px] px-2 py-0.5 rounded transition-colors cursor-pointer"
+                            className="text-[10px] px-2 py-0.5 rounded transition-colors cursor-pointer flex items-center gap-1.5"
                             style={{
                               background: reviewing ? 'rgba(124,58,237,0.25)' : 'rgba(124,58,237,0.1)',
                               color: '#a78bfa',
                               border: '1px solid rgba(124,58,237,0.3)',
                             }}
-                            title={reviewing ? 'Close review panel' : 'Open Frame.io-style review with timestamped comments'}
+                            title={reviewing ? 'Close review panel' : `Open the timestamped review${(take.unresolved_count ?? 0) > 0 ? ` — ${take.unresolved_count} unresolved` : ''}`}
                           >
                             {reviewing ? '▾ Hide review' : '▸ Review & comment'}
+                            {!reviewing && (take.unresolved_count ?? 0) > 0 && (
+                              <span
+                                className="text-[9px] px-1 py-0.5 rounded-full font-bold"
+                                style={{
+                                  background: 'rgba(167,139,250,0.5)',
+                                  color: '#fff',
+                                  minWidth: 14,
+                                  textAlign: 'center',
+                                }}
+                              >
+                                {take.unresolved_count}
+                              </span>
+                            )}
                           </button>
                           {section.status !== 'approved' && (
                             <button onClick={() => handleApproveSection(section.id, take.id)} className="text-[10px] px-2 py-0.5 rounded text-white cursor-pointer" style={{ background: '#22c55e' }}>Approve</button>

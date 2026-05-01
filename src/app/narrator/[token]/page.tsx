@@ -22,6 +22,11 @@ interface Assignment {
   retake_sections: number;
   pending_sections: number;
   unread_owner_comments: number;
+  /** Top-level unresolved owner-authored comments on takes within this
+   *  assignment. Drives the loud "feedback waiting" badge on the
+   *  assignment card. Different from `unread_owner_comments` (legacy
+   *  per-section chat) — Frame.io-style timestamped feedback only. */
+  unresolved_owner_take_comments: number;
   total_words: number;
 }
 
@@ -93,6 +98,9 @@ export default function NarratorDashboard({ params }: { params: Promise<{ token:
       if (a.status === 'completed' || a.status === 'approved') return false;
       if (a.retake_sections > 0) return true;
       if (a.unread_owner_comments > 0) return true;
+      // Frame.io-style timestamped feedback the narrator hasn't addressed —
+      // treat the same as a retake request for the urgent bucket.
+      if (a.unresolved_owner_take_comments > 0) return true;
       if (a.deadline && new Date(a.deadline).getTime() - now <= 1000 * 60 * 60 * 24 * 3) return true;
       return false;
     });
@@ -415,11 +423,20 @@ function KanbanCard({ a }: { a: Assignment }) {
             </span>
           )}
         </div>
-        {(a.retake_sections > 0 || a.unread_owner_comments > 0) && (
+        {(a.retake_sections > 0 || a.unread_owner_comments > 0 || a.unresolved_owner_take_comments > 0) && (
           <div className="flex items-center gap-1 mt-1.5 flex-wrap">
             {a.retake_sections > 0 && (
               <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium" style={{ background: 'rgba(239,68,68,0.18)', color: '#ef4444' }}>
                 🔁 {a.retake_sections}
+              </span>
+            )}
+            {a.unresolved_owner_take_comments > 0 && (
+              <span
+                className="text-[9px] px-1.5 py-0.5 rounded-full font-medium"
+                style={{ background: 'rgba(239,68,68,0.18)', color: '#fca5a5' }}
+                title={`${a.unresolved_owner_take_comments} unresolved owner ${a.unresolved_owner_take_comments === 1 ? 'comment' : 'comments'} on takes`}
+              >
+                💬 {a.unresolved_owner_take_comments}
               </span>
             )}
             {a.unread_owner_comments > 0 && (
@@ -552,6 +569,15 @@ function TableRow({ a }: { a: Assignment }) {
           {a.retake_sections > 0 && (
             <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium" style={{ background: 'rgba(239,68,68,0.18)', color: '#ef4444' }}>
               🔁 {a.retake_sections}
+            </span>
+          )}
+          {a.unresolved_owner_take_comments > 0 && (
+            <span
+              className="text-[9px] px-1.5 py-0.5 rounded-full font-medium"
+              style={{ background: 'rgba(239,68,68,0.18)', color: '#fca5a5' }}
+              title={`${a.unresolved_owner_take_comments} unresolved owner ${a.unresolved_owner_take_comments === 1 ? 'comment' : 'comments'} on takes`}
+            >
+              💬 {a.unresolved_owner_take_comments}
             </span>
           )}
           {a.unread_owner_comments > 0 && (

@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
-import { getAssignmentByToken, getSectionsForAssignment, getCommentsForAssignment, resyncAssignmentSectionsIfStale } from '@/lib/narrator-db';
+import {
+  getAssignmentByToken,
+  getSectionsForAssignment,
+  getCommentsForAssignment,
+  resyncAssignmentSectionsIfStale,
+  getTakeCommentCountsForAssignment,
+} from '@/lib/narrator-db';
 import { getNarrationDownloadUrl } from '@/lib/r2';
 
 interface TakeRow {
@@ -50,13 +56,38 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
     const comments = await getCommentsForAssignment(assignment.id);
     const sectionsWithFreshUrls = await refreshTakeUrls(sections as SectionRow[]);
 
+    // Embed per-take comment counts so the narrator's UI can show a
+    // "feedback waiting" badge without N extra fetches. Drives the red
+    // dot on the Review button + the top-of-page "X takes have feedback"
+    // banner. Cheap: single GROUP BY across the assignment's comments.
+    const takeCounts = await getTakeCommentCountsForAssignment(assignment.id);
+    const sectionsWithCounts = sectionsWithFreshUrls.map(section => ({
+      ...section,
+      takes: section.takes
+        ? section.takes.map((t: TakeRow) => ({
+            ...t,
+            ...(takeCounts[t.id] || { comment_count: 0, unresolved_count: 0, has_owner_feedback: false, has_unresolved_owner_feedback: false }),
+          }))
+        : section.takes,
+    }));
+
     // Refresh the full-audio presigned URL so the player doesn't fail mid-session.
-    const a = assignment as { full_audio_r2_key?: string | null; full_audio_url?: string | null; [key: string]: unknown };
+    const a = assignment as { full_audio_r2_key?: string | null; full_audio_url?: string | null; full_audio_take_id?: string | null; [key: string]: unknown };
     if (a.full_audio_r2_key) {
       try { a.full_audio_url = await getNarrationDownloadUrl(a.full_audio_r2_key); } catch {}
     }
+    // Also surface counts at the assignment level for the full-audio take —
+    // it lives in section 0 so it isn't included in the `sections` array
+    // the client iterates for per-section badges.
+    if (a.full_audio_take_id && takeCounts[a.full_audio_take_id]) {
+      Object.assign(a, {
+        full_audio_comment_count: takeCounts[a.full_audio_take_id].comment_count,
+        full_audio_unresolved_count: takeCounts[a.full_audio_take_id].unresolved_count,
+        full_audio_has_unresolved_owner_feedback: takeCounts[a.full_audio_take_id].has_unresolved_owner_feedback,
+      });
+    }
 
-    return NextResponse.json({ assignment, sections: sectionsWithFreshUrls, comments });
+    return NextResponse.json({ assignment, sections: sectionsWithCounts, comments });
   } catch (err) {
     console.error('GET narrate/[token] error:', err);
     return NextResponse.json({ error: 'Failed to load assignment' }, { status: 500 });

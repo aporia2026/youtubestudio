@@ -26,6 +26,11 @@ interface Assignment {
   full_audio_take_id?: string | null;
   full_audio_url?: string | null;
   full_audio_duration_seconds?: number | null;
+  /** Comment counts for the full-audio take (parallel to per-take counts
+   *  but at the assignment level since section 0 isn't iterated). */
+  full_audio_comment_count?: number;
+  full_audio_unresolved_count?: number;
+  full_audio_has_unresolved_owner_feedback?: boolean;
 }
 
 interface Take {
@@ -38,6 +43,12 @@ interface Take {
   rating: number | null;
   is_selected: boolean;
   created_at: string;
+  /** Per-take Frame.io-style comment counts. Embedded by the GET route so the
+   *  narrator can see "feedback waiting" before opening the review panel. */
+  comment_count?: number;
+  unresolved_count?: number;
+  has_owner_feedback?: boolean;
+  has_unresolved_owner_feedback?: boolean;
 }
 
 interface Section {
@@ -517,6 +528,27 @@ export function NarratorPortal({ token }: { token: string }) {
   const approvedCount = realSections.filter(s => s.status === 'approved').length;
   const uploadedCount = realSections.filter(s => s.takes && s.takes.length > 0).length;
   const progress = realSections.length > 0 ? Math.round((uploadedCount / realSections.length) * 100) : 0;
+
+  // How many takes (across all real sections + the full-audio take) carry
+  // unresolved owner feedback. Drives the "feedback waiting" banner so the
+  // narrator sees the call-to-action before scrolling/expanding takes.
+  const takesWithOwnerFeedback = (() => {
+    let count = 0;
+    let unresolved = 0;
+    for (const s of realSections) {
+      for (const t of s.takes || []) {
+        if (t.has_unresolved_owner_feedback) {
+          count += 1;
+          unresolved += t.unresolved_count || 0;
+        }
+      }
+    }
+    if (assignment.full_audio_has_unresolved_owner_feedback) {
+      count += 1;
+      unresolved += assignment.full_audio_unresolved_count || 0;
+    }
+    return { takes: count, unresolved };
+  })();
   const assignmentStatus = STATUS_LABELS[assignment.status] || STATUS_LABELS.assigned;
   const totalDuration = realSections.reduce((acc, s) => acc + (s.estimated_duration_seconds || 0), 0);
   // Spoken word count — sums words in every section after stripping any
@@ -684,6 +716,56 @@ export function NarratorPortal({ token }: { token: string }) {
           </div>
         </div>
 
+        {/* Owner feedback banner — only renders when at least one take has
+            unresolved owner comments. Tells the narrator "you have work to
+            address" up-front so they don't have to expand each take to find
+            out. Clicking the banner jumps to the first take with feedback. */}
+        {takesWithOwnerFeedback.takes > 0 && (
+          <button
+            onClick={() => {
+              // Find the first take with unresolved owner feedback and
+              // expand its review panel + scroll into view.
+              if (assignment.full_audio_has_unresolved_owner_feedback && assignment.full_audio_take_id) {
+                setReviewingTakeId(assignment.full_audio_take_id);
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+                return;
+              }
+              for (const s of realSections) {
+                for (const t of s.takes || []) {
+                  if (t.has_unresolved_owner_feedback) {
+                    setExpandedSection(s.id);
+                    setReviewingTakeId(t.id);
+                    setTimeout(() => {
+                      const el = document.querySelector(`[data-section-id="${s.id}"]`);
+                      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }, 50);
+                    return;
+                  }
+                }
+              }
+            }}
+            className="w-full mb-5 p-3 rounded-lg flex items-center gap-3 transition-colors cursor-pointer text-left"
+            style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)' }}
+            title="Click to open the first take with unresolved feedback"
+          >
+            <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: 'rgba(239,68,68,0.2)' }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fca5a5" strokeWidth="2">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold" style={{ color: '#fca5a5' }}>
+                {takesWithOwnerFeedback.unresolved} unresolved {takesWithOwnerFeedback.unresolved === 1 ? 'comment' : 'comments'} from the owner
+                {' '}— across {takesWithOwnerFeedback.takes} {takesWithOwnerFeedback.takes === 1 ? 'take' : 'takes'}
+              </p>
+              <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                Click to jump to the first one. Open each take's Review panel to address feedback and reply.
+              </p>
+            </div>
+            <span className="text-[11px] shrink-0" style={{ color: '#fca5a5' }}>→</span>
+          </button>
+        )}
+
         {/* Director's general notes */}
         {assignment.director_notes && (
           <div className="mb-5 p-3 rounded-lg" style={{ background: 'rgba(6,182,212,0.08)', border: '1px solid rgba(6,182,212,0.2)' }}>
@@ -792,7 +874,7 @@ export function NarratorPortal({ token }: { token: string }) {
             const sectionComments = comments.filter(c => c.section_id === section.id);
 
             return (
-              <div key={section.id} className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+              <div key={section.id} data-section-id={section.id} className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
                 {/* Section header */}
                 <button
                   onClick={() => { setExpandedSection(isExpanded ? null : section.id); setCommentText(''); }}
@@ -808,6 +890,27 @@ export function NarratorPortal({ token }: { token: string }) {
                       {section.takes && section.takes.length > 0 && ` — ${section.takes.length} take${section.takes.length > 1 ? 's' : ''}`}
                     </p>
                   </div>
+                  {/* Section-level feedback badge — sums unresolved owner
+                      comments across this section's takes. Red when there's
+                      anything to address, dimmer when only narrator-authored
+                      threads exist. */}
+                  {(() => {
+                    const sectionUnresolvedOwner = (section.takes || []).reduce((acc, t) => acc + (t.has_unresolved_owner_feedback ? (t.unresolved_count || 0) : 0), 0);
+                    const sectionUnresolvedTotal = (section.takes || []).reduce((acc, t) => acc + (t.unresolved_count || 0), 0);
+                    if (sectionUnresolvedTotal === 0) return null;
+                    return (
+                      <span
+                        className="text-[10px] px-2 py-0.5 rounded-full font-medium shrink-0 flex items-center gap-1"
+                        style={{
+                          background: sectionUnresolvedOwner > 0 ? 'rgba(239,68,68,0.18)' : 'rgba(124,58,237,0.15)',
+                          color: sectionUnresolvedOwner > 0 ? '#fca5a5' : '#a78bfa',
+                        }}
+                        title={sectionUnresolvedOwner > 0 ? 'Owner left feedback to address' : 'Open comments on this section'}
+                      >
+                        💬 {sectionUnresolvedTotal}
+                      </span>
+                    );
+                  })()}
                   <span className="text-[10px] px-2 py-0.5 rounded-full font-medium shrink-0" style={{ background: `${sectionStatus.color}22`, color: sectionStatus.color }}>
                     {sectionStatus.label}
                   </span>
@@ -874,15 +977,37 @@ export function NarratorPortal({ token }: { token: string }) {
                                   </div>
                                   <button
                                     onClick={() => setReviewingTakeId(reviewing ? null : take.id)}
-                                    className="text-[10px] px-2 py-0.5 rounded transition-colors cursor-pointer shrink-0"
+                                    className="text-[10px] px-2 py-0.5 rounded transition-colors cursor-pointer shrink-0 flex items-center gap-1.5"
                                     style={{
-                                      background: reviewing ? 'rgba(124,58,237,0.25)' : 'rgba(124,58,237,0.1)',
-                                      color: '#a78bfa',
-                                      border: '1px solid rgba(124,58,237,0.3)',
+                                      // Loud red when the owner has left
+                                      // unresolved feedback the narrator
+                                      // hasn't addressed — signals "act on
+                                      // this" without making them open every
+                                      // panel to find out.
+                                      background: take.has_unresolved_owner_feedback
+                                        ? 'rgba(239,68,68,0.18)'
+                                        : reviewing ? 'rgba(124,58,237,0.25)' : 'rgba(124,58,237,0.1)',
+                                      color: take.has_unresolved_owner_feedback ? '#fca5a5' : '#a78bfa',
+                                      border: `1px solid ${take.has_unresolved_owner_feedback ? 'rgba(239,68,68,0.4)' : 'rgba(124,58,237,0.3)'}`,
                                     }}
-                                    title={reviewing ? 'Close review' : 'See timestamped feedback from the owner and reply'}
+                                    title={take.has_unresolved_owner_feedback
+                                      ? `Owner left ${take.unresolved_count ?? 0} unresolved comment${take.unresolved_count === 1 ? '' : 's'} — open to address`
+                                      : reviewing ? 'Close review' : 'See timestamped feedback from the owner and reply'}
                                   >
                                     {reviewing ? '▾ Hide review' : '▸ Review'}
+                                    {!reviewing && (take.unresolved_count ?? 0) > 0 && (
+                                      <span
+                                        className="text-[9px] px-1 py-0.5 rounded-full font-bold"
+                                        style={{
+                                          background: take.has_unresolved_owner_feedback ? '#ef4444' : 'rgba(167,139,250,0.5)',
+                                          color: '#fff',
+                                          minWidth: 14,
+                                          textAlign: 'center',
+                                        }}
+                                      >
+                                        {take.unresolved_count}
+                                      </span>
+                                    )}
                                   </button>
                                 </div>
                                 {take.owner_notes && (
@@ -1120,10 +1245,32 @@ function FullNarrationCard({
           <>
             <button
               onClick={onToggleReview}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer"
-              style={{ background: reviewing ? 'rgba(124,58,237,0.25)' : 'rgba(124,58,237,0.15)', color: '#a78bfa', border: '1px solid rgba(124,58,237,0.3)' }}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer flex items-center gap-2"
+              style={{
+                background: assignment.full_audio_has_unresolved_owner_feedback
+                  ? 'rgba(239,68,68,0.18)'
+                  : reviewing ? 'rgba(124,58,237,0.25)' : 'rgba(124,58,237,0.15)',
+                color: assignment.full_audio_has_unresolved_owner_feedback ? '#fca5a5' : '#a78bfa',
+                border: `1px solid ${assignment.full_audio_has_unresolved_owner_feedback ? 'rgba(239,68,68,0.4)' : 'rgba(124,58,237,0.3)'}`,
+              }}
+              title={assignment.full_audio_has_unresolved_owner_feedback
+                ? `Owner left ${assignment.full_audio_unresolved_count ?? 0} unresolved comment${assignment.full_audio_unresolved_count === 1 ? '' : 's'}`
+                : reviewing ? 'Close review' : 'Open the review panel'}
             >
               {reviewing ? '▾ Hide review' : '▸ Review & comments'}
+              {!reviewing && (assignment.full_audio_unresolved_count ?? 0) > 0 && (
+                <span
+                  className="text-[10px] px-1 py-0.5 rounded-full font-bold"
+                  style={{
+                    background: assignment.full_audio_has_unresolved_owner_feedback ? '#ef4444' : 'rgba(167,139,250,0.5)',
+                    color: '#fff',
+                    minWidth: 16,
+                    textAlign: 'center',
+                  }}
+                >
+                  {assignment.full_audio_unresolved_count}
+                </span>
+              )}
             </button>
             <label className="px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }}>
               <input

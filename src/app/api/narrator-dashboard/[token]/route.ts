@@ -32,7 +32,21 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
         (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id AND s.section_number != 0 AND s.status = 'submitted') AS submitted_sections,
         (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id AND s.section_number != 0 AND s.status = 'retake') AS retake_sections,
         (SELECT COUNT(*)::int FROM narrator_sections s WHERE s.assignment_id = a.id AND s.section_number != 0 AND s.status = 'pending') AS pending_sections,
-        (SELECT COUNT(*)::int FROM narrator_comments c WHERE c.assignment_id = a.id AND c.author_role = 'owner' AND c.created_at > a.last_accessed_at) AS unread_owner_comments
+        (SELECT COUNT(*)::int FROM narrator_comments c WHERE c.assignment_id = a.id AND c.author_role = 'owner' AND c.created_at > a.last_accessed_at) AS unread_owner_comments,
+        -- Per-take Frame.io-style feedback that the narrator hasn't
+        -- resolved yet. Drives the "feedback waiting" badge on the
+        -- assignment card so the narrator sees the call-to-action
+        -- without opening the assignment.
+        (
+          SELECT COUNT(*)::int
+          FROM narration_take_comments tc
+          JOIN narrator_takes t ON t.id = tc.take_id
+          JOIN narrator_sections s ON s.id = t.section_id
+          WHERE s.assignment_id = a.id
+            AND tc.author_role = 'owner'
+            AND tc.parent_id IS NULL
+            AND tc.resolved = false
+        ) AS unresolved_owner_take_comments
       FROM narrator_assignments a
       LEFT JOIN projects p ON p.id = a.project_id
       WHERE a.narrator_id = ${narrator.id}
