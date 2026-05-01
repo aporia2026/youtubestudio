@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateText, generateTextStream, getModelById } from '@/lib/ai';
 import { scriptGenerationPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { getSession } from '@/lib/session';
+import { resolveBrandKitForRequest } from '@/lib/channel-brand-kit';
 
 export const maxDuration = 120;
 
@@ -15,7 +17,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext, previousScripts, seriesContext, constraints } = await req.json();
+    const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext, previousScripts, seriesContext, constraints, channelId } = await req.json();
 
     if (!topic || !niche) {
       return NextResponse.json({ error: 'topic and niche are required' }, { status: 400 });
@@ -23,6 +25,19 @@ export async function POST(req: NextRequest) {
 
     const model = getModelById(modelId);
     if (!model) return NextResponse.json({ error: 'Invalid model' }, { status: 400 });
+
+    // Resolve the channel brand kit:
+    //   - explicit body.channelId wins, then the user's pinned active channel.
+    //   - failure modes (no session, no active channel, channel deleted, kit
+    //     malformed) all silently produce null and skip the kit injection —
+    //     never break script generation because of brand-kit plumbing.
+    const session = await getSession();
+    const brandKit = session
+      ? await resolveBrandKitForRequest(
+          session,
+          typeof channelId === 'string' ? channelId : undefined,
+        )
+      : null;
 
     // Fold recent scripts into additionalContext so the LLM avoids repeating
     // its own prior hooks/angles for this user. Matches the same mechanism
@@ -52,6 +67,7 @@ export async function POST(req: NextRequest) {
       additionalContext,
       referenceContext,
       constraints,
+      brandKit,
     });
 
     // Stream response.

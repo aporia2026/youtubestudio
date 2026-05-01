@@ -1,5 +1,6 @@
 // All AI prompts for the YouTube Studio system
 import { buildConstraintsPromptBlock, buildQAConstraintsPromptBlock, type ScriptConstraints } from './script-options';
+import { buildBrandKitPromptBlock, type ChannelBrandKit } from './channel-brand-kit';
 
 export function scriptGenerationPrompt({
   topic,
@@ -11,6 +12,7 @@ export function scriptGenerationPrompt({
   additionalContext,
   referenceContext,
   constraints,
+  brandKit,
 }: {
   topic: string;
   niche: string;
@@ -21,6 +23,10 @@ export function scriptGenerationPrompt({
   additionalContext?: string;
   referenceContext?: string;
   constraints?: ScriptConstraints;
+  /** Per-channel brand kit. When present, its directives override the
+   *  generic style guidance further down in the prompt. Pass `null` (or
+   *  omit) when no channel is active or its kit is empty. */
+  brandKit?: ChannelBrandKit | null;
 }): { system: string; user: string } {
   const wordsPerMinute = 140;
   const targetWords = targetDurationMinutes * wordsPerMinute;
@@ -58,6 +64,7 @@ export function scriptGenerationPrompt({
 - End with implications for the viewer's own life`,
   };
   const styleNote = styleInstructions[style || ''] || '';
+  const brandKitBlock = buildBrandKitPromptBlock(brandKit);
 
   return {
     system: `You are the world's top YouTube scriptwriter. You've written scripts for 50M+ subscriber channels. Every script you produce is IMMEDIATELY publish-ready — no QA pass needed.
@@ -100,7 +107,7 @@ You specialize in the "${niche}" niche. Your scripts consistently score 85+ on b
 - Every section must end with a reason to keep watching
 - CTAs should feel organic, not bolted on
 - The outro should connect back to the hook — create a satisfying loop
-- Leave the viewer with ONE powerful thought they'll remember`,
+- Leave the viewer with ONE powerful thought they'll remember${brandKitBlock}`,
 
     user: `Write a complete, publish-ready YouTube script that would score 85+ on a Nuclear QA review.
 
@@ -162,6 +169,7 @@ export function scriptQAPrompt({
   aggressiveness,
   constraints,
   additionalContext,
+  brandKit,
 }: {
   script: string;
   passNumber: number;
@@ -175,6 +183,10 @@ export function scriptQAPrompt({
    *  direct, flag every passive sentence") on top of the aggressiveness
    *  setting. Skipped when empty. */
   additionalContext?: string;
+  /** Per-channel brand kit. When present, the reviewer flags violations
+   *  (banned-phrase use, off-tone passages, missing required phrases) on
+   *  top of the standard QA criteria. */
+  brandKit?: ChannelBrandKit | null;
 }): { system: string; user: string } {
   const aggressivenessInstructions = {
     standard: 'Be thorough and constructive. Point out all issues clearly.',
@@ -208,10 +220,15 @@ CRITICAL QA CRITERIA YOU MUST ALWAYS CHECK:
    Are there jumps in logic? Missing explanations? Claims without backing?
    Does the ending follow from the setup?`;
 
+  const brandKitBlock = buildBrandKitPromptBlock(brandKit);
+  const brandKitReviewerNote = brandKitBlock
+    ? `\n\n5. **Channel Brand Kit Compliance**: The author has supplied a brand kit (below). Flag every violation as a critical issue: any banned phrase used verbatim, any required phrase missing, any tone/sentence-length deviation from the kit, any topics_to_avoid present, any topics_to_emphasize ignored. Quote the offending passage exactly.${brandKitBlock}`
+    : '';
+
   return {
     system: `You are a world-class YouTube content strategist and script analyst. You have deep expertise in the "${niche}" niche. ${aggressivenessInstructions[aggressiveness]}
 
-${humanAuthenticityNote}
+${humanAuthenticityNote}${brandKitReviewerNote}
 
 Your analysis must always be actionable — for every problem you find, provide a specific fix.`,
 

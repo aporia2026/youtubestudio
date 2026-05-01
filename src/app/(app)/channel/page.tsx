@@ -499,6 +499,13 @@ export default function ChannelPage() {
                           >
                             📊 Analyze
                           </button>
+                          <a
+                            href={`/channel/${channel.id}/brand-kit`}
+                            className="btn-secondary text-sm"
+                            title="Voice / tone / banned-phrase guidance auto-piped into script generation when this channel is active"
+                          >
+                            🎨 Brand kit
+                          </a>
                           <button
                             onClick={() => deleteChannel(channel.id)}
                             className="p-2 rounded-lg text-xs transition-all"

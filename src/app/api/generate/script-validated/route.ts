@@ -3,6 +3,8 @@ import { generateText, getModelById } from '@/lib/ai';
 import { scriptGenerationPrompt, scriptQAPrompt } from '@/lib/prompts';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { getSession } from '@/lib/session';
+import { resolveBrandKitForRequest } from '@/lib/channel-brand-kit';
 
 /**
  * Self-QA'd script generation. Generates a script, runs it through the
@@ -87,11 +89,14 @@ export async function POST(req: NextRequest) {
       skipClickableLinks?: boolean;
       custom?: string[];
     };
+    /** Optional override of the active channel — if absent, the user's
+     *  pinned channel is used to resolve the brand kit. */
+    channelId?: string;
   };
   try { body = await req.json(); }
   catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }); }
 
-  const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext, previousScripts = [], seriesContext, constraints } = body;
+  const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext, previousScripts = [], seriesContext, constraints, channelId } = body;
   if (!topic || !niche) return NextResponse.json({ error: 'topic and niche are required' }, { status: 400 });
   if (!modelId) return NextResponse.json({ error: 'modelId is required' }, { status: 400 });
   const model = getModelById(modelId);
@@ -99,6 +104,13 @@ export async function POST(req: NextRequest) {
 
   const threshold = Math.max(0, Math.min(100, body.threshold ?? DEFAULT_THRESHOLD));
   const maxAttempts = Math.max(1, Math.min(5, body.maxAttempts ?? DEFAULT_MAX_ATTEMPTS));
+
+  // Resolve the active channel's brand kit once — every attempt + every QA
+  // pass uses the same kit, so we only need to fetch it once per request.
+  const session = await getSession();
+  const brandKit = session
+    ? await resolveBrandKitForRequest(session, channelId)
+    : null;
 
   // Build a prefix that warns the LLM about prior scripts to avoid
   // repeating exact hooks / openings / structure.
@@ -129,6 +141,7 @@ export async function POST(req: NextRequest) {
       additionalContext: (context || '') + (seriesBlock || dedupNote) + retryNote,
       referenceContext,
       constraints,
+      brandKit,
     });
 
     let script: string;
@@ -162,6 +175,7 @@ export async function POST(req: NextRequest) {
       previousFeedback: lastFeedback,
       aggressiveness: 'brutal',
       constraints,
+      brandKit,
     });
 
     let qa: QAResult = {};

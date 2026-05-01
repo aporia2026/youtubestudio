@@ -4,6 +4,8 @@ import { scriptQAPrompt } from '@/lib/prompts';
 import { sql } from '@/lib/db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { getTemplate } from '@/lib/templates-db';
+import { getSession } from '@/lib/session';
+import { resolveBrandKitForRequest } from '@/lib/channel-brand-kit';
 
 export const maxDuration = 300;
 
@@ -68,7 +70,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { modelId, script, niche, aggressiveness, passNumber, previousFeedback, scriptId, projectId, constraints, templateId, context } = await req.json();
+    const { modelId, script, niche, aggressiveness, passNumber, previousFeedback, scriptId, projectId, constraints, templateId, context, channelId } = await req.json();
 
     if (!script || script.length < 50) {
       return NextResponse.json({ error: 'Script too short (min 50 chars)' }, { status: 400 });
@@ -92,6 +94,16 @@ export async function POST(req: NextRequest) {
     if (typeof context === 'string' && context.trim()) ctxParts.push(`ADDITIONAL CONTEXT FOR THIS PASS:\n${context.trim()}`);
     const additionalContext = ctxParts.join('\n\n');
 
+    // Brand kit resolution — same priority as script-gen (explicit body
+     // channelId > pinned channel). Failure modes silently skip the kit.
+    const session = await getSession();
+    const brandKit = session
+      ? await resolveBrandKitForRequest(
+          session,
+          typeof channelId === 'string' ? channelId : undefined,
+        )
+      : null;
+
     const { system, user } = scriptQAPrompt({
       script,
       niche: niche || 'General',
@@ -100,6 +112,7 @@ export async function POST(req: NextRequest) {
       aggressiveness: aggressiveness || 'brutal',
       constraints,
       additionalContext: additionalContext || undefined,
+      brandKit,
     });
 
     /**
