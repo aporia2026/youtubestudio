@@ -56,6 +56,19 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {summary?.errors && summary.errors.length > 0 && (
+        <div
+          className="text-xs px-4 py-2 rounded-lg mb-3"
+          style={{
+            background: 'rgba(245,158,11,0.1)',
+            border: '1px solid rgba(245,158,11,0.3)',
+            color: '#f59e0b',
+          }}
+        >
+          Some sections couldn’t be fetched: {summary.errors.join(' · ')}
+        </div>
+      )}
+
       {summary && (
         <motion.div
           initial="hidden"

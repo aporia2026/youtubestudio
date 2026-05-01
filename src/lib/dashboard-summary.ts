@@ -109,6 +109,9 @@ export interface DashboardSummary {
   underperformers: UnderperformerItem[];
   cadence: CadenceRow[];
   generated_at: string;
+  /** Per-section error messages when a fetch failed. Surfaces in the UI
+   *  as a soft warning instead of replacing every section with an error. */
+  errors?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -287,25 +290,48 @@ export interface BuildSummaryArgs {
 /**
  * One round trip per section. Each query is workspace-scoped and (when
  * applicable) channel-scoped. Returns the assembled summary.
+ *
+ * Sections are independent — a failure in one (e.g. a missing optional
+ * column) leaves that section empty rather than blanking the whole
+ * dashboard. The `errors` field surfaces what failed so the UI can show
+ * a non-fatal hint.
  */
 export async function buildDashboardSummary(args: BuildSummaryArgs): Promise<DashboardSummary> {
   const now = args.now ?? new Date();
   const channelFilter = args.activeChannelId ?? null;
+  const errors: string[] = [];
 
   // -- Schedule rows in scope -------------------------------------------------
-  // We fetch every non-published item plus today's publishes regardless of
-  // status; pure functions then filter. Keep the SQL list minimal so the
-  // dashboard remains fast even with hundreds of items.
-  const scheduleRows = await fetchScheduleRows(args.workspaceId, channelFilter);
+  let scheduleRows: ScheduleRow[] = [];
+  try {
+    scheduleRows = await fetchScheduleRows(args.workspaceId, channelFilter);
+  } catch (e) {
+    errors.push(`schedule: ${e instanceof Error ? e.message : String(e)}`);
+  }
 
   // -- Analytics rows for the recent window ----------------------------------
-  const analyticsRows = await fetchAnalyticsRows(args.workspaceId, channelFilter);
+  let analyticsRows: AnalyticsRow[] = [];
+  try {
+    analyticsRows = await fetchAnalyticsRows(args.workspaceId, channelFilter);
+  } catch (e) {
+    errors.push(`analytics: ${e instanceof Error ? e.message : String(e)}`);
+  }
 
   // -- Channels for cadence calc ---------------------------------------------
-  const channels = await fetchChannelsList(args.workspaceId, channelFilter);
+  let channels: ChannelRow[] = [];
+  try {
+    channels = await fetchChannelsList(args.workspaceId, channelFilter);
+  } catch (e) {
+    errors.push(`channels: ${e instanceof Error ? e.message : String(e)}`);
+  }
 
   // -- Published counts in trailing 4 weeks ---------------------------------
-  const counts = await fetchPublishedCountsLast4w(args.workspaceId, channelFilter, now);
+  let counts: PublishedCountRow[] = [];
+  try {
+    counts = await fetchPublishedCountsLast4w(args.workspaceId, channelFilter, now);
+  } catch (e) {
+    errors.push(`cadence: ${e instanceof Error ? e.message : String(e)}`);
+  }
 
   return {
     today_publishes: pickTodayPublishes(scheduleRows, now),
@@ -313,6 +339,7 @@ export async function buildDashboardSummary(args: BuildSummaryArgs): Promise<Das
     underperformers: pickUnderperformers(analyticsRows, now),
     cadence: computeCadenceGap(channels, counts),
     generated_at: now.toISOString(),
+    errors: errors.length > 0 ? errors : undefined,
   };
 }
 
@@ -320,19 +347,27 @@ async function fetchScheduleRows(
   workspaceId: string,
   channelFilter: string | null,
 ): Promise<ScheduleRow[]> {
-  // LEFT JOIN to schedule_item_channels — items can have 0 channels (we
-  // surface them anyway under "no channel"); if multiple, the row appears
-  // once per channel and we'll dedupe in the pure layer if needed.
+  // Editor / narrator names live on the collaborators table — we resolve them
+  // via the FK columns (editor_collaborator_id, narrator_collaborator_id).
+  // Earlier prototypes denormalised the names onto schedule_items, but that
+  // wasn't the schema we shipped; joining is the canonical path.
+  //
+  // LEFT JOINs to schedule_item_channels keep items without a channel
+  // visible. When channelFilter is set, the channel JOIN becomes inner-join
+  // semantics so only items in that channel are returned.
   if (channelFilter) {
     const { rows } = await sql<ScheduleRow>`
       SELECT
         si.id, si.title, si.status, si.scheduled_for, si.stage_entered_at,
-        si.editor_collaborator_name, si.narrator_collaborator_name,
+        ed.name AS editor_collaborator_name,
+        na.name AS narrator_collaborator_name,
         si.youtube_url,
         c.id AS channel_id, c.name AS channel_name
       FROM schedule_items si
       JOIN schedule_item_channels sic ON sic.item_id = si.id
       JOIN channels c ON c.id = sic.channel_id
+      LEFT JOIN collaborators ed ON ed.id = si.editor_collaborator_id
+      LEFT JOIN collaborators na ON na.id = si.narrator_collaborator_id
       WHERE si.workspace_id = ${workspaceId}::uuid
         AND c.id = ${channelFilter}::uuid
     `;
@@ -341,12 +376,15 @@ async function fetchScheduleRows(
   const { rows } = await sql<ScheduleRow>`
     SELECT
       si.id, si.title, si.status, si.scheduled_for, si.stage_entered_at,
-      si.editor_collaborator_name, si.narrator_collaborator_name,
+      ed.name AS editor_collaborator_name,
+      na.name AS narrator_collaborator_name,
       si.youtube_url,
       c.id AS channel_id, c.name AS channel_name
     FROM schedule_items si
     LEFT JOIN schedule_item_channels sic ON sic.item_id = si.id
     LEFT JOIN channels c ON c.id = sic.channel_id
+    LEFT JOIN collaborators ed ON ed.id = si.editor_collaborator_id
+    LEFT JOIN collaborators na ON na.id = si.narrator_collaborator_id
     WHERE si.workspace_id = ${workspaceId}::uuid
   `;
   return rows;
