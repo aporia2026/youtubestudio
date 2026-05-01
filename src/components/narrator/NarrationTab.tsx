@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { AssignDialog } from './AssignDialog';
 import { AudioPlayer } from './AudioPlayer';
+import { TakeReview } from './TakeReview';
 
 interface Assignment {
   id: string;
@@ -60,6 +61,9 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
   const [showAssign, setShowAssign] = useState(false);
   const [activeAssignment, setActiveAssignment] = useState<Assignment | null>(null);
   const [stitching, setStitching] = useState(false);
+  // Which take is currently expanded into the Frame.io-style review panel.
+  // One at a time so the page stays manageable on long scripts.
+  const [reviewingTakeId, setReviewingTakeId] = useState<string | null>(null);
 
   useEffect(() => { loadAssignments(); }, [projectId]);
 
@@ -254,23 +258,57 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
               {/* Takes */}
               {takes.length > 0 ? (
                 <div className="space-y-2">
-                  {takes.map((take: Take) => (
-                    <div key={take.id} className="flex items-center gap-2 p-2 rounded-lg" style={{ background: 'var(--bg-primary)', border: take.id === section.approved_take_id ? '1px solid #22c55e' : '1px solid transparent' }}>
-                      <AudioPlayer src={take.audio_url} label={`Take ${take.take_number}`} compact />
-                      <div className="flex items-center gap-1">
-                        {[1, 2, 3, 4, 5].map(star => (
-                          <button key={star} onClick={() => handleRateTake(take.id, star, section.id)} className="text-xs" style={{ color: take.rating && take.rating >= star ? '#eab308' : 'var(--text-muted)' }}>
-                            {take.rating && take.rating >= star ? '★' : '☆'}
+                  {takes.map((take: Take) => {
+                    const reviewing = reviewingTakeId === take.id;
+                    return (
+                      <div key={take.id} className="rounded-lg" style={{ background: 'var(--bg-primary)', border: take.id === section.approved_take_id ? '1px solid #22c55e' : '1px solid transparent' }}>
+                        <div className="flex items-center gap-2 p-2">
+                          <AudioPlayer src={take.audio_url} label={`Take ${take.take_number}`} compact />
+                          <div className="flex items-center gap-1">
+                            {[1, 2, 3, 4, 5].map(star => (
+                              <button key={star} onClick={() => handleRateTake(take.id, star, section.id)} className="text-xs cursor-pointer" style={{ color: take.rating && take.rating >= star ? '#eab308' : 'var(--text-muted)' }}>
+                                {take.rating && take.rating >= star ? '★' : '☆'}
+                              </button>
+                            ))}
+                          </div>
+                          <button
+                            onClick={() => setReviewingTakeId(reviewing ? null : take.id)}
+                            className="text-[10px] px-2 py-0.5 rounded transition-colors cursor-pointer"
+                            style={{
+                              background: reviewing ? 'rgba(124,58,237,0.25)' : 'rgba(124,58,237,0.1)',
+                              color: '#a78bfa',
+                              border: '1px solid rgba(124,58,237,0.3)',
+                            }}
+                            title={reviewing ? 'Close review panel' : 'Open Frame.io-style review with timestamped comments'}
+                          >
+                            {reviewing ? '▾ Hide review' : '▸ Review & comment'}
                           </button>
-                        ))}
+                          {section.status !== 'approved' && (
+                            <button onClick={() => handleApproveSection(section.id, take.id)} className="text-[10px] px-2 py-0.5 rounded text-white cursor-pointer" style={{ background: '#22c55e' }}>Approve</button>
+                          )}
+                        </div>
+
+                        {reviewing && (
+                          <div className="px-3 pb-3" style={{ borderTop: '1px solid var(--border)' }}>
+                            <div className="pt-3">
+                              <TakeReview
+                                takeId={take.id}
+                                audioUrl={take.audio_url}
+                                scriptText={section.script_text}
+                                initialDurationMs={take.duration_seconds ? take.duration_seconds * 1000 : null}
+                                listUrl={`/api/narrator/takes/${take.id}/comments`}
+                                itemUrl={(id) => `/api/narrator/take-comments/${id}`}
+                                author={{ name: 'Owner', color: '#06b6d4', role: 'owner' }}
+                                canDeleteAny
+                              />
+                            </div>
+                          </div>
+                        )}
                       </div>
-                      {section.status !== 'approved' && (
-                        <button onClick={() => handleApproveSection(section.id, take.id)} className="text-[10px] px-2 py-0.5 rounded text-white" style={{ background: '#22c55e' }}>Approve</button>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                   {section.status !== 'approved' && (
-                    <button onClick={() => handleRetakeSection(section.id)} className="text-[10px] flex items-center gap-1" style={{ color: '#ef4444' }}>
+                    <button onClick={() => handleRetakeSection(section.id)} className="text-[10px] flex items-center gap-1 cursor-pointer" style={{ color: '#ef4444' }}>
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" /></svg>
                       Request retake
                     </button>

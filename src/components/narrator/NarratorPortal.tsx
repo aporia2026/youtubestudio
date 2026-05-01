@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { EmphasisBadge } from './EmphasisBadge';
 import { AudioPlayer } from './AudioPlayer';
 import { TeleprompterMode } from './TeleprompterMode';
+import { TakeReview } from './TakeReview';
 import { HeroAction } from '@/components/dashboard/HeroAction';
 
 interface Assignment {
@@ -269,6 +270,11 @@ export function NarratorPortal({ token }: { token: string }) {
   const [showLabels, setShowLabels] = useState(true);
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  // Per-take Frame.io review panel — narrator can expand to see/respond to
+  // owner comments and post their own.
+  const [reviewingTakeId, setReviewingTakeId] = useState<string | null>(null);
+  // Full-script single-file upload (drops one audio for the whole assignment).
+  const [fullUploading, setFullUploading] = useState(false);
 
   useEffect(() => { loadData(); }, [token]);
 
@@ -743,17 +749,58 @@ export function NarratorPortal({ token }: { token: string }) {
                     {section.takes && section.takes.length > 0 && (
                       <div className="space-y-2">
                         <p className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>Your Takes</p>
-                        {section.takes.map(take => (
-                          <div key={take.id} className="p-2 rounded-lg" style={{ background: 'var(--bg-primary)', border: take.is_selected ? '1px solid #22c55e' : '1px solid transparent' }}>
-                            <AudioPlayer src={take.audio_url} label={`Take ${take.take_number}`} />
-                            {take.owner_notes && (
-                              <p className="text-xs mt-1 px-2" style={{ color: '#f97316' }}>Feedback: {take.owner_notes}</p>
-                            )}
-                            {take.rating && (
-                              <p className="text-[10px] mt-1 px-2" style={{ color: '#eab308' }}>{'★'.repeat(take.rating)}{'☆'.repeat(5 - take.rating)}</p>
-                            )}
-                          </div>
-                        ))}
+                        {section.takes.map(take => {
+                          const reviewing = reviewingTakeId === take.id;
+                          return (
+                            <div key={take.id} className="rounded-lg" style={{ background: 'var(--bg-primary)', border: take.is_selected ? '1px solid #22c55e' : '1px solid transparent' }}>
+                              <div className="p-2">
+                                <div className="flex items-center gap-2">
+                                  <div className="flex-1 min-w-0">
+                                    <AudioPlayer src={take.audio_url} label={`Take ${take.take_number}`} />
+                                  </div>
+                                  <button
+                                    onClick={() => setReviewingTakeId(reviewing ? null : take.id)}
+                                    className="text-[10px] px-2 py-0.5 rounded transition-colors cursor-pointer shrink-0"
+                                    style={{
+                                      background: reviewing ? 'rgba(124,58,237,0.25)' : 'rgba(124,58,237,0.1)',
+                                      color: '#a78bfa',
+                                      border: '1px solid rgba(124,58,237,0.3)',
+                                    }}
+                                    title={reviewing ? 'Close review' : 'See timestamped feedback from the owner and reply'}
+                                  >
+                                    {reviewing ? '▾ Hide review' : '▸ Review'}
+                                  </button>
+                                </div>
+                                {take.owner_notes && (
+                                  <p className="text-xs mt-1 px-2" style={{ color: '#f97316' }}>Feedback: {take.owner_notes}</p>
+                                )}
+                                {take.rating && (
+                                  <p className="text-[10px] mt-1 px-2" style={{ color: '#eab308' }}>{'★'.repeat(take.rating)}{'☆'.repeat(5 - take.rating)}</p>
+                                )}
+                              </div>
+                              {reviewing && (
+                                <div className="px-3 pb-3" style={{ borderTop: '1px solid var(--border)' }}>
+                                  <div className="pt-3">
+                                    <TakeReview
+                                      takeId={take.id}
+                                      audioUrl={take.audio_url}
+                                      scriptText={section.script_text}
+                                      initialDurationMs={take.duration_seconds ? take.duration_seconds * 1000 : null}
+                                      listUrl={`/api/narrate/${token}/takes/${take.id}/comments`}
+                                      itemUrl={(id) => `/api/narrate/${token}/take-comments/${id}`}
+                                      author={{
+                                        name: assignment.narrator_name,
+                                        color: assignment.narrator_color,
+                                        role: 'narrator',
+                                      }}
+                                      canDeleteAny={false}
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
 

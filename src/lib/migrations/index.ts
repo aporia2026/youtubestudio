@@ -5,6 +5,11 @@ import migration0002 from './0002_create_workspaces';
 import migration0003 from './0003_extend_collaborators_with_auth';
 import migration0004 from './0004_create_workspace_members';
 import migration0005 from './0005_bootstrap_admin_and_default_workspace';
+import migration0006 from './0006_create_narration_take_comments';
+import migration0007 from './0007_add_workspace_id_columns';
+import migration0008 from './0008_backfill_workspace_id';
+import migration0009 from './0009_enforce_workspace_id';
+import migration0010 from './0010_add_assignment_full_audio';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -18,6 +23,11 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0003,
   migration0004,
   migration0005,
+  migration0006,
+  migration0007,
+  migration0008,
+  migration0009,
+  migration0010,
 ]);
 
 /**

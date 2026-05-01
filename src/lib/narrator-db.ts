@@ -97,6 +97,31 @@ export async function ensureNarratorSchema() {
     `;
     try { await sql`CREATE INDEX IF NOT EXISTS idx_narrator_comments_assignment ON narrator_comments(assignment_id)`; } catch {}
 
+    // Per-take Frame.io-style timestamped review comments. Mirrors the
+    // review_comments shape but scoped to a single audio take. Same idempotent
+    // pattern as the rest of this file — also created by migration 0006 in
+    // production.
+    await sql`
+      CREATE TABLE IF NOT EXISTS narration_take_comments (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        take_id UUID NOT NULL REFERENCES narrator_takes(id) ON DELETE CASCADE,
+        timestamp_ms INTEGER NOT NULL,
+        end_timestamp_ms INTEGER,
+        text TEXT NOT NULL,
+        author_name TEXT NOT NULL,
+        author_color TEXT NOT NULL DEFAULT '#7c3aed',
+        author_role TEXT NOT NULL CHECK (author_role IN ('owner','narrator')),
+        resolved BOOLEAN NOT NULL DEFAULT false,
+        resolved_by TEXT,
+        resolved_at TIMESTAMPTZ,
+        parent_id UUID REFERENCES narration_take_comments(id) ON DELETE CASCADE,
+        fix_for_comment_id UUID REFERENCES narration_take_comments(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_narration_take_comments_take ON narration_take_comments(take_id)`; } catch {}
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_narration_take_comments_parent ON narration_take_comments(parent_id)`; } catch {}
+
     // Access tracking columns
     try { await sql`ALTER TABLE narrator_assignments ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ`; } catch {}
     try { await sql`ALTER TABLE narrator_assignments ADD COLUMN IF NOT EXISTS access_count INTEGER NOT NULL DEFAULT 0`; } catch {}
@@ -502,4 +527,149 @@ export async function getCommentsForAssignment(assignmentId: string) {
     ORDER BY created_at ASC
   `;
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Per-take timestamped review comments (Frame.io-style)
+// ---------------------------------------------------------------------------
+
+export interface NarrationTakeComment {
+  id: string;
+  take_id: string;
+  timestamp_ms: number;
+  end_timestamp_ms: number | null;
+  text: string;
+  author_name: string;
+  author_color: string;
+  author_role: 'owner' | 'narrator';
+  resolved: boolean;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  parent_id: string | null;
+  fix_for_comment_id: string | null;
+  created_at: string;
+}
+
+export async function createTakeComment(fields: {
+  take_id: string;
+  timestamp_ms: number;
+  /** When set and > timestamp_ms, this is a RANGE comment. */
+  end_timestamp_ms?: number | null;
+  text: string;
+  author_name: string;
+  author_color?: string;
+  author_role: 'owner' | 'narrator';
+  parent_id?: string | null;
+  fix_for_comment_id?: string | null;
+}) {
+  await ensureNarratorSchema();
+  // Coerce a reversed/equal range to null so weird input doesn't end up as
+  // a hidden bug. Mirrors createComment() in review-db.ts.
+  let endMs: number | null = null;
+  if (typeof fields.end_timestamp_ms === 'number' && fields.end_timestamp_ms > fields.timestamp_ms) {
+    endMs = fields.end_timestamp_ms;
+  }
+  const { rows } = await sql`
+    INSERT INTO narration_take_comments
+      (take_id, timestamp_ms, end_timestamp_ms, text, author_name, author_color, author_role, parent_id, fix_for_comment_id)
+    VALUES (
+      ${fields.take_id},
+      ${Math.max(0, Math.round(fields.timestamp_ms))},
+      ${endMs},
+      ${fields.text},
+      ${fields.author_name},
+      ${fields.author_color || '#7c3aed'},
+      ${fields.author_role},
+      ${fields.parent_id ?? null},
+      ${fields.fix_for_comment_id ?? null}
+    )
+    RETURNING *
+  `;
+  return rows[0] as NarrationTakeComment;
+}
+
+export async function getTakeComments(takeId: string) {
+  await ensureNarratorSchema();
+  const { rows } = await sql`
+    SELECT * FROM narration_take_comments
+    WHERE take_id = ${takeId}
+    ORDER BY timestamp_ms ASC, created_at ASC
+  `;
+  return rows as NarrationTakeComment[];
+}
+
+/** All comments across every take in an assignment — used for the owner-side
+ *  count badges and the "request retake" auto-summary. */
+export async function getTakeCommentsForAssignment(assignmentId: string) {
+  await ensureNarratorSchema();
+  const { rows } = await sql`
+    SELECT c.* FROM narration_take_comments c
+    JOIN narrator_takes t ON t.id = c.take_id
+    JOIN narrator_sections s ON s.id = t.section_id
+    WHERE s.assignment_id = ${assignmentId}
+    ORDER BY c.created_at ASC
+  `;
+  return rows as NarrationTakeComment[];
+}
+
+export async function resolveTakeComment(commentId: string, resolvedBy: string) {
+  await ensureNarratorSchema();
+  const { rows } = await sql`
+    UPDATE narration_take_comments
+    SET resolved = true, resolved_by = ${resolvedBy}, resolved_at = NOW()
+    WHERE id = ${commentId}
+    RETURNING *
+  `;
+  return (rows[0] as NarrationTakeComment) ?? null;
+}
+
+export async function unresolveTakeComment(commentId: string) {
+  await ensureNarratorSchema();
+  const { rows } = await sql`
+    UPDATE narration_take_comments
+    SET resolved = false, resolved_by = NULL, resolved_at = NULL
+    WHERE id = ${commentId}
+    RETURNING *
+  `;
+  return (rows[0] as NarrationTakeComment) ?? null;
+}
+
+export async function deleteTakeComment(commentId: string) {
+  await ensureNarratorSchema();
+  await sql`DELETE FROM narration_take_comments WHERE id = ${commentId}`;
+}
+
+/** Walk back up the take ownership chain to verify a comment lives under a
+ *  given assignment. Used by both owner + token routes to enforce scoping. */
+export async function getTakeCommentScope(commentId: string) {
+  await ensureNarratorSchema();
+  const { rows } = await sql`
+    SELECT c.id, c.author_name, c.author_role, t.id AS take_id, s.id AS section_id, s.assignment_id
+    FROM narration_take_comments c
+    JOIN narrator_takes t ON t.id = c.take_id
+    JOIN narrator_sections s ON s.id = t.section_id
+    WHERE c.id = ${commentId}
+    LIMIT 1
+  `;
+  return (rows[0] as {
+    id: string;
+    author_name: string;
+    author_role: 'owner' | 'narrator';
+    take_id: string;
+    section_id: string;
+    assignment_id: string;
+  }) ?? null;
+}
+
+/** Lookup helper for posting a comment: confirm a take belongs to an assignment. */
+export async function getTakeAssignmentScope(takeId: string) {
+  await ensureNarratorSchema();
+  const { rows } = await sql`
+    SELECT t.id AS take_id, s.id AS section_id, s.assignment_id
+    FROM narrator_takes t
+    JOIN narrator_sections s ON s.id = t.section_id
+    WHERE t.id = ${takeId}
+    LIMIT 1
+  `;
+  return (rows[0] as { take_id: string; section_id: string; assignment_id: string }) ?? null;
 }
