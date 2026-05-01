@@ -1,6 +1,10 @@
 import { createClient, type VercelClient } from '@vercel/postgres';
 import type { Migration, MigrationClient } from './types';
 import migration0001 from './0001_init_schema_migrations';
+import migration0002 from './0002_create_workspaces';
+import migration0003 from './0003_extend_collaborators_with_auth';
+import migration0004 from './0004_create_workspace_members';
+import migration0005 from './0005_bootstrap_admin_and_default_workspace';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -10,6 +14,10 @@ import migration0001 from './0001_init_schema_migrations';
  */
 export const allMigrations: readonly Migration[] = Object.freeze([
   migration0001,
+  migration0002,
+  migration0003,
+  migration0004,
+  migration0005,
 ]);
 
 /**

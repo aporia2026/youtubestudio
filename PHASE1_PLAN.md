@@ -12,7 +12,7 @@ This document tracks the multi-tenancy + auth + observability foundation work. I
 
 ### Unified user model
 
-A single `users` table for every human. The existing `collaborators` table is renamed to `users` and extended with `password_hash`, `google_sub`, `system_role`, `status`, etc. Existing FK columns (`editor_collaborator_id`, `narrator_collaborator_id`, etc.) keep pointing to the same UUIDs — no orphaned data.
+A single user/identity table for every human. The existing `collaborators` table is **kept under that name** (renaming would touch 60+ sites: `editor_collaborator_id` and `narrator_collaborator_id` FKs, JOINs in `notify.ts`, `narrator-db.ts`, `editor-db.ts`, `team-db.ts`, `review-db.ts`, `activity-feed.ts`, plus query strings throughout API routes). Instead it is **extended in place** with `password_hash`, `google_sub`, `system_role`, `status`, `last_login_at`, `encrypted_settings`, `invite_token`, `password_reset_token`, etc. The "user" terminology is used in new auth code; existing code continues to say "collaborator". This is a deliberate cosmetic compromise to avoid breakage.
 
 ### Two role layers
 
@@ -80,7 +80,7 @@ GitHub Actions, single workflow, three parallel jobs: typecheck, lint, test (aga
 |---|---|---|
 | 0001 | `0001_init_schema_migrations` | Bootstrap + sentinel |
 | 0002 | `0002_create_workspaces` | `workspaces` table |
-| 0003 | `0003_extend_collaborators_to_users` | Rename + add `password_hash`, `google_sub`, `system_role`, `status`, `last_login_at`, `encrypted_settings`, `invite_token`, `password_reset_token` |
+| 0003 | `0003_extend_collaborators_with_auth` | Add `password_hash`, `google_sub`, `system_role`, `status`, `last_login_at`, `encrypted_settings`, `invite_token`, `invite_expires_at`, `password_reset_token`, `password_reset_expires_at`. Partial unique index on `LOWER(email)` where not null. No rename. |
 | 0004 | `0004_create_workspace_members` | `workspace_members` table |
 | 0005 | `0005_bootstrap_admin_and_default_workspace` | Read `ADMIN_EMAIL`/`ADMIN_PASSWORD`, create admin user, default workspace, owner membership |
 | 0006 | `0006_add_workspace_id_columns` | Add nullable `workspace_id` to all data tables |
@@ -100,7 +100,8 @@ Each migration is wrapped in `BEGIN`/`COMMIT`. The runner refuses to apply a mig
 | PR | Scope | Behavior change? |
 |---|---|---|
 | **#1** | Plan doc, vitest harness, migration runner, `schema_migrations` table, sentinel migration, runner unit tests | No — infrastructure only |
-| **#2** | Migrations 0002–0012 + per-migration tests | DB schema only; app code still uses legacy auth |
+| **#2** | Migrations 0002–0005: user model + workspaces + bootstrap admin + per-migration tests | DB schema only; app code still uses legacy auth |
+| **#2b** | Migrations 0006–0010: `workspace_id` column added, backfilled, enforced NOT NULL on every data table; collaborator → workspace_member assignment | DB schema only; data scoped, app code still doesn't use it |
 | **#3** | `users.ts`, `session.ts`, `route-helpers.ts`, new login route (email+password), Google login, password reset, magic-link invites | Login changes for users; AUTH_PASSWORD kept as fallback |
 | **#4** | `request-context`, `logger`, `middleware.ts`, tenancy test framework | No behavior change for users |
 | **#5** | Apply `requireUser` + `WHERE workspace_id` to all ~50 existing routes; tenancy tests pass | Cross-tenant access now blocked |
