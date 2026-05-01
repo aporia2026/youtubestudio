@@ -1,8 +1,9 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { sql, ensureChannelsSchema } from '@/lib/db';
 import { fetchChannelData } from '@/lib/youtube';
+import { apiRoute } from '@/lib/route-helpers';
 
-export async function GET() {
+export const GET = apiRoute.authed(async (session) => {
   try {
     await ensureChannelsSchema();
     const result = await sql`
@@ -11,35 +12,49 @@ export async function GET() {
              CASE WHEN api_credentials IS NOT NULL AND api_credentials != '{}' THEN true ELSE false END as has_api_key,
              COALESCE(oauth_connected, false) as oauth_connected,
              created_at
-      FROM channels ORDER BY created_at DESC
+      FROM channels
+      WHERE workspace_id = ${session.ws}::uuid
+      ORDER BY created_at DESC
     `;
     return NextResponse.json({ channels: result.rows });
   } catch {
     return NextResponse.json({ channels: [] });
   }
-}
+});
 
-export async function POST(req: NextRequest) {
+export const POST = apiRoute.authed(async (session, req) => {
   const { url, niche, accountLabel, accountEmail, accountColor, accountApiKey, notes } = await req.json();
   if (!url) return NextResponse.json({ error: 'url required' }, { status: 400 });
 
   try {
     await ensureChannelsSchema();
-    // Try to fetch channel data from YouTube API (use per-account key if provided)
     const channelData = await fetchChannelData(url, accountApiKey || undefined);
 
-    // Prevent duplicates when no channel_id is available
+    // Duplicate check is now per-workspace — different workspaces can each
+    // add the same external channel without colliding.
     if (!channelData?.id) {
-      const existing = await sql`SELECT id FROM channels WHERE name = ${url} LIMIT 1`;
+      const existing = await sql`
+        SELECT id FROM channels
+         WHERE name = ${url} AND workspace_id = ${session.ws}::uuid
+         LIMIT 1
+      `;
       if (existing.rows.length > 0) {
-        return NextResponse.json({ error: 'This channel was already added. Configure a YouTube API key to fetch proper channel data.' }, { status: 409 });
+        return NextResponse.json(
+          { error: 'This channel was already added. Configure a YouTube API key to fetch proper channel data.' },
+          { status: 409 },
+        );
       }
     }
 
     const name = channelData?.title || url;
     const credentials = accountApiKey ? JSON.stringify({ youtube_api_key: accountApiKey }) : '{}';
+
+    // The (channel_id) UNIQUE index from the legacy schema is GLOBAL — two
+    // workspaces can't add the same external channel even though they
+    // conceptually should be able to. PR #5 leaves that as-is; revisit when
+    // we onboard a second tenant who hits the conflict.
     const result = await sql`
-      INSERT INTO channels (channel_id, name, handle, description, subscriber_count, video_count, niche, thumbnail_url, account_label, account_email, account_color, notes, api_credentials)
+      INSERT INTO channels (channel_id, name, handle, description, subscriber_count, video_count, niche, thumbnail_url, account_label, account_email, account_color, notes, api_credentials, workspace_id)
       VALUES (
         ${channelData?.id || null},
         ${name},
@@ -53,7 +68,8 @@ export async function POST(req: NextRequest) {
         ${accountEmail || null},
         ${accountColor || '#7c3aed'},
         ${notes || null},
-        ${credentials}
+        ${credentials},
+        ${session.ws}::uuid
       )
       ON CONFLICT (channel_id) DO UPDATE SET
         name = EXCLUDED.name,
@@ -73,4 +89,4 @@ export async function POST(req: NextRequest) {
     console.error(err);
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed' }, { status: 500 });
   }
-}
+});

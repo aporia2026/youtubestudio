@@ -271,7 +271,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     setOpenSections(next);
     setHydrated(true);
     // We deliberately only re-run when pathname changes
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [pathname]);
 
   function toggleSection(label: string) {
