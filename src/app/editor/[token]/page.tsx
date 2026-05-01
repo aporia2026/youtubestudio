@@ -134,6 +134,14 @@ export default function EditorDashboard({ params }: { params: Promise<{ token: s
     return list;
   }, [assignments, buckets, filter, search]);
 
+  // Scroll to the assignment-list section after a hero-stat tile click
+  // so the click → filter → see-the-rows flow has visual continuity.
+  function scrollToList() {
+    setTimeout(() => {
+      document.getElementById('assignment-list')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
+  }
+
   if (loading) return <SplashLoader />;
   if (error || !editor) return <SplashError />;
 
@@ -181,36 +189,47 @@ export default function EditorDashboard({ params }: { params: Promise<{ token: s
           </section>
         )}
 
-        {/* Hero stats */}
+        {/* Hero stats — clickable. Each tile filters the assignment list
+            to the matching bucket and scrolls into view, mirroring the
+            narrator dashboard. The "Versions shipped" tile filters to
+            completed (since shipped versions are the completed work). */}
         <section className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
           <HeroStat
             value={buckets.urgent.length}
             label="Urgent"
             sub={buckets.urgent.length === 0 ? 'No tight deadlines' : 'Due in ≤ 3 days'}
             tone={buckets.urgent.length > 0 ? 'urgent' : 'good'}
+            onClick={() => { setFilter('urgent'); scrollToList(); }}
+            ariaLabel="Show urgent assignments"
           />
           <HeroStat
             value={buckets.active.length}
             label="In progress"
             sub={`${buckets.editing.length} editing · ${buckets.review.length} in review`}
             tone="info"
+            onClick={() => { setFilter('editing'); scrollToList(); }}
+            ariaLabel="Show editing-stage assignments"
           />
           <HeroStat
             value={metrics.versions}
             label="Versions shipped"
             sub="Across all your projects"
             tone="info"
+            onClick={() => { setFilter('completed'); scrollToList(); }}
+            ariaLabel="Show completed assignments"
           />
           <HeroStat
             value={`${metrics.completionRate}%`}
             label="Completion rate"
             sub={`${buckets.completed.length} of ${metrics.totalProjects} projects done`}
             tone={metrics.completionRate >= 80 ? 'good' : 'info'}
+            onClick={() => { setFilter('review'); scrollToList(); }}
+            ariaLabel="Show in-review assignments"
           />
         </section>
 
         {/* Filter pills + search + view toggle */}
-        <section className="mb-4 flex items-center gap-2 flex-wrap">
+        <section id="assignment-list" className="mb-4 flex items-center gap-2 flex-wrap">
           <FilterPill active={filter === 'all'} onClick={() => setFilter('all')} count={assignments.length}>All</FilterPill>
           <FilterPill active={filter === 'urgent'} onClick={() => setFilter('urgent')} tone="urgent" count={buckets.urgent.length}>Urgent</FilterPill>
           <FilterPill active={filter === 'editing'} onClick={() => setFilter('editing')} count={buckets.editing.length}>Editing</FilterPill>
@@ -310,20 +329,49 @@ function SplashError() {
   );
 }
 
-function HeroStat({ value, label, sub, tone }: { value: string | number; label: string; sub: string; tone: 'good' | 'urgent' | 'info' | 'muted' }) {
+function HeroStat({
+  value, label, sub, tone, onClick, ariaLabel,
+}: {
+  value: string | number;
+  label: string;
+  sub: string;
+  tone: 'good' | 'urgent' | 'info' | 'muted';
+  /** When provided, the tile becomes a button — click filters the
+   *  assignment list to the matching bucket. */
+  onClick?: () => void;
+  ariaLabel?: string;
+}) {
   const accent = tone === 'good' ? '#22c55e' : tone === 'urgent' ? '#ef4444' : tone === 'info' ? '#a78bfa' : 'var(--text-muted)';
-  return (
-    <div
-      className="rounded-2xl p-4 transition-transform hover:translate-y-[-1px]"
-      style={{
-        background: 'var(--bg-secondary)',
-        border: '1px solid var(--border)',
-        boxShadow: tone === 'urgent' ? `0 0 0 1px ${accent}33` : 'none',
-      }}
-    >
+  const baseStyle: React.CSSProperties = {
+    background: 'var(--bg-secondary)',
+    border: '1px solid var(--border)',
+    boxShadow: tone === 'urgent' ? `0 0 0 1px ${accent}33` : 'none',
+  };
+  const inner = (
+    <>
       <p className="text-3xl font-bold leading-none mb-1" style={{ color: accent }}>{value}</p>
       <p className="text-[11px] uppercase tracking-wider mt-2" style={{ color: 'var(--text-muted)' }}>{label}</p>
       <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{sub}</p>
+    </>
+  );
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={ariaLabel || `Filter to ${label}`}
+        className="rounded-2xl p-4 text-left transition-all hover:translate-y-[-1px] cursor-pointer focus:outline-none focus-visible:ring-2"
+        style={baseStyle}
+        onMouseEnter={e => (e.currentTarget.style.borderColor = `${accent}66`)}
+        onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border)')}
+      >
+        {inner}
+      </button>
+    );
+  }
+  return (
+    <div className="rounded-2xl p-4 transition-transform hover:translate-y-[-1px]" style={baseStyle}>
+      {inner}
     </div>
   );
 }
