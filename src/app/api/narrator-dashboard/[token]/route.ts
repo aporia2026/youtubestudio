@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getNarratorByPersonalToken } from '@/lib/team-db';
+import { countWords } from '@/lib/utils';
 
 /**
  * Public API for the narrator's personal dashboard at /narrator/[token].
@@ -80,8 +81,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
         [assignmentIds],
       );
       for (const sec of sections) {
-        const spoken = (sec.script_text || '').replace(/\[[^\]]+\]/g, '');
-        const words = spoken.split(/\s+/).filter(w => w.length > 0).length;
+        const words = countWords(sec.script_text || '');
         wordCounts.set(sec.assignment_id, (wordCounts.get(sec.assignment_id) || 0) + words);
       }
     }

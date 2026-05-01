@@ -6,6 +6,7 @@ import { AudioPlayer } from './AudioPlayer';
 import { TeleprompterMode } from './TeleprompterMode';
 import { TakeReview } from './TakeReview';
 import { HeroAction } from '@/components/dashboard/HeroAction';
+import { stripProductionCues, countWords as countSpokenWords } from '@/lib/utils';
 
 interface Assignment {
   id: string;
@@ -149,12 +150,42 @@ function autoMatchFileToSection(
 }
 
 /**
- * Strip production cues like [VISUAL CUE: ...], [SFX: ...], [B-ROLL ...]
- * from a narration line so the plain reading view shows only what the
- * narrator actually says. Mirrors the teleprompter's plain-mode logic.
+ * Plain-mode strip for the reading view: removes brackets, markdown
+ * headers, generator-injected word-count metadata (e.g. "(Spoken
+ * words: 84)", "**TOTAL SPOKEN WORD COUNT: 1570** …"), and markdown
+ * emphasis markers. Source of truth lives in lib/utils.ts. Internal
+ * whitespace is collapsed because plain mode renders sections inline.
  */
 function stripCues(text: string): string {
-  return text.replace(/\[[^\]]+\]/g, '').replace(/\s+/g, ' ').trim();
+  return stripProductionCues(text).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Variant for the badge-style "sections" view: keeps bracketed cues
+ * intact (renderScriptWithBadges() dims/badges them visually) but
+ * still removes the un-spoken metadata lines and markdown emphasis
+ * the LLM sometimes emits, since those have no visual treatment and
+ * would otherwise read as raw text.
+ */
+function stripDisplayMetadata(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(/^[ \t]*#{1,6}[ \t]+.*$/gm, '')
+    .replace(
+      /^.*\b(?:total\s+spoken\s+word\s+count|spoken\s+words?\s*[:=]|word\s+count\s+so\s+far|word\s+count\s*[:=]|wordcount\s*[:=]|estimated\s+duration\s*[:=])\b.*$/gim,
+      '',
+    )
+    .replace(
+      /\([^()]*\b(?:spoken\s+words?|word\s+count(?:\s+so\s+far)?|wordcount|estimated\s+duration)\b[^()]*\)/gi,
+      '',
+    )
+    .replace(/\*\*([^*\n]+?)\*\*/g, '$1')
+    .replace(/__([^_\n]+?)__/g, '$1')
+    .replace(/(?<![\w*])\*([^*\n]+?)\*(?!\w)/g, '$1')
+    .replace(/(?<![\w_])_([^_\n]+?)_(?!\w)/g, '$1')
+    .replace(/[ \t]+(\r?\n)/g, '$1')
+    .replace(/(\r?\n){3,}/g, '\n\n')
+    .trim();
 }
 
 function sanitizeFilename(name: string): string {
@@ -551,13 +582,14 @@ export function NarratorPortal({ token }: { token: string }) {
   })();
   const assignmentStatus = STATUS_LABELS[assignment.status] || STATUS_LABELS.assigned;
   const totalDuration = realSections.reduce((acc, s) => acc + (s.estimated_duration_seconds || 0), 0);
-  // Spoken word count — sums words in every section after stripping any
-  // bracketed cue ([VISUAL CUE: …], [excited], [pause], etc.). What the
-  // narrator will literally read aloud, not the raw script length.
-  const totalWords = realSections.reduce((acc, s) => {
-    const spoken = (s.script_text || '').replace(/\[[^\]]+\]/g, '');
-    return acc + spoken.split(/\s+/).filter(w => w.length > 0).length;
-  }, 0);
+  // Spoken word count — sums words in every section after stripping every
+  // kind of non-spoken content (brackets, markdown headers/emphasis, and
+  // generator-injected word-count metadata). What the narrator will
+  // literally read aloud, not the raw script length.
+  const totalWords = realSections.reduce(
+    (acc, s) => acc + countSpokenWords(s.script_text || ''),
+    0,
+  );
 
   return (
     <>
@@ -932,7 +964,7 @@ export function NarratorPortal({ token }: { token: string }) {
                         <span className="flex items-center gap-1 text-[10px]" style={{ color: '#eab308' }}><span className="w-2 h-2 rounded-full" style={{ background: '#eab308' }} /> Pacing</span>
                       </div>
                       <div className="p-3 text-sm leading-relaxed">
-                        {renderScriptWithBadges(section.script_text, section.emphasis_markers)}
+                        {renderScriptWithBadges(stripDisplayMetadata(section.script_text), section.emphasis_markers)}
                       </div>
                     </div>
 
@@ -1570,7 +1602,7 @@ function RecordingModeView({
               const latestTake = s.takes && s.takes.length > 0 ? s.takes[0] : null;
               const isUploading = uploading === s.id;
               const commentCount = comments.filter(c => c.section_id === s.id).length;
-              const wordCount = (s.script_text || '').replace(/\[[^\]]+\]/g, '').split(/\s+/).filter(w => w.length > 0).length;
+              const wordCount = countSpokenWords(s.script_text || '');
 
               const approved = s.status === 'approved';
               return (

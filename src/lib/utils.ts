@@ -23,21 +23,72 @@ export function estimateDuration(wordCount: number): number {
 }
 
 /**
- * Strip bracketed production cues from a script — anything in square
- * brackets including [VISUAL CUE: ...], [SFX: ...], [B-ROLL: ...],
- * performance tags like [excited] / [pause] / [whisper], inline
- * directions like [PAUSE], etc. None of these are spoken aloud, so
- * none of them should count toward word totals or duration estimates
- * anywhere in the app. The single source of truth lives here so the
- * generator, project page, narrator dashboard, exports, and section
- * splitter all agree on what "a word the narrator says" means.
+ * Strip everything from a script that the narrator does NOT say aloud.
+ * Single source of truth for "what's a spoken word" — the generator,
+ * project page, narrator portal, teleprompter, exports, and section
+ * splitter all route through here so word counts and the reading view
+ * stay in lockstep.
+ *
+ * Removes, in order:
+ *   1. Bracketed cues / citations / performance tags — `[VISUAL CUE: …]`,
+ *      `[SFX: …]`, `[B-ROLL: …]`, `[PAUSE]`, `[excited]`, `[whisper]`,
+ *      Perplexity-style citation markers like `[1]` / `[3][6]`, etc.
+ *   2. Standalone markdown header lines — `## Outro`, `### Section 2`.
+ *      The section splitter already lifts these into labels, but a stray
+ *      one inside a section body (the LLM occasionally emits them mid-
+ *      paragraph during expansion passes) would otherwise be read aloud.
+ *   3. Whole lines of word-count / duration metadata the generator
+ *      inlines for self-tracking — `**TOTAL SPOKEN WORD COUNT: 1570** …`,
+ *      `(Word count so far: …)`, `(Spoken words: 84)`, `Estimated
+ *      duration: 2:30`, etc. The narrator should never have these
+ *      counted as part of the script, let alone read them out.
+ *   4. Inline parenthetical metadata that survived the line-level pass —
+ *      e.g. `…ends here.(Spoken words: 310) Next paragraph…`. Conservative:
+ *      only parens whose content contains a metadata keyword get stripped.
+ *   5. Markdown emphasis wrappers — `**bold**`, `*italic*`, `__bold__`,
+ *      `_italic_`. The wrapped words ARE spoken; the asterisks/underscores
+ *      are editorial-only and would otherwise show up as stray punctuation
+ *      in the plain reading view.
+ *
+ * Whitespace cleanup: trims trailing spaces before newlines and collapses
+ * runs of 3+ newlines to a paragraph break, but keeps single/double
+ * newlines so paragraph structure survives for the teleprompter.
  */
 export function stripProductionCues(text: string): string {
-  return text.replace(/\[[^\]]+\]/g, '');
+  if (!text) return '';
+  return text
+    // 1. Bracketed cues — handles empty `[]` too so we don't leave the
+    //    literal characters behind.
+    .replace(/\[[^\]]*\]/g, '')
+    // 2. Markdown header lines (full-line match).
+    .replace(/^[ \t]*#{1,6}[ \t]+.*$/gm, '')
+    // 3. Whole metadata lines. Match any line containing the canonical
+    //    phrases the generator uses — case insensitive, multiline.
+    .replace(
+      /^.*\b(?:total\s+spoken\s+word\s+count|spoken\s+words?\s*[:=]|word\s+count\s+so\s+far|word\s+count\s*[:=]|wordcount\s*[:=]|estimated\s+duration\s*[:=])\b.*$/gim,
+      '',
+    )
+    // 4. Inline parenthetical metadata. `[^()]*` keeps the match on a
+    //    single nesting level so we don't blow past the closing paren.
+    .replace(
+      /\([^()]*\b(?:spoken\s+words?|word\s+count(?:\s+so\s+far)?|wordcount|estimated\s+duration)\b[^()]*\)/gi,
+      '',
+    )
+    // 5. Markdown emphasis — keep the inner text. Order matters:
+    //    `**`/`__` (bold) before `*`/`_` (italic) so we don't half-strip.
+    .replace(/\*\*([^*\n]+?)\*\*/g, '$1')
+    .replace(/__([^_\n]+?)__/g, '$1')
+    .replace(/(?<![\w*])\*([^*\n]+?)\*(?!\w)/g, '$1')
+    .replace(/(?<![\w_])_([^_\n]+?)_(?!\w)/g, '$1')
+    // Whitespace cleanup. Trailing spaces on a line + 3+ newlines → one
+    //    paragraph break.
+    .replace(/[ \t]+(\r?\n)/g, '$1')
+    .replace(/(\r?\n){3,}/g, '\n\n')
+    .trim();
 }
 
 export function countWords(text: string): number {
-  return stripProductionCues(text).trim().split(/\s+/).filter(Boolean).length;
+  return stripProductionCues(text).split(/\s+/).filter(Boolean).length;
 }
 
 export function formatBytes(bytes: number): string {

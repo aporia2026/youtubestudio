@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { stripProductionCues } from '@/lib/utils';
 
 type FollowMode = 'plain' | 'teleprompter';
 
@@ -40,9 +41,11 @@ export function ScriptFollow({ scriptText, currentMs, durationMs, onSeek }: Scri
   const userScrollAtRef = useRef<number>(0);
   const [followLocked, setFollowLocked] = useState(false);
 
-  // Strip production cues that aren't meant to be spoken.
+  // Strip production cues that aren't meant to be spoken. Routed through
+  // the canonical helper so word-level highlighting indexes the same
+  // tokens the narrator portal counts as "spoken".
   const spokenText = useMemo(() => {
-    return scriptText.replace(/\[[^\]]+\]/g, '').replace(/\s+/g, ' ').trim();
+    return stripProductionCues(scriptText).replace(/\s+/g, ' ').trim();
   }, [scriptText]);
 
   // Tokenise into displayable words. We keep the original word + a

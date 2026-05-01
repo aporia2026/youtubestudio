@@ -2,6 +2,8 @@
  * Narrator utility functions — section splitting, emphasis parsing, duration estimation.
  */
 
+import { stripProductionCues } from './utils';
+
 // v3 audio tags from ElevenLabs
 const EMOTION_TAGS = ['excited', 'happy', 'sad', 'angry', 'frustrated', 'curious', 'confused', 'serious', 'thoughtful', 'confident', 'nervous', 'surprised', 'whisper', 'shouting', 'mischievously', 'sarcastic'];
 const NONVERBAL_TAGS = ['laughs', 'laughs harder', 'chuckles', 'sighs', 'gasps', 'clears throat', 'exhales', 'snorts'];
@@ -41,18 +43,15 @@ export function parseEmphasisMarkers(text: string): EmphasisMarker[] {
 }
 
 /**
- * Count words a narrator would actually say. Strips every bracketed cue
- * (production directions like [VISUAL CUE: ...] AND performance tags
- * like [excited], [pause], [whisper]) plus markdown punctuation, then
- * counts whitespace-separated tokens.
- *
- * Wider than the previous TAG_REGEX-only strip so section sizing
- * matches what the rest of the app considers "spoken". Mirrors
- * stripProductionCues() in lib/utils.ts.
+ * Count words a narrator would actually say. Delegates to the canonical
+ * stripProductionCues() in lib/utils.ts so section sizing, project word
+ * totals, the narrator dashboard, and the teleprompter all agree on
+ * what "spoken" means — bracketed cues, markdown headers, emphasis
+ * markers, and inline word-count metadata are excluded uniformly.
  */
 function countWords(text: string): number {
-  const clean = text.replace(/\[[^\]]+\]/g, '').replace(/[#*_\-—]/g, ' ');
-  return clean.split(/\s+/).filter(w => w.length > 0).length;
+  const clean = stripProductionCues(text);
+  return clean ? clean.split(/\s+/).filter(w => w.length > 0).length : 0;
 }
 
 /**
@@ -66,7 +65,7 @@ export function splitScriptIntoSections(text: string, wpm: number = 150): Script
 
   // First try splitting on ## headings
   const headingSplit = text.split(/^## /m);
-  let rawSections: { label?: string; text: string }[] = [];
+  const rawSections: { label?: string; text: string }[] = [];
 
   if (headingSplit.length > 1) {
     // First chunk before any heading
@@ -122,18 +121,26 @@ export function splitScriptIntoSections(text: string, wpm: number = 150): Script
   }
   if (buffer) merged.push(buffer);
 
-  // Convert to ScriptSections with duration estimates and emphasis markers
-  return merged.map(s => {
+  // Convert to ScriptSections with duration estimates and emphasis markers.
+  // Drop sections that contain no spoken words after stripping cues +
+  // metadata — happens when the LLM emits a closing block that is purely
+  // production stuff (e.g. a final "**TOTAL SPOKEN WORD COUNT: …**"
+  // summary, or an Outro that's just an SFX line). Keeping them would
+  // surface empty cards in the narrator portal.
+  const out: ScriptSection[] = [];
+  for (const s of merged) {
     const words = countWords(s.text);
+    if (words === 0) continue;
     const durationSec = Math.round((words / wpm) * 60);
     const markers = parseEmphasisMarkers(s.text);
-    return {
+    out.push({
       label: s.label,
       script_text: s.text,
       estimated_duration_seconds: durationSec,
       emphasis_markers: markers,
-    };
-  });
+    });
+  }
+  return out;
 }
 
 /**

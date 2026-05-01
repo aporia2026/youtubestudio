@@ -209,11 +209,18 @@ The four budgets above sum to ~${targetWords} spoken words, which is the target.
 - Use [PAUSE] for dramatic effect
 - Use **BOLD** for emphasis
 - Mark sections with ## Section Name
+
+## OUTPUT RULES — STRICTLY ENFORCED (the script is fed directly to a narrator who reads everything that isn't a bracketed cue):
+- Do NOT inline word counts, running totals, duration estimates, or self-tracking notes anywhere in the script. No "(Word count so far: …)", no "(Spoken words: 84)", no trailing "**TOTAL SPOKEN WORD COUNT: …**" line, no "Estimated duration: …" annotations. Anything outside [brackets] gets read aloud.
+- Do NOT include citation markers like [1], [3][6], or footnote-style references. Attribute stats inline ("a 2024 FTC report found…") instead.
+- Do NOT add meta-commentary, preambles, or self-summaries (e.g. "Here's the script:", "I've structured this as…", "Verified.", "Excludes brackets."). Output the script ONLY.
+- Markdown emphasis (**bold**) on individual words/phrases is fine — the asterisks are stripped before display — but do not wrap entire summary lines or metadata blocks in bold.
 ${buildConstraintsPromptBlock(constraints)}
 ## FINAL CHECK BEFORE YOU FINISH:
-1. Count the spoken words in your draft (everything outside [brackets]). It must be at least ${minWords}.
+1. Count the spoken words in your draft silently (everything outside [brackets]). It must be at least ${minWords}. The count is for your own verification — do NOT write it into the script.
 2. If you are below ${minWords} spoken words, you are NOT done. Go back to the most underdeveloped sections and expand them with more concrete examples, more specific data, deeper exploration — never with filler, repetition, or generic statements.
-3. Only output the script when the spoken-word total is in the ${minWords}–${maxWords} range.
+3. Re-scan and DELETE any line containing a word count, running total, duration estimate, citation marker, or meta-commentary before output. None of those exist in the final script.
+4. Only output when the spoken-word total is in the ${minWords}–${maxWords} range AND no metadata lines remain.
 
 Write the complete script now. Make it exceptional, AND make it the right length.`,
   };
@@ -259,7 +266,8 @@ ABSOLUTE RULES:
 - Expand by adding REAL substance: more specific examples (real names / numbers / dates), more concrete data, deeper exploration of each angle, additional pattern interrupts, more sensory detail. Never pad with filler, generic statements, or rhetorical-question repetition.
 - Keep every existing strong line. Don't rewrite passages that already work — extend around them.
 - Honor every constraint listed below. Do NOT re-introduce a hook / CTA / link if the user disabled it.
-- No meta-commentary, no "here's the expanded script:" preamble, no notes at the end. Output the script only.`,
+- No meta-commentary, no "here's the expanded script:" preamble, no notes at the end. Output the script only.
+- Do NOT inline word counts, running totals, duration estimates, citation markers ([1], [3][6]), or any "(Spoken words: …)" / "(Word count so far: …)" / "**TOTAL SPOKEN WORD COUNT: …**" annotations. The script feeds straight to a narrator who reads everything that isn't a [bracketed cue]. If the input draft contains any of these, REMOVE them in your output.`,
 
     user: `# Current Draft (${currentSpokenWords} spoken words — too short)
 **Topic:** ${topic}
@@ -276,9 +284,10 @@ ${draftScript}
 Expand this script so the spoken-word total lands in the ${minWords}–${maxWords} range. Add substance, not filler. Keep the existing structure and identity. Output the complete expanded script.
 ${buildConstraintsPromptBlock(constraints)}
 ## FINAL CHECK BEFORE YOU FINISH:
-1. Count the spoken words in your output (everything outside [brackets]).
+1. Count the spoken words in your output silently (everything outside [brackets]). Do not write the count into the script.
 2. If still below ${minWords}, keep expanding the underdeveloped sections with more concrete substance.
-3. Only output when the spoken-word total is in the ${minWords}–${maxWords} range.`,
+3. Re-scan and DELETE any line that's a word count, running total, duration estimate, citation marker, or meta-commentary — even if it was in the input draft.
+4. Only output when the spoken-word total is in the ${minWords}–${maxWords} range AND no metadata lines remain.`,
   };
 }
 

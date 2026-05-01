@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { stripProductionCues } from '@/lib/utils';
 
 interface Section {
   section_number: number;
@@ -19,12 +20,15 @@ interface TeleprompterModeProps {
 type ViewMode = 'styled' | 'plain';
 
 /**
- * Strip [VISUAL CUE: ...] / [SFX: ...] style production markers from a
- * narration line. The section divider already shows production context;
- * leaving these inline just makes the narrator read them out loud.
+ * Strip every kind of non-spoken content from a narration line —
+ * bracketed cues ([VISUAL CUE: ...], [SFX: ...], performance tags),
+ * markdown headers, generator-injected word-count metadata, and
+ * markdown emphasis markers. Single source of truth lives in
+ * lib/utils.ts; we only collapse internal whitespace afterwards
+ * since the teleprompter renders sections inline (no paragraph breaks).
  */
 function stripCues(text: string): string {
-  return text.replace(/\[[^\]]+\]/g, '').replace(/\s+/g, ' ').trim();
+  return stripProductionCues(text).replace(/\s+/g, ' ').trim();
 }
 
 export function TeleprompterMode({ sections, wpm, onClose }: TeleprompterModeProps) {
