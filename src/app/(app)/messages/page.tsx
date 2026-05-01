@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { ChatThread } from '@/components/messages/ChatThread';
 
 interface ThreadSummary {
@@ -37,6 +38,13 @@ function formatRelative(iso: string) {
  * previews stay current without requiring a manual refresh.
  */
 export default function MessagesPage() {
+  const searchParams = useSearchParams();
+  // `?with=<collaborator_id>` deep-link target — when present, the page
+  // auto-selects that thread on load (and re-selects when the param
+  // changes). Set by the "Message {Name}" shortcuts on per-project
+  // surfaces (NarrationTab, EditorTab) so the owner lands in the right
+  // conversation in one click.
+  const requestedId = searchParams.get('with');
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [loadingList, setLoadingList] = useState(true);
@@ -48,9 +56,13 @@ export default function MessagesPage() {
       const data = await res.json();
       const list: ThreadSummary[] = Array.isArray(data.threads) ? data.threads : [];
       setThreads(list);
-      // Auto-select the first thread with unread messages, falling back
-      // to the most recent active thread, then to the first collaborator.
       setActiveId(prev => {
+        // Honour the deep-link target ahead of any other heuristic when
+        // it matches a real collaborator on the list. Falls through to
+        // the unread/most-recent/first-collaborator chain otherwise.
+        if (requestedId && list.some(t => t.collaborator_id === requestedId)) {
+          return requestedId;
+        }
         if (prev) return prev;
         const firstUnread = list.find(t => t.unread_count > 0);
         if (firstUnread) return firstUnread.collaborator_id;
@@ -63,7 +75,7 @@ export default function MessagesPage() {
     } finally {
       setLoadingList(false);
     }
-  }, []);
+  }, [requestedId]);
 
   useEffect(() => {
     loadThreads();

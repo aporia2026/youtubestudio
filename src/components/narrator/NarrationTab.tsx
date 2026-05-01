@@ -9,6 +9,9 @@ import { TakeReview } from './TakeReview';
 interface Assignment {
   id: string;
   project_id?: string;
+  /** Collaborator id of the assigned narrator — used to deep-link the
+   *  owner-side chat shortcut (`/messages?with=<id>`). */
+  narrator_id?: string;
   narrator_name: string;
   narrator_color: string;
   status: string;
@@ -235,6 +238,22 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {/* Owner shortcut to open the 1:1 chat with this narrator. Goes
+              straight to /messages with the right thread auto-selected,
+              saving the trip through the sidebar collaborator list. */}
+          {activeAssignment.narrator_id && (
+            <a
+              href={`/messages?with=${activeAssignment.narrator_id}`}
+              className="text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5"
+              style={{ background: 'rgba(6,182,212,0.1)', color: '#06b6d4' }}
+              title={`Open chat with ${activeAssignment.narrator_name}`}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+              Message
+            </a>
+          )}
           <button onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/narrate/${activeAssignment.share_token}`); toast.success('Link copied'); }}
             className="text-xs px-3 py-1.5 rounded-lg" style={{ background: 'rgba(124,58,237,0.1)', color: '#7c3aed' }}>
             Copy Link

@@ -291,6 +291,17 @@ export function EditorTab({ projectId }: Props) {
                       {a.last_accessed_at ? `last viewed ${timeAgo(a.last_accessed_at)}` : 'never accessed'}
                     </p>
                   </div>
+                  <a
+                    href={`/messages?with=${a.editor_id}`}
+                    className="text-[10px] px-2 py-1 rounded transition-colors hover:bg-cyan-500/10 cursor-pointer flex items-center gap-1"
+                    style={{ color: '#06b6d4', background: 'rgba(6,182,212,0.1)' }}
+                    title={`Open chat with ${a.editor_name}`}
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                    </svg>
+                    Message
+                  </a>
                   <button onClick={() => copyDashboardLink(a.editor_personal_token)} className="text-[10px] px-2 py-1 rounded transition-colors hover:bg-purple-500/10 cursor-pointer"
                     style={{ color: '#a78bfa', background: 'rgba(124,58,237,0.1)' }}>📋 Dashboard link</button>
                   <button onClick={() => handleRevoke(a.id, a.editor_name)} className="p-1.5 rounded hover:bg-red-500/10 cursor-pointer" title="Revoke access">
