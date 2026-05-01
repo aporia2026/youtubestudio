@@ -36,11 +36,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // next save), but if we deactivated first and the INSERT failed we'd
     // leave the project with zero active rows and the UI would render
     // "(no script yet)" despite versions existing in the table.
+    //
+    // workspace_id is NOT NULL on scripts (migration 0013); we copy it from
+    // the parent project so the route doesn't need session/auth context.
     const result = await sql`
-      INSERT INTO scripts (project_id, version, content, word_count, estimated_duration_seconds, ai_model, is_active)
-      VALUES (${id}, ${nextVersion}, ${content}, ${words}, ${duration}, ${modelId || null}, true)
+      INSERT INTO scripts (project_id, version, content, word_count, estimated_duration_seconds, ai_model, is_active, workspace_id)
+      SELECT ${id}::uuid, ${nextVersion}, ${content}, ${words}, ${duration}, ${modelId || null}, true, p.workspace_id
+        FROM projects p WHERE p.id = ${id}::uuid
       RETURNING *
     `;
+    if (result.rows.length === 0) {
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    }
     const newId = result.rows[0].id;
     await sql`UPDATE scripts SET is_active = false WHERE project_id = ${id} AND id <> ${newId}`;
 
@@ -67,7 +74,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     return NextResponse.json({ script: result.rows[0] });
   } catch (err) {
-    console.error(err);
-    return NextResponse.json({ error: 'Failed' }, { status: 500 });
+    console.error('POST /api/projects/:id/scripts error:', err);
+    const message = err instanceof Error ? err.message : 'Failed';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
