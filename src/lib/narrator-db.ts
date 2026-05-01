@@ -126,6 +126,15 @@ export async function ensureNarratorSchema() {
     try { await sql`ALTER TABLE narrator_assignments ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ`; } catch {}
     try { await sql`ALTER TABLE narrator_assignments ADD COLUMN IF NOT EXISTS access_count INTEGER NOT NULL DEFAULT 0`; } catch {}
 
+    // Full-script single-file narration upload — the narrator drops one
+    // audio file covering the whole script instead of one per section.
+    // Cached on the assignment row for fast access; the actual take row is
+    // also created so existing review/comment surfaces work unchanged.
+    try { await sql`ALTER TABLE narrator_assignments ADD COLUMN IF NOT EXISTS full_audio_take_id UUID`; } catch {}
+    try { await sql`ALTER TABLE narrator_assignments ADD COLUMN IF NOT EXISTS full_audio_url TEXT`; } catch {}
+    try { await sql`ALTER TABLE narrator_assignments ADD COLUMN IF NOT EXISTS full_audio_r2_key TEXT`; } catch {}
+    try { await sql`ALTER TABLE narrator_assignments ADD COLUMN IF NOT EXISTS full_audio_duration_seconds NUMERIC`; } catch {}
+
     narratorMigrated = true;
   } catch (err) {
     console.error('ensureNarratorSchema error:', err);
@@ -659,6 +668,68 @@ export async function getTakeCommentScope(commentId: string) {
     section_id: string;
     assignment_id: string;
   }) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Full-script audio (one file covers the whole assignment)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reserve a take row for the assignment's full-script audio. We persist this
+ * as a normal narrator_take inside a synthetic section (section_number=0)
+ * so the existing review/comment plumbing works unchanged.
+ *
+ * Section 0 is created on demand and hidden from normal section listings via
+ * the existing query (which orders by section_number ASC; callers can filter
+ * out 0 when they want only "real" sections).
+ */
+export async function ensureFullAudioSection(assignmentId: string): Promise<string> {
+  await ensureNarratorSchema();
+  // Look for an existing section 0
+  const { rows: existing } = await sql`
+    SELECT id FROM narrator_sections
+    WHERE assignment_id = ${assignmentId} AND section_number = 0
+    LIMIT 1
+  `;
+  if (existing.length > 0) return existing[0].id as string;
+
+  // Create the synthetic section. UNIQUE(assignment_id, section_number) will
+  // protect against the race where two requests try to create it at once.
+  try {
+    const { rows } = await sql`
+      INSERT INTO narrator_sections (assignment_id, section_number, label, script_text, status, estimated_duration_seconds)
+      VALUES (${assignmentId}, 0, 'Full narration', '', 'pending', NULL)
+      RETURNING id
+    `;
+    return rows[0].id as string;
+  } catch {
+    // Race lost — re-read.
+    const { rows: again } = await sql`
+      SELECT id FROM narrator_sections
+      WHERE assignment_id = ${assignmentId} AND section_number = 0
+      LIMIT 1
+    `;
+    return again[0].id as string;
+  }
+}
+
+export async function setAssignmentFullAudio(fields: {
+  assignment_id: string;
+  take_id: string;
+  audio_url: string;
+  r2_key: string;
+  duration_seconds?: number | null;
+}) {
+  await ensureNarratorSchema();
+  await sql`
+    UPDATE narrator_assignments
+    SET full_audio_take_id = ${fields.take_id},
+        full_audio_url = ${fields.audio_url},
+        full_audio_r2_key = ${fields.r2_key},
+        full_audio_duration_seconds = ${fields.duration_seconds ?? null},
+        updated_at = NOW()
+    WHERE id = ${fields.assignment_id}
+  `;
 }
 
 /** Lookup helper for posting a comment: confirm a take belongs to an assignment. */

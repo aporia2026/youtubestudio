@@ -28,6 +28,12 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     const sections = await getSectionsForAssignment(id);
     const comments = await getCommentsForAssignment(id);
     const sectionsWithFreshUrls = await refreshTakeUrls(sections as SectionRow[]);
+
+    const a = assignment as { full_audio_r2_key?: string | null; full_audio_url?: string | null; [key: string]: unknown };
+    if (a.full_audio_r2_key) {
+      try { a.full_audio_url = await getNarrationDownloadUrl(a.full_audio_r2_key); } catch {}
+    }
+
     return NextResponse.json({ assignment, sections: sectionsWithFreshUrls, comments });
   } catch (err) {
     console.error('GET assignment error:', err);

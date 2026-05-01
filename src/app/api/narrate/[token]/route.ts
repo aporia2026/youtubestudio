@@ -50,6 +50,12 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
     const comments = await getCommentsForAssignment(assignment.id);
     const sectionsWithFreshUrls = await refreshTakeUrls(sections as SectionRow[]);
 
+    // Refresh the full-audio presigned URL so the player doesn't fail mid-session.
+    const a = assignment as { full_audio_r2_key?: string | null; full_audio_url?: string | null; [key: string]: unknown };
+    if (a.full_audio_r2_key) {
+      try { a.full_audio_url = await getNarrationDownloadUrl(a.full_audio_r2_key); } catch {}
+    }
+
     return NextResponse.json({ assignment, sections: sectionsWithFreshUrls, comments });
   } catch (err) {
     console.error('GET narrate/[token] error:', err);

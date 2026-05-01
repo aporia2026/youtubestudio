@@ -20,6 +20,12 @@ interface Assignment {
   /** The narrator's personal_token, if available, so we can render a
    *  "Back to dashboard" link from any single-assignment view. */
   narrator_personal_token?: string | null;
+  /** When the narrator uploads a single file covering the whole script,
+   *  the take id + url + duration are cached here. Owner can leave
+   *  timestamped feedback on it via the standard TakeReview surface. */
+  full_audio_take_id?: string | null;
+  full_audio_url?: string | null;
+  full_audio_duration_seconds?: number | null;
 }
 
 interface Take {
@@ -378,6 +384,79 @@ export function NarratorPortal({ token }: { token: string }) {
     finally { setUploading(null); }
   }, [token]);
 
+  /**
+   * Upload one audio file that covers the whole script — alternative to
+   * recording per-section. Goes to a synthetic "section 0" backing take so
+   * the existing review/comment surfaces work unchanged.
+   */
+  const handleFullUpload = useCallback(async (file: File) => {
+    if (!file.type.startsWith('audio/')) {
+      alert('Please choose an audio file.');
+      return;
+    }
+    setFullUploading(true);
+    try {
+      let durationSeconds: number | undefined;
+      try {
+        const audioEl = document.createElement('audio');
+        audioEl.preload = 'metadata';
+        const objectUrl = URL.createObjectURL(file);
+        audioEl.src = objectUrl;
+        await new Promise<void>(resolve => {
+          audioEl.onloadedmetadata = () => resolve();
+          audioEl.onerror = () => resolve();
+        });
+        if (isFinite(audioEl.duration)) durationSeconds = Math.round(audioEl.duration);
+        URL.revokeObjectURL(objectUrl);
+      } catch {}
+
+      const reserveRes = await fetch(`/api/narrate/${token}/full-audio`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileName: file.name,
+          contentType: file.type,
+          fileSize: file.size,
+          durationSeconds,
+        }),
+      });
+      if (!reserveRes.ok) {
+        const err = await reserveRes.json().catch(() => ({}));
+        throw new Error(err.error || `Server returned ${reserveRes.status}`);
+      }
+      const { uploadUrl, takeId, audioUrl } = await reserveRes.json();
+
+      const putRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type },
+        body: file,
+      });
+      if (!putRes.ok) {
+        throw new Error(`R2 rejected the upload (HTTP ${putRes.status}). Check bucket CORS configuration.`);
+      }
+
+      await fetch(`/api/narrate/${token}/full-audio`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ takeId, durationSeconds, fileSize: file.size }),
+      }).catch(() => {});
+
+      setAssignment(prev => prev ? {
+        ...prev,
+        full_audio_take_id: takeId,
+        full_audio_url: audioUrl,
+        full_audio_duration_seconds: durationSeconds ?? prev.full_audio_duration_seconds ?? null,
+        status: prev.status === 'received' || prev.status === 'assigned' ? 'recording' : prev.status,
+      } : prev);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Upload failed';
+      console.error('Full-audio upload failed:', e);
+      alert(`Upload failed: ${msg}`);
+    } finally {
+      setFullUploading(false);
+    }
+  }, [token]);
+
   const handleComment = useCallback(async (sectionId: string) => {
     if (!commentText.trim() || !assignment) return;
     try {
@@ -418,15 +497,18 @@ export function NarratorPortal({ token }: { token: string }) {
     );
   }
 
-  const approvedCount = sections.filter(s => s.status === 'approved').length;
-  const uploadedCount = sections.filter(s => s.takes && s.takes.length > 0).length;
-  const progress = sections.length > 0 ? Math.round((uploadedCount / sections.length) * 100) : 0;
+  // Section 0 is the synthetic full-script section. Hide it from the normal
+  // per-section listings — it surfaces as the "Full narration" card instead.
+  const realSections = sections.filter(s => s.section_number !== 0);
+  const approvedCount = realSections.filter(s => s.status === 'approved').length;
+  const uploadedCount = realSections.filter(s => s.takes && s.takes.length > 0).length;
+  const progress = realSections.length > 0 ? Math.round((uploadedCount / realSections.length) * 100) : 0;
   const assignmentStatus = STATUS_LABELS[assignment.status] || STATUS_LABELS.assigned;
-  const totalDuration = sections.reduce((acc, s) => acc + (s.estimated_duration_seconds || 0), 0);
+  const totalDuration = realSections.reduce((acc, s) => acc + (s.estimated_duration_seconds || 0), 0);
   // Spoken word count — sums words in every section after stripping any
   // bracketed cue ([VISUAL CUE: …], [excited], [pause], etc.). What the
   // narrator will literally read aloud, not the raw script length.
-  const totalWords = sections.reduce((acc, s) => {
+  const totalWords = realSections.reduce((acc, s) => {
     const spoken = (s.script_text || '').replace(/\[[^\]]+\]/g, '');
     return acc + spoken.split(/\s+/).filter(w => w.length > 0).length;
   }, 0);
@@ -559,7 +641,7 @@ export function NarratorPortal({ token }: { token: string }) {
               </>
             )}
           </div>
-          {uploadedCount === sections.length && sections.length > 0 && assignment.status !== 'submitted' && assignment.status !== 'approved' && (
+          {uploadedCount === realSections.length && realSections.length > 0 && assignment.status !== 'submitted' && assignment.status !== 'approved' && (
             <HeroAction
               tone="green"
               icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>}
@@ -576,7 +658,7 @@ export function NarratorPortal({ token }: { token: string }) {
           <div className="flex items-center justify-between text-xs mb-1.5" style={{ color: 'var(--text-muted)' }}>
             <span>
               <span style={{ color: progress >= 100 ? '#22c55e' : 'var(--text-primary)', fontWeight: 600 }}>{uploadedCount}</span>
-              {' / '}{sections.length} sections uploaded
+              {' / '}{realSections.length} sections uploaded
             </span>
             <span>{progress}%</span>
           </div>
@@ -613,13 +695,28 @@ export function NarratorPortal({ token }: { token: string }) {
           )}
         </div>
 
+        {/* Full-script upload — drop one audio file that covers the whole
+            narration. Alternative to recording per-section. Owner can leave
+            timestamped feedback on it via the same review surface. */}
+        {viewMode !== 'plain' && (
+          <FullNarrationCard
+            assignment={assignment}
+            uploading={fullUploading}
+            onUpload={handleFullUpload}
+            scriptText={realSections.map(s => stripCues(s.script_text)).filter(Boolean).join('\n\n')}
+            reviewing={reviewingTakeId === assignment.full_audio_take_id}
+            onToggleReview={() => setReviewingTakeId(reviewingTakeId === assignment.full_audio_take_id ? null : (assignment.full_audio_take_id || null))}
+            token={token}
+          />
+        )}
+
         {/* Bulk-upload drop zone — visible in Sections + Recording modes only.
             Lets the narrator drop a folder of audio files at once and have
             them auto-mapped to sections by filename. Uses silent mode so each
             row's error state shows in the mapping panel instead of an alert. */}
         {viewMode !== 'plain' && (
           <BulkUploadZone
-            sections={sections}
+            sections={realSections}
             onUpload={(sectionId, file) => handleUpload(sectionId, file, { silent: true })}
           />
         )}
@@ -630,7 +727,7 @@ export function NarratorPortal({ token }: { token: string }) {
         {viewMode === 'plain' ? (
           <div className="rounded-xl p-6" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
             {(() => {
-              const visible = sections.filter(s => stripCues(s.script_text).length > 0);
+              const visible = realSections.filter(s => stripCues(s.script_text).length > 0);
               if (visible.length === 0) {
                 return <p className="text-sm text-center py-8" style={{ color: 'var(--text-muted)' }}>No narration text yet.</p>;
               }
@@ -663,7 +760,7 @@ export function NarratorPortal({ token }: { token: string }) {
         {/* Recording mode — flat row-per-section view, fastest path to upload */}
         {viewMode === 'recording' && (
           <RecordingModeView
-            sections={sections}
+            sections={realSections}
             comments={comments}
             uploading={uploading}
             onUpload={handleUpload}
@@ -672,7 +769,7 @@ export function NarratorPortal({ token }: { token: string }) {
 
         {/* Sections */}
         <div className="space-y-4" style={{ display: viewMode === 'sections' ? undefined : 'none' }}>
-          {sections.map(section => {
+          {realSections.map(section => {
             const sectionStatus = SECTION_STATUS[section.status] || SECTION_STATUS.pending;
             const isExpanded = expandedSection === section.id;
             const sectionComments = comments.filter(c => c.section_id === section.id);
@@ -958,6 +1055,99 @@ function renderScriptWithBadges(text: string, markers: Array<{ tag: string; posi
       </span>
     );
   });
+}
+
+// ─── Full-narration single-file upload card ────────────────────────────────
+
+function FullNarrationCard({
+  assignment,
+  uploading,
+  onUpload,
+  scriptText,
+  reviewing,
+  onToggleReview,
+  token,
+}: {
+  assignment: Assignment;
+  uploading: boolean;
+  onUpload: (file: File) => Promise<void>;
+  /** Combined script across every real section. Drives the script-follow panel
+   *  in the embedded TakeReview so the owner can verify every word. */
+  scriptText: string;
+  reviewing: boolean;
+  onToggleReview: () => void;
+  token: string;
+}) {
+  const hasUpload = !!assignment.full_audio_take_id && !!assignment.full_audio_url;
+
+  return (
+    <div className="mb-5 rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+      <div className="px-4 py-3 flex items-center gap-3">
+        <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'rgba(34,197,94,0.15)' }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+            {hasUpload ? 'Full narration uploaded' : 'Full narration — one file for the whole script'}
+          </p>
+          <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            {hasUpload
+              ? 'The owner can leave timestamped feedback on this file.'
+              : 'Have the whole thing in one take? Drop it here instead of uploading per-section.'}
+          </p>
+        </div>
+        {hasUpload ? (
+          <>
+            <button
+              onClick={onToggleReview}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+              style={{ background: reviewing ? 'rgba(124,58,237,0.25)' : 'rgba(124,58,237,0.15)', color: '#a78bfa', border: '1px solid rgba(124,58,237,0.3)' }}
+            >
+              {reviewing ? '▾ Hide review' : '▸ Review & comments'}
+            </button>
+            <label className="px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }}>
+              <input
+                type="file"
+                accept="audio/*"
+                className="hidden"
+                disabled={uploading}
+                onChange={e => { const f = e.target.files?.[0]; if (f) onUpload(f); e.target.value = ''; }}
+              />
+              {uploading ? 'Uploading…' : 'Replace'}
+            </label>
+          </>
+        ) : (
+          <label className="px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors" style={{ background: 'rgba(34,197,94,0.18)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.3)' }}>
+            <input
+              type="file"
+              accept="audio/*"
+              className="hidden"
+              disabled={uploading}
+              onChange={e => { const f = e.target.files?.[0]; if (f) onUpload(f); e.target.value = ''; }}
+            />
+            {uploading ? 'Uploading…' : 'Upload one file'}
+          </label>
+        )}
+      </div>
+
+      {hasUpload && reviewing && assignment.full_audio_take_id && assignment.full_audio_url && (
+        <div className="px-4 pb-4" style={{ borderTop: '1px solid var(--border)' }}>
+          <div className="pt-3">
+            <TakeReview
+              takeId={assignment.full_audio_take_id}
+              audioUrl={assignment.full_audio_url}
+              scriptText={scriptText}
+              initialDurationMs={assignment.full_audio_duration_seconds ? assignment.full_audio_duration_seconds * 1000 : null}
+              listUrl={`/api/narrate/${token}/takes/${assignment.full_audio_take_id}/comments`}
+              itemUrl={(id) => `/api/narrate/${token}/take-comments/${id}`}
+              author={{ name: assignment.narrator_name, color: assignment.narrator_color, role: 'narrator' }}
+              canDeleteAny={false}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─── View tab ──────────────────────────────────────────────────────────────

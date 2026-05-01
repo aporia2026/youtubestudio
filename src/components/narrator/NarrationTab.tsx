@@ -15,6 +15,11 @@ interface Assignment {
   share_token: string;
   deadline: string | null;
   created_at: string;
+  /** Set when the narrator uploaded one audio file covering the whole
+   *  script — owner reviews it via TakeReview. */
+  full_audio_take_id?: string | null;
+  full_audio_url?: string | null;
+  full_audio_duration_seconds?: number | null;
 }
 
 interface Take {
@@ -201,9 +206,12 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
     );
   }
 
-  const approvedCount = sections.filter(s => s.status === 'approved').length;
-  const allApproved = approvedCount === sections.length && sections.length > 0;
-  const progress = sections.length > 0 ? Math.round((approvedCount / sections.length) * 100) : 0;
+  // Section 0 is the synthetic "full narration" container — surfaced as its
+  // own card, not in the per-section grid.
+  const realSections = sections.filter(s => s.section_number !== 0);
+  const approvedCount = realSections.filter(s => s.status === 'approved').length;
+  const allApproved = approvedCount === realSections.length && realSections.length > 0;
+  const progress = realSections.length > 0 ? Math.round((approvedCount / realSections.length) * 100) : 0;
 
   return (
     <div className="space-y-4">
@@ -215,7 +223,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
           </div>
           <div>
             <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{activeAssignment.narrator_name}</p>
-            <p className="text-xs capitalize" style={{ color: 'var(--text-muted)' }}>{activeAssignment.status} — {approvedCount}/{sections.length} approved</p>
+            <p className="text-xs capitalize" style={{ color: 'var(--text-muted)' }}>{activeAssignment.status} — {approvedCount}/{realSections.length} approved</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -236,9 +244,55 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
         <div className="h-full rounded-full transition-all" style={{ width: `${progress}%`, background: 'linear-gradient(90deg, #7c3aed, #22c55e)' }} />
       </div>
 
+      {/* Full-narration card — surfaces when the narrator chose to upload a
+          single audio file covering the whole script. Owner reviews it via
+          the same TakeReview component used per-take. */}
+      {activeAssignment.full_audio_take_id && activeAssignment.full_audio_url && (
+        <div className="glass rounded-xl p-4">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
+              <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Full narration</span>
+              {activeAssignment.full_audio_duration_seconds && (
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  ~{Math.floor(activeAssignment.full_audio_duration_seconds / 60)}:{(Math.round(activeAssignment.full_audio_duration_seconds) % 60).toString().padStart(2, '0')}
+                </span>
+              )}
+            </div>
+            <button
+              onClick={() => setReviewingTakeId(reviewingTakeId === activeAssignment.full_audio_take_id ? null : (activeAssignment.full_audio_take_id || null))}
+              className="text-[10px] px-2 py-0.5 rounded transition-colors cursor-pointer"
+              style={{
+                background: reviewingTakeId === activeAssignment.full_audio_take_id ? 'rgba(124,58,237,0.25)' : 'rgba(124,58,237,0.1)',
+                color: '#a78bfa',
+                border: '1px solid rgba(124,58,237,0.3)',
+              }}
+            >
+              {reviewingTakeId === activeAssignment.full_audio_take_id ? '▾ Hide review' : '▸ Review & comment'}
+            </button>
+          </div>
+          {reviewingTakeId === activeAssignment.full_audio_take_id ? (
+            <div className="pt-2">
+              <TakeReview
+                takeId={activeAssignment.full_audio_take_id}
+                audioUrl={activeAssignment.full_audio_url}
+                scriptText={realSections.map(s => s.script_text).filter(Boolean).join('\n\n')}
+                initialDurationMs={activeAssignment.full_audio_duration_seconds ? activeAssignment.full_audio_duration_seconds * 1000 : null}
+                listUrl={`/api/narrator/takes/${activeAssignment.full_audio_take_id}/comments`}
+                itemUrl={(id) => `/api/narrator/take-comments/${id}`}
+                author={{ name: 'Owner', color: '#06b6d4', role: 'owner' }}
+                canDeleteAny
+              />
+            </div>
+          ) : (
+            <AudioPlayer src={activeAssignment.full_audio_url} compact />
+          )}
+        </div>
+      )}
+
       {/* Sections grid */}
       <div className="space-y-3">
-        {sections.map(section => {
+        {realSections.map(section => {
           const sc = STATUS_COLORS[section.status] || STATUS_COLORS.pending;
           const takes = section.takes || [];
           return (
