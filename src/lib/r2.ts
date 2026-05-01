@@ -114,6 +114,49 @@ export function buildNarrationKey(assignmentId: string, sectionId: string, takeN
   return `assignments/${assignmentId}/sections/${sectionId}/take-${takeNumber}-${Date.now()}-${sanitized}`;
 }
 
+/**
+ * Stream an object out of the narration bucket with optional Range support.
+ * Used by the audio-proxy routes so the browser fetches audio same-origin
+ * (no CORS dance, no presigned-URL expiry inside a long review session).
+ *
+ * Forwards a Range header verbatim if present — R2/S3 honour byte-range
+ * GETs natively. Returns the AWS SDK response so the caller can echo
+ * the relevant headers (Content-Type, Content-Length, Accept-Ranges,
+ * Content-Range) back to the browser; without those audio seek goes
+ * sequential and waveform decode bloats memory.
+ */
+export async function streamFromNarrationBucket(
+  key: string,
+  range?: string | null,
+): Promise<{
+  body: ReadableStream<Uint8Array> | null;
+  contentType: string | null;
+  contentLength: number | null;
+  contentRange: string | null;
+  acceptRanges: string | null;
+  status: 200 | 206;
+}> {
+  const client = getR2Client();
+  const command = new GetObjectCommand({
+    Bucket: getNarrationBucket(),
+    Key: key,
+    Range: range || undefined,
+  });
+  const res = await client.send(command);
+  // res.Body in the AWS SDK v3 web build is a ReadableStream when running
+  // on the Node 18+ / Edge runtime fetch transport. Cast accordingly —
+  // older Node-stream variants are not in our deploy targets.
+  const body = (res.Body as unknown as ReadableStream<Uint8Array>) ?? null;
+  return {
+    body,
+    contentType: res.ContentType ?? null,
+    contentLength: typeof res.ContentLength === 'number' ? res.ContentLength : null,
+    contentRange: res.ContentRange ?? null,
+    acceptRanges: res.AcceptRanges ?? 'bytes',
+    status: range && res.ContentRange ? 206 : 200,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Images bucket — image references + thumbnails (and any other static images)
 // ---------------------------------------------------------------------------

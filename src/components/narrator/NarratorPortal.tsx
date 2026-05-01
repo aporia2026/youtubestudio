@@ -897,7 +897,10 @@ export function NarratorPortal({ token }: { token: string }) {
                                   <div className="pt-3">
                                     <TakeReview
                                       takeId={take.id}
-                                      audioUrl={take.audio_url}
+                                      // Same-origin audio proxy — see the
+                                      // owner-side TakeReview wiring for the
+                                      // CORS / expiry rationale.
+                                      audioUrl={`/api/narrate/${token}/takes/${take.id}/audio`}
                                       scriptText={section.script_text}
                                       initialDurationMs={take.duration_seconds ? take.duration_seconds * 1000 : null}
                                       listUrl={`/api/narrate/${token}/takes/${take.id}/comments`}
@@ -1152,7 +1155,7 @@ function FullNarrationCard({
           <div className="pt-3">
             <TakeReview
               takeId={assignment.full_audio_take_id}
-              audioUrl={assignment.full_audio_url}
+              audioUrl={`/api/narrate/${token}/takes/${assignment.full_audio_take_id}/audio`}
               scriptText={scriptText}
               initialDurationMs={assignment.full_audio_duration_seconds ? assignment.full_audio_duration_seconds * 1000 : null}
               listUrl={`/api/narrate/${token}/takes/${assignment.full_audio_take_id}/comments`}

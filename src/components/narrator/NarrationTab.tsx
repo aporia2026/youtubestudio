@@ -275,7 +275,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
             <div className="pt-2">
               <TakeReview
                 takeId={activeAssignment.full_audio_take_id}
-                audioUrl={activeAssignment.full_audio_url}
+                audioUrl={`/api/narrator/takes/${activeAssignment.full_audio_take_id}/audio`}
                 scriptText={realSections.map(s => s.script_text).filter(Boolean).join('\n\n')}
                 initialDurationMs={activeAssignment.full_audio_duration_seconds ? activeAssignment.full_audio_duration_seconds * 1000 : null}
                 listUrl={`/api/narrator/takes/${activeAssignment.full_audio_take_id}/comments`}
@@ -347,7 +347,11 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
                             <div className="pt-3">
                               <TakeReview
                                 takeId={take.id}
-                                audioUrl={take.audio_url}
+                                // Use the same-origin audio proxy so
+                                // wavesurfer's fetch doesn't need R2 CORS
+                                // configured, and so the URL doesn't carry
+                                // a presign expiry mid-review-session.
+                                audioUrl={`/api/narrator/takes/${take.id}/audio`}
                                 scriptText={section.script_text}
                                 initialDurationMs={take.duration_seconds ? take.duration_seconds * 1000 : null}
                                 listUrl={`/api/narrator/takes/${take.id}/comments`}
