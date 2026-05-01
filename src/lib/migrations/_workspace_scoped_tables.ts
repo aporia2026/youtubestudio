@@ -34,6 +34,7 @@ export const ROOT_TENANT_TABLES = [
   'templates',
   'reference_library',
   'google_auth_tokens',
+  'production_doc_styles',
 ] as const;
 
 export interface ChildTenantTable {

@@ -9,6 +9,11 @@ export interface SheetsRow {
   visual_type: string;
   visual_description: string;
   stock_search_terms: string;
+  /** Optional editor-composite asset (logo / screenshot / photo) overlaid
+   *  on top of the AI-generated visual. Surfaces as a dedicated column
+   *  in the Sheets export only when at least one row in the doc carries
+   *  a non-empty value — otherwise the legacy 11-column layout is kept. */
+  overlay_stock_terms?: string;
   ai_image_prompt: string;
   on_screen_text: string;
   notes: string;
@@ -100,7 +105,36 @@ export async function createProductionDocSheet(
   const HEADER_ROW = 3; // 0-indexed (row 4 in Sheets = col headers)
   const DATA_START = 4; // 0-indexed (row 5+ in Sheets = data)
   const numDataRows = data.rows.length;
-  const COLS = 11; // added Image Preview column (K)
+
+  // The Overlay column is added only when at least one row carries a
+  // non-empty overlay_stock_terms value. Pure-doodle / pure-cinematic
+  // / legacy docs keep the original 11-column layout (Image at G,
+  // Image Preview at K) byte-for-byte. When overlays exist, an
+  // Overlay column is inserted at F, shifting every later column
+  // down by one (Image G→H, Image Preview K→L, COLS 11→12).
+  const hasOverlay = data.rows.some((r) => (r.overlay_stock_terms ?? '').trim().length > 0);
+  const COLS = hasOverlay ? 12 : 11;
+  // Column indices used in formulas + formatting. Computed once so a
+  // future schema change can't drift between layout, formulas, and CSS.
+  const COL = {
+    NUM: 0,
+    TIMECODE: 1,
+    SCRIPT: 2,
+    VIS_TYPE: 3,
+    VIS_DESC: 4,
+    STOCK: 5,
+    OVERLAY: hasOverlay ? 6 : -1,
+    IMAGE_LINK: hasOverlay ? 7 : 6,
+    AI_PROMPT: hasOverlay ? 8 : 7,
+    ON_SCREEN: hasOverlay ? 9 : 8,
+    NOTES: hasOverlay ? 10 : 9,
+    IMAGE_PREVIEW: hasOverlay ? 11 : 10,
+  } as const;
+  /** 0-indexed column number → A1 letter ("A", "B", … up to "Z"). */
+  const colLetter = (n: number): string => String.fromCharCode('A'.charCodeAt(0) + n);
+  const lastCol = colLetter(COLS - 1);
+  const imageLinkLetter = colLetter(COL.IMAGE_LINK);
+  const imagePreviewLetter = colLetter(COL.IMAGE_PREVIEW);
 
   // Compute the full continuous script that we'll append at the bottom of
   // the doc. Editors often want to read the narrative end-to-end as one
@@ -134,7 +168,9 @@ export async function createProductionDocSheet(
   // ── 2. Write values ────────────────────────────────────────────────────────
   const HEADERS = [
     '#', 'Timecode', 'Script Text', 'Visual Type', 'Visual Description',
-    'Stock Search Terms', 'Image', 'AI Image Prompt', 'On-Screen Text', 'Notes', 'Image Preview',
+    'Stock Search Terms',
+    ...(hasOverlay ? ['Overlay'] : []),
+    'Image', 'AI Image Prompt', 'On-Screen Text', 'Notes', 'Image Preview',
   ];
 
   const valueRows: (string | number)[][] = [
@@ -158,15 +194,16 @@ export async function createProductionDocSheet(
       r.visual_type,
       r.visual_description,
       r.stock_search_terms,
-      '', // col G: HYPERLINK formula added below
+      ...(hasOverlay ? [r.overlay_stock_terms ?? ''] : []),
+      '', // image-link col: HYPERLINK formula added below
       r.ai_image_prompt,
       r.on_screen_text,
       r.notes,
-      '', // col K: IMAGE formula added below
+      '', // image-preview col: IMAGE formula added below
     ]),
   ];
 
-  const range = `A1:K${DATA_START + numDataRows}`;
+  const range = `A1:${lastCol}${DATA_START + numDataRows}`;
   const valRes = await sheetsPut(
     `${SHEETS_BASE}/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,
     accessToken,
@@ -181,23 +218,25 @@ export async function createProductionDocSheet(
     const safeImageUrl = row.imageUrl ? safeHyperlinkUrl(row.imageUrl) : null;
     const safeSearchUrl = row.searchUrl ? safeHyperlinkUrl(row.searchUrl) : null;
 
-    // Column G — hyperlink to image or search
+    // Image-link column — hyperlink to image or search.
+    // Letter is dynamic so the layout shift caused by the optional
+    // Overlay column doesn't drop the formula on the wrong cell.
     if (safeImageUrl) {
       formulaUpdates.push({
-        range: `G${sheetRow}`,
+        range: `${imageLinkLetter}${sheetRow}`,
         values: [[`=HYPERLINK("${safeImageUrl}","View Image")`]],
       });
     } else if (safeSearchUrl) {
       formulaUpdates.push({
-        range: `G${sheetRow}`,
+        range: `${imageLinkLetter}${sheetRow}`,
         values: [[`=HYPERLINK("${safeSearchUrl}","Search Images")`]],
       });
     }
 
-    // Column K — inline image preview using =IMAGE(url, 1) (fit to cell)
+    // Image-preview column — inline image using =IMAGE(url, 1) (fit to cell).
     if (safeImageUrl) {
       formulaUpdates.push({
-        range: `K${sheetRow}`,
+        range: `${imagePreviewLetter}${sheetRow}`,
         values: [[`=IMAGE("${safeImageUrl}",1)`]],
       });
     }
@@ -234,7 +273,7 @@ export async function createProductionDocSheet(
   }
 
   // ── 4. Apply formatting ────────────────────────────────────────────────────
-  const requests = buildFormatRequests(sheetId, HEADER_ROW, DATA_START, data.rows, COLS);
+  const requests = buildFormatRequests(sheetId, HEADER_ROW, DATA_START, data.rows, COLS, COL);
   const fmtRes = await sheetsPost(
     `${SHEETS_BASE}/${spreadsheetId}:batchUpdate`,
     accessToken,
@@ -321,12 +360,29 @@ function border(sheetId: number, r1: number, r2: number, c1: number, c2: number,
   };
 }
 
+interface ColumnMap {
+  readonly NUM: number;
+  readonly TIMECODE: number;
+  readonly SCRIPT: number;
+  readonly VIS_TYPE: number;
+  readonly VIS_DESC: number;
+  readonly STOCK: number;
+  /** -1 when the Overlay column is absent (no rows have overlay_stock_terms). */
+  readonly OVERLAY: number;
+  readonly IMAGE_LINK: number;
+  readonly AI_PROMPT: number;
+  readonly ON_SCREEN: number;
+  readonly NOTES: number;
+  readonly IMAGE_PREVIEW: number;
+}
+
 function buildFormatRequests(
   sheetId: number,
   HEADER_ROW: number,
   DATA_START: number,
   rows: SheetsRow[],
   COLS: number,
+  COL: ColumnMap,
 ): unknown[] {
   const reqs: unknown[] = [];
   const numRows = rows.length;
@@ -368,8 +424,12 @@ function buildFormatRequests(
   }));
   reqs.push(rowHeight(sheetId, HEADER_ROW, HEADER_ROW + 1, 36));
 
-  // — Column widths: #, Time, Script, VisType, VisDesc, Stock, Image, AIPrompt, OnScreen, Notes, ImagePreview
-  const widths = [36, 68, 230, 130, 190, 155, 110, 270, 135, 135, 160];
+  // — Column widths.
+  // Base layout: #, Time, Script, VisType, VisDesc, Stock, [Overlay?,] Image, AIPrompt, OnScreen, Notes, ImagePreview.
+  // The Overlay column (155px, same as Stock) is inserted only when present.
+  const widths = [36, 68, 230, 130, 190, 155];
+  if (COL.OVERLAY >= 0) widths.push(155);
+  widths.push(110, 270, 135, 135, 160);
   widths.forEach((px, c) => reqs.push(colWidth(sheetId, c, c + 1, px)));
 
   // — Data rows
@@ -405,7 +465,7 @@ function buildFormatRequests(
     // Visual type — color-coded badge
     const vt = VT_COLORS[row.visual_type];
     if (vt) {
-      reqs.push(cellFmt(sheetId, r, r + 1, 3, 4, {
+      reqs.push(cellFmt(sheetId, r, r + 1, COL.VIS_TYPE, COL.VIS_TYPE + 1, {
         backgroundColor: vt.bg,
         textFormat: { foregroundColor: vt.text, fontSize: 9, bold: true },
         horizontalAlignment: 'CENTER',
@@ -413,15 +473,26 @@ function buildFormatRequests(
       }));
     }
 
-    // Image link column (G) — center, blue link style
-    reqs.push(cellFmt(sheetId, r, r + 1, 6, 7, {
+    // Overlay column — amber pill so editors immediately see composite rows.
+    if (COL.OVERLAY >= 0 && (row.overlay_stock_terms ?? '').trim().length > 0) {
+      reqs.push(cellFmt(sheetId, r, r + 1, COL.OVERLAY, COL.OVERLAY + 1, {
+        backgroundColor: rgb(254, 243, 199),
+        textFormat: { foregroundColor: rgb(180, 83, 9), fontSize: 9, bold: true },
+        horizontalAlignment: 'CENTER',
+        verticalAlignment: 'MIDDLE',
+        wrapStrategy: 'WRAP',
+      }));
+    }
+
+    // Image link column — center, blue link style
+    reqs.push(cellFmt(sheetId, r, r + 1, COL.IMAGE_LINK, COL.IMAGE_LINK + 1, {
       textFormat: { foregroundColor: rgb(59, 130, 246), fontSize: 9, underline: true },
       horizontalAlignment: 'CENTER',
       verticalAlignment: 'MIDDLE',
     }));
 
-    // Image preview column (K) — center aligned, no text wrapping
-    reqs.push(cellFmt(sheetId, r, r + 1, 10, 11, {
+    // Image preview column — center aligned, no text wrapping
+    reqs.push(cellFmt(sheetId, r, r + 1, COL.IMAGE_PREVIEW, COL.IMAGE_PREVIEW + 1, {
       horizontalAlignment: 'CENTER',
       verticalAlignment: 'MIDDLE',
       wrapStrategy: 'CLIP',

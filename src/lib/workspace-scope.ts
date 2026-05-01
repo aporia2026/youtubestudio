@@ -62,6 +62,7 @@ export const SCOPED_TABLES = [
   'messages',
   'dubbed_voiceovers',
   'shorts',
+  'production_doc_styles',
 ] as const;
 
 export type ScopedTable = (typeof SCOPED_TABLES)[number];

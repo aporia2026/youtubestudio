@@ -1106,6 +1106,7 @@ function ProductionDocPage() {
           visual_type: r.visual_type || '',
           visual_description: r.visual_description || '',
           stock_search_terms: r.stock_search_terms || '',
+          overlay_stock_terms: r.overlay_stock_terms || '',
           ai_image_prompt: r.ai_image_prompt || '',
           on_screen_text: r.on_screen_text || '',
           notes: r.notes || '',

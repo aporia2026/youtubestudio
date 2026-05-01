@@ -1801,12 +1801,32 @@ Return ONLY valid JSON.`,
 
 // ─── Production Document ──────────────────────────────────────────────────────
 
+/**
+ * Fully-resolved style payload accepted by `productionDocPrompt`.
+ *
+ * Mirrors `ResolvedStyle` from `@/lib/production-doc-styles` but is duplicated
+ * here so the prompt builder doesn't pull a server-only DB module into any
+ * client bundle that imports prompts.ts. Keep the shapes in sync.
+ */
+export interface ProductionDocStyleInput {
+  /** Stable id — used for logging and the user-prompt header. */
+  id: string;
+  /** Human label shown to the model. */
+  label: string;
+  /** Suffix appended verbatim to every AI image prompt. */
+  ai_image_suffix: string;
+  /** Free-form rules injected into the system prompt. Optional. */
+  mixing_rules?: string;
+  /** True if rows may populate `overlay_stock_terms` for editor composites. */
+  allow_overlay_stock: boolean;
+}
+
 export function productionDocPrompt({
   script,
   niche,
   topic,
   speakingPaceWpm = 135,
-  stylePreset,
+  style,
   creativeBrief,
   startTimecodeSeconds = 0,
   isChunk = false,
@@ -1815,7 +1835,8 @@ export function productionDocPrompt({
   niche: string;
   topic?: string;
   speakingPaceWpm?: number;
-  stylePreset?: string;
+  /** Resolved style (built-in or workspace-saved). Pass null for "no style". */
+  style?: ProductionDocStyleInput | null;
   creativeBrief?: string;
   /** Timecode offset in seconds — used when generating a chunk of a longer script */
   startTimecodeSeconds?: number;
@@ -1833,28 +1854,24 @@ export function productionDocPrompt({
   const totalSecs = chunkDurationSeconds % 60;
   const totalDuration = `${totalMins}:${String(totalSecs).padStart(2, '0')}`;
 
-  const STYLE_SUFFIXES: Record<string, string> = {
-    cinematic:    'cinematic live-action photography, dramatic lighting, anamorphic lens, movie-grade color grading, film grain, 8K quality',
-    animation_2d: '2D flat vector animation style, vibrant saturated colors, clean crisp outlines, motion-graphics aesthetic, NOT photorealistic, NOT a photograph',
-    animation_3d: '3D CGI render, Blender/Cinema4D quality, studio lighting, smooth shading, high-poly models, NOT photorealistic photography',
-    documentary:  'documentary photography, handheld camera feel, natural available light, authentic candid moment, journalistic realism',
-    stock:        'professional stock photo, clean commercial photography, bright natural lighting, sharp focus, Getty/Shutterstock quality',
-    tech:         'dark UI background, neon glow accents, cyberpunk aesthetic, blue and purple lighting, holographic data visualization, 8K ultra-detailed',
-    viral:        'bold high-contrast social media aesthetic, saturated colors, dramatic lighting, Gen-Z energy, YouTube thumbnail quality',
-    whiteboard:   'whiteboard animation style, hand-drawn black marker sketch on white background, educational explainer, minimal and clean, NOT photorealistic',
-  };
-
-  const styleSuffix = stylePreset && STYLE_SUFFIXES[stylePreset] ? STYLE_SUFFIXES[stylePreset] : null;
+  const styleSuffix = style?.ai_image_suffix ?? null;
+  const mixingRules = style?.mixing_rules?.trim() ?? '';
+  const allowOverlay = style?.allow_overlay_stock === true;
 
   // Build the mandatory style block — controls HOW images look, not which shot types appear
-  const mandatoryStyleBlock = (styleSuffix || creativeBrief) ? `
+  const mandatoryStyleBlock = (styleSuffix || creativeBrief || mixingRules) ? `
 ## MANDATORY IMAGE STYLE — APPLIES TO ALL ai_image_prompt FIELDS
 
-${styleSuffix ? `### Chosen Style: ${stylePreset}
+${styleSuffix ? `### Chosen Style: ${style!.label}
 Every non-empty ai_image_prompt MUST end with this exact suffix (copy verbatim, do not rephrase):
 "${styleSuffix}"
 
 The style controls the VISUAL AESTHETIC of generated images — it does not restrict which shot types (Talking Head, B-Roll, etc.) you may use. Choose shot types based on what best serves the content. The style suffix ensures every generated image looks consistent.` : ''}
+
+${mixingRules ? `### Mixing Rules — When to Combine AI Visuals With Real Stock Assets
+These rules tell you when a row should ALSO carry an \`overlay_stock_terms\` value so the editor can composite a real-world asset (logo, screenshot, photograph) on top of the AI-generated visual in post.
+
+${mixingRules}` : ''}
 
 ${creativeBrief ? `### Creative Brief — Hard Requirements for Every Shot
 These requirements must be reflected in every visual description and ai_image_prompt:
@@ -1902,6 +1919,11 @@ Break the provided script into timed production rows. Each row = one visual shot
 - For ALL other rows: write a full scene prompt, then append the mandatory style suffix verbatim${styleSuffix ? ` ("${styleSuffix}")` : ''}
 - The prompt must describe the exact scene: subject, action, environment, lighting, camera angle — then the style suffix
 
+${allowOverlay ? `**overlay_stock_terms** — OPTIONAL. 2–4 comma-separated keywords for a real-world asset (logo, screenshot, photo) the editor will composite on top of the AI-generated visual in post. ONLY populate this when the Mixing Rules above explicitly call for it. Leave as "" otherwise. When set:
+  - visual_type STAYS as Animation (or whatever the doodle scene calls for) — do NOT switch to "Screen Recording" or "B-Roll"
+  - ai_image_prompt still describes a complete stand-alone doodle scene, leaving visual room for the overlay
+  - notes should describe what the editor overlays and where (e.g. "Composite: drop the real Apple logo onto the blank rectangle in the doodle")` : ''}
+
 **on_screen_text** — Text to display on screen. Empty string if none.
 
 **notes** — Editor production notes. Empty string if none.
@@ -1921,7 +1943,8 @@ Break the provided script into timed production rows. Each row = one visual shot
       "visual_type": "Title Card",
       "visual_description": "specific shot direction matching the chosen style",
       "stock_search_terms": "keyword1, keyword2",
-      "ai_image_prompt": "Full detailed scene prompt... ${styleSuffix ?? ''}",
+      "ai_image_prompt": "Full detailed scene prompt... ${styleSuffix ?? ''}",${allowOverlay ? `
+      "overlay_stock_terms": "",` : ''}
       "on_screen_text": "",
       "notes": ""
     }
@@ -1930,13 +1953,14 @@ Break the provided script into timed production rows. Each row = one visual shot
 \`\`\`
 
 ABSOLUTE RULES:
-- Every row has all 8 fields
+- Every row has all ${allowOverlay ? '9' : '8'} fields
 - script_text is verbatim from the script — never paraphrase
 - ai_image_prompt ≥ 40 words for every non-Talking Head / non-Screen Recording row
 - Every ai_image_prompt MUST end with the style suffix${styleSuffix ? ` "${styleSuffix}"` : ' (if one was specified)'}
 - Talking Head + Screen Recording → ai_image_prompt = ""
 - Opening row: ${isChunk ? 'First B-Roll/Animation scene (no Title Card — continuation chunk)' : 'Title Card or first B-Roll/Animation scene'}
-- Statistics/numbers in the script → "Statistics" type with on_screen_text`,
+- Statistics/numbers in the script → "Statistics" type with on_screen_text${allowOverlay ? `
+- overlay_stock_terms is OPTIONAL — populate it ONLY when the Mixing Rules apply. Most rows leave it as "".` : ''}`,
 
     user: `Generate a complete production document for this script.
 
@@ -1944,7 +1968,7 @@ ABSOLUTE RULES:
 **Niche:** ${niche}
 **Word Count:** ${wordCount} words
 **Estimated Duration:** ${totalDuration} at ${speakingPaceWpm} wpm
-**Visual Style:** ${stylePreset || 'not specified'}
+**Visual Style:** ${style?.label || 'not specified'}
 ${creativeBrief ? `**Creative Brief:**\n${creativeBrief}` : ''}
 
 REMINDER: Apply the mandatory visual style and creative brief requirements to EVERY row. Do not default to "Talking Head" shots unless the style and script demand it.
