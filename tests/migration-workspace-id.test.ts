@@ -26,6 +26,19 @@ function makeRecorder(handlers: Array<[RegExp, () => Promise<{ rows: unknown[]; 
   return { client: { query } as MigrationClient, calls };
 }
 
+/** Default handler set used by the 0012 / 0013 specs: pretends every tenant
+ *  table physically exists. Real failure modes (missing tables, etc.) are
+ *  exercised separately in the missing-tables tests below. */
+const SCHEMA_INTROSPECTION_RE = /SELECT table_name FROM information_schema\.tables/;
+function fullSchemaHandlers(): Array<[RegExp, () => Promise<{ rows: unknown[]; rowCount: number | null }>]> {
+  return [
+    [SCHEMA_INTROSPECTION_RE, async () => ({
+      rows: ALL_TENANT_TABLES.map((t) => ({ table_name: t })),
+      rowCount: ALL_TENANT_TABLES.length,
+    })],
+  ];
+}
+
 describe('tenant table list invariants', () => {
   it('every root and child name is a safe SQL identifier', () => {
     const SAFE = /^[a-z_][a-z0-9_]*$/;
@@ -107,6 +120,7 @@ describe('migration 0012 — backfill workspace_id', () => {
   it('updates every root table with the bootstrap workspace id', async () => {
     const { client, calls } = makeRecorder([
       [SELECT_BOOTSTRAP_RE, async () => ({ rows: [{ id: 'bootstrap-ws' }], rowCount: 1 })],
+      ...fullSchemaHandlers(),
     ]);
     await migration0012.up(client);
 
@@ -122,6 +136,7 @@ describe('migration 0012 — backfill workspace_id', () => {
   it('updates every child table by joining its parent', async () => {
     const { client, calls } = makeRecorder([
       [SELECT_BOOTSTRAP_RE, async () => ({ rows: [{ id: 'bootstrap-ws' }], rowCount: 1 })],
+      ...fullSchemaHandlers(),
     ]);
     await migration0012.up(client);
 
@@ -139,10 +154,10 @@ describe('migration 0012 — backfill workspace_id', () => {
   it('processes children in increasing depth order (1 → 4)', async () => {
     const { client, calls } = makeRecorder([
       [SELECT_BOOTSTRAP_RE, async () => ({ rows: [{ id: 'bootstrap-ws' }], rowCount: 1 })],
+      ...fullSchemaHandlers(),
     ]);
     await migration0012.up(client);
 
-    // For every child, find its position in the call list.
     const positions = new Map<string, number>();
     for (const c of CHILD_TENANT_TABLES) {
       const idx = calls.findIndex((call) => call.text.includes(`UPDATE ${c.table} AS t`));
@@ -150,7 +165,6 @@ describe('migration 0012 — backfill workspace_id', () => {
       positions.set(c.table, idx);
     }
 
-    // Every depth-N child must come after every depth-(N-1) child.
     for (const c of CHILD_TENANT_TABLES) {
       for (const earlier of CHILD_TENANT_TABLES) {
         if (earlier.depth < c.depth) {
@@ -166,6 +180,7 @@ describe('migration 0012 — backfill workspace_id', () => {
   it('runs every root UPDATE before any child UPDATE', async () => {
     const { client, calls } = makeRecorder([
       [SELECT_BOOTSTRAP_RE, async () => ({ rows: [{ id: 'bootstrap-ws' }], rowCount: 1 })],
+      ...fullSchemaHandlers(),
     ]);
     await migration0012.up(client);
 
@@ -186,17 +201,67 @@ describe('migration 0012 — backfill workspace_id', () => {
     expect(lastRootIdx).toBeGreaterThanOrEqual(0);
     expect(firstChildIdx).toBeGreaterThan(lastRootIdx);
   });
+
+  it('skips tables that physically do not exist on the target DB', async () => {
+    // information_schema returns ONLY two tables — projects + scripts.
+    // The migration must skip every other table without throwing.
+    const { client, calls } = makeRecorder([
+      [SELECT_BOOTSTRAP_RE, async () => ({ rows: [{ id: 'bootstrap-ws' }], rowCount: 1 })],
+      [SCHEMA_INTROSPECTION_RE, async () => ({
+        rows: [{ table_name: 'projects' }, { table_name: 'scripts' }],
+        rowCount: 2,
+      })],
+    ]);
+    await expect(migration0012.up(client)).resolves.toBeUndefined();
+
+    // Every UPDATE must hit only one of the two known-existing tables.
+    // Three structural passes per table that exists: initial root/child
+    // backfill + final NULL sweep. No UPDATE should reference any of the
+    // 27 tables that don't exist.
+    const updates = calls.filter((c) => c.text.startsWith('UPDATE'));
+    expect(updates.length).toBeGreaterThan(0);
+    for (const u of updates) {
+      const referencesProjects = /\bprojects\b/.test(u.text);
+      const referencesScripts = /\bscripts\b/.test(u.text);
+      expect(
+        referencesProjects || referencesScripts,
+        `UPDATE references a missing table: ${u.text}`,
+      ).toBe(true);
+    }
+    expect(updates.some((c) => c.text.includes('UPDATE projects'))).toBe(true);
+    expect(updates.some((c) => c.text.includes('UPDATE scripts AS t'))).toBe(true);
+  });
+
+  it('runs a final NULL-sweep pass that attributes orphans to the bootstrap workspace', async () => {
+    const { client, calls } = makeRecorder([
+      [SELECT_BOOTSTRAP_RE, async () => ({ rows: [{ id: 'bootstrap-ws' }], rowCount: 1 })],
+      ...fullSchemaHandlers(),
+    ]);
+    await migration0012.up(client);
+
+    // Every tenant table must have at least one root-style UPDATE
+    // (UPDATE x SET workspace_id = $1 WHERE workspace_id IS NULL) — this
+    // is the sweep, regardless of root vs child.
+    for (const table of ALL_TENANT_TABLES) {
+      const rootishUpdates = calls.filter(
+        (c) =>
+          c.text.startsWith(`UPDATE ${table} `) &&
+          c.text.includes('workspace_id IS NULL') &&
+          !c.text.includes(`UPDATE ${table} AS t`),
+      );
+      expect(rootishUpdates.length, `no sweep UPDATE for ${table}`).toBeGreaterThan(0);
+    }
+  });
 });
 
 describe('migration 0013 — enforce workspace_id', () => {
-  it('issues SET NOT NULL + CREATE INDEX for every tenant table', async () => {
-    const { client, calls } = makeRecorder();
+  it('issues SET NOT NULL + CREATE INDEX for every tenant table that exists', async () => {
+    const { client, calls } = makeRecorder(fullSchemaHandlers());
     await migration0013.up(client);
 
-    expect(calls.length).toBe(ALL_TENANT_TABLES.length * 2);
     for (const table of ALL_TENANT_TABLES) {
       const notNull = calls.find(
-        (c) => c.text.includes(`ALTER TABLE IF EXISTS ${table}`) && c.text.includes('SET NOT NULL'),
+        (c) => c.text.includes(`ALTER TABLE ${table}`) && c.text.includes('SET NOT NULL'),
       );
       const index = calls.find(
         (c) => c.text.includes(`CREATE INDEX IF NOT EXISTS idx_${table}_workspace`),
@@ -207,17 +272,34 @@ describe('migration 0013 — enforce workspace_id', () => {
   });
 
   it('emits the NOT NULL ALTER before the CREATE INDEX for the same table', async () => {
-    const { client, calls } = makeRecorder();
+    const { client, calls } = makeRecorder(fullSchemaHandlers());
     await migration0013.up(client);
 
     for (const table of ALL_TENANT_TABLES) {
       const notNullIdx = calls.findIndex(
-        (c) => c.text.includes(`ALTER TABLE IF EXISTS ${table}`) && c.text.includes('SET NOT NULL'),
+        (c) => c.text.includes(`ALTER TABLE ${table}`) && c.text.includes('SET NOT NULL'),
       );
       const indexIdx = calls.findIndex(
         (c) => c.text.includes(`CREATE INDEX IF NOT EXISTS idx_${table}_workspace`),
       );
       expect(notNullIdx).toBeLessThan(indexIdx);
     }
+  });
+
+  it('skips tables that physically do not exist on the target DB', async () => {
+    const { client, calls } = makeRecorder([
+      [SCHEMA_INTROSPECTION_RE, async () => ({
+        rows: [{ table_name: 'projects' }],
+        rowCount: 1,
+      })],
+    ]);
+    await expect(migration0013.up(client)).resolves.toBeUndefined();
+
+    const ddl = calls.filter(
+      (c) => c.text.startsWith('ALTER TABLE') || c.text.startsWith('CREATE INDEX'),
+    );
+    // exactly 2 DDLs — the ALTER + CREATE INDEX for `projects`.
+    expect(ddl).toHaveLength(2);
+    expect(ddl.every((c) => c.text.includes('projects'))).toBe(true);
   });
 });
