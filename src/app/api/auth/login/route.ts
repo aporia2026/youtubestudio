@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { findUserByEmail, verifyPassword, markLoginSuccess } from '@/lib/users';
 import { findPrimaryWorkspaceForUser } from '@/lib/workspaces';
 import { createSession, SESSION_COOKIE_NAME } from '@/lib/session';
+import { checkAndIncrementRateLimit, rateLimitHeaders } from '@/lib/rate-limit-db';
+import { extractIp } from '@/lib/audit';
 
 /**
  * Email + password login.
@@ -19,11 +21,27 @@ import { createSession, SESSION_COOKIE_NAME } from '@/lib/session';
  * PR #7 adds the Postgres-backed sliding window.
  */
 export async function POST(req: NextRequest) {
+  // Rate-limit gate first — counts every hit against the bucket so that even
+  // 400-Bad-Request probes count toward the 10/5min/IP cap. Falls open if
+  // the table is unreachable (logged but doesn't 500 the user).
+  const ip = extractIp(req) || 'unknown';
+  const rl = await checkAndIncrementRateLimit({
+    key: `auth.login:${ip}`,
+    limit: 10,
+    windowMs: 5 * 60 * 1000,
+  });
+  if (!rl.ok) {
+    return NextResponse.json(
+      { error: 'Too many sign-in attempts. Try again in a few minutes.' },
+      { status: 429, headers: rateLimitHeaders(rl) },
+    );
+  }
+
   let body: unknown;
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'Invalid request' }, { status: 400 });
+    return NextResponse.json({ error: 'Invalid request' }, { status: 400, headers: rateLimitHeaders(rl) });
   }
 
   const { email, password } =
@@ -32,7 +50,10 @@ export async function POST(req: NextRequest) {
       : {};
 
   if (typeof email !== 'string' || typeof password !== 'string' || !email.trim() || !password) {
-    return NextResponse.json({ error: 'Email and password are required' }, { status: 400 });
+    return NextResponse.json(
+      { error: 'Email and password are required' },
+      { status: 400, headers: rateLimitHeaders(rl) },
+    );
   }
 
   // Constant-ish-time path: even on unknown email we still call verifyPassword
@@ -45,13 +66,16 @@ export async function POST(req: NextRequest) {
   );
 
   if (!user || !user.password_hash || !passwordOk) {
-    return NextResponse.json({ error: 'Invalid email or password' }, { status: 401 });
+    return NextResponse.json(
+      { error: 'Invalid email or password' },
+      { status: 401, headers: rateLimitHeaders(rl) },
+    );
   }
 
   if (user.status === 'suspended') {
     return NextResponse.json(
       { error: 'This account is suspended. Contact your administrator.' },
-      { status: 403 },
+      { status: 403, headers: rateLimitHeaders(rl) },
     );
   }
 
@@ -62,7 +86,7 @@ export async function POST(req: NextRequest) {
         error:
           'Your account exists but isn’t a member of any workspace. Ask an administrator to add you.',
       },
-      { status: 403 },
+      { status: 403, headers: rateLimitHeaders(rl) },
     );
   }
 
@@ -74,7 +98,7 @@ export async function POST(req: NextRequest) {
 
   await markLoginSuccess(user.id);
 
-  const response = NextResponse.json({ ok: true });
+  const response = NextResponse.json({ ok: true }, { headers: rateLimitHeaders(rl) });
   response.cookies.set(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',

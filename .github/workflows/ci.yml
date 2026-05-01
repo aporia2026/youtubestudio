@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# Cancel in-progress runs for the same branch when a new commit arrives —
+# saves Actions minutes on free-tier and keeps PR feedback fresh.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci --no-audit --no-fund
+      - run: npm run test
+        env:
+          # Tests need an AUTH_SECRET to verify the JWT roundtrip; the value
+          # below is a fixed test-only secret with no production meaning.
+          AUTH_SECRET: ci-only-do-not-use-in-prod-${{ github.run_id }}-xxxxxxxxxxxxxx
+
+  # NOTE: `npm run lint` is currently NOT a CI gate. The legacy codebase
+  # carries 122 pre-existing lint findings (mostly setState-in-effect, missing
+  # JSX entity escapes, unused imports in Remotion scenes). Adding lint as a
+  # required check before clearing those would block every Phase-2 PR. Plan:
+  #   1. Land a dedicated lint-cleanup PR that resolves the existing findings.
+  #   2. Promote `lint` to a third required job here.
+  # Until then, run `npm run lint` locally before raising a PR.
