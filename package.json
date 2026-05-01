@@ -11,8 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "db:migrate": "tsx scripts/migrate.ts up",
-    "db:status": "tsx scripts/migrate.ts status"
+    "db:migrate": "tsx --env-file-if-exists=.env.local scripts/migrate.ts up",
+    "db:status": "tsx --env-file-if-exists=.env.local scripts/migrate.ts status"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.66",

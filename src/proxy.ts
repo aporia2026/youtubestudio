@@ -1,104 +1,159 @@
+/**
+ * Next.js 16 edge proxy (formerly known as `middleware.ts` in older Next).
+ * Runs before every matching request. Two responsibilities:
+ *
+ *   1. Page-route gate: send unauthenticated browsers to /login.
+ *   2. API-route gate: return JSON 401 (not a redirect) for unauthenticated
+ *      /api/* requests, so fetch() callers see an error instead of HTML.
+ *
+ * Public paths bypass both checks — auth flows themselves, token-portal
+ * surfaces (editor / narrator / reviewer / share / unsubscribe), and the
+ * public schedule-share endpoint.
+ *
+ * Session validity in Phase 1 means the JWT carries the new
+ * { uid, sysrole, ws } claim shape. The legacy single-password
+ * { authenticated: true } payload from the pre-Phase-1 deployment is
+ * rejected here, forcing those users to re-login as a real account.
+ *
+ * Edge runtime: this file ONLY uses jose for verification; no Node crypto
+ * APIs, no DB access. The /admin layout server-component does its own
+ * admin role check (it has DB access), so this proxy doesn't gate on role.
+ */
 import { NextRequest, NextResponse } from 'next/server';
 import { jwtVerify } from 'jose';
+
+const COOKIE_NAME = 'yt_studio_session';
 
 let _secret: Uint8Array | null = null;
 function getSecret(): Uint8Array {
   if (!_secret) {
     const secret = process.env.AUTH_SECRET;
-    if (!secret) throw new Error('AUTH_SECRET environment variable is not set. Add it to your .env.local or Vercel project settings.');
+    if (!secret) {
+      throw new Error(
+        'AUTH_SECRET environment variable is not set. Add it to your .env.local or Vercel project settings.',
+      );
+    }
     _secret = new TextEncoder().encode(secret);
   }
   return _secret;
 }
-const COOKIE_NAME = 'yt_studio_session';
 
-const PUBLIC_PATHS = [
-  '/login', '/api/auth/login', '/api/auth/logout', '/api/auth/google/callback',
-  // Public schedule share tokens — readable without session when a valid token is provided.
-  '/share', '/api/public',
-  // Public unsubscribe link from emails (token-based)
-  '/unsubscribe', '/api/notifications/unsubscribe',
+/** Public paths matched by exact equality OR by `<path>/...` startsWith. */
+const PUBLIC_PATHS: readonly string[] = [
+  '/login',
+  '/forgot-password',
+  // Auth API surfaces — must be reachable while logged out.
+  '/api/auth/login',
+  '/api/auth/logout',
+  '/api/auth/forgot-password',
+  '/api/auth/reset-password',
+  '/api/auth/accept-invite',
+  '/api/auth/google',
+  '/api/auth/google-sheets',
+  '/api/auth/google/callback',
+  // Public share / unsubscribe surfaces.
+  '/share',
+  '/api/public',
+  '/unsubscribe',
+  '/api/notifications/unsubscribe',
 ];
 
-// Paths that bypass auth entirely (public review pages + their API endpoints)
-const PUBLIC_PREFIXES = [
+/** Path prefixes that grant a token-portal exemption — anything matching any
+ *  of these is reachable without a session. The portal endpoint authenticates
+ *  the caller via a per-collaborator token in the URL, not via a cookie. */
+const PUBLIC_PREFIXES: readonly string[] = [
   '/review/',
   '/narrate/',
   '/narrator/',
+  '/editor/',
+  '/reset-password/',
+  '/accept-invite/',
   '/api/narrate/',
   '/api/narrator/',
   '/api/narrator-dashboard/',
-  '/editor/',
-  '/api/editor-dashboard/',
   '/api/editor/',
-  // Personal-token-authenticated endpoints used from collaborator dashboards.
+  '/api/editor-dashboard/',
   '/api/activity/',
   '/api/collaborator-prefs/',
 ];
 
-export async function proxy(req: NextRequest) {
+/**
+ * Pure-logic predicate exported so tests can assert the allow-list directly
+ * without spinning up a NextRequest.
+ *
+ * /api/review/[token]/* is a token-portal surface but /api/review/projects/*
+ * is the owner-side admin surface — the two namespaces share a prefix, so we
+ * match on the second path segment instead of a flat prefix.
+ */
+export function isPathPublic(pathname: string): boolean {
+  if (PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'))) return true;
+  if (PUBLIC_PREFIXES.some((p) => pathname.startsWith(p))) return true;
+  if (pathname.startsWith('/api/review/')) {
+    const after = pathname.slice('/api/review/'.length);
+    // /api/review/projects[/...] is the owner-side admin surface — gate it.
+    // Everything else under /api/review/ is the token-portal namespace.
+    if (after !== 'projects' && !after.startsWith('projects/')) return true;
+  }
+  if (pathname.startsWith('/_next') || pathname.startsWith('/favicon')) return true;
+  return false;
+}
+
+/**
+ * Verify the session cookie's JWT signature AND claim shape. A token signed
+ * with the right secret but missing uid / having a non-allowed sysrole / with
+ * empty ws is rejected — this is what catches pre-Phase-1 sessions.
+ *
+ * Exported for unit testing.
+ */
+export async function isSessionValid(token: string | undefined): Promise<boolean> {
+  if (!token) return false;
+  try {
+    const { payload } = await jwtVerify(token, getSecret());
+    return (
+      typeof payload.uid === 'string' &&
+      payload.uid.length > 0 &&
+      (payload.sysrole === 'admin' || payload.sysrole === 'user') &&
+      typeof payload.ws === 'string' &&
+      payload.ws.length > 0
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function proxy(req: NextRequest): Promise<NextResponse> {
   const { pathname } = req.nextUrl;
 
-  // Allow public paths (exact match or startsWith for /login page)
-  if (PUBLIC_PATHS.some(p => pathname === p || pathname.startsWith(p + '/'))) {
-    return NextResponse.next();
-  }
+  if (isPathPublic(pathname)) return NextResponse.next();
 
-  // Allow public review pages and their token-based API endpoints
-  if (PUBLIC_PREFIXES.some(p => pathname.startsWith(p))) {
-    return NextResponse.next();
-  }
-
-  // Token-side review API routes (`/api/review/<token>/...`) are public —
-  // they authenticate via the share-link token, not a session cookie.
-  // BUT `/api/review/projects/<id>/...` is the owner-side admin surface and
-  // MUST stay auth-gated. The two namespaces share a prefix, so we match
-  // on the second path segment instead of relying on a flat prefix list.
-  if (pathname.startsWith('/api/review/') && !pathname.startsWith('/api/review/projects/')) {
-    return NextResponse.next();
-  }
-
-  // Allow static files
-  if (pathname.startsWith('/_next') || pathname.startsWith('/favicon')) {
-    return NextResponse.next();
-  }
-
+  const isApi = pathname.startsWith('/api/');
   const token = req.cookies.get(COOKIE_NAME)?.value;
 
-  // For API routes, return a JSON 401 instead of a 30x redirect to /login.
-  // fetch() transparently follows the redirect — the browser then sees 200 OK
-  // with the login page HTML, and our streaming/JSON consumers happily parse
-  // login HTML as if it were data. A 401 with a clear error body lets the
-  // client surface 'session expired' and stop trying to read the body as
-  // script content.
-  const isApi = pathname.startsWith('/api/');
-
-  if (!token) {
-    if (isApi) {
-      return NextResponse.json(
-        { error: 'Session expired. Refresh the page and sign in again.' },
-        { status: 401 },
-      );
-    }
-    return NextResponse.redirect(new URL('/login', req.url));
-  }
-
+  let valid: boolean;
   try {
-    await jwtVerify(token, getSecret());
-    return NextResponse.next();
+    valid = await isSessionValid(token);
   } catch {
+    // AUTH_SECRET missing / unreachable — fail closed.
+    valid = false;
+  }
+
+  if (!valid) {
     if (isApi) {
-      const response = NextResponse.json(
+      const r = NextResponse.json(
         { error: 'Session expired. Refresh the page and sign in again.' },
         { status: 401 },
       );
-      response.cookies.delete(COOKIE_NAME);
-      return response;
+      // Clear the stale/legacy cookie so the next request lands logged-out
+      // cleanly instead of replaying an invalid token forever.
+      if (token) r.cookies.delete(COOKIE_NAME);
+      return r;
     }
-    const response = NextResponse.redirect(new URL('/login', req.url));
-    response.cookies.delete(COOKIE_NAME);
-    return response;
+    const r = NextResponse.redirect(new URL('/login', req.url));
+    if (token) r.cookies.delete(COOKIE_NAME);
+    return r;
   }
+
+  return NextResponse.next();
 }
 
 export const config = {
