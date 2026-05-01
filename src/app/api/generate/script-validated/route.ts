@@ -1,10 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateText, getModelById } from '@/lib/ai';
-import { scriptGenerationPrompt, scriptQAPrompt } from '@/lib/prompts';
+import { scriptGenerationPrompt, scriptQAPrompt, scriptExpansionPrompt, SCRIPT_WPM } from '@/lib/prompts';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { getSession } from '@/lib/session';
 import { resolveBrandKitForRequest } from '@/lib/channel-brand-kit';
+import { countWords } from '@/lib/utils';
+
+/** Same dynamic cap as the streaming route — derive from the duration so
+ *  long scripts don't get truncated at the legacy 8000-token default. */
+function computeMaxTokens(durationMinutes: number): number {
+  const targetWords = durationMinutes * SCRIPT_WPM;
+  const tokensFromTarget = Math.round(targetWords * 3);
+  return Math.max(8000, Math.min(16000, tokensFromTarget));
+}
 
 /**
  * Self-QA'd script generation. Generates a script, runs it through the
@@ -131,10 +140,15 @@ export async function POST(req: NextRequest) {
     const retryNote = lastFeedback
       ? `\n\nPRIOR ATTEMPT FAILED QA (scored below ${threshold}). The reviewer's critical notes:\n${lastFeedback}\n\nRewrite from scratch addressing every issue. Don't merely tweak the prior script — restructure as needed.`
       : '';
+    const targetDurationMinutes = duration || 7;
+    const targetSpokenWords = targetDurationMinutes * SCRIPT_WPM;
+    const minSpokenWords = Math.round(targetSpokenWords * 0.92);
+    const dynamicMaxTokens = computeMaxTokens(targetDurationMinutes);
+
     const { system: scriptSystem, user: scriptUser } = scriptGenerationPrompt({
       topic,
       niche,
-      targetDurationMinutes: duration || 7,
+      targetDurationMinutes,
       tone,
       style,
       targetAudience: audience,
@@ -150,7 +164,7 @@ export async function POST(req: NextRequest) {
         modelId,
         prompt: scriptUser,
         systemPrompt: scriptSystem,
-        maxTokens: 8000,
+        maxTokens: dynamicMaxTokens,
         // Slightly higher temperature on retries to escape the prior local minimum.
         temperature: 0.8 + (attempt - 1) * 0.05,
       });
@@ -164,6 +178,38 @@ export async function POST(req: NextRequest) {
     if (!script || script.length < 200) {
       lastFeedback = 'Script came back empty or too short — generate a full draft.';
       continue;
+    }
+
+    // Length-undershoot expansion. Same logic the streaming route uses —
+    // models routinely return scripts at 40-60% of the asked-for duration,
+    // so we run a dedicated expansion pass before handing the draft to QA.
+    // Best-effort: if the expansion fails or returns shorter content, we
+    // keep the first pass and let QA proceed.
+    const initialSpokenWords = countWords(script);
+    if (initialSpokenWords < minSpokenWords) {
+      try {
+        const { system: expandSystem, user: expandUser } = scriptExpansionPrompt({
+          draftScript: script,
+          topic,
+          niche,
+          targetDurationMinutes,
+          currentSpokenWords: initialSpokenWords,
+          constraints,
+        });
+        const expanded = (await generateText({
+          modelId,
+          prompt: expandUser,
+          systemPrompt: expandSystem,
+          maxTokens: dynamicMaxTokens,
+          temperature: 0.65,
+        })).trim();
+        const expandedSpokenWords = countWords(expanded);
+        if (expanded.length > 200 && expandedSpokenWords > initialSpokenWords) {
+          script = expanded;
+        }
+      } catch (expandErr) {
+        console.warn(`[script-validated] expansion pass failed attempt ${attempt}:`, expandErr);
+      }
     }
 
     // 2) QA the script. Pass the same constraints so the reviewer doesn't

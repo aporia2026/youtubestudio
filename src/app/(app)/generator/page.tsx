@@ -651,12 +651,27 @@ function GeneratorPage() {
       const decoder = new TextDecoder();
       if (!reader) throw new Error('No response stream');
 
+      // Sentinel the server sends when it ran a length-expansion pass —
+      // anything streamed before this marker is the (too-short) first
+      // pass that we discard, anything after is the expanded script that
+      // replaces it on screen. Must stay in sync with REPLACE_SENTINEL
+      // in src/app/api/generate/script/route.ts.
+      const REPLACE_SENTINEL = '\n__REPLACE_FULL__\n';
       let full = '';
+      let replaced = false;
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
         full += chunk;
+        // If the sentinel has arrived (possibly split across chunks), strip
+        // everything up to and including it and surface a brief notice so
+        // the user understands why the script just got swapped.
+        if (!replaced && full.includes(REPLACE_SENTINEL)) {
+          replaced = true;
+          full = full.slice(full.indexOf(REPLACE_SENTINEL) + REPLACE_SENTINEL.length);
+          toast.info('First draft was too short — expanding to hit your duration target…');
+        }
         setScript(full);
         scriptRef.current?.scrollTo({ top: scriptRef.current.scrollHeight, behavior: 'smooth' });
       }

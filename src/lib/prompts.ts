@@ -2,6 +2,43 @@
 import { buildConstraintsPromptBlock, buildQAConstraintsPromptBlock, type ScriptConstraints } from './script-options';
 import { buildBrandKitPromptBlock, type ChannelBrandKit } from './channel-brand-kit';
 
+/** Words-per-minute baseline used everywhere we convert between script
+ *  duration and word count. Matches `estimateDuration` in lib/utils.ts —
+ *  if you change one, change the other. */
+export const SCRIPT_WPM = 140;
+
+/** Convert a target duration in minutes to a target spoken-word count
+ *  (excluding [VISUAL CUE: ...] / [PAUSE] / [SFX: ...] markers, which
+ *  countWords also strips so the two sides agree). */
+export function targetWordsForDuration(minutes: number): number {
+  return Math.round(minutes * SCRIPT_WPM);
+}
+
+/** Per-section word budget for the structure block in the user prompt.
+ *  Lets the model "see" how the total breaks down so it can't quietly
+ *  finish the script at 800 words when 2100 was asked. */
+function sectionWordBudget(targetWords: number, skipHook: boolean): {
+  hook: number;
+  intro: number;
+  main: number;
+  outro: number;
+  perMainSection: number;
+} {
+  // Hook ~3%, intro ~5%, main ~85%, outro ~7% of total. When the hook is
+  // skipped, the freed budget rolls into MAIN since `main` is computed
+  // as the remainder so the four buckets always sum to targetWords.
+  const hookShare = skipHook ? 0 : 0.03;
+  const introShare = 0.05;
+  const outroShare = 0.07;
+  const hook = Math.round(targetWords * hookShare);
+  const intro = Math.round(targetWords * introShare);
+  const outro = Math.round(targetWords * outroShare);
+  const main = Math.max(targetWords - hook - intro - outro, 0);
+  // Default to 4 main sections when computing per-section budget.
+  const perMainSection = Math.round(main / 4);
+  return { hook, intro, main, outro, perMainSection };
+}
+
 export function scriptGenerationPrompt({
   topic,
   niche,
@@ -28,8 +65,13 @@ export function scriptGenerationPrompt({
    *  omit) when no channel is active or its kit is empty. */
   brandKit?: ChannelBrandKit | null;
 }): { system: string; user: string } {
-  const wordsPerMinute = 140;
+  const wordsPerMinute = SCRIPT_WPM;
   const targetWords = targetDurationMinutes * wordsPerMinute;
+  // Floor the model has to clear. We treat anything under this as a
+  // generation failure on the server and run an expansion pass.
+  const minWords = Math.round(targetWords * 0.92);
+  const maxWords = Math.round(targetWords * 1.15);
+  const budget = sectionWordBudget(targetWords, !!constraints?.skipHook);
 
   const styleInstructions: Record<string, string> = {
     'Story-driven': `\n**STYLE-SPECIFIC: STORY-DRIVEN**
@@ -107,13 +149,21 @@ You specialize in the "${niche}" niche. Your scripts consistently score 85+ on b
 - Every section must end with a reason to keep watching
 - CTAs should feel organic, not bolted on
 - The outro should connect back to the hook — create a satisfying loop
-- Leave the viewer with ONE powerful thought they'll remember${brandKitBlock}`,
+- Leave the viewer with ONE powerful thought they'll remember
+
+**LENGTH DISCIPLINE — NON-NEGOTIABLE**:
+- The duration target is the spoken length the narrator will deliver at ${wordsPerMinute} words per minute
+- Spoken words = every word the narrator says out loud, EXCLUDING bracketed cues like [VISUAL CUE: ...], [PAUSE], [SFX: ...], [B-ROLL: ...] (these don't count toward duration)
+- Hitting the spoken word count is a HARD requirement, not a suggestion. Going short is worse than going long — a 6-minute script returned for a 15-minute slot is a complete failure regardless of quality
+- Do NOT pad with filler, repetition, or generic sentences to hit the target. Hit it through real substance: more specific examples, more concrete data points, deeper exploration of each angle, additional pattern interrupts, more sensory detail in stories
+- Plan the section budget BEFORE you start writing. If a section runs short, expand it with another concrete example or a deeper layer of insight — never with empty calories${brandKitBlock}`,
 
     user: `Write a complete, publish-ready YouTube script that would score 85+ on a Nuclear QA review.
 
 **Topic:** ${topic}
 **Niche:** ${niche}
-**Target Duration:** ${targetDurationMinutes} minutes (~${targetWords} words)
+**Target Duration:** ${targetDurationMinutes} minutes
+**SPOKEN WORD COUNT (HARD REQUIREMENT):** ${targetWords} words minimum (range ${minWords}–${maxWords}). Spoken words exclude all bracketed cues like [VISUAL CUE: ...], [PAUSE], [SFX: ...]. Anything below ${minWords} words is a generation failure and will be rejected. The narrator speaks at ~${wordsPerMinute} wpm — at that pace, ${targetWords} words is exactly ${targetDurationMinutes} minutes. This is the most important constraint in this brief.
 **Tone:** ${tone || 'Engaging, authoritative but friendly'}
 **Style:** ${style || 'Educational explainer'}
 **Target Audience:** ${targetAudience || 'General audience interested in ' + niche}
@@ -132,24 +182,27 @@ ${referenceContext}
 - If multiple references are provided, synthesize the best elements from each` : ''}
 ${styleNote}
 
-## Structure (follow precisely):
+## Structure (follow precisely — word counts are SPOKEN words, excluding [VISUAL CUE: ...] / [PAUSE] / [SFX: ...]):
 
 ${constraints?.skipHook
-  ? `1. **OPENING** (first 10-15 seconds): NO hook. Open directly in-scene, mid-action, mid-sentence, or with the first beat of the story itself. The viewer should feel like they just walked into a moment already in progress. No warm-up, no attention-grabber, no "In this video", no teaser stat.`
-  : `1. **HOOK** (first 10-15 seconds): Gut-punch opening. No warm-up. Drop the viewer into the most compelling moment of the topic. Make them feel something immediately — fear, shock, curiosity, outrage.`}
+  ? `1. **OPENING** (~${budget.intro > 0 ? Math.round(budget.intro * 0.4) : 30} spoken words): NO hook. Open directly in-scene, mid-action, mid-sentence, or with the first beat of the story itself. The viewer should feel like they just walked into a moment already in progress. No warm-up, no attention-grabber, no "In this video", no teaser stat.`
+  : `1. **HOOK** (~${budget.hook} spoken words / first 10-15 seconds): Gut-punch opening. No warm-up. Drop the viewer into the most compelling moment of the topic. Make them feel something immediately — fear, shock, curiosity, outrage.`}
 
-2. **INTRO** (20-40 seconds): Quick context. Why should THEY care? What's at stake for them personally? Tease the structure: "By the end of this video, you'll know X, Y, and Z."
+2. **INTRO** (~${budget.intro} spoken words / 20-40 seconds): Quick context. Why should THEY care? What's at stake for them personally? Tease the structure: "By the end of this video, you'll know X, Y, and Z."
 
-3. **MAIN CONTENT**: 3-5 distinct sections, each with:
+3. **MAIN CONTENT** (~${budget.main} spoken words total — this is the bulk of the script): 4 distinct sections, each ~${budget.perMainSection} spoken words. Each section MUST contain:
    - A mini-hook that re-engages attention
-   - Specific examples with real names, numbers, dates
-   - At least one analogy or visual metaphor per section
+   - At least 2 specific examples with real names, numbers, dates
+   - At least one analogy or visual metaphor
    - A pattern interrupt or surprise reveal
    - A bridge to the next section that creates anticipation
+   - Enough depth and concrete substance to fully fill its word budget without filler. If a section feels short, add another example or go deeper on one — do NOT pad with rhetorical questions, generic statements, or repetition.
 
 ${constraints?.skipSubscribeCTA || constraints?.skipClickableLinks
-  ? `4. **OUTRO** (20-30 seconds): Circle back to the opening. Deliver a final insight that reframes everything. ${constraints?.skipSubscribeCTA ? 'Do NOT include any subscribe / like / bell CTAs.' : 'CTA that feels natural.'} ${constraints?.skipClickableLinks ? 'Do NOT reference any links, promo codes, or "link in description" prompts.' : ''} ${!constraints?.skipSubscribeCTA && !constraints?.skipClickableLinks ? 'Tease next video.' : 'End on a thought, not a request.'}`
-  : `4. **OUTRO** (20-30 seconds): Circle back to the hook. Deliver a final insight that reframes everything. CTA that feels natural. Tease next video.`}
+  ? `4. **OUTRO** (~${budget.outro} spoken words / 20-30 seconds): Circle back to the opening. Deliver a final insight that reframes everything. ${constraints?.skipSubscribeCTA ? 'Do NOT include any subscribe / like / bell CTAs.' : 'CTA that feels natural.'} ${constraints?.skipClickableLinks ? 'Do NOT reference any links, promo codes, or "link in description" prompts.' : ''} ${!constraints?.skipSubscribeCTA && !constraints?.skipClickableLinks ? 'Tease next video.' : 'End on a thought, not a request.'}`
+  : `4. **OUTRO** (~${budget.outro} spoken words / 20-30 seconds): Circle back to the hook. Deliver a final insight that reframes everything. CTA that feels natural. Tease next video.`}
+
+The four budgets above sum to ~${targetWords} spoken words, which is the target. Do NOT skip sections or shorten them to "tighten" the script — every section's word target is binding.
 
 ## Format:
 - Use [VISUAL CUE: description] for B-roll/visual suggestions
@@ -157,7 +210,75 @@ ${constraints?.skipSubscribeCTA || constraints?.skipClickableLinks
 - Use **BOLD** for emphasis
 - Mark sections with ## Section Name
 ${buildConstraintsPromptBlock(constraints)}
-Write the complete script now. Make it exceptional.`,
+## FINAL CHECK BEFORE YOU FINISH:
+1. Count the spoken words in your draft (everything outside [brackets]). It must be at least ${minWords}.
+2. If you are below ${minWords} spoken words, you are NOT done. Go back to the most underdeveloped sections and expand them with more concrete examples, more specific data, deeper exploration — never with filler, repetition, or generic statements.
+3. Only output the script when the spoken-word total is in the ${minWords}–${maxWords} range.
+
+Write the complete script now. Make it exceptional, AND make it the right length.`,
+  };
+}
+
+/** Prompt that asks the model to expand an existing draft to hit the
+ *  required spoken-word count. Used by the script route when the first
+ *  pass came back materially shorter than the duration target — instead
+ *  of leaving the user with a 6-minute script for a 15-minute slot, the
+ *  server reruns the model with this prompt and substitutes the longer
+ *  version into the response stream.
+ *
+ *  The expansion pass is allowed to rewrite passages but MUST preserve
+ *  the script's identity (topic, hook, narrative arc, format markers,
+ *  user-imposed constraints) — we want the same script, longer, not a
+ *  brand new one. */
+export function scriptExpansionPrompt({
+  draftScript,
+  topic,
+  niche,
+  targetDurationMinutes,
+  currentSpokenWords,
+  constraints,
+}: {
+  draftScript: string;
+  topic: string;
+  niche: string;
+  targetDurationMinutes: number;
+  currentSpokenWords: number;
+  constraints?: ScriptConstraints;
+}): { system: string; user: string } {
+  const targetWords = targetDurationMinutes * SCRIPT_WPM;
+  const minWords = Math.round(targetWords * 0.92);
+  const maxWords = Math.round(targetWords * 1.15);
+  const deficit = Math.max(0, targetWords - currentSpokenWords);
+
+  return {
+    system: `You are a world-class YouTube script editor. You take publish-ready scripts that came back too short for their duration target and expand them with substance until they hit the required length.
+
+ABSOLUTE RULES:
+- Return the COMPLETE expanded script — not a diff, not a summary, not the additions only.
+- Preserve the original script's identity: same topic, same hook (or same skip-hook opening), same narrative arc, same section structure, same format markers ([VISUAL CUE: ...], [PAUSE], **BOLD**, ## section headers), same tone.
+- Expand by adding REAL substance: more specific examples (real names / numbers / dates), more concrete data, deeper exploration of each angle, additional pattern interrupts, more sensory detail. Never pad with filler, generic statements, or rhetorical-question repetition.
+- Keep every existing strong line. Don't rewrite passages that already work — extend around them.
+- Honor every constraint listed below. Do NOT re-introduce a hook / CTA / link if the user disabled it.
+- No meta-commentary, no "here's the expanded script:" preamble, no notes at the end. Output the script only.`,
+
+    user: `# Current Draft (${currentSpokenWords} spoken words — too short)
+**Topic:** ${topic}
+**Niche:** ${niche}
+**Duration target:** ${targetDurationMinutes} minutes at ${SCRIPT_WPM} wpm = ${targetWords} spoken words
+**Required range:** ${minWords}–${maxWords} spoken words (spoken = everything outside [brackets])
+**Deficit:** ~${deficit} spoken words missing
+
+\`\`\`
+${draftScript}
+\`\`\`
+
+# Task
+Expand this script so the spoken-word total lands in the ${minWords}–${maxWords} range. Add substance, not filler. Keep the existing structure and identity. Output the complete expanded script.
+${buildConstraintsPromptBlock(constraints)}
+## FINAL CHECK BEFORE YOU FINISH:
+1. Count the spoken words in your output (everything outside [brackets]).
+2. If still below ${minWords}, keep expanding the underdeveloped sections with more concrete substance.
+3. Only output when the spoken-word total is in the ${minWords}–${maxWords} range.`,
   };
 }
 
