@@ -83,13 +83,16 @@ GitHub Actions, single workflow, three parallel jobs: typecheck, lint, test (aga
 | 0003 | `0003_extend_collaborators_with_auth` | Add `password_hash`, `google_sub`, `system_role`, `status`, `last_login_at`, `encrypted_settings`, `invite_token`, `invite_expires_at`, `password_reset_token`, `password_reset_expires_at`. Partial unique index on `LOWER(email)` where not null. No rename. |
 | 0004 | `0004_create_workspace_members` | `workspace_members` table |
 | 0005 | `0005_bootstrap_admin_and_default_workspace` | Read `ADMIN_EMAIL`/`ADMIN_PASSWORD`, create admin user, default workspace, owner membership |
-| 0006 | `0006_add_workspace_id_columns` | Add nullable `workspace_id` to all data tables |
-| 0007 | `0007_backfill_workspace_id` | Set every existing row to bootstrap workspace |
-| 0008 | `0008_enforce_workspace_id_not_null` | `ALTER COLUMN … NOT NULL` |
-| 0009 | `0009_index_workspace_id` | Per-table index on `workspace_id` |
-| 0010 | `0010_assign_existing_collaborators` | Map editor/narrator/reviewer assignments to `workspace_members` rows |
-| 0011 | `0011_create_rate_limits` | Rate limit storage |
-| 0012 | `0012_create_admin_audit_log` | Admin audit log |
+| 0006 | `0006_create_narration_take_comments` | Threaded timestamped comments on narrator audio takes (parallel feature work; pre-dates the workspace_id rollout) |
+| 0010 | `0010_add_assignment_full_audio` | `narrator_assignments` columns for single-file full-audio narration uploads (parallel feature work) |
+| 0011 | `0011_add_workspace_id_columns` | Add nullable `workspace_id` (FK ON DELETE CASCADE) to all data tables |
+| 0012 | `0012_backfill_workspace_id` | Set every existing row to bootstrap workspace; deepest-first parent-child resolution for child tables |
+| 0013 | `0013_enforce_workspace_id` | `ALTER COLUMN … NOT NULL` and per-table scoping index |
+| 0014 | `0014_assign_existing_collaborators` | Map editor/narrator/reviewer assignments to `workspace_members` rows (PR #3) |
+| 0015 | `0015_create_rate_limits` | Rate limit storage (PR #7) |
+| 0016 | `0016_create_admin_audit_log` | Admin audit log (PR #6) |
+
+> Note: 0007–0009 were originally allocated to this rollout but were renumbered to 0011–0013 after parallel feature work introduced 0006 and 0010 in the same id space. The migration runner enforces strict numerical apply order, so out-of-order numbering would break re-runs after a partial deploy. Keep ids monotonically increasing.
 
 Each migration is wrapped in `BEGIN`/`COMMIT`. The runner refuses to apply a migration if the previous one failed.
 
