@@ -338,6 +338,16 @@ const SECTIONS: NavSection[] = [
           </svg>
         ),
       },
+      {
+        label: 'Competitor signals',
+        href: '/competitors/dashboard',
+        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M3 12 7 8l4 6 4-9 6 11" />
+            <path d="M3 21h18" strokeOpacity="0.4" />
+          </svg>
+        ),
+      },
     ],
   },
 ];
