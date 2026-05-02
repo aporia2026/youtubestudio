@@ -518,7 +518,7 @@ export async function concludeAbTest(args: ConcludeAbTestArgs): Promise<AbTestRo
      WHERE id = ${args.id}::uuid AND workspace_id = ${args.workspaceId}::uuid
   `;
 
-  // Fire-and-forget webhook notification. Imported lazily to avoid pulling
+  // Fire-and-forget notifications. Imported lazily to avoid pulling
   // crypto + http deps into every consumer of this module.
   void (async () => {
     try {
@@ -539,6 +539,20 @@ export async function concludeAbTest(args: ConcludeAbTestArgs): Promise<AbTestRo
       });
     } catch {
       /* webhooks failing must never block conclusion */
+    }
+    try {
+      const { dispatchWorkflowEvent } = await import('./workflows');
+      await dispatchWorkflowEvent(args.workspaceId, {
+        type: 'ab_test_concluded',
+        payload: {
+          video_id: test.youtube_video_id,
+          winner: args.winner,
+          channel_db_id: test.channel_db_id,
+          ab_test_id: test.id,
+        },
+      });
+    } catch {
+      /* workflow plumbing failure must never block conclusion */
     }
   })();
 

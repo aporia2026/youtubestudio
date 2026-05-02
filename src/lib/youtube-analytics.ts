@@ -444,7 +444,34 @@ export async function syncVideoAnalytics(opts: SyncOptions): Promise<VideoAnalyt
       fetched_at = EXCLUDED.fetched_at
   `;
 
-  return readVideoAnalyticsRow(opts.workspaceId, opts.youtubeVideoId);
+  const row = await readVideoAnalyticsRow(opts.workspaceId, opts.youtubeVideoId);
+
+  // Fire-and-forget workflow trigger so rules like "if CTR drops below 4%
+  // run a fix-the-dip" can react. Lazy import to avoid pulling the
+  // workflow stack into every analytics consumer; failure must never
+  // propagate (analytics sync is the source of truth).
+  if (row) {
+    void (async () => {
+      try {
+        const { dispatchWorkflowEvent } = await import('./workflows');
+        await dispatchWorkflowEvent(opts.workspaceId, {
+          type: 'video_analytics_synced',
+          payload: {
+            video_id: row.youtube_video_id,
+            channel_db_id: opts.channelDbId,
+            ctr_percentage: row.ctr_percentage,
+            average_view_percentage: row.average_view_percentage,
+            views: row.views,
+            data_source: row.data_source,
+          },
+        });
+      } catch {
+        /* workflow plumbing failure must never block the sync result */
+      }
+    })();
+  }
+
+  return row;
 }
 
 /** Read the cached row. Throws if not found — call POST sync first. */

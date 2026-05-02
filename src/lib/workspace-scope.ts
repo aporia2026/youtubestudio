@@ -76,6 +76,8 @@ export const SCOPED_TABLES = [
   'webhook_deliveries',
   'youtube_comments',
   'comment_sync_runs',
+  'workflow_rules',
+  'workflow_action_runs',
 ] as const;
 
 export type ScopedTable = (typeof SCOPED_TABLES)[number];

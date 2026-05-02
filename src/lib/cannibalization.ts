@@ -426,6 +426,24 @@ export async function runCannibalizationScan(
       } catch {
         /* webhook failure must never block the scan result */
       }
+      try {
+        const { dispatchWorkflowEvent } = await import('./workflows');
+        for (const alert of highRiskCreated) {
+          await dispatchWorkflowEvent(args.workspaceId, {
+            type: 'cannibalization_high_risk',
+            payload: {
+              alert_id: alert.id,
+              similarity: alert.similarity_score,
+              channel_a: alert.pair_a.channel_name,
+              channel_b: alert.pair_b.channel_name,
+              channel_a_db_id: alert.pair_a.channel_id,
+              channel_b_db_id: alert.pair_b.channel_id,
+            },
+          });
+        }
+      } catch {
+        /* workflow plumbing failure must never block the scan result */
+      }
     })();
   }
 

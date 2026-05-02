@@ -28,6 +28,7 @@ import migration0028 from './0028_create_cannibalization_alerts';
 import migration0029 from './0029_create_ask_studio_questions';
 import migration0030 from './0030_create_webhook_subscriptions';
 import migration0031 from './0031_create_youtube_comments';
+import migration0032 from './0032_create_workflows';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -64,6 +65,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0029,
   migration0030,
   migration0031,
+  migration0032,
 ]);
 
 /**
