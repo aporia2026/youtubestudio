@@ -207,6 +207,24 @@ async function kieGptResponsesFetch(kieModelId: string, prompt: string, systemPr
   });
 }
 
+// `gpt-5-N-codex` variants live on a different path (`/api/v1/responses`) than
+// the `gpt-5-2/4/5` family (`/codex/v1/responses`). Body shape is identical
+// per docs.kie.ai/market/codex/gpt-codex; only the URL differs.
+async function kieCodexResponsesFetch(kieModelId: string, prompt: string, systemPrompt?: string, stream = false, maxTokens = 4000) {
+  const apiKey = requireKieKey();
+  const url = `${KIE_BASE}/api/v1/responses`;
+  const input = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
+
+  return fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ model: kieModelId, input, stream, max_tokens: maxTokens }),
+  });
+}
+
 // --- Error helpers ---
 
 /** Extract a clean error message from a failed kie.ai response.
@@ -264,10 +282,12 @@ async function kieGenerateText(modelId: string, prompt: string, systemPrompt?: s
     return textBlock?.text || '';
   }
 
-  if (config.endpointType === 'gpt-responses') {
-    const res = await kieRetry(() => kieGptResponsesFetch(config.kieModelId, prompt, systemPrompt, false, maxTokens));
+  if (config.endpointType === 'gpt-responses' || config.endpointType === 'codex-responses') {
+    const fetcher = config.endpointType === 'gpt-responses' ? kieGptResponsesFetch : kieCodexResponsesFetch;
+    const res = await kieRetry(() => fetcher(config.kieModelId, prompt, systemPrompt, false, maxTokens));
     if (!res.ok) throw new Error(await kieErrorMessage(res));
     const data = await res.json();
+    throwIfKieBodyError(data);
     // Responses API: output is in output[].content[].text or output_text
     if (data.output_text) return data.output_text;
     const output = data.output;
@@ -300,6 +320,8 @@ async function* kieStreamText(modelId: string, prompt: string, systemPrompt?: st
     res = await kieRetry(() => kieClaudeFetch(config.kieModelId, prompt, systemPrompt, maxTokens, true, cache));
   } else if (config.endpointType === 'gpt-responses') {
     res = await kieRetry(() => kieGptResponsesFetch(config.kieModelId, prompt, systemPrompt, true, maxTokens));
+  } else if (config.endpointType === 'codex-responses') {
+    res = await kieRetry(() => kieCodexResponsesFetch(config.kieModelId, prompt, systemPrompt, true, maxTokens));
   } else {
     throw new Error(`Unknown Kie endpoint type: ${config.endpointType}`);
   }
@@ -354,8 +376,8 @@ async function* kieStreamText(modelId: string, prompt: string, systemPrompt?: st
           if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
             yield parsed.delta.text;
           }
-        } else if (config.endpointType === 'gpt-responses') {
-          // OpenAI Responses API SSE format
+        } else if (config.endpointType === 'gpt-responses' || config.endpointType === 'codex-responses') {
+          // OpenAI Responses API SSE format (shared between /codex/v1/responses and /api/v1/responses)
           if (parsed.type === 'response.output_text.delta' && parsed.delta) {
             yield parsed.delta;
           }

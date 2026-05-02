@@ -5,17 +5,21 @@ export const maxDuration = 120;
 
 /**
  * Kie.ai image generation model configurations.
+ *
+ * Each entry maps our internal id → Kie's `model` string + the kind of input.
+ * GPT Image 2 uses `input_urls` instead of `image_urls` for its image-to-image
+ * variant — handled in the request builder below.
  */
 const MODEL_MAP: Record<string, { model: string; type: 'text-to-image' | 'image-to-image' }> = {
   'grok-imagine-t2i': { model: 'grok-imagine/text-to-image', type: 'text-to-image' },
   'flux2-pro-t2i': { model: 'flux-2/pro-text-to-image', type: 'text-to-image' },
   'flux2-flex-t2i': { model: 'flux-2/flex-text-to-image', type: 'text-to-image' },
   'nano-banana': { model: 'google/nano-banana', type: 'text-to-image' },
-  'nano-banana-2': { model: 'google/nanobanana2', type: 'text-to-image' },
+  'gpt-image-2-t2i': { model: 'gpt-image-2-text-to-image', type: 'text-to-image' },
   'grok-imagine-i2i': { model: 'grok-imagine/image-to-image', type: 'image-to-image' },
   'flux2-pro-i2i': { model: 'flux-2/pro-image-to-image', type: 'image-to-image' },
   'flux2-flex-i2i': { model: 'flux-2/flex-image-to-image', type: 'image-to-image' },
-  'pro-i2i': { model: 'google/pro-image-to-image', type: 'image-to-image' },
+  'gpt-image-2-i2i': { model: 'gpt-image-2-image-to-image', type: 'image-to-image' },
 };
 
 const KIE_BASE = 'https://api.kie.ai/api/v1/jobs';
@@ -111,12 +115,14 @@ export async function POST(req: NextRequest) {
 
     const apiKey = requireKieKey();
 
-    // Build request body
+    // Build request body. GPT Image 2 doesn't document an nsfw_checker
+    // field (per Kie market spec) — including it risks a 422 on stricter
+    // validators. Every other Kie image model accepts it.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const input: Record<string, any> = {
-      prompt,
-      nsfw_checker: true,
-    };
+    const input: Record<string, any> = { prompt };
+    if (!config.model.startsWith('gpt-image-2')) {
+      input.nsfw_checker = true;
+    }
 
     // Text-to-image models
     if (config.type === 'text-to-image') {
@@ -126,14 +132,22 @@ export async function POST(req: NextRequest) {
       } else if (config.model.startsWith('google/')) {
         input.image_size = '16:9';
         input.output_format = 'png';
+      } else if (config.model.startsWith('gpt-image-2')) {
+        input.aspect_ratio = '16:9';
+        input.resolution = '1K';
       } else {
         input.aspect_ratio = '16:9';
       }
     }
 
-    // Image-to-image models — add reference image
+    // Image-to-image models — add reference image. GPT Image 2 expects
+    // `input_urls`; everything else uses `image_urls`. Both are arrays.
     if (config.type === 'image-to-image') {
-      input.image_urls = [referenceImageUrl];
+      if (config.model === 'gpt-image-2-image-to-image') {
+        input.input_urls = [referenceImageUrl];
+      } else {
+        input.image_urls = [referenceImageUrl];
+      }
     }
 
     // Create task — retry up to 3× on transient gateway errors

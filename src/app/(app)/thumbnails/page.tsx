@@ -45,11 +45,11 @@ const IMAGE_MODELS = [
   { value: 'flux2-pro-t2i', label: 'Flux2 Pro (Text-to-Image)' },
   { value: 'flux2-flex-t2i', label: 'Flux2 Flex (Text-to-Image)' },
   { value: 'nano-banana', label: 'NanoBanana (Text-to-Image)' },
-  { value: 'nano-banana-2', label: 'NanoBanana 2 (Text-to-Image)' },
+  { value: 'gpt-image-2-t2i', label: 'GPT Image 2 (Text-to-Image)' },
   { value: 'grok-imagine-i2i', label: 'Grok Imagine (Image-to-Image)' },
   { value: 'flux2-pro-i2i', label: 'Flux2 Pro (Image-to-Image)' },
   { value: 'flux2-flex-i2i', label: 'Flux2 Flex (Image-to-Image)' },
-  { value: 'pro-i2i', label: 'Pro (Image-to-Image)' },
+  { value: 'gpt-image-2-i2i', label: 'GPT Image 2 (Image-to-Image)' },
 ];
 
 interface CtrBreakdownEntry {

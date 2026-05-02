@@ -100,18 +100,32 @@ export const AI_MODELS: AIModel[] = [
   { id: 'kie-gemini-3-pro', name: 'Gemini 3 Pro', provider: 'kie', contextWindow: '1M', description: 'Latest pro Gemini via Kie.ai', tier: 'flagship', inputCostPerMTok: 1.5, outputCostPerMTok: 6, pricingNote: 'approx — verify on kie.ai' },
   { id: 'kie-gemini-3.1-pro', name: 'Gemini 3.1 Pro', provider: 'kie', contextWindow: '1M', description: 'Newest Gemini reasoning via Kie.ai', tier: 'flagship', inputCostPerMTok: 1.5, outputCostPerMTok: 6, pricingNote: 'approx — verify on kie.ai' },
   // Kie.ai — Claude models
+  { id: 'kie-claude-opus-4-7', name: 'Claude Opus 4.7 (Kie)', provider: 'kie', contextWindow: '1M', description: 'Newest Anthropic flagship via Kie.ai', tier: 'flagship', inputCostPerMTok: 12, outputCostPerMTok: 60, pricingNote: 'approx — verify on kie.ai' },
   { id: 'kie-claude-opus-4-6', name: 'Claude Opus 4.6 (Kie)', provider: 'kie', contextWindow: '1M', description: 'Claude Opus via Kie.ai', tier: 'flagship', inputCostPerMTok: 12, outputCostPerMTok: 60, pricingNote: 'approx — verify on kie.ai' },
   { id: 'kie-claude-sonnet-4-6', name: 'Claude Sonnet 4.6 (Kie)', provider: 'kie', contextWindow: '1M', description: 'Claude Sonnet via Kie.ai', tier: 'balanced', inputCostPerMTok: 2.4, outputCostPerMTok: 12, pricingNote: 'approx — verify on kie.ai' },
   { id: 'kie-claude-sonnet-4-5', name: 'Claude Sonnet 4.5 (Kie)', provider: 'kie', contextWindow: '1M', description: 'Claude Sonnet 4.5 via Kie.ai', tier: 'balanced', inputCostPerMTok: 2.4, outputCostPerMTok: 12, pricingNote: 'approx — verify on kie.ai' },
   { id: 'kie-claude-opus-4-5', name: 'Claude Opus 4.5 (Kie)', provider: 'kie', contextWindow: '1M', description: 'Claude Opus 4.5 via Kie.ai', tier: 'flagship', inputCostPerMTok: 12, outputCostPerMTok: 60, pricingNote: 'approx — verify on kie.ai' },
   { id: 'kie-claude-haiku-4-5', name: 'Claude Haiku 4.5 (Kie)', provider: 'kie', contextWindow: '1M', description: 'Claude Haiku via Kie.ai', tier: 'fast', inputCostPerMTok: 0.8, outputCostPerMTok: 4, pricingNote: 'approx — verify on kie.ai' },
-  // Kie.ai — GPT models
+  // Kie.ai — GPT models (chat/completions + Codex Responses API)
   { id: 'kie-gpt-5-2', name: 'GPT 5.2 (Kie)', provider: 'kie', contextWindow: '200K', description: 'GPT 5.2 via Kie.ai', tier: 'balanced', inputCostPerMTok: 2, outputCostPerMTok: 8, pricingNote: 'approx — verify on kie.ai' },
   { id: 'kie-gpt-5-4', name: 'GPT 5.4 (Kie)', provider: 'kie', contextWindow: '200K', description: 'Latest GPT via Kie.ai', tier: 'flagship', inputCostPerMTok: 4, outputCostPerMTok: 16, pricingNote: 'approx — verify on kie.ai' },
+  { id: 'kie-gpt-5-5', name: 'GPT 5.5 (Kie)', provider: 'kie', contextWindow: '200K', description: 'Newest OpenAI flagship via Kie.ai', tier: 'flagship', inputCostPerMTok: 4, outputCostPerMTok: 16, pricingNote: 'approx — verify on kie.ai' },
+  // Kie.ai — GPT Codex variants (coding-focused, Responses API at /api/v1/responses)
+  { id: 'kie-gpt-5-codex', name: 'GPT-5 Codex (Kie)', provider: 'kie', contextWindow: '200K', description: 'GPT-5 Codex — coding-focused via Kie.ai', tier: 'flagship', inputCostPerMTok: 4, outputCostPerMTok: 16, pricingNote: 'approx — verify on kie.ai' },
+  { id: 'kie-gpt-5-1-codex', name: 'GPT-5.1 Codex (Kie)', provider: 'kie', contextWindow: '200K', description: 'GPT-5.1 Codex via Kie.ai', tier: 'flagship', inputCostPerMTok: 4, outputCostPerMTok: 16, pricingNote: 'approx — verify on kie.ai' },
+  { id: 'kie-gpt-5-2-codex', name: 'GPT-5.2 Codex (Kie)', provider: 'kie', contextWindow: '200K', description: 'GPT-5.2 Codex via Kie.ai', tier: 'flagship', inputCostPerMTok: 4, outputCostPerMTok: 16, pricingNote: 'approx — verify on kie.ai' },
+  { id: 'kie-gpt-5-3-codex', name: 'GPT-5.3 Codex (Kie)', provider: 'kie', contextWindow: '200K', description: 'GPT-5.3 Codex via Kie.ai', tier: 'flagship', inputCostPerMTok: 4, outputCostPerMTok: 16, pricingNote: 'approx — verify on kie.ai' },
+  { id: 'kie-gpt-5-4-codex', name: 'GPT-5.4 Codex (Kie)', provider: 'kie', contextWindow: '200K', description: 'GPT-5.4 Codex via Kie.ai', tier: 'flagship', inputCostPerMTok: 4, outputCostPerMTok: 16, pricingNote: 'approx — verify on kie.ai' },
 ];
 
 // Kie.ai model ID mapping: our internal ID → kie.ai API model ID and endpoint type
-export type KieEndpointType = 'gemini' | 'claude' | 'gpt-responses';
+//
+// Endpoint types:
+//   gemini          → POST /<kieModelId>/v1/chat/completions  (OpenAI-compatible chat)
+//   claude          → POST /claude/v1/messages                 (Anthropic-style)
+//   gpt-responses   → POST /codex/v1/responses                 (gpt-5-2/4/5 — uses `input` not messages)
+//   codex-responses → POST /api/v1/responses                   (gpt-5-N-codex variants — same shape as gpt-responses)
+export type KieEndpointType = 'gemini' | 'claude' | 'gpt-responses' | 'codex-responses';
 
 export interface KieModelConfig {
   kieModelId: string;
@@ -124,6 +138,7 @@ export const KIE_MODEL_MAP: Record<string, KieModelConfig> = {
   'kie-gemini-3-flash': { kieModelId: 'gemini-3-flash', endpointType: 'gemini' },
   'kie-gemini-3-pro': { kieModelId: 'gemini-3-pro', endpointType: 'gemini' },
   'kie-gemini-3.1-pro': { kieModelId: 'gemini-3.1-pro', endpointType: 'gemini' },
+  'kie-claude-opus-4-7': { kieModelId: 'claude-opus-4-7', endpointType: 'claude' },
   'kie-claude-opus-4-6': { kieModelId: 'claude-opus-4-6', endpointType: 'claude' },
   'kie-claude-sonnet-4-6': { kieModelId: 'claude-sonnet-4-6', endpointType: 'claude' },
   'kie-claude-sonnet-4-5': { kieModelId: 'claude-sonnet-4-5', endpointType: 'claude' },
@@ -131,6 +146,12 @@ export const KIE_MODEL_MAP: Record<string, KieModelConfig> = {
   'kie-claude-haiku-4-5': { kieModelId: 'claude-haiku-4-5', endpointType: 'claude' },
   'kie-gpt-5-2': { kieModelId: 'gpt-5-2', endpointType: 'gemini' }, // GPT 5.2 uses chat/completions
   'kie-gpt-5-4': { kieModelId: 'gpt-5-4', endpointType: 'gpt-responses' },
+  'kie-gpt-5-5': { kieModelId: 'gpt-5-5', endpointType: 'gpt-responses' }, // also /codex/v1/responses
+  'kie-gpt-5-codex': { kieModelId: 'gpt-5-codex', endpointType: 'codex-responses' },
+  'kie-gpt-5-1-codex': { kieModelId: 'gpt-5.1-codex', endpointType: 'codex-responses' },
+  'kie-gpt-5-2-codex': { kieModelId: 'gpt-5.2-codex', endpointType: 'codex-responses' },
+  'kie-gpt-5-3-codex': { kieModelId: 'gpt-5.3-codex', endpointType: 'codex-responses' },
+  'kie-gpt-5-4-codex': { kieModelId: 'gpt-5.4-codex', endpointType: 'codex-responses' },
 };
 
 export function getDefaultModel(): AIModel {
