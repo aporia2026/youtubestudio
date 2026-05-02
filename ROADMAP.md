@@ -1,0 +1,88 @@
+# Roadmap
+
+Source of truth for what's planned, in flight, and shipped. **Update this file in the same commit that ships a feature** — new sessions read it before starting work to avoid duplicating shipped items or renaming phases.
+
+## Origin
+
+This roadmap was written during the **May 1, 2026 system audit** (response to "extreme robust insane review" prompt). The four-phase structure was committed to then; sub-items inside each phase have evolved as work progressed.
+
+A more detailed file-by-file plan exists for Phase 1 in [PHASE1_PLAN.md](PHASE1_PLAN.md). Phases 2–4 were planned in conversation and tracked here.
+
+## Status legend
+
+- ✅ Shipped (in production, migration applied to prod DB)
+- 🚧 In flight
+- ⏸ Not started
+- ❌ Cancelled (with reason)
+
+---
+
+## Phase 1 — Foundation ✅
+
+Auth + multi-tenancy + encryption at rest + CI + rate-limit + observability + test harness. See [PHASE1_PLAN.md](PHASE1_PLAN.md) for the detailed plan that drove this phase.
+
+Migrations: **0001–0015** (rate limits) + **0016** (channels brand kit, started Phase 2).
+
+## Phase 2 — Multi-channel ergonomics ✅
+
+| PR | Topic | Status |
+|---|---|---|
+| #1 | Channel switcher in top bar | ✅ |
+| #2 | Per-channel brand kit + auto-pipe into script gen + QA | ✅ |
+| #3 | YouTube Analytics ingestion | ✅ |
+| #4 | Dashboard rebuild — "what needs your attention today" | ✅ |
+| #5 | Workspace scoping on top routes + CI lint gate | ✅ |
+| Hardening | Post-Phase-2 code review fixes (P0 channel UNIQUE + P1s) | ✅ |
+
+Migrations: **0016–0019**.
+
+## Phase 3 — 2026 table-stakes features ✅
+
+| PR | Topic | Migration | Status |
+|---|---|---|---|
+| #1 | Auto-dubbing pipeline (translation + ElevenLabs multilingual) | 0020 | ✅ |
+| #2 | Shorts pipeline (script-to-Short extractor + voiceover) | 0021 | ✅ |
+| #3 | Veo 3 / Sora 2 B-roll per shot (Production Doc per-row) | 0023 | ✅ |
+| #4 | Native YouTube A/B title + thumbnail (videos.update + snapshots) | 0024 | ✅ |
+
+Notes:
+- Migration **0022** (production_doc_styles) shipped in parallel, not part of Phase 3.
+- Shorts → MP4 render (Remotion 1080×1920) was **deferred** from PR #2 — see Beyond Phase 4 below.
+
+## Phase 4 — Innovative differentiation 🚧
+
+| Sub | Topic | Status | Notes |
+|---|---|---|---|
+| 4.1 | **Court of Critics live** — stream the existing 4-phase panel as it runs + persist full deliberation transcript + real-time courtroom UI | 🚧 | Existing engine: [src/lib/script-critics/runner.ts](src/lib/script-critics/runner.ts). Currently synchronous (~90-120s blocking). |
+| 4.2 | **Retention-curve predictor** — predict viewer drop-off shape from a script before publish | ⏸ | Use `video_analytics.retention_curve` JSONB as ground truth for training/few-shot. |
+| 4.3 | **Fix-the-dip** — detect retention drops in published videos + suggest specific script/edit fixes at the timecodes that drop | ⏸ | Pairs with 4.2. |
+| 4.4 | **Cross-channel cannibalization detector** — same niche + same audience + competing uploads warning | ⏸ | Multi-channel-only feature. |
+| 4.5 | **"Ask Studio" agent over your own DB** — natural-language query of analytics + project state ("which of my last-month uploads underperformed and why?") | ⏸ | Likely tool-use loop over a curated read-only SQL surface. |
+| 4.6 | **Mobile narrator PWA** — installable, offline-capable narrator portal | ⏸ | Existing portal at `/narrator/[token]` is desktop-first. |
+| 4.7 | **Slack/Discord webhooks** — send events (publish, A/B winner, low CTR alert) to an ops channel | ⏸ | Webhook URL + signed payload per workspace. |
+
+## Beyond Phase 4 (not in original audit, parking lot)
+
+Surfaced in conversation but **not** in the original May 1 audit. Pick one of these only after Phase 4 ships, and only if it's still useful then:
+
+- Comment & community management — pull YouTube comments, AI-triage, reply, pinned-comment automation
+- Competitor intelligence dashboard — `competitor_channels` + `competitor_videos` already exist, no consumer UI yet
+- Shorts → MP4 render (Remotion 1080×1920) — explicitly deferred from Phase 3 PR #2
+- End-to-end workflow triggers — "when video publishes, auto-create A/B test", "when CTR drops below X, suggest swap"
+- Spend tracker — per-API per-project AI cost log
+
+---
+
+## How to update this file
+
+When you **start** a sub-item: flip ⏸ → 🚧.
+When you **finish** a sub-item:
+1. Flip 🚧 → ✅
+2. Add the migration number(s) it required
+3. Commit the change to ROADMAP.md in the **same** PR that ships the feature.
+
+When you **cancel** a sub-item: flip → ❌ with a one-line reason.
+
+If a phase grows past ~10 sub-items or the file past ~200 lines, split it into its own `PHASE<N>_PLAN.md` (like Phase 1 did) and keep this file as the index.
+
+**Don't invent new phase numbers or rename sub-items mid-flight.** New work goes under "Beyond Phase 4" until promoted by an explicit decision.
