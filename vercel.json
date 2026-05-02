@@ -3,7 +3,6 @@
   "buildCommand": "npm run build",
   "devCommand": "npm run dev",
   "installCommand": "npm install",
-  "//": "On Pro plan the per-function ceiling is 300s (800s with Fluid Compute). Every LLM-driven generation is sized at 300s — script gen + expansion + QA scoring + brand-kit folding can stack to >120s for 10-15 min targets. Short utility routes (uploads, polling, DB ops) keep tighter caps so a hung handler doesn't waste compute.",
   "functions": {
     "src/app/api/generate/script/route.ts":                          { "maxDuration": 300 },
     "src/app/api/generate/script/refine/route.ts":                   { "maxDuration": 300 },
