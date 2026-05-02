@@ -6,7 +6,7 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { computeAnalytics, VideoRow } from '@/lib/competitor-analytics';
 
-export const maxDuration = 180;
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;

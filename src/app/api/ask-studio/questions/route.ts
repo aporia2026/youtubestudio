@@ -5,7 +5,7 @@ import { askStudio, listAskStudioQuestions } from '@/lib/ask-studio';
 // Tool-use loops can run up to MAX_TOOL_ITERATIONS sequential model
 // calls. With Haiku each call is ~1-3s, so the worst case is ~20s.
 // 60s ceiling gives comfortable margin.
-export const maxDuration = 60;
+export const maxDuration = 180;
 
 /**
  * GET /api/ask-studio/questions?limit=

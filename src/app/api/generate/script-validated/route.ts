@@ -49,12 +49,14 @@ const DEFAULT_THRESHOLD = 85;
 // to exceed Vercel's 300s cap. Users who really want a third attempt
 // can pass maxAttempts:3 explicitly and accept the timeout risk.
 const DEFAULT_MAX_ATTEMPTS = 2;
-// Stop starting NEW attempts once this much wall-clock has elapsed —
-// 220s leaves ~80s headroom for the in-flight attempt's gen+expand+QA
-// to finish before Vercel's 300s ceiling. Tuned conservatively because
-// the alternative (a 504 with no script returned) is much worse than
-// "we ran 1 attempt instead of 2 and returned what we had".
-const DEADLINE_MS = 220_000;
+// Stop starting NEW attempts once this much wall-clock has elapsed.
+// vercel.json caps this route at 300s (Pro plan ceiling without Fluid
+// Compute). 240s leaves a 60s headroom for the in-flight attempt's
+// gen+expand+QA to finish before Vercel kills the function. Tuned
+// conservatively because the alternative (a 504 with no script
+// returned) is much worse than "we ran 1 attempt instead of 2 and
+// returned what we had".
+const DEADLINE_MS = 240_000;
 
 interface CriticalIssue {
   severity?: string;

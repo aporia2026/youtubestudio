@@ -4,7 +4,7 @@ import { ideaGenerationPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 // Normalize a title for cross-attempt dedup: lowercase, collapse whitespace,
 // strip leading/trailing punctuation. Matches "5 Ways to Get Rich!" with

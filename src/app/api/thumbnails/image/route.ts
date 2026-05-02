@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 /**
  * Kie.ai image generation model configurations.

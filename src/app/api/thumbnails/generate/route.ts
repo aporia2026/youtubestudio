@@ -4,7 +4,7 @@ import { thumbnailConceptPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   try {

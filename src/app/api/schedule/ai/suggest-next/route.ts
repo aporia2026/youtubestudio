@@ -3,7 +3,7 @@ import { generateText } from '@/lib/ai';
 import { sql, ensureScheduleSchema } from '@/lib/db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 /** POST /api/schedule/ai/suggest-next
  *  body: { channel_id?: string, modelId?: string }

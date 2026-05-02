@@ -4,7 +4,7 @@ import { generateText, getDefaultModel } from '@/lib/ai';
 import { channelAnalysisPrompt } from '@/lib/prompts';
 import { fetchChannelVideos } from '@/lib/youtube';
 
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;

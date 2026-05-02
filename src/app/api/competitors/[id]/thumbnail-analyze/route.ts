@@ -5,7 +5,7 @@ import { competitorThumbnailPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 /**
  * Analyze a single competitor video's thumbnail using vision.

@@ -4,7 +4,7 @@ import { runCannibalizationScan } from '@/lib/cannibalization';
 
 // AI step is Haiku — fast — but we cap at 10 pairs per scan, so worst
 // case is ~10 sequential calls. 60s ceiling is comfortable.
-export const maxDuration = 60;
+export const maxDuration = 180;
 
 /**
  * POST /api/cannibalization/scans

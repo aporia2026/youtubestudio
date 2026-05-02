@@ -3,7 +3,7 @@ import { generateVoiceover } from '@/lib/elevenlabs';
 import { put } from '@vercel/blob';
 import { sql } from '@/lib/db';
 
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   try {

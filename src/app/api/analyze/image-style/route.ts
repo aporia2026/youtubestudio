@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateText } from '@/lib/ai';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as const;
 

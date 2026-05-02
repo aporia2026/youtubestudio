@@ -5,7 +5,7 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { fetchVideoMetadata, checkHandlesBatch, parseYouTubeUrl, fetchChannelData, fetchChannelVideosRich } from '@/lib/youtube';
 
-export const maxDuration = 180;
+export const maxDuration = 300;
 
 interface Candidate {
   name: string;

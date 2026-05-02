@@ -4,7 +4,7 @@ import { youtubeDescriptionPrompt } from '@/lib/prompts';
 import { getTemplate } from '@/lib/templates-db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 
-export const maxDuration = 90;
+export const maxDuration = 180;
 
 // Strip residual AI tells the model might emit despite the prompt rules.
 // Em-dashes are the most common — replace with comma + space (semantically

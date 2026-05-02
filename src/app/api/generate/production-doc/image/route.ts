@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { put } from '@vercel/blob';
 
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 const KIE_BASE = 'https://api.kie.ai/api/v1/jobs';
 

@@ -3,7 +3,7 @@ import { generateTextStream, getModelById } from '@/lib/ai';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { buildConstraintsPromptBlock, type ScriptConstraints } from '@/lib/script-options';
 
-export const maxDuration = 180;
+export const maxDuration = 300;
 
 /** Post-generation refinement. Takes an already-produced script and the user's
  *  free-form improvement notes, streams back a revised version. Respects the

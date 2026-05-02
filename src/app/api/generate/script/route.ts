@@ -6,10 +6,11 @@ import { getSession } from '@/lib/session';
 import { resolveBrandKitForRequest } from '@/lib/channel-brand-kit';
 import { countWords } from '@/lib/utils';
 
-// Bumped from 120s to handle the optional second-pass expansion when the
-// first stream comes back materially shorter than the duration target.
-// The expansion is non-streaming so it adds at most one model round-trip.
-export const maxDuration = 240;
+// 300s is the Pro-plan ceiling without Fluid Compute. The optional
+// expansion pass (non-streaming) can add another 30-60s on top of a
+// long stream, so the prior 120/240 caps were starving real 10-15 min
+// generations of headroom.
+export const maxDuration = 300;
 
 /** Sentinel the client looks for to know "discard everything you've shown
  *  so far and start fresh from the bytes that follow." Used when the

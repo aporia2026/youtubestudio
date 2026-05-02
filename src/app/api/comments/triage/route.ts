@@ -4,7 +4,7 @@ import { triageComments } from '@/lib/comment-triage';
 
 // AI loop runs CONCURRENCY=3 in parallel — worst case ~10s for 25
 // comments with Haiku. 60s ceiling is comfortable.
-export const maxDuration = 60;
+export const maxDuration = 180;
 
 /**
  * POST /api/comments/triage

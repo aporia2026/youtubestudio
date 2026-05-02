@@ -3,7 +3,7 @@ import { sql, ensureCompetitorSchema } from '@/lib/db';
 import { fetchChannelVideosRich, fetchChannelData, fetchVideoComments, parseDurationSeconds } from '@/lib/youtube';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 
-export const maxDuration = 120;
+export const maxDuration = 180;
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;

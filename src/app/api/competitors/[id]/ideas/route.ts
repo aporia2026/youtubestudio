@@ -6,7 +6,7 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { computeAnalytics, VideoRow } from '@/lib/competitor-analytics';
 
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 /**
  * Generate video ideas for the user based on competitor analytics.
