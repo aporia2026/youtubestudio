@@ -72,6 +72,8 @@ export const SCOPED_TABLES = [
   'dip_analyses',
   'cannibalization_alerts',
   'ask_studio_questions',
+  'webhook_subscriptions',
+  'webhook_deliveries',
 ] as const;
 
 export type ScopedTable = (typeof SCOPED_TABLES)[number];

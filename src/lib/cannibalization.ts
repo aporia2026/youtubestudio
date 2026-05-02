@@ -399,6 +399,36 @@ export async function runCannibalizationScan(
     });
   }
 
+  // Fire-and-forget webhook for every NEW high-risk alert (dedup index
+  // ensures we don't re-fire on already-flagged pairs). Lazy import so
+  // the webhook code doesn't get bundled into every consumer of this
+  // orchestrator.
+  const highRiskCreated = created.filter((a) => a.risk_level === 'high');
+  if (highRiskCreated.length > 0) {
+    void (async () => {
+      try {
+        const { dispatchWebhookEvent } = await import('./webhooks');
+        for (const alert of highRiskCreated) {
+          await dispatchWebhookEvent(args.workspaceId, {
+            type: 'cannibalization_high_risk',
+            title: '⚠️ High-risk cannibalization detected',
+            detail: alert.why ?? `Two of your channels overlap on similar titles within a ${windowDays}-day window.`,
+            fields: {
+              channel_a: alert.pair_a.channel_name ?? 'unknown',
+              title_a: alert.pair_a.title.slice(0, 120),
+              channel_b: alert.pair_b.channel_name ?? 'unknown',
+              title_b: alert.pair_b.title.slice(0, 120),
+              similarity: `${(alert.similarity_score * 100).toFixed(0)}%`,
+              fix: alert.recommended_fix ?? '(none)',
+            },
+          });
+        }
+      } catch {
+        /* webhook failure must never block the scan result */
+      }
+    })();
+  }
+
   return {
     scanned_window_days: windowDays,
     candidates_considered: uploads.length,

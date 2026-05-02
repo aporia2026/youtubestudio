@@ -49,7 +49,7 @@ Notes:
 - Migration **0022** (production_doc_styles) shipped in parallel, not part of Phase 3.
 - Shorts → MP4 render (Remotion 1080×1920) was **deferred** from PR #2 — see Beyond Phase 4 below.
 
-## Phase 4 — Innovative differentiation 🚧
+## Phase 4 — Innovative differentiation ✅
 
 | Sub | Topic | Status | Notes |
 |---|---|---|---|
@@ -59,7 +59,7 @@ Notes:
 | 4.4 | **Cross-channel cannibalization detector** — same niche + same audience + competing uploads warning | ✅ | Migration 0028. Pulls scheduled + recently-published uploads across the workspace, finds cross-channel pairs in a ±7-day window, scores Jaccard similarity over significant title tokens, top-10 above threshold get an AI explanation + concrete fix. UI at `/cannibalization` with dismiss. |
 | 4.5 | **"Ask Studio" agent over your own DB** — natural-language query of analytics + project state | ✅ | Migration 0029. Anthropic native tool-use loop over a curated 9-tool read-only catalog (channels, recent/top/underperforming videos, scheduled items, projects, A/B tests, per-channel upload counts, single-video deep-dive). Every executor auto-scopes to workspace_id. Hard caps: 6 iterations, 50 rows/tool. UI at `/ask-studio` with suggested prompts + collapsible tool trace. |
 | 4.6 | **Mobile narrator PWA** — installable, offline-capable narrator portal | ✅ | Service worker scoped to `/narrator/` (cache-first static, stale-while-revalidate HTML, network-first API, never caches non-GET so uploads always hit network). Manifest + iOS web-app meta + safe-area inset support + install pill (Android beforeinstallprompt) + iOS A2HS hint with localStorage dismissal. Offline fallback page. |
-| 4.7 | **Slack/Discord webhooks** — send events (publish, A/B winner, low CTR alert) to an ops channel | ⏸ | Webhook URL + signed payload per workspace. |
+| 4.7 | **Slack/Discord webhooks** — send events (A/B winner, cannibalization, panel completed, retention dip) to an ops channel | ✅ | Migration 0030. Per-workspace subscriptions (Slack/Discord/generic) with per-event filters; URLs encrypted at rest, only `url_preview` exposed; URL validation gates host (hooks.slack.com / discord.com / discordapp.com) + blocks loopback/private addrs. Fire-and-forget dispatcher with full delivery audit log. Wired producers: A/B test conclude + high-risk cannibalization. Test-webhook button. |
 
 ## Beyond Phase 4 (not in original audit, parking lot)
 

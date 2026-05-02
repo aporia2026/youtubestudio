@@ -518,5 +518,29 @@ export async function concludeAbTest(args: ConcludeAbTestArgs): Promise<AbTestRo
      WHERE id = ${args.id}::uuid AND workspace_id = ${args.workspaceId}::uuid
   `;
 
+  // Fire-and-forget webhook notification. Imported lazily to avoid pulling
+  // crypto + http deps into every consumer of this module.
+  void (async () => {
+    try {
+      const { dispatchWebhookEvent } = await import('./webhooks');
+      const winnerTitle =
+        args.winner === 'a' ? test.variant_a_title : test.variant_b_title;
+      await dispatchWebhookEvent(args.workspaceId, {
+        type: 'ab_test_concluded',
+        title: `🏆 A/B test concluded — variant ${args.winner.toUpperCase()} won`,
+        detail: `Winning title: *${winnerTitle}*`,
+        fields: {
+          video_id: test.youtube_video_id,
+          winner: args.winner.toUpperCase(),
+          variant_a_title: test.variant_a_title.slice(0, 120),
+          variant_b_title: test.variant_b_title.slice(0, 120),
+        },
+        url: `https://www.youtube.com/watch?v=${test.youtube_video_id}`,
+      });
+    } catch {
+      /* webhooks failing must never block conclusion */
+    }
+  })();
+
   return (await getAbTest(args.id, args.workspaceId))!;
 }
