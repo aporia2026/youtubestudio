@@ -16,7 +16,7 @@ import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { ScoreRing } from '@/components/ui/ScoreRing';
 import { saveDraft, getActiveDraft } from '@/lib/drafts';
 import { EMPTY_CONSTRAINTS, hasAnyConstraint, type ScriptConstraints } from '@/lib/script-options';
-import { scoreLabel } from '@/lib/utils';
+import { countWords, scoreLabel } from '@/lib/utils';
 import { saveQAEntry, getQAHistory, deleteQAEntry, clearQAHistory, getRecentNiches, type QAHistoryEntry } from '@/lib/history';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
@@ -138,6 +138,10 @@ function QAPage() {
   // When the latest pass's runKey diverges from this, the Save button shows a
   // dirty-dot indicator.
   const [lastSavedQaRunKey, setLastSavedQaRunKey] = useState<string | null>(null);
+  // Tracks the exact script content last saved to the linked project. Drives
+  // the dirty indicator in concert with `lastSavedQaRunKey` so re-saving a
+  // post-QA edited script (or applying new fixes) lights up the button.
+  const [lastSavedQaScript, setLastSavedQaScript] = useState<string>('');
 
   // Load prefill from Script Generator. Also restore any previously-backed-up session
   // so a refresh or HMR cycle doesn't wipe a multi-pass QA run.
@@ -163,7 +167,13 @@ function QAPage() {
       if (cancelled) return;
       if (ctx.niche) setNiche(curr => curr || ctx.niche);
       if (ctx.topic) setTopic(curr => curr || ctx.topic);
-      if (ctx.script) setScript(prev => prev || ctx.script!);
+      if (ctx.script) {
+        setScript(prev => prev || ctx.script!);
+        // The prefilled script is the current active script on the linked
+        // project — already on disk. Mark it as "last saved" so the banner's
+        // dirty indicator doesn't light up the moment the page hydrates.
+        setLastSavedQaScript(prev => prev || ctx.script!.trim());
+      }
       // Carry forward the project linkage so saved QA sessions and applied
       // fixes land on the same script row that the schedule item points to.
       if (item.project_id) setProjectId(curr => curr || item.project_id);
@@ -649,46 +659,129 @@ function QAPage() {
 
   const currentResult = results[activeResult];
 
-  // Saver derived values: the latest pass's score + verdict are what we
-  // surface to the schedule grid. The "report" itself isn't pushed back
-  // (it's persisted in the project's `qa_sessions` table and in
-  // localStorage); the schedule item just needs the fingerprint.
+  // Saver derived values. QA's primary artifact is a *script* (either the
+  // original input or — preferred when it exists — the fixed script after
+  // applying QA suggestions). On Save we:
+  //   - POST a new script revision to the linked project (or create a new
+  //     project if none is linked yet), same update-in-place pattern as
+  //     Script Generator's banner save,
+  //   - PATCH the schedule item with project_id + new script_id,
+  //   - shallow-merge a `latest_qa` fingerprint when there's a QA pass.
+  //
+  // The auto-stamp keeps firing on each new pass so the schedule grid can
+  // show "QA'd" without requiring a save.
   const latestQaResult = results.length > 0 ? results[results.length - 1] : null;
   const latestQaScore = latestQaResult?.overall_score ?? null;
-  const qaIsReady = !!latestQaResult;
+  // The script to push: prefer the post-fix version, fall back to the
+  // original input. Same convention QA uses for "Save as Project" /
+  // "Send to narrator" / etc. (lib/qa-utils notwithstanding).
+  const effectiveQaScript = (fixedScript || script).trim();
+  const qaWordCount = effectiveQaScript ? countWords(effectiveQaScript) : 0;
+  // Save is enabled when there's *something* worth saving — either a script
+  // (with or without a QA pass) or a QA pass alone (metadata-only stamp).
+  const qaIsReady = effectiveQaScript.length > 0 || !!latestQaResult;
   const qaRunKey = latestQaResult
     ? `${results.length}:${latestQaScore ?? 'null'}:${latestQaResult.verdict ?? ''}`
     : null;
+  // Dirty when *either* a new pass landed or the script diverged from
+  // what was last pushed. Either condition lights up the dirty indicator.
+  const qaScriptIsDirty = effectiveQaScript.length > 0 && effectiveQaScript !== lastSavedQaScript;
+  const qaPassIsDirty = !!qaRunKey && qaRunKey !== lastSavedQaRunKey;
+  const qaIsDirty = qaIsReady && (qaScriptIsDirty || qaPassIsDirty);
 
   return (
     <ScheduleLinkProvider item={scheduleItem}>
       <ScheduleSaverRegistration
         handle={{
-          artifactLabel: 'QA report',
+          artifactLabel: 'script',
           isReady: qaIsReady,
-          // Each new pass shifts the runKey, which we use as a stable
-          // identity for "what's been saved". When runKey doesn't match
-          // lastSavedQaRunKey (tracked in the onSaved callback), dirty.
-          isDirty: qaIsReady && qaRunKey !== lastSavedQaRunKey,
-          notReadyReason: 'Run a QA pass first',
-          buildPatch: () => ({
-            patch: {},
-            customFieldsMerge: {
-              latest_qa: {
-                score: latestQaResult!.overall_score,
-                verdict: latestQaResult!.verdict,
+          isDirty: qaIsDirty,
+          notReadyReason: 'Paste a script or run a QA pass first',
+          // Saving a script from QA → schedule item moves to "scripting"
+          // (no-op if it's already past). Server enforces strict-forward
+          // ordering so this can't accidentally rewind.
+          nextStatus: { key: 'scripting', label: 'Scripting' },
+          buildPatch: async () => {
+            const trimmed = effectiveQaScript;
+            const patch: Record<string, unknown> = {};
+            const merge: Record<string, unknown> = {};
+
+            // Stamp the QA fingerprint (no-op when the user hasn't run QA
+            // yet — they may be on this page just to land a script revision).
+            if (latestQaResult) {
+              merge.latest_qa = {
+                score: latestQaResult.overall_score,
+                verdict: latestQaResult.verdict,
                 pass_count: results.length,
                 ran_at: new Date().toISOString(),
                 model_id: modelId,
                 aggressiveness,
-              },
-            },
-          }),
-          describeSaved: () =>
-            latestQaResult
-              ? `${latestQaResult.overall_score}/100 · ${latestQaResult.verdict || 'verdict pending'}`
-              : '',
-          onSaved: () => setLastSavedQaRunKey(qaRunKey),
+              };
+            }
+
+            // Push the script to a project — either a new revision on the
+            // already-linked project or a fresh project + initial script.
+            if (trimmed) {
+              const targetProjectId = projectId ?? scheduleItem?.project_id ?? null;
+              try {
+                if (targetProjectId) {
+                  const r = await fetch(`/api/projects/${targetProjectId}/scripts`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content: trimmed, modelId }),
+                  });
+                  if (!r.ok) throw new Error('Failed to save script revision');
+                  const data = await r.json();
+                  patch.project_id = targetProjectId;
+                  if (data.script?.id) patch.script_id = data.script.id;
+                  setScriptId(data.script?.id ?? null);
+                } else {
+                  const titleSeed = (topic || scheduleItem?.title || '').trim() || 'QA Script';
+                  const r = await fetch('/api/projects', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      title: titleSeed,
+                      niche: niche || 'General',
+                      topic: titleSeed,
+                      script: trimmed,
+                      modelId,
+                    }),
+                  });
+                  if (!r.ok) throw new Error('Failed to create project');
+                  const data = await r.json();
+                  const newProjectId: string | null = data.project?.id ?? data.id ?? null;
+                  const newScriptId: string | null = data.script?.id ?? null;
+                  if (newProjectId) {
+                    patch.project_id = newProjectId;
+                    setProjectId(newProjectId);
+                  }
+                  if (newScriptId) {
+                    patch.script_id = newScriptId;
+                    setScriptId(newScriptId);
+                  }
+                }
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : 'Could not save the script');
+                throw err;
+              }
+            }
+
+            return {
+              patch,
+              customFieldsMerge: Object.keys(merge).length > 0 ? merge : undefined,
+            };
+          },
+          describeSaved: () => {
+            const parts: string[] = [];
+            if (effectiveQaScript) parts.push(`${qaWordCount} words`);
+            if (latestQaResult) parts.push(`QA ${latestQaResult.overall_score}/100`);
+            return parts.join(' · ');
+          },
+          onSaved: () => {
+            setLastSavedQaRunKey(qaRunKey);
+            setLastSavedQaScript(effectiveQaScript);
+          },
         }}
         autoStamp={{
           key: 'latest_qa',
