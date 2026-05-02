@@ -22,6 +22,7 @@ import migration0022 from './0022_create_production_doc_styles';
 import migration0023 from './0023_create_broll_clips';
 import migration0024 from './0024_create_ab_tests';
 import migration0025 from './0025_create_critic_panels';
+import migration0026 from './0026_create_retention_predictions';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -52,6 +53,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0023,
   migration0024,
   migration0025,
+  migration0026,
 ]);
 
 /**

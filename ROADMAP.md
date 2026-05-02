@@ -54,7 +54,7 @@ Notes:
 | Sub | Topic | Status | Notes |
 |---|---|---|---|
 | 4.1 | **Court of Critics live** — stream the existing 4-phase panel as it runs + persist full deliberation transcript + real-time courtroom UI | ✅ | Migration 0025. AsyncGenerator wrapper at [src/lib/script-critics/runner-live.ts](src/lib/script-critics/runner-live.ts) reuses the original normalizers; SSE route streams + persists each event; `/critics` page renders critic cards filling in as drafts complete. |
-| 4.2 | **Retention-curve predictor** — predict viewer drop-off shape from a script before publish | ⏸ | Use `video_analytics.retention_curve` JSONB as ground truth for training/few-shot. |
+| 4.2 | **Retention-curve predictor** — predict viewer drop-off shape from a script before publish | ✅ | Migration 0026. RAG over `video_analytics.retention_curve` (workspace's own past videos), scopes by channel when possible. Outputs predicted curve + per-segment drop forecast + cross-segment fixes. AVP recomputed from curve (LLMs misintegrate). UI at `/retention`. |
 | 4.3 | **Fix-the-dip** — detect retention drops in published videos + suggest specific script/edit fixes at the timecodes that drop | ⏸ | Pairs with 4.2. |
 | 4.4 | **Cross-channel cannibalization detector** — same niche + same audience + competing uploads warning | ⏸ | Multi-channel-only feature. |
 | 4.5 | **"Ask Studio" agent over your own DB** — natural-language query of analytics + project state ("which of my last-month uploads underperformed and why?") | ⏸ | Likely tool-use loop over a curated read-only SQL surface. |
