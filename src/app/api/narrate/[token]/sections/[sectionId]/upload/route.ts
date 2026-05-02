@@ -3,14 +3,12 @@ import { sql } from '@vercel/postgres';
 import { getAssignmentByToken, createTake, updateAssignment } from '@/lib/narrator-db';
 import { isR2Configured, buildNarrationKey, getNarrationUploadUrl, getNarrationDownloadUrl } from '@/lib/r2';
 import { notifyNarratorTake } from '@/lib/notify';
+import { ALLOWED_AUDIO_MIME_TYPES, resolveAudioMime } from '@/lib/narrator-utils';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500MB hard cap
-// Browsers vary on the mime they emit for mp3 / flac. Accept the common
-// informal aliases to avoid silently rejecting valid audio.
-const ALLOWED_AUDIO_TYPES = ['audio/mpeg', 'audio/mp3', 'audio/mp4', 'audio/x-m4a', 'audio/wav', 'audio/wave', 'audio/x-wav', 'audio/webm', 'audio/ogg', 'audio/flac', 'audio/x-flac', 'audio/aac'];
 
 /**
  * Two-step upload to R2 narration bucket:
@@ -47,7 +45,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
     if (!fileName || !contentType) {
       return NextResponse.json({ error: 'fileName and contentType are required' }, { status: 400 });
     }
-    if (!ALLOWED_AUDIO_TYPES.includes(contentType)) {
+    // Resolve before validating: browsers sometimes emit `application/octet-stream`
+    // for AIFF / desktop-exported files. The R2 presign uses the resolved mime so
+    // the client's PUT must send the same type — see the response below.
+    const resolvedContentType = resolveAudioMime(contentType, fileName);
+    if (!ALLOWED_AUDIO_MIME_TYPES.includes(resolvedContentType)) {
       return NextResponse.json({ error: `Invalid audio type: ${contentType}` }, { status: 400 });
     }
     if (typeof fileSize === 'number' && fileSize > MAX_FILE_SIZE) {
@@ -68,7 +70,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
     let uploadUrl: string;
     let downloadUrl: string;
     try {
-      uploadUrl = await getNarrationUploadUrl(r2Key, contentType);
+      uploadUrl = await getNarrationUploadUrl(r2Key, resolvedContentType);
       downloadUrl = await getNarrationDownloadUrl(r2Key);
     } catch (e) {
       // Roll back the take row if presigning fails
@@ -107,6 +109,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
       takeNumber: take.take_number,
       r2Key,
       audioUrl: downloadUrl,
+      // Client must PUT with this exact Content-Type — R2 signed it into the URL.
+      contentType: resolvedContentType,
     }, { status: 201 });
   } catch (err) {
     console.error('upload take error:', err);

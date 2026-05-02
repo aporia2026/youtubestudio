@@ -299,3 +299,63 @@ export function diffWords(oldText: string, newText: string): DiffToken[] {
   for (let k = temp.length - 1; k >= 0; k--) result.push(temp[k]);
   return result;
 }
+
+// ─── Audio MIME normalisation for narrator uploads ──────────────────────────
+//
+// Browsers vary on the mime they emit for audio files. Some report
+// `application/octet-stream` (or an empty string) for less-common formats —
+// AIFF in particular, but also files that came through a desktop "save as"
+// or were renamed without re-encoding. The narrator routes' allowlist used
+// to reject those outright; we now fall back to the file extension before
+// validating, and let both client and server agree on the resolved mime so
+// the R2 presigned PUT's signed Content-Type matches what the browser sends.
+
+export const ALLOWED_AUDIO_MIME_TYPES = [
+  'audio/mpeg', 'audio/mp3',
+  'audio/mp4', 'audio/x-m4a',
+  'audio/wav', 'audio/wave', 'audio/x-wav',
+  'audio/webm',
+  'audio/ogg', 'audio/opus',
+  'audio/flac', 'audio/x-flac',
+  'audio/aac',
+  'audio/aiff', 'audio/x-aiff',
+];
+
+const EXTENSION_TO_AUDIO_MIME: Record<string, string> = {
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  wave: 'audio/wav',
+  m4a: 'audio/mp4',
+  mp4: 'audio/mp4',
+  aac: 'audio/aac',
+  ogg: 'audio/ogg',
+  oga: 'audio/ogg',
+  opus: 'audio/opus',
+  flac: 'audio/flac',
+  webm: 'audio/webm',
+  aiff: 'audio/aiff',
+  aif: 'audio/aiff',
+};
+
+function extOf(fileName: string): string {
+  const dot = fileName.lastIndexOf('.');
+  return dot >= 0 ? fileName.slice(dot + 1).toLowerCase() : '';
+}
+
+/** Returns the contentType unchanged when it's a known audio mime; otherwise
+ *  derives one from the file extension. Returns the original contentType if
+ *  no fallback was found, so callers' allowlist check still rejects truly
+ *  non-audio uploads with a useful error. */
+export function resolveAudioMime(contentType: string, fileName: string): string {
+  if (ALLOWED_AUDIO_MIME_TYPES.includes(contentType)) return contentType;
+  const ext = extOf(fileName);
+  return EXTENSION_TO_AUDIO_MIME[ext] || contentType;
+}
+
+/** Client-side guard. Accepts the file when either the browser-reported mime
+ *  starts with `audio/`, or the extension is one we know how to upload —
+ *  matters for AIFF / odd exports where browsers emit `application/octet-stream`. */
+export function isLikelyAudioFile(file: File): boolean {
+  if (file.type.startsWith('audio/')) return true;
+  return extOf(file.name) in EXTENSION_TO_AUDIO_MIME;
+}

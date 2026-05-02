@@ -7,7 +7,7 @@ import { TeleprompterMode } from './TeleprompterMode';
 import { TakeReview } from './TakeReview';
 import { HeroAction } from '@/components/dashboard/HeroAction';
 import { stripProductionCues, countWords as countSpokenWords } from '@/lib/utils';
-import { getSpokenSectionText } from '@/lib/narrator-utils';
+import { getSpokenSectionText, isLikelyAudioFile, resolveAudioMime } from '@/lib/narrator-utils';
 
 interface Assignment {
   id: string;
@@ -358,10 +358,14 @@ export function NarratorPortal({ token }: { token: string }) {
     // `silent: true` propagates the error back to the caller (used by BulkUploadZone
     // so each row can show its own error state). Default behaviour shows an alert
     // for one-off per-section uploads since this component lives outside the app shell.
-    if (!file.type.startsWith('audio/')) {
+    if (!isLikelyAudioFile(file)) {
       if (opts?.silent) throw new Error('Not an audio file');
       return;
     }
+    // Some browsers report `application/octet-stream` for AIFF / desktop-exported
+    // files; resolve via extension so the PUT's Content-Type matches the server's
+    // R2 presign (which signs the same resolved type).
+    const resolvedContentType = resolveAudioMime(file.type, file.name);
     setUploading(sectionId);
     try {
       // Probe duration locally before reserving the take row
@@ -385,7 +389,7 @@ export function NarratorPortal({ token }: { token: string }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fileName: file.name,
-          contentType: file.type,
+          contentType: resolvedContentType,
           fileSize: file.size,
           durationSeconds,
         }),
@@ -394,12 +398,12 @@ export function NarratorPortal({ token }: { token: string }) {
         const err = await reserveRes.json().catch(() => ({}));
         throw new Error(err.error || `Server returned ${reserveRes.status}`);
       }
-      const { uploadUrl, takeId, takeNumber, audioUrl } = await reserveRes.json();
+      const { uploadUrl, takeId, takeNumber, audioUrl, contentType: signedContentType } = await reserveRes.json();
 
-      // 2. Upload directly to R2
+      // 2. Upload directly to R2 — must match the Content-Type the server signed.
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
-        headers: { 'Content-Type': file.type },
+        headers: { 'Content-Type': signedContentType || resolvedContentType },
         body: file,
       });
       if (!putRes.ok) {
@@ -443,10 +447,14 @@ export function NarratorPortal({ token }: { token: string }) {
    * the existing review/comment surfaces work unchanged.
    */
   const handleFullUpload = useCallback(async (file: File) => {
-    if (!file.type.startsWith('audio/')) {
+    if (!isLikelyAudioFile(file)) {
       alert('Please choose an audio file.');
       return;
     }
+    // Resolve via extension so AIFF / desktop-exported files (which browsers
+    // sometimes report as `application/octet-stream`) match the server's R2
+    // presigned Content-Type when we PUT below.
+    const resolvedContentType = resolveAudioMime(file.type, file.name);
     setFullUploading(true);
     try {
       let durationSeconds: number | undefined;
@@ -468,7 +476,7 @@ export function NarratorPortal({ token }: { token: string }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fileName: file.name,
-          contentType: file.type,
+          contentType: resolvedContentType,
           fileSize: file.size,
           durationSeconds,
         }),
@@ -477,11 +485,11 @@ export function NarratorPortal({ token }: { token: string }) {
         const err = await reserveRes.json().catch(() => ({}));
         throw new Error(err.error || `Server returned ${reserveRes.status}`);
       }
-      const { uploadUrl, takeId, audioUrl } = await reserveRes.json();
+      const { uploadUrl, takeId, audioUrl, contentType: signedContentType } = await reserveRes.json();
 
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
-        headers: { 'Content-Type': file.type },
+        headers: { 'Content-Type': signedContentType || resolvedContentType },
         body: file,
       });
       if (!putRes.ok) {
@@ -1424,7 +1432,7 @@ function BulkUploadZone({
   const [uploadingAll, setUploadingAll] = useState(false);
 
   const acceptFiles = useCallback((files: FileList | File[]) => {
-    const audio = Array.from(files).filter(f => f.type.startsWith('audio/'));
+    const audio = Array.from(files).filter(f => isLikelyAudioFile(f));
     if (audio.length === 0) return;
     const next: BulkMapping[] = audio.map(f => ({
       file: f,

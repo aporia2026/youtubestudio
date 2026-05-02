@@ -16,6 +16,7 @@ import {
   getNarrationDownloadUrl,
   deleteNarrationObject,
 } from '@/lib/r2';
+import { ALLOWED_AUDIO_MIME_TYPES, resolveAudioMime } from '@/lib/narrator-utils';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -24,13 +25,6 @@ export const maxDuration = 60;
 // stay capped at 500MB; this path needs more headroom because the narrator may
 // not transcode before submitting.
 const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
-// Browsers vary on the mime they emit for mp3 (`audio/mpeg` is normative; iOS
-// Safari and a couple of older builds emit `audio/mp3`). Including both
-// avoids silent rejections.
-const ALLOWED_AUDIO_TYPES = [
-  'audio/mpeg', 'audio/mp3', 'audio/mp4', 'audio/x-m4a', 'audio/wav', 'audio/wave',
-  'audio/x-wav', 'audio/webm', 'audio/ogg', 'audio/flac', 'audio/x-flac', 'audio/aac',
-];
 
 /**
  * STEP 1 (POST { fileName, contentType, fileSize, durationSeconds? }):
@@ -59,11 +53,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
     if (!fileName || !contentType) {
       return NextResponse.json({ error: 'fileName and contentType are required' }, { status: 400 });
     }
-    if (!ALLOWED_AUDIO_TYPES.includes(contentType)) {
+    // Resolve before validating: browsers sometimes emit `application/octet-stream`
+    // for AIFF / desktop-exported files. The R2 presign uses the resolved mime so
+    // the client's PUT must send the same type — see the response below.
+    const resolvedContentType = resolveAudioMime(contentType, fileName);
+    if (!ALLOWED_AUDIO_MIME_TYPES.includes(resolvedContentType)) {
       return NextResponse.json({ error: `Invalid audio type: ${contentType}` }, { status: 400 });
     }
     if (typeof fileSize === 'number' && fileSize > MAX_FILE_SIZE) {
-      return NextResponse.json({ error: 'File too large (max 500MB)' }, { status: 400 });
+      return NextResponse.json({ error: 'File too large (max 2GB)' }, { status: 400 });
     }
 
     const sectionId = await ensureFullAudioSection(assignment.id);
@@ -114,7 +112,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
     let uploadUrl: string;
     let downloadUrl: string;
     try {
-      uploadUrl = await getNarrationUploadUrl(r2Key, contentType);
+      uploadUrl = await getNarrationUploadUrl(r2Key, resolvedContentType);
       downloadUrl = await getNarrationDownloadUrl(r2Key);
     } catch (e) {
       await sql`DELETE FROM narrator_takes WHERE id = ${take.id}`;
@@ -145,6 +143,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
       takeId: take.id,
       r2Key,
       audioUrl: downloadUrl,
+      // Client must PUT with this exact Content-Type — R2 signed it into the URL.
+      contentType: resolvedContentType,
     }, { status: 201 });
   } catch (err) {
     console.error('upload full audio error:', err);
