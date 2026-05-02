@@ -69,6 +69,7 @@ export const SCOPED_TABLES = [
   'critic_panels',
   'critic_panel_events',
   'retention_predictions',
+  'dip_analyses',
 ] as const;
 
 export type ScopedTable = (typeof SCOPED_TABLES)[number];
