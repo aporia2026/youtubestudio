@@ -562,7 +562,7 @@ function GeneratorPage() {
         // as text first so we can surface a readable message instead of a
         // cryptic JSON.parse error.
         const rawBody = await res.text();
-        let data: { error?: string; passed?: boolean; script?: string; qa?: { overall_score?: number; critical_issues?: Array<{ severity?: string; location?: string; issue?: string; fix?: string }>; strengths?: string[] }; attempts?: number; threshold?: number; bestScore?: number } = {};
+        let data: { error?: string; passed?: boolean; script?: string; qa?: { overall_score?: number; critical_issues?: Array<{ severity?: string; location?: string; issue?: string; fix?: string }>; strengths?: string[] }; attempts?: number; threshold?: number; bestScore?: number; deadlineReached?: boolean } = {};
         try { data = rawBody ? JSON.parse(rawBody) : {}; }
         catch {
           if (res.status === 504 || /timeout|FUNCTION_INVOCATION_TIMEOUT/i.test(rawBody)) {
@@ -575,8 +575,6 @@ function GeneratorPage() {
         }
         if (!res.ok) throw new Error(data.error || `Generation failed (${res.status})`);
         if (!data.passed) {
-          // Per the user's requirement: if it never clears the bar, don't
-          // return the script — warn so they can retry or lower the threshold.
           setQaResult({
             overall_score: data.bestScore,
             passed: false,
@@ -585,6 +583,20 @@ function GeneratorPage() {
             critical_issues: data.qa?.critical_issues,
             strengths: data.qa?.strengths,
           });
+          if (data.deadlineReached && data.script) {
+            // Server stopped before starting another attempt to avoid Vercel's
+            // 300s kill. We have a real script, just one that didn't clear
+            // the threshold — show it to the user with a clear note instead
+            // of dropping the work.
+            setScript(data.script);
+            setShowSave(true);
+            toast.warning(
+              `Self-QA ran ${data.attempts ?? 0} attempt${(data.attempts ?? 0) === 1 ? '' : 's'} (best ${data.bestScore ?? '?'}/${data.threshold ?? qaThreshold}) and stopped before another retry to stay under Vercel's 300s cap. Showing the best draft — refine or regenerate to push the score higher.`,
+            );
+            return;
+          }
+          // Threshold-failure path with no script returned (legacy "don't
+          // even return it" behavior). Toast + prompt to retry.
           toast.error(`Self-QA failed after ${data.attempts ?? 0} attempts — best score ${data.bestScore ?? '?'}/${data.threshold ?? qaThreshold}. Lower the threshold or try a stronger model.`);
           return;
         }

@@ -38,13 +38,23 @@ function computeMaxTokens(durationMinutes: number): number {
  */
 
 export const runtime = 'nodejs';
-// Vercel Pro caps serverless functions at 300s. Each attempt is ~90–120s
-// (script gen + QA scorer), so 300s comfortably covers 2 attempts. Users
-// who hit the cap mid-third-attempt will get a 504 and can retry.
+// Vercel Pro caps serverless functions at 300s. Each attempt is ~90–140s
+// (script gen + optional expansion + QA scorer). We track elapsed time
+// and return the best-so-far before Vercel kills us — see DEADLINE_MS
+// below.
 export const maxDuration = 300;
 
 const DEFAULT_THRESHOLD = 85;
-const DEFAULT_MAX_ATTEMPTS = 3;
+// Default 2 — at 90-140s per attempt, three is essentially guaranteed
+// to exceed Vercel's 300s cap. Users who really want a third attempt
+// can pass maxAttempts:3 explicitly and accept the timeout risk.
+const DEFAULT_MAX_ATTEMPTS = 2;
+// Stop starting NEW attempts once this much wall-clock has elapsed —
+// 220s leaves ~80s headroom for the in-flight attempt's gen+expand+QA
+// to finish before Vercel's 300s ceiling. Tuned conservatively because
+// the alternative (a 504 with no script returned) is much worse than
+// "we ran 1 attempt instead of 2 and returned what we had".
+const DEADLINE_MS = 220_000;
 
 interface CriticalIssue {
   severity?: string;
@@ -133,8 +143,17 @@ export async function POST(req: NextRequest) {
 
   const attempts: Array<{ script: string; qa: QAResult; score: number }> = [];
   let lastFeedback: string | undefined;
+  const startedAt = Date.now();
+  let deadlineReached = false;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // Deadline guard — don't START a new attempt if we'd risk getting
+    // killed by Vercel before it can finish. Returning the best-so-far
+    // (with passed:false) is strictly better than a 504 with nothing.
+    if (attempt > 1 && Date.now() - startedAt > DEADLINE_MS) {
+      deadlineReached = true;
+      break;
+    }
     // 1) Generate the script. On retries, fold the previous attempt's
     // critical issues into the prompt so the model knows what to fix.
     const retryNote = lastFeedback
@@ -280,5 +299,6 @@ export async function POST(req: NextRequest) {
     passed: false,
     threshold,
     bestScore: best.score,
+    deadlineReached,
   });
 }
