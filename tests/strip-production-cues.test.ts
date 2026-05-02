@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { stripProductionCues, countWords } from '@/lib/utils';
-import { splitScriptIntoSections } from '@/lib/narrator-utils';
+import { splitScriptIntoSections, getSpokenSectionText } from '@/lib/narrator-utils';
 
 /**
  * Regression coverage for the narrator's "what do I actually say?" pipeline.
@@ -207,5 +207,85 @@ Here is the meat of the script with enough words to count as a real section in t
     // The two real sections survive.
     expect(sections.length).toBeGreaterThanOrEqual(1);
     expect(sections.every(s => countWords(s.script_text) > 0)).toBe(true);
+  });
+});
+
+describe('stripProductionCues — markdown code fences (paste artifacts)', () => {
+  it('strips standalone triple-backtick fence lines', () => {
+    const input = '```\n```\n## Morris Worm\n\nScreens froze.';
+    const out = stripProductionCues(input);
+    expect(out).not.toContain('```');
+    expect(out).not.toMatch(/##/);
+    expect(out).toContain('Screens froze.');
+  });
+
+  it('strips a fence with a language tag (```text, ```js, etc.)', () => {
+    const input = '```text\nNarration here.\n```';
+    expect(stripProductionCues(input)).toBe('Narration here.');
+  });
+
+  it('does NOT strip backticks that are NOT a standalone fence line', () => {
+    // Inline triple-backticks in narration (extremely rare, but should
+    // survive — the strip targets ONLY standalone fence lines).
+    expect(stripProductionCues('Talk about ``` triple backticks ``` here')).toBe(
+      'Talk about ``` triple backticks ``` here',
+    );
+  });
+
+  it('makes a fence-only preamble drop out of the splitter as 0-words', () => {
+    const script = '```\n```\n## Morris Worm\n\nScreens froze. Berkeley. Stanford. NASA. One worm downed 10% of the net. 60,000 machines total. Cornell grad Robert Morris released it. November 2, 1988. Not malice. Curiosity. Gauge net size. Backfired. Worm hit fingerd buffer overflow. Unix user tool. Used dictionary passwords.';
+    const sections = splitScriptIntoSections(script, 150);
+    // The labelless preamble (just code-fence lines) should be filtered
+    // out, not surfaced as a "Section 1" with `\`\`\` \`\`\`` content.
+    expect(sections.length).toBe(1);
+    expect(sections[0].label).toBe('Morris Worm');
+  });
+});
+
+describe('getSpokenSectionText — narrator reads the section title', () => {
+  it('prepends the label as a sentence so the narrator reads it aloud', () => {
+    expect(getSpokenSectionText('Morris Worm', 'Screens froze. Berkeley.')).toBe(
+      'Morris Worm.\n\nScreens froze. Berkeley.',
+    );
+  });
+
+  it('returns the body unchanged when there is no label', () => {
+    expect(getSpokenSectionText(null, 'Some body text.')).toBe('Some body text.');
+    expect(getSpokenSectionText('', 'Some body text.')).toBe('Some body text.');
+    expect(getSpokenSectionText(undefined, 'Some body text.')).toBe('Some body text.');
+  });
+
+  it('skips the splitter\'s "Section N" fallback labels', () => {
+    // Reading "Section 1." aloud as a transition is not natural narration.
+    expect(getSpokenSectionText('Section 1', 'Body.')).toBe('Body.');
+    expect(getSpokenSectionText('Section 12', 'Body.')).toBe('Body.');
+    expect(getSpokenSectionText('section 3', 'Body.')).toBe('Body.');
+  });
+
+  it('does NOT double up when the body already starts with the label', () => {
+    expect(getSpokenSectionText('Morris Worm', 'Morris Worm. Screens froze.')).toBe(
+      'Morris Worm. Screens froze.',
+    );
+    expect(getSpokenSectionText('Morris Worm', 'Morris Worm\nScreens froze.')).toBe(
+      'Morris Worm\nScreens froze.',
+    );
+    // Idempotent — running twice doesn't add a third copy.
+    const once = getSpokenSectionText('Morris Worm', 'Screens froze.');
+    expect(getSpokenSectionText('Morris Worm', once)).toBe(once);
+  });
+
+  it('handles labels with regex-special characters safely', () => {
+    expect(getSpokenSectionText('A.I. Takeover', 'Body.')).toBe('A.I. Takeover.\n\nBody.');
+    expect(getSpokenSectionText('What (Really) Happened', 'Body.')).toBe(
+      'What (Really) Happened.\n\nBody.',
+    );
+    expect(getSpokenSectionText('$10 Million Heist', 'Body.')).toBe('$10 Million Heist.\n\nBody.');
+  });
+
+  it('post-strip, the spoken text starts with the title', () => {
+    const body = '[VISUAL CUE: cyber lab]\n\nScreens froze. Berkeley. Stanford.';
+    const spoken = stripProductionCues(getSpokenSectionText('Morris Worm', body));
+    expect(spoken.startsWith('Morris Worm.')).toBe(true);
+    expect(spoken).not.toMatch(/VISUAL CUE/);
   });
 });

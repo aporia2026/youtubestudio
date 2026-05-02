@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { stripProductionCues } from '@/lib/utils';
+import { getSpokenSectionText } from '@/lib/narrator-utils';
 
 interface Section {
   section_number: number;
@@ -161,8 +162,15 @@ export function TeleprompterMode({ sections, wpm, onClose }: TeleprompterModePro
 
   // Pre-compute cleaned text per section once so render doesn't redo it on
   // every frame (font size + scroll changes re-render this component).
+  // Each section's clean text is the section title prepended to the body
+  // so the narrator reads the title aloud as a transition (otherwise the
+  // title is only visible as a small pill divider and never gets spoken).
   const renderedSections = useMemo(
-    () => visibleSections.map(s => ({ ...s, _clean: stripCues(s.script_text) })),
+    () =>
+      visibleSections.map(s => ({
+        ...s,
+        _clean: stripCues(getSpokenSectionText(s.label, s.script_text)),
+      })),
     [visibleSections],
   );
 

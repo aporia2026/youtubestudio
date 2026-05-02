@@ -7,6 +7,7 @@ import { TeleprompterMode } from './TeleprompterMode';
 import { TakeReview } from './TakeReview';
 import { HeroAction } from '@/components/dashboard/HeroAction';
 import { stripProductionCues, countWords as countSpokenWords } from '@/lib/utils';
+import { getSpokenSectionText } from '@/lib/narrator-utils';
 
 interface Assignment {
   id: string;
@@ -161,6 +162,16 @@ function stripCues(text: string): string {
 }
 
 /**
+ * Spoken text for a section as a continuous paragraph — section title
+ * prepended so the narrator reads it aloud as a transition, then all
+ * cues / metadata / markdown stripped. Used for plain-mode reading
+ * and exports.
+ */
+function spokenForSection(label: string | null | undefined, scriptText: string): string {
+  return stripCues(getSpokenSectionText(label, scriptText));
+}
+
+/**
  * Variant for the badge-style "sections" view: keeps bracketed cues
  * intact (renderScriptWithBadges() dims/badges them visually) but
  * still removes the un-spoken metadata lines and markdown emphasis
@@ -211,19 +222,19 @@ interface PortalSectionLite {
 
 function exportTxt(title: string, sections: PortalSectionLite[], withLabels: boolean) {
   const lines: string[] = [title, '='.repeat(Math.max(title.length, 8)), ''];
-  const visible = sections.filter(s => stripCues(s.script_text).length > 0);
+  const visible = sections.filter(s => spokenForSection(s.label, s.script_text).length > 0);
   if (withLabels) {
     for (const s of visible) {
       const label = s.label || `Section ${s.section_number}`;
       const dur = s.estimated_duration_seconds ? ` (~${Math.round(s.estimated_duration_seconds)}s)` : '';
       lines.push(`-- ${label}${dur} --`);
       lines.push('');
-      lines.push(stripCues(s.script_text));
+      lines.push(spokenForSection(s.label, s.script_text));
       lines.push('');
       lines.push('');
     }
   } else {
-    lines.push(visible.map(s => stripCues(s.script_text)).join('\n\n'));
+    lines.push(visible.map(s => spokenForSection(s.label, s.script_text)).join('\n\n'));
   }
   downloadBlob(lines.join('\n'), `${sanitizeFilename(title)}-narration.txt`, 'text/plain');
 }
@@ -231,15 +242,15 @@ function exportTxt(title: string, sections: PortalSectionLite[], withLabels: boo
 function exportDoc(title: string, sections: PortalSectionLite[], withLabels: boolean) {
   // Word will open .doc files that are valid HTML with the right MIME type.
   // Avoids pulling in a docx dep just for a save-as option.
-  const visible = sections.filter(s => stripCues(s.script_text).length > 0);
+  const visible = sections.filter(s => spokenForSection(s.label, s.script_text).length > 0);
   const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const body = withLabels
     ? visible.map(s => {
         const label = escape(s.label || `Section ${s.section_number}`);
         const dur = s.estimated_duration_seconds ? ` <span style="color:#777">(~${Math.round(s.estimated_duration_seconds)}s)</span>` : '';
-        return `<h2 style="color:#7c3aed;margin-top:18pt;">${label}${dur}</h2><p>${escape(stripCues(s.script_text))}</p>`;
+        return `<h2 style="color:#7c3aed;margin-top:18pt;">${label}${dur}</h2><p>${escape(spokenForSection(s.label, s.script_text))}</p>`;
       }).join('\n')
-    : `<p>${escape(visible.map(s => stripCues(s.script_text)).join('\n\n'))}</p>`;
+    : `<p>${escape(visible.map(s => spokenForSection(s.label, s.script_text)).join('\n\n'))}</p>`;
   const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><title>${escape(title)}</title></head><body style="font-family:Georgia,serif;font-size:13pt;line-height:1.6;"><h1>${escape(title)}</h1>${body}</body></html>`;
   downloadBlob(html, `${sanitizeFilename(title)}-narration.doc`, 'application/msword');
 }
@@ -262,7 +273,7 @@ async function exportPdf(title: string, sections: PortalSectionLite[], withLabel
   }
   y += 4;
 
-  const visible = sections.filter(s => stripCues(s.script_text).length > 0);
+  const visible = sections.filter(s => spokenForSection(s.label, s.script_text).length > 0);
   doc.setFont('times', 'normal');
   doc.setFontSize(13);
   doc.setTextColor(15, 15, 15);
@@ -294,11 +305,11 @@ async function exportPdf(title: string, sections: PortalSectionLite[], withLabel
       doc.setFont('times', 'normal');
       doc.setFontSize(13);
       doc.setTextColor(15, 15, 15);
-      writeParagraph(stripCues(s.script_text));
+      writeParagraph(spokenForSection(s.label, s.script_text));
       y += 2;
     }
   } else {
-    writeParagraph(visible.map(s => stripCues(s.script_text)).join('\n\n'));
+    writeParagraph(visible.map(s => spokenForSection(s.label, s.script_text)).join('\n\n'));
   }
 
   doc.save(`${sanitizeFilename(title)}-narration.pdf`);
@@ -555,7 +566,15 @@ export function NarratorPortal({ token }: { token: string }) {
 
   // Section 0 is the synthetic full-script section. Hide it from the normal
   // per-section listings — it surfaces as the "Full narration" card instead.
-  const realSections = sections.filter(s => s.section_number !== 0);
+  // Also drop sections whose post-strip body is empty: legacy assignments
+  // (created before the splitter learned to filter metadata-only chunks)
+  // can carry a "Section 1" whose only content is a stray ```...``` paste
+  // artifact or a TOTAL-line summary. Hiding those at the source means
+  // the badge view, recording mode, exports, and teleprompter all agree
+  // on which sections actually have something to record / read.
+  const realSections = sections.filter(
+    s => s.section_number !== 0 && countSpokenWords(s.script_text || '') > 0,
+  );
   const approvedCount = realSections.filter(s => s.status === 'approved').length;
   const uploadedCount = realSections.filter(s => s.takes && s.takes.length > 0).length;
   const progress = realSections.length > 0 ? Math.round((uploadedCount / realSections.length) * 100) : 0;
@@ -858,14 +877,14 @@ export function NarratorPortal({ token }: { token: string }) {
         {viewMode === 'plain' ? (
           <div className="rounded-xl p-6" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
             {(() => {
-              const visible = realSections.filter(s => stripCues(s.script_text).length > 0);
+              const visible = realSections.filter(s => spokenForSection(s.label, s.script_text).length > 0);
               if (visible.length === 0) {
                 return <p className="text-sm text-center py-8" style={{ color: 'var(--text-muted)' }}>No narration text yet.</p>;
               }
               if (!showLabels) {
                 return (
                   <p className="text-base leading-relaxed whitespace-pre-wrap" style={{ color: 'var(--text-primary)', fontFamily: 'Georgia, serif', lineHeight: 1.8 }}>
-                    {visible.map(s => stripCues(s.script_text)).join('\n\n')}
+                    {visible.map(s => spokenForSection(s.label, s.script_text)).join('\n\n')}
                   </p>
                 );
               }
@@ -878,7 +897,7 @@ export function NarratorPortal({ token }: { token: string }) {
                         {section.estimated_duration_seconds ? ` · ~${Math.round(section.estimated_duration_seconds)}s` : ''}
                       </p>
                       <p className="text-base leading-relaxed whitespace-pre-wrap" style={{ color: 'var(--text-primary)', fontFamily: 'Georgia, serif', lineHeight: 1.8 }}>
-                        {stripCues(section.script_text)}
+                        {spokenForSection(section.label, section.script_text)}
                       </p>
                     </div>
                   ))}
@@ -964,7 +983,7 @@ export function NarratorPortal({ token }: { token: string }) {
                         <span className="flex items-center gap-1 text-[10px]" style={{ color: '#eab308' }}><span className="w-2 h-2 rounded-full" style={{ background: '#eab308' }} /> Pacing</span>
                       </div>
                       <div className="p-3 text-sm leading-relaxed">
-                        {renderScriptWithBadges(stripDisplayMetadata(section.script_text), section.emphasis_markers)}
+                        {renderScriptWithBadges(stripDisplayMetadata(getSpokenSectionText(section.label, section.script_text)), section.emphasis_markers)}
                       </div>
                     </div>
 

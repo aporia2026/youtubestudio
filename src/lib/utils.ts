@@ -62,6 +62,14 @@ export function stripProductionCues(text: string): string {
     .replace(/\[[^\]]*\]/g, '')
     // 2. Markdown header lines (full-line match).
     .replace(/^[ \t]*#{1,6}[ \t]+.*$/gm, '')
+    // 2a. Standalone markdown code-fence lines. Common paste artifact —
+    //     a script copied out of a chat UI sometimes carries the
+    //     wrapping ```...``` fence (occasionally with a language tag like
+    //     ```text). The narrator obviously shouldn't read backticks aloud,
+    //     and an all-fence preamble would otherwise get pushed through the
+    //     splitter as "Section 1" with literal ``` content (a real bug
+    //     reported by users).
+    .replace(/^[ \t]*`{3,}[a-zA-Z0-9_-]*[ \t]*$/gm, '')
     // 3. Whole metadata lines. Match any line containing the canonical
     //    phrases the generator uses — case insensitive, multiline.
     .replace(

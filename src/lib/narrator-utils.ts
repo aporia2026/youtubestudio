@@ -144,6 +144,46 @@ export function splitScriptIntoSections(text: string, wpm: number = 150): Script
 }
 
 /**
+ * Returns the text the narrator should actually read for a section —
+ * the section title prepended as a spoken sentence to the body. Without
+ * this, the title (e.g. "## Morris Worm") gets extracted into `label`
+ * for UI orientation only and never makes it into the spoken script,
+ * so the narrator skips silently from the end of one section into the
+ * next without saying the title aloud as a transition.
+ *
+ * Idempotent — if the body already starts with the label (e.g. the
+ * generator wrote it inline, or this function ran on already-prefixed
+ * text), no second copy is added. Falls back to `script_text` unchanged
+ * when:
+ *   - There is no label at all (preamble before the first heading).
+ *   - The label is the splitter's "Section N" fallback, since reading
+ *     "Section 1." aloud as a transition isn't natural narration.
+ *
+ * Uses display-layer prefixing on purpose so the same helper covers
+ * both new assignments (whose split sections were stored without the
+ * title) AND existing assignments already in the database — no data
+ * migration needed.
+ */
+export function getSpokenSectionText(
+  label: string | null | undefined,
+  scriptText: string,
+): string {
+  const body = scriptText || '';
+  if (!label) return body;
+  const trimmed = label.trim();
+  if (!trimmed) return body;
+  if (/^section\s+\d+$/i.test(trimmed)) return body;
+
+  const labelEsc = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Already starts with the label (followed by punctuation, end of body, or
+  // a newline)? Don't double up.
+  if (new RegExp(`^[\\s]*${labelEsc}(?:[.,!?;:\\s]|$)`, 'i').test(body)) {
+    return body;
+  }
+  return `${trimmed}.\n\n${body}`;
+}
+
+/**
  * Generate section labels using AI. Returns label suggestions.
  */
 export function buildLabelPrompt(sections: ScriptSection[]): string {
