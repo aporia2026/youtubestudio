@@ -24,6 +24,7 @@ import migration0024 from './0024_create_ab_tests';
 import migration0025 from './0025_create_critic_panels';
 import migration0026 from './0026_create_retention_predictions';
 import migration0027 from './0027_create_dip_analyses';
+import migration0028 from './0028_create_cannibalization_alerts';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -56,6 +57,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0025,
   migration0026,
   migration0027,
+  migration0028,
 ]);
 
 /**
