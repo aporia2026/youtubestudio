@@ -24,6 +24,8 @@ import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { StyleManagerDialog, type StyleSummary } from './StyleManagerDialog';
+import { BrollCell } from '@/components/production-doc/BrollCell';
+import { brollRowSignatureInput } from '@/lib/broll-types';
 import { productionDocToVideoConfig } from '@/remotion/utils';
 import type { BrandKit } from '@/remotion/types';
 
@@ -1752,7 +1754,7 @@ function ProductionDocPage() {
                 <thead>
                   <tr style={{ background: 'var(--bg-card)', borderBottom: '1px solid var(--border)' }}>
                     {(() => {
-                      const headerList = ['#', 'Time', 'Script Text', 'Visual Type', 'Visual Description', 'Stock Terms', 'Image', 'AI Prompt'];
+                      const headerList = ['#', 'Time', 'Script Text', 'Visual Type', 'Visual Description', 'Stock Terms', 'Image', 'B-roll', 'AI Prompt'];
                       if (showOverlayColumn) headerList.push('Overlay');
                       headerList.push('On-Screen Text', 'Notes');
                       return headerList;
@@ -1820,6 +1822,19 @@ function ProductionDocPage() {
                                 generateImageForRow(i, row.ai_image_prompt);
                               }
                             }}
+                          />
+                        </td>
+                        {/* B-roll (Veo 3 / Sora 2) */}
+                        <td style={{ padding: '8px 10px', width: 140, borderRight: '1px solid var(--border)', verticalAlign: 'middle', position: 'relative' }}>
+                          <BrollCell
+                            rowIndex={i}
+                            rowSignature={brollRowSignatureInput({
+                              timecode: row.timecode,
+                              visual_description: row.visual_description,
+                            })}
+                            visualDescription={row.visual_description}
+                            aiImagePrompt={row.ai_image_prompt}
+                            styleHint={stylePreset}
                           />
                         </td>
                         {/* AI prompt */}
@@ -1911,6 +1926,19 @@ function ProductionDocPage() {
                           <ImageCell
                             state={imgState}
                             onRetry={() => row.ai_image_prompt?.trim() && generateImageForRow(i, row.ai_image_prompt)}
+                          />
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold mb-0.5" style={{ color: 'var(--text-muted)' }}>B-roll</p>
+                          <BrollCell
+                            rowIndex={i}
+                            rowSignature={brollRowSignatureInput({
+                              timecode: row.timecode,
+                              visual_description: row.visual_description,
+                            })}
+                            visualDescription={row.visual_description}
+                            aiImagePrompt={row.ai_image_prompt}
+                            styleHint={stylePreset}
                           />
                         </div>
                         {row.ai_image_prompt && (
