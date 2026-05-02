@@ -94,20 +94,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
       file_size: typeof fileSize === 'number' ? fileSize : undefined,
     });
 
-    // The shared createTake() helper doesn't yet supply workspace_id (Phase 1
-    // retrofit pending). Backfill it from the assignment row so post-0013
-    // (NOT NULL) databases accept this row. The assignment carries the
-    // workspace via 0011/0012; this is just a one-off copy. Best-effort —
-    // the column may not exist pre-0011, hence the swallow.
-    try {
-      await sql`
-        UPDATE narrator_takes t
-        SET workspace_id = a.workspace_id
-        FROM narrator_assignments a
-        WHERE t.id = ${take.id} AND a.id = ${assignment.id} AND t.workspace_id IS NULL
-      `;
-    } catch {}
-
     const r2Key = buildNarrationKey(assignment.id, sectionId, take.take_number, fileName);
     let uploadUrl: string;
     let downloadUrl: string;

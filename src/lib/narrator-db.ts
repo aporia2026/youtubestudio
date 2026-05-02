@@ -532,21 +532,31 @@ export async function createTake(fields: {
   narrator_notes?: string;
 }) {
   await ensureNarratorSchema();
-  // Atomic take_number increment via subquery
+  // Atomic take_number increment via subquery + workspace_id sourced from
+  // the section/assignment chain so post-migration-0013 (NOT NULL) inserts
+  // succeed without every route having to thread workspace_id through.
+  // COALESCE through the chain in case a partially-backfilled DB has it on
+  // the assignment but not the section.
   const { rows } = await sql`
-    INSERT INTO narrator_takes (section_id, take_number, audio_url, r2_key, blob_pathname, duration_seconds, file_size, narrator_notes)
-    VALUES (
-      ${fields.section_id},
-      (SELECT COALESCE(MAX(take_number), 0) + 1 FROM narrator_takes WHERE section_id = ${fields.section_id}),
+    INSERT INTO narrator_takes (section_id, take_number, audio_url, r2_key, blob_pathname, duration_seconds, file_size, narrator_notes, workspace_id)
+    SELECT
+      ${fields.section_id}::uuid,
+      (SELECT COALESCE(MAX(take_number), 0) + 1 FROM narrator_takes WHERE section_id = ${fields.section_id}::uuid),
       ${fields.audio_url},
       ${fields.r2_key ?? null},
       ${fields.blob_pathname ?? null},
       ${fields.duration_seconds ?? null},
       ${fields.file_size ?? null},
-      ${fields.narrator_notes ?? null}
-    )
+      ${fields.narrator_notes ?? null},
+      COALESCE(s.workspace_id, a.workspace_id)
+    FROM narrator_sections s
+    JOIN narrator_assignments a ON a.id = s.assignment_id
+    WHERE s.id = ${fields.section_id}::uuid
     RETURNING *
   `;
+  if (rows.length === 0) {
+    throw new Error(`Section ${fields.section_id} not found — cannot create take`);
+  }
 
   // Auto-update section status to 'submitted' on first take
   if (rows[0].take_number === 1) {
