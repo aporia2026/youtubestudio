@@ -471,6 +471,138 @@ function ShortCard({
           </>
         )}
       </div>
+      <ShortRenderRow short={short} />
+    </div>
+  );
+}
+
+/**
+ * Self-contained render-MP4 row. Idle → POST /api/render/short → poll
+ * GET until status flips. On success the rendered_video_url already
+ * sits on the shorts row server-side, so a refresh of the parent list
+ * is enough to persist; for now we render the player inline so the
+ * user doesn't have to refresh.
+ */
+function ShortRenderRow({ short }: { short: ShortRow }) {
+  const [renderId, setRenderId] = useState<string | null>(null);
+  const [status, setStatus] = useState<'idle' | 'rendering' | 'done' | 'error'>(
+    short.rendered_video_url ? 'done' : 'idle',
+  );
+  const [progress, setProgress] = useState(0);
+  const [outputUrl, setOutputUrl] = useState<string | null>(short.rendered_video_url);
+  const [error, setError] = useState<string | null>(null);
+
+  // Poll while rendering.
+  useEffect(() => {
+    if (status !== 'rendering' || !renderId) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await fetch(`/api/render/short?renderId=${renderId}`, { cache: 'no-store' });
+        if (!res.ok) {
+          if (cancelled) return;
+          window.setTimeout(tick, 4000);
+          return;
+        }
+        const data = (await res.json()) as { status: string; progress: number; output_url: string | null; error: string | null };
+        if (cancelled) return;
+        setProgress(data.progress);
+        if (data.status === 'done') {
+          setStatus('done');
+          setOutputUrl(data.output_url);
+        } else if (data.status === 'error') {
+          setStatus('error');
+          setError(data.error || 'Render failed');
+        } else {
+          window.setTimeout(tick, 4000);
+        }
+      } catch {
+        if (cancelled) return;
+        window.setTimeout(tick, 6000);
+      }
+    };
+    window.setTimeout(tick, 2500);
+    return () => {
+      cancelled = true;
+    };
+  }, [status, renderId]);
+
+  async function startRender() {
+    setStatus('rendering');
+    setProgress(0);
+    setError(null);
+    try {
+      const res = await fetch('/api/render/short', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shortId: short.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      setRenderId(data.renderId as string);
+    } catch (e) {
+      setStatus('error');
+      setError(e instanceof Error ? e.message : 'Failed to start render');
+    }
+  }
+
+  if (!short.voiceover_audio_url) {
+    return (
+      <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+        Generate a voiceover above to enable MP4 rendering.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+      {status === 'done' && outputUrl ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <video src={outputUrl} controls style={{ width: 80, height: 142, borderRadius: 6, background: '#000' }} />
+          <div style={{ flex: 1, fontSize: 12, color: 'var(--text-secondary)' }}>
+            <div>1080×1920 MP4 ready.</div>
+            <a
+              href={outputUrl}
+              download={`short-${short.id.slice(0, 8)}.mp4`}
+              className="hover:underline"
+              style={{ color: 'var(--text-primary)', fontSize: 11 }}
+            >
+              ↓ Download
+            </a>
+            <button
+              type="button"
+              onClick={startRender}
+              className="ml-2 text-xs"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              ↻ Re-render
+            </button>
+          </div>
+        </div>
+      ) : status === 'rendering' ? (
+        <div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
+            Rendering MP4… {Math.round(progress * 100)}%
+          </div>
+          <div style={{ height: 4, background: 'rgba(255,255,255,0.05)', borderRadius: 2, overflow: 'hidden' }}>
+            <div style={{ width: `${progress * 100}%`, height: '100%', background: '#a78bfa', transition: 'width 0.3s' }} />
+          </div>
+        </div>
+      ) : status === 'error' ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ color: '#f87171', fontSize: 12 }}>⚠ {error}</span>
+          <button onClick={startRender} className="btn-secondary text-xs">Retry</button>
+        </div>
+      ) : (
+        <button
+          onClick={startRender}
+          className="btn-secondary text-xs"
+          style={{ width: '100%' }}
+          title="Render a 1080×1920 vertical MP4 with burned-in captions + your voiceover audio"
+        >
+          🎬 Render MP4 (1080×1920)
+        </button>
+      )}
     </div>
   );
 }
