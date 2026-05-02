@@ -144,6 +144,45 @@ export function splitScriptIntoSections(text: string, wpm: number = 150): Script
 }
 
 /**
+ * Generic structural / meta labels the generator emits for the script's
+ * skeleton sections. The narrator shouldn't read these aloud as
+ * transitions — saying "Outro." or "Hook." before a section is awkward
+ * compared to a topical title like "Morris Worm" or "Stuxnet".
+ *
+ * Match is exact (case-insensitive) on the trimmed label after
+ * stripping a trailing " N" (so "Main Point 2" normalises to
+ * "main point"). Anything not in this set is treated as a topical
+ * title and gets prefixed.
+ */
+const META_SECTION_LABELS = new Set([
+  'hook',
+  'intro',
+  'introduction',
+  'opening',
+  'cold open',
+  'cold-open',
+  'main',
+  'main content',
+  'main section',
+  'main point',
+  'body',
+  'middle',
+  'transition',
+  'outro',
+  'ending',
+  'closing',
+  'conclusion',
+  'wrap up',
+  'wrap-up',
+  'recap',
+  'summary',
+  'cta',
+  'call to action',
+  'subscribe',
+  'subscribe cta',
+]);
+
+/**
  * Returns the text the narrator should actually read for a section —
  * the section title prepended as a spoken sentence to the body. Without
  * this, the title (e.g. "## Morris Worm") gets extracted into `label`
@@ -158,6 +197,10 @@ export function splitScriptIntoSections(text: string, wpm: number = 150): Script
  *   - There is no label at all (preamble before the first heading).
  *   - The label is the splitter's "Section N" fallback, since reading
  *     "Section 1." aloud as a transition isn't natural narration.
+ *   - The label is a generic structural / meta label like "Hook",
+ *     "Intro", "Outro", "Conclusion", "Main Point 1" — see
+ *     META_SECTION_LABELS. Topical titles ("Morris Worm", "Stuxnet")
+ *     still get prefixed.
  *
  * Uses display-layer prefixing on purpose so the same helper covers
  * both new assignments (whose split sections were stored without the
@@ -173,6 +216,10 @@ export function getSpokenSectionText(
   const trimmed = label.trim();
   if (!trimmed) return body;
   if (/^section\s+\d+$/i.test(trimmed)) return body;
+  // Strip a trailing " N" so "Main Point 2" / "Hook 1" both fold into
+  // their meta-label form before lookup.
+  const normalized = trimmed.toLowerCase().replace(/\s+\d+$/, '').trim();
+  if (META_SECTION_LABELS.has(normalized)) return body;
 
   const labelEsc = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   // Already starts with the label (followed by punctuation, end of body, or

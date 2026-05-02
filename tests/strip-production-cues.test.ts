@@ -262,6 +262,64 @@ describe('getSpokenSectionText — narrator reads the section title', () => {
     expect(getSpokenSectionText('section 3', 'Body.')).toBe('Body.');
   });
 
+  it('skips generic structural / meta labels', () => {
+    // The generator's skeleton labels — narrator shouldn't read these
+    // aloud as transitions. Compare to topical titles which DO get
+    // prefixed (covered above).
+    for (const meta of [
+      'Hook',
+      'Intro',
+      'Introduction',
+      'Opening',
+      'Cold Open',
+      'cold-open',
+      'Main',
+      'Main Content',
+      'Main Section',
+      'Main Point',
+      'Body',
+      'Middle',
+      'Transition',
+      'Outro',
+      'Ending',
+      'Closing',
+      'Conclusion',
+      'Wrap Up',
+      'wrap-up',
+      'Recap',
+      'Summary',
+      'CTA',
+      'Call to Action',
+      'Subscribe',
+      'Subscribe CTA',
+    ]) {
+      expect(getSpokenSectionText(meta, 'Body.')).toBe('Body.');
+      // Case-insensitivity sanity check.
+      expect(getSpokenSectionText(meta.toLowerCase(), 'Body.')).toBe('Body.');
+      expect(getSpokenSectionText(meta.toUpperCase(), 'Body.')).toBe('Body.');
+    }
+  });
+
+  it('skips numbered meta-labels like "Main Point 1" / "Hook 2"', () => {
+    expect(getSpokenSectionText('Main Point 1', 'Body.')).toBe('Body.');
+    expect(getSpokenSectionText('Main Point 2', 'Body.')).toBe('Body.');
+    expect(getSpokenSectionText('Hook 1', 'Body.')).toBe('Body.');
+  });
+
+  it('still prefixes topical titles even when they share words with meta labels', () => {
+    // "The Hook" / "Story of …" are topical, NOT structural. The set is
+    // exact-match by design so we don't accidentally swallow real titles.
+    expect(getSpokenSectionText('The Story of Stuxnet', 'Body.')).toBe(
+      'The Story of Stuxnet.\n\nBody.',
+    );
+    expect(getSpokenSectionText('Hook Line and Sinker', 'Body.')).toBe(
+      'Hook Line and Sinker.\n\nBody.',
+    );
+    expect(getSpokenSectionText('The Outro Effect', 'Body.')).toBe(
+      'The Outro Effect.\n\nBody.',
+    );
+  });
+
   it('does NOT double up when the body already starts with the label', () => {
     expect(getSpokenSectionText('Morris Worm', 'Morris Worm. Screens froze.')).toBe(
       'Morris Worm. Screens froze.',
