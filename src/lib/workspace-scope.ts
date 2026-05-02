@@ -66,6 +66,8 @@ export const SCOPED_TABLES = [
   'broll_clips',
   'ab_tests',
   'ab_test_snapshots',
+  'critic_panels',
+  'critic_panel_events',
 ] as const;
 
 export type ScopedTable = (typeof SCOPED_TABLES)[number];

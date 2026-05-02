@@ -53,7 +53,7 @@ Notes:
 
 | Sub | Topic | Status | Notes |
 |---|---|---|---|
-| 4.1 | **Court of Critics live** — stream the existing 4-phase panel as it runs + persist full deliberation transcript + real-time courtroom UI | 🚧 | Existing engine: [src/lib/script-critics/runner.ts](src/lib/script-critics/runner.ts). Currently synchronous (~90-120s blocking). |
+| 4.1 | **Court of Critics live** — stream the existing 4-phase panel as it runs + persist full deliberation transcript + real-time courtroom UI | ✅ | Migration 0025. AsyncGenerator wrapper at [src/lib/script-critics/runner-live.ts](src/lib/script-critics/runner-live.ts) reuses the original normalizers; SSE route streams + persists each event; `/critics` page renders critic cards filling in as drafts complete. |
 | 4.2 | **Retention-curve predictor** — predict viewer drop-off shape from a script before publish | ⏸ | Use `video_analytics.retention_curve` JSONB as ground truth for training/few-shot. |
 | 4.3 | **Fix-the-dip** — detect retention drops in published videos + suggest specific script/edit fixes at the timecodes that drop | ⏸ | Pairs with 4.2. |
 | 4.4 | **Cross-channel cannibalization detector** — same niche + same audience + competing uploads warning | ⏸ | Multi-channel-only feature. |

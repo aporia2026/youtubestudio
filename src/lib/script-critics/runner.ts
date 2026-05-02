@@ -48,13 +48,13 @@ import {
   CATEGORY_OWNER,
 } from './prompts';
 
-const CHAIR_MODEL = 'kie-gemini-3.1-pro';
+export const CHAIR_MODEL = 'kie-gemini-3.1-pro';
 
 /** Safe JSON parse — treat malformed model output as a recoverable error,
  *  not a crash. Returns null on failure so callers can substitute a
  *  fallback shape without propagating a parse exception up through
  *  Promise.all (which would fail the whole panel). */
-function safeParseLlmJson<T>(raw: string): T | null {
+export function safeParseLlmJson<T>(raw: string): T | null {
   try { return parseLlmJson(raw) as T; }
   catch { return null; }
 }
@@ -250,7 +250,7 @@ export async function runScriptPanel(args: RunScriptPanelArgs): Promise<RunScrip
 
 // ─── Charter runner (Phase 0) ──────────────────────────────────────────────
 
-async function runScriptCharter(ctx: ScriptCriticContext): Promise<ScriptCharter> {
+export async function runScriptCharter(ctx: ScriptCriticContext): Promise<ScriptCharter> {
   const contributions = await Promise.all(
     SCRIPT_CRITICS.map(async (spec): Promise<ScriptCharterContribution> => {
       const { system, user } = buildCharterContributionPrompt(spec, ctx);
@@ -348,7 +348,7 @@ interface RawCharterSynthesis {
 /** Objective unanimity check for the script panel. A rewrite_suggestion
  *  or critical_issue "touches" a non-negotiable if they share a 5+ char
  *  keyword. Fuzzy but catches the obvious conflicts. */
-function checkScriptBundleUnanimity(
+export function checkScriptBundleUnanimity(
   verdict: ScriptPanelVerdict,
   deliberations: ScriptDeliberationNote[],
 ): { unanimous: boolean; violations: Array<{ critic: ScriptCriticId; objection: string }> } {
@@ -375,7 +375,7 @@ function checkScriptBundleUnanimity(
 /** Minimal valid draft for a critic whose LLM call failed or whose output
  *  was unparseable. Emits one `critical` issue so the Chair can see this
  *  specialist couldn't weigh in; everything else is zeroed. */
-function emptyDraft(critic: ScriptCriticId, reason: string): ScriptCriticReport {
+export function emptyDraft(critic: ScriptCriticId, reason: string): ScriptCriticReport {
   return {
     critic,
     overall_score: 0,
@@ -396,7 +396,7 @@ function emptyDraft(critic: ScriptCriticId, reason: string): ScriptCriticReport 
 // The model sometimes returns extra keys, missing keys, or wrong types; the
 // normalizers here give us stable output shape regardless of model noise.
 
-interface RawDraftOutput {
+export interface RawDraftOutput {
   overall_score?: number;
   summary?: string;
   categories?: Record<string, Partial<CategoryScore>>;
@@ -404,7 +404,7 @@ interface RawDraftOutput {
   strengths?: string[];
 }
 
-interface RawDeliberationOutput {
+export interface RawDeliberationOutput {
   summary?: string;
   updated_score?: number;
   peer_responses?: Array<{ targetCritic?: string; targetCategory?: string; stance?: string; reasoning?: string }>;
@@ -415,7 +415,7 @@ interface RawDeliberationOutput {
   my_predicted_score_if_bundle_applied?: number;
 }
 
-interface RawChairOutput {
+export interface RawChairOutput {
   overall_score?: number;
   verdict?: string;
   will_it_perform?: string;
@@ -430,7 +430,7 @@ interface RawChairOutput {
   next_pass_focus?: string;
 }
 
-function normalizeDraft(critic: ScriptCriticId, raw: RawDraftOutput): ScriptCriticReport {
+export function normalizeDraft(critic: ScriptCriticId, raw: RawDraftOutput): ScriptCriticReport {
   const owned = ownedCategories(critic);
   const categories: Partial<Record<ScriptCategoryKey, CategoryScore>> = {};
   for (const key of owned) {
@@ -450,7 +450,7 @@ function normalizeDraft(critic: ScriptCriticId, raw: RawDraftOutput): ScriptCrit
   };
 }
 
-function normalizeDeliberation(
+export function normalizeDeliberation(
   critic: ScriptCriticId,
   draft: ScriptCriticReport,
   raw: RawDeliberationOutput,
@@ -494,7 +494,7 @@ function normalizeDeliberation(
   };
 }
 
-function normalizeChair(
+export function normalizeChair(
   raw: RawChairOutput,
   drafts: ScriptCriticReport[],
   deliberations: ScriptDeliberationNote[],
