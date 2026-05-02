@@ -1,0 +1,25 @@
+{
+  "name": "YouTube Studio — Narrator",
+  "short_name": "Narrator",
+  "description": "Record and upload narration for assigned scripts. Works offline for already-loaded scripts.",
+  "start_url": "/narrator",
+  "scope": "/narrator/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0d0d12",
+  "theme_color": "#0d0d12",
+  "icons": [
+    {
+      "src": "/icons/narrator-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/narrator-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
