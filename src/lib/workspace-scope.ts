@@ -71,6 +71,7 @@ export const SCOPED_TABLES = [
   'retention_predictions',
   'dip_analyses',
   'cannibalization_alerts',
+  'ask_studio_questions',
 ] as const;
 
 export type ScopedTable = (typeof SCOPED_TABLES)[number];
