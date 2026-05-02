@@ -212,6 +212,12 @@ async function triageOne(
       prompt: user,
       maxTokens: 600,
       temperature: 0.2,
+      spend: {
+        workspaceId,
+        channelDbId: comment.channel_db_id ?? null,
+        featureArea: 'comment_triage',
+        metadata: { comment_id: comment.id },
+      },
     });
   } catch (err) {
     logger.warn('comment-triage: generateText failed', {

@@ -411,6 +411,13 @@ export async function predictRetention(args: PredictRetentionArgs): Promise<{
     prompt: user,
     maxTokens: 4000,
     temperature: 0.4,
+    spend: {
+      workspaceId: args.workspaceId,
+      projectId: args.projectId ?? null,
+      channelDbId: args.channelDbId ?? null,
+      featureArea: 'retention_predictor',
+      metadata: { few_shot_count: examples.length },
+    },
   });
 
   let prediction: RetentionPrediction;

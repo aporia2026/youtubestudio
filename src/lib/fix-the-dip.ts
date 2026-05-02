@@ -452,6 +452,13 @@ export async function analyzeRetentionDips(
     prompt: user,
     maxTokens: 4000,
     temperature: 0.3,
+    spend: {
+      workspaceId: args.workspaceId,
+      projectId: args.projectId ?? null,
+      channelDbId: args.channelDbId ?? va.channel_id ?? null,
+      featureArea: 'fix_the_dip',
+      metadata: { dip_count: rawDips.length },
+    },
   });
 
   let parsed: { dips: RetentionDip[]; patterns: DipPattern[]; top_fixes: string[] };

@@ -78,6 +78,7 @@ export const SCOPED_TABLES = [
   'comment_sync_runs',
   'workflow_rules',
   'workflow_action_runs',
+  'ai_spend_log',
 ] as const;
 
 export type ScopedTable = (typeof SCOPED_TABLES)[number];

@@ -41,6 +41,22 @@ export interface GenerateOptions {
    *  `userCachePrefix + prompt` concatenated — identical semantics, no cache
    *  mechanic, so callers don't need to branch on provider. */
   userCachePrefix?: string;
+  /** When provided, fire-and-forget log a row in `ai_spend_log` after a
+   *  successful Anthropic / OpenAI / Google call. Token usage is captured
+   *  from the SDK response; cost is computed at log time from
+   *  src/lib/ai-pricing.ts. Other providers (kie, perplexity) are no-op
+   *  for now — pass null/omit and they'll return content silently with
+   *  no row written.
+   *
+   *  Importing the type lazily (via `unknown` here) to avoid a circular
+   *  module dependency between ai.ts and ai-spend.ts. */
+  spend?: {
+    workspaceId: string;
+    projectId?: string | null;
+    channelDbId?: string | null;
+    featureArea: string;
+    metadata?: Record<string, unknown>;
+  };
 }
 
 // --- Kie.ai helpers ---
@@ -492,6 +508,37 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
   // Anthropic branch below takes the raw prompt + prefix separately.
   const effectivePrompt = mergeUserCachePrefix(opts.prompt, opts.userCachePrefix);
 
+  /**
+   * Spend-logging helper — fire-and-forget, never blocks the call.
+   * Only fires when caller passed opts.spend AND we captured usage from
+   * the SDK response. Other providers (kie, perplexity) silently skip.
+   */
+  const startedAt = Date.now();
+  const recordSpend = (input: number, output: number, cachedInput = 0) => {
+    if (!opts.spend || (input <= 0 && output <= 0)) return;
+    void (async () => {
+      try {
+        const { logAiSpend } = await import('./ai-spend');
+        await logAiSpend({
+          context: {
+            workspaceId: opts.spend!.workspaceId,
+            projectId: opts.spend!.projectId,
+            channelDbId: opts.spend!.channelDbId,
+            featureArea: opts.spend!.featureArea,
+            metadata: opts.spend!.metadata,
+          },
+          modelId: opts.modelId,
+          inputTokens: input,
+          outputTokens: output,
+          cachedInputTokens: cachedInput,
+          durationMs: Date.now() - startedAt,
+        });
+      } catch {
+        /* swallow — never block the model call on spend logging */
+      }
+    })();
+  };
+
   if (model.provider === 'kie') {
     return kieGenerateText(opts.modelId, effectivePrompt, systemPrompt, maxTokens, opts.cache);
   }
@@ -534,6 +581,18 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
       system: systemParam,
       messages: [{ role: 'user', content: msgContent }],
     });
+    // Anthropic returns input_tokens / output_tokens on every response.
+    // cache_read_input_tokens is present when the prompt cache was hit.
+    const usage = response.usage as {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+    } | undefined;
+    recordSpend(
+      usage?.input_tokens ?? 0,
+      usage?.output_tokens ?? 0,
+      usage?.cache_read_input_tokens ?? 0,
+    );
     const block = response.content[0];
     if (block.type !== 'text') throw new Error('Unexpected response type');
     return block.text;
@@ -547,6 +606,14 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
     const response = await client.chat.completions.create(
       buildOpenAIChatParams(model.id, msgs, maxTokens, temperature, false),
     );
+    const usage = response.usage as
+      | { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } }
+      | undefined;
+    recordSpend(
+      usage?.prompt_tokens ?? 0,
+      usage?.completion_tokens ?? 0,
+      usage?.prompt_tokens_details?.cached_tokens ?? 0,
+    );
     return response.choices[0].message.content || '';
   }
 
@@ -557,14 +624,21 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
     const gemini = genAI.getGenerativeModel({ model: model.id, generationConfig: { temperature, maxOutputTokens: maxTokens } });
     const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${effectivePrompt}` : effectivePrompt;
     try {
-      if (opts.image) {
-        const result = await gemini.generateContent([
-          fullPrompt,
-          { inlineData: { mimeType: opts.image.mimeType, data: opts.image.base64 } },
-        ]);
-        return result.response.text();
-      }
-      const result = await gemini.generateContent(fullPrompt);
+      const result = opts.image
+        ? await gemini.generateContent([
+            fullPrompt,
+            { inlineData: { mimeType: opts.image.mimeType, data: opts.image.base64 } },
+          ])
+        : await gemini.generateContent(fullPrompt);
+      // Gemini returns usageMetadata at the response level when supported.
+      const usage = (result.response as unknown as {
+        usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; cachedContentTokenCount?: number };
+      }).usageMetadata;
+      recordSpend(
+        usage?.promptTokenCount ?? 0,
+        usage?.candidatesTokenCount ?? 0,
+        usage?.cachedContentTokenCount ?? 0,
+      );
       return result.response.text();
     } catch (err) {
       throw rewriteGoogleError(err, model.id);
