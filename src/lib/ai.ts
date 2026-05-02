@@ -169,6 +169,15 @@ async function kieClaudeFetch(kieModelId: string, prompt: string, systemPrompt?:
     max_tokens: maxTokens,
     messages: [{ role: 'user', content: prompt }],
     stream,
+    // Kie's /claude/v1/messages silently injects a skill-system tool that
+    // the model reflexively calls (`view` against /mnt/skills/public/md/SKILL.md)
+    // on any non-trivial prompt — stop_reason becomes "tool_use", content has
+    // zero text blocks, our streaming parser yields 0 chars. Confirmed live
+    // 2026-05-02: passing `tool_choice:{type:'none'}` forces text generation
+    // and produces full output (e.g. ~7000-word script on a 15-min prompt).
+    // `tools: []` alone does NOT work — Kie keeps its default tools exposed
+    // unless the model is explicitly told not to call any.
+    tool_choice: { type: 'none' },
   };
   if (systemPrompt) {
     // Note: `cache` is accepted but NOT applied for Kie's Claude pass-through.
