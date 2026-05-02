@@ -61,15 +61,17 @@ Notes:
 | 4.6 | **Mobile narrator PWA** — installable, offline-capable narrator portal | ✅ | Service worker scoped to `/narrator/` (cache-first static, stale-while-revalidate HTML, network-first API, never caches non-GET so uploads always hit network). Manifest + iOS web-app meta + safe-area inset support + install pill (Android beforeinstallprompt) + iOS A2HS hint with localStorage dismissal. Offline fallback page. |
 | 4.7 | **Slack/Discord webhooks** — send events (A/B winner, cannibalization, panel completed, retention dip) to an ops channel | ✅ | Migration 0030. Per-workspace subscriptions (Slack/Discord/generic) with per-event filters; URLs encrypted at rest, only `url_preview` exposed; URL validation gates host (hooks.slack.com / discord.com / discordapp.com) + blocks loopback/private addrs. Fire-and-forget dispatcher with full delivery audit log. Wired producers: A/B test conclude + high-risk cannibalization. Test-webhook button. |
 
-## Beyond Phase 4 (not in original audit, parking lot)
+## Phase 5 — Operational depth 🚧
 
-Surfaced in conversation but **not** in the original May 1 audit. Pick one of these only after Phase 4 ships, and only if it's still useful then:
+Promoted from "Beyond Phase 4" parking lot on 2026-05-02 after Phase 4 fully shipped. Theme: features that deepen day-to-day operability of the system Phase 1–4 built.
 
-- Comment & community management — pull YouTube comments, AI-triage, reply, pinned-comment automation
-- Competitor intelligence dashboard — `competitor_channels` + `competitor_videos` already exist, no consumer UI yet
-- Shorts → MP4 render (Remotion 1080×1920) — explicitly deferred from Phase 3 PR #2
-- End-to-end workflow triggers — "when video publishes, auto-create A/B test", "when CTR drops below X, suggest swap"
-- Spend tracker — per-API per-project AI cost log
+| Sub | Topic | Status | Notes |
+|---|---|---|---|
+| 5.1 | **Comment & community management** — pull YouTube comments per channel, AI-triage by intent, reply + moderate from inside the app | ✅ | Migration 0031. Sync via public Data API (cheap), AI triage via Haiku into 8-intent enum (question/support/fan/feedback/troll/spam/self_promo/other) with suggested-reply per comment, reply + hold/reject via channel OAuth. UI at `/comments` with intent-pill counts, video filter, unreplied filter, restore-AI-suggestion button. Pinning skipped (not in YouTube public API as of May 2026). |
+| 5.2 | **Workflow triggers** — "when CTR drops below X, auto-create a fix-the-dip"; "when A/B concludes, auto-snapshot 7 days later" | ⏸ | Multiplier on Phase 3 + 4 — turns standalone tools into a flow. |
+| 5.3 | **Competitor intelligence dashboard** — `competitor_channels` + `competitor_videos` already exist with no consumer UI | ⏸ | Pure UI on top of existing tables. |
+| 5.4 | **Spend tracker** — per-API per-project AI cost log | ⏸ | You only pay for AI APIs — visibility matters. |
+| 5.5 | **Shorts → MP4 render (Remotion 1080×1920)** — explicitly deferred from Phase 3 PR #2 | ⏸ | Closes the Shorts loop. Heavier infra than the others. |
 
 ---
 

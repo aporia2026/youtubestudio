@@ -74,6 +74,8 @@ export const SCOPED_TABLES = [
   'ask_studio_questions',
   'webhook_subscriptions',
   'webhook_deliveries',
+  'youtube_comments',
+  'comment_sync_runs',
 ] as const;
 
 export type ScopedTable = (typeof SCOPED_TABLES)[number];
