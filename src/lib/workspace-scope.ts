@@ -64,6 +64,8 @@ export const SCOPED_TABLES = [
   'shorts',
   'production_doc_styles',
   'broll_clips',
+  'ab_tests',
+  'ab_test_snapshots',
 ] as const;
 
 export type ScopedTable = (typeof SCOPED_TABLES)[number];

@@ -20,6 +20,7 @@ import migration0020 from './0020_create_dubbed_voiceovers';
 import migration0021 from './0021_create_shorts';
 import migration0022 from './0022_create_production_doc_styles';
 import migration0023 from './0023_create_broll_clips';
+import migration0024 from './0024_create_ab_tests';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -48,6 +49,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0021,
   migration0022,
   migration0023,
+  migration0024,
 ]);
 
 /**
