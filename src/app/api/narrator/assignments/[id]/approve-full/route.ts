@@ -63,33 +63,39 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     // Mirror stitch flow: publish the approved audio as a project voiceover
     // so the Voiceover tab + render pipeline see it without a manual step.
     // De-dupe by metadata.assignment_id so re-approving doesn't multiply rows.
+    // r2_bucket / r2_key are NOT included in the column list — those are
+    // editor-side additions (added in ensureEditorSchema) that may not exist
+    // on every DB; the values still travel through metadata for traceability.
+    // Wrapped in try/catch so a media_asset hiccup doesn't block the
+    // user-facing approve+notify flow — that's the core promise.
     const projectTitle = await sql`SELECT title FROM projects WHERE id = ${assignment.project_id} LIMIT 1`
       .then(r => (r.rows[0]?.title as string | undefined) || 'Untitled');
-    const r2Bucket = process.env.R2_NARRATION_BUCKET_NAME || 'narration';
-    const sizeBytes = null;
     const assetName = `Narration — ${assignment.narrator_name || 'Narrator'}`;
-    await sql`
-      INSERT INTO media_assets (project_id, type, source, name, url, blob_pathname, size_bytes, duration_seconds, r2_bucket, r2_key, metadata)
-      SELECT
-        ${assignment.project_id}, 'voiceover', 'upload', ${assetName},
-        ${assignment.full_audio_url}, NULL, ${sizeBytes},
-        ${assignment.full_audio_duration_seconds},
-        ${assignment.full_audio_r2_key ? r2Bucket : null},
-        ${assignment.full_audio_r2_key},
-        ${JSON.stringify({
-          narrator_id: assignment.narrator_id,
-          assignment_id: id,
-          take_id: assignment.full_audio_take_id,
-          full_narration: true,
-        })}::jsonb
-      WHERE NOT EXISTS (
-        SELECT 1 FROM media_assets
-        WHERE project_id = ${assignment.project_id}
-          AND type = 'voiceover'
-          AND metadata->>'assignment_id' = ${id}
-          AND metadata->>'full_narration' = 'true'
-      )
-    `;
+    try {
+      await sql`
+        INSERT INTO media_assets (project_id, type, source, name, url, blob_pathname, size_bytes, duration_seconds, metadata)
+        SELECT
+          ${assignment.project_id}, 'voiceover', 'upload', ${assetName},
+          ${assignment.full_audio_url}, NULL, NULL,
+          ${assignment.full_audio_duration_seconds},
+          ${JSON.stringify({
+            narrator_id: assignment.narrator_id,
+            assignment_id: id,
+            take_id: assignment.full_audio_take_id,
+            r2_key: assignment.full_audio_r2_key,
+            full_narration: true,
+          })}::jsonb
+        WHERE NOT EXISTS (
+          SELECT 1 FROM media_assets
+          WHERE project_id = ${assignment.project_id}
+            AND type = 'voiceover'
+            AND metadata->>'assignment_id' = ${id}
+            AND metadata->>'full_narration' = 'true'
+        )
+      `;
+    } catch (mediaErr) {
+      console.error('approve-full: media_asset insert skipped:', mediaErr);
+    }
 
     // Fire-and-forget — don't block the response on email I/O.
     if (assignment.narrator_id) {
@@ -105,6 +111,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     return NextResponse.json({ ok: true, status: 'completed' });
   } catch (err) {
     console.error('POST approve-full error:', err);
-    return NextResponse.json({ error: 'Failed to approve full narration' }, { status: 500 });
+    const detail = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({ error: `Failed to approve full narration: ${detail}` }, { status: 500 });
   }
 }
