@@ -27,6 +27,7 @@ import { sql } from '@vercel/postgres';
 import { generateText } from './ai';
 import { parseLlmJson } from './parse-llm-json';
 import { logger } from './logger';
+import { getEffectiveModelId } from './model-defaults';
 import {
   countSpokenWords,
   estimateDurationSeconds,
@@ -51,8 +52,6 @@ export type {
   DipSeverity,
   RetentionDip,
 } from './fix-the-dip-types';
-
-const DEFAULT_DIP_MODEL = 'claude-sonnet-4-6';
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -437,7 +436,7 @@ export async function analyzeRetentionDips(
     script_excerpt: scriptExcerptForDip(script, duration, d.start_seconds, d.end_seconds),
   }));
 
-  const modelId = args.modelId || DEFAULT_DIP_MODEL;
+  const modelId = args.modelId || (await getEffectiveModelId(args.workspaceId, 'fix-the-dip'));
   const { system, user } = buildDipFixPrompt({
     videoTitle: va.title,
     videoDurationSeconds: duration,

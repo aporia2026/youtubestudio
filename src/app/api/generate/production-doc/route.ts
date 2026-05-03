@@ -5,6 +5,7 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { apiRoute } from '@/lib/route-helpers';
 import { resolveStyle } from '@/lib/production-doc-styles';
+import { getEffectiveModelId } from '@/lib/model-defaults';
 
 export const maxDuration = 300;
 
@@ -68,7 +69,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   });
 
   const raw = await generateText({
-    modelId: modelId || 'claude-sonnet-4-6',
+    modelId: modelId || (await getEffectiveModelId(session.ws, 'production-doc')),
     prompt: user,
     systemPrompt: system,
     maxTokens: 16000,

@@ -20,6 +20,7 @@ import { generateText } from './ai';
 import { generateVoiceover } from './elevenlabs';
 import { parseLlmJson } from './parse-llm-json';
 import { logger } from './logger';
+import { getEffectiveModelId } from './model-defaults';
 import {
   TARGET_DURATION_SECONDS_DEFAULT,
   WORDS_PER_SECOND,
@@ -29,12 +30,6 @@ import {
 export type { ShortRow } from './shorts-types';
 
 const ELEVENLABS_MULTILINGUAL_MODEL = 'eleven_multilingual_v2';
-
-/** Default extraction model — Sonnet 4.6 over Haiku because the extractor
- *  needs more reasoning (pick the SHARPEST insight from a 7-min script).
- *  Cheap-tier ($3 in / $15 out per 1M tokens) compared to Opus, fast
- *  enough for the 60s function budget. Override per-call by passing modelId. */
-const DEFAULT_EXTRACTION_MODEL = 'claude-sonnet-4-6';
 
 // ---------------------------------------------------------------------------
 // Pure prompt + parsing
@@ -167,7 +162,7 @@ export interface ExtractShortArgs {
  */
 export async function extractAndSaveShort(args: ExtractShortArgs): Promise<{ id: string; short: ExtractedShort }> {
   const targetSeconds = Math.max(10, Math.min(90, args.targetSeconds ?? TARGET_DURATION_SECONDS_DEFAULT));
-  const modelId = args.modelId || DEFAULT_EXTRACTION_MODEL;
+  const modelId = args.modelId || (await getEffectiveModelId(args.workspaceId, 'shorts-extract'));
   const { system, user } = buildShortExtractionPrompt({
     longScript: args.longScript,
     niche: args.niche,

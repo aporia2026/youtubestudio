@@ -3,6 +3,7 @@ import { generateText } from '@/lib/ai';
 import { sql, ensureScheduleSchema } from '@/lib/db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { makeSpendContext } from '@/lib/ai-spend';
+import { resolveFeatureModel } from '@/lib/model-defaults';
 
 export const maxDuration = 120;
 
@@ -37,8 +38,7 @@ export async function POST(req: NextRequest) {
     // Use only the first ~2000 chars — hook + opening arc dominate title relevance.
     const snippet = content.slice(0, 2500);
 
-    // Titles are short, creative, cheap — Haiku is the right default here.
-    const chosenModel = modelId || 'claude-haiku-4-5-20251001';
+    const chosenModel = modelId || (await resolveFeatureModel('schedule-title'));
     const system = `You are a YouTube title strategist. Generate exactly 5 title candidates for the given script.
 Rules:
 - 55-70 chars each. Title case.

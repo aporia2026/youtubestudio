@@ -20,6 +20,7 @@ import { sql } from '@vercel/postgres';
 import { generateText } from './ai';
 import { parseLlmJson } from './parse-llm-json';
 import { logger } from './logger';
+import { getEffectiveModelId } from './model-defaults';
 import {
   MAX_FEW_SHOT_EXAMPLES,
   MIN_SCRIPT_CHARS,
@@ -36,11 +37,6 @@ export type {
   RetentionPredictionRow,
   SegmentExplanation,
 } from './retention-predictor-types';
-
-/** Cheap fast model is fine here — predictor accuracy lives in the
- *  few-shot examples, not in raw model strength. Override per-call by
- *  passing `modelId` to `predictRetention`. */
-const DEFAULT_PREDICTION_MODEL = 'claude-haiku-4-5-20251001';
 
 // ---------------------------------------------------------------------------
 // Few-shot retrieval
@@ -390,7 +386,7 @@ export async function predictRetention(args: PredictRetentionArgs): Promise<{
 
   const wordCount = countSpokenWords(script);
   const estDuration = estimateDurationSeconds(wordCount);
-  const modelId = args.modelId || DEFAULT_PREDICTION_MODEL;
+  const modelId = args.modelId || (await getEffectiveModelId(args.workspaceId, 'retention-predictor'));
 
   const examples = await findFewShotExamples({
     workspaceId: args.workspaceId,

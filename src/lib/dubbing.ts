@@ -21,6 +21,7 @@ import { put } from '@vercel/blob';
 import { generateText } from './ai';
 import { generateVoiceover } from './elevenlabs';
 import { logger } from './logger';
+import { getEffectiveModelId } from './model-defaults';
 import {
   SUPPORTED_LANGUAGES,
   isSupportedLanguage,
@@ -36,9 +37,6 @@ export type { SupportedLanguage };
 
 const ELEVENLABS_MULTILINGUAL_MODEL = 'eleven_multilingual_v2';
 
-/** Default translation model — Claude Haiku 4.5 is fast + cheap and handles
- *  the 8 target languages well. Override per-call by passing translationModelId. */
-const DEFAULT_TRANSLATION_MODEL = 'claude-haiku-4-5-20251001';
 
 export type DubStatus = 'translating' | 'generating' | 'ready' | 'failed';
 
@@ -237,7 +235,7 @@ export async function dubScript(args: DubScriptArgs): Promise<{ id: string; stat
   try {
     const { system, user } = buildTranslationPrompt(args.sourceText, args.targetLanguage);
     translated = (await generateText({
-      modelId: args.translationModelId || DEFAULT_TRANSLATION_MODEL,
+      modelId: args.translationModelId || (await getEffectiveModelId(args.workspaceId, 'dubbing-translate')),
       systemPrompt: system,
       prompt: user,
       maxTokens: 8000,

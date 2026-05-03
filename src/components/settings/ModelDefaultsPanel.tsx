@@ -48,9 +48,14 @@ export function ModelDefaultsPanel() {
       .then((r) => r.json())
       .then((data) => {
         if (cancelled) return;
-        setDefaults(data.defaults ?? EMPTY_BLOB);
+        const blob = data.defaults ?? EMPTY_BLOB;
+        setDefaults(blob);
         setSections(data.sections ?? []);
         setFeatures(data.features ?? []);
+        // Mirror to localStorage so other client pages that read
+        // getFeatureDefaultModelId (which falls back to localStorage when
+        // no blob is supplied) see the workspace's saved defaults.
+        try { localStorage.setItem('feature_model_defaults_v2', JSON.stringify(blob)); } catch {}
       })
       .catch((err) => {
         if (cancelled) return;
@@ -61,6 +66,13 @@ export function ModelDefaultsPanel() {
       });
     return () => { cancelled = true; };
   }, []);
+
+  // Keep the localStorage mirror in sync after every save/clear so
+  // navigation to another page picks up the change immediately.
+  useEffect(() => {
+    if (loading) return;
+    try { localStorage.setItem('feature_model_defaults_v2', JSON.stringify(defaults)); } catch {}
+  }, [defaults, loading]);
 
   // Group features by section once the catalogue arrives.
   const featuresBySection = useMemo(() => {

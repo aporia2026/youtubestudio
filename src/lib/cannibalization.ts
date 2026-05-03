@@ -27,6 +27,7 @@ import { sql } from '@vercel/postgres';
 import { generateText } from './ai';
 import { parseLlmJson } from './parse-llm-json';
 import { logger } from './logger';
+import { getEffectiveModelId } from './model-defaults';
 import {
   CANNIBAL_DEFAULT_LOOKAHEAD_DAYS,
   CANNIBAL_DEFAULT_LOOKBACK_DAYS,
@@ -47,8 +48,6 @@ export type {
   CannibalizationAlertRow,
   CannibalizationScanResult,
 } from './cannibalization-types';
-
-const DEFAULT_CANNIBAL_MODEL = 'claude-haiku-4-5-20251001';
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -306,7 +305,7 @@ export async function runCannibalizationScan(
   args: RunCannibalizationScanArgs,
 ): Promise<CannibalizationScanResult> {
   const windowDays = args.windowDays ?? CANNIBAL_DEFAULT_WINDOW_DAYS;
-  const modelId = args.modelId || DEFAULT_CANNIBAL_MODEL;
+  const modelId = args.modelId || (await getEffectiveModelId(args.workspaceId, 'cannibalization'));
 
   const { uploads, windowStart, windowEnd } = await loadCandidateUploads({
     workspaceId: args.workspaceId,

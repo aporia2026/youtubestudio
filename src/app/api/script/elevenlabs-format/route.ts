@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateText } from '@/lib/ai';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { makeSpendContext } from '@/lib/ai-spend';
+import { resolveFeatureModel } from '@/lib/model-defaults';
 
 /**
  * Convert a raw narration script into an ElevenLabs-ready format.
@@ -99,7 +100,7 @@ export async function POST(req: NextRequest) {
     const userMsg = `${voiceCtx ? `VOICE DIRECTION: ${voiceCtx}\n\n` : ''}SCRIPT TO REFORMAT:\n\n${script}`;
     try {
       const result = await generateText({
-        modelId: process.env.SCRIPT_FORMAT_MODEL || 'kie-gemini-2.5-flash',
+        modelId: process.env.SCRIPT_FORMAT_MODEL || (await resolveFeatureModel('script-format')),
         systemPrompt: system,
         prompt: userMsg,
         temperature: 0.4,

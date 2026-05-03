@@ -21,6 +21,7 @@
  */
 import { generateText } from './ai';
 import { parseLlmJson } from './parse-llm-json';
+import { getEffectiveModelId } from './model-defaults';
 import {
   COMMENT_INTENT_VALUES,
   isCommentIntent,
@@ -35,7 +36,6 @@ import {
 
 export type { CommentIntent } from './youtube-comments-types';
 
-const DEFAULT_TRIAGE_MODEL = 'claude-haiku-4-5-20251001';
 const CONCURRENCY = 3;
 
 // ---------------------------------------------------------------------------
@@ -157,7 +157,7 @@ export async function triageComments(args: TriageCommentsArgs): Promise<{
   failed: Array<{ id: string; error: string }>;
   considered: number;
 }> {
-  const modelId = args.modelId || DEFAULT_TRIAGE_MODEL;
+  const modelId = args.modelId || (await getEffectiveModelId(args.workspaceId, 'comment-triage'));
   const todo = await listCommentsForTriage(args.workspaceId, {
     limit: args.limit,
     videoId: args.videoId,

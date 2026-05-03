@@ -3,6 +3,7 @@ import { generateText } from '@/lib/ai';
 import { sql, ensureScheduleSchema } from '@/lib/db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { makeSpendContext } from '@/lib/ai-spend';
+import { resolveFeatureModel } from '@/lib/model-defaults';
 
 export const maxDuration = 120;
 
@@ -68,9 +69,7 @@ ${savedIdeas.map(i => `- ${i.title}${i.hook ? ` — hook: ${i.hook}` : ''}`).joi
 
 Pick 3 strong next-video candidates. Prefer pulling from the saved idea library unless the backlog has an obvious gap (e.g. a pillar untouched for weeks) — in that case propose a new idea. Return JSON only, no prose.`;
 
-    // Deliberate server-side default: balanced Sonnet works well for JSON-structured
-    // strategy calls without the Opus-tier cost. Client can override by passing modelId.
-    const chosenModel = modelId || 'claude-sonnet-4-6';
+    const chosenModel = modelId || (await resolveFeatureModel('schedule-suggest'));
     const raw = await generateText({
       modelId: chosenModel,
       prompt,

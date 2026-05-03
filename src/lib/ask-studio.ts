@@ -22,8 +22,8 @@
  */
 import { sql } from '@vercel/postgres';
 import { logger } from './logger';
+import { getEffectiveModelId } from './model-defaults';
 
-const ASK_STUDIO_DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 const MAX_TOOL_ITERATIONS = 6;
 const ROW_LIMIT_PER_TOOL_CALL = 50;
 
@@ -481,7 +481,7 @@ export async function askStudio(args: AskStudioRunArgs): Promise<{ id: string; a
   if (!args.question.trim()) {
     throw new Error('question is required');
   }
-  const modelId = args.modelId || ASK_STUDIO_DEFAULT_MODEL;
+  const modelId = args.modelId || (await getEffectiveModelId(args.workspaceId, 'ask-studio'));
 
   // Insert a placeholder row immediately so the question is durable even
   // if the agent loop crashes mid-flight.

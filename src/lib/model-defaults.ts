@@ -29,6 +29,7 @@ import {
   getModelById,
   resolveFeatureModelId,
 } from './ai-models';
+import { getSession } from './session';
 
 /** A scope that can be set/cleared by the user. */
 export type DefaultScope =
@@ -148,6 +149,21 @@ export async function getEffectiveModelId(
  *  page to render the current state. */
 export async function getDefaults(workspaceId: string): Promise<ModelDefaultsBlob> {
   return loadDefaults(workspaceId);
+}
+
+/** Convenience for raw route handlers (export async function POST(req))
+ *  that don't have a session in scope. Reads getSession() itself; falls
+ *  back to the feature's hardcoded default when no session is available
+ *  (e.g. anon-callable routes). Prefer `getEffectiveModelId(session.ws,
+ *  feature)` when you already have a SessionPayload. */
+export async function resolveFeatureModel(feature: AppFeature): Promise<string> {
+  try {
+    const session = await getSession();
+    if (session?.ws) return getEffectiveModelId(session.ws, feature);
+  } catch {
+    // Fall through.
+  }
+  return getFeatureSpec(feature)?.defaultModelId ?? AI_MODELS[0].id;
 }
 
 /** Upsert one scope's model id. Pass `null` model id to clear the
