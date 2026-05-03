@@ -139,6 +139,7 @@ export async function* runScriptPanelLive(
     previousFeedback: args.previousFeedback,
     aggressiveness: args.aggressiveness,
     modelId: args.modelId,
+    spend: args.spend,
   };
 
   yield event('panel', 'start', null, {
@@ -181,6 +182,7 @@ export async function* runScriptPanelLive(
             temperature: 0.3,
             cache: true,
             userCachePrefix,
+            spend: ctx.spend ? { ...ctx.spend, featureArea: `critic_panel_live_draft_${spec.id}` } : undefined,
           });
           const parsed = safeParseLlmJson<RawDraftOutput>(raw);
           if (!parsed) return emptyDraft(spec.id, 'Model returned unparseable JSON.');
@@ -241,6 +243,7 @@ export async function* runScriptPanelLive(
             temperature: 0.25,
             cache: true,
             userCachePrefix,
+            spend: ctx.spend ? { ...ctx.spend, featureArea: `critic_panel_live_deliberation_${spec.id}` } : undefined,
           });
           const parsed = safeParseLlmJson<RawDeliberationOutput>(raw);
           if (!parsed) {
@@ -322,6 +325,7 @@ export async function* runScriptPanelLive(
       temperature: 0.25,
       cache: true,
       userCachePrefix: chairPrefix,
+      spend: ctx.spend ? { ...ctx.spend, featureArea: 'critic_panel_live_chair' } : undefined,
     });
     chairParsed = safeParseLlmJson<RawChairOutput>(chairRaw);
     if (!chairParsed) chairError = 'Chair JSON unparseable — using deliberation consensus directly.';

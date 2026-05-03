@@ -30,6 +30,16 @@ export interface GenerateJsonOptions {
    *  string; on Anthropic it becomes a cached text block; on other providers
    *  it is concatenated back in front of `userPrompt` for identical semantics. */
   userCachePrefix?: string;
+  /** Optional spend-log context — when set, the underlying generateText
+   *  call records token usage + cost into ai_spend_log under this
+   *  feature label. Composer stages should pass workspaceId + a
+   *  per-stage label (e.g. 'composer_plan', 'composer_critic'). */
+  spend?: {
+    workspaceId: string;
+    projectId?: string | null;
+    featureArea: string;
+    metadata?: Record<string, unknown>;
+  };
 }
 
 export interface GenerateJsonResult<T> {
@@ -59,6 +69,7 @@ export async function generateJson<T>(opts: GenerateJsonOptions): Promise<Genera
       // providers (Gemini, OpenAI, Perplexity). Caller can opt out via cache:false.
       cache: opts.cache ?? true,
       userCachePrefix: opts.userCachePrefix,
+      spend: opts.spend,
     });
   }
 

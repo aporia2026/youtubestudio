@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateText } from '@/lib/ai';
 import { sql, ensureScheduleSchema } from '@/lib/db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { makeSpendContext } from '@/lib/ai-spend';
 
 export const maxDuration = 120;
 
@@ -59,6 +60,7 @@ Generate 5 title candidates. JSON only.`;
       systemPrompt: system,
       maxTokens: 900,
       temperature: 0.8,
+      spend: await makeSpendContext('schedule_title_from_script', { metadata: { item_id } }),
     });
 
     const m = raw.match(/\{[\s\S]*\}/);

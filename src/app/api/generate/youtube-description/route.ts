@@ -3,6 +3,7 @@ import { generateText, getModelById } from '@/lib/ai';
 import { youtubeDescriptionPrompt } from '@/lib/prompts';
 import { getTemplate } from '@/lib/templates-db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { makeSpendContext } from '@/lib/ai-spend';
 
 export const maxDuration = 180;
 
@@ -77,6 +78,7 @@ export async function POST(req: NextRequest) {
       maxTokens: 1200,
       // Slightly higher temp than QA — we want voice variation, not cookie-cutter.
       temperature: 0.85,
+      spend: await makeSpendContext('youtube_description', { metadata: { niche } }),
     });
 
     const description = postProcess(raw);

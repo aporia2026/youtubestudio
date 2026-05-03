@@ -181,6 +181,12 @@ export async function extractAndSaveShort(args: ExtractShortArgs): Promise<{ id:
     prompt: user,
     maxTokens: 4000,
     temperature: 0.7,
+    spend: {
+      workspaceId: args.workspaceId,
+      projectId: args.projectId ?? null,
+      featureArea: 'shorts_extract',
+      metadata: { target_seconds: targetSeconds },
+    },
   });
 
   let short: ExtractedShort;

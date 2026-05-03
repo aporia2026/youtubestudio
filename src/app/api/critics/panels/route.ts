@@ -122,6 +122,11 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
           passNumber,
           aggressiveness,
           modelId,
+          spend: {
+            workspaceId: session.ws,
+            projectId,
+            sourceScriptId,
+          },
         });
         for await (const ev of generator) {
           sequenceNo += 1;

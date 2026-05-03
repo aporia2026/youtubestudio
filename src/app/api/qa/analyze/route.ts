@@ -130,6 +130,7 @@ export async function POST(req: NextRequest) {
         systemPrompt: system,
         maxTokens,
         temperature: 0.3,
+        spend: session?.ws ? { workspaceId: session.ws, featureArea: 'qa_analyze', metadata: { max_tokens: maxTokens } } : undefined,
       });
     }
 

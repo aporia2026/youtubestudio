@@ -88,6 +88,7 @@ export async function runScriptPanel(args: RunScriptPanelArgs): Promise<RunScrip
     previousFeedback: args.previousFeedback,
     aggressiveness: args.aggressiveness,
     modelId: args.modelId,
+    spend: args.spend,
   };
 
   // ─── Phase 0: Charter ───────────────────────────────────────────────────
@@ -113,6 +114,7 @@ export async function runScriptPanel(args: RunScriptPanelArgs): Promise<RunScrip
           temperature: 0.3,
           cache: true,
           userCachePrefix,
+          spend: ctx.spend ? { ...ctx.spend, featureArea: `critic_panel_draft_${spec.id}` } : undefined,
         });
         const parsed = safeParseLlmJson<RawDraftOutput>(raw);
         // Malformed model output — fall back to an empty draft with a
@@ -142,6 +144,7 @@ export async function runScriptPanel(args: RunScriptPanelArgs): Promise<RunScrip
           temperature: 0.25,
           cache: true,
           userCachePrefix,
+          spend: ctx.spend ? { ...ctx.spend, featureArea: `critic_panel_deliberation_${spec.id}` } : undefined,
         });
         const parsed = safeParseLlmJson<RawDeliberationOutput>(raw);
         // Malformed deliberation → carry draft forward (same effect as
@@ -199,6 +202,7 @@ export async function runScriptPanel(args: RunScriptPanelArgs): Promise<RunScrip
       temperature: 0.25,
       cache: true,
       userCachePrefix: chairPrefix,
+      spend: ctx.spend ? { ...ctx.spend, featureArea: 'critic_panel_chair' } : undefined,
     });
     chairParsed = safeParseLlmJson<RawChairOutput>(chairRaw);
     if (!chairParsed) chairError = 'Chair JSON unparseable — using deliberation consensus directly.';
@@ -262,6 +266,7 @@ export async function runScriptCharter(ctx: ScriptCriticContext): Promise<Script
           maxTokens: 1500,
           temperature: 0.3,
           cache: true,
+          spend: ctx.spend ? { ...ctx.spend, featureArea: `critic_panel_charter_${spec.id}` } : undefined,
         });
         const parsed = safeParseLlmJson<RawContribution>(raw);
         if (!parsed) return stubContribution(spec.id);
@@ -291,6 +296,7 @@ export async function runScriptCharter(ctx: ScriptCriticContext): Promise<Script
     maxTokens: 2500,
     temperature: 0.25,
     cache: true,
+    spend: ctx.spend ? { ...ctx.spend, featureArea: 'critic_panel_charter_synthesis' } : undefined,
   });
   const parsed = safeParseLlmJson<RawCharterSynthesis>(raw) ?? {};
   const perCritic: ScriptCharter['perCritic'] = {};

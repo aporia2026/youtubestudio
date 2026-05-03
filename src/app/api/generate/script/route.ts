@@ -155,6 +155,7 @@ export async function POST(req: NextRequest) {
                 systemPrompt: system,
                 maxTokens: Math.min(dynamicMaxTokens, 4000),
                 temperature: 0.8,
+                spend: session?.ws ? { workspaceId: session.ws, featureArea: 'script_generation', metadata: { phase: 'retry' } } : undefined,
               });
               if (retry && retry.trim().length >= 100) {
                 controller.enqueue(encoder.encode(retry));
@@ -197,6 +198,7 @@ export async function POST(req: NextRequest) {
                 // Lower temperature for the expansion pass — we want
                 // disciplined editing, not a fresh creative pass.
                 temperature: 0.65,
+                spend: session?.ws ? { workspaceId: session.ws, featureArea: 'script_generation', metadata: { phase: 'expansion' } } : undefined,
               });
               const expandedTrimmed = (expanded || '').trim();
               const expandedSpokenWords = countWords(expandedTrimmed);

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { splitScriptIntoSections, buildLabelPrompt } from '@/lib/narrator-utils';
 import { generateText } from '@/lib/ai';
+import { makeSpendContext } from '@/lib/ai-spend';
 
 export async function POST(req: NextRequest) {
   try {
@@ -13,7 +14,7 @@ export async function POST(req: NextRequest) {
     if (autoLabel && modelId) {
       try {
         const prompt = buildLabelPrompt(sections);
-        const result = await generateText({ modelId, prompt, systemPrompt: 'You are a script structure analyst. Return only valid JSON.', maxTokens: 2000, temperature: 0 });
+        const result = await generateText({ modelId, prompt, systemPrompt: 'You are a script structure analyst. Return only valid JSON.', maxTokens: 2000, temperature: 0, spend: await makeSpendContext('narrator_section_labels') });
         const labels: string[] = JSON.parse(result);
         for (let i = 0; i < Math.min(labels.length, sections.length); i++) {
           sections[i].label = labels[i];

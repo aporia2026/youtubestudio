@@ -3,6 +3,7 @@ import { sql } from '@/lib/db';
 import { generateText, getDefaultModel } from '@/lib/ai';
 import { channelAnalysisPrompt } from '@/lib/prompts';
 import { fetchChannelVideos } from '@/lib/youtube';
+import { makeSpendContext } from '@/lib/ai-spend';
 
 export const maxDuration = 300;
 
@@ -46,6 +47,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       prompt: user,
       systemPrompt: system,
       maxTokens: 3000,
+      spend: await makeSpendContext('channel_analysis', { channelDbId: id }),
     });
 
     return NextResponse.json({ analysis });

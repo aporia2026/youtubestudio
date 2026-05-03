@@ -54,6 +54,15 @@ export interface ScriptCriticContext {
   previousFeedback?: string;
   aggressiveness: ScriptAggressiveness;
   modelId: string;
+  /** Optional spend-log context. When set, every generateText call
+   *  inside the panel (charter contributions + draft + deliberation +
+   *  chair) records token usage with `featureArea` derived from the
+   *  stage. Pass workspaceId from the route's session. */
+  spend?: {
+    workspaceId: string;
+    projectId?: string | null;
+    sourceScriptId?: string | null;
+  };
 }
 
 export interface ScriptPeerResponse {

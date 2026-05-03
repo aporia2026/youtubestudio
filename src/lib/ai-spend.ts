@@ -12,6 +12,43 @@
 import { sql } from '@vercel/postgres';
 import { computeCost, type AiProvider } from './ai-pricing';
 import { logger } from './logger';
+import { getSession } from './session';
+
+/**
+ * Convenience builder used by API routes that don't go through
+ * `apiRoute.authed` and so don't have `session.ws` in scope. Looks up
+ * the session via cookies; returns `undefined` when no session is
+ * present (anonymous portal calls, system jobs).
+ *
+ * Usage:
+ *   const raw = await generateText({
+ *     ...
+ *     spend: await makeSpendContext('seo_optimize', { projectId }),
+ *   });
+ *
+ * `generateText.spend` is optional — passing undefined is the same as
+ * skipping it (no log row).
+ */
+export async function makeSpendContext(
+  featureArea: string,
+  opts: { projectId?: string | null; channelDbId?: string | null; metadata?: Record<string, unknown> } = {},
+): Promise<AiSpendContext | undefined> {
+  try {
+    const session = await getSession();
+    if (!session?.ws) return undefined;
+    return {
+      workspaceId: session.ws,
+      projectId: opts.projectId ?? null,
+      channelDbId: opts.channelDbId ?? null,
+      featureArea,
+      metadata: opts.metadata,
+    };
+  } catch {
+    // Cookie parse failure / Edge runtime quirks — return undefined so
+    // the caller logs nothing rather than throwing into the route.
+    return undefined;
+  }
+}
 
 export interface AiSpendContext {
   workspaceId: string;

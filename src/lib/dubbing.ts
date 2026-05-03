@@ -242,6 +242,11 @@ export async function dubScript(args: DubScriptArgs): Promise<{ id: string; stat
       prompt: user,
       maxTokens: 8000,
       temperature: 0.3,
+      spend: {
+        workspaceId: args.workspaceId,
+        featureArea: 'dubbing_translate',
+        metadata: { target_language: args.targetLanguage, source_chars: args.sourceText.length },
+      },
     })).trim();
     if (translated.length < 10) {
       throw new DubError('Translation came back empty or too short', 'translate');

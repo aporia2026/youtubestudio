@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateText } from '@/lib/ai';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { makeSpendContext } from '@/lib/ai-spend';
 
 export const maxDuration = 60;
 
@@ -41,6 +42,7 @@ Return ONLY the style description, no preamble or explanation.`;
       image: { base64: imageBase64, mimeType: mediaType },
       maxTokens: 400,
       temperature: 0.3,
+      spend: await makeSpendContext('image_style_analysis'),
     })).trim();
 
     if (!description) {

@@ -4,6 +4,7 @@ import { generateText, getModelById } from '@/lib/ai';
 import { competitorThumbnailPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
+import { makeSpendContext } from '@/lib/ai-spend';
 
 export const maxDuration = 120;
 
@@ -83,6 +84,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       maxTokens: 3000,
       temperature: 0.2,
       image: { base64, mimeType: contentType.includes('png') ? 'image/png' : 'image/jpeg' },
+      spend: await makeSpendContext('competitor_thumbnail_analysis', { metadata: { competitor_id: id } }),
     });
 
     let analysis;

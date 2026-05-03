@@ -5,6 +5,7 @@ import { generateText } from '@/lib/ai';
 import { deepVideoAnalysisPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { getCachedReference, upsertCachedReference, touchReference } from '@/lib/reference-cache-db';
+import { makeSpendContext } from '@/lib/ai-spend';
 
 export const maxDuration = 300; // 5 minutes — deep analysis takes time
 
@@ -148,6 +149,7 @@ export async function POST(req: NextRequest) {
           systemPrompt: system,
           prompt: user,
           image: thumbnailImage || undefined,
+          spend: await makeSpendContext('youtube_video_analysis', { metadata: { has_thumbnail: !!thumbnailImage } }),
         });
 
         // Parse structured JSON response — try multiple extraction strategies

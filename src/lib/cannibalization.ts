@@ -342,6 +342,11 @@ export async function runCannibalizationScan(
         prompt: user,
         maxTokens: 800,
         temperature: 0.3,
+        spend: {
+          workspaceId: args.workspaceId,
+          featureArea: 'cannibalization_alert',
+          metadata: { similarity: pair.score },
+        },
       });
       const out = parseAlertOutput(raw, risk_level);
       why = out.why;

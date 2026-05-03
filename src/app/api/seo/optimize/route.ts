@@ -3,6 +3,7 @@ import { generateText, getModelById } from '@/lib/ai';
 import { seoOptimizationPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
+import { makeSpendContext } from '@/lib/ai-spend';
 
 export const maxDuration = 300;
 
@@ -36,6 +37,7 @@ export async function POST(req: NextRequest) {
       systemPrompt: system,
       maxTokens: 6000,
       temperature: 0.7,
+      spend: await makeSpendContext('seo_optimize', { metadata: { niche } }),
     });
 
     let result;

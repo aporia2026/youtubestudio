@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateText } from '@/lib/ai';
 import { sql, ensureScheduleSchema } from '@/lib/db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { makeSpendContext } from '@/lib/ai-spend';
 
 export const maxDuration = 120;
 
@@ -76,6 +77,7 @@ Pick 3 strong next-video candidates. Prefer pulling from the saved idea library 
       systemPrompt: system,
       maxTokens: 1500,
       temperature: 0.6,
+      spend: await makeSpendContext('schedule_suggest_next', { channelDbId: channel_id }),
     });
 
     const jsonMatch = raw.match(/\{[\s\S]*\}/);

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateText } from '@/lib/ai';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { makeSpendContext } from '@/lib/ai-spend';
 
 /**
  * Convert a raw narration script into an ElevenLabs-ready format.
@@ -103,6 +104,7 @@ export async function POST(req: NextRequest) {
         prompt: userMsg,
         temperature: 0.4,
         maxTokens: 8000,
+        spend: await makeSpendContext('elevenlabs_script_format', { metadata: { version: v } }),
       });
       out[v] = stripFences(result).trim();
     } catch (err) {

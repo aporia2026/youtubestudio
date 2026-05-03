@@ -188,6 +188,7 @@ export async function POST(req: NextRequest) {
         maxTokens: dynamicMaxTokens,
         // Slightly higher temperature on retries to escape the prior local minimum.
         temperature: 0.8 + (attempt - 1) * 0.05,
+        spend: session?.ws ? { workspaceId: session.ws, featureArea: 'script_validated', metadata: { phase: 'generate', attempt } } : undefined,
       });
       script = script.trim();
     } catch (err) {
@@ -223,6 +224,7 @@ export async function POST(req: NextRequest) {
           systemPrompt: expandSystem,
           maxTokens: dynamicMaxTokens,
           temperature: 0.65,
+          spend: session?.ws ? { workspaceId: session.ws, featureArea: 'script_validated', metadata: { phase: 'expansion', attempt } } : undefined,
         })).trim();
         const expandedSpokenWords = countWords(expanded);
         if (expanded.length > 200 && expandedSpokenWords > initialSpokenWords) {
@@ -254,6 +256,7 @@ export async function POST(req: NextRequest) {
         systemPrompt: qaSystem,
         maxTokens: 4000,
         temperature: 0.3,
+        spend: session?.ws ? { workspaceId: session.ws, featureArea: 'script_validated', metadata: { phase: 'qa', attempt } } : undefined,
       });
       qa = parseLlmJson(qaRaw) as QAResult;
     } catch (err) {

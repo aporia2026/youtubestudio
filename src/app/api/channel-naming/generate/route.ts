@@ -4,6 +4,7 @@ import { channelNamingPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { fetchVideoMetadata, checkHandlesBatch, parseYouTubeUrl, fetchChannelData, fetchChannelVideosRich } from '@/lib/youtube';
+import { makeSpendContext } from '@/lib/ai-spend';
 
 export const maxDuration = 300;
 
@@ -178,6 +179,7 @@ export async function POST(req: NextRequest) {
       maxTokens: tokenBudget,
       temperature: 0.95, // higher creativity for branding work
       image: firstImage,
+      spend: await makeSpendContext('channel_naming', { metadata: { count: clampedCount } }),
     });
 
     let parsed: unknown;

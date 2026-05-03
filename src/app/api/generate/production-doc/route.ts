@@ -73,6 +73,11 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     systemPrompt: system,
     maxTokens: 16000,
     temperature: 0.4,
+    spend: {
+      workspaceId: session.ws,
+      featureArea: 'production_doc',
+      metadata: { niche, is_chunk: isChunk === true },
+    },
   });
 
   let result;

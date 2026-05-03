@@ -3,6 +3,7 @@ import { generateText, getModelById } from '@/lib/ai';
 import { ideaGenerationPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
+import { makeSpendContext } from '@/lib/ai-spend';
 
 export const maxDuration = 300;
 
@@ -70,6 +71,7 @@ export async function POST(req: NextRequest) {
         maxTokens: hasAttribution ? 12000 : 6000,
         // Bump temperature on the retry to escape the same neighbourhood.
         temperature: attempt === 1 ? 0.9 : 1.05,
+        spend: await makeSpendContext('idea_generation', { metadata: { attempt, focus } }),
       });
       let parsed: { ideas?: unknown[] };
       try {

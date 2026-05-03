@@ -3,6 +3,7 @@ import { generateText, getModelById } from '@/lib/ai';
 import { thumbnailConceptPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
+import { makeSpendContext } from '@/lib/ai-spend';
 
 export const maxDuration = 300;
 
@@ -30,6 +31,7 @@ export async function POST(req: NextRequest) {
       systemPrompt: system,
       maxTokens: 8000,
       temperature: 0.8,
+      spend: await makeSpendContext('thumbnail_concepts', { metadata: { niche } }),
     });
 
     let result;
