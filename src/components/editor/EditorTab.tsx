@@ -124,8 +124,13 @@ export function EditorTab({ projectId }: Props) {
         // Production-doc attachments live on the unified media table.
         fetch(`/api/projects/${projectId}/media`).then(r => r.ok ? r.json() : { assets: [] }),
       ]);
+      // production-doc attachments are stored as type='document' +
+      // metadata.kind='production_doc' (the type column has a fixed CHECK
+      // enum so we lean on the metadata key for the subtype).
       const allAssets = (mediaRes?.assets ?? []) as Array<ProductionDocAsset & { type?: string }>;
-      setProductionDocs(allAssets.filter(m => m.type === 'production_doc'));
+      setProductionDocs(
+        allAssets.filter(m => m.type === 'document' && (m.metadata as { kind?: string } | null)?.kind === 'production_doc'),
+      );
       setAssignments(a);
       setEditors(c);
       setImageRefs(refs);
@@ -250,14 +255,16 @@ export function EditorTab({ projectId }: Props) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: 'production_doc',
+          // type='document' is what the CHECK constraint allows; the
+          // production-doc subtype is carried on metadata.kind.
+          type: 'document',
           source: 'upload',
           name: file.name,
           url: downloadUrl,
           r2_bucket: r2Bucket,
           r2_key: r2Key,
           size_bytes: file.size,
-          metadata: { kind: 'file', mime: file.type },
+          metadata: { kind: 'production_doc', source_kind: 'file', mime: file.type },
         }),
       });
       if (!registerRes.ok) {
@@ -292,11 +299,14 @@ export function EditorTab({ projectId }: Props) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: 'production_doc',
+          // type='document' is what the CHECK constraint allows; the
+          // production-doc subtype is carried on metadata.kind, with a
+          // source_kind sub-marker for the sheet vs file distinction.
+          type: 'document',
           source: 'url',
           name: sheetName.trim() || 'Production Doc (Google Sheet)',
           url,
-          metadata: { kind: 'google_sheet' },
+          metadata: { kind: 'production_doc', source_kind: 'google_sheet' },
         }),
       });
       if (!res.ok) {
@@ -338,8 +348,11 @@ export function EditorTab({ projectId }: Props) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: 'production_doc',
-          source: item.r2_key ? 'r2-link' : (item.source || 'url'),
+          // type='document' (CHECK enum) + metadata.kind='production_doc'
+          // for the subtype; source must be one of upload|url so map a
+          // library link to 'upload' when the underlying file is in R2.
+          type: 'document',
+          source: item.r2_key ? 'upload' : (item.source === 'upload' ? 'upload' : 'url'),
           name: item.name || 'Linked production doc',
           url: item.url,
           r2_bucket: item.r2_bucket,
@@ -347,6 +360,7 @@ export function EditorTab({ projectId }: Props) {
           size_bytes: item.size_bytes,
           metadata: {
             ...(item.metadata || {}),
+            kind: 'production_doc',
             linked_from_asset_id: item.id,
             linked_from_project_id: item.project_id,
           },
@@ -651,8 +665,9 @@ export function EditorTab({ projectId }: Props) {
         ) : (
           <div className="space-y-2">
             {productionDocs.map(d => {
-              const kind = (d.metadata as { kind?: string } | null)?.kind;
-              const isSheet = kind === 'google_sheet';
+              const meta = (d.metadata || {}) as { source_kind?: string; linked_from_asset_id?: string };
+              const isSheet = meta.source_kind === 'google_sheet';
+              const isLinked = !!meta.linked_from_asset_id;
               return (
                 <div
                   key={d.id}
@@ -663,7 +678,7 @@ export function EditorTab({ projectId }: Props) {
                   <div className="min-w-0 flex-1">
                     <p className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>{d.name}</p>
                     <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                      {isSheet ? 'Google Sheet' : (d.source === 'r2-link' ? 'Linked from library' : (d.r2_key ? 'Uploaded file' : 'External URL'))}
+                      {isSheet ? 'Google Sheet' : (isLinked ? 'Linked from library' : (d.r2_key ? 'Uploaded file' : 'External URL'))}
                       {d.size_bytes ? ` · ${(d.size_bytes / 1024 / 1024).toFixed(1)} MB` : ''}
                       {d.created_at ? ` · added ${timeAgo(d.created_at)}` : ''}
                     </p>
@@ -738,8 +753,8 @@ export function EditorTab({ projectId }: Props) {
               {!prodDocLibLoading && !prodDocLibError && prodDocLibrary.length > 0 && (
                 <div className="space-y-2">
                   {prodDocLibrary.map(item => {
-                    const itemMeta = item.metadata as { kind?: string } | null;
-                    const isSheet = itemMeta?.kind === 'google_sheet';
+                    const itemMeta = (item.metadata || {}) as { source_kind?: string };
+                    const isSheet = itemMeta.source_kind === 'google_sheet';
                     return (
                       <div
                         key={item.id}

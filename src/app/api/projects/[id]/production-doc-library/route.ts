@@ -31,6 +31,10 @@ interface LibraryRow {
 export const GET = apiRoute.authed<{ id: string }>(async (session, _req, ctx) => {
   const { id: projectId } = await ctx.params;
   try {
+    // The media_assets.type CHECK constraint allows only a fixed enum
+    // (voiceover/image/video/reference/document); production-doc
+    // attachments are stored as type='document' + metadata.kind =
+    // 'production_doc' so we filter on the metadata key here.
     const { rows } = await sql<LibraryRow>`
       SELECT m.id, m.project_id, p.title AS project_title,
              m.name, m.url, m.source, m.r2_bucket, m.r2_key,
@@ -38,7 +42,8 @@ export const GET = apiRoute.authed<{ id: string }>(async (session, _req, ctx) =>
       FROM media_assets m
       JOIN projects p ON p.id = m.project_id
       WHERE m.workspace_id = ${session.ws}::uuid
-        AND m.type = 'production_doc'
+        AND m.type = 'document'
+        AND m.metadata->>'kind' = 'production_doc'
         AND m.project_id <> ${projectId}::uuid
       ORDER BY m.created_at DESC
       LIMIT 200

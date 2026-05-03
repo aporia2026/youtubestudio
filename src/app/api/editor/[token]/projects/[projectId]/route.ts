@@ -71,7 +71,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
     const thumbnails = refreshed.filter(m => m.type === 'image' && m.metadata?.kind === 'thumbnail');
     const voiceovers = refreshed.filter(m => m.type === 'voiceover');
     const videos = refreshed.filter(m => m.type === 'video');
-    const productionDocs = refreshed.filter(m => m.type === 'production_doc');
+    const productionDocs = refreshed.filter(
+      m => m.type === 'document' && m.metadata?.kind === 'production_doc',
+    );
 
     // YouTube refs
     const { rows: ytRefs } = await sql`

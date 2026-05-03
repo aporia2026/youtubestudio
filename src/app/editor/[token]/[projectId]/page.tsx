@@ -313,8 +313,9 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
           <Section title="Production Doc" subtitle={`${data.productionDocs.length} attached`}>
             <div className="space-y-2">
               {data.productionDocs.map(d => {
-                const meta = (d.metadata || {}) as { kind?: string };
-                const isSheet = meta.kind === 'google_sheet';
+                const meta = (d.metadata || {}) as { source_kind?: string; linked_from_asset_id?: string };
+                const isSheet = meta.source_kind === 'google_sheet';
+                const isLinked = !!meta.linked_from_asset_id;
                 return (
                   <a
                     key={d.id}
@@ -328,7 +329,7 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
                     <div className="min-w-0 flex-1">
                       <p className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>{d.name}</p>
                       <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                        {isSheet ? 'Google Sheet' : (d.source === 'r2-link' ? 'Linked from library' : (d.source === 'upload' ? 'Uploaded file' : 'External URL'))}
+                        {isSheet ? 'Google Sheet' : (isLinked ? 'Linked from library' : (d.source === 'upload' ? 'Uploaded file' : 'External URL'))}
                         {d.size_bytes ? ` · ${(d.size_bytes / 1024 / 1024).toFixed(1)} MB` : ''}
                       </p>
                     </div>
