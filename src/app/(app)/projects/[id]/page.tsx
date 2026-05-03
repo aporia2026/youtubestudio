@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { useParams } from 'next/navigation';
+import { upload } from '@vercel/blob/client';
 import { formatBytes, countWords, estimateDuration, formatDuration } from '@/lib/utils';
 import { ScriptVoiceoverPanel } from '@/components/ui/ScriptVoiceoverPanel';
 import { NarrationTab } from '@/components/narrator/NarrationTab';
@@ -148,6 +149,12 @@ export default function ProjectDetailPage() {
   }
 
   async function uploadFile(file: File, type: string) {
+    // Voiceover audio files routinely exceed Vercel's 4.5 MB API body cap,
+    // so for that type we go browser → Blob directly with a server-issued
+    // token. The other types (small images, etc.) keep using /api/upload.
+    if (type === 'voiceover') {
+      return uploadVoiceoverFile(file);
+    }
     setUploadingFile(true);
     try {
       const form = new FormData();
@@ -166,6 +173,42 @@ export default function ProjectDetailPage() {
       toast.error(err instanceof Error ? err.message : 'Upload failed');
     }
     finally { setUploadingFile(false); }
+  }
+
+  // Direct browser → Vercel Blob upload for voiceover files. Bypasses the
+  // 4.5 MB API request body cap that was 413'ing real audio files. After
+  // the upload completes we register the URL via the existing /media POST
+  // so the row gets a workspace_id from the parent project.
+  async function uploadVoiceoverFile(file: File) {
+    setUploadingFile(true);
+    try {
+      const blob = await upload(`voiceover/${Date.now()}-${file.name}`, file, {
+        access: 'public',
+        handleUploadUrl: `/api/projects/${id}/voiceover-upload-token`,
+      });
+      const res = await fetch(`/api/projects/${id}/media`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'voiceover',
+          source: 'upload',
+          name: file.name,
+          url: blob.url,
+          blob_pathname: blob.pathname,
+          size_bytes: file.size,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error((data && data.error) ? data.error : `Failed to register upload (${res.status})`);
+      }
+      toast.success('Voiceover uploaded');
+      fetchAll();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setUploadingFile(false);
+    }
   }
 
   async function addYoutubeRef() {
