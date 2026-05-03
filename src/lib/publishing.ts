@@ -45,15 +45,11 @@ export type {
   PublishedVideoRow,
 } from './publishing-types';
 
-const YOUTUBE_UPLOAD_URL =
-  'https://www.googleapis.com/upload/youtube/v3/videos?part=snippet,status&uploadType=multipart';
+const YOUTUBE_RESUMABLE_INIT_URL =
+  'https://www.googleapis.com/upload/youtube/v3/videos?part=snippet,status&uploadType=resumable';
 const YOUTUBE_PLAYLIST_INSERT_URL =
   'https://www.googleapis.com/youtube/v3/playlistItems?part=snippet';
 const YOUTUBE_VIDEOS_LIST_URL = 'https://www.googleapis.com/youtube/v3/videos';
-
-/** Multipart boundary — fixed string, doesn't conflict with the JSON
- *  metadata or any reasonable MP4 byte sequence. */
-const MULTIPART_BOUNDARY = '----youtubestudio-publishing-boundary';
 
 // ---------------------------------------------------------------------------
 // DB helpers
@@ -174,58 +170,97 @@ interface VideosInsertResponse {
   error?: { code: number; message: string };
 }
 
-async function fetchSourceVideo(url: string): Promise<{ buffer: Buffer; mimeType: string }> {
+/** Open a streaming response for the source MP4. Returns the raw
+ *  body stream + the metadata YouTube needs (size + MIME) to set up
+ *  the resumable upload session. The body is consumed by piping
+ *  directly into the YouTube PUT — never materialised in memory.
+ *  Audit M10. */
+async function openSourceVideo(url: string): Promise<{
+  body: ReadableStream<Uint8Array>;
+  size: number;
+  mimeType: string;
+}> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch source video: ${res.status} ${res.statusText}`);
-  const arrayBuffer = await res.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  const mimeType = res.headers.get('content-type') || 'video/mp4';
-  return { buffer, mimeType };
-}
-
-/** Build the multipart/related body for videos.insert. The first
- *  part is JSON metadata (snippet+status), the second part is the
- *  raw video bytes. Standard pattern documented by Google for
- *  uploadType=multipart. */
-function buildMultipartBody(
-  metadata: object,
-  videoBuffer: Buffer,
-  videoMime: string,
-): { body: Buffer; contentType: string } {
-  const meta = `--${MULTIPART_BOUNDARY}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`;
-  const videoHeader = `--${MULTIPART_BOUNDARY}\r\nContent-Type: ${videoMime}\r\n\r\n`;
-  const closing = `\r\n--${MULTIPART_BOUNDARY}--`;
-  const body = Buffer.concat([
-    Buffer.from(meta, 'utf8'),
-    Buffer.from(videoHeader, 'utf8'),
-    videoBuffer,
-    Buffer.from(closing, 'utf8'),
-  ]);
+  const lenHeader = res.headers.get('content-length');
+  const size = lenHeader ? Number.parseInt(lenHeader, 10) : NaN;
+  if (!Number.isFinite(size) || size <= 0) {
+    // YouTube's resumable upload requires Content-Length up front.
+    // Without it from the source, we'd have to buffer the whole body
+    // anyway. Defer that to a future enhancement and surface the
+    // limitation clearly.
+    throw new Error(
+      'Source video URL did not return a Content-Length header. ' +
+      'YouTube resumable upload needs the byte size up front — host ' +
+      'the file somewhere that returns Content-Length (Vercel Blob does).',
+    );
+  }
   return {
-    body,
-    contentType: `multipart/related; boundary=${MULTIPART_BOUNDARY}`,
+    body: res.body!,
+    size,
+    mimeType: res.headers.get('content-type') || 'video/mp4',
   };
 }
 
+/** Two-step resumable upload to YouTube videos.insert.
+ *
+ *  Step 1 (init): POST the JSON metadata to the resumable endpoint
+ *  with X-Upload-Content-Length + X-Upload-Content-Type headers.
+ *  YouTube responds 200 with a `Location:` header pointing at the
+ *  per-upload session URL.
+ *
+ *  Step 2 (upload): PUT the video bytes to the session URL with
+ *  Content-Length = total size. We pipe `body` straight in — no
+ *  in-memory buffering — so a 2GB upload uses only the chunk-buffer
+ *  RAM that Node's fetch maintains internally. */
 async function callVideosInsert(
   accessToken: string,
   metadata: { snippet: object; status: object },
-  videoBuffer: Buffer,
+  videoBody: ReadableStream<Uint8Array>,
+  videoSize: number,
   videoMime: string,
 ): Promise<VideosInsertResponse> {
-  const { body, contentType } = buildMultipartBody(metadata, videoBuffer, videoMime);
-  const res = await fetch(YOUTUBE_UPLOAD_URL, {
+  // Step 1: resumable session init.
+  const metaBody = JSON.stringify(metadata);
+  const initRes = await fetch(YOUTUBE_RESUMABLE_INIT_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
-      'Content-Type': contentType,
-      'Content-Length': body.length.toString(),
+      'Content-Type': 'application/json; charset=UTF-8',
+      'Content-Length': Buffer.byteLength(metaBody, 'utf8').toString(),
+      'X-Upload-Content-Length': videoSize.toString(),
+      'X-Upload-Content-Type': videoMime,
     },
-    body: new Uint8Array(body),
+    body: metaBody,
   });
-  const json = (await res.json().catch(() => ({}))) as VideosInsertResponse;
-  if (!res.ok) {
-    const msg = json.error?.message || `videos.insert returned ${res.status}`;
+  if (!initRes.ok) {
+    const errJson = (await initRes.json().catch(() => ({}))) as VideosInsertResponse;
+    const msg = errJson.error?.message || `videos.insert init returned ${initRes.status}`;
+    throw new Error(msg);
+  }
+  const sessionUrl = initRes.headers.get('location') || initRes.headers.get('Location');
+  if (!sessionUrl) {
+    throw new Error('videos.insert init did not return a Location header for the upload session.');
+  }
+
+  // Step 2: stream the bytes into the PUT.
+  // `duplex: 'half'` is required by Node's fetch when sending a
+  // ReadableStream body — opts into the half-duplex protocol that
+  // sends the request body before reading the response.
+  const uploadRes = await fetch(sessionUrl, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': videoMime,
+      'Content-Length': videoSize.toString(),
+    },
+    body: videoBody,
+    // @ts-expect-error — `duplex` is required for streaming bodies but
+    // not yet in the Node fetch types we have.
+    duplex: 'half',
+  });
+  const json = (await uploadRes.json().catch(() => ({}))) as VideosInsertResponse;
+  if (!uploadRes.ok) {
+    const msg = json.error?.message || `videos.insert upload returned ${uploadRes.status}`;
     throw new Error(msg);
   }
   if (!json.id) throw new Error('videos.insert succeeded without returning a video id');
@@ -322,23 +357,27 @@ export async function publishVideoToYouTube(req: PublishRequest): Promise<Publis
     return { id, status: 'failed', youtubeVideoId: null, youtubeUrl: null, errorMessage: msg };
   }
 
-  // -- 3. Status: uploading. Fetch source video bytes.
+  // -- 3. Status: uploading. Open the source video as a stream — the
+  //       body is piped straight into the YouTube PUT, never
+  //       materialised in memory. Audit M10.
   await markUploading(id);
-  let videoBuffer: Buffer;
+  let videoBody: ReadableStream<Uint8Array>;
+  let videoSize: number;
   let videoMime: string;
   try {
-    const fetched = await fetchSourceVideo(req.sourceVideoUrl);
-    videoBuffer = fetched.buffer;
-    videoMime = fetched.mimeType;
+    const opened = await openSourceVideo(req.sourceVideoUrl);
+    videoBody = opened.body;
+    videoSize = opened.size;
+    videoMime = opened.mimeType;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.error('publish: source fetch failed', { id, detail: msg });
+    logger.error('publish: source open failed', { id, detail: msg });
     await markFailed(id, `Source video fetch failed: ${msg}`);
     nextStatusFor('uploading', 'upload_failed');
     return { id, status: 'failed', youtubeVideoId: null, youtubeUrl: null, errorMessage: msg };
   }
 
-  // -- 4. videos.insert.
+  // -- 4. videos.insert via two-step resumable protocol.
   let response: VideosInsertResponse;
   try {
     response = await callVideosInsert(
@@ -347,7 +386,8 @@ export async function publishVideoToYouTube(req: PublishRequest): Promise<Publis
         snippet: buildVideosInsertSnippet(req),
         status: buildVideosInsertStatus(req),
       },
-      videoBuffer,
+      videoBody,
+      videoSize,
       videoMime,
     );
   } catch (err) {
