@@ -20,12 +20,23 @@ interface NavSection {
 }
 
 // Per-section header tint. Each section gets a brand-aligned color so the
-// nav reads as a coherent map of the product's three "modes" rather than
-// three identical grey labels. Colors picked from the existing site palette.
+// nav reads as a coherent map of the product's modes rather than identical
+// grey labels.
+//
+// Mental-model split:
+//   Create     — making the video (production funnel, in workflow order)
+//   Grow       — performance, audience, experiments, competitor intel
+//   Collaborate — internal team work
+//   Automate   — meta / operational tools that act across the others
+//
+// Webhooks + AI spend are intentionally NOT in the sidebar — they're
+// rare-touch surfaces that live on /settings as cards (routes still
+// work for deep links).
 const SECTION_COLORS: Record<string, string> = {
   Create: '#a78bfa',      // brand purple — generative work
-  Collaborate: '#06b6d4', // cyan — communication / sharing
   Grow: '#22c55e',        // green — analytics / growth
+  Collaborate: '#06b6d4', // cyan — communication / sharing
+  Automate: '#f59e0b',    // amber — meta / operational
 };
 
 // Always-visible top items
@@ -75,10 +86,14 @@ const PINNED_TOP: NavItem[] = [
 
 const SECTIONS: NavSection[] = [
   {
+    // CREATE — production funnel, ordered to match the actual workflow:
+    // pick an idea → script → review → plan visuals → record voice →
+    // assemble video (long-form OR shorts) → translate → finishing
+    // touches (thumbnails + SEO).
     label: 'Create',
     items: [
       {
-        label: 'Idea Generator',
+        label: 'Ideas',
         href: '/ideas',
         icon: (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -107,96 +122,8 @@ const SECTIONS: NavSection[] = [
         ),
       },
       {
-        label: 'Comments',
-        href: '/comments',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-            <path d="M8 10h.01M12 10h.01M16 10h.01" strokeLinecap="round" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Workflows',
-        href: '/workflows',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="6" cy="6" r="2.5" />
-            <circle cx="18" cy="6" r="2.5" />
-            <circle cx="6" cy="18" r="2.5" />
-            <circle cx="18" cy="18" r="2.5" />
-            <path d="M8.5 6h7M8.5 18h7M6 8.5v7M18 8.5v7" />
-          </svg>
-        ),
-      },
-      {
-        label: 'AI spend',
-        href: '/spend',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <line x1="12" y1="1" x2="12" y2="23" />
-            <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Webhooks',
-        href: '/webhooks',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M10 14a3.5 3.5 0 1 0 0-7" />
-            <path d="M10 7v7l-3.5 6" />
-            <circle cx="6.5" cy="20" r="2" />
-            <circle cx="18" cy="14" r="2" />
-            <path d="M16 14h-6" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Ask Studio',
-        href: '/ask-studio',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-            <path d="M12 8v4M12 16h.01" strokeLinecap="round" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Cannibalization',
-        href: '/cannibalization',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="8" cy="9" r="4" />
-            <circle cx="16" cy="15" r="4" />
-            <path d="M11 11.5l2 2" strokeLinecap="round" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Fix the dip',
-        href: '/fix-the-dip',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M3 3v18h18" />
-            <path d="M3 17 7 13 11 16 14 9 17 14 21 6" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Retention predictor',
-        href: '/retention',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M3 3v18h18" />
-            <path d="M3 17 8 12 12 14 17 8 21 11" />
-            <circle cx="8" cy="12" r="1.5" fill="currentColor" />
-            <circle cx="12" cy="14" r="1.5" fill="currentColor" />
-            <circle cx="17" cy="8" r="1.5" fill="currentColor" />
-          </svg>
-        ),
-      },
-      {
+        // Critics is a script-stage gate (panel reviews the script
+        // before recording), not an analytics tool — belongs here.
         label: 'Critics (live)',
         href: '/critics',
         icon: (
@@ -234,13 +161,15 @@ const SECTIONS: NavSection[] = [
         ),
       },
       {
-        label: 'Auto-dub',
-        href: '/dub',
+        label: 'Video Studio',
+        href: '/video-studio',
         icon: (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M5 8h14" /><path d="M5 12h9" /><path d="M5 16h6" />
-            <circle cx="18" cy="18" r="3" />
-            <path d="m17 17 2 2" />
+            <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18" />
+            <line x1="7" y1="2" x2="7" y2="22" /><line x1="17" y1="2" x2="17" y2="22" />
+            <line x1="2" y1="12" x2="22" y2="12" /><line x1="2" y1="7" x2="7" y2="7" />
+            <line x1="2" y1="17" x2="7" y2="17" /><line x1="17" y1="17" x2="22" y2="17" />
+            <line x1="17" y1="7" x2="22" y2="7" />
           </svg>
         ),
       },
@@ -255,15 +184,13 @@ const SECTIONS: NavSection[] = [
         ),
       },
       {
-        label: 'Video Studio',
-        href: '/video-studio',
+        label: 'Auto-dub',
+        href: '/dub',
         icon: (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18" />
-            <line x1="7" y1="2" x2="7" y2="22" /><line x1="17" y1="2" x2="17" y2="22" />
-            <line x1="2" y1="12" x2="22" y2="12" /><line x1="2" y1="7" x2="7" y2="7" />
-            <line x1="2" y1="17" x2="7" y2="17" /><line x1="17" y1="17" x2="22" y2="17" />
-            <line x1="17" y1="7" x2="22" y2="7" />
+            <path d="M5 8h14" /><path d="M5 12h9" /><path d="M5 16h6" />
+            <circle cx="18" cy="18" r="3" />
+            <path d="m17 17 2 2" />
           </svg>
         ),
       },
@@ -277,6 +204,33 @@ const SECTIONS: NavSection[] = [
         ),
       },
       {
+        label: 'SEO Optimizer',
+        href: '/seo',
+        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" /><line x1="4" y1="22" x2="4" y2="15" />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
+    // GROW — performance + audience + experiments + competition.
+    // Everything that looks at data after publish OR forecasts what
+    // will happen on publish.
+    label: 'Grow',
+    items: [
+      {
+        label: 'Channel',
+        href: '/channel',
+        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M22.54 6.42a2.78 2.78 0 0 0-1.95-1.96C18.88 4 12 4 12 4s-6.88 0-8.59.46a2.78 2.78 0 0 0-1.95 1.96A29 29 0 0 0 1 12a29 29 0 0 0 .46 5.58A2.78 2.78 0 0 0 3.41 19.54C5.12 20 12 20 12 20s6.88 0 8.59-.46a2.78 2.78 0 0 0 1.95-1.96A29 29 0 0 0 23 12a29 29 0 0 0-.46-5.58z" />
+            <polygon points="9.75 15.02 15.5 12 9.75 8.98 9.75 15.02" />
+          </svg>
+        ),
+      },
+      {
         label: 'A/B tests',
         href: '/ab-tests',
         icon: (
@@ -285,6 +239,69 @@ const SECTIONS: NavSection[] = [
             <path d="M7 14l4-4 4 4 5-7" />
             <circle cx="11" cy="10" r="1" fill="currentColor" />
             <circle cx="15" cy="14" r="1" fill="currentColor" />
+          </svg>
+        ),
+      },
+      {
+        label: 'Retention predictor',
+        href: '/retention',
+        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M3 3v18h18" />
+            <path d="M3 17 8 12 12 14 17 8 21 11" />
+            <circle cx="8" cy="12" r="1.5" fill="currentColor" />
+            <circle cx="12" cy="14" r="1.5" fill="currentColor" />
+            <circle cx="17" cy="8" r="1.5" fill="currentColor" />
+          </svg>
+        ),
+      },
+      {
+        label: 'Fix the dip',
+        href: '/fix-the-dip',
+        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M3 3v18h18" />
+            <path d="M3 17 7 13 11 16 14 9 17 14 21 6" />
+          </svg>
+        ),
+      },
+      {
+        label: 'Cannibalization',
+        href: '/cannibalization',
+        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="8" cy="9" r="4" />
+            <circle cx="16" cy="15" r="4" />
+            <path d="M11 11.5l2 2" strokeLinecap="round" />
+          </svg>
+        ),
+      },
+      {
+        label: 'Comments',
+        href: '/comments',
+        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            <path d="M8 10h.01M12 10h.01M16 10h.01" strokeLinecap="round" />
+          </svg>
+        ),
+      },
+      {
+        label: 'Competitors',
+        href: '/competitors',
+        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
+          </svg>
+        ),
+      },
+      {
+        label: 'Competitor signals',
+        href: '/competitors/dashboard',
+        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M3 12 7 8l4 6 4-9 6 11" />
+            <path d="M3 21h18" strokeOpacity="0.4" />
           </svg>
         ),
       },
@@ -318,43 +335,31 @@ const SECTIONS: NavSection[] = [
     ],
   },
   {
-    label: 'Grow',
+    // AUTOMATE — meta/operational tools that act ACROSS the other
+    // sections. Workflows fires actions on events, Ask Studio
+    // queries any data anywhere.
+    label: 'Automate',
     items: [
       {
-        label: 'SEO Optimizer',
-        href: '/seo',
+        label: 'Workflows',
+        href: '/workflows',
         icon: (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" /><line x1="4" y1="22" x2="4" y2="15" />
+            <circle cx="6" cy="6" r="2.5" />
+            <circle cx="18" cy="6" r="2.5" />
+            <circle cx="6" cy="18" r="2.5" />
+            <circle cx="18" cy="18" r="2.5" />
+            <path d="M8.5 6h7M8.5 18h7M6 8.5v7M18 8.5v7" />
           </svg>
         ),
       },
       {
-        label: 'Channel',
-        href: '/channel',
+        label: 'Ask Studio',
+        href: '/ask-studio',
         icon: (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M22.54 6.42a2.78 2.78 0 0 0-1.95-1.96C18.88 4 12 4 12 4s-6.88 0-8.59.46a2.78 2.78 0 0 0-1.95 1.96A29 29 0 0 0 1 12a29 29 0 0 0 .46 5.58A2.78 2.78 0 0 0 3.41 19.54C5.12 20 12 20 12 20s6.88 0 8.59-.46a2.78 2.78 0 0 0 1.95-1.96A29 29 0 0 0 23 12a29 29 0 0 0-.46-5.58z" />
-            <polygon points="9.75 15.02 15.5 12 9.75 8.98 9.75 15.02" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Competitors',
-        href: '/competitors',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Competitor signals',
-        href: '/competitors/dashboard',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M3 12 7 8l4 6 4-9 6 11" />
-            <path d="M3 21h18" strokeOpacity="0.4" />
+            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+            <path d="M12 8v4M12 16h.01" strokeLinecap="round" />
           </svg>
         ),
       },

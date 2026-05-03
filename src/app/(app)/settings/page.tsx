@@ -31,7 +31,7 @@ export default function SettingsPage() {
   const [newNicheDesc, setNewNicheDesc] = useState('');
   const [newNicheKeywords, setNewNicheKeywords] = useState('');
   const [addingNiche, setAddingNiche] = useState(false);
-  const [activeSection, setActiveSection] = useState<'niches' | 'api' | 'models' | 'templates' | 'notifications' | 'about'>('niches');
+  const [activeSection, setActiveSection] = useState<'niches' | 'api' | 'models' | 'templates' | 'notifications' | 'integrations' | 'about'>('niches');
   const [featureModels, setFeatureModels] = useState<Record<AppFeature, string>>(DEFAULT_FEATURE_MODELS);
   const [keyStatus, setKeyStatus] = useState<KeyStatus>({});
   const [keyStatusLoading, setKeyStatusLoading] = useState(true);
@@ -263,6 +263,7 @@ export default function SettingsPage() {
     { id: 'models' as const, label: '🤖 Model Defaults' },
     { id: 'templates' as const, label: '📋 Templates' },
     { id: 'notifications' as const, label: '📧 Notifications' },
+    { id: 'integrations' as const, label: '🔌 Integrations & Usage' },
     { id: 'about' as const, label: 'ℹ️ About' },
   ];
 
@@ -745,6 +746,70 @@ export default function SettingsPage() {
           )}
 
           {activeSection === 'templates' && <TemplatesPanel />}
+
+          {activeSection === 'integrations' && (
+            <div className="space-y-4">
+              <div>
+                <h2 className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
+                  Outbound integrations
+                </h2>
+                <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+                  Push studio events into Slack, Discord, or any HTTPS endpoint. Set up once; the
+                  rest of the app fires events to whatever you've configured.
+                </p>
+                <a
+                  href="/webhooks"
+                  className="glass rounded-xl p-4 block hover:bg-white/[0.02] transition-colors"
+                  style={{ borderLeft: '3px solid #4ade80', textDecoration: 'none' }}
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                        Webhooks
+                      </div>
+                      <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                        Slack / Discord / generic — per-event filters, encrypted URLs at rest, full delivery audit log
+                      </div>
+                    </div>
+                    <span style={{ color: 'var(--text-muted)' }}>→</span>
+                  </div>
+                </a>
+              </div>
+
+              <div>
+                <h2 className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
+                  Usage &amp; spend
+                </h2>
+                <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+                  Per-call AI cost log across every Anthropic / OpenAI / Google call routed through
+                  the studio. Auto-populated for opted-in features.
+                </p>
+                <a
+                  href="/spend"
+                  className="glass rounded-xl p-4 block hover:bg-white/[0.02] transition-colors"
+                  style={{ borderLeft: '3px solid #c084fc', textDecoration: 'none' }}
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                        AI spend
+                      </div>
+                      <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                        Total USD by feature, model, project, day · top 10 most-expensive calls · 7d / 30d / 90d windows
+                      </div>
+                    </div>
+                    <span style={{ color: 'var(--text-muted)' }}>→</span>
+                  </div>
+                </a>
+              </div>
+
+              <div className="text-xs pt-2" style={{ color: 'var(--text-muted)' }}>
+                These surfaces have their own routes (<code>/webhooks</code>, <code>/spend</code>) — bookmarks
+                + deep links keep working. They live here in Settings instead of the main sidebar
+                because they're rare-touch (configured once, then mostly ignored).
+              </div>
+            </div>
+          )}
 
           {activeSection === 'about' && (
             <div className="glass rounded-xl p-6">
