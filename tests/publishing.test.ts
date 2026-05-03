@@ -40,10 +40,16 @@ describe('validatePublishRequest', () => {
     expect(r.errors.some((e) => e.includes('title'))).toBe(true);
   });
 
-  it('rejects non-http(s) sourceVideoUrl', () => {
+  it('rejects non-https sourceVideoUrl', () => {
     const r = validatePublishRequest(baseReq({ sourceVideoUrl: 'file:///etc/passwd' }));
     expect(r.ok).toBe(false);
-    expect(r.errors.some((e) => e.includes('http(s)'))).toBe(true);
+    expect(r.errors.some((e) => e.includes('https'))).toBe(true);
+  });
+
+  it('rejects http (cleartext) sourceVideoUrl', () => {
+    const r = validatePublishRequest(baseReq({ sourceVideoUrl: 'http://example.com/foo.mp4' }));
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.includes('https'))).toBe(true);
   });
 
   it('rejects oversize title', () => {
@@ -109,10 +115,15 @@ describe('validatePublishRequest', () => {
     expect(r.ok).toBe(true);
   });
 
-  it('rejects non-http(s) thumbnailUrl', () => {
+  it('rejects non-https thumbnailUrl', () => {
     const r = validatePublishRequest(baseReq({ thumbnailUrl: 'data:image/jpg;base64,xxx' }));
     expect(r.ok).toBe(false);
     expect(r.errors.some((e) => e.includes('thumbnailUrl'))).toBe(true);
+  });
+
+  it('rejects http (cleartext) thumbnailUrl', () => {
+    const r = validatePublishRequest(baseReq({ thumbnailUrl: 'http://example.com/t.jpg' }));
+    expect(r.ok).toBe(false);
   });
 
   it('treats null thumbnailUrl as absent (no error)', () => {

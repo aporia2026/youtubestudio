@@ -66,6 +66,12 @@ export interface PublishRequest {
   thumbnailUrl?: string | null;     // Vercel Blob URL or external https
   playlistId?: string | null;       // YouTube playlist id (e.g. PLxxx…)
   initiatedBy?: string | null;      // collaborator id
+  /** Optional idempotency key (audit C7). When set, a retry with the
+   *  SAME (workspaceId, idempotencyKey) returns the existing row's
+   *  status instead of creating a duplicate publish row + duplicate
+   *  YouTube upload. The route plumbs this from the
+   *  `Idempotency-Key` HTTP header. */
+  idempotencyKey?: string | null;
 }
 
 export interface ValidationResult {
@@ -92,8 +98,10 @@ export function validatePublishRequest(req: PublishRequest): ValidationResult {
   if (!req.workspaceId) errors.push('workspaceId is required.');
   if (!req.channelDbId) errors.push('channelDbId is required.');
   if (!req.sourceVideoUrl) errors.push('sourceVideoUrl is required.');
-  else if (!/^https?:\/\//.test(req.sourceVideoUrl)) {
-    errors.push('sourceVideoUrl must be an http(s) URL.');
+  else if (!/^https:\/\//.test(req.sourceVideoUrl)) {
+    // Audit C4 — only HTTPS sources accepted. The lib also runs
+    // assertSafePublicUrl against this for SSRF protection.
+    errors.push('sourceVideoUrl must be an https URL.');
   }
 
   const title = (req.title ?? '').trim();
@@ -140,8 +148,8 @@ export function validatePublishRequest(req: PublishRequest): ValidationResult {
   }
 
   if (req.thumbnailUrl !== undefined && req.thumbnailUrl !== null) {
-    if (!/^https?:\/\//.test(req.thumbnailUrl)) {
-      errors.push('thumbnailUrl must be an http(s) URL.');
+    if (!/^https:\/\//.test(req.thumbnailUrl)) {
+      errors.push('thumbnailUrl must be an https URL.');
     }
   }
 

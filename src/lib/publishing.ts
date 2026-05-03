@@ -28,6 +28,7 @@ import { sql } from '@vercel/postgres';
 import { getValidAccessToken } from './google-oauth';
 import { uploadThumbnailOAuth } from './youtube';
 import { logger } from './logger';
+import { assertSafePublicUrl } from './url-safety';
 import {
   validatePublishRequest,
   buildVideosInsertSnippet,
@@ -63,7 +64,7 @@ async function insertQueuedRow(req: PublishRequest): Promise<string> {
       title, description, tags, category_id, default_language,
       privacy_status, publish_at, made_for_kids,
       thumbnail_url, playlist_id,
-      initiated_by,
+      initiated_by, idempotency_key,
       status
     ) VALUES (
       ${req.workspaceId}::uuid,
@@ -82,11 +83,27 @@ async function insertQueuedRow(req: PublishRequest): Promise<string> {
       ${req.thumbnailUrl ?? null},
       ${req.playlistId ?? null},
       ${req.initiatedBy ?? null}::uuid,
+      ${req.idempotencyKey ?? null},
       'queued'
     )
     RETURNING id
   `;
   return rows[0]!.id;
+}
+
+/** Look up an existing publish row by (workspaceId, idempotencyKey).
+ *  Used by the orchestrator to short-circuit a retry — see audit C7. */
+async function findByIdempotencyKey(
+  workspaceId: string,
+  key: string,
+): Promise<string | null> {
+  const { rows } = await sql<{ id: string }>`
+    SELECT id FROM published_videos
+     WHERE workspace_id = ${workspaceId}::uuid
+       AND idempotency_key = ${key}
+     LIMIT 1
+  `;
+  return rows[0]?.id ?? null;
 }
 
 /**
@@ -180,7 +197,13 @@ async function openSourceVideo(url: string): Promise<{
   size: number;
   mimeType: string;
 }> {
-  const res = await fetch(url);
+  // Audit C4: previously this called fetch(url) with no SSRF check, so
+  // an authenticated user could pivot the server into hitting AWS IMDS,
+  // RFC1918 ranges, or .internal hostnames. assertSafePublicUrl blocks
+  // every documented private/loopback/link-local range and enforces
+  // https only — see src/lib/url-safety.ts.
+  const safe = assertSafePublicUrl(url, { allowedProtocols: ['https:'] });
+  const res = await fetch(safe);
   if (!res.ok) throw new Error(`Failed to fetch source video: ${res.status} ${res.statusText}`);
   const lenHeader = res.headers.get('content-length');
   const size = lenHeader ? Number.parseInt(lenHeader, 10) : NaN;
@@ -347,6 +370,26 @@ export async function publishVideoToYouTube(req: PublishRequest): Promise<Publis
     throw new Error(validation.errors.join(' '));
   }
 
+  // -- 1a. Idempotency short-circuit (audit C7). If the caller sent a
+  //        key and we've seen it before in this workspace, return the
+  //        existing row's status. The orchestrator does NOT re-do any
+  //        work — the original call is the source of truth.
+  if (req.idempotencyKey) {
+    const existingId = await findByIdempotencyKey(req.workspaceId, req.idempotencyKey);
+    if (existingId) {
+      const row = await getPublishedVideo(existingId, req.workspaceId);
+      if (row) {
+        return {
+          id: row.id,
+          status: row.status,
+          youtubeVideoId: row.youtube_video_id,
+          youtubeUrl: row.youtube_url,
+          errorMessage: row.error_message,
+        };
+      }
+    }
+  }
+
   const id = await insertQueuedRow(req);
 
   // -- 2. Resolve channel OAuth.
@@ -405,7 +448,9 @@ export async function publishVideoToYouTube(req: PublishRequest): Promise<Publis
   // -- 5. Optional thumbnail (best-effort — partial success).
   if (req.thumbnailUrl) {
     try {
-      const thumbRes = await fetch(req.thumbnailUrl);
+      // Same SSRF protection as the source video — see C4.
+      const safeThumb = assertSafePublicUrl(req.thumbnailUrl, { allowedProtocols: ['https:'] });
+      const thumbRes = await fetch(safeThumb);
       if (!thumbRes.ok) throw new Error(`thumbnail fetch ${thumbRes.status}`);
       const thumbBuf = Buffer.from(await thumbRes.arrayBuffer());
       const thumbMime = thumbRes.headers.get('content-type') || 'image/jpeg';

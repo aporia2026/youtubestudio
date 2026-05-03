@@ -56,6 +56,14 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   }
   const b = (body ?? {}) as Record<string, unknown>;
 
+  // Audit C7 — idempotency key. Header is the standard transport;
+  // body field is also accepted as a courtesy for clients that can't
+  // easily set headers. Cap at 200 chars to bound the index.
+  const headerKey = req.headers.get('idempotency-key');
+  const bodyKey = typeof b.idempotencyKey === 'string' ? b.idempotencyKey : null;
+  const rawKey = headerKey || bodyKey;
+  const idempotencyKey = rawKey && rawKey.length > 0 && rawKey.length <= 200 ? rawKey : null;
+
   const channelDbId = typeof b.channelDbId === 'string' ? b.channelDbId.trim() : '';
   const sourceVideoUrl = typeof b.sourceVideoUrl === 'string' ? b.sourceVideoUrl.trim() : '';
   const title = typeof b.title === 'string' ? b.title : '';
@@ -100,6 +108,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       thumbnailUrl: typeof b.thumbnailUrl === 'string' && b.thumbnailUrl ? b.thumbnailUrl : null,
       playlistId: typeof b.playlistId === 'string' && b.playlistId ? b.playlistId : null,
       initiatedBy: session.uid,
+      idempotencyKey,
     });
     return NextResponse.json(result);
   } catch (err) {
