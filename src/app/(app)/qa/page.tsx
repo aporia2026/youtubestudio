@@ -21,6 +21,7 @@ import { saveQAEntry, getQAHistory, deleteQAEntry, clearQAHistory, getRecentNich
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { TemplateContextPicker } from '@/components/ui/TemplateContextPicker';
+import { createStreamThrottle } from '@/lib/stream-throttle';
 
 type Aggressiveness = 'standard' | 'brutal' | 'nuclear';
 
@@ -381,16 +382,24 @@ function QAPage() {
 
       let full = '';
       let streamError: unknown = null;
+      // Throttle UI updates: streams arrive in many small chunks; rendering a
+      // textarea bound to the full growing string on every chunk hammers the
+      // main thread and inflates retained memory on long scripts.
+      const throttle = createStreamThrottle<string>(value => {
+        setFixedScript(value);
+        fixedScriptRef.current?.scrollTo({ top: fixedScriptRef.current.scrollHeight });
+      });
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           full += decoder.decode(value, { stream: true });
-          setFixedScript(full);
-          fixedScriptRef.current?.scrollTo({ top: fixedScriptRef.current.scrollHeight });
+          throttle.push(full);
         }
       } catch (e) {
         streamError = e;
+      } finally {
+        throttle.flush(); // guarantee final value reaches state even on error / abort
       }
       // The server may error mid-stream (the AI provider hangs up, the
       // function hits maxDuration, etc). If we got partial content, keep

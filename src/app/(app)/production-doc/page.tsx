@@ -138,8 +138,11 @@ interface VisualRef {
   url?: string;
   title?: string;
   channelTitle?: string;
-  // Screenshot
-  dataUrl?: string;
+  // Screenshot — `objectUrl` is a `blob:` URL produced by URL.createObjectURL.
+  // Storing the full base64 data URL here previously held 5–7 MB per upload
+  // on the JS heap; the blob URL is a few dozen bytes and the bytes live in
+  // browser-managed memory until revoked.
+  objectUrl?: string;
   mediaType?: string;
   name?: string;
   // Shared
@@ -557,6 +560,17 @@ function ProductionDocPage() {
     return () => { mountedRef.current = false; };
   }, []);
 
+  // Revoke any outstanding screenshot blob URLs on unmount. We track the
+  // latest visualRefs through a ref so the cleanup closure sees the final
+  // list (not the empty array captured at mount).
+  const visualRefsLatestRef = useRef<VisualRef[]>([]);
+  useEffect(() => { visualRefsLatestRef.current = visualRefs; }, [visualRefs]);
+  useEffect(() => () => {
+    for (const r of visualRefsLatestRef.current) {
+      if (r.objectUrl) URL.revokeObjectURL(r.objectUrl);
+    }
+  }, []);
+
   // Schedule-link preload: pull every relevant field off the linked item so
   // the user doesn't retype context they already captured upstream. Functional
   // setters (curr => curr || ctx.x) keep manual edits made before the async
@@ -744,11 +758,12 @@ function ProductionDocPage() {
     analyzeYouTubeStyle(canonical, newIdx);
   }
 
-  async function analyzeScreenshot(ref: VisualRef, idx: number) {
-    if (!ref.dataUrl || !ref.mediaType) return;
-    const base64 = ref.dataUrl.split(',')[1];
-    if (!base64) return; // malformed data URL
+  // Takes the base64 + mediaType directly so the bytes never have to be
+  // retained in component state. Caller has them transiently from the
+  // FileReader; once this call resolves they're gone.
+  async function analyzeScreenshot(base64: string, mediaType: string, idx: number) {
     setVisualRefs(prev => {
+      if (!prev[idx]) return prev;
       const next = [...prev];
       next[idx] = { ...next[idx], analyzing: true };
       return next;
@@ -757,7 +772,7 @@ function ProductionDocPage() {
       const res = await fetch('/api/analyze/image-style', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageBase64: base64, mediaType: ref.mediaType }),
+        body: JSON.stringify({ imageBase64: base64, mediaType }),
       });
       const data = await safeJson(res);
       if (!res.ok) throw new Error((data.error as string) || 'Analysis failed');
@@ -776,6 +791,7 @@ function ProductionDocPage() {
       }
     } catch (err) {
       setVisualRefs(prev => {
+        if (!prev[idx]) return prev;
         const next = [...prev];
         next[idx] = { ...next[idx], analyzing: false, analysisFailed: true };
         return next;
@@ -792,16 +808,27 @@ function ProductionDocPage() {
       const reader = new FileReader();
       reader.onload = e => {
         const dataUrl = e.target?.result as string;
+        const base64 = dataUrl?.split(',')[1];
+        if (!base64) { toast.error('Failed to read image'); return; }
+        // `objectUrl` is the small string we store for display. The base64
+        // we just extracted stays in this closure only — we hand it to the
+        // analyze API and then it falls out of scope.
+        const objectUrl = URL.createObjectURL(file);
         const newRef: VisualRef = {
           type: 'screenshot',
-          dataUrl,
+          objectUrl,
           mediaType: file.type,
           name: file.name,
         };
-        const newIdx = visualRefs.length;
-        setVisualRefs(prev => [...prev, newRef]);
-        // Analyze outside the state updater
-        analyzeScreenshot(newRef, newIdx);
+        // Capture the index inside the updater so concurrent uploads
+        // don't all collide on a stale `visualRefs.length` snapshot.
+        // queueMicrotask defers the analyze call until after React's
+        // commit so we don't kick off a side effect during render.
+        setVisualRefs(prev => {
+          const newIdx = prev.length;
+          queueMicrotask(() => { void analyzeScreenshot(base64, file.type, newIdx); });
+          return [...prev, newRef];
+        });
       };
       reader.readAsDataURL(file);
     });
@@ -889,7 +916,16 @@ function ProductionDocPage() {
   const appendLog = useCallback((msg: string) => {
     if (!mountedRef.current) return;
     const ts = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    setGenerationLog(prev => [...prev, `${ts}  ${msg}`]);
+    // Cap the log so a long-running session with image generation, retries
+    // and chunked runs can't grow it without bound. 200 lines is plenty to
+    // diagnose a single run; older lines drop off the front.
+    const MAX_LOG_LINES = 200;
+    setGenerationLog(prev => {
+      const entry = `${ts}  ${msg}`;
+      if (prev.length < MAX_LOG_LINES) return [...prev, entry];
+      // Slice from the tail to keep the most recent (MAX-1) plus the new entry.
+      return [...prev.slice(prev.length - (MAX_LOG_LINES - 1)), entry];
+    });
   }, []);
 
   function cancelGeneration() {
@@ -1501,11 +1537,11 @@ function ProductionDocPage() {
                           </button>
                         )}
                       </div>
-                    ) : ref.type === 'screenshot' && ref.dataUrl ? (
+                    ) : ref.type === 'screenshot' && ref.objectUrl ? (
                       <div style={{ position: 'relative' }}>
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
-                          src={ref.dataUrl}
+                          src={ref.objectUrl}
                           alt={ref.name || 'Screenshot'}
                           title={ref.analyzedStyle || ref.name}
                           style={{ width: 100, height: 56, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)', display: 'block' }}
@@ -1538,7 +1574,11 @@ function ProductionDocPage() {
                       </div>
                     ) : null}
                     <button
-                      onClick={() => setVisualRefs(prev => prev.filter((_, i) => i !== idx))}
+                      onClick={() => setVisualRefs(prev => {
+                        const removed = prev[idx];
+                        if (removed?.objectUrl) URL.revokeObjectURL(removed.objectUrl);
+                        return prev.filter((_, i) => i !== idx);
+                      })}
                       className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold"
                       style={{ background: '#ef4444', color: 'white', lineHeight: 1 }}
                       title="Remove"

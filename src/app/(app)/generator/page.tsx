@@ -27,6 +27,7 @@ import { EMPTY_CONSTRAINTS, type ScriptConstraints } from '@/lib/script-options'
 import { getScriptHistory, saveScript as saveScriptToHistory, deleteScriptEntry, clearScriptHistory, getRecentTopics, type ScriptHistoryEntry } from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
+import { createStreamThrottle } from '@/lib/stream-throttle';
 
 const TONES = ['Engaging & Friendly', 'Authoritative & Expert', 'Conversational', 'Dramatic & Urgent', 'Humorous & Relaxed', 'Educational & Clear'];
 const STYLES = ['Explainer', 'Story-driven', 'Tutorial', 'Comparison', 'Opinion / Commentary', 'Top 10 List', 'Documentary'];
@@ -239,12 +240,22 @@ function GeneratorPage() {
       const decoder = new TextDecoder();
       if (!reader) throw new Error('No response stream');
       let refined = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        refined += decoder.decode(value, { stream: true });
-        setScript(refined);
+      // Throttle UI updates: streams arrive in many small chunks; rendering a
+      // textarea bound to the full growing string on every chunk hammers the
+      // main thread and inflates retained memory on long scripts.
+      const throttle = createStreamThrottle<string>(value => {
+        setScript(value);
         scriptRef.current?.scrollTo({ top: scriptRef.current.scrollHeight, behavior: 'smooth' });
+      });
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          refined += decoder.decode(value, { stream: true });
+          throttle.push(refined);
+        }
+      } finally {
+        throttle.flush(); // guarantee final value reaches state even on early exit
       }
       // Save the refined version as a new history entry so both versions are recoverable.
       saveScriptToHistory({
@@ -675,21 +686,33 @@ function GeneratorPage() {
       const REPLACE_SENTINEL = '\n__REPLACE_FULL__\n';
       let full = '';
       let replaced = false;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        full += chunk;
-        // If the sentinel has arrived (possibly split across chunks), strip
-        // everything up to and including it and surface a brief notice so
-        // the user understands why the script just got swapped.
-        if (!replaced && full.includes(REPLACE_SENTINEL)) {
-          replaced = true;
-          full = full.slice(full.indexOf(REPLACE_SENTINEL) + REPLACE_SENTINEL.length);
-          toast.info('First draft was too short — expanding to hit your duration target…');
-        }
-        setScript(full);
+      // Throttle UI updates — see comment in refine() for rationale.
+      const throttle = createStreamThrottle<string>(value => {
+        setScript(value);
         scriptRef.current?.scrollTo({ top: scriptRef.current.scrollHeight, behavior: 'smooth' });
+      });
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          full += chunk;
+          // If the sentinel has arrived (possibly split across chunks), strip
+          // everything up to and including it and surface a brief notice so
+          // the user understands why the script just got swapped.
+          if (!replaced && full.includes(REPLACE_SENTINEL)) {
+            replaced = true;
+            full = full.slice(full.indexOf(REPLACE_SENTINEL) + REPLACE_SENTINEL.length);
+            toast.info('First draft was too short — expanding to hit your duration target…');
+            // Force-apply immediately so the user sees the swap, not the discarded draft.
+            throttle.push(full);
+            throttle.flush();
+            continue;
+          }
+          throttle.push(full);
+        }
+      } finally {
+        throttle.flush();
       }
 
       // Belt-and-braces: HTML markup leaking into the stream means we
