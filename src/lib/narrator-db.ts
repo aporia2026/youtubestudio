@@ -606,11 +606,19 @@ export async function createNarratorComment(fields: {
   author_role: 'owner' | 'narrator';
 }) {
   await ensureNarratorSchema();
+  // workspace_id is NOT NULL on narrator_comments since migration 0013 —
+  // copy it from the parent narrator_assignment.
   const { rows } = await sql`
-    INSERT INTO narrator_comments (assignment_id, section_id, text, author_name, author_role)
-    VALUES (${fields.assignment_id}, ${fields.section_id ?? null}, ${fields.text}, ${fields.author_name}, ${fields.author_role})
+    INSERT INTO narrator_comments (assignment_id, section_id, text, author_name, author_role, workspace_id)
+    SELECT ${fields.assignment_id}::uuid, ${fields.section_id ?? null}::uuid,
+           ${fields.text}, ${fields.author_name}, ${fields.author_role},
+           a.workspace_id
+      FROM narrator_assignments a WHERE a.id = ${fields.assignment_id}::uuid
     RETURNING *
   `;
+  if (rows.length === 0) {
+    throw new Error(`Narrator assignment ${fields.assignment_id} not found — cannot create comment`);
+  }
   return rows[0];
 }
 

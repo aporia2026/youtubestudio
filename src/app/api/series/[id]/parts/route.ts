@@ -136,25 +136,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const words = countWords(content);
     const duration = estimateDuration(words);
 
+    // workspace_id is NOT NULL on scripts since migration 0013 — copy it
+    // from the parent series (always present for this route).
     const result = await sql`
       INSERT INTO scripts (
         project_id, series_id, part_number, version, content,
-        word_count, estimated_duration_seconds, ai_model, series_summary, is_active
+        word_count, estimated_duration_seconds, ai_model, series_summary, is_active, workspace_id
       )
-      VALUES (
-        ${projectId || null}::uuid,
-        ${id}::uuid,
-        ${partNumber || null},
-        1,
-        ${content},
-        ${words},
-        ${duration},
-        ${modelId || null},
-        ${summary || null},
-        true
-      )
+      SELECT
+        ${projectId || null}::uuid, ${id}::uuid, ${partNumber || null},
+        1, ${content}, ${words}, ${duration},
+        ${modelId || null}, ${summary || null}, true, s.workspace_id
+        FROM series s WHERE s.id = ${id}::uuid
       RETURNING *
     `;
+    if (result.rows.length === 0) {
+      return NextResponse.json({ error: 'Series not found' }, { status: 404 });
+    }
     await sql`UPDATE series SET updated_at = NOW() WHERE id = ${id}::uuid`;
     return NextResponse.json({ script: result.rows[0] });
   } catch (err) {

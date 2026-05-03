@@ -63,22 +63,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: `R2 presign failed: ${msg}`, code: 'R2_PRESIGN_FAILED' }, { status: 502 });
     }
 
+    // workspace_id is NOT NULL on media_assets since migration 0013 — copy
+    // it from the parent project so this insert satisfies the constraint.
     const { rows } = await sql`
-      INSERT INTO media_assets (project_id, type, source, name, url, r2_bucket, r2_key, size_bytes, notes, metadata)
-      VALUES (
-        ${projectId},
-        'image',
-        'upload',
-        ${name || fileName},
-        ${downloadUrl},
-        ${getImagesBucket()},
-        ${r2Key},
-        ${typeof fileSize === 'number' ? fileSize : null},
-        ${notes ?? null},
-        ${JSON.stringify({ kind: 'thumbnail', original_name: fileName })}
-      )
+      INSERT INTO media_assets (project_id, type, source, name, url, r2_bucket, r2_key, size_bytes, notes, metadata, workspace_id)
+      SELECT ${projectId}::uuid, 'image', 'upload', ${name || fileName},
+             ${downloadUrl}, ${getImagesBucket()}, ${r2Key},
+             ${typeof fileSize === 'number' ? fileSize : null},
+             ${notes ?? null},
+             ${JSON.stringify({ kind: 'thumbnail', original_name: fileName })}::jsonb,
+             p.workspace_id
+        FROM projects p WHERE p.id = ${projectId}::uuid
       RETURNING id, name, url, r2_key, size_bytes, notes, created_at
     `;
+    if (rows.length === 0) {
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    }
 
     return NextResponse.json({ uploadUrl, asset: rows[0] }, { status: 201 });
   } catch (err) {

@@ -151,18 +151,20 @@ export async function deleteProject(id: string) {
 
 export async function createVersion(projectId: string, r2Key: string, uploadedBy: string, fileSize?: number) {
   await ensureReviewSchema();
-  // Atomic version_number increment via subquery
+  // Atomic version_number increment via subquery. workspace_id is NOT NULL
+  // on review_versions since migration 0013 — copy it from the parent
+  // review_project so callers don't need session context.
   const { rows } = await sql`
-    INSERT INTO review_versions (project_id, version_number, r2_key, uploaded_by, file_size)
-    VALUES (
-      ${projectId},
-      (SELECT COALESCE(MAX(version_number), 0) + 1 FROM review_versions WHERE project_id = ${projectId}),
-      ${r2Key},
-      ${uploadedBy},
-      ${fileSize ?? null}
-    )
+    INSERT INTO review_versions (project_id, version_number, r2_key, uploaded_by, file_size, workspace_id)
+    SELECT ${projectId}::uuid,
+           (SELECT COALESCE(MAX(version_number), 0) + 1 FROM review_versions WHERE project_id = ${projectId}::uuid),
+           ${r2Key}, ${uploadedBy}, ${fileSize ?? null}, rp.workspace_id
+      FROM review_projects rp WHERE rp.id = ${projectId}::uuid
     RETURNING *
   `;
+  if (rows.length === 0) {
+    throw new Error(`Review project ${projectId} not found — cannot create version`);
+  }
   return rows[0];
 }
 
@@ -218,21 +220,22 @@ export async function createComment(fields: {
   if (typeof fields.end_timestamp_ms === 'number' && fields.end_timestamp_ms > fields.timestamp_ms) {
     endMs = fields.end_timestamp_ms;
   }
+  // workspace_id is NOT NULL on review_comments since migration 0013 — copy
+  // it from the parent review_version so callers don't need session context.
   const { rows } = await sql`
-    INSERT INTO review_comments (version_id, timestamp_ms, end_timestamp_ms, text, author_name, author_color, drawing_data, drawing_thumbnail_url, parent_id)
-    VALUES (
-      ${fields.version_id},
-      ${fields.timestamp_ms},
-      ${endMs},
-      ${fields.text},
-      ${fields.author_name},
-      ${fields.author_color},
-      ${fields.drawing_data ? JSON.stringify(fields.drawing_data) : null},
-      ${fields.drawing_thumbnail_url ?? null},
-      ${fields.parent_id ?? null}
-    )
+    INSERT INTO review_comments (version_id, timestamp_ms, end_timestamp_ms, text, author_name, author_color, drawing_data, drawing_thumbnail_url, parent_id, workspace_id)
+    SELECT ${fields.version_id}::uuid, ${fields.timestamp_ms}, ${endMs},
+           ${fields.text}, ${fields.author_name}, ${fields.author_color},
+           ${fields.drawing_data ? JSON.stringify(fields.drawing_data) : null}::jsonb,
+           ${fields.drawing_thumbnail_url ?? null},
+           ${fields.parent_id ?? null}::uuid,
+           v.workspace_id
+      FROM review_versions v WHERE v.id = ${fields.version_id}::uuid
     RETURNING *
   `;
+  if (rows.length === 0) {
+    throw new Error(`Review version ${fields.version_id} not found — cannot create comment`);
+  }
   return rows[0];
 }
 

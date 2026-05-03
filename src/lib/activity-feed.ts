@@ -90,18 +90,30 @@ interface LogArgs {
 export async function logActivity(args: LogArgs): Promise<void> {
   await ensureActivityFeedSchema();
   try {
+    // workspace_id is NOT NULL on activity_events since migration 0013.
+    // project_id is the canonical source when present; otherwise fall back
+    // to the recipient collaborator's first workspace via workspace_members.
+    // If neither resolves (e.g. an event for a collaborator with no
+    // workspace membership) the LEFT JOIN COALESCE returns NULL and the
+    // INSERT will fail at the constraint — caught silently below since this
+    // is a fire-and-forget telemetry path.
     await sql`
       INSERT INTO activity_events (
-        recipient_collaborator_id, type, title, body, project_id, link_path, metadata
-      ) VALUES (
-        ${args.recipientCollaboratorId},
+        recipient_collaborator_id, type, title, body, project_id, link_path, metadata, workspace_id
+      )
+      SELECT
+        ${args.recipientCollaboratorId}::uuid,
         ${args.type},
         ${args.title},
         ${args.body ?? null},
-        ${args.projectId ?? null},
+        ${args.projectId ?? null}::uuid,
         ${args.linkPath ?? null},
-        ${JSON.stringify(args.metadata ?? {})}::jsonb
-      )
+        ${JSON.stringify(args.metadata ?? {})}::jsonb,
+        COALESCE(p.workspace_id, wm.workspace_id)
+      FROM (SELECT 1) AS _
+      LEFT JOIN projects p ON p.id = ${args.projectId ?? null}::uuid
+      LEFT JOIN workspace_members wm ON wm.user_id = ${args.recipientCollaboratorId}::uuid
+      LIMIT 1
     `;
   } catch (err) {
     console.warn('logActivity failed:', err);

@@ -62,24 +62,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       const durSec = parseDurationSeconds(video.duration);
       const topComments = commentsMap.get(video.id) || [];
 
+      // workspace_id is NOT NULL on competitor_videos since migration 0013
+      // — copy it from the parent competitor_channels row.
       const result = await sql`
         INSERT INTO competitor_videos (
           competitor_id, video_id, title, published_at,
           view_count, like_count, comment_count, duration,
           thumbnail_url, outlier_score, engagement_rate, synced_at,
-          description, tags, category_id, duration_seconds, top_comments, topic_categories
+          description, tags, category_id, duration_seconds, top_comments, topic_categories,
+          workspace_id
         )
-        VALUES (
-          ${id}, ${video.id}, ${video.title}, ${video.publishedAt},
+        SELECT
+          ${id}::uuid, ${video.id}, ${video.title}, ${video.publishedAt}::timestamptz,
           ${video.viewCount}, ${video.likeCount}, ${video.commentCount || 0}, ${video.duration},
           ${video.thumbnailUrl}, ${os}, ${er}, NOW(),
           ${(video.description || '').slice(0, 5000)},
-          ${JSON.stringify(video.tags || [])},
+          ${JSON.stringify(video.tags || [])}::jsonb,
           ${video.categoryId || ''},
           ${durSec},
-          ${JSON.stringify(topComments)},
-          ${JSON.stringify(video.topicCategories || [])}
-        )
+          ${JSON.stringify(topComments)}::jsonb,
+          ${JSON.stringify(video.topicCategories || [])}::jsonb,
+          c.workspace_id
+        FROM competitor_channels c WHERE c.id = ${id}::uuid
         ON CONFLICT (video_id) DO UPDATE SET
           view_count = ${video.viewCount},
           like_count = ${video.likeCount},

@@ -149,10 +149,14 @@ export async function storeTokens(
   const expiry = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
   const scopesCsv = `{${tokens.scope.split(' ').join(',')}}`;
 
-  // Upsert — update if already connected
+  // Upsert — update if already connected. workspace_id is NOT NULL on
+  // oauth_tokens since migration 0013 — copy it from the parent channel.
   await sql`
-    INSERT INTO oauth_tokens (channel_id, provider, access_token_encrypted, refresh_token_encrypted, token_expiry, scopes, google_email)
-    VALUES (${channelDbId}::uuid, 'google', ${accessTokenEnc}, ${refreshTokenEnc}, ${expiry}::timestamptz, ${scopesCsv}::text[], ${googleEmail || null})
+    INSERT INTO oauth_tokens (channel_id, provider, access_token_encrypted, refresh_token_encrypted, token_expiry, scopes, google_email, workspace_id)
+    SELECT ${channelDbId}::uuid, 'google', ${accessTokenEnc}, ${refreshTokenEnc},
+           ${expiry}::timestamptz, ${scopesCsv}::text[], ${googleEmail || null},
+           c.workspace_id
+      FROM channels c WHERE c.id = ${channelDbId}::uuid
     ON CONFLICT (channel_id, provider) DO UPDATE SET
       access_token_encrypted = EXCLUDED.access_token_encrypted,
       refresh_token_encrypted = COALESCE(EXCLUDED.refresh_token_encrypted, oauth_tokens.refresh_token_encrypted),

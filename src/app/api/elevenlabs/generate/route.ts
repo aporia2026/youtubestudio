@@ -29,20 +29,16 @@ export async function POST(req: NextRequest) {
       addRandomSuffix: true,
     });
 
-    // Save to project if provided
+    // Save to project if provided. workspace_id is NOT NULL on media_assets
+    // since migration 0013 — copy it from the parent project.
     if (projectId) {
       await sql`
-        INSERT INTO media_assets (project_id, type, source, name, url, blob_pathname, size_bytes, metadata)
-        VALUES (
-          ${projectId},
-          'voiceover',
-          'upload',
-          ${`ElevenLabs - ${voiceId}`},
-          ${blob.url},
-          ${blob.pathname},
-          ${audioBuffer.byteLength},
-          ${JSON.stringify({ voiceId, modelId, generatedAt: new Date().toISOString() })}
-        )
+        INSERT INTO media_assets (project_id, type, source, name, url, blob_pathname, size_bytes, metadata, workspace_id)
+        SELECT ${projectId}::uuid, 'voiceover', 'upload', ${`ElevenLabs - ${voiceId}`},
+               ${blob.url}, ${blob.pathname}, ${audioBuffer.byteLength},
+               ${JSON.stringify({ voiceId, modelId, generatedAt: new Date().toISOString() })}::jsonb,
+               p.workspace_id
+          FROM projects p WHERE p.id = ${projectId}::uuid
       `;
     }
 

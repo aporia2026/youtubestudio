@@ -59,12 +59,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
       const orig = origRows[0];
       if (!orig || orig.project_id !== link.project_id) continue;
 
+      // workspace_id is NOT NULL on review_comments since migration 0013 —
+      // copy it from the parent review_version.
       const { rows: insertRows } = await sql`
         INSERT INTO review_comments
-          (version_id, timestamp_ms, end_timestamp_ms, text, author_name, author_color, fix_for_comment_id)
-        VALUES
-          (${versionId}, ${orig.timestamp_ms}, ${orig.end_timestamp_ms}, ${text},
-           ${collab.name}, ${collab.color || '#22c55e'}, ${orig.id})
+          (version_id, timestamp_ms, end_timestamp_ms, text, author_name, author_color, fix_for_comment_id, workspace_id)
+        SELECT ${versionId}::uuid, ${orig.timestamp_ms}, ${orig.end_timestamp_ms},
+               ${text}, ${collab.name}, ${collab.color || '#22c55e'},
+               ${orig.id}::uuid, v.workspace_id
+          FROM review_versions v WHERE v.id = ${versionId}::uuid
         RETURNING *
       `;
       created.push(insertRows[0]);

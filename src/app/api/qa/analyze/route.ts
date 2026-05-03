@@ -174,19 +174,34 @@ export async function POST(req: NextRequest) {
 
     // Persist to DB if we have context
     try {
-      if (projectId || scriptId) {
+      // workspace_id is NOT NULL on qa_sessions since migration 0013 — copy
+      // it from whichever parent we have. project_id is the canonical hop;
+      // when only scriptId is supplied we walk through scripts → projects.
+      if (projectId) {
         await sql`
-          INSERT INTO qa_sessions (script_id, project_id, pass_number, overall_score, feedback, issues, suggestions, ai_model)
-          VALUES (
-            ${scriptId || null},
-            ${projectId || null},
-            ${passNumber || 1},
-            ${(result as { overall_score?: number }).overall_score ?? null},
-            ${JSON.stringify((result as { categories?: unknown }).categories ?? {})},
-            ${JSON.stringify((result as { critical_issues?: unknown[] }).critical_issues ?? [])},
-            ${JSON.stringify((result as { rewrite_suggestions?: unknown[] }).rewrite_suggestions ?? [])},
-            ${modelId}
-          )
+          INSERT INTO qa_sessions (script_id, project_id, pass_number, overall_score, feedback, issues, suggestions, ai_model, workspace_id)
+          SELECT ${scriptId || null}::uuid, ${projectId}::uuid,
+                 ${passNumber || 1},
+                 ${(result as { overall_score?: number }).overall_score ?? null},
+                 ${JSON.stringify((result as { categories?: unknown }).categories ?? {})}::jsonb,
+                 ${JSON.stringify((result as { critical_issues?: unknown[] }).critical_issues ?? [])}::jsonb,
+                 ${JSON.stringify((result as { rewrite_suggestions?: unknown[] }).rewrite_suggestions ?? [])}::jsonb,
+                 ${modelId},
+                 p.workspace_id
+            FROM projects p WHERE p.id = ${projectId}::uuid
+        `;
+      } else if (scriptId) {
+        await sql`
+          INSERT INTO qa_sessions (script_id, project_id, pass_number, overall_score, feedback, issues, suggestions, ai_model, workspace_id)
+          SELECT ${scriptId}::uuid, NULL,
+                 ${passNumber || 1},
+                 ${(result as { overall_score?: number }).overall_score ?? null},
+                 ${JSON.stringify((result as { categories?: unknown }).categories ?? {})}::jsonb,
+                 ${JSON.stringify((result as { critical_issues?: unknown[] }).critical_issues ?? [])}::jsonb,
+                 ${JSON.stringify((result as { rewrite_suggestions?: unknown[] }).rewrite_suggestions ?? [])}::jsonb,
+                 ${modelId},
+                 s.workspace_id
+            FROM scripts s WHERE s.id = ${scriptId}::uuid
         `;
       }
     } catch (dbErr) {

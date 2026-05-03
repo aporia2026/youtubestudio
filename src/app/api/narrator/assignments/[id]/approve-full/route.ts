@@ -72,10 +72,13 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       .then(r => (r.rows[0]?.title as string | undefined) || 'Untitled');
     const assetName = `Narration — ${assignment.narrator_name || 'Narrator'}`;
     try {
+      // workspace_id is NOT NULL on media_assets since migration 0013 — pull
+      // it from the parent project (FROM projects p) to satisfy the
+      // constraint while keeping the existing dedupe NOT EXISTS guard.
       await sql`
-        INSERT INTO media_assets (project_id, type, source, name, url, blob_pathname, size_bytes, duration_seconds, metadata)
+        INSERT INTO media_assets (project_id, type, source, name, url, blob_pathname, size_bytes, duration_seconds, metadata, workspace_id)
         SELECT
-          ${assignment.project_id}, 'voiceover', 'upload', ${assetName},
+          ${assignment.project_id}::uuid, 'voiceover', 'upload', ${assetName},
           ${assignment.full_audio_url}, NULL, NULL,
           ${assignment.full_audio_duration_seconds},
           ${JSON.stringify({
@@ -84,14 +87,17 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
             take_id: assignment.full_audio_take_id,
             r2_key: assignment.full_audio_r2_key,
             full_narration: true,
-          })}::jsonb
-        WHERE NOT EXISTS (
-          SELECT 1 FROM media_assets
-          WHERE project_id = ${assignment.project_id}
-            AND type = 'voiceover'
-            AND metadata->>'assignment_id' = ${id}
-            AND metadata->>'full_narration' = 'true'
-        )
+          })}::jsonb,
+          p.workspace_id
+        FROM projects p
+        WHERE p.id = ${assignment.project_id}::uuid
+          AND NOT EXISTS (
+            SELECT 1 FROM media_assets
+            WHERE project_id = ${assignment.project_id}::uuid
+              AND type = 'voiceover'
+              AND metadata->>'assignment_id' = ${id}
+              AND metadata->>'full_narration' = 'true'
+          )
       `;
     } catch (mediaErr) {
       console.error('approve-full: media_asset insert skipped:', mediaErr);

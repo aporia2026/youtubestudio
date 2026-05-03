@@ -24,27 +24,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // Try to fetch YouTube metadata
     const videoData = await fetchYouTubeVideoData(youtube_url);
 
+    // workspace_id is NOT NULL on youtube_references since migration 0013 —
+    // copy it from the parent project so this insert satisfies the constraint.
     const scrapedAt = videoData ? new Date().toISOString() : null;
     const result = await sql`
       INSERT INTO youtube_references (
         project_id, youtube_url, video_id, title, channel,
-        view_count, like_count, duration, thumbnail_url, notes, scraped_at
+        view_count, like_count, duration, thumbnail_url, notes, scraped_at, workspace_id
       )
-      VALUES (
-        ${id},
-        ${youtube_url},
-        ${videoData?.id || null},
-        ${videoData?.title || null},
-        ${videoData?.channelTitle || null},
-        ${videoData?.viewCount || 0},
-        ${videoData?.likeCount || 0},
-        ${videoData?.duration || null},
-        ${videoData?.thumbnailUrl || null},
-        ${notes || ''},
-        ${scrapedAt}
-      )
+      SELECT ${id}::uuid, ${youtube_url}, ${videoData?.id || null},
+             ${videoData?.title || null}, ${videoData?.channelTitle || null},
+             ${videoData?.viewCount || 0}, ${videoData?.likeCount || 0},
+             ${videoData?.duration || null}, ${videoData?.thumbnailUrl || null},
+             ${notes || ''}, ${scrapedAt}::timestamptz, p.workspace_id
+        FROM projects p WHERE p.id = ${id}::uuid
       RETURNING *
     `;
+    if (result.rows.length === 0) {
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    }
 
     return NextResponse.json({ reference: result.rows[0] });
   } catch (err) {

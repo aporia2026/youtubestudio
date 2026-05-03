@@ -88,19 +88,16 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     const pathname = `narrator-stitched/${assignment.project_id}/${Date.now()}-stitched.mp3`;
     const blob = await put(pathname, new Blob([stitched], { type: 'audio/mpeg' }), { access: 'public', contentType: 'audio/mpeg' });
 
-    // Save as media_asset on the project
+    // Save as media_asset on the project. workspace_id is NOT NULL on
+    // media_assets since migration 0013 — copy it from the parent project.
     await sql`
-      INSERT INTO media_assets (project_id, type, source, name, url, blob_pathname, size_bytes, metadata)
-      VALUES (
-        ${assignment.project_id},
-        'voiceover',
-        'upload',
-        ${`Narration — ${assignment.narrator_name}`},
-        ${blob.url},
-        ${blob.pathname},
-        ${totalSize},
-        ${JSON.stringify({ narrator_id: assignment.narrator_id, assignment_id: id, stitched: true, sections: audioUrls.length })}
-      )
+      INSERT INTO media_assets (project_id, type, source, name, url, blob_pathname, size_bytes, metadata, workspace_id)
+      SELECT ${assignment.project_id}::uuid, 'voiceover', 'upload',
+             ${`Narration — ${assignment.narrator_name}`},
+             ${blob.url}, ${blob.pathname}, ${totalSize},
+             ${JSON.stringify({ narrator_id: assignment.narrator_id, assignment_id: id, stitched: true, sections: audioUrls.length })}::jsonb,
+             p.workspace_id
+        FROM projects p WHERE p.id = ${assignment.project_id}::uuid
     `;
 
     // Update assignment status

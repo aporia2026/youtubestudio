@@ -33,14 +33,14 @@ export async function POST(req: NextRequest) {
       addRandomSuffix: true,
     });
 
-    // Save to DB if projectId provided
+    // Save to DB if projectId provided. workspace_id is NOT NULL on
+    // media_assets since migration 0013 — copy it from the parent project.
     if (projectId) {
       await sql`
-        INSERT INTO media_assets (project_id, type, source, name, url, blob_pathname, size_bytes)
-        VALUES (
-          ${projectId}, ${type}, 'upload', ${file.name},
-          ${blob.url}, ${blob.pathname}, ${file.size}
-        )
+        INSERT INTO media_assets (project_id, type, source, name, url, blob_pathname, size_bytes, workspace_id)
+        SELECT ${projectId}::uuid, ${type}, 'upload', ${file.name},
+               ${blob.url}, ${blob.pathname}, ${file.size}, p.workspace_id
+          FROM projects p WHERE p.id = ${projectId}::uuid
       `;
       await sql`UPDATE projects SET updated_at = NOW() WHERE id = ${projectId}`;
     }

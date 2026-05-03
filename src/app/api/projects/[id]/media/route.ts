@@ -20,15 +20,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!url || !type) return NextResponse.json({ error: 'url and type required' }, { status: 400 });
 
   try {
+    // workspace_id is NOT NULL on media_assets since migration 0013 — copy
+    // it from the parent project so this insert satisfies the constraint.
     const result = await sql`
-      INSERT INTO media_assets (project_id, type, source, name, url, blob_pathname, size_bytes, duration_seconds, notes, metadata)
-      VALUES (
-        ${id}, ${type}, ${source || 'url'}, ${name || url.split('/').pop()},
-        ${url}, ${blob_pathname || null}, ${size_bytes || 0}, ${duration_seconds || null},
-        ${notes || ''}, ${JSON.stringify(metadata || {})}
-      )
+      INSERT INTO media_assets (project_id, type, source, name, url, blob_pathname, size_bytes, duration_seconds, notes, metadata, workspace_id)
+      SELECT ${id}::uuid, ${type}, ${source || 'url'}, ${name || url.split('/').pop()},
+             ${url}, ${blob_pathname || null}, ${size_bytes || 0}, ${duration_seconds || null},
+             ${notes || ''}, ${JSON.stringify(metadata || {})}::jsonb,
+             p.workspace_id
+        FROM projects p WHERE p.id = ${id}::uuid
       RETURNING *
     `;
+    if (result.rows.length === 0) {
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    }
     await sql`UPDATE projects SET updated_at = NOW() WHERE id = ${id}`;
     return NextResponse.json({ asset: result.rows[0] });
   } catch (err) {
