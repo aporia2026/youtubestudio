@@ -6,6 +6,7 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { makeSpendContext } from '@/lib/ai-spend';
 import { logger } from '@/lib/logger';
+import { apiRoute } from '@/lib/route-helpers';
 
 export const maxDuration = 120;
 
@@ -13,8 +14,11 @@ export const maxDuration = 120;
  * Analyze a single competitor video's thumbnail using vision.
  * Body: { modelId, videoRowId }
  * Returns: { analysis }
+ *
+ * Audit C2: previously unauthenticated. Now wrapped + workspace-scoped
+ * via the parent competitor_channels row.
  */
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export const POST = apiRoute.authed(async (session, req: NextRequest, { params }: { params: Promise<{ id: string }> }) => {
   const { id } = await params;
 
   const { limited } = checkRateLimit(`thumb-analyze:${getClientIP(req)}`, 10, 60_000);
@@ -22,6 +26,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   try {
     await ensureCompetitorSchema();
+    // Workspace-scope check on the parent competitor.
+    const owner = await sql`
+      SELECT 1 FROM competitor_channels
+       WHERE id = ${id}
+         AND workspace_id = ${session.ws}::uuid
+       LIMIT 1
+    `;
+    if (owner.rows.length === 0) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
     let body: { modelId?: string; videoRowId?: string };
     try { body = await req.json(); } catch {
       return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
@@ -106,4 +120,4 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const detail = err instanceof Error ? err.message : 'unknown';
     return NextResponse.json({ error: `Thumbnail analysis failed: ${detail}` }, { status: 500 });
   }
-}
+});

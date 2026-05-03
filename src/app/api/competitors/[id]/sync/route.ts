@@ -2,11 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureCompetitorSchema } from '@/lib/db';
 import { fetchChannelVideosRich, fetchChannelData, fetchVideoComments, parseDurationSeconds } from '@/lib/youtube';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
-import { logger } from '@/lib/logger';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 
 export const maxDuration = 180;
 
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+/** Audit C2: this sync route was unauthenticated. Now wrapped +
+ *  workspace-scoped — the channel SELECT requires the row belong
+ *  to the session's workspace. */
+export const POST = apiRoute.authed(async (session, req: NextRequest, { params }: { params: Promise<{ id: string }> }) => {
   const { id } = await params;
 
   const { limited } = checkRateLimit(`sync:${getClientIP(req)}`, 5, 60_000);
@@ -15,7 +18,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   try {
     await ensureCompetitorSchema();
 
-    const channel = await sql`SELECT * FROM competitor_channels WHERE id = ${id}`;
+    const channel = await sql`
+      SELECT * FROM competitor_channels
+       WHERE id = ${id}
+         AND workspace_id = ${session.ws}::uuid
+    `;
     if (channel.rows.length === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
     const comp = channel.rows[0];
@@ -112,8 +119,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       subscriberCount: freshData?.subscriberCount || comp.subscriber_count,
     });
   } catch (err) {
-    logger.error('Competitor sync error', { detail: err instanceof Error ? err.message : String(err) });
-    const detail = err instanceof Error ? err.message : 'unknown';
-    return NextResponse.json({ error: `Sync failed: ${detail}` }, { status: 500 });
+    return domainErrorResponse(err, {
+      op: 'competitors: sync',
+      knownPatterns: [
+        { match: /YOUTUBE_API_KEY|quota/i, status: 503 },
+      ],
+      fallbackMessage: 'Competitor sync failed.',
+    });
   }
-}
+});

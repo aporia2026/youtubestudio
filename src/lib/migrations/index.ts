@@ -34,6 +34,7 @@ import migration0034 from './0034_create_workspace_model_defaults';
 import migration0035 from './0035_create_published_videos';
 import migration0036 from './0036_google_auth_tokens_workspace_unique';
 import migration0037 from './0037_add_listing_indexes';
+import migration0038 from './0038_competitor_channels_workspace_unique';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -76,6 +77,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0035,
   migration0036,
   migration0037,
+  migration0038,
 ]);
 
 /**

@@ -7,6 +7,7 @@ import { parseLlmJson } from '@/lib/parse-llm-json';
 import { computeAnalytics, VideoRow } from '@/lib/competitor-analytics';
 import { makeSpendContext } from '@/lib/ai-spend';
 import { logger } from '@/lib/logger';
+import { apiRoute } from '@/lib/route-helpers';
 
 export const maxDuration = 300;
 
@@ -14,8 +15,10 @@ export const maxDuration = 300;
  * Generate video ideas for the user based on competitor analytics.
  * Body: { modelId, niche, userAngle?, contentGaps? }
  * Returns: { ideas: [...] }
+ *
+ * Audit C2: previously unauthenticated. Now wrapped + workspace-scoped.
  */
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export const POST = apiRoute.authed(async (session, req: NextRequest, { params }: { params: Promise<{ id: string }> }) => {
   const { id } = await params;
 
   const { limited } = checkRateLimit(`comp-ideas:${getClientIP(req)}`, 5, 60_000);
@@ -32,7 +35,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const model = getModelById(modelId);
     if (!model) return NextResponse.json({ error: 'Invalid model' }, { status: 400 });
 
-    const channel = await sql`SELECT * FROM competitor_channels WHERE id = ${id}`;
+    const channel = await sql`
+      SELECT * FROM competitor_channels
+       WHERE id = ${id}
+         AND workspace_id = ${session.ws}::uuid
+    `;
     if (channel.rows.length === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     const ch = channel.rows[0];
 
@@ -94,4 +101,4 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const detail = err instanceof Error ? err.message : 'unknown';
     return NextResponse.json({ error: `Ideas generation failed: ${detail}` }, { status: 500 });
   }
-}
+});

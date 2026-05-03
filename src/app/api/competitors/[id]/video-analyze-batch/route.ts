@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { sql, ensureCompetitorSchema } from '@/lib/db';
+import { apiRoute } from '@/lib/route-helpers';
 import { analyzeYouTubeVideo, modelSupportsVideo, getModelById } from '@/lib/ai';
 import { competitorVideoForensicsPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
@@ -22,7 +23,8 @@ export const maxDuration = 300;
  *   data: {"type":"progress","videoRowId":"...","status":"error","error":"..."}
  *   data: {"type":"complete","analyzed":N,"failed":M}
  */
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+// Audit C2: previously unauthenticated. Now wrapped + workspace-scoped.
+export const POST = apiRoute.authed(async (session, req: NextRequest, { params }: { params: Promise<{ id: string }> }) => {
   const { id } = await params;
 
   const { limited } = checkRateLimit(`video-batch:${getClientIP(req)}`, 2, 60_000);
@@ -46,7 +48,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   await ensureCompetitorSchema();
 
-  const channelRes = await sql`SELECT title FROM competitor_channels WHERE id = ${id}`;
+  const channelRes = await sql`
+    SELECT title FROM competitor_channels
+     WHERE id = ${id}
+       AND workspace_id = ${session.ws}::uuid
+  `;
   if (channelRes.rows.length === 0) return new Response(JSON.stringify({ error: 'Competitor not found' }), { status: 404 });
   const channelName = String(channelRes.rows[0].title);
 
@@ -149,4 +155,4 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       'Connection': 'keep-alive',
     },
   });
-}
+});

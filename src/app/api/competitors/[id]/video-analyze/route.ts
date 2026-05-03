@@ -5,6 +5,7 @@ import { competitorVideoForensicsPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { logger } from '@/lib/logger';
+import { apiRoute } from '@/lib/route-helpers';
 
 export const maxDuration = 300; // up to 5 min — Gemini may take a while on long videos
 
@@ -14,8 +15,10 @@ export const maxDuration = 300; // up to 5 min — Gemini may take a while on lo
  * Returns: { analysis }
  *
  * Caches result in competitor_videos.video_analysis. Pass force=true to re-run.
+ *
+ * Audit C2: previously unauthenticated. Now wrapped + workspace-scoped.
  */
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export const POST = apiRoute.authed(async (session, req: NextRequest, { params }: { params: Promise<{ id: string }> }) => {
   const { id } = await params;
 
   const { limited } = checkRateLimit(`video-analyze:${getClientIP(req)}`, 10, 60_000);
@@ -37,8 +40,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       }, { status: 400 });
     }
 
-    // Fetch competitor + video
-    const channelRes = await sql`SELECT title FROM competitor_channels WHERE id = ${id}`;
+    // Fetch competitor + video — workspace-scoped on the parent.
+    const channelRes = await sql`
+      SELECT title FROM competitor_channels
+       WHERE id = ${id}
+         AND workspace_id = ${session.ws}::uuid
+    `;
     if (channelRes.rows.length === 0) return NextResponse.json({ error: 'Competitor not found' }, { status: 404 });
     const channelName = String(channelRes.rows[0].title);
 
@@ -104,4 +111,4 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const detail = err instanceof Error ? err.message : 'unknown';
     return NextResponse.json({ error: `Video analysis failed: ${detail}` }, { status: 500 });
   }
-}
+});

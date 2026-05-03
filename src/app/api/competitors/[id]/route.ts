@@ -1,22 +1,34 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { sql, ensureCompetitorSchema } from '@/lib/db';
+import { apiRoute } from '@/lib/route-helpers';
 
-export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
-  try {
+/**
+ * Audit C2: per-id reads/deletes were also unauthenticated and lacked
+ * workspace scoping. Now wrapped + scoped — a request for an id that
+ * belongs to a different workspace returns 404 (not 403, to avoid
+ * leaking the existence of the row).
+ */
+
+export const GET = apiRoute.authed(
+  async (session, _req, { params }: { params: Promise<{ id: string }> }) => {
+    const { id } = await params;
     await ensureCompetitorSchema();
-    const channel = await sql`SELECT * FROM competitor_channels WHERE id = ${id}`;
+    const channel = await sql`
+      SELECT * FROM competitor_channels
+       WHERE id = ${id}
+         AND workspace_id = ${session.ws}::uuid
+    `;
     if (channel.rows.length === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
     const videos = await sql`
       SELECT * FROM competitor_videos
-      WHERE competitor_id = ${id}
-      ORDER BY published_at DESC
-      LIMIT 200
+       WHERE competitor_id = ${id}
+       ORDER BY published_at DESC
+       LIMIT 200
     `;
 
     // Coerce NUMERIC/BIGINT columns to JS numbers — @vercel/postgres returns them as strings
-    const normalizedVideos = videos.rows.map(v => ({
+    const normalizedVideos = videos.rows.map((v) => ({
       ...v,
       view_count: Number(v.view_count) || 0,
       like_count: Number(v.like_count) || 0,
@@ -34,18 +46,31 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     };
 
     return NextResponse.json({ competitor: normalizedChannel, videos: normalizedVideos });
-  } catch {
-    return NextResponse.json({ error: 'Failed' }, { status: 500 });
-  }
-}
+  },
+);
 
-export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
-  try {
-    await sql`DELETE FROM competitor_videos WHERE competitor_id = ${id}`;
-    await sql`DELETE FROM competitor_channels WHERE id = ${id}`;
+export const DELETE = apiRoute.authed(
+  async (session, _req, { params }: { params: Promise<{ id: string }> }) => {
+    const { id } = await params;
+    // Workspace-scoped DELETE — both queries are bounded by the
+    // session's workspace, so a stolen id from another tenant has no
+    // effect.
+    await sql`
+      DELETE FROM competitor_videos
+       WHERE competitor_id IN (
+         SELECT id FROM competitor_channels
+          WHERE id = ${id}
+            AND workspace_id = ${session.ws}::uuid
+       )
+    `;
+    const result = await sql`
+      DELETE FROM competitor_channels
+       WHERE id = ${id}
+         AND workspace_id = ${session.ws}::uuid
+    `;
+    if ((result.rowCount ?? 0) === 0) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
     return NextResponse.json({ success: true });
-  } catch {
-    return NextResponse.json({ error: 'Failed' }, { status: 500 });
-  }
-}
+  },
+);

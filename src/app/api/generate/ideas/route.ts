@@ -5,6 +5,7 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { makeSpendContext } from '@/lib/ai-spend';
 import { logger } from '@/lib/logger';
+import { apiRoute } from '@/lib/route-helpers';
 
 export const maxDuration = 300;
 
@@ -16,7 +17,13 @@ function normalizeTitle(s: string): string {
   return s.toLowerCase().replace(/\s+/g, ' ').replace(/^[\s\W_]+|[\s\W_]+$/g, '').trim();
 }
 
-export async function POST(req: NextRequest) {
+/**
+ * Audit C3: previously the only gate was per-IP rate limiting — anonymous
+ * callers could burn unlimited AI tokens (the rate limit is per IP, easily
+ * spread across a botnet). Now apiRoute.authed gates on session, so spend
+ * is attributable and unauthenticated traffic gets 401.
+ */
+export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
   try {
     const { limited, resetIn } = checkRateLimit(`ideas:${getClientIP(req)}`, 10, 60_000);
     if (limited) {
@@ -101,4 +108,4 @@ export async function POST(req: NextRequest) {
       { status: 500 }
     );
   }
-}
+});
