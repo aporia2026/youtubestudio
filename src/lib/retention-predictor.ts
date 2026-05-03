@@ -21,6 +21,7 @@ import { generateText } from './ai';
 import { parseLlmJson } from './parse-llm-json';
 import { logger } from './logger';
 import { getEffectiveModelId } from './model-defaults';
+import { findFewShotOutcomes } from './prediction-outcomes';
 import {
   MAX_FEW_SHOT_EXAMPLES,
   MIN_SCRIPT_CHARS,
@@ -51,6 +52,16 @@ export interface FewShotExample {
    *  isn't available (we don't archive scripts of published videos), so
    *  the title + curve do most of the work. */
   script_excerpt?: string;
+  /** Phase 8.5 — outcome rows carry the curve we predicted last time
+   *  for this video alongside the actual curve. Present only when the
+   *  RAG source was prediction_outcomes (not raw video_analytics). */
+  predicted_curve?: RetentionPoint[];
+  /** Phase 8.5 — summarised miss when the source is an outcome row. */
+  miss_summary?: {
+    mae_pct: number;
+    biggest_miss_at_pct: number;
+    biggest_miss_direction: 'over' | 'under' | 'none';
+  };
 }
 
 interface RawAnalyticsRow {
@@ -167,6 +178,8 @@ export function buildRetentionPredictionPrompt(args: {
   examples: FewShotExample[];
   estimatedDurationSeconds: number;
 }): { system: string; user: string } {
+  const outcomeCount = args.examples.filter((e) => !!e.predicted_curve).length;
+
   const exampleBlock = args.examples
     .map((ex, i) => {
       const sampled = downsampleCurve(ex.retention_curve, 12);
@@ -175,9 +188,35 @@ export function buildRetentionPredictionPrompt(args: {
         .join(', ');
       const dur = ex.duration_seconds ? `${ex.duration_seconds}s` : 'unknown duration';
       const title = ex.title ? `"${ex.title.slice(0, 80)}"` : '(untitled)';
-      return `Example ${i + 1} — ${title}, ${dur}\n  curve: [${curveStr}]`;
+      // When the example is an outcome row, also show what we predicted
+      // last time + how far off the prediction was. This is the
+      // strictly-more-signal payload that lets the model learn the
+      // channel's *delta pattern*, not just its raw curve shape.
+      let extra = '';
+      if (ex.predicted_curve && ex.predicted_curve.length > 0 && ex.miss_summary) {
+        const predSampled = downsampleCurve(ex.predicted_curve, 12);
+        const predStr = predSampled
+          .map((p) => `[${p.position.toFixed(2)}, ${p.retention.toFixed(3)}]`)
+          .join(', ');
+        const m = ex.miss_summary;
+        const dirNote =
+          m.biggest_miss_direction === 'over'
+            ? 'we OVERpredicted (real audience dropped faster)'
+            : m.biggest_miss_direction === 'under'
+              ? 'we UNDERpredicted (real audience held longer)'
+              : 'prediction matched closely';
+        extra =
+          `\n  prior prediction: [${predStr}]` +
+          `\n  miss: MAE ${m.mae_pct.toFixed(1)}pp, biggest miss at position ${m.biggest_miss_at_pct.toFixed(2)} — ${dirNote}`;
+      }
+      return `Example ${i + 1} — ${title}, ${dur}\n  actual curve: [${curveStr}]${extra}`;
     })
     .join('\n');
+
+  const learningSignal =
+    outcomeCount > 0
+      ? `\n\nNOTE: ${outcomeCount} of the examples below are AUDITED OUTCOMES — they include the curve we previously predicted plus the realised miss. Use those misses to calibrate your new prediction toward this channel's actual deviations from your defaults.`
+      : '';
 
   return {
     system: `You are a YouTube retention analyst with a 99th-percentile track record predicting audience drop-off curves from script text. You take a script + the channel's recent retention history and forecast how the new video will retain viewers.
@@ -214,7 +253,7 @@ Output STRICTLY this JSON shape with no prose:
 
 Provide 12-25 curve samples (denser around the first 30% of the video where most drops happen). Provide 4-8 segment_explanations.`,
     user: `Channel niche: ${args.niche ?? 'unknown'}
-Estimated video duration: ${args.estimatedDurationSeconds}s
+Estimated video duration: ${args.estimatedDurationSeconds}s${learningSignal}
 
 Recent retention history from this channel (most recent first):
 ${exampleBlock || '(none — no published-video history available; rely on niche conventions)'}
@@ -388,11 +427,36 @@ export async function predictRetention(args: PredictRetentionArgs): Promise<{
   const estDuration = estimateDurationSeconds(wordCount);
   const modelId = args.modelId || (await getEffectiveModelId(args.workspaceId, 'retention-predictor'));
 
-  const examples = await findFewShotExamples({
+  // Phase 8.5: prefer prediction_outcomes (predicted+actual+delta) over
+  // raw video_analytics rows. Outcome rows give the model strictly
+  // more signal — it sees not just "what the curve looked like" but
+  // "what we predicted last time and how far off we were on this
+  // channel". Cold-start workspaces with no captured outcomes yet
+  // fall back to the original raw-analytics path.
+  const outcomeExamples = await findFewShotOutcomes({
     workspaceId: args.workspaceId,
     channelDbId: args.channelDbId,
     limit: MAX_FEW_SHOT_EXAMPLES,
   });
+  const examples: FewShotExample[] =
+    outcomeExamples.length > 0
+      ? outcomeExamples.map((o) => ({
+          youtube_video_id: o.youtube_video_id,
+          title: o.title,
+          duration_seconds: o.duration_seconds,
+          retention_curve: o.retention_curve,
+          predicted_curve: o.predicted_curve,
+          miss_summary: {
+            mae_pct: o.delta_metrics.mae_pct,
+            biggest_miss_at_pct: o.delta_metrics.biggest_miss_at_pct,
+            biggest_miss_direction: o.delta_metrics.biggest_miss_direction,
+          },
+        }))
+      : await findFewShotExamples({
+          workspaceId: args.workspaceId,
+          channelDbId: args.channelDbId,
+          limit: MAX_FEW_SHOT_EXAMPLES,
+        });
 
   const { system, user } = buildRetentionPredictionPrompt({
     script,

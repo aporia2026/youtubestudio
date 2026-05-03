@@ -45,7 +45,8 @@
     "src/app/api/schedule/ai/suggest-next/route.ts":                 { "maxDuration": 120 },
     "src/app/api/schedule/ai/title-from-script/route.ts":            { "maxDuration": 120 },
     "src/app/api/publishing/route.ts":                               { "maxDuration": 300 },
-    "src/app/api/cron/poll-publishing/route.ts":                     { "maxDuration": 300 }
+    "src/app/api/cron/poll-publishing/route.ts":                     { "maxDuration": 300 },
+    "src/app/api/cron/capture-prediction-outcomes/route.ts":         { "maxDuration": 300 }
   },
   "crons": [
     {
@@ -55,6 +56,10 @@
     {
       "path": "/api/cron/poll-publishing",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/capture-prediction-outcomes",
+      "schedule": "15 3 * * *"
     }
   ]
 }

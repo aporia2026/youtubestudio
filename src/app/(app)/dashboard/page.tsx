@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { motion } from 'framer-motion';
 import type { DashboardSummary } from '@/lib/dashboard-summary';
 import { CompetitorSignalsCard } from '@/components/dashboard/CompetitorSignalsCard';
+import { PredictionAccuracyCard } from '@/components/dashboard/PredictionAccuracyCard';
 
 // -- Quick action shortcuts -------------------------------------------------
 // Six high-frequency actions surfaced as gradient cards above the operational
@@ -178,6 +179,7 @@ export default function DashboardPage() {
           style={{ display: 'flex', flexDirection: 'column', gap: 18 }}
         >
           <CompetitorSignalsCard />
+          <PredictionAccuracyCard />
           <Section title="Today's publishes" empty="Nothing scheduled for today.">
             {summary.today_publishes.length > 0 ? (
               <Table
