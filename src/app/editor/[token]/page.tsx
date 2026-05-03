@@ -1,7 +1,8 @@
 'use client';
 
-import { use, useEffect, useMemo, useState } from 'react';
+import { use, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { toast } from 'sonner';
 import { NotificationBell } from '@/components/dashboard/NotificationBell';
 import { MessagesLink } from '@/components/messages/MessagesLink';
 import { AvailabilityToggle } from '@/components/dashboard/AvailabilityToggle';
@@ -142,6 +143,31 @@ export default function EditorDashboard({ params }: { params: Promise<{ token: s
     }, 80);
   }
 
+  // Editor moves an assignment between assigned/editing/submitted. Owner-only
+  // states (approved/completed) are gated server-side too. Optimistic update
+  // first, rollback on failure.
+  const handleStatusChange = useCallback(async (assignmentId: string, newStatus: string) => {
+    const target = assignments.find(x => x.id === assignmentId);
+    if (!target) return;
+    const prev = target.status;
+    setAssignments(list => list.map(x => x.id === assignmentId ? { ...x, status: newStatus } : x));
+    try {
+      const res = await fetch(`/api/editor/${token}/projects/${target.project_id}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error || 'Failed to move');
+      }
+      toast.success(`Moved to ${newStatus}`);
+    } catch (e) {
+      setAssignments(list => list.map(x => x.id === assignmentId ? { ...x, status: prev } : x));
+      toast.error(e instanceof Error ? e.message : 'Failed to move');
+    }
+  }, [assignments, token]);
+
   if (loading) return <SplashLoader />;
   if (error || !editor) return <SplashError />;
 
@@ -252,7 +278,7 @@ export default function EditorDashboard({ params }: { params: Promise<{ token: s
           {filtered.length === 0 ? (
             <EmptyState filter={filter} />
           ) : viewMode === 'kanban' ? (
-            <KanbanView assignments={filtered} token={token} />
+            <KanbanView assignments={filtered} token={token} onStatusChange={handleStatusChange} />
           ) : viewMode === 'table' ? (
             <TableView
               assignments={filtered}
@@ -421,7 +447,15 @@ const KANBAN_COLUMNS: Array<{ key: string; label: string; statuses: string[]; co
   { key: 'done',     label: 'Done',        statuses: ['approved', 'completed'], color: '#22c55e' },
 ];
 
-function KanbanView({ assignments, token }: { assignments: Assignment[]; token: string }) {
+function KanbanView({
+  assignments,
+  token,
+  onStatusChange,
+}: {
+  assignments: Assignment[];
+  token: string;
+  onStatusChange: (assignmentId: string, newStatus: string) => Promise<void>;
+}) {
   const grouped = useMemo(() => {
     const m: Record<string, Assignment[]> = {};
     for (const col of KANBAN_COLUMNS) m[col.key] = [];
@@ -453,7 +487,7 @@ function KanbanView({ assignments, token }: { assignments: Assignment[]; token: 
             <div className="space-y-2 flex-1">
               {items.length === 0 ? (
                 <p className="text-[11px] text-center py-4" style={{ color: 'var(--text-muted)', opacity: 0.5 }}>—</p>
-              ) : items.map(a => <KanbanCard key={a.id} a={a} token={token} />)}
+              ) : items.map(a => <KanbanCard key={a.id} a={a} token={token} onStatusChange={onStatusChange} />)}
             </div>
           </div>
         );
@@ -462,20 +496,74 @@ function KanbanView({ assignments, token }: { assignments: Assignment[]; token: 
   );
 }
 
-function KanbanCard({ a, token }: { a: Assignment; token: string }) {
+// Editor-controllable status moves. `approved` / `completed` are owner-only —
+// kept out of the dropdown so editors can't mark their own work as approved.
+const EDITOR_STATUS_MOVES: Array<{ key: string; label: string; emoji: string }> = [
+  { key: 'assigned',  label: 'New',       emoji: '🟡' },
+  { key: 'editing',   label: 'Editing',   emoji: '🟣' },
+  { key: 'submitted', label: 'In review', emoji: '🔵' },
+];
+
+function KanbanCard({
+  a,
+  token,
+  onStatusChange,
+}: {
+  a: Assignment;
+  token: string;
+  onStatusChange: (assignmentId: string, newStatus: string) => Promise<void>;
+}) {
   const dl = deadlineInfo(a.deadline);
   const flagged = dl.tone === 'overdue' || dl.tone === 'urgent';
   const dlColor = dl.tone === 'overdue' || dl.tone === 'urgent' ? '#ef4444' : dl.tone === 'soon' ? '#f97316' : 'var(--text-muted)';
 
+  // Status menu state lives on the card so each card opens independently.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Click-away + Esc dismiss the popover.
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onDown(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setMenuOpen(false); }
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen]);
+
+  // Owner-only states: surface them as read-only chips since the editor can't
+  // change to/from them. Everything else stays interactive.
+  const isOwnerOnly = a.status === 'approved' || a.status === 'completed';
+
+  async function pickStatus(next: string) {
+    if (next === a.status) { setMenuOpen(false); return; }
+    setPending(true);
+    try {
+      await onStatusChange(a.id, next);
+    } finally {
+      setPending(false);
+      setMenuOpen(false);
+    }
+  }
+
   return (
-    <Link href={`/editor/${token}/${a.project_id}`} className="block">
-      <div
-        className="rounded-lg p-2.5 transition-all hover:translate-y-[-1px]"
-        style={{
-          background: 'var(--bg-primary)',
-          border: flagged ? '1px solid rgba(239,68,68,0.35)' : '1px solid var(--border)',
-        }}
-      >
+    <div
+      className="rounded-lg p-2.5 transition-all hover:translate-y-[-1px]"
+      style={{
+        background: 'var(--bg-primary)',
+        border: flagged ? '1px solid rgba(239,68,68,0.35)' : '1px solid var(--border)',
+        opacity: pending ? 0.6 : 1,
+      }}
+    >
+      {/* Whole content area is the link — only the status mover (below) sits
+          outside the anchor so the dropdown buttons aren't nested in <a>. */}
+      <Link href={`/editor/${token}/${a.project_id}`} className="block">
         <p className="text-xs font-semibold mb-1.5 line-clamp-2" style={{ color: 'var(--text-primary)' }}>
           {a.project_title}
         </p>
@@ -489,8 +577,64 @@ function KanbanCard({ a, token }: { a: Assignment; token: string }) {
             {dl.tone === 'urgent' || dl.tone === 'overdue' ? '⏰ ' : ''}{dl.text}
           </p>
         )}
+      </Link>
+      {/* Status mover — sits at the bottom so it's always reachable on the card.
+          Owner-only states render as a static chip (editor can't undo them). */}
+      <div ref={menuRef} className="relative mt-2 pt-1.5" style={{ borderTop: '1px dashed var(--border)' }}>
+        {isOwnerOnly ? (
+          <span className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+            style={{ background: 'rgba(34,197,94,0.18)', color: '#22c55e' }}>
+            {a.status === 'completed' ? 'Completed' : 'Approved'} · owner-only
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setMenuOpen(o => !o)}
+            disabled={pending}
+            className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-medium transition-colors"
+            style={{
+              background: menuOpen ? 'rgba(124,58,237,0.18)' : 'rgba(255,255,255,0.05)',
+              color: menuOpen ? '#a78bfa' : 'var(--text-secondary)',
+              border: '1px solid var(--border)',
+            }}
+            title="Change status"
+          >
+            {pending ? 'Saving…' : 'Move →'}
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+        )}
+        {menuOpen && !isOwnerOnly && (
+          <div
+            className="absolute left-0 top-full mt-1 z-30 rounded-lg overflow-hidden min-w-[140px]"
+            style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }}
+          >
+            {EDITOR_STATUS_MOVES.map(s => {
+              const active = a.status === s.key;
+              return (
+                <button
+                  key={s.key}
+                  onClick={() => pickStatus(s.key)}
+                  disabled={active}
+                  className="w-full flex items-center gap-1.5 px-2 py-1.5 text-[11px] text-left transition-colors disabled:opacity-50"
+                  style={{
+                    background: active ? 'rgba(124,58,237,0.12)' : 'transparent',
+                    color: active ? '#a78bfa' : 'var(--text-primary)',
+                  }}
+                  onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; }}
+                  onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+                >
+                  <span>{s.emoji}</span>
+                  <span>{s.label}</span>
+                  {active && <span className="ml-auto text-[10px]" style={{ opacity: 0.6 }}>current</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
-    </Link>
+    </div>
   );
 }
 

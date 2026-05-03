@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureScheduleSchema, DEFAULT_SCHEDULE_STATUSES } from '@/lib/db';
+import { createEditorAssignment } from '@/lib/editor-db';
+import { notifyEditorAssigned } from '@/lib/notify';
 
 // youtube_url guard: accept only http/https URLs on youtube hosts. Rejecting
 // javascript:/file:/data: scheme URLs prevents a stored-XSS sink when the
@@ -83,9 +85,15 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     }
 
     // Single SELECT for the pieces the rest of the handler needs.
-    const prev = await sql`SELECT status, checklist, custom_fields FROM schedule_items WHERE id = ${id}`;
+    const prev = await sql`
+      SELECT status, checklist, custom_fields, project_id, title, editor_collaborator_id
+      FROM schedule_items WHERE id = ${id}
+    `;
     if (!prev.rows.length) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     const prevStatus: string = prev.rows[0]?.status;
+    const prevProjectId: string | null = prev.rows[0]?.project_id ?? null;
+    const prevEditorCollaboratorId: string | null = prev.rows[0]?.editor_collaborator_id ?? null;
+    const itemTitle: string | null = prev.rows[0]?.title ?? null;
 
     // --- Server-side auto-advance --------------------------------------------
     // Caller passes `auto_advance_to: 'scripting'`; server decides whether
@@ -207,6 +215,49 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         updated_at       = NOW()
       WHERE id = ${id}
     `;
+
+    // Mirror editor_collaborator_id into editor_assignments so the picked
+    // editor sees this item on their dashboard. Mirrors the narrator
+    // auto-create flow that runs client-side in ItemDetail. Conditions:
+    //  - the patch actually touched editor_collaborator_id
+    //  - a project_id resolves (editor_assignments is project-scoped). The
+    //    "resolved" project_id is the patched value if present, else the
+    //    previous one — so a compound patch that sets both project_id +
+    //    editor_collaborator_id in one call still mirrors correctly.
+    // Failures are logged but never block the patch — the pointer column on
+    // schedule_items is still authoritative.
+    if (hasField('editor_collaborator_id')) {
+      const next: string | null = patch.editor_collaborator_id ?? null;
+      const nextProjectId: string | null = hasField('project_id')
+        ? (patch.project_id ?? null)
+        : prevProjectId;
+      const titleForEmail: string = (hasField('title') && typeof patch.title === 'string'
+        ? patch.title
+        : itemTitle) || 'a project';
+      try {
+        // If the editor changed (or was cleared), drop the previous link.
+        // The cleanup uses prevProjectId since that's where the old link lived,
+        // even if the project pointer is being moved in the same patch.
+        if (prevProjectId && prevEditorCollaboratorId && prevEditorCollaboratorId !== next) {
+          await sql`
+            DELETE FROM editor_assignments
+            WHERE project_id = ${prevProjectId} AND editor_id = ${prevEditorCollaboratorId}
+          `;
+        }
+        if (next && nextProjectId) {
+          await createEditorAssignment({ project_id: nextProjectId, editor_id: next });
+          if (next !== prevEditorCollaboratorId) {
+            notifyEditorAssigned({
+              editorId: next,
+              projectId: nextProjectId,
+              projectTitle: titleForEmail,
+            }).catch(e => console.error('notifyEditorAssigned failed:', e));
+          }
+        }
+      } catch (e) {
+        console.error('mirror editor_collaborator_id → editor_assignments failed:', e);
+      }
+    }
 
     return NextResponse.json({ success: true, advanced });
   } catch (err) {
