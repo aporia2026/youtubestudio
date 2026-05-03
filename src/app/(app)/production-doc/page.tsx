@@ -1019,25 +1019,56 @@ function ProductionDocPage() {
       let firstResult: ProductionDoc | null = null;
       let timecodeOffsetSeconds = 0;
 
-      for (let ci = 0; ci < chunks.length; ci++) {
-        if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-        if (isMultiChunk) appendLog(`Generating chunk ${ci + 1} of ${chunks.length}...`);
-
-        const res = await fetch('/api/generate/production-doc', {
+      // Send one chunk to the API. Retries once on transient upstream failures
+      // (502/503/504 + network errors) — Kie's gateway has occasional blips
+      // and a single retry recovers most of them. Aborts and 4xx responses
+      // are non-retryable.
+      const sendChunk = async (chunkIdx: number): Promise<Response> => {
+        const doFetch = () => fetch('/api/generate/production-doc', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           signal: controller.signal,
           body: JSON.stringify({
             modelId, niche, topic,
-            script: chunks[ci],
+            script: chunks[chunkIdx],
             speakingPaceWpm: effectiveWpm,
             stylePreset,
             creativeBrief: fullBrief || undefined,
             startTimecodeSeconds: timecodeOffsetSeconds,
-            isChunk: isMultiChunk && ci > 0,
+            isChunk: isMultiChunk && chunkIdx > 0,
           }),
         });
+        let attempts = 0;
+        while (true) {
+          let res: Response | null = null;
+          let networkErr: unknown = null;
+          try {
+            res = await doFetch();
+          } catch (err) {
+            if ((err as { name?: string }).name === 'AbortError') throw err;
+            networkErr = err;
+          }
+          const transient = networkErr !== null
+            || (res !== null && (res.status === 502 || res.status === 503 || res.status === 504));
+          if (transient && attempts < 1) {
+            attempts++;
+            const reason = networkErr !== null
+              ? 'network error'
+              : `HTTP ${res!.status}`;
+            appendLog(`↻ Chunk ${chunkIdx + 1} ${reason} — retrying in 2s...`);
+            await new Promise(r => setTimeout(r, 2000));
+            continue;
+          }
+          if (networkErr) throw networkErr;
+          return res!;
+        }
+      };
 
+      for (let ci = 0; ci < chunks.length; ci++) {
+        if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        if (isMultiChunk) appendLog(`Generating chunk ${ci + 1} of ${chunks.length}...`);
+
+        const res = await sendChunk(ci);
         const data = await safeJson(res);
         if (!res.ok) throw new Error((data.error as string) || `Chunk ${ci + 1} generation failed`);
 

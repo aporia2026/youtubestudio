@@ -6,6 +6,7 @@ import { parseLlmJson } from '@/lib/parse-llm-json';
 import { apiRoute } from '@/lib/route-helpers';
 import { resolveStyle } from '@/lib/production-doc-styles';
 import { getEffectiveModelId } from '@/lib/model-defaults';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 300;
 
@@ -68,18 +69,50 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     isChunk: isChunk === true,
   });
 
-  const raw = await generateText({
-    modelId: modelId || (await getEffectiveModelId(session.ws, 'production-doc')),
-    prompt: user,
-    systemPrompt: system,
-    maxTokens: 16000,
-    temperature: 0.4,
-    spend: {
-      workspaceId: session.ws,
-      featureArea: 'production_doc',
-      metadata: { niche, is_chunk: isChunk === true },
-    },
-  });
+  const effectiveModelId = modelId || (await getEffectiveModelId(session.ws, 'production-doc'));
+
+  // Catch the AI call here rather than letting it propagate to the route
+  // wrapper's generic 500. Errors from generateText are domain-safe
+  // explanations of upstream failure modes (Kie gateway down, model returned
+  // empty, rate limited, timeout) — the user can act on them. The wrapper's
+  // "Internal server error" mask is for DB / internal exceptions where the
+  // text might leak schema details, not for AI provider responses.
+  let raw: string;
+  try {
+    raw = await generateText({
+      modelId: effectiveModelId,
+      prompt: user,
+      systemPrompt: system,
+      maxTokens: 16000,
+      temperature: 0.4,
+      spend: {
+        workspaceId: session.ws,
+        featureArea: 'production_doc',
+        metadata: { niche, is_chunk: isChunk === true },
+      },
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : 'AI generation failed';
+    logger.error('production-doc generation failed', {
+      detail,
+      modelId: effectiveModelId,
+      isChunk: isChunk === true,
+      promptChars: (system?.length ?? 0) + user.length,
+    });
+    // 502 because the failure is upstream of us, not an internal bug.
+    return NextResponse.json({ error: detail }, { status: 502 });
+  }
+
+  if (!raw || raw.trim().length === 0) {
+    logger.error('production-doc model returned empty output', {
+      modelId: effectiveModelId,
+      isChunk: isChunk === true,
+    });
+    return NextResponse.json(
+      { error: `${effectiveModelId} returned an empty response — try the same model again, or switch models.` },
+      { status: 502 },
+    );
+  }
 
   let result;
   try {
