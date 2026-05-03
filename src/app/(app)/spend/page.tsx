@@ -9,6 +9,7 @@ import type {
   SpendRecentExpensiveRow,
   SpendSummary,
 } from '@/lib/ai-spend';
+import { InlinePageSkeleton } from '@/components/ui/PageSkeleton';
 
 const WINDOWS = [
   { label: '7d', days: 7 },
@@ -84,6 +85,8 @@ export default function SpendPage() {
           {error}
         </div>
       )}
+
+      {loading && !summary && !error && <InlinePageSkeleton kind="grid" rows={5} />}
 
       {summary && (
         <>

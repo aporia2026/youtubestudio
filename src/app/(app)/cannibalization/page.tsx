@@ -51,7 +51,14 @@ export default function CannibalizationPage() {
 
   async function dismiss(id: string) {
     try {
-      await fetch(`/api/cannibalization/alerts/${id}/dismiss`, { method: 'POST' });
+      // Check res.ok — fetch() doesn't throw on 4xx/5xx, so without
+      // this the local state drifts away from the server when the
+      // API rejects (audit M3).
+      const res = await fetch(`/api/cannibalization/alerts/${id}/dismiss`, { method: 'POST' });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error || `HTTP ${res.status}`);
+      }
       setAlerts((curr) => curr.filter((a) => a.id !== id));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Dismiss failed');

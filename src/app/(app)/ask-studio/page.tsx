@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { AskStudioQuestionRow } from '@/lib/ask-studio';
+import { InlinePageSkeleton } from '@/components/ui/PageSkeleton';
 
 interface ToolStep {
   iteration: number;
@@ -25,6 +26,7 @@ export default function AskStudioPage() {
   const [asking, setAsking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   async function refreshHistory() {
@@ -34,6 +36,8 @@ export default function AskStudioPage() {
       setHistory(((await res.json()).questions as AskStudioQuestionRow[]) || []);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load history');
+    } finally {
+      setHistoryLoaded(true);
     }
   }
 
@@ -71,7 +75,12 @@ export default function AskStudioPage() {
   async function dismiss(id: string) {
     if (!confirm('Delete this question and its answer?')) return;
     try {
-      await fetch(`/api/ask-studio/questions/${id}`, { method: 'DELETE' });
+      // Check res.ok — fetch() doesn't throw on 4xx/5xx (audit M3).
+      const res = await fetch(`/api/ask-studio/questions/${id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error || `HTTP ${res.status}`);
+      }
       setHistory((curr) => curr.filter((q) => q.id !== id));
       if (openId === id) setOpenId(null);
     } catch (e) {
@@ -151,6 +160,8 @@ export default function AskStudioPage() {
           </div>
         )}
       </div>
+
+      {!historyLoaded && history.length === 0 && <InlinePageSkeleton rows={3} />}
 
       {history.length > 0 && (
         <div className="space-y-3">

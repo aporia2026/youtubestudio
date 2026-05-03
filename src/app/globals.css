@@ -432,3 +432,9 @@ textarea.input-field {
             mask-image: linear-gradient(to right, black 0, black calc(100% - 24px), transparent 100%);
   }
 }
+
+/* Shimmer animation used by <PageSkeleton /> placeholders. */
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
