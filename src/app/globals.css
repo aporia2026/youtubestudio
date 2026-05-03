@@ -421,3 +421,14 @@ textarea.input-field {
 .score-low { color: #ef4444; }
 .score-mid { color: var(--accent-yellow); }
 .score-high { color: var(--accent-green); }
+
+/* Horizontal-scroll affordance for data tables that overflow on
+ * mobile widths. Right-edge fade signals "more content this way".
+ * Use alongside `overflow-x-auto`. The fade only applies under the
+ * `md` breakpoint (768px) — desktop has plenty of room. */
+@media (max-width: 767px) {
+  .scroll-x-fade {
+    -webkit-mask-image: linear-gradient(to right, black 0, black calc(100% - 24px), transparent 100%);
+            mask-image: linear-gradient(to right, black 0, black calc(100% - 24px), transparent 100%);
+  }
+}

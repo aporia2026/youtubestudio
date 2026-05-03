@@ -221,7 +221,15 @@ export async function POST(req: NextRequest) {
 
           controller.close();
         } catch (err) {
-          controller.error(err);
+          // Echo the error into the stream as a `[ERROR: ...]` sentinel
+          // so the client can show a meaningful message instead of
+          // "stream just stopped". `controller.error` would also work
+          // but Next.js's edge runtime sometimes swallows that, leaving
+          // the client with an empty result and no signal. (Same
+          // pattern as /api/qa/apply-fixes.)
+          const msg = err instanceof Error ? err.message : 'unknown stream error';
+          try { controller.enqueue(encoder.encode(`\n\n[ERROR: ${msg}]`)); } catch {}
+          try { controller.close(); } catch {}
         }
       },
     });

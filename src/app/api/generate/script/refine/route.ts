@@ -82,7 +82,11 @@ Return the complete refined script now. Apply the user's request. Preserve every
           }
           controller.close();
         } catch (err) {
-          controller.error(err);
+          // Sentinel-style error frame — see /api/qa/apply-fixes for
+          // why we don't use controller.error() (Next.js edge swallows it).
+          const msg = err instanceof Error ? err.message : 'unknown stream error';
+          try { controller.enqueue(encoder.encode(`\n\n[ERROR: ${msg}]`)); } catch {}
+          try { controller.close(); } catch {}
         }
       },
     });

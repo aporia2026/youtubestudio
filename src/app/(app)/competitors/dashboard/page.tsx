@@ -113,7 +113,7 @@ export default function CompetitorDashboardPage() {
               Per-channel momentum
             </h2>
             <div className="glass rounded-xl overflow-hidden">
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto scroll-x-fade">
                 <table className="w-full text-xs">
                   <thead style={{ background: 'var(--bg-card)', borderBottom: '1px solid var(--border)' }}>
                     <tr>

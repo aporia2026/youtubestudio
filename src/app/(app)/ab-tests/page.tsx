@@ -487,7 +487,7 @@ function DetailView({
           <div className="text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>
             Snapshot history ({snapshots.length})
           </div>
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto scroll-x-fade">
             <table className="w-full text-xs">
               <thead>
                 <tr style={{ background: 'var(--bg-card)', borderBottom: '1px solid var(--border)' }}>

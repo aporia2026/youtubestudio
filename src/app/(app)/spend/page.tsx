@@ -163,7 +163,7 @@ export default function SpendPage() {
               <h2 className="text-sm font-semibold mb-3" style={{ color: 'var(--text-secondary)' }}>
                 Most expensive calls (window's top 10)
               </h2>
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto scroll-x-fade">
                 <table className="w-full text-xs">
                   <thead style={{ background: 'var(--bg-card)', borderBottom: '1px solid var(--border)' }}>
                     <tr>
