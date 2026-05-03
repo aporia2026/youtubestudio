@@ -51,12 +51,35 @@ export function checkRateLimit(
 }
 
 /**
- * Extract client IP from request headers (works on Vercel).
+ * Extract client IP from request headers.
+ *
+ * On Vercel, the proxy appends the real client IP as the LAST entry in
+ * X-Forwarded-For (any earlier values come from the client and can be
+ * forged: `X-Forwarded-For: 1.1.1.1, attacker.com`). Reading the first
+ * entry — as we used to — let an attacker split per-IP rate-limit
+ * counters across forged values.
+ *
+ * Prefer Vercel's tamper-resistant `x-vercel-forwarded-for` header
+ * when present; fall back to the LAST entry in `x-forwarded-for`,
+ * then `x-real-ip`. Cloudflare deployments should inspect
+ * `cf-connecting-ip` first if put behind CF.
  */
 export function getClientIP(req: Request): string {
-  return (
-    (req.headers.get('x-forwarded-for') || '').split(',')[0].trim() ||
-    req.headers.get('x-real-ip') ||
-    'unknown'
-  );
+  const cf = req.headers.get('cf-connecting-ip');
+  if (cf) return cf.trim();
+
+  const vercel = req.headers.get('x-vercel-forwarded-for');
+  if (vercel) {
+    // x-vercel-forwarded-for is a single trustworthy IP set by Vercel's edge.
+    return vercel.split(',')[0].trim();
+  }
+
+  const xff = req.headers.get('x-forwarded-for');
+  if (xff) {
+    const parts = xff.split(',').map((s) => s.trim()).filter(Boolean);
+    // Last entry is the one appended by the closest trusted proxy.
+    if (parts.length > 0) return parts[parts.length - 1];
+  }
+
+  return req.headers.get('x-real-ip')?.trim() || 'unknown';
 }

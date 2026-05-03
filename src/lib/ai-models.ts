@@ -306,12 +306,6 @@ export function getFeatureDefaultModelId(
     if (saved) {
       return resolveFeatureModelId(feature, JSON.parse(saved) as ModelDefaultsBlob);
     }
-    // Backward-compat with the v1 shape (flat `feature → modelId`).
-    const v1 = localStorage.getItem('feature_model_defaults');
-    if (v1) {
-      const flat = JSON.parse(v1) as Record<string, string>;
-      return resolveFeatureModelId(feature, { workspace: null, sections: {}, features: flat as Partial<Record<AppFeature, string>> });
-    }
   } catch {}
   return getFeatureSpec(feature)?.defaultModelId ?? AI_MODELS[0].id;
 }

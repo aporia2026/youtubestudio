@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { rateLimitHeaders, windowStartFor, type RateLimitResult } from '@/lib/rate-limit-db';
+import { getClientIP } from '@/lib/rate-limit';
+
+function makeReq(headers: Record<string, string>): Request {
+  return new Request('http://localhost/anything', { headers });
+}
 
 describe('windowStartFor', () => {
   it('floors to the nearest multiple of windowMs from epoch', () => {
@@ -51,5 +56,54 @@ describe('rateLimitHeaders', () => {
       resetAt: new Date(Date.now() - 1000),
     };
     expect(rateLimitHeaders(result)['RateLimit-Reset']).toBe('0');
+  });
+});
+
+describe('getClientIP', () => {
+  it('prefers cf-connecting-ip when present (Cloudflare)', () => {
+    const req = makeReq({
+      'cf-connecting-ip': '203.0.113.5',
+      'x-forwarded-for': '1.2.3.4, 5.6.7.8',
+      'x-real-ip': '9.9.9.9',
+    });
+    expect(getClientIP(req)).toBe('203.0.113.5');
+  });
+
+  it('falls back to x-vercel-forwarded-for when no Cloudflare header', () => {
+    const req = makeReq({
+      'x-vercel-forwarded-for': '198.51.100.7',
+      'x-forwarded-for': 'attacker.example.com, 10.0.0.1',
+    });
+    expect(getClientIP(req)).toBe('198.51.100.7');
+  });
+
+  it('uses the LAST entry of x-forwarded-for (proxy-appended, not client-supplied)', () => {
+    // Attacker forges the leading entry; Vercel appends the real IP at the end.
+    const req = makeReq({ 'x-forwarded-for': '1.1.1.1, attacker.com, 192.0.2.42' });
+    expect(getClientIP(req)).toBe('192.0.2.42');
+  });
+
+  it('handles a single-entry x-forwarded-for', () => {
+    const req = makeReq({ 'x-forwarded-for': '203.0.113.99' });
+    expect(getClientIP(req)).toBe('203.0.113.99');
+  });
+
+  it('falls through to x-real-ip when no XFF/Vercel/CF header', () => {
+    const req = makeReq({ 'x-real-ip': '10.20.30.40' });
+    expect(getClientIP(req)).toBe('10.20.30.40');
+  });
+
+  it('returns "unknown" when no headers are set', () => {
+    expect(getClientIP(makeReq({}))).toBe('unknown');
+  });
+
+  it('trims whitespace around the resolved IP', () => {
+    const req = makeReq({ 'x-forwarded-for': '1.1.1.1 ,  2.2.2.2  ' });
+    expect(getClientIP(req)).toBe('2.2.2.2');
+  });
+
+  it('ignores empty entries in x-forwarded-for', () => {
+    const req = makeReq({ 'x-forwarded-for': ', , 192.0.2.10, ' });
+    expect(getClientIP(req)).toBe('192.0.2.10');
   });
 });

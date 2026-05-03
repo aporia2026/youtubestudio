@@ -404,11 +404,7 @@ function SegmentRow({ seg }: { seg: SegmentExplanation }) {
   );
 }
 
-/**
- * SVG sparkline of the predicted curve. Same shape as
- * `components/schedule/AnalyticsPanel.tsx`'s RetentionCurve so visual
- * style stays consistent across past-actuals and future-predictions.
- */
+/** SVG sparkline of the predicted curve. */
 function PredictedCurve({ points }: { points: RetentionPoint[] }) {
   if (points.length < 2) return null;
   const W = 720;

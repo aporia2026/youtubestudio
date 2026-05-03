@@ -137,6 +137,8 @@ export async function dispatchWorkflowEvent(
        WHERE workspace_id = ${workspaceId}::uuid
          AND enabled = TRUE
          AND trigger_event_type = ${event.type}
+       ORDER BY created_at ASC
+       LIMIT 200
     `;
     rules = rows;
   } catch (err) {
