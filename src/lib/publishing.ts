@@ -93,27 +93,50 @@ async function insertQueuedRow(req: PublishRequest): Promise<string> {
   return rows[0]!.id;
 }
 
+/**
+ * Compare-and-swap status updates. Each helper guards on the
+ * source state(s) so a late-arriving error / signal can never
+ * overwrite a row that has already advanced to a terminal state
+ * ('live'). Audit C5 + M12.
+ *
+ * On a refused transition, we log at warn level (so we can spot
+ * orchestrator bugs in the wild) but don't throw — the orchestrator's
+ * own control flow already moved past that step.
+ */
 async function markFailed(id: string, msg: string): Promise<void> {
-  await sql`
+  // Refuse to overwrite a 'live' row: a publish that completed
+  // can't be retroactively marked failed by a stale error path.
+  const r = await sql`
     UPDATE published_videos
        SET status = 'failed',
            error_message = ${msg},
            updated_at = NOW()
      WHERE id = ${id}::uuid
+       AND status != 'live'
   `;
+  if ((r.rowCount ?? 0) === 0) {
+    logger.warn('publish: markFailed refused (row already live or missing)', { id });
+  }
 }
 
 async function markUploading(id: string): Promise<void> {
-  await sql`
+  // Only valid from 'queued' — anything else means the orchestrator
+  // already advanced and a duplicate call is racing.
+  const r = await sql`
     UPDATE published_videos
        SET status = 'uploading',
            updated_at = NOW()
      WHERE id = ${id}::uuid
+       AND status = 'queued'
   `;
+  if ((r.rowCount ?? 0) === 0) {
+    logger.warn('publish: markUploading refused (row not in queued)', { id });
+  }
 }
 
 async function markProcessing(id: string, ytVideoId: string): Promise<void> {
-  await sql`
+  // Only valid from 'uploading'.
+  const r = await sql`
     UPDATE published_videos
        SET status = 'processing',
            youtube_video_id = ${ytVideoId},
@@ -121,7 +144,11 @@ async function markProcessing(id: string, ytVideoId: string): Promise<void> {
            uploaded_at = NOW(),
            updated_at = NOW()
      WHERE id = ${id}::uuid
+       AND status = 'uploading'
   `;
+  if ((r.rowCount ?? 0) === 0) {
+    logger.warn('publish: markProcessing refused (row not in uploading)', { id });
+  }
 }
 
 async function appendErrorNote(id: string, note: string): Promise<void> {
@@ -412,9 +439,11 @@ export async function pollPublishStatus(
   }
 
   // YouTube's processingStatus values: processing, succeeded, failed,
-  // terminated. Map to our state machine.
+  // terminated. Map to our state machine. Both flips are guarded on
+  // the source state being 'processing' so a race between two cron
+  // invocations or modal-poll + cron can't double-flip the row.
   if (ytStatus.processingStatus === 'succeeded' && ytStatus.uploadStatus === 'uploaded') {
-    await sql`
+    const r = await sql`
       UPDATE published_videos
          SET status = 'live',
              upload_status = ${ytStatus.uploadStatus},
@@ -423,10 +452,14 @@ export async function pollPublishStatus(
              live_at = NOW(),
              updated_at = NOW()
        WHERE id = ${id}::uuid
+         AND status = 'processing'
     `;
-    // Fire-and-forget producer events. Lazy imports keep webhook /
-    // workflow deps out of every consumer of this module.
-    void emitVideoPublishedEvent(id, workspaceId);
+    // Only emit the producer event if WE were the call that flipped
+    // the row to live (rowCount > 0). Otherwise a concurrent caller
+    // already emitted and we'd duplicate the webhook + workflow fire.
+    if ((r.rowCount ?? 0) > 0) {
+      void emitVideoPublishedEvent(id, workspaceId);
+    }
     return { status: 'live', youtubeVideoId: row.youtube_video_id };
   }
   if (ytStatus.processingStatus === 'failed' || ytStatus.processingStatus === 'terminated') {
@@ -438,6 +471,7 @@ export async function pollPublishStatus(
              error_message = ${`YouTube reported processingStatus = ${ytStatus.processingStatus}`},
              updated_at = NOW()
        WHERE id = ${id}::uuid
+         AND status = 'processing'
     `;
     return { status: 'failed', youtubeVideoId: row.youtube_video_id };
   }

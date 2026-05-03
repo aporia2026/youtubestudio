@@ -141,25 +141,40 @@ async function upsertDubRow(args: UpsertArgs): Promise<string> {
   return rows[0]!.id;
 }
 
+/**
+ * Compare-and-swap status updates. Each helper guards on the
+ * source state so a late-arriving error path can never overwrite
+ * a 'ready' row. Audit C5 + M12.
+ */
 async function markFailed(dubId: string, message: string): Promise<void> {
-  await sql`
+  // Refuse to overwrite a 'ready' row.
+  const r = await sql`
     UPDATE dubbed_voiceovers
        SET status = 'failed',
            error_message = ${message},
            updated_at = NOW()
      WHERE id = ${dubId}::uuid
+       AND status != 'ready'
   `;
+  if ((r.rowCount ?? 0) === 0) {
+    logger.warn('dub: markFailed refused (row already ready or missing)', { dubId });
+  }
 }
 
 async function markGenerating(dubId: string, translated: string): Promise<void> {
-  await sql`
+  // Only valid from 'translating'.
+  const r = await sql`
     UPDATE dubbed_voiceovers
        SET status = 'generating',
            translated_script = ${translated},
            char_count = ${translated.length},
            updated_at = NOW()
      WHERE id = ${dubId}::uuid
+       AND status = 'translating'
   `;
+  if ((r.rowCount ?? 0) === 0) {
+    logger.warn('dub: markGenerating refused (row not in translating)', { dubId });
+  }
 }
 
 async function markReady(
@@ -168,7 +183,8 @@ async function markReady(
   blobPathname: string,
   durationSeconds: number,
 ): Promise<void> {
-  await sql`
+  // Only valid from 'generating'.
+  const r = await sql`
     UPDATE dubbed_voiceovers
        SET status = 'ready',
            audio_url = ${audioUrl},
@@ -177,7 +193,11 @@ async function markReady(
            updated_at = NOW(),
            completed_at = NOW()
      WHERE id = ${dubId}::uuid
+       AND status = 'generating'
   `;
+  if ((r.rowCount ?? 0) === 0) {
+    logger.warn('dub: markReady refused (row not in generating)', { dubId });
+  }
 }
 
 // ---------------------------------------------------------------------------
