@@ -19,20 +19,108 @@ export interface AIModel {
   webSearch?: boolean;
 }
 
-// Features that support per-feature model selection
-export type AppFeature = 'script-generator' | 'qa-engine' | 'idea-generator' | 'competitor-analysis' | 'channel-naming' | 'seo-optimizer' | 'production-doc' | 'schedule-suggest' | 'schedule-title';
+// Sidebar sections that group features. Order matches the sidebar.
+export type FeatureSection = 'create' | 'grow' | 'collaborate' | 'automate' | 'foundation';
 
-export const APP_FEATURES: { id: AppFeature; label: string; description: string }[] = [
-  { id: 'script-generator', label: 'Script Generator', description: 'AI model used for generating YouTube scripts' },
-  { id: 'qa-engine', label: 'QA Engine', description: 'AI model used for script quality analysis' },
-  { id: 'idea-generator', label: 'Idea Generator', description: 'AI model used for brainstorming video ideas' },
-  { id: 'competitor-analysis', label: 'Competitor Analysis', description: 'AI model used for deep competitor intelligence' },
-  { id: 'channel-naming', label: 'Channel Naming', description: 'AI model used for generating brandable channel names + @handles' },
-  { id: 'seo-optimizer', label: 'SEO Optimizer', description: 'AI model used for optimizing titles, descriptions, and tags' },
-  { id: 'production-doc', label: 'Production Document', description: 'AI model used for generating shot-by-shot production documents' },
-  { id: 'schedule-suggest', label: 'Schedule — "What next" suggestions', description: 'AI model used to pick the next video from your backlog and ideas' },
-  { id: 'schedule-title', label: 'Schedule — Title candidates from script', description: 'AI model used to generate YouTube title candidates from a linked script' },
+export const FEATURE_SECTIONS: { id: FeatureSection; label: string; description: string }[] = [
+  { id: 'create', label: 'Create', description: 'Script writing, QA, narration, video, and assets' },
+  { id: 'grow', label: 'Grow', description: 'Channel insights, competitor intel, and growth tools' },
+  { id: 'collaborate', label: 'Collaborate', description: 'Reviews and team coordination (no AI today)' },
+  { id: 'automate', label: 'Automate', description: 'Workflows and Ask Studio' },
+  { id: 'foundation', label: 'Foundation', description: 'Cross-cutting helpers: scheduling, formatting, etc.' },
 ];
+
+// Features that support per-feature model selection. Every server-side
+// generateText caller should map to exactly one feature here so the
+// resolver can apply per-workspace overrides consistently.
+export type AppFeature =
+  // Create
+  | 'script-generator'
+  | 'qa-engine'
+  | 'critic-panel'
+  | 'idea-generator'
+  | 'production-doc'
+  | 'seo-optimizer'
+  | 'youtube-description'
+  | 'thumbnail-generate'
+  | 'image-style-analyze'
+  | 'narrator-split-sections'
+  | 'script-format'
+  | 'dubbing-translate'
+  | 'shorts-extract'
+  | 'video-composer'
+  // Grow
+  | 'channel-analyze'
+  | 'channel-naming'
+  | 'competitor-analysis'
+  | 'competitor-ideas'
+  | 'competitor-thumbnail'
+  | 'youtube-analyze'
+  | 'retention-predictor'
+  | 'fix-the-dip'
+  | 'cannibalization'
+  | 'comment-triage'
+  // Automate
+  | 'ask-studio'
+  // Foundation
+  | 'schedule-suggest'
+  | 'schedule-title';
+
+export interface AppFeatureSpec {
+  id: AppFeature;
+  label: string;
+  description: string;
+  section: FeatureSection;
+  /** Hardcoded fallback model — used when no workspace/section/feature
+   *  override is set. Picked per feature based on quality/cost tradeoff. */
+  defaultModelId: string;
+}
+
+const HAIKU = 'claude-haiku-4-5-20251001';
+const SONNET = 'claude-sonnet-4-6';
+const KIE_GEMINI_FLASH = 'kie-gemini-2.5-flash';
+
+export const APP_FEATURES: AppFeatureSpec[] = [
+  // ─── Create ──────────────────────────────────────────────────────────
+  { id: 'script-generator', label: 'Script Generator', description: 'Drafts YouTube scripts from a brief', section: 'create', defaultModelId: SONNET },
+  { id: 'qa-engine', label: 'QA Engine', description: 'Single-model script quality analysis', section: 'create', defaultModelId: SONNET },
+  { id: 'critic-panel', label: 'Critic Panel', description: 'Multi-critic deliberative script review (charter → drafts → deliberation → chair)', section: 'create', defaultModelId: SONNET },
+  { id: 'idea-generator', label: 'Idea Generator', description: 'Brainstorms video ideas for a niche', section: 'create', defaultModelId: SONNET },
+  { id: 'production-doc', label: 'Production Document', description: 'Shot-by-shot production plan from a script', section: 'create', defaultModelId: SONNET },
+  { id: 'seo-optimizer', label: 'SEO Optimizer', description: 'Optimizes titles, descriptions, and tags', section: 'create', defaultModelId: SONNET },
+  { id: 'youtube-description', label: 'YouTube Description', description: 'Generates the description / chapter list / tags for a script', section: 'create', defaultModelId: HAIKU },
+  { id: 'thumbnail-generate', label: 'Thumbnail Generator', description: 'Drafts thumbnail concepts + copy variants', section: 'create', defaultModelId: SONNET },
+  { id: 'image-style-analyze', label: 'Image Style Analyze', description: 'Reads a thumbnail image and extracts style/composition', section: 'create', defaultModelId: HAIKU },
+  { id: 'narrator-split-sections', label: 'Narrator — Split Sections', description: 'Splits a long script into narrator-friendly sections', section: 'create', defaultModelId: HAIKU },
+  { id: 'script-format', label: 'Script Format (ElevenLabs)', description: 'Reformats a script for ElevenLabs voiceover ingestion', section: 'create', defaultModelId: KIE_GEMINI_FLASH },
+  { id: 'dubbing-translate', label: 'Dubbing — Translate', description: 'Translates a script for an auto-dub', section: 'create', defaultModelId: HAIKU },
+  { id: 'shorts-extract', label: 'Shorts Extract', description: 'Extracts shorts-worthy moments from a long script', section: 'create', defaultModelId: SONNET },
+  { id: 'video-composer', label: 'Video Composer', description: 'Composer pipeline (intake → analyze → plan → compose → critic → chair)', section: 'create', defaultModelId: SONNET },
+
+  // ─── Grow ────────────────────────────────────────────────────────────
+  { id: 'channel-analyze', label: 'Channel Analyze', description: 'Analyzes a YouTube channel for positioning + opportunities', section: 'grow', defaultModelId: SONNET },
+  { id: 'channel-naming', label: 'Channel Naming', description: 'Generates brandable channel names + @handles', section: 'grow', defaultModelId: SONNET },
+  { id: 'competitor-analysis', label: 'Competitor Analysis', description: 'Deep competitor intelligence + content patterns', section: 'grow', defaultModelId: SONNET },
+  { id: 'competitor-ideas', label: 'Competitor Ideas', description: 'Generates ideas inspired by a competitor channel', section: 'grow', defaultModelId: SONNET },
+  { id: 'competitor-thumbnail', label: 'Competitor Thumbnail', description: 'Analyzes a competitor thumbnail for what works', section: 'grow', defaultModelId: HAIKU },
+  { id: 'youtube-analyze', label: 'YouTube Analyze', description: 'Analyzes channel/video analytics for insights', section: 'grow', defaultModelId: SONNET },
+  { id: 'retention-predictor', label: 'Retention Predictor', description: 'Predicts retention curves for a script', section: 'grow', defaultModelId: HAIKU },
+  { id: 'fix-the-dip', label: 'Fix the Dip', description: 'Diagnoses retention dips and suggests rewrites', section: 'grow', defaultModelId: SONNET },
+  { id: 'cannibalization', label: 'Cannibalization', description: 'Finds videos competing with each other for the same query', section: 'grow', defaultModelId: HAIKU },
+  { id: 'comment-triage', label: 'Comment Triage', description: 'Sorts comments by signal: questions, bugs, ideas, hate', section: 'grow', defaultModelId: HAIKU },
+
+  // ─── Automate ────────────────────────────────────────────────────────
+  { id: 'ask-studio', label: 'Ask Studio', description: 'Conversational analytics — natural-language questions over your channel data', section: 'automate', defaultModelId: HAIKU },
+
+  // ─── Foundation ──────────────────────────────────────────────────────
+  { id: 'schedule-suggest', label: 'Schedule — "What next" suggestions', description: 'Picks the next video from backlog + ideas', section: 'foundation', defaultModelId: SONNET },
+  { id: 'schedule-title', label: 'Schedule — Title candidates from script', description: 'Generates YouTube title candidates from a linked script', section: 'foundation', defaultModelId: HAIKU },
+];
+
+/** Lookup a feature spec by id. Returns undefined for unknown ids. */
+export function getFeatureSpec(id: AppFeature): AppFeatureSpec | undefined {
+  return APP_FEATURES.find((f) => f.id === id);
+}
 
 export const AI_MODELS: AIModel[] = [
   // Anthropic
@@ -168,15 +256,62 @@ export function formatModelPricing(m: AIModel): string {
   return `${fmt(m.inputCostPerMTok)} in / ${fmt(m.outputCostPerMTok)} out per 1M tok`;
 }
 
-/** Get the saved default model ID for a feature, falling back to global default */
-export function getFeatureDefaultModelId(feature: AppFeature): string {
-  if (typeof window === 'undefined') return AI_MODELS[0].id;
+/** Resolve a feature's default model from a defaults blob using the
+ *  workspace → section → feature precedence. Pure function — both the
+ *  client and the server use this against their respective sources of
+ *  truth (a fetched JSON blob on the client, the DB on the server). */
+export function resolveFeatureModelId(
+  feature: AppFeature,
+  defaults: { workspace?: string | null; sections?: Partial<Record<FeatureSection, string | null>>; features?: Partial<Record<AppFeature, string | null>> } | null | undefined,
+): string {
+  const spec = getFeatureSpec(feature);
+  // 1. Per-feature override wins.
+  const featureOverride = defaults?.features?.[feature];
+  if (featureOverride && getModelById(featureOverride)) return featureOverride;
+  // 2. Per-section override.
+  if (spec) {
+    const sectionOverride = defaults?.sections?.[spec.section];
+    if (sectionOverride && getModelById(sectionOverride)) return sectionOverride;
+  }
+  // 3. Workspace-wide override.
+  const workspaceOverride = defaults?.workspace;
+  if (workspaceOverride && getModelById(workspaceOverride)) return workspaceOverride;
+  // 4. Feature's hardcoded default.
+  if (spec && getModelById(spec.defaultModelId)) return spec.defaultModelId;
+  // 5. Last-ditch: first registered model.
+  return AI_MODELS[0].id;
+}
+
+export interface ModelDefaultsBlob {
+  workspace: string | null;
+  sections: Partial<Record<FeatureSection, string | null>>;
+  features: Partial<Record<AppFeature, string | null>>;
+}
+
+/** Get the saved default model ID for a feature on the client, falling
+ *  back through the documented precedence to the feature's hardcoded
+ *  default. Reads from localStorage when no fetched-from-server blob is
+ *  passed. Server callers must use `getEffectiveModelId` from
+ *  `model-defaults.ts` instead — this function CANNOT see the DB. */
+export function getFeatureDefaultModelId(
+  feature: AppFeature,
+  blob?: ModelDefaultsBlob | null,
+): string {
+  if (blob) return resolveFeatureModelId(feature, blob);
+  if (typeof window === 'undefined') {
+    return getFeatureSpec(feature)?.defaultModelId ?? AI_MODELS[0].id;
+  }
   try {
-    const saved = localStorage.getItem('feature_model_defaults');
+    const saved = localStorage.getItem('feature_model_defaults_v2');
     if (saved) {
-      const defaults = JSON.parse(saved);
-      if (defaults[feature] && getModelById(defaults[feature])) return defaults[feature];
+      return resolveFeatureModelId(feature, JSON.parse(saved) as ModelDefaultsBlob);
+    }
+    // Backward-compat with the v1 shape (flat `feature → modelId`).
+    const v1 = localStorage.getItem('feature_model_defaults');
+    if (v1) {
+      const flat = JSON.parse(v1) as Record<string, string>;
+      return resolveFeatureModelId(feature, { workspace: null, sections: {}, features: flat as Partial<Record<AppFeature, string>> });
     }
   } catch {}
-  return AI_MODELS[0].id;
+  return getFeatureSpec(feature)?.defaultModelId ?? AI_MODELS[0].id;
 }
