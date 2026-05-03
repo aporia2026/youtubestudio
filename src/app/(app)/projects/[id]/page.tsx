@@ -155,10 +155,16 @@ export default function ProjectDetailPage() {
       form.append('type', type);
       form.append('projectId', id);
       const res = await fetch('/api/upload', { method: 'POST', body: form });
-      if (!res.ok) throw new Error('Upload failed');
+      if (!res.ok) {
+        // Surface the server's actual error so failures aren't silent.
+        const data = await res.json().catch(() => ({}));
+        throw new Error((data && data.error) ? data.error : `Upload failed (${res.status})`);
+      }
       toast.success('File uploaded');
       fetchAll();
-    } catch { toast.error('Upload failed'); }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Upload failed');
+    }
     finally { setUploadingFile(false); }
   }
 
