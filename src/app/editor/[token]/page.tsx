@@ -496,12 +496,16 @@ function KanbanView({
   );
 }
 
-// Editor-controllable status moves. `approved` / `completed` are owner-only —
-// kept out of the dropdown so editors can't mark their own work as approved.
+// Editor-controllable status moves. `approved` is owner-only (the editor
+// can't approve their own work), but `completed` is fair game — editors
+// can mark a piece as Done from their own kanban. Owner-side `approved`
+// also lands in the Done column automatically since the kanban bucket
+// covers both statuses.
 const EDITOR_STATUS_MOVES: Array<{ key: string; label: string; emoji: string }> = [
   { key: 'assigned',  label: 'New',       emoji: '🟡' },
   { key: 'editing',   label: 'Editing',   emoji: '🟣' },
   { key: 'submitted', label: 'In review', emoji: '🔵' },
+  { key: 'completed', label: 'Done',      emoji: '🟢' },
 ];
 
 function KanbanCard({
@@ -537,9 +541,10 @@ function KanbanCard({
     };
   }, [menuOpen]);
 
-  // Owner-only states: surface them as read-only chips since the editor can't
-  // change to/from them. Everything else stays interactive.
-  const isOwnerOnly = a.status === 'approved' || a.status === 'completed';
+  // `approved` is the only owner-only state — once the owner approves the
+  // work the editor can't unapprove it. `completed` stays interactive so
+  // editors can flip it back to "In review" if they marked Done by mistake.
+  const isOwnerOnly = a.status === 'approved';
 
   async function pickStatus(next: string) {
     if (next === a.status) { setMenuOpen(false); return; }
@@ -584,7 +589,7 @@ function KanbanCard({
         {isOwnerOnly ? (
           <span className="text-[10px] px-1.5 py-0.5 rounded font-medium"
             style={{ background: 'rgba(34,197,94,0.18)', color: '#22c55e' }}>
-            {a.status === 'completed' ? 'Completed' : 'Approved'} · owner-only
+            Approved · owner-only
           </span>
         ) : (
           <button

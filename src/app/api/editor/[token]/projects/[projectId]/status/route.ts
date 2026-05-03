@@ -3,10 +3,13 @@ import { getEditorByPersonalToken } from '@/lib/team-db';
 import { getEditorAssignment, updateEditorAssignment } from '@/lib/editor-db';
 import { logger } from '@/lib/logger';
 
-// Statuses the editor can move themselves between. Owner-only states
-// (`approved`, `completed`) stay out of reach — an editor can't approve
-// their own work.
-const EDITOR_ALLOWED_STATUSES = new Set(['assigned', 'editing', 'submitted']);
+// Statuses the editor can move themselves between. `approved` stays
+// owner-only (an editor can't approve their own work) — but `completed`
+// is fair game so editors can mark a piece as Done from their kanban
+// without waiting for owner approval. Owner-side `approved` also lands
+// in the kanban "Done" column automatically since both statuses share
+// that bucket.
+const EDITOR_ALLOWED_STATUSES = new Set(['assigned', 'editing', 'submitted', 'completed']);
 
 export async function PATCH(
   req: NextRequest,
@@ -24,7 +27,7 @@ export async function PATCH(
     const status = typeof body?.status === 'string' ? body.status : null;
     if (!status || !EDITOR_ALLOWED_STATUSES.has(status)) {
       return NextResponse.json(
-        { error: 'status must be one of: assigned, editing, submitted' },
+        { error: 'status must be one of: assigned, editing, submitted, completed' },
         { status: 400 },
       );
     }
