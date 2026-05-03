@@ -5,6 +5,7 @@ import fs from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { sql } from '@vercel/postgres';
 import { VideoConfig } from '@/remotion/types';
+import { logger } from '@/lib/logger';
 
 // Extend Vercel function timeout — requires Vercel Pro (300s) or Enterprise (900s)
 // On free tier this is ignored; local dev runs without limit
@@ -71,14 +72,14 @@ export async function POST(req: NextRequest) {
       VALUES (${renderId}, 'pending', 0, ${Date.now()})
     `;
   } catch (err) {
-    console.error('[render] DB insert failed:', err);
+    logger.error('[render] DB insert failed', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to create render job' }, { status: 500 });
   }
 
   // Kick off render — runs synchronously in this function instance
   // maxDuration = 300 keeps it alive long enough for short/medium videos
   startRender(renderId, config as VideoConfig).catch(err => {
-    console.error('[render] Fatal render error:', err);
+    logger.error('[render] Fatal render error', { detail: err instanceof Error ? err.message : String(err) });
   });
 
   return NextResponse.json({ renderId }, { status: 202 });
@@ -115,7 +116,7 @@ export async function GET(req: NextRequest) {
       elapsedMs: Date.now() - job.started_at,
     });
   } catch (err) {
-    console.error('[render] DB read failed:', err);
+    logger.error('[render] DB read failed', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to read render status' }, { status: 500 });
   }
 }
@@ -202,7 +203,7 @@ async function startRender(renderId: string, config: VideoConfig) {
     });
 
   } catch (err) {
-    console.error(`[render] Job ${renderId} failed:`, err);
+    logger.error(`[render] Job ${renderId} failed:`, { detail: err instanceof Error ? err.message : String(err) });
     await updateJob(renderId, {
       status: 'error',
       error: err instanceof Error ? err.message : String(err),

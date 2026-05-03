@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createShareLink, getShareLinks, deleteShareLink, getProject } from '@/lib/review-db';
 import { getCollaborator } from '@/lib/team-db';
 import { ensureEditorAssignmentFromReviewLink } from '@/lib/editor-db';
+import { logger } from '@/lib/logger';
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -9,7 +10,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     const links = await getShareLinks(id);
     return NextResponse.json(links);
   } catch (err) {
-    console.error('GET share links error:', err);
+    logger.error('GET share links error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to get share links' }, { status: 500 });
   }
 }
@@ -40,13 +41,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           await ensureEditorAssignmentFromReviewLink(id, collaboratorId);
         }
       } catch (err) {
-        console.error('auto-create editor_assignment failed:', err);
+        logger.error('auto-create editor_assignment failed', { detail: err instanceof Error ? err.message : String(err) });
       }
     }
 
     return NextResponse.json(link, { status: 201 });
   } catch (err) {
-    console.error('POST share link error:', err);
+    logger.error('POST share link error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to create share link' }, { status: 500 });
   }
 }
@@ -58,7 +59,7 @@ export async function DELETE(req: NextRequest) {
     await deleteShareLink(linkId);
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('DELETE share link error:', err);
+    logger.error('DELETE share link error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to delete share link' }, { status: 500 });
   }
 }

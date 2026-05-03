@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getShareLinkByToken, resolveComment, unresolveComment } from '@/lib/review-db';
 import { notifyCommentResolvedToOwner } from '@/lib/notify';
+import { logger } from '@/lib/logger';
 
 /**
  * Token-side comment mutation.
@@ -83,12 +84,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ to
         versionNumber: owner.version_number,
         versionId: owner.version_id,
         timestampMs: comment.timestamp_ms,
-      }).catch(e => console.error('notifyCommentResolvedToOwner failed:', e));
+      }).catch(e => logger.error('notifyCommentResolvedToOwner failed', { detail: e instanceof Error ? e.message : String(e) }));
     }
 
     return NextResponse.json(comment);
   } catch (err) {
-    console.error('PATCH token comment error:', err);
+    logger.error('PATCH token comment error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to update comment' }, { status: 500 });
   }
 }
@@ -127,7 +128,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ t
     await sql`DELETE FROM review_comments WHERE id = ${commentId}`;
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('DELETE token comment error:', err);
+    logger.error('DELETE token comment error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to delete comment' }, { status: 500 });
   }
 }

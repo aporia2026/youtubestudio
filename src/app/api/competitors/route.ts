@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureCompetitorSchema } from '@/lib/db';
 import { fetchChannelData } from '@/lib/youtube';
+import { logger } from '@/lib/logger';
 
 export async function GET() {
   try {
@@ -69,7 +70,7 @@ export async function POST(req: NextRequest) {
       view_count: Number(c.view_count) || 0,
     } });
   } catch (err) {
-    console.error('Add competitor error:', err);
+    logger.error('Add competitor error', { detail: err instanceof Error ? err.message : String(err) });
     const detail = err instanceof Error ? err.message : 'unknown error';
     return NextResponse.json({ error: `Failed to add competitor: ${detail}` }, { status: 500 });
   }

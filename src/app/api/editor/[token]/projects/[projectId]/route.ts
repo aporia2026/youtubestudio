@@ -4,6 +4,7 @@ import { getEditorByPersonalToken } from '@/lib/team-db';
 import { bumpEditorAssignmentAccess, getEditorAssignment } from '@/lib/editor-db';
 import { getImagesDownloadUrl } from '@/lib/r2';
 import { getDownloadPresignedUrl } from '@/lib/r2';
+import { logger } from '@/lib/logger';
 
 interface MediaRow {
   id: string;
@@ -137,7 +138,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
       reviewShareToken,
     });
   } catch (err) {
-    console.error('GET editor project error:', err);
+    logger.error('GET editor project error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

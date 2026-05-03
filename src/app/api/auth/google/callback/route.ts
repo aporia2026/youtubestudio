@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { logger } from '@/lib/logger';
 import { sql } from '@/lib/db';
 import { ensureGoogleAuthSchema } from '@/lib/db';
 import {
@@ -93,13 +94,13 @@ export async function GET(req: NextRequest) {
         }
       }
     } catch (err) {
-      console.error('Failed to fetch YouTube channel data after OAuth:', err);
+      logger.error('Failed to fetch YouTube channel data after OAuth', { detail: err instanceof Error ? err.message : String(err) });
     }
 
     await storeTokens(channelDbId, tokens, googleEmail);
     return NextResponse.redirect(new URL('/channel?oauth=success', req.url));
   } catch (err: unknown) {
-    console.error('OAuth callback error:', err);
+    logger.error('OAuth callback error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.redirect(new URL('/settings?google=error', req.url));
   }
 }

@@ -1,5 +1,6 @@
 // YouTube Data API integration
 // Infrastructure ready — add API credentials in .env to activate
+import { logger } from '@/lib/logger';
 
 export interface YouTubeVideoData {
   id: string;
@@ -84,7 +85,7 @@ export async function fetchYouTubeVideoData(url: string, overrideApiKey?: string
       tags: item.snippet.tags || [],
     };
   } catch (error) {
-    console.error('YouTube API error:', error);
+    logger.error('YouTube API error', { detail: error instanceof Error ? error.message : String(error) });
     return null;
   }
 }
@@ -140,7 +141,7 @@ export async function fetchChannelData(channelIdOrUrl: string, overrideApiKey?: 
       customUrl: item.snippet.customUrl || '',
     };
   } catch (error) {
-    console.error('YouTube channel fetch error:', error);
+    logger.error('YouTube channel fetch error', { detail: error instanceof Error ? error.message : String(error) });
     return null;
   }
 }
@@ -199,7 +200,7 @@ export async function fetchChannelVideos(channelId: string, maxResults = 50, ove
       tags: item.snippet.tags || [],
     }));
   } catch (error) {
-    console.error('YouTube channel videos fetch error:', error);
+    logger.error('YouTube channel videos fetch error', { detail: error instanceof Error ? error.message : String(error) });
     return [];
   }
 }
@@ -230,7 +231,7 @@ export async function fetchMyChannelOAuth(accessToken: string): Promise<YouTubeC
       customUrl: item.snippet.customUrl || '',
     };
   } catch (err) {
-    console.error('OAuth channel fetch error:', err);
+    logger.error('OAuth channel fetch error', { detail: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }
@@ -290,7 +291,7 @@ export async function listMyVideosOAuth(accessToken: string, maxResults = 50): P
       tags: item.snippet.tags || [],
     }));
   } catch (err) {
-    console.error('OAuth videos fetch error:', err);
+    logger.error('OAuth videos fetch error', { detail: err instanceof Error ? err.message : String(err) });
     return [];
   }
 }
@@ -329,7 +330,7 @@ export async function uploadThumbnailOAuth(
       thumbnailUrl: data.items?.[0]?.high?.url || data.items?.[0]?.medium?.url || data.items?.[0]?.default?.url || data.high?.url || data.default?.url,
     };
   } catch (err) {
-    console.error('Thumbnail upload error:', err);
+    logger.error('Thumbnail upload error', { detail: err instanceof Error ? err.message : String(err) });
     return { success: false, error: err instanceof Error ? err.message : 'Upload failed' };
   }
 }
@@ -418,7 +419,7 @@ export async function fetchChannelVideosRich(
     }
     return videos;
   } catch (err) {
-    console.error('fetchChannelVideosRich error:', err);
+    logger.error('fetchChannelVideosRich error', { detail: err instanceof Error ? err.message : String(err) });
     return [];
   }
 }

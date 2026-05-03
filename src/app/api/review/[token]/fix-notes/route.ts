@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getShareLinkByToken } from '@/lib/review-db';
 import { notifyCommentResolvedToOwner } from '@/lib/notify';
+import { logger } from '@/lib/logger';
 
 /**
  * Token-side fix-notes submission. Mirrors the editor-dashboard fix-notes
@@ -87,13 +88,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
           versionNumber: vRows[0].version_number,
           versionId,
           timestampMs: orig.timestamp_ms,
-        }).catch(e => console.error('notifyCommentResolvedToOwner failed:', e));
+        }).catch(e => logger.error('notifyCommentResolvedToOwner failed', { detail: e instanceof Error ? e.message : String(e) }));
       }
     }
 
     return NextResponse.json({ created: created.length });
   } catch (err) {
-    console.error('POST token fix-notes error:', err);
+    logger.error('POST token fix-notes error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to save fix notes' }, { status: 500 });
   }
 }

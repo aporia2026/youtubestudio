@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureSeriesSchema } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 /** GET /api/series/:id — series metadata plus all parts (scripts + ideas + schedule items). */
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -36,7 +37,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       scheduleItems: scheduleItems.rows,
     });
   } catch (err) {
-    console.error('GET /api/series/:id error:', err);
+    logger.error('GET /api/series/:id error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Server error' }, { status: 500 });
   }
 }
@@ -69,7 +70,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     }
     return NextResponse.json({ series: result.rows[0] });
   } catch (err) {
-    console.error('PATCH /api/series/:id error:', err);
+    logger.error('PATCH /api/series/:id error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Server error' }, { status: 500 });
   }
 }
@@ -83,7 +84,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     await sql`DELETE FROM series WHERE id = ${id}::uuid`;
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('DELETE /api/series/:id error:', err);
+    logger.error('DELETE /api/series/:id error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Server error' }, { status: 500 });
   }
 }

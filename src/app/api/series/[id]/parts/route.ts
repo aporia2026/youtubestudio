@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureSeriesSchema } from '@/lib/db';
 import { countWords, estimateDuration } from '@/lib/utils';
+import { logger } from '@/lib/logger';
 
 /** Rough token budget helper — ~4 chars per token is a serviceable approximation
  * for English prose. We care about not blowing the context window; the model's
@@ -115,7 +116,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       tokenBudget: maxTokens,
     });
   } catch (err) {
-    console.error('GET /api/series/:id/parts error:', err);
+    logger.error('GET /api/series/:id/parts error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Server error' }, { status: 500 });
   }
 }
@@ -156,7 +157,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     await sql`UPDATE series SET updated_at = NOW() WHERE id = ${id}::uuid`;
     return NextResponse.json({ script: result.rows[0] });
   } catch (err) {
-    console.error('POST /api/series/:id/parts error:', err);
+    logger.error('POST /api/series/:id/parts error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Server error' }, { status: 500 });
   }
 }

@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { streamFromNarrationBucket } from '@/lib/r2';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -41,7 +42,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ take
 
     return new Response(r2.body, { status: r2.status, headers });
   } catch (err) {
-    console.error('GET narrator take audio proxy error:', err);
+    logger.error('GET narrator take audio proxy error', { detail: err instanceof Error ? err.message : String(err) });
     return new Response(JSON.stringify({ error: 'Failed to stream audio' }), { status: 500 });
   }
 }

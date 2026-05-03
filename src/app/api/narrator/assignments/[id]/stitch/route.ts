@@ -3,6 +3,7 @@ import { put } from '@vercel/blob';
 import { sql } from '@vercel/postgres';
 import { getAssignment, getRealSectionsForAssignment } from '@/lib/narrator-db';
 import { getNarrationDownloadUrl } from '@/lib/r2';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -105,7 +106,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
 
     return NextResponse.json({ url: blob.url, size: totalSize, sections: audioUrls.length });
   } catch (err) {
-    console.error('stitch error:', err);
+    logger.error('stitch error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to stitch audio' }, { status: 500 });
   }
 }

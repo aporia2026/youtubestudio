@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCollaboratorByPersonalToken } from '@/lib/team-db';
 import { listActivity, countUnreadActivity, markActivityRead } from '@/lib/activity-feed';
+import { logger } from '@/lib/logger';
 
 /**
  * GET — recent events for a collaborator's bell, plus unread count.
@@ -30,7 +31,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ toke
 
     return NextResponse.json({ events, unreadCount });
   } catch (err) {
-    console.error('GET activity error:', err);
+    logger.error('GET activity error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
@@ -50,7 +51,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
 
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('POST activity error:', err);
+    logger.error('POST activity error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

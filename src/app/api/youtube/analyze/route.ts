@@ -6,6 +6,7 @@ import { deepVideoAnalysisPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { getCachedReference, upsertCachedReference, touchReference } from '@/lib/reference-cache-db';
 import { makeSpendContext } from '@/lib/ai-spend';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 300; // 5 minutes — deep analysis takes time
 
@@ -170,7 +171,7 @@ export async function POST(req: NextRequest) {
           }
         } catch (parseErr) {
           // If JSON parsing fails, store as raw text for backward compatibility
-          console.error('Failed to parse analysis JSON:', parseErr);
+          logger.error('Failed to parse analysis JSON', { detail: parseErr instanceof Error ? parseErr.message : String(parseErr) });
           styleAnalysis = raw;
         }
 
@@ -179,7 +180,7 @@ export async function POST(req: NextRequest) {
           styleAnalysis = buildReadableSummary(analysis, metadata.title);
         }
       } catch (err) {
-        console.error('Deep analysis error:', err);
+        logger.error('Deep analysis error', { detail: err instanceof Error ? err.message : String(err) });
         warnings.push('AI analysis encountered an error — partial results may be shown.');
       }
     }
@@ -238,7 +239,7 @@ export async function POST(req: NextRequest) {
       cached: false,
     });
   } catch (err: unknown) {
-    console.error('Video analyze error:', err);
+    logger.error('Video analyze error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Analysis failed' },
       { status: 500 },

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getAssignment, updateSection, updateAssignment } from '@/lib/narrator-db';
 import { notifyAssignmentApproved } from '@/lib/notify';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 
@@ -100,7 +101,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
           )
       `;
     } catch (mediaErr) {
-      console.error('approve-full: media_asset insert skipped:', mediaErr);
+      logger.error('approve-full: media_asset insert skipped', { detail: mediaErr instanceof Error ? mediaErr.message : String(mediaErr) });
     }
 
     // Fire-and-forget — don't block the response on email I/O.
@@ -111,12 +112,12 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
         projectId: assignment.project_id,
         projectTitle,
         ownerName: 'Owner',
-      }).catch(e => console.error('notifyAssignmentApproved failed:', e));
+      }).catch(e => logger.error('notifyAssignmentApproved failed', { detail: e instanceof Error ? e.message : String(e) }));
     }
 
     return NextResponse.json({ ok: true, status: 'completed' });
   } catch (err) {
-    console.error('POST approve-full error:', err);
+    logger.error('POST approve-full error', { detail: err instanceof Error ? err.message : String(err) });
     const detail = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: `Failed to approve full narration: ${detail}` }, { status: 500 });
   }

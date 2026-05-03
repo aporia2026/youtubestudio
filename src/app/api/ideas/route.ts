@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 export async function GET(req: NextRequest) {
   try {
@@ -40,7 +41,7 @@ export async function POST(req: NextRequest) {
     `;
     return NextResponse.json({ idea: result.rows[0] });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

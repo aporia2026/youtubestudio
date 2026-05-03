@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureScheduleSchema, ensureSeriesSchema } from '@/lib/db';
 import { expandRecurrence, type RecurrenceRule } from '@/lib/schedule';
 import { UNASSIGNED_CHANNEL_ID } from '@/lib/schedule-constants';
+import { logger } from '@/lib/logger';
 
 /** Escape `%`, `_`, and `\` so a search term's literal wildcards don't
  *  amplify into a full-table scan or OR-shape query. */
@@ -95,7 +96,7 @@ export async function GET(req: NextRequest) {
     );
     return NextResponse.json({ items: rows });
   } catch (err) {
-    console.error('GET /api/schedule error:', err);
+    logger.error('GET /api/schedule error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ items: [], error: 'Failed' }, { status: 500 });
   }
 }
@@ -186,7 +187,7 @@ export async function POST(req: NextRequest) {
     await attachChannels(itemId, channel_ids);
     return NextResponse.json({ item: result.rows[0] });
   } catch (err) {
-    console.error('POST /api/schedule error:', err);
+    logger.error('POST /api/schedule error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

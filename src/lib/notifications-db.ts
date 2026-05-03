@@ -1,4 +1,5 @@
 import { sql } from '@vercel/postgres';
+import { logger } from '@/lib/logger';
 
 // Singleton row id — there's only one notification settings row for the owner
 const SINGLETON_ID = '00000000-0000-0000-0000-000000000001';
@@ -34,7 +35,7 @@ export async function ensureNotificationsSchema() {
     try { await sql`ALTER TABLE notification_settings ADD COLUMN IF NOT EXISTS on_message BOOLEAN NOT NULL DEFAULT true`; } catch {}
     migrated = true;
   } catch (err) {
-    console.error('ensureNotificationsSchema error:', err);
+    logger.error('ensureNotificationsSchema error', { detail: err instanceof Error ? err.message : String(err) });
   }
 }
 

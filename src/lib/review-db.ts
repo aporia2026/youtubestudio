@@ -1,4 +1,5 @@
 import { sql } from '@vercel/postgres';
+import { logger } from '@/lib/logger';
 
 // ---------------------------------------------------------------------------
 // Schema migration (idempotent)
@@ -90,7 +91,7 @@ export async function ensureReviewSchema() {
 
     reviewMigrated = true;
   } catch (err) {
-    console.error('ensureReviewSchema error:', err);
+    logger.error('ensureReviewSchema error', { detail: err instanceof Error ? err.message : String(err) });
   }
 }
 

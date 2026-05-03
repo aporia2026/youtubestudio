@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getValidAccessToken } from '@/lib/google-oauth';
 import { uploadThumbnailOAuth } from '@/lib/youtube';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 60;
 
@@ -46,7 +47,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, thumbnailUrl: result.thumbnailUrl });
   } catch (err: unknown) {
-    console.error('Thumbnail upload error:', err);
+    logger.error('Thumbnail upload error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Upload failed' },
       { status: 500 },

@@ -5,6 +5,7 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { getSession } from '@/lib/session';
 import { resolveBrandKitForRequest } from '@/lib/channel-brand-kit';
 import { countWords } from '@/lib/utils';
+import { logger } from '@/lib/logger';
 
 // 300s is the Pro-plan ceiling without Fluid Compute. The optional
 // expansion pass (non-streaming) can add another 30-60s on top of a
@@ -242,7 +243,7 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (err: unknown) {
-    console.error('Script generation error:', err);
+    logger.error('Script generation error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Generation failed' },
       { status: 500 }

@@ -3,6 +3,7 @@ import { sql } from '@vercel/postgres';
 import { createVersion, getProject, updateVersion } from '@/lib/review-db';
 import { buildR2Key, getUploadPresignedUrl } from '@/lib/r2';
 import { notifyVersionUploaded } from '@/lib/notify';
+import { logger } from '@/lib/logger';
 
 /** POST: Generate a presigned upload URL and create a version row. */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -55,7 +56,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       r2Key,
     }, { status: 201 });
   } catch (err) {
-    console.error('POST /api/review/projects/[id]/versions error:', err);
+    logger.error('POST /api/review/projects/[id]/versions error', { detail: err instanceof Error ? err.message : String(err) });
     const msg = err instanceof Error ? err.message : 'Unknown error';
     return NextResponse.json({ error: `Failed to create version: ${msg}` }, { status: 500 });
   }
@@ -79,13 +80,13 @@ export async function PATCH(req: NextRequest) {
             projectTitle: title,
             versionId: version.id,
             versionNumber: version.version_number,
-          }).catch(e => console.error('notifyVersionUploaded failed:', e));
+          }).catch(e => logger.error('notifyVersionUploaded failed', { detail: e instanceof Error ? e.message : String(e) }));
         }).catch(() => {});
     }
 
     return NextResponse.json(version);
   } catch (err) {
-    console.error('PATCH versions error:', err);
+    logger.error('PATCH versions error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to update version' }, { status: 500 });
   }
 }

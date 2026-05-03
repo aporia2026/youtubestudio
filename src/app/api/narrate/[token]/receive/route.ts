@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAssignmentByToken, updateAssignment } from '@/lib/narrator-db';
+import { logger } from '@/lib/logger';
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -12,7 +13,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ to
     }
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('receive error:', err);
+    logger.error('receive error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

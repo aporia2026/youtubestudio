@@ -1,4 +1,5 @@
 import { sql } from '@vercel/postgres';
+import { logger } from '@/lib/logger';
 
 let migrated = false;
 
@@ -31,7 +32,7 @@ export async function ensureEditorSchema() {
 
     migrated = true;
   } catch (err) {
-    console.error('ensureEditorSchema error:', err);
+    logger.error('ensureEditorSchema error', { detail: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -199,7 +200,7 @@ export async function ensureEditorAssignmentFromReviewLink(reviewProjectId: stri
     `;
     return rows[0] ?? null;
   } catch (err) {
-    console.error('ensureEditorAssignmentFromReviewLink error:', err);
+    logger.error('ensureEditorAssignmentFromReviewLink error', { detail: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }

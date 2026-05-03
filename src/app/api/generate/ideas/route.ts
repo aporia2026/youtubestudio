@@ -4,6 +4,7 @@ import { ideaGenerationPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { makeSpendContext } from '@/lib/ai-spend';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 300;
 
@@ -94,7 +95,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ideas: collected, requested: targetCount, returned: collected.length, attempts: attempt });
   } catch (err: unknown) {
-    console.error('Ideas generation error:', err);
+    logger.error('Ideas generation error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Generation failed' },
       { status: 500 }

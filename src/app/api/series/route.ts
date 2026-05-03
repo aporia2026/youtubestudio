@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureSeriesSchema } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 /** GET /api/series — list all series ordered by most recently updated.
  *  `part_count` is MAX(part_number) across all three part-bearing tables
@@ -35,7 +36,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ series: result.rows });
   } catch (err) {
-    console.error('GET /api/series error:', err);
+    logger.error('GET /api/series error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ series: [] });
   }
 }
@@ -61,7 +62,7 @@ export async function POST(req: NextRequest) {
     `;
     return NextResponse.json({ series: result.rows[0] });
   } catch (err) {
-    console.error('POST /api/series error:', err);
+    logger.error('POST /api/series error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to create series' }, { status: 500 });
   }
 }

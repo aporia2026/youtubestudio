@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureSeriesSchema } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 // Bulk-insert a batch of generated ideas so they are persisted immediately
 // without requiring the user to manually click "Save" on each one.
@@ -52,7 +53,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ inserted: inserted.length, ideas: inserted });
   } catch (err) {
-    console.error('POST /api/ideas/batch error:', err);
+    logger.error('POST /api/ideas/batch error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Batch save failed' }, { status: 500 });
   }
 }

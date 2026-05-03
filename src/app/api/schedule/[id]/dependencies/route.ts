@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureScheduleSchema } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 /** GET /api/schedule/[id]/dependencies — returns both directions:
  *  outgoing (this item depends on …) and incoming (… depends on this item). */
@@ -19,7 +20,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     `;
     return NextResponse.json({ outgoing: out.rows, incoming: inc.rows });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ outgoing: [], incoming: [] });
   }
 }
@@ -40,7 +41,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     `;
     return NextResponse.json({ edge: row.rows[0] ?? null });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed' }, { status: 500 });
   }
 }
@@ -55,7 +56,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     await sql`DELETE FROM schedule_dependencies WHERE id = ${edgeId}`;
     return NextResponse.json({ success: true });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

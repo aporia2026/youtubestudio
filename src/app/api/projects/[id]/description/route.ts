@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 // Self-healing migration: makes sure the youtube_description column exists.
 // Idempotent — IF NOT EXISTS guards the ALTER, and the in-process flag
@@ -29,7 +30,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     `;
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('PUT description error:', err);
+    logger.error('PUT description error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
@@ -41,7 +42,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     await sql`UPDATE projects SET youtube_description = NULL, updated_at = NOW() WHERE id = ${id}`;
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('DELETE description error:', err);
+    logger.error('DELETE description error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

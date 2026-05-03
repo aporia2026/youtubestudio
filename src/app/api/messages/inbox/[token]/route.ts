@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { logger } from '@/lib/logger';
 import {
   getCollaboratorByPersonalToken,
   getWorkspaceOwner,
@@ -36,7 +37,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
       messages,
     });
   } catch (err) {
-    console.error('GET inbox thread error:', err);
+    logger.error('GET inbox thread error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to load thread' }, { status: 500 });
   }
 }
@@ -66,11 +67,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
       fromName: me.name,
       recipientRole: 'owner',
       text,
-    }).catch(e => console.error('notifyMessage(owner) failed:', e));
+    }).catch(e => logger.error('notifyMessage(owner) failed', { detail: e instanceof Error ? e.message : String(e) }));
 
     return NextResponse.json(created, { status: 201 });
   } catch (err) {
-    console.error('POST inbox message error:', err);
+    logger.error('POST inbox message error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to send message' }, { status: 500 });
   }
 }

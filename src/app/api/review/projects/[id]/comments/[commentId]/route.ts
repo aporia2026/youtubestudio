@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { resolveComment, unresolveComment } from '@/lib/review-db';
 import { notifyCommentResolved } from '@/lib/notify';
+import { logger } from '@/lib/logger';
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string; commentId: string }> }) {
   try {
@@ -48,13 +49,13 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
           collaboratorId: row.collaborator_id,
           commentText: comment.text,
           resolverName: author_name || 'Owner',
-        }).catch(e => console.error('notifyCommentResolved failed:', e));
+        }).catch(e => logger.error('notifyCommentResolved failed', { detail: e instanceof Error ? e.message : String(e) }));
       }).catch(() => {});
     }
 
     return NextResponse.json(comment);
   } catch (err) {
-    console.error('PATCH owner comment error:', err);
+    logger.error('PATCH owner comment error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to update comment' }, { status: 500 });
   }
 }
@@ -76,7 +77,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     await sql`DELETE FROM review_comments WHERE id = ${commentId}`;
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('DELETE owner comment error:', err);
+    logger.error('DELETE owner comment error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to delete comment' }, { status: 500 });
   }
 }

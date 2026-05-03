@@ -1,4 +1,5 @@
 import sgMail from '@sendgrid/mail';
+import { logger } from '@/lib/logger';
 
 let _initialized = false;
 let _warnedNoKey = false;
@@ -78,7 +79,7 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
     // SendGrid throws an error with .response.body containing detail
     const err = e as { message?: string; response?: { body?: { errors?: Array<{ message?: string }> } } };
     const detail = err?.response?.body?.errors?.[0]?.message || err?.message || 'unknown error';
-    console.error('[email] SendGrid send failed:', detail);
+    logger.error('[email] SendGrid send failed', { detail });
     return { ok: false, error: detail };
   }
 }

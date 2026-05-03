@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureDraftsSchema } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 export async function GET() {
   try {
@@ -21,7 +22,7 @@ export async function GET() {
     }));
     return NextResponse.json({ drafts });
   } catch (err) {
-    console.error('GET /api/drafts error:', err);
+    logger.error('GET /api/drafts error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ drafts: [] });
   }
 }
@@ -57,7 +58,7 @@ export async function POST(req: NextRequest) {
     `;
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('POST /api/drafts error:', err);
+    logger.error('POST /api/drafts error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to save draft' }, { status: 500 });
   }
 }

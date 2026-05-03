@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { isR2Configured, buildImageRefKey, getImagesUploadUrl, getImagesDownloadUrl, getImagesBucket } from '@/lib/r2';
+import { logger } from '@/lib/logger';
 
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
@@ -30,7 +31,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     }));
     return NextResponse.json(out);
   } catch (err) {
-    console.error('GET image-refs error:', err);
+    logger.error('GET image-refs error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
@@ -84,7 +85,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     return NextResponse.json({ uploadUrl, asset: rows[0] }, { status: 201 });
   } catch (err) {
-    console.error('POST image-refs error:', err);
+    logger.error('POST image-refs error', { detail: err instanceof Error ? err.message : String(err) });
     const msg = err instanceof Error ? err.message : 'Unknown error';
     return NextResponse.json({ error: `Failed to start upload: ${msg}` }, { status: 500 });
   }

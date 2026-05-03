@@ -1,5 +1,6 @@
 import { sql } from '@vercel/postgres';
 import { splitScriptIntoSections } from './narrator-utils';
+import { logger } from '@/lib/logger';
 
 // ---------------------------------------------------------------------------
 // Schema migration (idempotent)
@@ -171,7 +172,7 @@ export async function ensureNarratorSchema() {
 
     narratorMigrated = true;
   } catch (err) {
-    console.error('ensureNarratorSchema error:', err);
+    logger.error('ensureNarratorSchema error', { detail: err instanceof Error ? err.message : String(err) });
   }
 }
 

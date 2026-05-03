@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { deleteCachedReference, ensureReferenceCacheSchema, updateReferenceMetadata } from '@/lib/reference-cache-db';
+import { logger } from '@/lib/logger';
 
 /**
  * GET — full record including the analysis JSON. Used when the user
@@ -15,7 +16,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     if (!rows[0]) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     return NextResponse.json({ reference: rows[0] });
   } catch (err) {
-    console.error('GET reference error:', err);
+    logger.error('GET reference error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
@@ -31,7 +32,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (!updated) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     return NextResponse.json({ reference: updated });
   } catch (err) {
-    console.error('PATCH reference error:', err);
+    logger.error('PATCH reference error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
@@ -42,7 +43,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     await deleteCachedReference(id);
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('DELETE reference error:', err);
+    logger.error('DELETE reference error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

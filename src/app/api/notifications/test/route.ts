@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getNotificationSettings } from '@/lib/notifications-db';
 import { sendEmail, getAppUrl } from '@/lib/email';
 import { testEmailTemplate } from '@/lib/email-templates';
+import { logger } from '@/lib/logger';
 
 export async function POST(req: NextRequest) {
   try {
@@ -34,7 +35,7 @@ export async function POST(req: NextRequest) {
     }
     return NextResponse.json({ sent: true, to, id: result.id });
   } catch (err) {
-    console.error('test notification error:', err);
+    logger.error('test notification error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to send test email' }, { status: 500 });
   }
 }

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureCompetitorSchema } from '@/lib/db';
 import { fetchChannelVideosRich, fetchChannelData, fetchVideoComments, parseDurationSeconds } from '@/lib/youtube';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 180;
 
@@ -111,7 +112,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       subscriberCount: freshData?.subscriberCount || comp.subscriber_count,
     });
   } catch (err) {
-    console.error('Competitor sync error:', err);
+    logger.error('Competitor sync error', { detail: err instanceof Error ? err.message : String(err) });
     const detail = err instanceof Error ? err.message : 'unknown';
     return NextResponse.json({ error: `Sync failed: ${detail}` }, { status: 500 });
   }

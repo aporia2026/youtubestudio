@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getShareLinkByToken, createComment, getComments } from '@/lib/review-db';
 import { notifyReviewComment } from '@/lib/notify';
+import { logger } from '@/lib/logger';
 
 /** Verify a version belongs to the token's project */
 async function verifyVersionOwnership(versionId: string, projectId: string): Promise<boolean> {
@@ -28,7 +29,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ toke
     const comments = await getComments(versionId);
     return NextResponse.json(comments);
   } catch (err) {
-    console.error('GET comments error:', err);
+    logger.error('GET comments error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to get comments' }, { status: 500 });
   }
 }
@@ -90,13 +91,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
           text: text.trim(),
           timestampMs: timestamp_ms,
           drawingThumbnailUrl: drawing_thumbnail_url,
-        }).catch(e => console.error('notifyReviewComment failed:', e));
+        }).catch(e => logger.error('notifyReviewComment failed', { detail: e instanceof Error ? e.message : String(e) }));
       }).catch(() => {});
     }
 
     return NextResponse.json(comment, { status: 201 });
   } catch (err) {
-    console.error('POST comment error:', err);
+    logger.error('POST comment error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to create comment' }, { status: 500 });
   }
 }

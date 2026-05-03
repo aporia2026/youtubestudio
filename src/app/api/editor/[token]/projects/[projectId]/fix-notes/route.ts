@@ -3,6 +3,7 @@ import { sql } from '@vercel/postgres';
 import { getEditorByPersonalToken } from '@/lib/team-db';
 import { getEditorAssignment } from '@/lib/editor-db';
 import { notifyCommentResolvedToOwner } from '@/lib/notify';
+import { logger } from '@/lib/logger';
 
 /**
  * Editor submits "what I fixed" notes when uploading a corrected version.
@@ -91,13 +92,13 @@ export async function POST(
           versionNumber: vRows[0].version_number,
           versionId,
           timestampMs: orig.timestamp_ms,
-        }).catch(e => console.error('notifyCommentResolvedToOwner failed:', e));
+        }).catch(e => logger.error('notifyCommentResolvedToOwner failed', { detail: e instanceof Error ? e.message : String(e) }));
       }
     }
 
     return NextResponse.json({ created: created.length });
   } catch (err) {
-    console.error('POST fix-notes error:', err);
+    logger.error('POST fix-notes error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to save fix notes' }, { status: 500 });
   }
 }

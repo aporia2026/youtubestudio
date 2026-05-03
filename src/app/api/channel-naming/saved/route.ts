@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureChannelNamesSchema } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 export async function GET() {
   try {
@@ -95,7 +96,7 @@ export async function POST(req: NextRequest) {
     const row = result.rows[0];
     return NextResponse.json({ saved: row, created: row.is_new === true });
   } catch (err) {
-    console.error('Save name error:', err);
+    logger.error('Save name error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed' }, { status: 500 });
   }
 }

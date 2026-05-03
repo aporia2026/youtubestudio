@@ -4,6 +4,7 @@ import { getAssignmentByToken, createTake, updateAssignment } from '@/lib/narrat
 import { isR2Configured, buildNarrationKey, getNarrationUploadUrl, getNarrationDownloadUrl } from '@/lib/r2';
 import { notifyNarratorTake } from '@/lib/notify';
 import { ALLOWED_AUDIO_MIME_TYPES, resolveAudioMime } from '@/lib/narrator-utils';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -100,7 +101,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
         projectTitle: assignment.project_title || 'project',
         sectionLabel,
         takeNumber: take.take_number,
-      }).catch(e => console.error('notifyNarratorTake failed:', e));
+      }).catch(e => logger.error('notifyNarratorTake failed', { detail: e instanceof Error ? e.message : String(e) }));
     }).catch(() => {});
 
     return NextResponse.json({
@@ -113,7 +114,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
       contentType: resolvedContentType,
     }, { status: 201 });
   } catch (err) {
-    console.error('upload take error:', err);
+    logger.error('upload take error', { detail: err instanceof Error ? err.message : String(err) });
     const msg = err instanceof Error ? err.message : 'Unknown error';
     return NextResponse.json({ error: `Failed to start upload: ${msg}` }, { status: 500 });
   }
@@ -148,7 +149,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ to
     `;
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('PATCH take error:', err);
+    logger.error('PATCH take error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to update take' }, { status: 500 });
   }
 }

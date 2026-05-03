@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { deleteImagesObject } from '@/lib/r2';
+import { logger } from '@/lib/logger';
 
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string; assetId: string }> }) {
   try {
@@ -18,7 +19,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     await sql`DELETE FROM media_assets WHERE id = ${assetId}`;
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('DELETE image-ref error:', err);
+    logger.error('DELETE image-ref error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

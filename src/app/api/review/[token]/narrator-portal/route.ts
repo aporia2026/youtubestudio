@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getShareLinkByToken } from '@/lib/review-db';
+import { logger } from '@/lib/logger';
 
 /**
  * 302 redirect from the review page to the linked narrator's personal portal.
@@ -34,7 +35,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
     }
     return NextResponse.redirect(new URL(`/narrator/${collab.personal_token}`, _req.url));
   } catch (err) {
-    console.error('narrator-portal redirect error:', err);
+    logger.error('narrator-portal redirect error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

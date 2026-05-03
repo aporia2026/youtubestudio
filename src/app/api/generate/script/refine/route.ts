@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateTextStream, getModelById } from '@/lib/ai';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { buildConstraintsPromptBlock, type ScriptConstraints } from '@/lib/script-options';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 300;
 
@@ -99,7 +100,7 @@ Return the complete refined script now. Apply the user's request. Preserve every
       },
     });
   } catch (err: unknown) {
-    console.error('Script refine error:', err);
+    logger.error('Script refine error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Refine failed' },
       { status: 500 }

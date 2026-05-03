@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getEditorByPersonalToken } from '@/lib/team-db';
 import { getEditorAssignment, updateEditorAssignment } from '@/lib/editor-db';
+import { logger } from '@/lib/logger';
 
 // Statuses the editor can move themselves between. Owner-only states
 // (`approved`, `completed`) stay out of reach — an editor can't approve
@@ -31,7 +32,7 @@ export async function PATCH(
     const updated = await updateEditorAssignment(assignment.id, { status });
     return NextResponse.json({ assignment: updated });
   } catch (err) {
-    console.error('PATCH editor status error:', err);
+    logger.error('PATCH editor status error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getAuthorizationUrlForSheets } from '@/lib/google-oauth';
 import { ensureGoogleAuthSchema } from '@/lib/db';
 import { requireUser, SessionError } from '@/lib/session';
+import { logger } from '@/lib/logger';
 
 export async function GET() {
   try {
@@ -13,7 +14,7 @@ export async function GET() {
     if (err instanceof SessionError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
-    console.error('Google Sheets OAuth initiation error:', err);
+    logger.error('Google Sheets OAuth initiation error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Failed to start OAuth' },
       { status: 500 },

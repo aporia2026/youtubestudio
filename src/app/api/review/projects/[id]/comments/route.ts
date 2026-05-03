@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { createComment } from '@/lib/review-db';
+import { logger } from '@/lib/logger';
 
 /** Owner-side: post a comment without needing a share token. */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -35,7 +36,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     return NextResponse.json(comment, { status: 201 });
   } catch (err) {
-    console.error('POST owner comment error:', err);
+    logger.error('POST owner comment error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to create comment' }, { status: 500 });
   }
 }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureScheduleSchema } from '@/lib/db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { logger } from '@/lib/logger';
 
 const YOUTUBE_HOSTS = new Set(['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be']);
 const VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
@@ -98,7 +99,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       wrote,
     });
   } catch (err) {
-    console.error('POST /api/schedule/[id]/pull-youtube-metadata', err);
+    logger.error('POST /api/schedule/[id]/pull-youtube-metadata', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

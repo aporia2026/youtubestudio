@@ -1,6 +1,7 @@
 // YouTube transcript fetcher — pulls captions/subtitles for style analysis
 
 import { YoutubeTranscript } from 'youtube-transcript';
+import { logger } from '@/lib/logger';
 
 export interface TranscriptSegment {
   text: string;
@@ -44,7 +45,7 @@ export async function fetchTranscript(videoIdOrUrl: string): Promise<VideoTransc
       durationSeconds,
     };
   } catch (err) {
-    console.error('Transcript fetch error:', err);
+    logger.error('Transcript fetch error', { detail: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }

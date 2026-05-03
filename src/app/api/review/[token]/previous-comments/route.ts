@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getShareLinkByToken } from '@/lib/review-db';
+import { logger } from '@/lib/logger';
 
 /**
  * Token-side mirror of the editor-dashboard previous-comments endpoint.
@@ -50,7 +51,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ toke
       comments,
     });
   } catch (err) {
-    console.error('GET token previous-comments error:', err);
+    logger.error('GET token previous-comments error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

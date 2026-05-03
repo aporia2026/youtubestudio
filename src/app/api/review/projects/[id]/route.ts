@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getProject, updateProject, deleteProject, getVersions } from '@/lib/review-db';
 import { deleteR2Object } from '@/lib/r2';
 import { notifyStatusChanged } from '@/lib/notify';
+import { logger } from '@/lib/logger';
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -11,7 +12,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     const versions = await getVersions(id);
     return NextResponse.json({ project, versions });
   } catch (err) {
-    console.error('GET /api/review/projects/[id] error:', err);
+    logger.error('GET /api/review/projects/[id] error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to get project' }, { status: 500 });
   }
 }
@@ -32,12 +33,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         projectTitle: project.title,
         oldStatus: before.status,
         newStatus: project.status,
-      }).catch(e => console.error('notifyStatusChanged failed:', e));
+      }).catch(e => logger.error('notifyStatusChanged failed', { detail: e instanceof Error ? e.message : String(e) }));
     }
 
     return NextResponse.json(project);
   } catch (err) {
-    console.error('PATCH /api/review/projects/[id] error:', err);
+    logger.error('PATCH /api/review/projects/[id] error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to update project' }, { status: 500 });
   }
 }
@@ -55,7 +56,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     await deleteProject(id);
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('DELETE /api/review/projects/[id] error:', err);
+    logger.error('DELETE /api/review/projects/[id] error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to delete project' }, { status: 500 });
   }
 }

@@ -1,4 +1,5 @@
 import { sql } from '@vercel/postgres';
+import { logger } from '@/lib/logger';
 
 // ---------------------------------------------------------------------------
 // Schema migration (idempotent)
@@ -79,7 +80,7 @@ export async function ensureTeamSchema() {
 
     teamMigrated = true;
   } catch (err) {
-    console.error('ensureTeamSchema error:', err);
+    logger.error('ensureTeamSchema error', { detail: err instanceof Error ? err.message : String(err) });
   }
 }
 

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureScheduleSchema, DEFAULT_SCHEDULE_STATUSES } from '@/lib/db';
 import { createEditorAssignment } from '@/lib/editor-db';
 import { notifyEditorAssigned } from '@/lib/notify';
+import { logger } from '@/lib/logger';
 
 // youtube_url guard: accept only http/https URLs on youtube hosts. Rejecting
 // javascript:/file:/data: scheme URLs prevents a stored-XSS sink when the
@@ -47,7 +48,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     if (!result.rows.length) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     return NextResponse.json({ item: result.rows[0] });
   } catch (err) {
-    console.error('GET /api/schedule/[id]', err);
+    logger.error('GET /api/schedule/[id]', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
@@ -251,17 +252,17 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
               editorId: next,
               projectId: nextProjectId,
               projectTitle: titleForEmail,
-            }).catch(e => console.error('notifyEditorAssigned failed:', e));
+            }).catch(e => logger.error('notifyEditorAssigned failed', { detail: e instanceof Error ? e.message : String(e) }));
           }
         }
       } catch (e) {
-        console.error('mirror editor_collaborator_id → editor_assignments failed:', e);
+        logger.error('mirror editor_collaborator_id → editor_assignments failed', { detail: e instanceof Error ? e.message : String(e) });
       }
     }
 
     return NextResponse.json({ success: true, advanced });
   } catch (err) {
-    console.error('PATCH /api/schedule/[id]', err);
+    logger.error('PATCH /api/schedule/[id]', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
@@ -278,7 +279,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     await sql`DELETE FROM schedule_items WHERE id = ${id}`;
     return NextResponse.json({ success: true });
   } catch (err) {
-    console.error('DELETE /api/schedule/[id]', err);
+    logger.error('DELETE /api/schedule/[id]', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

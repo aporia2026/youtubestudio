@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCollaboratorByPersonalToken, getUnreadCountForUser } from '@/lib/messages-db';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 
@@ -16,7 +17,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
     const n = await getUnreadCountForUser(me.id);
     return NextResponse.json({ unread: n });
   } catch (err) {
-    console.error('GET inbox unread error:', err);
+    logger.error('GET inbox unread error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

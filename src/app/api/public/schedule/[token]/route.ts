@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureScheduleSchema } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 /** GET /api/public/schedule/[token] — read-only data for a share link.
  *  Validates the token, checks expiry, and returns items scoped to the linked channel
@@ -58,7 +59,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
       items: items.rows,
     });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

@@ -5,6 +5,7 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { fetchVideoMetadata, checkHandlesBatch, parseYouTubeUrl, fetchChannelData, fetchChannelVideosRich } from '@/lib/youtube';
 import { makeSpendContext } from '@/lib/ai-spend';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 300;
 
@@ -262,7 +263,7 @@ export async function POST(req: NextRequest) {
       availabilityCaveat: 'Availability is best-effort based on YouTube forHandle lookup. Always verify by visiting youtube.com/@handle before claiming.',
     });
   } catch (err) {
-    console.error('Channel naming error:', err);
+    logger.error('Channel naming error', { detail: err instanceof Error ? err.message : String(err) });
     const detail = err instanceof Error ? err.message : 'unknown';
     return NextResponse.json({ error: `Channel naming failed: ${detail}` }, { status: 500 });
   }

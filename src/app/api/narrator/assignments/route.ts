@@ -3,13 +3,14 @@ import { sql } from '@vercel/postgres';
 import { createAssignment, createSection, listAllAssignments } from '@/lib/narrator-db';
 import { splitScriptIntoSections } from '@/lib/narrator-utils';
 import { notifyAssignmentReceived } from '@/lib/notify';
+import { logger } from '@/lib/logger';
 
 export async function GET() {
   try {
     const assignments = await listAllAssignments();
     return NextResponse.json(assignments);
   } catch (err) {
-    console.error('GET assignments error:', err);
+    logger.error('GET assignments error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to list assignments' }, { status: 500 });
   }
 }
@@ -88,12 +89,12 @@ export async function POST(req: NextRequest) {
         shareToken: assignment.share_token,
         sectionCount: sectionData.length,
         deadline,
-      }).catch(e => console.error('notifyAssignmentReceived failed:', e));
+      }).catch(e => logger.error('notifyAssignmentReceived failed', { detail: e instanceof Error ? e.message : String(e) }));
     }).catch(() => {});
 
     return NextResponse.json({ assignment, sectionCount: sectionData.length }, { status: 201 });
   } catch (err) {
-    console.error('POST assignment error:', err);
+    logger.error('POST assignment error', { detail: err instanceof Error ? err.message : String(err) });
     const message = err instanceof Error ? err.message : 'Failed to create assignment';
     return NextResponse.json({ error: message }, { status: 500 });
   }

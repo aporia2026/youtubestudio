@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureScheduleSchema } from '@/lib/db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { logger } from '@/lib/logger';
 
 const MAX_NAME = 200;
 const MAX_EMAIL = 320;
@@ -21,7 +22,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     `;
     return NextResponse.json({ editors: rows });
   } catch (err) {
-    console.error('GET /api/channels/[id]/editors', err);
+    logger.error('GET /api/channels/[id]/editors', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ editors: [], error: 'Failed' }, { status: 500 });
   }
 }
@@ -63,7 +64,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     `;
     return NextResponse.json({ editor: rows[0], existed: false });
   } catch (err) {
-    console.error('POST /api/channels/[id]/editors', err);
+    logger.error('POST /api/channels/[id]/editors', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

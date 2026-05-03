@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCollaboratorWithAccess, updateCollaborator, deleteCollaborator } from '@/lib/team-db';
+import { logger } from '@/lib/logger';
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -8,7 +9,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     if (!data) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     return NextResponse.json(data);
   } catch (err) {
-    console.error('GET collaborator error:', err);
+    logger.error('GET collaborator error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
@@ -21,7 +22,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (!collaborator) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     return NextResponse.json(collaborator);
   } catch (err) {
-    console.error('PATCH collaborator error:', err);
+    logger.error('PATCH collaborator error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
@@ -32,7 +33,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     await deleteCollaborator(id);
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('DELETE collaborator error:', err);
+    logger.error('DELETE collaborator error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

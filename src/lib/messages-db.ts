@@ -14,6 +14,7 @@
  * volumes per pair are small.
  */
 import { sql } from '@vercel/postgres';
+import { logger } from '@/lib/logger';
 
 let migrated = false;
 
@@ -40,7 +41,7 @@ export async function ensureMessagesSchema() {
     try { await sql`CREATE INDEX IF NOT EXISTS idx_messages_pair_b ON messages(to_collaborator_id, from_collaborator_id, created_at DESC)`; } catch {}
     migrated = true;
   } catch (err) {
-    console.error('ensureMessagesSchema error:', err);
+    logger.error('ensureMessagesSchema error', { detail: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -98,7 +99,7 @@ export async function getWorkspaceOwner(): Promise<{ id: string; name: string; e
       workspace_id: row.workspace_id as string,
     };
   } catch (err) {
-    console.error('getWorkspaceOwner error:', err);
+    logger.error('getWorkspaceOwner error', { detail: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }

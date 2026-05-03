@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureScheduleSchema, DEFAULT_SCHEDULE_STATUSES } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 /** GET /api/schedule/statuses?channel_id=
  *  Returns per-channel statuses, or the default global list when the channel has no config. */
@@ -23,7 +24,7 @@ export async function GET(req: NextRequest) {
     // Fall back to defaults (also returned when no channel is specified).
     return NextResponse.json({ statuses: DEFAULT_SCHEDULE_STATUSES });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ statuses: DEFAULT_SCHEDULE_STATUSES });
   }
 }
@@ -49,7 +50,7 @@ export async function PUT(req: NextRequest) {
     }
     return NextResponse.json({ success: true });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed' }, { status: 500 });
   }
 }

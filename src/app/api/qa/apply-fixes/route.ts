@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateTextStream, getDefaultModel } from '@/lib/ai';
 import { applyFixesPrompt } from '@/lib/prompts';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 300;
 
@@ -62,7 +63,7 @@ export async function POST(req: NextRequest) {
           // sometimes swallows that, leaving the client with an empty
           // result and no signal.
           const msg = err instanceof Error ? err.message : 'unknown stream error';
-          console.error('apply-fixes stream error:', err);
+          logger.error('apply-fixes stream error', { detail: err instanceof Error ? err.message : String(err) });
           try { controller.enqueue(encoder.encode(`\n\n[ERROR: ${msg}]`)); } catch {}
           try { controller.close(); } catch {}
         }
@@ -82,7 +83,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Apply fixes failed';
-    console.error('apply-fixes pre-flight error:', err);
+    logger.error('apply-fixes pre-flight error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

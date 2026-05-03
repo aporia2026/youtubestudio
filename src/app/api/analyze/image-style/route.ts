@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateText } from '@/lib/ai';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { makeSpendContext } from '@/lib/ai-spend';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 60;
 
@@ -50,7 +51,7 @@ Return ONLY the style description, no preamble or explanation.`;
     }
     return NextResponse.json({ description });
   } catch (err: unknown) {
-    console.error('Image style analysis error:', err);
+    logger.error('Image style analysis error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Analysis failed' },
       { status: 500 },

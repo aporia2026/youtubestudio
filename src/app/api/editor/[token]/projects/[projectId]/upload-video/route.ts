@@ -4,6 +4,7 @@ import { getEditorByPersonalToken } from '@/lib/team-db';
 import { getEditorAssignment, updateEditorAssignment } from '@/lib/editor-db';
 import { createProject as createReviewProject, createVersion } from '@/lib/review-db';
 import { isR2Configured, buildR2Key, getUploadPresignedUrl } from '@/lib/r2';
+import { logger } from '@/lib/logger';
 
 const ALLOWED_VIDEO_TYPES = ['video/mp4', 'video/webm', 'video/quicktime', 'video/mpeg', 'video/x-msvideo', 'video/x-matroska'];
 
@@ -75,7 +76,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
       r2Key,
     }, { status: 201 });
   } catch (err) {
-    console.error('editor upload-video error:', err);
+    logger.error('editor upload-video error', { detail: err instanceof Error ? err.message : String(err) });
     const msg = err instanceof Error ? err.message : 'Unknown error';
     return NextResponse.json({ error: `Failed to start upload: ${msg}` }, { status: 500 });
   }
@@ -111,7 +112,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ to
     `;
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('PATCH editor video error:', err);
+    logger.error('PATCH editor video error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

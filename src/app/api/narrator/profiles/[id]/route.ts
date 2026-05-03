@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { updateNarratorProfile, deleteNarratorProfile } from '@/lib/narrator-db';
+import { logger } from '@/lib/logger';
 
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -9,7 +10,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     if (!profile) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     return NextResponse.json(profile);
   } catch (err) {
-    console.error('PUT narrator profile error:', err);
+    logger.error('PUT narrator profile error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to update profile' }, { status: 500 });
   }
 }
@@ -20,7 +21,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     await deleteNarratorProfile(id);
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('DELETE narrator profile error:', err);
+    logger.error('DELETE narrator profile error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to delete profile' }, { status: 500 });
   }
 }

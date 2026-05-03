@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
 import { countWords, estimateDuration } from '@/lib/utils';
 import { apiRoute } from '@/lib/route-helpers';
+import { logger } from '@/lib/logger';
 
 export const GET = apiRoute.authed(async (session, req) => {
   const { searchParams } = new URL(req.url);
@@ -30,7 +31,7 @@ export const GET = apiRoute.authed(async (session, req) => {
       total: parseInt(countResult.rows[0]!.total as string),
     });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ projects: [], total: 0 });
   }
 });

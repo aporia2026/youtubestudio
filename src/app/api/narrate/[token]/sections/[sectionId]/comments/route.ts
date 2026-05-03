@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getAssignmentByToken, createNarratorComment } from '@/lib/narrator-db';
 import { notifyNarratorComment } from '@/lib/notify';
+import { logger } from '@/lib/logger';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ token: string; sectionId: string }> }) {
   try {
@@ -36,11 +37,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
       projectId: assignment.project_id,
       projectTitle: assignment.project_title || 'project',
       text: text.trim(),
-    }).catch(e => console.error('notifyNarratorComment failed:', e));
+    }).catch(e => logger.error('notifyNarratorComment failed', { detail: e instanceof Error ? e.message : String(e) }));
 
     return NextResponse.json(comment, { status: 201 });
   } catch (err) {
-    console.error('comment error:', err);
+    logger.error('comment error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to post comment' }, { status: 500 });
   }
 }

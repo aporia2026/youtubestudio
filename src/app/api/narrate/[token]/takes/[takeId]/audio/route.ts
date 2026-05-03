@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getAssignmentByToken } from '@/lib/narrator-db';
 import { streamFromNarrationBucket } from '@/lib/r2';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 // Audio responses are streamed from R2; we don't buffer them in serverless
@@ -62,7 +63,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ toke
 
     return new Response(r2.body, { status: r2.status, headers });
   } catch (err) {
-    console.error('GET narrate take audio proxy error:', err);
+    logger.error('GET narrate take audio proxy error', { detail: err instanceof Error ? err.message : String(err) });
     return new Response(JSON.stringify({ error: 'Failed to stream audio' }), { status: 500 });
   }
 }

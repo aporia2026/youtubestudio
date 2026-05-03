@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { logger } from '@/lib/logger';
 import { sql } from '@vercel/postgres';
 import {
   createTakeComment,
@@ -18,7 +19,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tak
     const comments = await getTakeComments(takeId);
     return NextResponse.json(comments);
   } catch (err) {
-    console.error('GET take comments (owner) error:', err);
+    logger.error('GET take comments (owner) error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to load comments' }, { status: 500 });
   }
 }
@@ -83,12 +84,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tak
         timestampMs: comment.timestamp_ms,
         endTimestampMs: comment.end_timestamp_ms,
         text: comment.text,
-      }).catch(e => console.error('notifyOwnerTakeComment failed:', e));
+      }).catch(e => logger.error('notifyOwnerTakeComment failed', { detail: e instanceof Error ? e.message : String(e) }));
     }).catch(() => {});
 
     return NextResponse.json(comment, { status: 201 });
   } catch (err) {
-    console.error('POST take comment (owner) error:', err);
+    logger.error('POST take comment (owner) error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to create comment' }, { status: 500 });
   }
 }

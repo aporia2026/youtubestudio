@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { listCachedReferences } from '@/lib/reference-cache-db';
+import { logger } from '@/lib/logger';
 
 /**
  * Browse the user's saved reference videos. Returns the cached metadata
@@ -38,7 +39,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ items });
   } catch (err) {
-    console.error('GET reference-library error:', err);
+    logger.error('GET reference-library error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to list references' }, { status: 500 });
   }
 }

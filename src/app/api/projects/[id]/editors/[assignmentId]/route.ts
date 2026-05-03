@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { deleteEditorAssignment, updateEditorAssignment } from '@/lib/editor-db';
+import { logger } from '@/lib/logger';
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string; assignmentId: string }> }) {
   try {
@@ -9,7 +10,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (!a) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     return NextResponse.json(a);
   } catch (err) {
-    console.error('PATCH editor assignment error:', err);
+    logger.error('PATCH editor assignment error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
@@ -20,7 +21,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     await deleteEditorAssignment(assignmentId);
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('DELETE editor assignment error:', err);
+    logger.error('DELETE editor assignment error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

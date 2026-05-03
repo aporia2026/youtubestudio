@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { createEditorAssignment, getEditorAssignmentsForProject } from '@/lib/editor-db';
 import { notifyEditorAssigned } from '@/lib/notify';
+import { logger } from '@/lib/logger';
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -9,7 +10,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     const list = await getEditorAssignmentsForProject(id);
     return NextResponse.json(list);
   } catch (err) {
-    console.error('GET project editors error:', err);
+    logger.error('GET project editors error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
@@ -36,12 +37,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         projectTitle: title,
         editorNotes: editor_notes,
         deadline,
-      }).catch(e => console.error('notifyEditorAssigned failed:', e));
+      }).catch(e => logger.error('notifyEditorAssigned failed', { detail: e instanceof Error ? e.message : String(e) }));
     }).catch(() => {});
 
     return NextResponse.json(assignment, { status: 201 });
   } catch (err) {
-    console.error('POST project editor error:', err);
+    logger.error('POST project editor error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to assign editor' }, { status: 500 });
   }
 }

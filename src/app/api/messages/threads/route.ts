@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getWorkspaceOwner, listThreadsForOwner } from '@/lib/messages-db';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 
@@ -17,7 +18,7 @@ export async function GET(_req: NextRequest) {
     const threads = await listThreadsForOwner(owner.id);
     return NextResponse.json({ owner: { id: owner.id, name: owner.name, color: owner.color }, threads });
   } catch (err) {
-    console.error('GET threads error:', err);
+    logger.error('GET threads error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to load threads' }, { status: 500 });
   }
 }

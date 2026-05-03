@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getTemplate, updateTemplate, deleteTemplate } from '@/lib/templates-db';
+import { logger } from '@/lib/logger';
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -8,7 +9,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     if (!template) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     return NextResponse.json({ template });
   } catch (err) {
-    console.error('GET template error:', err);
+    logger.error('GET template error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
@@ -25,7 +26,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (!template) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     return NextResponse.json({ template });
   } catch (err) {
-    console.error('PATCH template error:', err);
+    logger.error('PATCH template error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to update' }, { status: 500 });
   }
 }
@@ -36,7 +37,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     await deleteTemplate(id);
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('DELETE template error:', err);
+    logger.error('DELETE template error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to delete' }, { status: 500 });
   }
 }

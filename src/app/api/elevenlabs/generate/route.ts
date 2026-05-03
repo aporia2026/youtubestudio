@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateVoiceover } from '@/lib/elevenlabs';
 import { put } from '@vercel/blob';
 import { sql } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 300;
 
@@ -44,7 +45,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ url: blob.url, size: audioBuffer.byteLength });
   } catch (err: unknown) {
-    console.error('ElevenLabs generation error:', err);
+    logger.error('ElevenLabs generation error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Generation failed' },
       { status: 500 }

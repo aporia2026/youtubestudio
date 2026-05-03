@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getShareLinkByToken, getVersions, getCommentsForProject } from '@/lib/review-db';
 import { getDownloadPresignedUrl } from '@/lib/r2';
+import { logger } from '@/lib/logger';
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -64,7 +65,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
       comments,
     });
   } catch (err) {
-    console.error('GET /api/review/[token] error:', err);
+    logger.error('GET /api/review/[token] error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to load review' }, { status: 500 });
   }
 }

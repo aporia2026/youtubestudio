@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureScheduleSchema } from '@/lib/db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { logger } from '@/lib/logger';
 
 // Hard ceilings so a runaway client (or a crafted request) can't pin a DB
 // connection for minutes. Tuned generously for a solo-creator with a huge
@@ -95,7 +96,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ updated: itemIds.length });
   } catch (err) {
-    console.error('POST /api/schedule/bulk-assign-channels', err);
+    logger.error('POST /api/schedule/bulk-assign-channels', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

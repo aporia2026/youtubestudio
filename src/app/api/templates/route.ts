@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { listTemplates, createTemplate, type TemplateFieldType } from '@/lib/templates-db';
+import { logger } from '@/lib/logger';
 
 const VALID_TYPES: TemplateFieldType[] = ['script', 'youtube_description', 'title', 'thumbnail', 'idea', 'qa', 'production_doc', 'other'];
 
@@ -12,7 +13,7 @@ export async function GET(req: NextRequest) {
     const templates = await listTemplates(fieldType);
     return NextResponse.json({ templates });
   } catch (err) {
-    console.error('GET templates error:', err);
+    logger.error('GET templates error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to list templates' }, { status: 500 });
   }
 }
@@ -41,7 +42,7 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json({ template }, { status: 201 });
   } catch (err) {
-    console.error('POST template error:', err);
+    logger.error('POST template error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to create template' }, { status: 500 });
   }
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 300;
 
@@ -186,7 +187,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ imageUrl, taskId });
   } catch (err: unknown) {
-    console.error('Thumbnail image generation error:', err);
+    logger.error('Thumbnail image generation error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Image generation failed' },
       { status: 500 },

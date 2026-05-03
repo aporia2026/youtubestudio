@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getAssignmentByToken } from '@/lib/narrator-db';
+import { logger } from '@/lib/logger';
 
 /** Token-side delete — narrator can only delete their own comments. */
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ token: string; commentId: string }> }) {
@@ -26,7 +27,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ t
     await sql`DELETE FROM narrator_comments WHERE id = ${commentId}`;
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('DELETE narrator token comment error:', err);
+    logger.error('DELETE narrator token comment error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to delete comment' }, { status: 500 });
   }
 }

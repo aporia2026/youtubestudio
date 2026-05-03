@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { updateSection, createNarratorComment } from '@/lib/narrator-db';
 import { notifyRetakeRequested } from '@/lib/notify';
+import { logger } from '@/lib/logger';
 
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string; sectionId: string }> }) {
   try {
@@ -45,13 +46,13 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
           shareToken: row.share_token,
           sectionLabel: row.label || 'a section',
           notes: retake_notes,
-        }).catch(e => console.error('notifyRetakeRequested failed:', e));
+        }).catch(e => logger.error('notifyRetakeRequested failed', { detail: e instanceof Error ? e.message : String(e) }));
       }).catch(() => {});
     }
 
     return NextResponse.json(section);
   } catch (err) {
-    console.error('PUT section error:', err);
+    logger.error('PUT section error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to update section' }, { status: 500 });
   }
 }

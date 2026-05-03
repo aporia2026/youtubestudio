@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureScheduleSchema } from '@/lib/db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { logger } from '@/lib/logger';
 
 const MAX_NAME = 200;
 const MAX_EMAIL = 320;
@@ -42,7 +43,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     `;
     return NextResponse.json({ success: true });
   } catch (err) {
-    console.error('PATCH /api/channel-editors/[id]', err);
+    logger.error('PATCH /api/channel-editors/[id]', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
@@ -57,7 +58,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     await sql`DELETE FROM channel_editors WHERE id = ${id}`;
     return NextResponse.json({ success: true });
   } catch (err) {
-    console.error('DELETE /api/channel-editors/[id]', err);
+    logger.error('DELETE /api/channel-editors/[id]', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

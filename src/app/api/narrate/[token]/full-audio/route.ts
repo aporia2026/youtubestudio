@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { logger } from '@/lib/logger';
 import { sql } from '@vercel/postgres';
 import {
   getAssignmentByToken,
@@ -133,7 +134,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
       contentType: resolvedContentType,
     }, { status: 201 });
   } catch (err) {
-    console.error('upload full audio error:', err);
+    logger.error('upload full audio error', { detail: err instanceof Error ? err.message : String(err) });
     const msg = err instanceof Error ? err.message : 'Unknown error';
     return NextResponse.json({ error: `Failed to start upload: ${msg}` }, { status: 500 });
   }
@@ -175,7 +176,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ to
     }
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('PATCH full audio error:', err);
+    logger.error('PATCH full audio error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to update full audio' }, { status: 500 });
   }
 }

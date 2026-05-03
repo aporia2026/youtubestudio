@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createCollaborator, listCollaborators } from '@/lib/team-db';
+import { logger } from '@/lib/logger';
 
 export async function GET(req: NextRequest) {
   try {
@@ -7,7 +8,7 @@ export async function GET(req: NextRequest) {
     const collaborators = await listCollaborators(role);
     return NextResponse.json(collaborators);
   } catch (err) {
-    console.error('GET collaborators error:', err);
+    logger.error('GET collaborators error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to list collaborators' }, { status: 500 });
   }
 }
@@ -19,7 +20,7 @@ export async function POST(req: NextRequest) {
     const collaborator = await createCollaborator({ ...body, name: body.name.trim() });
     return NextResponse.json(collaborator, { status: 201 });
   } catch (err) {
-    console.error('POST collaborator error:', err);
+    logger.error('POST collaborator error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to create collaborator' }, { status: 500 });
   }
 }

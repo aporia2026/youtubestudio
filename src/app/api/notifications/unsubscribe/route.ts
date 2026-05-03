@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCollaboratorByUnsubscribeToken, setCollaboratorNotifications } from '@/lib/notifications-db';
+import { logger } from '@/lib/logger';
 
 /** Public — flips notifications off for a collaborator. Used by email links. */
 export async function POST(req: NextRequest) {
@@ -11,7 +12,7 @@ export async function POST(req: NextRequest) {
     await setCollaboratorNotifications(collab.id, !!enabled);
     return NextResponse.json({ ok: true, name: collab.name, enabled: !!enabled });
   } catch (err) {
-    console.error('unsubscribe error:', err);
+    logger.error('unsubscribe error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

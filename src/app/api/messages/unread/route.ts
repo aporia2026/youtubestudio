@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getWorkspaceOwner, getUnreadCountForUser } from '@/lib/messages-db';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 
@@ -11,7 +12,7 @@ export async function GET(_req: NextRequest) {
     const n = await getUnreadCountForUser(owner.id);
     return NextResponse.json({ unread: n });
   } catch (err) {
-    console.error('GET owner unread error:', err);
+    logger.error('GET owner unread error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

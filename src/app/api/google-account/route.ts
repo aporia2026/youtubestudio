@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getSheetsAccountInfo, deleteSheetsTokens } from '@/lib/google-oauth';
 import { ensureGoogleAuthSchema } from '@/lib/db';
 import { requireUser, SessionError } from '@/lib/session';
+import { logger } from '@/lib/logger';
 
 export async function GET() {
   try {
@@ -14,7 +15,7 @@ export async function GET() {
     if (err instanceof SessionError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
-    console.error('Google account status error:', err);
+    logger.error('Google account status error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ connected: false });
   }
 }
@@ -28,7 +29,7 @@ export async function DELETE() {
     if (err instanceof SessionError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
-    console.error('Google account disconnect error:', err);
+    logger.error('Google account disconnect error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to disconnect' }, { status: 500 });
   }
 }

@@ -1,4 +1,5 @@
 import { sql } from '@vercel/postgres';
+import { logger } from '@/lib/logger';
 
 // ---------------------------------------------------------------------------
 // Reusable prompt templates.
@@ -55,7 +56,7 @@ export async function ensureTemplatesSchema() {
     try { await sql`CREATE INDEX IF NOT EXISTS idx_prompt_templates_field ON prompt_templates(field_type)`; } catch {}
     migrated = true;
   } catch (err) {
-    console.error('ensureTemplatesSchema error:', err);
+    logger.error('ensureTemplatesSchema error', { detail: err instanceof Error ? err.message : String(err) });
   }
 }
 

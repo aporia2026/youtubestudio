@@ -6,6 +6,7 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { computeAnalytics, VideoRow } from '@/lib/competitor-analytics';
 import { makeSpendContext } from '@/lib/ai-spend';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 300;
 
@@ -89,7 +90,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const ideas = (parsed as { ideas?: unknown[] }).ideas || [];
     return NextResponse.json({ ideas });
   } catch (err) {
-    console.error('Competitor ideas error:', err);
+    logger.error('Competitor ideas error', { detail: err instanceof Error ? err.message : String(err) });
     const detail = err instanceof Error ? err.message : 'unknown';
     return NextResponse.json({ error: `Ideas generation failed: ${detail}` }, { status: 500 });
   }

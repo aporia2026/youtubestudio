@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { analyzeYouTubeVideo } from '@/lib/ai';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { logger } from '@/lib/logger';
 
 // Gemini natively ingests the YouTube video (not just the thumbnail), which takes
 // noticeably longer than a single image call — give it headroom.
@@ -82,7 +83,7 @@ export async function POST(req: NextRequest) {
       styleDescription,
     });
   } catch (err: unknown) {
-    console.error('YouTube style analysis error:', err);
+    logger.error('YouTube style analysis error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Analysis failed' },
       { status: 500 },

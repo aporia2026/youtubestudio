@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 60;
 
@@ -58,7 +59,7 @@ async function getRedditAccessToken(): Promise<string | null> {
     });
 
     if (!res.ok) {
-      console.error('Reddit OAuth token request failed:', res.status);
+      logger.error('Reddit OAuth token request failed', { detail: `status ${res.status}` });
       return null;
     }
 
@@ -71,7 +72,7 @@ async function getRedditAccessToken(): Promise<string | null> {
     };
     return tokenCache.token;
   } catch (err) {
-    console.error('Reddit OAuth error:', err);
+    logger.error('Reddit OAuth error', { detail: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }
@@ -94,7 +95,7 @@ async function fetchViaOAuth(niche: string, subreddits: string[], limit: number,
       const searchUrl = `https://oauth.reddit.com/search?q=${encodeURIComponent(niche)}&sort=${sort}&t=month&limit=${Math.ceil(limit / 2)}`;
       const res = await fetch(searchUrl, { headers, signal: AbortSignal.timeout(10000) });
       if (!res.ok) {
-        console.error(`OAuth search (${sort}) returned ${res.status}`);
+        logger.error(`OAuth search (${sort}) returned ${res.status}`);
         continue;
       }
       const data = await res.json();
@@ -114,7 +115,7 @@ async function fetchViaOAuth(niche: string, subreddits: string[], limit: number,
         });
       }
     } catch (err) {
-      console.error(`OAuth search (${sort}) error:`, err);
+      logger.error(`OAuth search (${sort}) error:`, { detail: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -144,7 +145,7 @@ async function fetchViaOAuth(niche: string, subreddits: string[], limit: number,
             });
           }
         } catch (err) {
-          console.error(`OAuth r/${sub} (${sortType}) error:`, err);
+          logger.error(`OAuth r/${sub} (${sortType}) error:`, { detail: err instanceof Error ? err.message : String(err) });
         }
       }
     }
@@ -239,11 +240,11 @@ async function fetchViaRSS(niche: string, subreddits: string[], limit: number): 
       if (xml.includes('<feed') || xml.includes('<entry')) {
         results.push(...parseRSSEntries(xml));
       } else {
-        console.error('Reddit RSS search returned non-feed response');
+        logger.error('Reddit RSS search returned non-feed response');
       }
     }
   } catch (err) {
-    console.error('Reddit RSS search error:', err);
+    logger.error('Reddit RSS search error', { detail: err instanceof Error ? err.message : String(err) });
   }
 
   // 2. Subreddit RSS feeds
@@ -259,7 +260,7 @@ async function fetchViaRSS(niche: string, subreddits: string[], limit: number): 
           }
         }
       } catch (err) {
-        console.error(`Reddit RSS r/${sub} error:`, err);
+        logger.error(`Reddit RSS r/${sub} error:`, { detail: err instanceof Error ? err.message : String(err) });
       }
     });
     await Promise.allSettled(subFetches);
@@ -362,7 +363,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(response);
   } catch (err: unknown) {
-    console.error('Reddit research error:', err);
+    logger.error('Reddit research error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Reddit research failed' },
       { status: 500 },

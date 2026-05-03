@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { logger } from '@/lib/logger';
 import { sql } from '@vercel/postgres';
 import {
   getAssignmentByToken,
@@ -25,7 +26,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
     const comments = await getTakeComments(takeId);
     return NextResponse.json(comments);
   } catch (err) {
-    console.error('GET token take comments error:', err);
+    logger.error('GET token take comments error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to load comments' }, { status: 500 });
   }
 }
@@ -83,12 +84,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
         timestampMs: comment.timestamp_ms,
         text: comment.text,
         isReply: !!parent_id,
-      }).catch(e => console.error('notifyNarratorTakeComment failed:', e));
+      }).catch(e => logger.error('notifyNarratorTakeComment failed', { detail: e instanceof Error ? e.message : String(e) }));
     }).catch(() => {});
 
     return NextResponse.json(comment, { status: 201 });
   } catch (err) {
-    console.error('POST token take comment error:', err);
+    logger.error('POST token take comment error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to create comment' }, { status: 500 });
   }
 }

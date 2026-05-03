@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getValidAccessToken } from '@/lib/google-oauth';
 import { listMyVideosOAuth } from '@/lib/youtube';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 30;
 
@@ -50,7 +51,7 @@ export async function GET(req: NextRequest) {
       top,
     });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed' }, { status: 500 });
   }
 }

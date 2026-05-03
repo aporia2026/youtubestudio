@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureCompetitorSchema } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 /** GET /api/schedule/competitor-cadence?from=&to=
  *  Returns competitor upload events within a date range so the calendar can
@@ -30,7 +31,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ events: rows.rows });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ events: [] });
   }
 }

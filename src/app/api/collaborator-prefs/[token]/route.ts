@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { logger } from '@/lib/logger';
 import {
   getCollaboratorByPersonalToken,
   updateCollaboratorAvailability,
@@ -33,7 +34,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
       notification_prefs: me.notification_prefs ?? {},
     });
   } catch (err) {
-    console.error('GET prefs error:', err);
+    logger.error('GET prefs error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
@@ -89,7 +90,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ to
       notification_prefs: updated?.notification_prefs ?? {},
     });
   } catch (err) {
-    console.error('PATCH prefs error:', err);
+    logger.error('PATCH prefs error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

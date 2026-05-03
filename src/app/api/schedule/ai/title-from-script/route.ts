@@ -4,6 +4,7 @@ import { sql, ensureScheduleSchema } from '@/lib/db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { makeSpendContext } from '@/lib/ai-spend';
 import { resolveFeatureModel } from '@/lib/model-defaults';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 120;
 
@@ -71,7 +72,7 @@ Generate 5 title candidates. JSON only.`;
 
     return NextResponse.json(parsed);
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed' }, { status: 500 });
   }
 }

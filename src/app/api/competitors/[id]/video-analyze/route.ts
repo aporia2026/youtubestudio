@@ -4,6 +4,7 @@ import { analyzeYouTubeVideo, modelSupportsVideo, getModelById } from '@/lib/ai'
 import { competitorVideoForensicsPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 300; // up to 5 min — Gemini may take a while on long videos
 
@@ -99,7 +100,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     return NextResponse.json({ analysis, cached: false, model: modelId });
   } catch (err) {
-    console.error('Video forensics error:', err);
+    logger.error('Video forensics error', { detail: err instanceof Error ? err.message : String(err) });
     const detail = err instanceof Error ? err.message : 'unknown';
     return NextResponse.json({ error: `Video analysis failed: ${detail}` }, { status: 500 });
   }

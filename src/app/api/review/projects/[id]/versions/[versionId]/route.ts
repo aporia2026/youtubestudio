@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getVersion } from '@/lib/review-db';
 import { deleteR2Object } from '@/lib/r2';
+import { logger } from '@/lib/logger';
 
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string; versionId: string }> }) {
   try {
@@ -20,7 +21,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
       try {
         await deleteR2Object(version.r2_key);
       } catch (e) {
-        console.error('R2 delete failed for', version.r2_key, e);
+        logger.error('R2 delete failed for', { detail: [version.r2_key, e].map(v => v instanceof Error ? v.message : String(v)).join(' | ') });
       }
     }
 
@@ -29,7 +30,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
 
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('DELETE version error:', err);
+    logger.error('DELETE version error', { detail: err instanceof Error ? err.message : String(err) });
     const msg = err instanceof Error ? err.message : 'Unknown error';
     return NextResponse.json({ error: `Failed to delete version: ${msg}` }, { status: 500 });
   }

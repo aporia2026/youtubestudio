@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { logger } from '@/lib/logger';
 import { sql } from '@vercel/postgres';
 import { getEditorByPersonalToken } from '@/lib/team-db';
 import {
@@ -32,7 +33,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
         await ensureEditorAssignmentFromReviewLink(row.review_project_id, editor.id);
       }
     } catch (err) {
-      console.error('editor dashboard backfill error:', err);
+      logger.error('editor dashboard backfill error', { detail: err instanceof Error ? err.message : String(err) });
     }
 
     const [assignments, reviewOnly] = await Promise.all([
@@ -51,7 +52,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
       reviewOnly,
     });
   } catch (err) {
-    console.error('GET editor dashboard error:', err);
+    logger.error('GET editor dashboard error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

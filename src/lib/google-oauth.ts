@@ -1,6 +1,7 @@
 import { SignJWT, jwtVerify } from 'jose';
 import { sql } from '@/lib/db';
 import { encrypt, decrypt } from '@/lib/crypto';
+import { logger } from '@/lib/logger';
 
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -214,7 +215,7 @@ export async function getValidAccessToken(
 
       token = refreshed.access_token;
     } catch (err) {
-      console.error('Token refresh failed for channel', channelDbId, err);
+      logger.error('Token refresh failed for channel', { channel_db_id: channelDbId, detail: err instanceof Error ? err.message : String(err) });
       return null;
     }
   }

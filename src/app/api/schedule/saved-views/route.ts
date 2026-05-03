@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureScheduleSchema } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 export async function GET() {
   try {
@@ -7,7 +8,7 @@ export async function GET() {
     const rows = await sql`SELECT * FROM schedule_saved_views ORDER BY created_at DESC`;
     return NextResponse.json({ views: rows.rows });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ views: [] });
   }
 }
@@ -24,7 +25,7 @@ export async function POST(req: NextRequest) {
     `;
     return NextResponse.json({ view: row.rows[0] });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed' }, { status: 500 });
   }
 }

@@ -5,6 +5,7 @@ import { competitorThumbnailPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { makeSpendContext } from '@/lib/ai-spend';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 120;
 
@@ -101,7 +102,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     return NextResponse.json({ analysis, cached: false });
   } catch (err) {
-    console.error('Thumbnail analysis error:', err);
+    logger.error('Thumbnail analysis error', { detail: err instanceof Error ? err.message : String(err) });
     const detail = err instanceof Error ? err.message : 'unknown';
     return NextResponse.json({ error: `Thumbnail analysis failed: ${detail}` }, { status: 500 });
   }

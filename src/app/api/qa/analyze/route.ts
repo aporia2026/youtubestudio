@@ -6,6 +6,7 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { getTemplate } from '@/lib/templates-db';
 import { getSession } from '@/lib/session';
 import { resolveBrandKitForRequest } from '@/lib/channel-brand-kit';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 300;
 
@@ -147,7 +148,7 @@ export async function POST(req: NextRequest) {
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'AI provider call failed';
-      console.error('QA generateText failed:', e);
+      logger.error('QA generateText failed', { detail: e instanceof Error ? e.message : String(e) });
       return NextResponse.json({ error: `AI provider error: ${msg}` }, { status: 502 });
     }
 
@@ -165,7 +166,7 @@ export async function POST(req: NextRequest) {
       // sentence). 200 chars is enough to spot the pattern without turning
       // the toast into a wall of text.
       const snippet = raw.slice(0, 200).replace(/\s+/g, ' ').trim();
-      console.error('QA JSON parse failed. Raw start:', snippet);
+      logger.error('QA JSON parse failed. Raw start', { detail: snippet });
       return NextResponse.json(
         { error: `Model returned non-JSON output. Try a different model or re-run. Snippet: ${snippet || '(no content)'}` },
         { status: 502 },
@@ -210,7 +211,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ result });
   } catch (err: unknown) {
-    console.error('QA analyze error:', err);
+    logger.error('QA analyze error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'QA analysis failed' },
       { status: 500 }

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getNarratorByPersonalToken } from '@/lib/team-db';
 import { countWords } from '@/lib/utils';
+import { logger } from '@/lib/logger';
 
 /**
  * Public API for the narrator's personal dashboard at /narrator/[token].
@@ -97,7 +98,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
       assignments: enriched,
     });
   } catch (err) {
-    console.error('GET narrator dashboard error:', err);
+    logger.error('GET narrator dashboard error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to load dashboard' }, { status: 500 });
   }
 }

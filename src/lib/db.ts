@@ -1,4 +1,5 @@
 import { sql } from '@vercel/postgres';
+import { logger } from '@/lib/logger';
 
 export { sql };
 
@@ -21,7 +22,7 @@ export async function ensureDraftsSchema() {
     try { await sql`CREATE INDEX IF NOT EXISTS idx_workflow_drafts_updated ON workflow_drafts(updated_at DESC)`; } catch {}
     draftsMigrated = true;
   } catch (err) {
-    console.error('ensureDraftsSchema error:', err);
+    logger.error('ensureDraftsSchema error', { detail: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -56,7 +57,7 @@ export async function ensureChannelNamesSchema() {
     try { await sql`CREATE INDEX IF NOT EXISTS idx_saved_names_saved_at ON saved_channel_names(saved_at DESC)`; } catch {}
     channelNamesMigrated = true;
   } catch (err) {
-    console.error('ensureChannelNamesSchema error:', err);
+    logger.error('ensureChannelNamesSchema error', { detail: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -118,7 +119,7 @@ export async function ensureCompetitorSchema() {
 
     competitorMigrated = true;
   } catch (err) {
-    console.error('ensureCompetitorSchema error:', err);
+    logger.error('ensureCompetitorSchema error', { detail: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -378,7 +379,7 @@ export async function ensureChannelsSchema() {
     try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS oauth_connected BOOLEAN DEFAULT false`; } catch {}
     channelsMigrated = true;
   } catch (err) {
-    console.error('ensureChannelsSchema error:', err);
+    logger.error('ensureChannelsSchema error', { detail: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -533,7 +534,7 @@ export async function ensureScheduleSchema() {
 
     scheduleMigrated = true;
   } catch (err) {
-    console.error('ensureScheduleSchema error:', err);
+    logger.error('ensureScheduleSchema error', { detail: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -623,7 +624,7 @@ export async function ensureSeriesSchema() {
     // is created) can apply the pending column additions.
     if (allOk) seriesMigrated = true;
   } catch (err) {
-    console.error('ensureSeriesSchema error:', err);
+    logger.error('ensureSeriesSchema error', { detail: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -658,6 +659,6 @@ export async function ensureGoogleAuthSchema() {
     `;
     googleAuthMigrated = true;
   } catch (err) {
-    console.error('ensureGoogleAuthSchema error:', err);
+    logger.error('ensureGoogleAuthSchema error', { detail: err instanceof Error ? err.message : String(err) });
   }
 }

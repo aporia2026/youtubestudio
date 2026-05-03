@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getProject, getVersions, getCommentsForProject } from '@/lib/review-db';
 import { getDownloadPresignedUrl } from '@/lib/r2';
+import { logger } from '@/lib/logger';
 
 /**
  * Owner-side playback data — same shape as /api/review/[token] but
@@ -35,7 +36,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       comments,
     });
   } catch (err) {
-    console.error('GET playback error:', err);
+    logger.error('GET playback error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to load playback' }, { status: 500 });
   }
 }

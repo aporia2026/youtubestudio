@@ -1,4 +1,5 @@
 import { sql } from '@vercel/postgres';
+import { logger } from '@/lib/logger';
 
 // ---------------------------------------------------------------------------
 // Reference video cache.
@@ -83,7 +84,7 @@ export async function ensureReferenceCacheSchema() {
     try { await sql`CREATE INDEX IF NOT EXISTS idx_reference_cache_last_used ON reference_video_cache(last_used_at DESC NULLS LAST)`; } catch {}
     migrated = true;
   } catch (err) {
-    console.error('ensureReferenceCacheSchema error:', err);
+    logger.error('ensureReferenceCacheSchema error', { detail: err instanceof Error ? err.message : String(err) });
   }
 }
 

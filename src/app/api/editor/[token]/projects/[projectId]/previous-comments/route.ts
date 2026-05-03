@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getEditorByPersonalToken } from '@/lib/team-db';
 import { getEditorAssignment } from '@/lib/editor-db';
+import { logger } from '@/lib/logger';
 
 /**
  * Returns the unresolved (top-level) comments from the version JUST BEFORE
@@ -58,7 +59,7 @@ export async function GET(
       comments,
     });
   } catch (err) {
-    console.error('GET previous-comments error:', err);
+    logger.error('GET previous-comments error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

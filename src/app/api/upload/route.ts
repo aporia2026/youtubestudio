@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { put } from '@vercel/blob';
 import { sql } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 60;
 
@@ -53,7 +54,7 @@ export async function POST(req: NextRequest) {
       type,
     });
   } catch (err: unknown) {
-    console.error('Upload error:', err);
+    logger.error('Upload error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Upload failed' },
       { status: 500 }

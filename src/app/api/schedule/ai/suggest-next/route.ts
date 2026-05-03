@@ -4,6 +4,7 @@ import { sql, ensureScheduleSchema } from '@/lib/db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { makeSpendContext } from '@/lib/ai-spend';
 import { resolveFeatureModel } from '@/lib/model-defaults';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 120;
 
@@ -89,7 +90,7 @@ Pick 3 strong next-video candidates. Prefer pulling from the saved idea library 
 
     return NextResponse.json(parsed);
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed' }, { status: 500 });
   }
 }

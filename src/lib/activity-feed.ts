@@ -1,4 +1,5 @@
 import { sql } from '@vercel/postgres';
+import { logger } from '@/lib/logger';
 
 // ---------------------------------------------------------------------------
 // In-app activity feed.
@@ -67,7 +68,7 @@ export async function ensureActivityFeedSchema() {
     try { await sql`CREATE INDEX IF NOT EXISTS idx_activity_events_unread ON activity_events(recipient_collaborator_id) WHERE read_at IS NULL`; } catch {}
     migrated = true;
   } catch (err) {
-    console.error('ensureActivityFeedSchema error:', err);
+    logger.error('ensureActivityFeedSchema error', { detail: err instanceof Error ? err.message : String(err) });
   }
 }
 

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { logger } from '@/lib/logger';
 import { sql } from '@vercel/postgres';
 import {
   getWorkspaceOwner,
@@ -59,7 +60,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ col
       messages,
     });
   } catch (err) {
-    console.error('GET owner thread error:', err);
+    logger.error('GET owner thread error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to load thread' }, { status: 500 });
   }
 }
@@ -92,11 +93,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ col
       recipientRole: 'collaborator',
       recipientCollaboratorId: counterpart.id as string,
       text,
-    }).catch(e => console.error('notifyMessage(collaborator) failed:', e));
+    }).catch(e => logger.error('notifyMessage(collaborator) failed', { detail: e instanceof Error ? e.message : String(e) }));
 
     return NextResponse.json(created, { status: 201 });
   } catch (err) {
-    console.error('POST owner message error:', err);
+    logger.error('POST owner message error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to send message' }, { status: 500 });
   }
 }

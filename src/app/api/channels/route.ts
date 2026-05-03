@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { sql, ensureChannelsSchema } from '@/lib/db';
 import { fetchChannelData } from '@/lib/youtube';
 import { apiRoute } from '@/lib/route-helpers';
+import { logger } from '@/lib/logger';
 
 export const GET = apiRoute.authed(async (session) => {
   try {
@@ -86,7 +87,7 @@ export const POST = apiRoute.authed(async (session, req) => {
 
     return NextResponse.json({ channel: result.rows[0] });
   } catch (err: unknown) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed' }, { status: 500 });
   }
 });

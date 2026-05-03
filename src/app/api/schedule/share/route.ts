@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureScheduleSchema } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 function genToken(): string {
   const bytes = new Uint8Array(24);
@@ -14,7 +15,7 @@ export async function GET() {
     const rows = await sql`SELECT id, token, channel_id, label, expires_at, created_at FROM schedule_share_tokens ORDER BY created_at DESC`;
     return NextResponse.json({ shares: rows.rows });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ shares: [] });
   }
 }
@@ -31,7 +32,7 @@ export async function POST(req: NextRequest) {
     `;
     return NextResponse.json({ share: row.rows[0] });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed' }, { status: 500 });
   }
 }
@@ -44,7 +45,7 @@ export async function DELETE(req: NextRequest) {
     await sql`DELETE FROM schedule_share_tokens WHERE id = ${id}`;
     return NextResponse.json({ success: true });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }

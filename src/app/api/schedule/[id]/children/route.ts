@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureScheduleSchema } from '@/lib/db';
 import { expandRecurrence } from '@/lib/schedule';
+import { logger } from '@/lib/logger';
 
 /** DELETE /api/schedule/[id]/children — remove only recurrence children, preserve the parent. */
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -10,7 +11,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     const { rowCount } = await sql`DELETE FROM schedule_items WHERE recurrence_parent_id = ${id}`;
     return NextResponse.json({ removed: rowCount });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
@@ -35,7 +36,7 @@ export async function PUT(_req: NextRequest, { params }: { params: Promise<{ id:
     await ensureScheduleSchema();
     await sql`DELETE FROM schedule_items WHERE recurrence_parent_id = ${p.id}`;
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to remove old children' }, { status: 500 });
   }
   return expandChildren(p);
@@ -76,7 +77,7 @@ async function expandChildren({ id }: { id: string }) {
     }
     return NextResponse.json({ created });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed' }, { status: 500 });
   }
 }

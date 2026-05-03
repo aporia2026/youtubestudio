@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureScheduleSchema } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 /** GET /api/schedule/checklist-templates?channel_id= — returns every template
  *  for that channel (or global-default templates when no channel is given). */
@@ -13,7 +14,7 @@ export async function GET(req: NextRequest) {
       : await sql`SELECT * FROM schedule_checklist_templates WHERE channel_id IS NULL`;
     return NextResponse.json({ templates: rows.rows });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ templates: [] });
   }
 }
@@ -50,7 +51,7 @@ export async function PUT(req: NextRequest) {
     }
     return NextResponse.json({ success: true });
   } catch (err) {
-    console.error(err);
+    logger.error('error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed' }, { status: 500 });
   }
 }

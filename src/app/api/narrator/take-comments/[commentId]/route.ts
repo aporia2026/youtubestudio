@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { logger } from '@/lib/logger';
 import {
   getTakeCommentScope,
   resolveTakeComment,
@@ -22,7 +23,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
     if (!comment) return NextResponse.json({ error: 'Comment not found' }, { status: 404 });
     return NextResponse.json(comment);
   } catch (err) {
-    console.error('PATCH owner take comment error:', err);
+    logger.error('PATCH owner take comment error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to update comment' }, { status: 500 });
   }
 }
@@ -36,7 +37,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     await deleteTakeComment(commentId);
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('DELETE owner take comment error:', err);
+    logger.error('DELETE owner take comment error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to delete comment' }, { status: 500 });
   }
 }

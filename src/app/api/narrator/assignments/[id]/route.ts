@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { logger } from '@/lib/logger';
 import {
   getAssignment,
   updateAssignment,
@@ -63,7 +64,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 
     return NextResponse.json({ assignment, sections: sectionsWithCounts, comments });
   } catch (err) {
-    console.error('GET assignment error:', err);
+    logger.error('GET assignment error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to get assignment' }, { status: 500 });
   }
 }
@@ -76,7 +77,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     if (!assignment) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     return NextResponse.json(assignment);
   } catch (err) {
-    console.error('PUT assignment error:', err);
+    logger.error('PUT assignment error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to update assignment' }, { status: 500 });
   }
 }

@@ -4,6 +4,7 @@ import { createProductionDocSheet, SheetsExportInput } from '@/lib/google-sheets
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { ensureGoogleAuthSchema } from '@/lib/db';
 import { requireUser, SessionError } from '@/lib/session';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 60;
 
@@ -50,7 +51,7 @@ export async function POST(req: NextRequest) {
     if (err instanceof SessionError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
-    console.error('Google Sheets export error:', err);
+    logger.error('Google Sheets export error', { detail: err instanceof Error ? err.message : String(err) });
     const msg = err instanceof Error ? err.message : 'Export failed';
     if (msg.startsWith('NEEDS_REAUTH')) {
       return NextResponse.json({ error: 'NEEDS_REAUTH', message: msg.replace('NEEDS_REAUTH: ', '') }, { status: 403 });

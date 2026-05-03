@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { splitScriptIntoSections, buildLabelPrompt } from '@/lib/narrator-utils';
 import { generateText } from '@/lib/ai';
 import { makeSpendContext } from '@/lib/ai-spend';
+import { logger } from '@/lib/logger';
 
 export async function POST(req: NextRequest) {
   try {
@@ -33,7 +34,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(sections);
   } catch (err) {
-    console.error('split-sections error:', err);
+    logger.error('split-sections error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to split sections' }, { status: 500 });
   }
 }
