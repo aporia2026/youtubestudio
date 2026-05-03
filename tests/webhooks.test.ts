@@ -22,7 +22,7 @@ describe('validateWebhookUrl', () => {
   it('rejects HTTP (must be HTTPS)', () => {
     const out = validateWebhookUrl('slack', 'http://hooks.slack.com/services/T01/B02/abc');
     expect(out.ok).toBe(false);
-    if (!out.ok) expect(out.error).toMatch(/HTTPS/);
+    if (!out.ok) expect(out.error.toLowerCase()).toMatch(/https/);
   });
 
   it('rejects Slack URLs not on hooks.slack.com', () => {
@@ -41,6 +41,20 @@ describe('validateWebhookUrl', () => {
     expect(validateWebhookUrl('generic', 'https://169.254.169.254/').ok).toBe(false);
     expect(validateWebhookUrl('generic', 'https://api.internal/x').ok).toBe(false);
     expect(validateWebhookUrl('generic', 'https://api.local/x').ok).toBe(false);
+  });
+
+  // Audit M6 — extends the prior "loopback / private" test to include
+  // every RFC1918 range + IPv6 private ranges + cloud-metadata DNS
+  // names. The old per-kind block list missed several of these.
+  it('rejects every documented private range when kind=generic', () => {
+    expect(validateWebhookUrl('generic', 'https://10.0.0.1/').ok).toBe(false);
+    expect(validateWebhookUrl('generic', 'https://172.16.5.1/').ok).toBe(false);
+    expect(validateWebhookUrl('generic', 'https://192.168.0.1/').ok).toBe(false);
+    expect(validateWebhookUrl('generic', 'https://100.64.5.5/').ok).toBe(false);
+    expect(validateWebhookUrl('generic', 'https://[::1]/').ok).toBe(false);
+    expect(validateWebhookUrl('generic', 'https://[fe80::1]/').ok).toBe(false);
+    expect(validateWebhookUrl('generic', 'https://[fc00::1]/').ok).toBe(false);
+    expect(validateWebhookUrl('generic', 'https://metadata.google.internal/').ok).toBe(false);
   });
 
   it('rejects malformed URLs', () => {

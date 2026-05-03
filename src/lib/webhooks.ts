@@ -22,6 +22,7 @@
 import { sql } from '@vercel/postgres';
 import { encrypt, decrypt } from './crypto';
 import { logger } from './logger';
+import { checkSafePublicUrl } from './url-safety';
 import {
   WEBHOOK_LABEL_MAX,
   WEBHOOK_URL_PREVIEW_LEN,
@@ -45,32 +46,26 @@ export type {
 // URL validation + preview
 // ---------------------------------------------------------------------------
 
-const SLACK_HOSTS = new Set(['hooks.slack.com']);
-const DISCORD_HOSTS = new Set(['discord.com', 'discordapp.com']);
+const SLACK_HOSTS: ReadonlySet<string> = new Set(['hooks.slack.com']);
+const DISCORD_HOSTS: ReadonlySet<string> = new Set(['discord.com', 'discordapp.com']);
 
 export function validateWebhookUrl(kind: WebhookKind, raw: string): { ok: true; url: string } | { ok: false; error: string } {
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    return { ok: false, error: 'Webhook URL is not a valid URL.' };
-  }
-  if (parsed.protocol !== 'https:') {
-    return { ok: false, error: 'Webhook URL must use HTTPS.' };
-  }
-  if (kind === 'slack' && !SLACK_HOSTS.has(parsed.hostname)) {
-    return { ok: false, error: 'Slack webhook URL must be on hooks.slack.com.' };
-  }
-  if (kind === 'discord' && !DISCORD_HOSTS.has(parsed.hostname)) {
-    return { ok: false, error: 'Discord webhook URL must be on discord.com or discordapp.com.' };
-  }
-  // Defence in depth — block localhost / loopback / metadata IPs.
-  const h = parsed.hostname;
-  const blocked =
-    h === 'localhost' || h === '127.0.0.1' || h === '0.0.0.0' || h === '::1' ||
-    h === '169.254.169.254' || h.endsWith('.internal') || h.endsWith('.local');
-  if (blocked) return { ok: false, error: 'Webhook URL points to a private address.' };
-  return { ok: true, url: parsed.toString() };
+  // SSRF + protocol + private-IP/host checks centralised in url-safety.
+  // Per-kind host pinning runs through the same helper via allowedHosts.
+  // Audit M6: previously the `generic` kind got only the partial private-
+  // address blocklist defined inline here. Now every kind goes through
+  // the comprehensive RFC1918 / loopback / link-local / IMDS / IPv6
+  // private-range checks plus protocol enforcement.
+  const allowedHosts =
+    kind === 'slack' ? SLACK_HOSTS :
+    kind === 'discord' ? DISCORD_HOSTS :
+    undefined;  // generic — no host pinning, but SSRF block list still applies
+  const r = checkSafePublicUrl(raw, {
+    allowedProtocols: ['https:'],
+    allowedHosts,
+  });
+  if (!r.ok) return { ok: false, error: `Webhook URL rejected: ${r.error}` };
+  return { ok: true, url: r.url.toString() };
 }
 
 export function buildUrlPreview(url: string): string {
@@ -253,8 +248,11 @@ export async function dispatchWebhookEvent(workspaceId: string, event: WebhookEv
   );
   if (matching.length === 0) return;
 
-  await Promise.allSettled(
-    matching.map(async (sub) => {
+  // Cap fan-out concurrency at 5. Without this, a workspace with 50
+  // subscriptions and one slow Slack endpoint would block the whole
+  // dispatch on Promise.allSettled until the slowest tail returned —
+  // burning the producer's wall-clock budget. Audit M7.
+  await runWithConcurrency(matching, 5, async (sub) => {
       let url: string;
       try {
         url = decrypt(sub.webhook_url_encrypted);
@@ -297,8 +295,7 @@ export async function dispatchWebhookEvent(workspaceId: string, event: WebhookEv
                updated_at = NOW()
          WHERE id = ${sub.id}::uuid
       `.catch(() => { /* ignore */ });
-    }),
-  );
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -498,4 +495,48 @@ export async function sendTestWebhook(id: string, workspaceId: string): Promise<
       ? `Sent. Receiving server replied ${attempt.http_status}.`
       : attempt.error_message ?? `Receiving server replied ${attempt.http_status ?? 'unknown'}.`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency helper (audit M7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Run `worker(item)` for every item with at most `limit` running in
+ * parallel. Always settles after every worker has resolved or
+ * rejected — like Promise.allSettled but with bounded concurrency so
+ * one slow tail can't hold up everything else queued behind it.
+ *
+ * Pure helper (no DB / network deps) — exported only as a module-local
+ * utility. If a third caller appears, lift to src/lib/concurrency.ts.
+ */
+async function runWithConcurrency<T>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return;
+  const cap = Math.max(1, Math.min(limit, items.length));
+  let cursor = 0;
+  const runners: Promise<void>[] = [];
+  for (let i = 0; i < cap; i++) {
+    runners.push(
+      (async () => {
+        while (true) {
+          const idx = cursor++;
+          if (idx >= items.length) return;
+          try {
+            await worker(items[idx]);
+          } catch (err) {
+            // Swallow — caller's `worker` is responsible for its own
+            // logging. Keeps the runner alive so other items still process.
+            logger.warn('webhooks: worker threw', {
+              detail: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+      })(),
+    );
+  }
+  await Promise.all(runners);
 }
