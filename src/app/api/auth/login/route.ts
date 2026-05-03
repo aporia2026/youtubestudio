@@ -113,7 +113,11 @@ export async function POST(req: NextRequest) {
   response.cookies.set(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
+    // Lax — required so the cookie is sent on the top-level GET that follows
+    // a 3rd-party OAuth redirect (e.g. Google Sheets connect → /api/auth/google/callback
+    // → /settings). Strict would withhold it from the whole redirect chain
+    // and bounce the user to /login post-OAuth.
+    sameSite: 'lax',
     maxAge: 60 * 60 * 24 * 30, // 30 days
     path: '/',
   });

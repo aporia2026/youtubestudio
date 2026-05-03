@@ -49,7 +49,12 @@ const PUBLIC_PATHS: readonly string[] = [
   '/api/auth/reset-password',
   '/api/auth/accept-invite',
   '/api/auth/google',
-  '/api/auth/google-sheets',
+  // /api/auth/google-sheets is NOT public — it must read the caller's
+  // workspace from the session and bind it into the OAuth state JWT.
+  // The callback below is public because the Google → app hop arrives
+  // without a session cookie under SameSite=Strict (and even Lax has
+  // edge cases on long redirect chains); the state JWT carries the
+  // workspace forward instead.
   '/api/auth/google/callback',
   // Public share / unsubscribe surfaces.
   '/share',

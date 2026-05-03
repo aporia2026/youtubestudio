@@ -225,10 +225,19 @@ const SHEETS_ONLY_SCOPES = [
   'https://www.googleapis.com/auth/userinfo.email',
 ];
 
-/** Build the Google OAuth URL for Sheets-only auth (no YouTube). */
-export async function getAuthorizationUrlForSheets(): Promise<string> {
+/**
+ * Build the Google OAuth URL for Sheets-only auth (no YouTube).
+ *
+ * `workspaceId` is bound into the signed state JWT so the callback can
+ * attribute the resulting tokens to the correct tenant — without trusting
+ * the session cookie, which `SameSite=Lax` may still withhold on some
+ * cross-site redirect chains. State expires in 10 minutes; a stale or
+ * forged state JWT is rejected by `verifyStatePayload`.
+ */
+export async function getAuthorizationUrlForSheets(workspaceId: string): Promise<string> {
+  if (!workspaceId) throw new Error('getAuthorizationUrlForSheets: workspaceId is required');
   const { clientId } = getOAuthConfig();
-  const state = await new SignJWT({ flow: 'sheets' })
+  const state = await new SignJWT({ flow: 'sheets', workspaceId })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setExpirationTime('10m')
@@ -251,16 +260,29 @@ export async function verifyStatePayload(state: string): Promise<Record<string, 
   return payload as Record<string, unknown>;
 }
 
-/** Store Google auth tokens in the user-level table (not tied to a channel). */
-export async function storeSheetsTokens(tokens: TokenResponse, email: string): Promise<void> {
+/**
+ * Store Google auth tokens for a workspace.
+ *
+ * Upsert key is `(workspace_id, email)` — reconnecting the same account in
+ * the same workspace updates in place; a different account creates a new
+ * row that the workspace's "latest" pointer (ORDER BY updated_at DESC) then
+ * picks up. The legacy `ON CONFLICT (email)` would have silently mutated
+ * another workspace's row, which is why we ship migration 0036 alongside.
+ */
+export async function storeSheetsTokens(
+  workspaceId: string,
+  tokens: TokenResponse,
+  email: string,
+): Promise<void> {
+  if (!workspaceId) throw new Error('storeSheetsTokens: workspaceId is required');
   const accessTokenEnc = encrypt(tokens.access_token);
   const refreshTokenEnc = tokens.refresh_token ? encrypt(tokens.refresh_token) : null;
   const expiry = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
   const scopesCsv = `{${tokens.scope.split(' ').join(',')}}`;
   await sql`
-    INSERT INTO google_auth_tokens (email, access_token_encrypted, refresh_token_encrypted, token_expiry, scopes)
-    VALUES (${email}, ${accessTokenEnc}, ${refreshTokenEnc}, ${expiry}::timestamptz, ${scopesCsv}::text[])
-    ON CONFLICT (email) DO UPDATE SET
+    INSERT INTO google_auth_tokens (workspace_id, email, access_token_encrypted, refresh_token_encrypted, token_expiry, scopes)
+    VALUES (${workspaceId}::uuid, ${email}, ${accessTokenEnc}, ${refreshTokenEnc}, ${expiry}::timestamptz, ${scopesCsv}::text[])
+    ON CONFLICT (workspace_id, email) DO UPDATE SET
       access_token_encrypted = EXCLUDED.access_token_encrypted,
       refresh_token_encrypted = COALESCE(EXCLUDED.refresh_token_encrypted, google_auth_tokens.refresh_token_encrypted),
       token_expiry = EXCLUDED.token_expiry,
@@ -269,11 +291,19 @@ export async function storeSheetsTokens(tokens: TokenResponse, email: string): P
   `;
 }
 
-/** Get a valid access token from the user-level table. Refreshes transparently. */
-export async function getValidSheetsToken(): Promise<{ token: string; scopes: string[]; email: string } | null> {
+/**
+ * Get a valid access token for the workspace's most-recently-connected
+ * Google account. Refreshes transparently. Scoped: never returns another
+ * workspace's token even if the global `LIMIT 1` is the freshest row.
+ */
+export async function getValidSheetsToken(
+  workspaceId: string,
+): Promise<{ token: string; scopes: string[]; email: string } | null> {
+  if (!workspaceId) throw new Error('getValidSheetsToken: workspaceId is required');
   const result = await sql`
     SELECT email, access_token_encrypted, refresh_token_encrypted, token_expiry, scopes
     FROM google_auth_tokens
+    WHERE workspace_id = ${workspaceId}::uuid
     ORDER BY updated_at DESC
     LIMIT 1
   `;
@@ -293,7 +323,7 @@ export async function getValidSheetsToken(): Promise<{ token: string; scopes: st
       await sql`
         UPDATE google_auth_tokens
         SET access_token_encrypted = ${newAccessEnc}, token_expiry = ${newExpiry}::timestamptz, updated_at = NOW()
-        WHERE email = ${row.email as string}
+        WHERE workspace_id = ${workspaceId}::uuid AND email = ${row.email as string}
       `;
       token = refreshed.access_token;
     } catch {
@@ -303,11 +333,16 @@ export async function getValidSheetsToken(): Promise<{ token: string; scopes: st
   return { token, scopes, email: row.email as string };
 }
 
-/** Get connected Google account info without fetching a token. */
-export async function getSheetsAccountInfo(): Promise<{ email: string; scopes: string[] } | null> {
+/** Get connected Google account info for a workspace, without fetching a token. */
+export async function getSheetsAccountInfo(
+  workspaceId: string,
+): Promise<{ email: string; scopes: string[] } | null> {
+  if (!workspaceId) throw new Error('getSheetsAccountInfo: workspaceId is required');
   try {
     const result = await sql`
-      SELECT email, scopes FROM google_auth_tokens ORDER BY updated_at DESC LIMIT 1
+      SELECT email, scopes FROM google_auth_tokens
+      WHERE workspace_id = ${workspaceId}::uuid
+      ORDER BY updated_at DESC LIMIT 1
     `;
     if (!result.rows.length) return null;
     const row = result.rows[0];
@@ -317,9 +352,10 @@ export async function getSheetsAccountInfo(): Promise<{ email: string; scopes: s
   }
 }
 
-/** Disconnect Google account — deletes all tokens. */
-export async function deleteSheetsTokens(): Promise<void> {
-  await sql`DELETE FROM google_auth_tokens`;
+/** Disconnect every Google account for the given workspace. */
+export async function deleteSheetsTokens(workspaceId: string): Promise<void> {
+  if (!workspaceId) throw new Error('deleteSheetsTokens: workspaceId is required');
+  await sql`DELETE FROM google_auth_tokens WHERE workspace_id = ${workspaceId}::uuid`;
 }
 
 /**

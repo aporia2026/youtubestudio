@@ -631,17 +631,30 @@ let googleAuthMigrated = false;
 export async function ensureGoogleAuthSchema() {
   if (googleAuthMigrated) return;
   try {
+    // Workspace-scoped: every Google OAuth connection belongs to one
+    // workspace. The composite UNIQUE allows the same Google account to
+    // be connected from multiple workspaces independently.
+    //
+    // This shape matches the post-0036 schema. On a database where the
+    // table was created lazily (by a prior boot of this helper) before
+    // 0036 ran, 0036 ALTERs the existing table to match.
     await sql`
       CREATE TABLE IF NOT EXISTS google_auth_tokens (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        email TEXT NOT NULL UNIQUE,
+        workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        email TEXT NOT NULL,
         access_token_encrypted TEXT NOT NULL,
         refresh_token_encrypted TEXT,
         token_expiry TIMESTAMPTZ NOT NULL,
         scopes TEXT[] NOT NULL DEFAULT '{}',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT google_auth_tokens_workspace_email_unique UNIQUE (workspace_id, email)
       )
+    `;
+    await sql`
+      CREATE INDEX IF NOT EXISTS idx_google_auth_tokens_workspace
+        ON google_auth_tokens(workspace_id)
     `;
     googleAuthMigrated = true;
   } catch (err) {

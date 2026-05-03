@@ -70,7 +70,10 @@ export async function POST(req: NextRequest) {
   response.cookies.set(SESSION_COOKIE_NAME, sessionToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
+    // Lax for parity with the login route — see comment there for the OAuth-
+    // redirect rationale. Strict would also break invite-acceptance flows that
+    // bounce through a third-party email-verification link.
+    sameSite: 'lax',
     maxAge: 60 * 60 * 24 * 30,
     path: '/',
   });

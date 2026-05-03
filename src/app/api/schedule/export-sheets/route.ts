@@ -3,6 +3,7 @@ import { getValidSheetsToken } from '@/lib/google-oauth';
 import { createScheduleSheet, type ScheduleSheetInput } from '@/lib/google-sheets-schedule';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { ensureGoogleAuthSchema, ensureScheduleSchema } from '@/lib/db';
+import { requireUser, SessionError } from '@/lib/session';
 
 export const maxDuration = 60;
 
@@ -10,6 +11,7 @@ const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 
 export async function POST(req: NextRequest) {
   try {
+    const session = await requireUser();
     const { limited } = checkRateLimit(`schedule-sheets:${getClientIP(req)}`, 10, 60_000);
     if (limited) return NextResponse.json({ error: 'Rate limited — try again shortly' }, { status: 429 });
 
@@ -35,7 +37,7 @@ export async function POST(req: NextRequest) {
 
     await ensureScheduleSchema();
     await ensureGoogleAuthSchema();
-    const tokenResult = await getValidSheetsToken();
+    const tokenResult = await getValidSheetsToken(session.ws);
     if (!tokenResult) {
       return NextResponse.json(
         { error: 'NEEDS_GOOGLE_AUTH', message: 'Connect your Google account in Settings to export to Sheets.' },
@@ -54,6 +56,9 @@ export async function POST(req: NextRequest) {
     const { spreadsheetId, sheetUrl } = await createScheduleSheet(token, exportData);
     return NextResponse.json({ spreadsheetId, sheetUrl });
   } catch (err: unknown) {
+    if (err instanceof SessionError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
     console.error('Schedule Sheets export error:', err);
     const msg = err instanceof Error ? err.message : 'Export failed';
     if (msg.startsWith('NEEDS_REAUTH')) {

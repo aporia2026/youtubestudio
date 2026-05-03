@@ -25,6 +25,16 @@ export async function GET(req: NextRequest) {
 
     if (payload.flow === 'sheets') {
       // ── Sheets-only flow ───────────────────────────────────────────────────
+      // workspaceId comes from the state JWT, not the session cookie. The
+      // initiating /api/auth/google-sheets request bound the caller's
+      // workspace into a signed, 10-minute-TTL state — see
+      // getAuthorizationUrlForSheets — so we don't need to trust the
+      // browser cookie on the way back from Google.
+      const workspaceId = payload.workspaceId;
+      if (typeof workspaceId !== 'string' || workspaceId.length === 0) {
+        return NextResponse.redirect(new URL('/settings?google=error', req.url));
+      }
+
       const tokens = await exchangeCodeForTokens(code);
       await ensureGoogleAuthSchema();
 
@@ -39,7 +49,7 @@ export async function GET(req: NextRequest) {
         }
       } catch { /* email is optional */ }
 
-      await storeSheetsTokens(tokens, email);
+      await storeSheetsTokens(workspaceId, tokens, email);
       return NextResponse.redirect(new URL('/settings?google=success', req.url));
     }
 
