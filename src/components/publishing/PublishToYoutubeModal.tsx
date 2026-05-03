@@ -95,6 +95,51 @@ export function PublishToYoutubeModal({
   const [submitting, setSubmitting] = useState(false);
   const [publishRow, setPublishRow] = useState<PublishedVideoRow | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleInputRef = useRef<HTMLInputElement>(null);
+
+  // Reset every form field to its `default…` prop whenever the modal
+  // opens. Without this, the modal that was opened for project A
+  // retains A's title/description/tags when reopened for project B
+  // (audit M4). The reset also clears any submission state from a
+  // previous use so opening a fresh modal doesn't show the old status
+  // panel.
+  useEffect(() => {
+    if (!open) return;
+    setChannelDbId(defaultChannelId ?? '');
+    setSourceVideoUrl(defaultSourceVideoUrl ?? '');
+    setTitle(defaultTitle ?? '');
+    setDescription(defaultDescription ?? '');
+    setTagsText((defaultTags ?? []).join(', '));
+    setCategoryId('22');
+    setPrivacyStatus('private');
+    setPublishAt('');
+    setMadeForKids(false);
+    setThumbnailUrl(defaultThumbnailUrl ?? '');
+    setPlaylistId('');
+    setPublishRow(null);
+    setSubmitting(false);
+  }, [open, defaultChannelId, defaultSourceVideoUrl, defaultTitle, defaultDescription, defaultTags, defaultThumbnailUrl]);
+
+  // Escape-to-close + initial focus on the title input. Both standard
+  // dialog-accessibility patterns. Focus shifts to the title because
+  // it's the first user-editable field; the channel picker is below
+  // the source-URL paste, which usually arrives pre-filled.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    // requestAnimationFrame so the input exists in the DOM before
+    // we try to focus it (the modal renders synchronously when `open`
+    // flips true but focus has to wait for the paint).
+    const raf = requestAnimationFrame(() => titleInputRef.current?.focus());
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      cancelAnimationFrame(raf);
+    };
+  }, [open, onClose]);
 
   // Load OAuth-connected channels once when the modal opens.
   useEffect(() => {
@@ -130,7 +175,9 @@ export function PublishToYoutubeModal({
     }
     let cancelled = false;
     function tick() {
-      fetch(`/api/publishing/${publishRow!.id}`)
+      // POST to the explicit /poll endpoint — hits YouTube once and
+      // returns the refreshed row. The plain GET is DB-only now (M9).
+      fetch(`/api/publishing/${publishRow!.id}/poll`, { method: 'POST' })
         .then((r) => r.json())
         .then((data) => {
           if (cancelled) return;
@@ -215,13 +262,33 @@ export function PublishToYoutubeModal({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.6)' }}>
-      <div className="glass rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.6)' }}
+      onClick={(e) => {
+        // Backdrop click closes; clicks inside the dialog don't bubble
+        // here because the inner div stops them via onClick stopPropagation.
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="publish-modal-title"
+        className="glass rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-baseline justify-between mb-4">
-          <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
+          <h2 id="publish-modal-title" className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
             📺 Publish to YouTube
           </h2>
-          <button onClick={onClose} className="text-sm hover:underline" style={{ color: 'var(--text-muted)' }}>
+          <button
+            onClick={onClose}
+            aria-label="Close publish dialog"
+            className="text-sm hover:underline"
+            style={{ color: 'var(--text-muted)' }}
+          >
             Close
           </button>
         </div>
@@ -280,6 +347,7 @@ export function PublishToYoutubeModal({
                 Title <span style={{ color: '#ef4444' }}>*</span>
               </label>
               <input
+                ref={titleInputRef}
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}

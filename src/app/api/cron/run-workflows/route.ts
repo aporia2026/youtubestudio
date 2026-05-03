@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runDueActions } from '@/lib/workflows';
+import { logger } from '@/lib/logger';
 
 /**
  * Vercel cron entry — runs every workspace's due workflow actions.
@@ -39,8 +40,22 @@ export async function POST(req: NextRequest) {
   // Vercel cron invocations have a 300s ceiling on Pro; each action
   // typically takes 1-30s so we have plenty of budget for 100 runs at
   // worst-case durations.
-  const result = await runDueActions({ limit: 100 });
-  return NextResponse.json(result);
+  const startedAt = Date.now();
+  logger.info('cron run-workflows: start');
+  try {
+    const result = await runDueActions({ limit: 100 });
+    logger.info('cron run-workflows: done', {
+      duration_ms: Date.now() - startedAt,
+      ...result,
+    });
+    return NextResponse.json(result);
+  } catch (err) {
+    logger.error('cron run-workflows: threw', {
+      duration_ms: Date.now() - startedAt,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+    return NextResponse.json({ error: 'cron failed' }, { status: 500 });
+  }
 }
 
 // GET also accepted so the route can be probed via browser during dev.

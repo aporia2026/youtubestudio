@@ -11,6 +11,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { pollAllPendingPublishes } from '@/lib/publishing';
+import { logger } from '@/lib/logger';
 
 export const maxDuration = 300;
 
@@ -30,8 +31,22 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const result = await pollAllPendingPublishes({ limit: 50 });
-  return NextResponse.json(result);
+  const startedAt = Date.now();
+  logger.info('cron poll-publishing: start');
+  try {
+    const result = await pollAllPendingPublishes({ limit: 50 });
+    logger.info('cron poll-publishing: done', {
+      duration_ms: Date.now() - startedAt,
+      ...result,
+    });
+    return NextResponse.json(result);
+  } catch (err) {
+    logger.error('cron poll-publishing: threw', {
+      duration_ms: Date.now() - startedAt,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+    return NextResponse.json({ error: 'cron failed' }, { status: 500 });
+  }
 }
 
 export const GET = POST;
