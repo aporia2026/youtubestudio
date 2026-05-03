@@ -37,6 +37,22 @@ interface ImageAsset {
   created_at: string;
 }
 
+interface ProductionDocAsset {
+  id: string;
+  project_id: string;
+  project_title?: string | null;
+  name: string;
+  url: string;
+  source: string | null;
+  r2_bucket?: string | null;
+  r2_key?: string | null;
+  size_bytes?: number | null;
+  metadata?: Record<string, unknown> | null;
+  created_at: string;
+}
+
+const PROD_DOC_ACCEPT = '.pdf,.docx,.doc,.xlsx,.xls,.csv,.txt,.json,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain,application/json';
+
 interface Props { projectId: string }
 
 const STATUS_COLORS: Record<string, { bg: string; text: string }> = {
@@ -63,7 +79,22 @@ export function EditorTab({ projectId }: Props) {
   const [assignments, setAssignments] = useState<EditorAssignment[]>([]);
   const [imageRefs, setImageRefs] = useState<ImageAsset[]>([]);
   const [thumbnails, setThumbnails] = useState<ImageAsset[]>([]);
+  const [productionDocs, setProductionDocs] = useState<ProductionDocAsset[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Production-doc state — three add paths (file upload / Google-Sheet URL /
+  // pick from workspace library), each with its own pending flag so the UI
+  // can show the right button label.
+  const [uploadingProdDoc, setUploadingProdDoc] = useState(false);
+  const [sheetUrl, setSheetUrl] = useState('');
+  const [sheetName, setSheetName] = useState('');
+  const [addingSheet, setAddingSheet] = useState(false);
+  const [showProdDocLibrary, setShowProdDocLibrary] = useState(false);
+  const [prodDocLibrary, setProdDocLibrary] = useState<ProductionDocAsset[]>([]);
+  const [prodDocLibLoading, setProdDocLibLoading] = useState(false);
+  const [prodDocLibError, setProdDocLibError] = useState<string | null>(null);
+  const [attachingProdDoc, setAttachingProdDoc] = useState<string | null>(null);
+  const prodDocInputRef = useRef<HTMLInputElement>(null);
 
   // Assign UI state
   const [showAssign, setShowAssign] = useState(false);
@@ -85,12 +116,16 @@ export function EditorTab({ projectId }: Props) {
   async function load() {
     setLoading(true);
     try {
-      const [a, c, refs, thumbs] = await Promise.all([
+      const [a, c, refs, thumbs, mediaRes] = await Promise.all([
         fetch(`/api/projects/${projectId}/editors`).then(r => r.ok ? r.json() : []),
         fetch(`/api/team/collaborators?role=editor`).then(r => r.ok ? r.json() : []),
         fetch(`/api/projects/${projectId}/image-refs`).then(r => r.ok ? r.json() : []),
         fetch(`/api/projects/${projectId}/thumbnails`).then(r => r.ok ? r.json() : []),
+        // Production-doc attachments live on the unified media table.
+        fetch(`/api/projects/${projectId}/media`).then(r => r.ok ? r.json() : { assets: [] }),
       ]);
+      const allAssets = (mediaRes?.assets ?? []) as Array<ProductionDocAsset & { type?: string }>;
+      setProductionDocs(allAssets.filter(m => m.type === 'production_doc'));
       setAssignments(a);
       setEditors(c);
       setImageRefs(refs);
@@ -188,6 +223,159 @@ export function EditorTab({ projectId }: Props) {
     if (kind === 'image-refs') setImageRefs(prev => prev.filter(a => a.id !== assetId));
     else setThumbnails(prev => prev.filter(a => a.id !== assetId));
     toast.success('Deleted');
+  }
+
+  // ── Production-doc flows ─────────────────────────────────────────────────
+  async function uploadProductionDoc(file: File) {
+    setUploadingProdDoc(true);
+    try {
+      const presignRes = await fetch(`/api/projects/${projectId}/production-doc-upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileName: file.name, contentType: file.type || 'application/octet-stream' }),
+      });
+      if (!presignRes.ok) {
+        const err = await presignRes.json().catch(() => ({}));
+        throw new Error(err.error || `Server returned ${presignRes.status}`);
+      }
+      const { uploadUrl, downloadUrl, r2Key, r2Bucket } = await presignRes.json();
+      const putRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type || 'application/octet-stream' },
+        body: file,
+      });
+      if (!putRes.ok) throw new Error(`R2 upload failed (HTTP ${putRes.status}). Check bucket CORS.`);
+
+      const registerRes = await fetch(`/api/projects/${projectId}/media`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'production_doc',
+          source: 'upload',
+          name: file.name,
+          url: downloadUrl,
+          r2_bucket: r2Bucket,
+          r2_key: r2Key,
+          size_bytes: file.size,
+          metadata: { kind: 'file', mime: file.type },
+        }),
+      });
+      if (!registerRes.ok) {
+        const err = await registerRes.json().catch(() => ({}));
+        throw new Error(err.error || `Failed to register doc (${registerRes.status})`);
+      }
+      toast.success('Production doc attached');
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Upload failed');
+    } finally {
+      setUploadingProdDoc(false);
+    }
+  }
+
+  async function attachSheetUrl() {
+    const url = sheetUrl.trim();
+    if (!url) { toast.error('Paste a Google Sheet URL first'); return; }
+    try {
+      // Light validation — must be http(s) + look like a Google host. Keeps
+      // the editor's open-link flow predictable; arbitrary URLs are still
+      // possible via the existing /media POST.
+      const u = new URL(url);
+      if (!/^https?:$/.test(u.protocol)) throw new Error('URL must be http or https');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Invalid URL');
+      return;
+    }
+    setAddingSheet(true);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/media`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'production_doc',
+          source: 'url',
+          name: sheetName.trim() || 'Production Doc (Google Sheet)',
+          url,
+          metadata: { kind: 'google_sheet' },
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Failed (${res.status})`);
+      }
+      toast.success('Google Sheet linked');
+      setSheetUrl('');
+      setSheetName('');
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to link sheet');
+    } finally {
+      setAddingSheet(false);
+    }
+  }
+
+  async function openProductionDocLibrary() {
+    setShowProdDocLibrary(true);
+    setProdDocLibLoading(true);
+    setProdDocLibError(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/production-doc-library`);
+      if (!res.ok) throw new Error(`Failed to load library (${res.status})`);
+      const data = await res.json();
+      setProdDocLibrary((data?.docs ?? []) as ProductionDocAsset[]);
+    } catch (e) {
+      setProdDocLibError(e instanceof Error ? e.message : 'Failed to load library');
+    } finally {
+      setProdDocLibLoading(false);
+    }
+  }
+
+  async function attachExistingProductionDoc(item: ProductionDocAsset) {
+    if (attachingProdDoc) return;
+    setAttachingProdDoc(item.id);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/media`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'production_doc',
+          source: item.r2_key ? 'r2-link' : (item.source || 'url'),
+          name: item.name || 'Linked production doc',
+          url: item.url,
+          r2_bucket: item.r2_bucket,
+          r2_key: item.r2_key,
+          size_bytes: item.size_bytes,
+          metadata: {
+            ...(item.metadata || {}),
+            linked_from_asset_id: item.id,
+            linked_from_project_id: item.project_id,
+          },
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Failed to attach (${res.status})`);
+      }
+      toast.success('Attached');
+      setShowProdDocLibrary(false);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to attach');
+    } finally {
+      setAttachingProdDoc(null);
+    }
+  }
+
+  async function deleteProductionDoc(assetId: string) {
+    if (!confirm('Detach this production doc from the project? The original file in R2 (or library) is not removed.')) return;
+    try {
+      const res = await fetch(`/api/media/${assetId}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(`Failed (${res.status})`);
+      setProductionDocs(prev => prev.filter(a => a.id !== assetId));
+      toast.success('Detached');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to detach');
+    }
   }
 
   if (loading) {
@@ -381,6 +569,220 @@ export function EditorTab({ projectId }: Props) {
           </div>
         )}
       </div>
+
+      {/* Production Doc — three add paths so the editor always has the
+          shot-by-shot reference. Files land in the images bucket under
+          prod-docs/; sheet links and library picks just store a URL row.
+          Existing attachments are listed below with open + detach. */}
+      <div className="glass rounded-xl p-5">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Production Doc</h3>
+        </div>
+        <p className="text-[11px] mb-3" style={{ color: 'var(--text-muted)' }}>
+          Attach the shot-by-shot doc the editor should follow. PDF / DOCX / XLSX / CSV / TXT / JSON, a Google Sheet link, or pick from your workspace library.
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+          {/* Upload */}
+          <div>
+            <p className="text-[10px] uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>Upload file</p>
+            <input
+              ref={prodDocInputRef}
+              type="file"
+              accept={PROD_DOC_ACCEPT}
+              className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (f) uploadProductionDoc(f); if (e.target) e.target.value = ''; }}
+            />
+            <button
+              onClick={() => prodDocInputRef.current?.click()}
+              disabled={uploadingProdDoc}
+              className="w-full px-3 py-2 rounded-lg text-xs font-medium cursor-pointer disabled:opacity-50"
+              style={{ background: 'rgba(124,58,237,0.15)', color: '#7c3aed', border: '1px solid rgba(124,58,237,0.25)' }}
+            >
+              {uploadingProdDoc ? 'Uploading…' : '⬆️ Upload'}
+            </button>
+          </div>
+
+          {/* Library */}
+          <div>
+            <p className="text-[10px] uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>Pick from library</p>
+            <button
+              onClick={openProductionDocLibrary}
+              className="w-full px-3 py-2 rounded-lg text-xs font-medium cursor-pointer"
+              style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+              title="Reuse a production doc attached to another project in this workspace"
+            >
+              📚 Browse library
+            </button>
+          </div>
+
+          {/* Sheet link */}
+          <div>
+            <p className="text-[10px] uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>Google Sheet link</p>
+            <div className="flex gap-1">
+              <input
+                value={sheetUrl}
+                onChange={e => setSheetUrl(e.target.value)}
+                placeholder="https://docs.google.com/…"
+                className="flex-1 px-2 py-2 rounded-lg text-xs"
+                style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+              />
+              <button
+                onClick={attachSheetUrl}
+                disabled={addingSheet || !sheetUrl.trim()}
+                className="px-3 py-2 rounded-lg text-xs font-medium cursor-pointer disabled:opacity-50"
+                style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}
+              >
+                {addingSheet ? '…' : 'Add'}
+              </button>
+            </div>
+            <input
+              value={sheetName}
+              onChange={e => setSheetName(e.target.value)}
+              placeholder="Optional label (e.g. 'v3 shotlist')"
+              className="w-full mt-1 px-2 py-1 rounded-lg text-[11px]"
+              style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+            />
+          </div>
+        </div>
+
+        {productionDocs.length === 0 ? (
+          <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>No production doc attached yet</p>
+        ) : (
+          <div className="space-y-2">
+            {productionDocs.map(d => {
+              const kind = (d.metadata as { kind?: string } | null)?.kind;
+              const isSheet = kind === 'google_sheet';
+              return (
+                <div
+                  key={d.id}
+                  className="flex items-center gap-3 p-2.5 rounded-lg"
+                  style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}
+                >
+                  <span className="text-base">{isSheet ? '📊' : '📄'}</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>{d.name}</p>
+                    <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      {isSheet ? 'Google Sheet' : (d.source === 'r2-link' ? 'Linked from library' : (d.r2_key ? 'Uploaded file' : 'External URL'))}
+                      {d.size_bytes ? ` · ${(d.size_bytes / 1024 / 1024).toFixed(1)} MB` : ''}
+                      {d.created_at ? ` · added ${timeAgo(d.created_at)}` : ''}
+                    </p>
+                  </div>
+                  <a
+                    href={d.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[11px] px-2 py-1 rounded shrink-0"
+                    style={{ background: 'rgba(124,58,237,0.15)', color: '#a78bfa' }}
+                  >
+                    Open ↗
+                  </a>
+                  <button
+                    onClick={() => deleteProductionDoc(d.id)}
+                    className="text-[11px] px-2 py-1 rounded shrink-0"
+                    style={{ background: 'rgba(239,68,68,0.10)', color: '#ef4444' }}
+                  >
+                    Detach
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Production-doc library modal — workspace-scoped picker. Click "Attach"
+          to insert a new media_assets row on this project pointing at the
+          same R2 file (or external URL), so the file isn't duplicated. */}
+      {showProdDocLibrary && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: 'rgba(0,0,0,0.6)' }}
+          onClick={() => setShowProdDocLibrary(false)}
+        >
+          <div
+            className="rounded-2xl w-[min(720px,92vw)] max-h-[85vh] flex flex-col"
+            style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+              <div>
+                <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Production doc library</h3>
+                <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  Pick an existing doc from another project to attach here.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowProdDocLibrary(false)}
+                className="text-xs px-2 py-1 rounded"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-3 py-3">
+              {prodDocLibLoading && (
+                <div className="flex items-center justify-center py-12">
+                  <div className="w-5 h-5 border-2 border-t-transparent rounded-full animate-spin"
+                    style={{ borderColor: '#7c3aed', borderTopColor: 'transparent' }} />
+                </div>
+              )}
+              {!prodDocLibLoading && prodDocLibError && (
+                <p className="text-xs text-center py-8" style={{ color: '#ef4444' }}>{prodDocLibError}</p>
+              )}
+              {!prodDocLibLoading && !prodDocLibError && prodDocLibrary.length === 0 && (
+                <p className="text-xs text-center py-12" style={{ color: 'var(--text-muted)' }}>
+                  No production docs in your workspace yet.
+                </p>
+              )}
+              {!prodDocLibLoading && !prodDocLibError && prodDocLibrary.length > 0 && (
+                <div className="space-y-2">
+                  {prodDocLibrary.map(item => {
+                    const itemMeta = item.metadata as { kind?: string } | null;
+                    const isSheet = itemMeta?.kind === 'google_sheet';
+                    return (
+                      <div
+                        key={item.id}
+                        className="flex items-center gap-3 p-2.5 rounded-lg"
+                        style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}
+                      >
+                        <span className="text-base">{isSheet ? '📊' : '📄'}</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>{item.name}</p>
+                          <p className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>
+                            {item.project_title || '—'}
+                            {item.size_bytes ? ` · ${(item.size_bytes / 1024 / 1024).toFixed(1)} MB` : ''}
+                            {isSheet ? ' · Google Sheet' : ''}
+                          </p>
+                        </div>
+                        {item.url && (
+                          <a
+                            href={item.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[10px] px-2 py-1 rounded shrink-0"
+                            style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}
+                          >
+                            Preview ↗
+                          </a>
+                        )}
+                        <button
+                          onClick={() => attachExistingProductionDoc(item)}
+                          disabled={attachingProdDoc === item.id}
+                          className="text-[11px] px-2.5 py-1 rounded shrink-0 cursor-pointer disabled:opacity-50"
+                          style={{ background: '#7c3aed', color: 'white' }}
+                        >
+                          {attachingProdDoc === item.id ? 'Attaching…' : 'Attach'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

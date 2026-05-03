@@ -14,6 +14,14 @@ interface ProjectData {
   thumbnails: Array<{ id: string; name: string; url: string; notes: string | null }>;
   voiceovers: Array<{ id: string; name: string; url: string; duration_seconds: number | null }>;
   videos: Array<{ id: string; name: string; url: string }>;
+  productionDocs: Array<{
+    id: string;
+    name: string;
+    url: string;
+    source: string | null;
+    size_bytes: number | null;
+    metadata: Record<string, unknown> | null;
+  }>;
   ytRefs: Array<{ id: string; youtube_url: string; title: string | null; channel: string | null; thumbnail_url: string | null; notes: string | null }>;
   reviewProjectId: string | null;
   reviewVersions: Array<{ id: string; version_number: number; thumbnail_url: string | null; duration_ms: number | null; created_at: string; comment_count: number }>;
@@ -295,6 +303,44 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
             <p className="text-xs text-center py-8" style={{ color: 'var(--text-muted)' }}>The owner hasn&apos;t added a script yet</p>
           )}
         </Section>
+
+        {/* Production Doc — shot-by-shot reference attached by the owner.
+            Three flavours: uploaded file (PDF/DOCX/etc.), Google Sheet link,
+            or a library link reusing another project's doc. We just render
+            them as openable links — the editor downloads or views in a new
+            tab. */}
+        {data.productionDocs && data.productionDocs.length > 0 && (
+          <Section title="Production Doc" subtitle={`${data.productionDocs.length} attached`}>
+            <div className="space-y-2">
+              {data.productionDocs.map(d => {
+                const meta = (d.metadata || {}) as { kind?: string };
+                const isSheet = meta.kind === 'google_sheet';
+                return (
+                  <a
+                    key={d.id}
+                    href={d.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center gap-3 p-2.5 rounded-lg hover:translate-y-[-1px] transition-transform"
+                    style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}
+                  >
+                    <span className="text-base">{isSheet ? '📊' : '📄'}</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>{d.name}</p>
+                      <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                        {isSheet ? 'Google Sheet' : (d.source === 'r2-link' ? 'Linked from library' : (d.source === 'upload' ? 'Uploaded file' : 'External URL'))}
+                        {d.size_bytes ? ` · ${(d.size_bytes / 1024 / 1024).toFixed(1)} MB` : ''}
+                      </p>
+                    </div>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full shrink-0" style={{ background: 'rgba(124,58,237,0.15)', color: '#a78bfa' }}>
+                      Open ↗
+                    </span>
+                  </a>
+                );
+              })}
+            </div>
+          </Section>
+        )}
 
         {/* Voiceover */}
         <Section title="Voiceover" subtitle={data.voiceovers.length > 0 ? `${data.voiceovers.length} file${data.voiceovers.length === 1 ? '' : 's'}` : 'None'}>

@@ -191,3 +191,12 @@ export function buildThumbnailKey(projectId: string, fileName: string): string {
   const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
   return `thumbnails/${projectId}/${Date.now()}-${sanitized}`;
 }
+
+/** Build an R2 key for an uploaded production-doc attachment (PDF/DOCX/XLSX/
+ *  CSV/TXT/JSON). Lives in the images bucket under a prod-docs/ prefix —
+ *  treats that bucket as a generic static-asset store rather than spinning
+ *  up another bucket just for documents. */
+export function buildProductionDocKey(projectId: string, fileName: string): string {
+  const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return `prod-docs/${projectId}/${Date.now()}-${sanitized}`;
+}
