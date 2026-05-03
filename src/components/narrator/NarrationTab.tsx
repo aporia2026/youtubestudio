@@ -55,6 +55,14 @@ interface Section {
   takes: Take[] | null;
 }
 
+/** True when the synthetic section_number=0 row (the full-audio holder)
+ *  is already marked approved. Drives the owner-side "Approve" CTA on
+ *  the full-narration card so it flips into a confirmation state. */
+function isFullNarrationApproved(sections: Section[]): boolean {
+  const fullAudioSection = sections.find(s => s.section_number === 0);
+  return fullAudioSection?.status === 'approved';
+}
+
 interface NarrationTabProps {
   projectId: string;
   scriptId: string;
@@ -80,6 +88,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
   // Which take is currently expanded into the Frame.io-style review panel.
   // One at a time so the page stays manageable on long scripts.
   const [reviewingTakeId, setReviewingTakeId] = useState<string | null>(null);
+  const [approvingFull, setApprovingFull] = useState(false);
 
   useEffect(() => { loadAssignments(); }, [projectId]);
 
@@ -157,6 +166,29 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
     } catch { toast.error('Failed'); }
   }
 
+  async function handleApproveFull() {
+    if (!activeAssignment || approvingFull) return;
+    if (!confirm('Approve this full narration? This marks the assignment complete and the narrator gets notified.')) return;
+    setApprovingFull(true);
+    try {
+      const res = await fetch(`/api/narrator/assignments/${activeAssignment.id}/approve-full`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as { error?: string }).error || `HTTP ${res.status}`);
+      }
+      // Reflect the new state locally so the button flips without a refetch.
+      setSections(prev => prev.map(s => s.section_number === 0
+        ? { ...s, status: 'approved', approved_take_id: activeAssignment.full_audio_take_id ?? s.approved_take_id }
+        : s));
+      setActiveAssignment(prev => prev ? { ...prev, status: 'completed' } : prev);
+      toast.success('Narration approved — narrator notified');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to approve');
+    } finally {
+      setApprovingFull(false);
+    }
+  }
+
   async function handleStitch() {
     if (!activeAssignment) return;
     setStitching(true);
@@ -223,6 +255,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
   const approvedCount = realSections.filter(s => s.status === 'approved').length;
   const allApproved = approvedCount === realSections.length && realSections.length > 0;
   const progress = realSections.length > 0 ? Math.round((approvedCount / realSections.length) * 100) : 0;
+  const fullNarrationApproved = isFullNarrationApproved(sections);
 
   return (
     <div className="space-y-4">
@@ -286,25 +319,50 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
                 </span>
               )}
             </div>
-            <button
-              onClick={() => setReviewingTakeId(reviewingTakeId === activeAssignment.full_audio_take_id ? null : (activeAssignment.full_audio_take_id || null))}
-              className="text-[10px] px-2 py-0.5 rounded transition-colors cursor-pointer flex items-center gap-1.5"
-              style={{
-                background: reviewingTakeId === activeAssignment.full_audio_take_id ? 'rgba(124,58,237,0.25)' : 'rgba(124,58,237,0.1)',
-                color: '#a78bfa',
-                border: '1px solid rgba(124,58,237,0.3)',
-              }}
-            >
-              {reviewingTakeId === activeAssignment.full_audio_take_id ? '▾ Hide review' : '▸ Review & comment'}
-              {reviewingTakeId !== activeAssignment.full_audio_take_id && (activeAssignment.full_audio_unresolved_count ?? 0) > 0 && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setReviewingTakeId(reviewingTakeId === activeAssignment.full_audio_take_id ? null : (activeAssignment.full_audio_take_id || null))}
+                className="text-[10px] px-2 py-0.5 rounded transition-colors cursor-pointer flex items-center gap-1.5"
+                style={{
+                  background: reviewingTakeId === activeAssignment.full_audio_take_id ? 'rgba(124,58,237,0.25)' : 'rgba(124,58,237,0.1)',
+                  color: '#a78bfa',
+                  border: '1px solid rgba(124,58,237,0.3)',
+                }}
+              >
+                {reviewingTakeId === activeAssignment.full_audio_take_id ? '▾ Hide review' : '▸ Review & comment'}
+                {reviewingTakeId !== activeAssignment.full_audio_take_id && (activeAssignment.full_audio_unresolved_count ?? 0) > 0 && (
+                  <span
+                    className="text-[9px] px-1 py-0.5 rounded-full font-bold"
+                    style={{ background: 'rgba(167,139,250,0.5)', color: '#fff', minWidth: 14, textAlign: 'center' }}
+                  >
+                    {activeAssignment.full_audio_unresolved_count}
+                  </span>
+                )}
+              </button>
+              {/* Approve CTA — flips to a confirmation chip once approved.
+                  Disabled while in flight, hidden once the section_number=0
+                  row is already 'approved' (and replaced with the chip) so
+                  re-clicking can't double-fire the notification. */}
+              {fullNarrationApproved ? (
                 <span
-                  className="text-[9px] px-1 py-0.5 rounded-full font-bold"
-                  style={{ background: 'rgba(167,139,250,0.5)', color: '#fff', minWidth: 14, textAlign: 'center' }}
+                  className="text-[10px] px-2 py-0.5 rounded font-medium flex items-center gap-1"
+                  style={{ background: 'rgba(34,197,94,0.18)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.4)' }}
+                  title="Narrator notified"
                 >
-                  {activeAssignment.full_audio_unresolved_count}
+                  ✓ Approved
                 </span>
+              ) : (
+                <button
+                  onClick={handleApproveFull}
+                  disabled={approvingFull}
+                  className="text-[10px] px-2 py-0.5 rounded font-medium text-white cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+                  style={{ background: '#22c55e' }}
+                  title="Approve this narration and notify the narrator"
+                >
+                  {approvingFull ? 'Approving…' : '✓ Approve'}
+                </button>
               )}
-            </button>
+            </div>
           </div>
           {reviewingTakeId === activeAssignment.full_audio_take_id ? (
             <div className="pt-2">

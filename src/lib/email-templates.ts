@@ -434,6 +434,33 @@ export function messageReceivedTemplate(ctx: BaseCtx & {
   };
 }
 
+/**
+ * Owner approved the narrator's full-narration upload. Final, celebratory tone —
+ * this is the end of the per-assignment back-and-forth.
+ */
+export function assignmentApprovedTemplate(ctx: BaseCtx & {
+  projectTitle: string;
+  ownerName: string;
+  portalUrl: string;
+}) {
+  const subject = `🎉 ${ctx.ownerName} approved your narration for "${ctx.projectTitle}"`;
+  const body = `
+    <p style="margin:0 0 12px 0;">Great news — <strong>${escapeHtml(ctx.ownerName)}</strong> approved your full narration for <strong>${escapeHtml(ctx.projectTitle)}</strong>.</p>
+    <p style="margin:0 0 12px 0;color:#cbd5e1;">No more retakes needed on this one. The assignment is now marked complete.</p>
+  `;
+  return {
+    subject,
+    html: layout({
+      preheader: `Your narration for "${ctx.projectTitle}" was approved`,
+      heading: subject,
+      body,
+      ctaLabel: 'Open narrator portal',
+      ctaHref: ctx.portalUrl,
+      unsubscribeUrl: ctx.unsubscribeUrl,
+    }),
+  };
+}
+
 export function testEmailTemplate(ctx: BaseCtx) {
   const subject = '✅ YT Studio email notifications are working';
   const body = `

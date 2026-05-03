@@ -268,6 +268,39 @@ export async function notifyRetakeRequested(args: {
   return sendEmail({ to: recipient.email, subject: t.subject, html: t.html });
 }
 
+/**
+ * Owner approved the narrator's full-narration upload. Closes out the
+ * assignment loop — fires an in-app feed entry on the narrator's bell and
+ * an email (gated by their `notifications_enabled` opt-in).
+ */
+export async function notifyAssignmentApproved(args: {
+  narratorId: string;
+  shareToken: string;
+  projectId?: string | null;
+  projectTitle: string;
+  ownerName: string;
+}) {
+  logActivity({
+    recipientCollaboratorId: args.narratorId,
+    type: 'assignment_approved',
+    title: `${args.ownerName} approved your narration for "${args.projectTitle}"`,
+    body: 'Your full narration was approved — assignment marked complete.',
+    projectId: args.projectId ?? undefined,
+    linkPath: `/narrate/${args.shareToken}`,
+    metadata: { projectTitle: args.projectTitle },
+  }).catch(() => {});
+  const recipient = await getCollaboratorEmailIfWantsNotifications(args.narratorId);
+  if (!recipient) return;
+  const t = tpl.assignmentApprovedTemplate({
+    appUrl: getAppUrl(),
+    projectTitle: args.projectTitle,
+    ownerName: args.ownerName,
+    portalUrl: `${getAppUrl()}/narrate/${args.shareToken}`,
+    unsubscribeUrl: buildUnsubscribeUrl(recipient.unsubscribeToken),
+  });
+  return sendEmail({ to: recipient.email, subject: t.subject, html: t.html });
+}
+
 export async function notifyEditorAssigned(args: {
   editorId: string;
   projectId?: string;

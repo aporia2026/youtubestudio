@@ -30,6 +30,7 @@ const TYPE_ICONS: Record<string, { emoji: string; tint: string }> = {
   retake_requested: { emoji: '🔁', tint: '#ef4444' },
   editor_assigned:  { emoji: '🎞️', tint: '#06b6d4' },
   narrator_assigned:{ emoji: '🎤', tint: '#7c3aed' },
+  assignment_approved: { emoji: '🎉', tint: '#22c55e' },
   script_updated:   { emoji: '📝', tint: '#eab308' },
   deadline_reminder:{ emoji: '⏰', tint: '#f97316' },
   system:           { emoji: '🔔', tint: 'var(--text-muted)' },

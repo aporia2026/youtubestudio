@@ -76,6 +76,10 @@ export default function NarratorDashboard({ params }: { params: Promise<{ token:
   const [viewMode, setViewMode] = useState<AssignmentViewMode>('cards');
   const [sortField, setSortField] = useState<SortField>('updated');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
+  // Unread chat messages — surfaced as a loud banner above the hero stats
+  // when > 0. The corner MessagesLink badge is easy to miss; this keeps
+  // owner→narrator chat traffic from being buried while takes are in flight.
+  const [unreadMessages, setUnreadMessages] = useState(0);
 
   // Load saved view preference on mount (client-only, avoids hydration mismatch).
   useEffect(() => { setViewMode(loadViewMode('narrator', 'cards')); }, []);
@@ -91,6 +95,28 @@ export default function NarratorDashboard({ params }: { params: Promise<{ token:
       })
       .catch(() => setError(true))
       .finally(() => setLoading(false));
+  }, [token]);
+
+  // Poll unread chat-message count for the message banner. Independent of
+  // the corner MessagesLink poll; keeps the banner reactive even when the
+  // user lingers on the dashboard with the chat untouched. 30s cadence
+  // matches MessagesLink so we don't double the request volume to perceive
+  // halve the latency.
+  useEffect(() => {
+    let alive = true;
+    async function load() {
+      try {
+        const res = await fetch(`/api/messages/inbox/${token}/unread`, { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (alive) setUnreadMessages((data.unread as number) || 0);
+      } catch {}
+    }
+    load();
+    const id = setInterval(load, 30_000);
+    const onFocus = () => load();
+    window.addEventListener('focus', onFocus);
+    return () => { alive = false; clearInterval(id); window.removeEventListener('focus', onFocus); };
   }, [token]);
 
   const buckets = useMemo(() => {
@@ -195,6 +221,51 @@ export default function NarratorDashboard({ params }: { params: Promise<{ token:
             <AvailabilityToggle token={token} role="narrator" />
             <NotificationPrefsPanel token={token} role="narrator" />
           </section>
+        )}
+
+        {/* Loud unread-chat banner. Sits above hero stats so a new
+            owner message can't be missed — the corner MessagesLink badge
+            is too subtle when the page is dense with assignment cards.
+            Hidden when there are no unreads. */}
+        {unreadMessages > 0 && (
+          <a
+            href={`/inbox/${token}`}
+            className="mb-6 flex items-center gap-3 rounded-2xl px-4 py-3 transition-all hover:translate-y-[-1px]"
+            style={{
+              background: 'linear-gradient(90deg, rgba(124,58,237,0.18), rgba(6,182,212,0.18))',
+              border: '1px solid rgba(124,58,237,0.5)',
+              boxShadow: '0 0 0 1px rgba(124,58,237,0.25), 0 8px 24px rgba(124,58,237,0.18)',
+            }}
+          >
+            <div
+              className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 relative"
+              style={{ background: 'rgba(124,58,237,0.25)' }}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+              <span
+                className="absolute -top-1 -right-1 text-[10px] px-1 rounded-full font-bold"
+                style={{ background: '#ef4444', color: '#fff', minWidth: 18, textAlign: 'center', lineHeight: '14px' }}
+              >
+                {unreadMessages > 99 ? '99+' : unreadMessages}
+              </span>
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                {unreadMessages === 1 ? 'New message from the owner' : `${unreadMessages} new messages from the owner`}
+              </p>
+              <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                Open the chat to read and reply.
+              </p>
+            </div>
+            <span
+              className="text-xs px-3 py-1.5 rounded-lg font-medium shrink-0"
+              style={{ background: 'rgba(124,58,237,0.3)', color: '#fff', border: '1px solid rgba(124,58,237,0.5)' }}
+            >
+              Open chat →
+            </span>
+          </a>
         )}
 
         {/* Hero stats — clickable. Each tile filters the assignment list
