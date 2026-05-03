@@ -29,7 +29,7 @@
  */
 import { sql } from '@vercel/postgres';
 import { logger } from './logger';
-import { normalizeCurve } from './retention-predictor';
+import { normalizeCurve } from './retention-curve-utils';
 import type { RetentionPoint } from './retention-predictor-types';
 
 // ---------------------------------------------------------------------------
@@ -391,6 +391,13 @@ export interface CaptureResult {
  *
  * Predictions without a project_id (ad-hoc /retention scratch runs) are
  * skipped — there's no way to attribute them to a published video.
+ *
+ * Phase 8.6.2 — only PRE-PUBLISH predictions are captured. Without
+ * the `rp.created_at < pv.created_at` clause, a user who runs
+ * /retention against a script *after* uploading would have that
+ * hindsight prediction captured as if it informed the upload, and the
+ * model would learn from a "miss" with cheating context. Filter it
+ * out here so the training signal stays clean.
  */
 export async function captureOutcomesForReadyVideos(
   opts: { minDaysLive?: number; limit?: number } = {},
@@ -415,6 +422,7 @@ export async function captureOutcomesForReadyVideos(
       ON va.workspace_id      = rp.workspace_id
      AND va.youtube_video_id  = pv.youtube_video_id
     WHERE rp.project_id IS NOT NULL
+      AND rp.created_at < pv.created_at
       AND va.retention_curve IS NOT NULL
       AND jsonb_array_length(va.retention_curve) > 5
       AND va.published_at IS NOT NULL
@@ -532,41 +540,49 @@ export async function findFewShotOutcomes(opts: {
   // than retention_predictions.channel_db_id so we get the channel
   // that actually published the video, not the channel the prediction
   // was scoped to (these can differ in edge cases).
+  //
+  // Phase 8.6.2 — DISTINCT ON (po.youtube_video_id) keeps the most
+  // recent outcome per video. Without this, a project with 3 prediction
+  // iterations could fill all 3 of MAX_FEW_SHOT_EXAMPLES with the same
+  // actual curve (different predicted curves) — burning prompt tokens
+  // for no extra signal. Diversity > iteration history at this stage.
   const rows: RawOutcomeRow[] = opts.channelDbId
     ? (
         await sql<RawOutcomeRow>`
-          SELECT
+          SELECT DISTINCT ON (po.youtube_video_id)
             po.youtube_video_id,
             va.title,
             va.duration_seconds,
             po.predicted_curve,
             po.actual_curve,
-            po.delta_metrics
+            po.delta_metrics,
+            po.captured_at
           FROM prediction_outcomes po
           JOIN video_analytics va
             ON va.workspace_id     = po.workspace_id
            AND va.youtube_video_id = po.youtube_video_id
           WHERE po.workspace_id = ${opts.workspaceId}::uuid
             AND va.channel_id   = ${opts.channelDbId}::uuid
-          ORDER BY po.captured_at DESC
+          ORDER BY po.youtube_video_id, po.captured_at DESC
           LIMIT ${limit}
         `
       ).rows
     : (
         await sql<RawOutcomeRow>`
-          SELECT
+          SELECT DISTINCT ON (po.youtube_video_id)
             po.youtube_video_id,
             va.title,
             va.duration_seconds,
             po.predicted_curve,
             po.actual_curve,
-            po.delta_metrics
+            po.delta_metrics,
+            po.captured_at
           FROM prediction_outcomes po
           JOIN video_analytics va
             ON va.workspace_id     = po.workspace_id
            AND va.youtube_video_id = po.youtube_video_id
           WHERE po.workspace_id = ${opts.workspaceId}::uuid
-          ORDER BY po.captured_at DESC
+          ORDER BY po.youtube_video_id, po.captured_at DESC
           LIMIT ${limit}
         `
       ).rows;
@@ -589,7 +605,13 @@ export async function findFewShotOutcomes(opts: {
     .filter((x): x is OutcomeFewShotExample => x !== null);
 }
 
-function parseDeltaMetrics(raw: unknown): DeltaMetrics {
+// Phase 8.6.2 — defensive parser that re-clamps stored JSONB to the
+// invariants `computeDeltaMetrics` produces. Catches any garbage that
+// a future migration / hand-fix could introduce (negative MAE,
+// position > 1, NaN deltas) before the dashboard renders it.
+//
+// Exported for unit testing — no production caller outside this file.
+export function parseDeltaMetrics(raw: unknown): DeltaMetrics {
   if (!raw || typeof raw !== 'object') {
     return {
       mae_pct: 0,
@@ -601,15 +623,14 @@ function parseDeltaMetrics(raw: unknown): DeltaMetrics {
   const o = raw as Record<string, unknown>;
   const direction = o.biggest_miss_direction;
   return {
-    mae_pct: typeof o.mae_pct === 'number' ? o.mae_pct : 0,
-    biggest_miss_at_pct:
-      typeof o.biggest_miss_at_pct === 'number' ? o.biggest_miss_at_pct : 0,
+    mae_pct: clamp(asNumber(o.mae_pct), 0, 100),
+    biggest_miss_at_pct: clamp(asNumber(o.biggest_miss_at_pct), 0, 1),
     biggest_miss_direction:
       direction === 'over' || direction === 'under' || direction === 'none'
         ? direction
         : 'none',
     per_segment_deltas: Array.isArray(o.per_segment_deltas)
-      ? (o.per_segment_deltas
+      ? o.per_segment_deltas
           .filter(
             (s): s is PerSegmentDelta =>
               !!s &&
@@ -618,9 +639,25 @@ function parseDeltaMetrics(raw: unknown): DeltaMetrics {
               typeof (s as PerSegmentDelta).predicted === 'number' &&
               typeof (s as PerSegmentDelta).actual === 'number' &&
               typeof (s as PerSegmentDelta).delta === 'number',
-          ))
+          )
+          .map((s) => ({
+            position: clamp(s.position, 0, 1),
+            predicted: clamp(s.predicted, 0, 1),
+            actual: clamp(s.actual, 0, 1),
+            // delta = actual - predicted, so its range is [-1, 1].
+            delta: clamp(s.delta, -1, 1),
+          }))
       : [],
   };
+}
+
+function asNumber(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+}
+
+function clamp(v: number, min: number, max: number): number {
+  if (!Number.isFinite(v)) return min;
+  return Math.max(min, Math.min(max, v));
 }
 
 // ---------------------------------------------------------------------------
