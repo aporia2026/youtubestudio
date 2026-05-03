@@ -117,18 +117,22 @@ async function findByIdempotencyKey(
  * own control flow already moved past that step.
  */
 async function markFailed(id: string, msg: string): Promise<void> {
-  // Refuse to overwrite a 'live' row: a publish that completed
-  // can't be retroactively marked failed by a stale error path.
+  // Refuse to overwrite a terminal row. Phase 8.6.3 — also exclude
+  // 'failed' so a second error path (e.g. cron's "stuck" sweeper
+  // racing with a real upstream error) can't overwrite the FIRST
+  // error message with its generic "Upload abandoned." text. The
+  // first error wins; subsequent attempts are logged for visibility
+  // but don't mutate the row.
   const r = await sql`
     UPDATE published_videos
        SET status = 'failed',
            error_message = ${msg},
            updated_at = NOW()
      WHERE id = ${id}::uuid
-       AND status != 'live'
+       AND status NOT IN ('live', 'failed')
   `;
   if ((r.rowCount ?? 0) === 0) {
-    logger.warn('publish: markFailed refused (row already live or missing)', { id });
+    logger.warn('publish: markFailed refused (row already terminal or missing)', { id });
   }
 }
 
@@ -394,7 +398,39 @@ export async function publishVideoToYouTube(req: PublishRequest): Promise<Publis
     }
   }
 
-  const id = await insertQueuedRow(req);
+  // Phase 8.6.3 — INSERT can still race even with the SELECT short-
+  // circuit above: two concurrent retries with the same key both pass
+  // the SELECT (no row yet), both hit INSERT, and the second loses to
+  // the partial UNIQUE index from migration 0039. Catch that specific
+  // collision and re-resolve to the row the WINNER created. Any other
+  // INSERT failure rethrows.
+  let id: string;
+  try {
+    id = await insertQueuedRow(req);
+  } catch (err) {
+    if (
+      req.idempotencyKey &&
+      err instanceof Error &&
+      /uq_published_videos_workspace_idempotency|duplicate key|unique constraint/i.test(
+        err.message,
+      )
+    ) {
+      const winnerId = await findByIdempotencyKey(req.workspaceId, req.idempotencyKey);
+      if (winnerId) {
+        const row = await getPublishedVideo(winnerId, req.workspaceId);
+        if (row) {
+          return {
+            id: row.id,
+            status: row.status,
+            youtubeVideoId: row.youtube_video_id,
+            youtubeUrl: row.youtube_url,
+            errorMessage: row.error_message,
+          };
+        }
+      }
+    }
+    throw err;
+  }
 
   // -- 2. Resolve channel OAuth.
   const accessToken = await getValidAccessToken(req.channelDbId);
@@ -570,7 +606,14 @@ export async function pollPublishStatus(
     return { status: 'failed', youtubeVideoId: row.youtube_video_id };
   }
   // Still processing — refresh the YouTube fields without flipping
-  // status, so the UI sees the latest signal.
+  // status, so the UI sees the latest signal. Phase 8.6.3 — guard on
+  // `status = 'processing'` so two concurrent pollers can't drift the
+  // YouTube-status fields backwards. Without the guard, poller A
+  // observes 'succeeded' and flips to 'live', then poller B (still
+  // mid-flight, observed 'processing') overwrites processing_status
+  // back to 'processing' on a row whose status is now 'live'. The
+  // user-facing status would stay 'live' but the YouTube debug fields
+  // would lie.
   await sql`
     UPDATE published_videos
        SET upload_status = ${ytStatus.uploadStatus},
@@ -578,6 +621,7 @@ export async function pollPublishStatus(
            privacy_status_actual = ${ytStatus.privacyStatus},
            updated_at = NOW()
      WHERE id = ${id}::uuid
+       AND status = 'processing'
   `;
   return { status: 'processing', youtubeVideoId: row.youtube_video_id };
 }

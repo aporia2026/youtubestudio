@@ -87,7 +87,25 @@ export const PUBLISH_LIMITS = Object.freeze({
   TAGS_MAX_TOTAL_LEN: 500,        // sum of all tag char-lengths
   TAGS_MAX_COUNT: 50,
   TAG_MAX_LEN: 30,
+  IDEMPOTENCY_KEY_MAX: 200,
 });
+
+/**
+ * Charset for the Idempotency-Key header. Per RFC 3986 §2.3 unreserved
+ * URI chars + draft-ietf-httpapi-idempotency-key. Any character outside
+ * this set is treated as "no key" — this prevents newlines / NUL bytes /
+ * unicode garbage from landing in the UNIQUE-indexed TEXT column added
+ * by migration 0039. Phase 8.6.3 hardening.
+ */
+const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._~-]{1,200}$/;
+
+/** Returns the validated key string, or null if the input is missing /
+ *  empty / over the cap / has any disallowed character. Pure — exported
+ *  for unit testing the route's parsing path without spinning up a DB. */
+export function parseIdempotencyKey(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  return IDEMPOTENCY_KEY_PATTERN.test(raw) ? raw : null;
+}
 
 /** Validate a publish request. Returns a list of human-readable error
  *  strings; empty list means valid. The route maps a non-empty list to

@@ -6,6 +6,7 @@ import {
   nextStatusFor,
   isTerminalStatus,
   buildYoutubeUrl,
+  parseIdempotencyKey,
   PUBLISH_LIMITS,
   type PublishRequest,
 } from '@/lib/publishing-types';
@@ -240,5 +241,37 @@ describe('isTerminalStatus', () => {
 describe('buildYoutubeUrl', () => {
   it('builds the canonical short URL', () => {
     expect(buildYoutubeUrl('dQw4w9WgXcQ')).toBe('https://youtu.be/dQw4w9WgXcQ');
+  });
+});
+
+describe('parseIdempotencyKey (Phase 8.6.3 charset validation)', () => {
+  it('accepts unreserved-URI characters within the length cap', () => {
+    expect(parseIdempotencyKey('abc-123_def~test.42')).toBe('abc-123_def~test.42');
+    expect(parseIdempotencyKey('A'.repeat(200))).toBe('A'.repeat(200));
+  });
+
+  it('rejects empty / null / undefined', () => {
+    expect(parseIdempotencyKey(null)).toBeNull();
+    expect(parseIdempotencyKey(undefined)).toBeNull();
+    expect(parseIdempotencyKey('')).toBeNull();
+  });
+
+  it('rejects keys longer than 200 chars (DB index bound)', () => {
+    expect(parseIdempotencyKey('A'.repeat(201))).toBeNull();
+  });
+
+  it.each([
+    ['key with spaces', 'spaces'],
+    ['key\nwith\nnewlines', 'newlines'],
+    ['key\x00with\x00nul', 'NUL bytes'],
+    ['key\twith\ttabs', 'tabs'],
+    ['key/with/slash', 'slash'],
+    ['key:with:colon', 'colon'],
+    ['key+with+plus', 'plus'],
+    ['unicode-😀-emoji', 'unicode'],
+    ['quote"injection', 'quote'],
+    ["semi;injection", 'semicolon'],
+  ])('rejects key with %s (%s)', (key, _label) => {
+    expect(parseIdempotencyKey(key)).toBeNull();
   });
 });
