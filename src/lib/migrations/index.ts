@@ -31,6 +31,7 @@ import migration0031 from './0031_create_youtube_comments';
 import migration0032 from './0032_create_workflows';
 import migration0033 from './0033_create_ai_spend_log';
 import migration0034 from './0034_create_workspace_model_defaults';
+import migration0035 from './0035_create_published_videos';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -70,6 +71,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0032,
   migration0033,
   migration0034,
+  migration0035,
 ]);
 
 /**
