@@ -212,6 +212,10 @@ async function triageOne(
       prompt: user,
       maxTokens: 600,
       temperature: 0.2,
+      // Audit M8: triage runs the SAME system prompt against N comments
+      // in a batch. Anthropic prompt cache → 90% cost reduction on the
+      // (large, static) system prompt. No-op on non-Anthropic providers.
+      cache: true,
       spend: {
         workspaceId,
         channelDbId: comment.channel_db_id ?? null,

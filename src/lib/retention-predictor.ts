@@ -407,6 +407,9 @@ export async function predictRetention(args: PredictRetentionArgs): Promise<{
     prompt: user,
     maxTokens: 4000,
     temperature: 0.4,
+    // Audit M8: predictor's system prompt is fully static. Same user
+    // running multiple predictions in a row hits the cache.
+    cache: true,
     spend: {
       workspaceId: args.workspaceId,
       projectId: args.projectId ?? null,

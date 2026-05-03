@@ -341,6 +341,10 @@ export async function runCannibalizationScan(
         prompt: user,
         maxTokens: 800,
         temperature: 0.3,
+        // Audit M8: cannibalization scores up to MAX_AI_PAIRS pairs
+        // per scan, all with the same system prompt. Anthropic prompt
+        // cache → big cost reduction; no-op on other providers.
+        cache: true,
         spend: {
           workspaceId: args.workspaceId,
           featureArea: 'cannibalization_alert',

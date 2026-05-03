@@ -451,6 +451,9 @@ export async function analyzeRetentionDips(
     prompt: user,
     maxTokens: 4000,
     temperature: 0.3,
+    // Audit M8: fix-the-dip's system prompt is static; per-video
+    // analyses hit the cache on Anthropic.
+    cache: true,
     spend: {
       workspaceId: args.workspaceId,
       projectId: args.projectId ?? null,
