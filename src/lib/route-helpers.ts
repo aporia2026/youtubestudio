@@ -112,6 +112,60 @@ export function withAdmin<P>(handler: AuthedHandler<P>): PublicHandler<P> {
   };
 }
 
+export interface KnownErrorPattern {
+  /** Regex against err.message. The first matching pattern wins. */
+  match: RegExp;
+  /** HTTP status to return for this domain error. Use 4xx for user
+   *  errors (404, 409, 422). The error message passes through to the
+   *  client as-is — only known/expected messages should be in this list. */
+  status: number;
+}
+
+/**
+ * Standard error response for catch blocks in domain-action routes
+ * (start an A/B test, conclude one, post a comment reply, etc).
+ *
+ * Two-tier classification:
+ *   1. If `err.message` matches a known pattern, log at WARN and pass
+ *      the message through to the client (4xx). These are user-facing
+ *      explanations of expected failure modes — surfacing them is the
+ *      point.
+ *   2. Otherwise log at ERROR with the full detail and return a
+ *      generic 502/500 message — never leak the raw exception text to
+ *      the client because it can include DB/internal API details.
+ *
+ * Replaces the 17-route copy-pasted pattern of regex-mapping
+ * `err.message` to a status code and returning the message verbatim.
+ */
+export function domainErrorResponse(
+  err: unknown,
+  opts: {
+    /** Short label for the log line: e.g. 'critic-panel: complete'. */
+    op: string;
+    /** Known patterns checked in order. First match wins. */
+    knownPatterns?: KnownErrorPattern[];
+    /** Status when no pattern matches. Defaults to 502 (upstream
+     *  failure — most route catches wrap external/AI calls). */
+    fallbackStatus?: number;
+    /** Generic message returned with the fallback status. Defaults to
+     *  a polite "try again" string. Routes can override to be
+     *  domain-specific (e.g. 'Could not start the AB test.'). */
+    fallbackMessage?: string;
+  },
+): NextResponse {
+  const detail = err instanceof Error ? err.message : String(err);
+  const matched = opts.knownPatterns?.find((p) => p.match.test(detail));
+  if (matched) {
+    logger.warn(`${opts.op}: known failure → ${matched.status}`, { detail });
+    return NextResponse.json({ error: detail }, { status: matched.status });
+  }
+  logger.error(`${opts.op}: unexpected failure`, { detail });
+  return NextResponse.json(
+    { error: opts.fallbackMessage ?? 'Operation failed — please try again.' },
+    { status: opts.fallbackStatus ?? 502 },
+  );
+}
+
 /**
  * Convenience composer. Routes prefer this over wiring withErrorHandler +
  * withAuth manually so the wrappers always compose in the same order.

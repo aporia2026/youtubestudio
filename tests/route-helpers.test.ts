@@ -181,3 +181,78 @@ describe('logger', () => {
     expect('user_id' in line).toBe(false);
   });
 });
+
+describe('domainErrorResponse', () => {
+  const stderrLines: string[] = [];
+  const realStderr = process.stderr.write;
+
+  beforeEach(() => {
+    stderrLines.length = 0;
+    process.stderr.write = ((chunk: unknown) => {
+      stderrLines.push(String(chunk).replace(/\n$/, ''));
+      return true;
+    }) as typeof process.stderr.write;
+  });
+
+  afterEach(() => {
+    process.stderr.write = realStderr;
+  });
+
+  it('passes through a known-pattern message and logs at warn', async () => {
+    const { domainErrorResponse } = await import('@/lib/route-helpers');
+    const res = domainErrorResponse(new Error('AB test already concluded'), {
+      op: 'ab-tests: conclude',
+      knownPatterns: [{ match: /already concluded/, status: 409 }],
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'AB test already concluded' });
+    const lines = stderrLines.map((l) => JSON.parse(l));
+    expect(lines.some((l) => l.level === 'warn' && l.detail === 'AB test already concluded')).toBe(true);
+    expect(lines.some((l) => l.level === 'error')).toBe(false);
+  });
+
+  it('returns the fallback status with a generic message and logs at error when no pattern matches', async () => {
+    const { domainErrorResponse } = await import('@/lib/route-helpers');
+    const res = domainErrorResponse(new Error('Postgres connection refused at 10.0.0.1'), {
+      op: 'ab-tests: conclude',
+      knownPatterns: [{ match: /already concluded/, status: 409 }],
+    });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Operation failed — please try again.' });
+    const lines = stderrLines.map((l) => JSON.parse(l));
+    expect(lines.some((l) => l.level === 'error' && l.detail.includes('Postgres connection refused'))).toBe(true);
+  });
+
+  it('uses the first matching known pattern in declaration order', async () => {
+    const { domainErrorResponse } = await import('@/lib/route-helpers');
+    const res = domainErrorResponse(new Error('not found'), {
+      op: 'comments: reply',
+      knownPatterns: [
+        { match: /not found/, status: 404 },
+        { match: /not found|forbidden/, status: 403 },
+      ],
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('honours custom fallback status and message', async () => {
+    const { domainErrorResponse } = await import('@/lib/route-helpers');
+    const res = domainErrorResponse('something went wrong', {
+      op: 'shorts: voiceover',
+      fallbackStatus: 500,
+      fallbackMessage: 'Voiceover generation failed.',
+    });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: 'Voiceover generation failed.' });
+  });
+
+  it('handles non-Error thrown values', async () => {
+    const { domainErrorResponse } = await import('@/lib/route-helpers');
+    const res = domainErrorResponse('plain string error', {
+      op: 'test',
+    });
+    expect(res.status).toBe(502);
+    const lines = stderrLines.map((l) => JSON.parse(l));
+    expect(lines.some((l) => l.level === 'error' && l.detail === 'plain string error')).toBe(true);
+  });
+});
