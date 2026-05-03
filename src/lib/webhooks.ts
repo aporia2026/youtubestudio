@@ -22,7 +22,7 @@
 import { sql } from '@vercel/postgres';
 import { encrypt, decrypt } from './crypto';
 import { logger } from './logger';
-import { checkSafePublicUrl } from './url-safety';
+import { checkSafePublicUrl, resolveAndPinSafeUrl } from './url-safety';
 import {
   WEBHOOK_LABEL_MAX,
   WEBHOOK_URL_PREVIEW_LEN,
@@ -191,11 +191,20 @@ interface DeliveryAttempt {
 async function sendOnce(url: string, body: Record<string, unknown>): Promise<DeliveryAttempt> {
   const startedAt = Date.now();
   try {
-    const res = await fetch(url, {
+    // Phase 8.6.1: revalidate + DNS-pin on every dispatch. The URL was
+    // checked at create time, but DNS rebinding (or a host A record
+    // pointed at a private IP after the fact) would defeat that.
+    // resolveAndPinSafeUrl re-runs the SSRF blocklist AND pins undici
+    // to the resolved set so the actual fetch can't be re-resolved.
+    const { url: safeUrl, dispatcher } = await resolveAndPinSafeUrl(url, {
+      allowedProtocols: ['https:'],
+    });
+    const res = await fetch(safeUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    });
+      dispatcher,
+    } as RequestInit & { dispatcher: unknown });
     const duration = Date.now() - startedAt;
     const responseText = await res.text().catch(() => '');
     return {

@@ -28,7 +28,7 @@ import { sql } from '@vercel/postgres';
 import { getValidAccessToken } from './google-oauth';
 import { uploadThumbnailOAuth } from './youtube';
 import { logger } from './logger';
-import { assertSafePublicUrl } from './url-safety';
+import { resolveAndPinSafeUrl } from './url-safety';
 import {
   validatePublishRequest,
   buildVideosInsertSnippet,
@@ -197,13 +197,17 @@ async function openSourceVideo(url: string): Promise<{
   size: number;
   mimeType: string;
 }> {
-  // Audit C4: previously this called fetch(url) with no SSRF check, so
-  // an authenticated user could pivot the server into hitting AWS IMDS,
-  // RFC1918 ranges, or .internal hostnames. assertSafePublicUrl blocks
-  // every documented private/loopback/link-local range and enforces
-  // https only — see src/lib/url-safety.ts.
-  const safe = assertSafePublicUrl(url, { allowedProtocols: ['https:'] });
-  const res = await fetch(safe);
+  // Audit C4 + Phase 8.6.1: previously this called fetch(url) with
+  // a string-only SSRF check, which left a DNS-rebinding window
+  // (hostname resolves public on validation, private on fetch).
+  // resolveAndPinSafeUrl resolves once via dns.lookup, validates every
+  // returned address, and returns a Dispatcher pinned to that set so
+  // undici can't be re-resolved into AWS IMDS / 127.0.0.1 / RFC1918.
+  // See src/lib/url-safety.ts for the helper + the rebinding rationale.
+  const { url: safe, dispatcher } = await resolveAndPinSafeUrl(url, {
+    allowedProtocols: ['https:'],
+  });
+  const res = await fetch(safe, { dispatcher } as RequestInit & { dispatcher: unknown });
   if (!res.ok) throw new Error(`Failed to fetch source video: ${res.status} ${res.statusText}`);
   const lenHeader = res.headers.get('content-length');
   const size = lenHeader ? Number.parseInt(lenHeader, 10) : NaN;
@@ -448,9 +452,14 @@ export async function publishVideoToYouTube(req: PublishRequest): Promise<Publis
   // -- 5. Optional thumbnail (best-effort — partial success).
   if (req.thumbnailUrl) {
     try {
-      // Same SSRF protection as the source video — see C4.
-      const safeThumb = assertSafePublicUrl(req.thumbnailUrl, { allowedProtocols: ['https:'] });
-      const thumbRes = await fetch(safeThumb);
+      // Same DNS-pin protection as the source video — see C4 + 8.6.1.
+      const { url: safeThumb, dispatcher: thumbDispatcher } = await resolveAndPinSafeUrl(
+        req.thumbnailUrl,
+        { allowedProtocols: ['https:'] },
+      );
+      const thumbRes = await fetch(safeThumb, {
+        dispatcher: thumbDispatcher,
+      } as RequestInit & { dispatcher: unknown });
       if (!thumbRes.ok) throw new Error(`thumbnail fetch ${thumbRes.status}`);
       const thumbBuf = Buffer.from(await thumbRes.arrayBuffer());
       const thumbMime = thumbRes.headers.get('content-type') || 'image/jpeg';

@@ -1,11 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import {
   checkSafePublicUrl,
   assertSafePublicUrl,
   parseIpv4,
   isPrivateOrSpecialIpv4,
   isPrivateOrSpecialIpv6,
+  resolveAndPinSafeUrl,
 } from '@/lib/url-safety';
+
+// Hoisted mock of node:dns/promises so resolveAndPinSafeUrl's lazy
+// `import('node:dns/promises')` call hits a stub instead of the real
+// resolver. The mock has to be hoisted so vi.mock runs before the
+// dynamic import inside the helper.
+const dnsMock = vi.hoisted(() => ({
+  lookup: vi.fn(),
+}));
+vi.mock('node:dns/promises', () => dnsMock);
 
 describe('parseIpv4', () => {
   it('parses well-formed dotted-quad', () => {
@@ -64,6 +74,19 @@ describe('isPrivateOrSpecialIpv6', () => {
     ['::ffff:192.168.1.1', true],
     ['::ffff:8.8.8.8', false],
     ['2001:4860:4860::8888', false],
+    // Phase 8.6.1 — coverage gaps surfaced by the Phase 8 review.
+    ['0:0:0:0:0:0:0:1', true],                           // fully expanded loopback
+    ['0:0:0:0:0:0:0:0', true],                           // fully expanded unspecified
+    ['0:0:0:0:0:ffff:127.0.0.1', true],                  // expanded IPv4-mapped, dotted
+    ['0:0:0:0:0:ffff:7f00:1', true],                     // expanded IPv4-mapped, hex-pair (= 127.0.0.1)
+    ['::1.2.3.4', false],                                // IPv4-compatible legacy form pointing at public IP
+    ['::127.0.0.1', true],                               // IPv4-compatible legacy form pointing at loopback
+    ['::169.254.169.254', true],                         // IPv4-compatible legacy form pointing at IMDS
+    ['64:ff9b::8.8.8.8', true],                          // NAT64 well-known prefix
+    ['64:ff9b:1::1', true],                              // NAT64 RFC8215 local prefix
+    ['fe80::1%eth0', true],                              // zone-suffix variant
+    ['FE80::1', true],                                   // uppercase link-local
+    ['FC00::1', true],                                   // uppercase unique-local
   ])('%s → %s', (host, expected) => {
     expect(isPrivateOrSpecialIpv6(host)).toBe(expected);
   });
@@ -152,5 +175,81 @@ describe('assertSafePublicUrl', () => {
   });
   it('throws on failure', () => {
     expect(() => assertSafePublicUrl('http://127.0.0.1')).toThrow(/private|blocked/);
+  });
+});
+
+describe('resolveAndPinSafeUrl', () => {
+  beforeEach(() => {
+    dnsMock.lookup.mockReset();
+  });
+
+  it('returns a dispatcher when every resolved address is public', async () => {
+    dnsMock.lookup.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+    const result = await resolveAndPinSafeUrl('https://example.com/foo.mp4', {
+      allowedProtocols: ['https:'],
+    });
+    expect(result.url.hostname).toBe('example.com');
+    expect(result.dispatcher).toBeDefined();
+    expect(dnsMock.lookup).toHaveBeenCalledWith('example.com', { all: true });
+  });
+
+  it('throws when DNS resolves to a private IPv4 (rebinding defence)', async () => {
+    dnsMock.lookup.mockResolvedValue([{ address: '127.0.0.1', family: 4 }]);
+    await expect(resolveAndPinSafeUrl('https://malicious.example/')).rejects.toThrow(
+      /private\/internal IPv4 \(127\.0\.0\.1\)/,
+    );
+  });
+
+  it('throws when DNS resolves to AWS IMDS (rebinding defence)', async () => {
+    dnsMock.lookup.mockResolvedValue([{ address: '169.254.169.254', family: 4 }]);
+    await expect(resolveAndPinSafeUrl('https://malicious.example/')).rejects.toThrow(
+      /169\.254\.169\.254/,
+    );
+  });
+
+  it('rejects when ANY resolved address is private (mixed A records)', async () => {
+    // Public + private mix — must reject. An attacker who publishes
+    // both records can have the resolver pick the private one at fetch.
+    dnsMock.lookup.mockResolvedValue([
+      { address: '8.8.8.8', family: 4 },
+      { address: '10.0.0.1', family: 4 },
+    ]);
+    await expect(resolveAndPinSafeUrl('https://malicious.example/')).rejects.toThrow(
+      /private\/internal IPv4 \(10\.0\.0\.1\)/,
+    );
+  });
+
+  it('rejects when DNS resolves to a private IPv6', async () => {
+    dnsMock.lookup.mockResolvedValue([{ address: 'fe80::1', family: 6 }]);
+    await expect(resolveAndPinSafeUrl('https://malicious.example/')).rejects.toThrow(
+      /private\/internal IPv6/,
+    );
+  });
+
+  it('skips DNS when the host is already a literal IPv4', async () => {
+    const result = await resolveAndPinSafeUrl('https://1.1.1.1/foo');
+    expect(result.url.hostname).toBe('1.1.1.1');
+    expect(dnsMock.lookup).not.toHaveBeenCalled();
+  });
+
+  it('still rejects literal private IPs at the synchronous gate (no DNS attempted)', async () => {
+    await expect(resolveAndPinSafeUrl('https://127.0.0.1/')).rejects.toThrow(
+      /private\/internal/,
+    );
+    expect(dnsMock.lookup).not.toHaveBeenCalled();
+  });
+
+  it('wraps DNS errors so the caller can show a useful message', async () => {
+    dnsMock.lookup.mockRejectedValue(new Error('ENOTFOUND'));
+    await expect(resolveAndPinSafeUrl('https://does-not-exist.example/')).rejects.toThrow(
+      /DNS resolution failed.*ENOTFOUND/,
+    );
+  });
+
+  it('rejects when DNS returns an empty address list', async () => {
+    dnsMock.lookup.mockResolvedValue([]);
+    await expect(resolveAndPinSafeUrl('https://example.com/')).rejects.toThrow(
+      /no addresses/,
+    );
   });
 });

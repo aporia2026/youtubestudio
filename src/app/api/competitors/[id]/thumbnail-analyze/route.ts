@@ -7,6 +7,12 @@ import { parseLlmJson } from '@/lib/parse-llm-json';
 import { makeSpendContext } from '@/lib/ai-spend';
 import { logger } from '@/lib/logger';
 import { apiRoute } from '@/lib/route-helpers';
+import { resolveAndPinSafeUrl } from '@/lib/url-safety';
+
+// Cap thumbnail buffer at 8 MB. Real YouTube thumbnails are well under
+// 1 MB; anything larger is either an attack (slow-loris a server) or a
+// misconfigured CDN that won't analyse cleanly anyway.
+const MAX_THUMBNAIL_BYTES = 8 * 1024 * 1024;
 
 export const maxDuration = 120;
 
@@ -79,11 +85,34 @@ export const POST = apiRoute.authed(async (session, req: NextRequest, { params }
       return NextResponse.json({ analysis: v.thumbnail_analysis, cached: true });
     }
 
-    // Download thumbnail
-    const imgRes = await fetch(v.thumbnail_url as string);
+    // Phase 8.6.1: SSRF + size cap on the stored thumbnail URL. The
+    // URL was originally supplied by YouTube on sync, but a future
+    // bulk-import or migration bug could let an attacker poison it
+    // — so revalidate + DNS-pin on every fetch + bound the buffer.
+    let imgRes: Response;
+    try {
+      const { url: safeUrl, dispatcher } = await resolveAndPinSafeUrl(
+        v.thumbnail_url as string,
+        { allowedProtocols: ['https:'] },
+      );
+      imgRes = await fetch(safeUrl, { dispatcher } as RequestInit & { dispatcher: unknown });
+    } catch (err) {
+      logger.warn('Thumbnail fetch rejected by SSRF guard', {
+        competitor_id: id,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      return NextResponse.json({ error: 'Failed to fetch thumbnail' }, { status: 502 });
+    }
     if (!imgRes.ok) return NextResponse.json({ error: 'Failed to fetch thumbnail' }, { status: 502 });
+    const declaredLen = Number.parseInt(imgRes.headers.get('content-length') ?? '', 10);
+    if (Number.isFinite(declaredLen) && declaredLen > MAX_THUMBNAIL_BYTES) {
+      return NextResponse.json({ error: 'Thumbnail exceeds 8 MB cap' }, { status: 413 });
+    }
     const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
     const arrayBuf = await imgRes.arrayBuffer();
+    if (arrayBuf.byteLength > MAX_THUMBNAIL_BYTES) {
+      return NextResponse.json({ error: 'Thumbnail exceeds 8 MB cap' }, { status: 413 });
+    }
     const base64 = Buffer.from(arrayBuf).toString('base64');
 
     const { system, user } = competitorThumbnailPrompt({

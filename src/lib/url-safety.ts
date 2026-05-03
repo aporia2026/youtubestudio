@@ -18,11 +18,19 @@
  * Pure helper — no DB, no network deps. The IPv4/IPv6 range checks
  * are unit-tested.
  *
- * NOTE: This validates the URL string. A determined attacker can
- * still defeat host-based checks via DNS rebinding (the hostname
- * resolves to a public IP at validation time, then mutates to a
- * private IP at fetch time). For higher-stakes use, also pin to
- * the resolved IP between validation and fetch — out of scope here.
+ * NOTE: `assertSafePublicUrl` validates the URL STRING only. A
+ * determined attacker can defeat host-based checks via DNS rebinding
+ * (the hostname resolves to a public IP at validation time, then
+ * mutates to a private IP at fetch time). Phase 8.6.1 added
+ * `resolveAndPinSafeUrl` for the rebinding-proof variant — it does
+ * a synchronous DNS lookup, validates every resolved address, and
+ * returns an undici Dispatcher whose connect.lookup is pinned to
+ * the validated address set. The actual fetch then can't be
+ * rebinding-attacked because undici won't re-resolve.
+ *
+ * Use the pinned variant for any server-initiated fetch on a
+ * user-supplied URL (publishing source MP4s, webhook fan-out, any
+ * future thumbnail-from-URL fetches).
  */
 
 export type UrlSafetyResult =
@@ -101,6 +109,121 @@ export function assertSafePublicUrl(raw: string, opts: CheckOptions = {}): URL {
   return r.url;
 }
 
+// ─── DNS-rebinding-proof variant ───────────────────────────────────────
+
+/**
+ * The rebinding-proof variant of `assertSafePublicUrl`. Use this for
+ * any server-initiated fetch on a user-supplied URL.
+ *
+ * Steps:
+ *   1. Run the synchronous string-based check (protocol, blocked hosts,
+ *      literal-IP private ranges).
+ *   2. If the host is a literal IP, the check above already validated it
+ *      — return a dispatcher that pins to that literal so undici
+ *      doesn't even try DNS.
+ *   3. Otherwise resolve the hostname via `dns.lookup({ all: true })`
+ *      and validate every returned address through the same private/
+ *      special blocklist used for literals.
+ *   4. Return an undici Dispatcher whose `connect.lookup` is pinned to
+ *      the validated address set. The actual `fetch(url, { dispatcher })`
+ *      call cannot be DNS-rebinding-attacked because undici will not
+ *      re-resolve.
+ *
+ * The TLS/SNI hostname is preserved (we only override the lookup, not
+ * the URL host), so HTTPS certs validate against the original
+ * hostname. Caller passes the original URL to `fetch`.
+ *
+ * Throws on any validation failure or DNS error. Always pair with a
+ * try/catch in the caller — DNS-resolution failures (NXDOMAIN, timeout)
+ * are common in the wild and shouldn't 500 the route.
+ */
+export async function resolveAndPinSafeUrl(
+  raw: string,
+  opts: CheckOptions = {},
+): Promise<{ url: URL; dispatcher: import('undici').Dispatcher }> {
+  const url = assertSafePublicUrl(raw, opts);
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+
+  // Lazy import — keeps the synchronous helper module-scope free of
+  // Node-only deps so url-safety.ts stays import-safe in any runtime.
+  const [{ Agent }, dnsMod] = await Promise.all([
+    import('undici'),
+    import('node:dns/promises'),
+  ]);
+
+  // Literal IP — already validated by assertSafePublicUrl. Pin to the
+  // literal so undici skips its own resolver entirely.
+  const literalIpv4 = parseIpv4(host);
+  if (literalIpv4) {
+    return { url, dispatcher: makePinnedAgent(Agent, [{ address: host, family: 4 }]) };
+  }
+  if (host.includes(':')) {
+    // Already validated as IPv6 by assertSafePublicUrl. Strip zone for
+    // the connect lookup callback (undici's connect doesn't want it).
+    const pct = host.indexOf('%');
+    const bareHost = pct >= 0 ? host.slice(0, pct) : host;
+    return { url, dispatcher: makePinnedAgent(Agent, [{ address: bareHost, family: 6 }]) };
+  }
+
+  // DNS lookup. `all: true` returns every A + AAAA record so we can
+  // reject when ANY resolved address is private (a hostname could
+  // resolve to one public + one private IP — must reject).
+  let addrs: Array<{ address: string; family: number }>;
+  try {
+    addrs = await dnsMod.lookup(host, { all: true });
+  } catch (err) {
+    throw new Error(
+      `DNS resolution failed for ${host}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (addrs.length === 0) {
+    throw new Error(`DNS resolution returned no addresses for ${host}.`);
+  }
+
+  for (const a of addrs) {
+    if (a.family === 4) {
+      const ip = parseIpv4(a.address);
+      if (!ip || isPrivateOrSpecialIpv4(ip)) {
+        throw new Error(
+          `Hostname ${host} resolves to a private/internal IPv4 (${a.address}).`,
+        );
+      }
+    } else if (a.family === 6) {
+      if (isPrivateOrSpecialIpv6(a.address.toLowerCase())) {
+        throw new Error(
+          `Hostname ${host} resolves to a private/internal IPv6 (${a.address}).`,
+        );
+      }
+    }
+  }
+
+  return {
+    url,
+    dispatcher: makePinnedAgent(
+      Agent,
+      addrs.map((a) => ({ address: a.address, family: a.family as 4 | 6 })),
+    ),
+  };
+}
+
+function makePinnedAgent(
+  AgentCtor: typeof import('undici').Agent,
+  addrs: Array<{ address: string; family: 4 | 6 }>,
+): import('undici').Dispatcher {
+  // undici's connect.lookup callback signature mirrors node:dns.lookup.
+  // We always return the FIRST validated address — undici handles
+  // connection failure + retry internally, and the address set was
+  // pre-validated as a whole.
+  return new AgentCtor({
+    connect: {
+      lookup: (_hostname, _options, cb) => {
+        const a = addrs[0]!;
+        cb(null, a.address, a.family);
+      },
+    },
+  });
+}
+
 // ─── Pure IP-range helpers (exported for tests) ────────────────────────
 
 /** Parse an IPv4 literal like "192.168.0.1" → [192,168,0,1] or null. */
@@ -138,21 +261,50 @@ export function isPrivateOrSpecialIpv4(ip: [number, number, number, number]): bo
  *  compressed hex form `::ffff:7f00:1`, so we have to handle both
  *  the dotted-quad and the hex-pair representations. */
 export function isPrivateOrSpecialIpv6(host: string): boolean {
-  const h = host.toLowerCase();
-  if (h === '::' || h === '::1') return true;                // unspecified + loopback
-  if (h.startsWith('fe80:') || h.startsWith('fe80::')) return true;  // link-local
-  if (/^f[cd][0-9a-f]{2}:/.test(h)) return true;             // unique-local fc00::/7
+  let h = host.toLowerCase();
+  // Strip IPv6 zone suffix (e.g. "fe80::1%eth0") — the literal address
+  // is what matters for the blocklist; the zone is just routing context.
+  const pct = h.indexOf('%');
+  if (pct >= 0) h = h.slice(0, pct);
+
+  // Loopback / unspecified — compressed and fully-expanded forms.
+  if (h === '::' || h === '::1') return true;
+  if (/^0+(?::0+){6}:0*1$/.test(h)) return true;             // 0:0:0:0:0:0:0:1
+  if (/^0+(?::0+){7}$/.test(h)) return true;                 // 0:0:0:0:0:0:0:0
+
+  // Link-local fe80::/10 — covers fe80..febf in the first hextet.
+  // Compressed (`fe80::`) AND fully-expanded (`fe80:0:…`) AND any
+  // upper variant in the /10.
+  if (/^fe[89ab][0-9a-f]:/.test(h) || /^fe[89ab][0-9a-f]::/.test(h)) return true;
+
+  // Unique-local fc00::/7
+  if (/^f[cd][0-9a-f]{2}:/.test(h)) return true;
+
+  // IPv4/IPv6 NAT64 translation 64:ff9b::/96 + 64:ff9b:1::/48.
+  // We treat the translated range as private since it's used to
+  // reach IPv4 hosts via internal NAT64 gateways.
+  if (/^64:ff9b(:0+)*:/.test(h) || h.startsWith('64:ff9b::') || /^64:ff9b:1:/.test(h)) return true;
 
   // IPv4-mapped IPv6 in dotted-quad form: ::ffff:a.b.c.d
-  const mappedDotted = h.match(/::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  // Also handles fully-expanded `0:0:0:0:0:ffff:a.b.c.d`.
+  const mappedDotted = h.match(/(?:^::|^(?:0+:){5,6})ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
   if (mappedDotted) {
     const ip = parseIpv4(mappedDotted[1]);
     return !ip || isPrivateOrSpecialIpv4(ip);
   }
 
+  // IPv4-compatible IPv6 (deprecated, no `ffff` segment): ::a.b.c.d
+  // Per RFC 4291 §2.5.5.1 these are "deprecated" but still routable;
+  // treat the same as IPv4-mapped for safety.
+  const compatDotted = h.match(/^::(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (compatDotted) {
+    const ip = parseIpv4(compatDotted[1]);
+    return !ip || isPrivateOrSpecialIpv4(ip);
+  }
+
   // IPv4-mapped IPv6 in compressed hex-pair form: ::ffff:HHHH:HHHH
-  // The last two 16-bit groups encode the four IPv4 octets.
-  const mappedHex = h.match(/::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  // (and fully-expanded `0:0:0:0:0:ffff:HHHH:HHHH`).
+  const mappedHex = h.match(/(?:^::|^(?:0+:){5,6})ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
   if (mappedHex) {
     const high = parseInt(mappedHex[1], 16);
     const low = parseInt(mappedHex[2], 16);
