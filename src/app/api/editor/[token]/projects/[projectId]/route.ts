@@ -107,9 +107,13 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
           reviewShareToken = linkRows[0].token as string;
         } else {
           const newToken = crypto.randomUUID();
+          // workspace_id is NOT NULL on review_share_links since migration
+          // 0013 — copy it from the parent review_project so this auto-create
+          // doesn't fail the same way createShareLink used to.
           await sql`
-            INSERT INTO review_share_links (project_id, token, permission, collaborator_id, label)
-            VALUES (${reviewProjectId}, ${newToken}, 'can-comment', ${editor.id}, 'Editor auto-link')
+            INSERT INTO review_share_links (project_id, token, permission, collaborator_id, label, workspace_id)
+            SELECT ${reviewProjectId}::uuid, ${newToken}, 'can-comment', ${editor.id}::uuid, 'Editor auto-link', rp.workspace_id
+              FROM review_projects rp WHERE rp.id = ${reviewProjectId}::uuid
           `;
           reviewShareToken = newToken;
         }

@@ -46,15 +46,22 @@ export async function createEditorAssignment(fields: {
   deadline?: string;
 }) {
   await ensureEditorSchema();
+  // workspace_id is NOT NULL on editor_assignments since migration 0013;
+  // copy it from the parent project so callers don't need session context.
+  // INSERT … SELECT FROM projects mirrors the pattern used in narrator-db.
   const { rows } = await sql`
-    INSERT INTO editor_assignments (project_id, editor_id, editor_notes, deadline)
-    VALUES (${fields.project_id}, ${fields.editor_id}, ${fields.editor_notes ?? null}, ${fields.deadline ?? null})
+    INSERT INTO editor_assignments (project_id, editor_id, editor_notes, deadline, workspace_id)
+    SELECT ${fields.project_id}::uuid, ${fields.editor_id}::uuid, ${fields.editor_notes ?? null}, ${fields.deadline ?? null}::timestamptz, p.workspace_id
+      FROM projects p WHERE p.id = ${fields.project_id}::uuid
     ON CONFLICT (project_id, editor_id) DO UPDATE
       SET editor_notes = EXCLUDED.editor_notes,
           deadline = EXCLUDED.deadline,
           updated_at = NOW()
     RETURNING *
   `;
+  if (rows.length === 0) {
+    throw new Error(`Project ${fields.project_id} not found — cannot create editor assignment`);
+  }
   return rows[0];
 }
 
@@ -179,9 +186,12 @@ export async function ensureEditorAssignmentFromReviewLink(reviewProjectId: stri
     const projectId = await findMainProjectIdForReviewProject(reviewProjectId);
     if (!projectId) return null;
     await ensureEditorSchema();
+    // workspace_id is NOT NULL on editor_assignments since migration 0013 —
+    // copy it from the parent project (same pattern as createEditorAssignment).
     const { rows } = await sql`
-      INSERT INTO editor_assignments (project_id, editor_id, review_project_id)
-      VALUES (${projectId}, ${editorId}, ${reviewProjectId})
+      INSERT INTO editor_assignments (project_id, editor_id, review_project_id, workspace_id)
+      SELECT ${projectId}::uuid, ${editorId}::uuid, ${reviewProjectId}::uuid, p.workspace_id
+        FROM projects p WHERE p.id = ${projectId}::uuid
       ON CONFLICT (project_id, editor_id) DO UPDATE
         SET review_project_id = COALESCE(editor_assignments.review_project_id, EXCLUDED.review_project_id),
             updated_at = NOW()

@@ -285,11 +285,18 @@ export async function unresolveComment(commentId: string) {
 export async function createShareLink(projectId: string, permission: string = 'can-comment', expiresAt?: string, collaboratorId?: string, label?: string) {
   await ensureReviewSchema();
   const token = crypto.randomUUID();
+  // workspace_id is NOT NULL on review_share_links since migration 0013;
+  // copy it from the parent review_project so callers don't need session
+  // context. Mirrors the INSERT … SELECT pattern used in narrator-db.
   const { rows } = await sql`
-    INSERT INTO review_share_links (project_id, token, permission, expires_at, collaborator_id, label)
-    VALUES (${projectId}, ${token}, ${permission}, ${expiresAt ?? null}, ${collaboratorId ?? null}, ${label ?? null})
+    INSERT INTO review_share_links (project_id, token, permission, expires_at, collaborator_id, label, workspace_id)
+    SELECT ${projectId}::uuid, ${token}, ${permission}, ${expiresAt ?? null}::timestamptz, ${collaboratorId ?? null}::uuid, ${label ?? null}, rp.workspace_id
+      FROM review_projects rp WHERE rp.id = ${projectId}::uuid
     RETURNING *
   `;
+  if (rows.length === 0) {
+    throw new Error(`Review project ${projectId} not found — cannot create share link`);
+  }
   return rows[0];
 }
 
