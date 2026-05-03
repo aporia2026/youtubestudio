@@ -35,6 +35,11 @@ export const WEBHOOK_EVENT_TYPES = [
     description: 'Fires when fix-the-dip detects a "cliff" severity dip in a published video.',
   },
   {
+    type: 'video_published',
+    label: 'Video published to YouTube',
+    description: 'Fires when a Publish-to-YouTube row flips to "live" (YouTube finished processing the upload).',
+  },
+  {
     type: 'test',
     label: 'Test event',
     description: 'Manual test from the /webhooks page. Always sends regardless of filters.',

@@ -33,6 +33,12 @@ export const WORKFLOW_TRIGGER_EVENTS = [
     description: 'When a script panel finishes — overall_score + consensus_pass available.',
     payload_fields: ['panel_id', 'overall_score', 'consensus_pass'],
   },
+  {
+    type: 'video_published',
+    label: 'Video published to YouTube',
+    description: 'When a Publish-to-YouTube row flips to "live" — useful for "post to Slack when published" or "schedule a 7-day analytics snapshot".',
+    payload_fields: ['publish_id', 'youtube_video_id', 'youtube_url', 'channel_db_id', 'project_id', 'schedule_item_id', 'title', 'privacy_status'],
+  },
 ] as const;
 
 export type WorkflowTriggerEventType = (typeof WORKFLOW_TRIGGER_EVENTS)[number]['type'];

@@ -172,6 +172,13 @@ describe('WORKFLOW_TRIGGER_EVENTS / WORKFLOW_ACTION_TYPES registries', () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
+  it('includes video_published so the publishing producer can dispatch it', () => {
+    expect(isWorkflowTriggerEvent('video_published')).toBe(true);
+    const entry = WORKFLOW_TRIGGER_EVENTS.find((e) => e.type === 'video_published');
+    expect(entry?.payload_fields).toContain('youtube_video_id');
+    expect(entry?.payload_fields).toContain('channel_db_id');
+  });
+
   it('every action type is unique', () => {
     const names = WORKFLOW_ACTION_TYPES.map((a) => a.type);
     expect(new Set(names).size).toBe(names.length);

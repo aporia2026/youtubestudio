@@ -424,6 +424,9 @@ export async function pollPublishStatus(
              updated_at = NOW()
        WHERE id = ${id}::uuid
     `;
+    // Fire-and-forget producer events. Lazy imports keep webhook /
+    // workflow deps out of every consumer of this module.
+    void emitVideoPublishedEvent(id, workspaceId);
     return { status: 'live', youtubeVideoId: row.youtube_video_id };
   }
   if (ytStatus.processingStatus === 'failed' || ytStatus.processingStatus === 'terminated') {
@@ -592,4 +595,61 @@ export async function getPublishedVideo(
     WHERE id = ${id}::uuid AND workspace_id = ${workspaceId}::uuid
   `;
   return rows[0] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Producer events
+// ---------------------------------------------------------------------------
+
+/** Fire `video_published` to both the webhooks and workflows
+ *  subsystems when a publish row flips to 'live'. Lazy imports keep
+ *  the webhook + workflow deps out of every consumer of this module
+ *  (mirrors the ab-tests / cannibalization pattern). Failures here
+ *  are silently swallowed — never block the row's transition to
+ *  'live' because of notification plumbing. */
+async function emitVideoPublishedEvent(id: string, workspaceId: string): Promise<void> {
+  const row = await getPublishedVideo(id, workspaceId).catch(() => null);
+  if (!row || !row.youtube_video_id || !row.youtube_url) return;
+
+  try {
+    const { dispatchWebhookEvent } = await import('./webhooks');
+    await dispatchWebhookEvent(workspaceId, {
+      type: 'video_published',
+      title: `🎉 Published: ${row.title}`,
+      detail: `Live on YouTube — ${row.privacy_status_actual ?? row.privacy_status}.`,
+      fields: {
+        title: row.title.slice(0, 120),
+        privacy: row.privacy_status_actual ?? row.privacy_status,
+        youtube_video_id: row.youtube_video_id,
+      },
+      url: row.youtube_url,
+    });
+  } catch (err) {
+    logger.warn('publish: webhook dispatch failed', {
+      id,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  try {
+    const { dispatchWorkflowEvent } = await import('./workflows');
+    await dispatchWorkflowEvent(workspaceId, {
+      type: 'video_published',
+      payload: {
+        publish_id: row.id,
+        youtube_video_id: row.youtube_video_id,
+        youtube_url: row.youtube_url,
+        channel_db_id: row.channel_db_id,
+        project_id: row.project_id,
+        schedule_item_id: row.schedule_item_id,
+        title: row.title,
+        privacy_status: row.privacy_status_actual ?? row.privacy_status,
+      },
+    });
+  } catch (err) {
+    logger.warn('publish: workflow dispatch failed', {
+      id,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
 }

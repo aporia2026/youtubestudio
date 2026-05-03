@@ -159,4 +159,8 @@ describe('isWebhookEventType', () => {
     expect(isWebhookEventType(42)).toBe(false);
     expect(isWebhookEventType('')).toBe(false);
   });
+
+  it('includes video_published so the publishing producer can dispatch it', () => {
+    expect(isWebhookEventType('video_published')).toBe(true);
+  });
 });
