@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { apiRoute } from '@/lib/route-helpers';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { deleteWorkflowRule, updateWorkflowRule } from '@/lib/workflows';
 
 export const PATCH = apiRoute.authed(
@@ -25,8 +25,13 @@ export const PATCH = apiRoute.authed(
       if (!ok) return NextResponse.json({ error: 'Not found' }, { status: 404 });
       return NextResponse.json({ ok: true });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return NextResponse.json({ error: msg }, { status: 400 });
+      return domainErrorResponse(err, {
+        op: 'workflows: update-rule',
+        knownPatterns: [
+          { match: /required|invalid|unsupported/i, status: 400 },
+        ],
+        fallbackMessage: 'Could not update the workflow rule.',
+      });
     }
   },
 );

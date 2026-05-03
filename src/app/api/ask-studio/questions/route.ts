@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { apiRoute } from '@/lib/route-helpers';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { askStudio, listAskStudioQuestions } from '@/lib/ask-studio';
 
 // Tool-use loops can run up to MAX_TOOL_ITERATIONS sequential model
@@ -49,7 +49,12 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     });
     return NextResponse.json(result);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: msg }, { status: 502 });
+    return domainErrorResponse(err, {
+      op: 'ask-studio: question',
+      knownPatterns: [
+        { match: /question is required/i, status: 400 },
+      ],
+      fallbackMessage: 'Could not answer the question — try again.',
+    });
   }
 });

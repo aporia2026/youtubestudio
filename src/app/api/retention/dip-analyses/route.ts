@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { apiRoute } from '@/lib/route-helpers';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { assertOwnsResource, ResourceNotInWorkspaceError } from '@/lib/workspace-scope';
 import { analyzeRetentionDips, listDipAnalyses } from '@/lib/fix-the-dip';
 
@@ -81,8 +81,14 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     });
     return NextResponse.json(result);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const status = /not found|too short|too sparse|required|Sync analytics/.test(msg) ? 409 : 502;
-    return NextResponse.json({ error: msg }, { status });
+    return domainErrorResponse(err, {
+      op: 'retention: dip-analysis',
+      knownPatterns: [
+        { match: /not found/i, status: 404 },
+        { match: /too short|required/i, status: 400 },
+        { match: /too sparse|Sync analytics/i, status: 409 },
+      ],
+      fallbackMessage: 'Dip analysis failed — please try again.',
+    });
   }
 });

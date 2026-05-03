@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { apiRoute } from '@/lib/route-helpers';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { assertOwnsResource, ResourceNotInWorkspaceError } from '@/lib/workspace-scope';
 import { listRetentionPredictions, predictRetention } from '@/lib/retention-predictor';
 
@@ -78,8 +78,12 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     });
     return NextResponse.json(result);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const status = /too short|required/.test(msg) ? 400 : 502;
-    return NextResponse.json({ error: msg }, { status });
+    return domainErrorResponse(err, {
+      op: 'retention: predict',
+      knownPatterns: [
+        { match: /too short|required/i, status: 400 },
+      ],
+      fallbackMessage: 'Retention prediction failed — please try again.',
+    });
   }
 });

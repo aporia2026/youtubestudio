@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { apiRoute } from '@/lib/route-helpers';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { createWebhookSubscription, listWebhookSubscriptions } from '@/lib/webhooks';
 import type { WebhookKind } from '@/lib/webhooks-types';
 
@@ -36,7 +36,12 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     });
     return NextResponse.json(result);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: msg }, { status: 400 });
+    return domainErrorResponse(err, {
+      op: 'webhooks: create',
+      knownPatterns: [
+        { match: /required|invalid url|must be|unsupported/i, status: 400 },
+      ],
+      fallbackMessage: 'Could not create the webhook subscription.',
+    });
   }
 });

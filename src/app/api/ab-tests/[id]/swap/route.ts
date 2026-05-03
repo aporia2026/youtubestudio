@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { apiRoute } from '@/lib/route-helpers';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { swapAbTestVariant } from '@/lib/ab-tests';
 import { isAbTestVariant } from '@/lib/ab-tests-types';
 
@@ -42,9 +42,14 @@ export const POST = apiRoute.authed(
       });
       return NextResponse.json(result);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const status = /not found|not OAuth|already concluded|associated channel/.test(msg) ? 409 : 502;
-      return NextResponse.json({ error: msg }, { status });
+      return domainErrorResponse(err, {
+        op: 'ab-tests: swap',
+        knownPatterns: [
+          { match: /not found/i, status: 404 },
+          { match: /not OAuth|already concluded|associated channel/i, status: 409 },
+        ],
+        fallbackMessage: 'Could not swap the AB test variant.',
+      });
     }
   },
 );

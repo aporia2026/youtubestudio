@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { apiRoute } from '@/lib/route-helpers';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { assertOwnsResource, ResourceNotInWorkspaceError } from '@/lib/workspace-scope';
 import { syncCommentsForVideo } from '@/lib/youtube-comments';
 
@@ -50,7 +50,13 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     });
     return NextResponse.json(result);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: msg }, { status: 502 });
+    return domainErrorResponse(err, {
+      op: 'comments: sync',
+      knownPatterns: [
+        { match: /YOUTUBE_API_KEY|quota/i, status: 503 },
+        { match: /not found|video unavailable/i, status: 404 },
+      ],
+      fallbackMessage: 'Could not sync comments — please try again.',
+    });
   }
 });

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { apiRoute } from '@/lib/route-helpers';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { generateShortVoiceover } from '@/lib/shorts';
 
 export const maxDuration = 60;
@@ -46,9 +46,13 @@ export const POST = apiRoute.authed(
       });
       return NextResponse.json({ ...result, status: 'ready' });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const status = msg.includes('not found') ? 404 : 502;
-      return NextResponse.json({ error: msg }, { status });
+      return domainErrorResponse(err, {
+        op: 'shorts: voiceover',
+        knownPatterns: [
+          { match: /not found/i, status: 404 },
+        ],
+        fallbackMessage: 'Voiceover generation failed.',
+      });
     }
   },
 );

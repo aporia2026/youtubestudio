@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { apiRoute } from '@/lib/route-helpers';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { setCommentModeration } from '@/lib/youtube-comments';
 
 export const maxDuration = 30;
@@ -31,9 +31,14 @@ export const POST = apiRoute.authed(
       await setCommentModeration({ id, workspaceId: session.ws, status, banAuthor });
       return NextResponse.json({ ok: true, status });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const httpStatus = /not found|not OAuth|associated channel/.test(msg) ? 409 : 502;
-      return NextResponse.json({ error: msg }, { status: httpStatus });
+      return domainErrorResponse(err, {
+        op: 'comments: moderate',
+        knownPatterns: [
+          { match: /not found/i, status: 404 },
+          { match: /not OAuth|associated channel/i, status: 409 },
+        ],
+        fallbackMessage: 'Could not update comment moderation.',
+      });
     }
   },
 );

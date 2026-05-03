@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { apiRoute } from '@/lib/route-helpers';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { triageComments } from '@/lib/comment-triage';
 
 // AI loop runs CONCURRENCY=3 in parallel — worst case ~10s for 25
@@ -48,7 +48,9 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     });
     return NextResponse.json(result);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: msg }, { status: 502 });
+    return domainErrorResponse(err, {
+      op: 'comments: triage',
+      fallbackMessage: 'Could not triage comments — please try again.',
+    });
   }
 });

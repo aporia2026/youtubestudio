@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { apiRoute } from '@/lib/route-helpers';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { replyToComment } from '@/lib/youtube-comments';
 
 export const maxDuration = 30;
@@ -31,9 +31,14 @@ export const POST = apiRoute.authed(
       const result = await replyToComment({ id, workspaceId: session.ws, replyText });
       return NextResponse.json(result);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const status = /not found|not OAuth|associated channel|exceeds/.test(msg) ? 409 : 502;
-      return NextResponse.json({ error: msg }, { status });
+      return domainErrorResponse(err, {
+        op: 'comments: reply',
+        knownPatterns: [
+          { match: /not found/i, status: 404 },
+          { match: /not OAuth|associated channel|exceeds/i, status: 409 },
+        ],
+        fallbackMessage: 'Could not post the reply.',
+      });
     }
   },
 );

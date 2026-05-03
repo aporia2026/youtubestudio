@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { apiRoute } from '@/lib/route-helpers';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { assertOwnsResource, ResourceNotInWorkspaceError } from '@/lib/workspace-scope';
 import { createAbTest, listAbTests } from '@/lib/ab-tests';
 
@@ -89,7 +89,12 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     });
     return NextResponse.json({ ...result, status: 'draft' });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: msg }, { status: 400 });
+    return domainErrorResponse(err, {
+      op: 'ab-tests: create',
+      knownPatterns: [
+        { match: /required|invalid|must be|too short|too long/i, status: 400 },
+      ],
+      fallbackMessage: 'Could not create the AB test.',
+    });
   }
 });

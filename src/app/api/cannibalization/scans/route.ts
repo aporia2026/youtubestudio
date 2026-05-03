@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { apiRoute } from '@/lib/route-helpers';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { runCannibalizationScan } from '@/lib/cannibalization';
 
 // AI step is Haiku — fast — but we cap at 10 pairs per scan, so worst
@@ -40,7 +40,9 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     });
     return NextResponse.json(result);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: msg }, { status: 502 });
+    return domainErrorResponse(err, {
+      op: 'cannibalization: scan',
+      fallbackMessage: 'Cannibalization scan failed — please try again.',
+    });
   }
 });

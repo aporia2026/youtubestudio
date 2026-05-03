@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { apiRoute } from '@/lib/route-helpers';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { recordAbTestSnapshot } from '@/lib/ab-tests';
 
 export const maxDuration = 60;
@@ -21,9 +21,14 @@ export const POST = apiRoute.authed(
       const snapshot = await recordAbTestSnapshot({ id, workspaceId: session.ws });
       return NextResponse.json({ snapshot });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const status = /not found|not been started|associated channel|not OAuth/.test(msg) ? 409 : 502;
-      return NextResponse.json({ error: msg }, { status });
+      return domainErrorResponse(err, {
+        op: 'ab-tests: snapshot',
+        knownPatterns: [
+          { match: /not found/i, status: 404 },
+          { match: /not been started|associated channel|not OAuth/i, status: 409 },
+        ],
+        fallbackMessage: 'Could not record the AB test snapshot.',
+      });
     }
   },
 );
