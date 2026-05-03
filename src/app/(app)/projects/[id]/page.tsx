@@ -9,6 +9,7 @@ import { ScriptVoiceoverPanel } from '@/components/ui/ScriptVoiceoverPanel';
 import { NarrationTab } from '@/components/narrator/NarrationTab';
 import { EditorTab } from '@/components/editor/EditorTab';
 import { YouTubeDescriptionPanel } from '@/components/ui/YouTubeDescriptionPanel';
+import { PublishToYoutubeModal } from '@/components/publishing/PublishToYoutubeModal';
 import Link from 'next/link';
 
 type TabId = 'script' | 'voiceover' | 'media' | 'references' | 'narration' | 'editor';
@@ -61,6 +62,7 @@ export default function ProjectDetailPage() {
   const [scripts, setScripts] = useState<Script[]>([]);
   const [media, setMedia] = useState<MediaAsset[]>([]);
   const [refs, setRefs] = useState<YoutubeRef[]>([]);
+  const [publishOpen, setPublishOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>(() => {
     if (typeof window === 'undefined') return 'script';
     const tab = new URLSearchParams(window.location.search).get('tab');
@@ -237,6 +239,13 @@ export default function ProjectDetailPage() {
           <Link href={`/generator?projectId=${id}`}>
             <button className="btn-secondary text-sm">✨ Regenerate</button>
           </Link>
+          <button
+            onClick={() => setPublishOpen(true)}
+            className="text-sm font-medium px-3 py-1.5 rounded-lg"
+            style={{ background: '#ef4444', color: 'white' }}
+          >
+            🚀 Publish to YouTube
+          </button>
         </div>
       </div>
 
@@ -537,6 +546,14 @@ export default function ProjectDetailPage() {
       {activeTab === 'editor' && project && (
         <EditorTab projectId={project.id} />
       )}
+
+      <PublishToYoutubeModal
+        open={publishOpen}
+        onClose={() => setPublishOpen(false)}
+        defaultTitle={project?.title || ''}
+        defaultDescription={project?.youtube_description || ''}
+        defaultProjectId={id}
+      />
     </div>
   );
 }

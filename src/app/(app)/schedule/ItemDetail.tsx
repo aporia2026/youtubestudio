@@ -16,6 +16,7 @@ import { SeriesPicker } from '@/components/ui/SeriesPicker';
 import { EditorPicker } from './EditorPicker';
 import { TeamMemberPicker } from './TeamMemberPicker';
 import { SCHEDULE_LINK_PARAM } from '@/lib/schedule-link';
+import { PublishToYoutubeModal } from '@/components/publishing/PublishToYoutubeModal';
 
 type Props = {
   item: ScheduleItem;
@@ -132,6 +133,7 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
   );
   const [titleSuggestions, setTitleSuggestions] = useState<Array<{ title: string; angle: string; ctr_hint: string }> | null>(null);
   const [suggestingTitles, setSuggestingTitles] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
 
   async function suggestTitles() {
     setSuggestingTitles(true);
@@ -257,6 +259,11 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
             className="flex items-center gap-1 px-2 py-1 rounded"
             style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}>
             📺 Prepare for YouTube
+          </button>
+          <button onClick={() => setPublishOpen(true)}
+            className="flex items-center gap-1 px-2 py-1 rounded"
+            style={{ background: '#ef4444', color: 'white', border: '1px solid #ef4444' }}>
+            🚀 Publish
           </button>
         </div>
 
@@ -716,6 +723,16 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
           )}
         </div>
       </motion.aside>
+      <PublishToYoutubeModal
+        open={publishOpen}
+        onClose={() => setPublishOpen(false)}
+        defaultChannelId={(item.channels ?? [])[0]?.id}
+        defaultTitle={item.title || ''}
+        defaultDescription={item.yt_description || item.notes || ''}
+        defaultTags={item.yt_tags ?? item.tags ?? []}
+        defaultScheduleItemId={item.id}
+        defaultProjectId={item.project_id ?? undefined}
+      />
     </AnimatePresence>
   );
 }

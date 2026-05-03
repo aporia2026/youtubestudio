@@ -43,11 +43,17 @@
     "src/app/api/narrator/takes/[takeId]/audio/route.ts":            { "maxDuration": 300 },
     "src/app/api/narrator/assignments/[id]/stitch/route.ts":         { "maxDuration": 300 },
     "src/app/api/schedule/ai/suggest-next/route.ts":                 { "maxDuration": 120 },
-    "src/app/api/schedule/ai/title-from-script/route.ts":            { "maxDuration": 120 }
+    "src/app/api/schedule/ai/title-from-script/route.ts":            { "maxDuration": 120 },
+    "src/app/api/publishing/route.ts":                               { "maxDuration": 300 },
+    "src/app/api/cron/poll-publishing/route.ts":                     { "maxDuration": 300 }
   },
   "crons": [
     {
       "path": "/api/cron/run-workflows",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/poll-publishing",
       "schedule": "0 * * * *"
     }
   ]

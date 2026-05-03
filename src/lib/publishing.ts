@@ -505,6 +505,70 @@ export async function listPublishedVideos(
   return rows;
 }
 
+/** Drain all rows currently in 'processing' across every workspace,
+ *  polling YouTube for each and flipping to 'live' or 'failed' as
+ *  appropriate. Used by the hourly cron so a user who closed the tab
+ *  still sees the row update without revisiting the page.
+ *
+ *  Also marks long-stuck 'queued'/'uploading' rows as failed — those
+ *  indicate the orchestrator process died mid-upload. Threshold is 1
+ *  hour, generous enough that a slow CDN fetch + slow YouTube
+ *  multipart push won't trigger it.
+ *
+ *  Returns counts so the cron route can log them. */
+export async function pollAllPendingPublishes(opts: { limit?: number } = {}): Promise<{
+  polled: number;
+  flippedLive: number;
+  flippedFailed: number;
+  stuckFailed: number;
+}> {
+  const limit = Math.max(1, Math.min(100, opts.limit ?? 50));
+
+  // Fail rows stuck in queued/uploading for > 1 hour. These can't make
+  // progress without a fresh orchestrator run, so they're effectively
+  // dead — better to mark them failed so the user can retry.
+  const stuck = await sql`
+    UPDATE published_videos
+       SET status = 'failed',
+           error_message = COALESCE(error_message || ' | ', '') ||
+                           'Upload abandoned (> 1 hour with no progress).',
+           updated_at = NOW()
+     WHERE status IN ('queued', 'uploading')
+       AND updated_at < NOW() - INTERVAL '1 hour'
+  `;
+
+  // Pick up everything in 'processing' to poll.
+  const { rows: pending } = await sql<{ id: string; workspace_id: string }>`
+    SELECT id, workspace_id
+      FROM published_videos
+     WHERE status = 'processing'
+     ORDER BY updated_at ASC
+     LIMIT ${limit}
+  `;
+
+  let flippedLive = 0;
+  let flippedFailed = 0;
+  for (const row of pending) {
+    try {
+      const res = await pollPublishStatus(row.id, row.workspace_id);
+      if (res.status === 'live') flippedLive += 1;
+      else if (res.status === 'failed') flippedFailed += 1;
+    } catch (err) {
+      logger.warn('publish: pollAll iteration failed', {
+        id: row.id,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return {
+    polled: pending.length,
+    flippedLive,
+    flippedFailed,
+    stuckFailed: stuck.rowCount ?? 0,
+  };
+}
+
 /** Single read, scoped to the workspace. Returns null when not found. */
 export async function getPublishedVideo(
   id: string,
