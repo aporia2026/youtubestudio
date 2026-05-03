@@ -3,15 +3,7 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
-import { AI_MODELS, APP_FEATURES, type AppFeature } from '@/lib/ai-models';
-
-// Build the default-model map from APP_FEATURES so adding a feature later
-// doesn't require a second edit here.
-const DEFAULT_FEATURE_MODELS: Record<AppFeature, string> = APP_FEATURES.reduce(
-  (acc, f) => { acc[f.id] = AI_MODELS[0].id; return acc; },
-  {} as Record<AppFeature, string>,
-);
-import { ModelSelector } from '@/components/ui/ModelSelector';
+import { ModelDefaultsPanel } from '@/components/settings/ModelDefaultsPanel';
 import { TemplatesPanel } from '@/components/settings/TemplatesPanel';
 
 interface Niche {
@@ -32,7 +24,6 @@ export default function SettingsPage() {
   const [newNicheKeywords, setNewNicheKeywords] = useState('');
   const [addingNiche, setAddingNiche] = useState(false);
   const [activeSection, setActiveSection] = useState<'niches' | 'api' | 'models' | 'templates' | 'notifications' | 'integrations' | 'about'>('niches');
-  const [featureModels, setFeatureModels] = useState<Record<AppFeature, string>>(DEFAULT_FEATURE_MODELS);
   const [keyStatus, setKeyStatus] = useState<KeyStatus>({});
   const [keyStatusLoading, setKeyStatusLoading] = useState(true);
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
@@ -165,11 +156,6 @@ export default function SettingsPage() {
     fetch('/api/niches').then(r => r.json()).then(data => setNiches(data.niches || []));
     loadKeyStatus();
     loadGoogleAccount();
-    try {
-      const saved = localStorage.getItem('feature_model_defaults');
-      if (saved) setFeatureModels(prev => ({ ...prev, ...JSON.parse(saved) }));
-    } catch {}
-
     // Handle Google OAuth redirect params
     const params = new URLSearchParams(window.location.search);
     const googleParam = params.get('google');
@@ -221,13 +207,6 @@ export default function SettingsPage() {
     await fetch(`/api/niches/${id}`, { method: 'DELETE' });
     setNiches(n => n.filter(ni => ni.id !== id));
     toast.success('Niche removed');
-  }
-
-  function updateFeatureModel(feature: AppFeature, modelId: string) {
-    const updated = { ...featureModels, [feature]: modelId };
-    setFeatureModels(updated);
-    localStorage.setItem('feature_model_defaults', JSON.stringify(updated));
-    toast.success('Default model updated');
   }
 
   async function savePerplexityKey() {
@@ -608,31 +587,7 @@ export default function SettingsPage() {
             </div>
           )}
 
-          {activeSection === 'models' && (
-            <div className="space-y-4">
-              <div className="glass rounded-xl p-5">
-                <h2 className="text-sm font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>Default Model per Feature</h2>
-                <p className="text-sm mb-5" style={{ color: 'var(--text-secondary)' }}>
-                  Choose which AI model each feature uses by default. You can still override per-session.
-                </p>
-                <div className="space-y-6">
-                  {APP_FEATURES.map(feature => (
-                    <div key={feature.id}>
-                      <div className="mb-2">
-                        <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{feature.label}</p>
-                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{feature.description}</p>
-                      </div>
-                      <ModelSelector
-                        value={featureModels[feature.id]}
-                        onChange={(id) => updateFeatureModel(feature.id, id)}
-                        label=""
-                      />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
+          {activeSection === 'models' && <ModelDefaultsPanel />}
 
           {activeSection === 'notifications' && (
             <div className="space-y-4">

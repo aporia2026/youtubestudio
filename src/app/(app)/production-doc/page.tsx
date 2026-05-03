@@ -479,17 +479,9 @@ function ProductionDocPage() {
   const [script, setScript] = useState('');
   const [niche, setNiche] = useState('');
   const [topic, setTopic] = useState('');
+  // Per-session override only. The canonical default is set in
+  // Settings → Model Defaults and resolved server-side.
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('production-doc'));
-
-  function handleModelChange(id: string) {
-    setModelId(id);
-    // Persist as the default for Production Doc (readable in Settings → Model Defaults)
-    try {
-      const saved = JSON.parse(localStorage.getItem('feature_model_defaults') || '{}');
-      saved['production-doc'] = id;
-      localStorage.setItem('feature_model_defaults', JSON.stringify(saved));
-    } catch { /* ignore storage errors */ }
-  }
   const [speakingPace, setSpeakingPace] = useState(135);
   const [actualDuration, setActualDuration] = useState(''); // "mm:ss" of actual voiceover recording
   const [stylePreset, setStylePreset] = useState('cinematic');
@@ -1590,7 +1582,7 @@ function ProductionDocPage() {
         {/* Model + Generate */}
         <div className="flex items-center gap-3">
           <div className="flex-1">
-            <ModelSelector value={modelId} onChange={handleModelChange} label="" />
+            <ModelSelector value={modelId} onChange={setModelId} label="" />
           </div>
           <button
             onClick={generate}
