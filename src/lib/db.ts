@@ -2,6 +2,42 @@ import { sql } from '@vercel/postgres';
 
 export { sql };
 
+/**
+ * Schema-drift heal: drops the leftover `workspace_id` column from every
+ * table that has it. Some deployments inherited this column from a
+ * multi-tenant fork of the app, but the current single-user codebase never
+ * reads or writes it — so the NOT NULL constraint blocks every INSERT.
+ *
+ * Idempotent: enumerates `information_schema.columns` so unaffected tables
+ * are skipped, and `IF EXISTS` makes the drop a no-op if the column was
+ * already removed by a concurrent caller. CASCADE clears dependent FKs
+ * (e.g. workspace_id → workspaces.id) which are equally dead weight here.
+ */
+export async function dropWorkspaceIdLeftover() {
+  try {
+    await sql`
+      DO $$
+      DECLARE r RECORD;
+      BEGIN
+        FOR r IN
+          SELECT table_name FROM information_schema.columns
+          WHERE column_name = 'workspace_id' AND table_schema = 'public'
+        LOOP
+          EXECUTE format('ALTER TABLE public.%I DROP COLUMN IF EXISTS workspace_id CASCADE', r.table_name);
+        END LOOP;
+      END $$;
+    `;
+  } catch (err) {
+    console.warn('dropWorkspaceIdLeftover failed:', err);
+  }
+}
+
+/** Heuristic: does this error look like a workspace_id NOT NULL violation? */
+export function isWorkspaceIdNotNullError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /workspace_id/i.test(msg) && /not[- ]?null/i.test(msg);
+}
+
 /** Idempotent setup for the workflow drafts table. */
 let draftsMigrated = false;
 export async function ensureDraftsSchema() {
@@ -135,20 +171,9 @@ export async function initDatabase() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `;
-  // Schema-drift heal: some deployments have a leftover `workspace_id NOT NULL`
-  // column from a multi-tenant variant of this app. The codebase is single-
-  // user (see login page) and never reads or writes workspace_id, so the
-  // column is dead weight blocking INSERTs. Drop it.
-  try {
-    await sql`ALTER TABLE projects DROP COLUMN IF EXISTS workspace_id`;
-  } catch (err) {
-    // CASCADE may be required if a view or FK depends on it. Try once more.
-    try {
-      await sql`ALTER TABLE projects DROP COLUMN IF EXISTS workspace_id CASCADE`;
-    } catch {
-      console.warn('initDatabase: could not drop projects.workspace_id', err);
-    }
-  }
+  // Schema-drift heal: drop the leftover workspace_id column from every
+  // table that still has it (single-user codebase doesn't use it).
+  await dropWorkspaceIdLeftover();
 
   // Scripts table (versioned)
   await sql`

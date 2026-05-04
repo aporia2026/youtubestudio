@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { sql } from '@/lib/db';
+import { sql, dropWorkspaceIdLeftover, isWorkspaceIdNotNullError } from '@/lib/db';
 import { countWords, estimateDuration } from '@/lib/utils';
 import { resyncAssignmentSectionsIfStale } from '@/lib/narrator-db';
 
@@ -34,11 +34,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const words = countWords(content);
     const duration = estimateDuration(words);
 
-    const result = await sql`
-      INSERT INTO scripts (project_id, version, content, word_count, estimated_duration_seconds, ai_model, is_active)
-      VALUES (${id}, ${nextVersion}, ${content}, ${words}, ${duration}, ${modelId || null}, true)
-      RETURNING *
-    `;
+    // Same multi-tenant-fork drift heal as in /api/projects: if `scripts`
+    // still has a workspace_id NOT NULL column, drop it once and retry.
+    let result;
+    try {
+      result = await sql`
+        INSERT INTO scripts (project_id, version, content, word_count, estimated_duration_seconds, ai_model, is_active)
+        VALUES (${id}, ${nextVersion}, ${content}, ${words}, ${duration}, ${modelId || null}, true)
+        RETURNING *
+      `;
+    } catch (insertErr) {
+      if (!isWorkspaceIdNotNullError(insertErr)) throw insertErr;
+      await dropWorkspaceIdLeftover();
+      result = await sql`
+        INSERT INTO scripts (project_id, version, content, word_count, estimated_duration_seconds, ai_model, is_active)
+        VALUES (${id}, ${nextVersion}, ${content}, ${words}, ${duration}, ${modelId || null}, true)
+        RETURNING *
+      `;
+    }
 
     await sql`UPDATE projects SET updated_at = NOW() WHERE id = ${id}`;
 
@@ -63,7 +76,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     return NextResponse.json({ script: result.rows[0] });
   } catch (err) {
-    console.error(err);
-    return NextResponse.json({ error: 'Failed' }, { status: 500 });
+    console.error('POST /api/projects/[id]/scripts failed:', err);
+    const detail = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({ error: `Failed to save script: ${detail}` }, { status: 500 });
   }
 }

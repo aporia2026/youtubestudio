@@ -99,10 +99,12 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content }),
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     setSavingScript(false);
     if (!res.ok) {
-      toast.error('Save failed');
+      const detail = data?.error ? `: ${data.error}` : '';
+      toast.error(`Save failed${detail}`);
+      console.error('saveScript failed', { status: res.status, data });
       return;
     }
     onPatch(item.id, { script_id: data.script.id });
