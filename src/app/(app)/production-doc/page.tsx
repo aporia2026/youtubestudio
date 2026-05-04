@@ -1710,9 +1710,20 @@ function ProductionDocPage() {
             <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
               Generating AI images with Grok…
             </span>
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-              {imageProgress.done} / {imageProgress.total}
-            </span>
+            <div className="flex items-center gap-3">
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                {imageProgress.done} / {imageProgress.total}
+              </span>
+              {/* Stop — same AbortController also cancels in-flight image fetches */}
+              <button
+                onClick={cancelGeneration}
+                className="text-xs px-2 py-0.5 rounded transition-colors"
+                style={{ background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)' }}
+                title="Cancel remaining image generations"
+              >
+                ✕ Stop
+              </button>
+            </div>
           </div>
           <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
             <div

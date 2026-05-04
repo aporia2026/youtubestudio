@@ -10,6 +10,7 @@ import { NarrationTab } from '@/components/narrator/NarrationTab';
 import { EditorTab } from '@/components/editor/EditorTab';
 import { YouTubeDescriptionPanel } from '@/components/ui/YouTubeDescriptionPanel';
 import { PublishToYoutubeModal } from '@/components/publishing/PublishToYoutubeModal';
+import { downloadCrossOriginFile } from '@/lib/download-file';
 import Link from 'next/link';
 
 type TabId = 'script' | 'voiceover' | 'media' | 'references' | 'narration' | 'editor';
@@ -494,12 +495,27 @@ export default function ProjectDetailPage() {
           {media.filter(m => m.type === 'voiceover').length > 0 ? (
             media.filter(m => m.type === 'voiceover').map(vo => (
               <div key={vo.id} className="glass rounded-xl p-5">
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <h3 className="font-medium" style={{ color: 'var(--text-primary)' }}>{vo.name}</h3>
+                <div className="flex items-center justify-between mb-3 gap-2">
+                  <div className="min-w-0 flex-1">
+                    <h3 className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>{vo.name}</h3>
                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{vo.source === 'upload' ? 'Uploaded' : 'External URL'}</p>
                   </div>
-                  <button onClick={() => deleteMedia(vo.id)} className="btn-danger text-xs px-2 py-1">Remove</button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => downloadCrossOriginFile(vo.url, vo.name).catch(e => toast.error(`Download failed: ${e instanceof Error ? e.message : 'unknown error'}`))}
+                      className="text-xs px-2.5 py-1 rounded transition-colors flex items-center gap-1 hover:bg-white/10"
+                      style={{ color: '#a78bfa', background: 'rgba(124,58,237,0.12)' }}
+                      title="Download voiceover file"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="7 10 12 15 17 10" />
+                        <line x1="12" y1="15" x2="12" y2="3" />
+                      </svg>
+                      Download
+                    </button>
+                    <button onClick={() => deleteMedia(vo.id)} className="btn-danger text-xs px-2 py-1">Remove</button>
+                  </div>
                 </div>
                 <audio controls src={vo.url} className="w-full" style={{ height: 40 }} />
                 {vo.notes && <p className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>{vo.notes}</p>}

@@ -412,6 +412,30 @@ function QAPage() {
         toast.error('Stream cut off — using partial result');
       }
 
+      // Detect the `[ERROR: ...]` sentinel that apply-fixes/route.ts writes
+      // when the upstream provider fails. Without this guard, an upstream
+      // 500 gets saved as the new script and overwrites the user's working
+      // version in the draft, the linked project, and qa_session_backup.
+      const sentinelMatch = full.match(/\n*\[ERROR:([^\]]*)\][\s\n]*$/);
+      if (sentinelMatch) {
+        const realContent = full.slice(0, sentinelMatch.index ?? 0).trim();
+        const reason = sentinelMatch[1].trim();
+        // < 200 chars of preceding content = the model produced nothing
+        // usable before erroring. Treat as a hard failure: don't save
+        // anywhere, restore previous fixedScript view.
+        if (realContent.length < 200) {
+          setFixedScript('');
+          throw new Error(`Apply fixes failed: ${reason}`);
+        }
+        // Partial content recovered — strip the sentinel and warn loudly.
+        // Skip the persistence step below so corrupted partials don't
+        // overwrite the canonical script.
+        full = realContent;
+        setFixedScript(full);
+        toast.error(`Stream errored mid-rewrite (${reason}) — partial result shown but NOT saved. Review and re-run if needed.`);
+        return;
+      }
+
       // Persist the improved script so it survives navigation:
       //   1. Active draft gets `fixedScript` + `script` updated to the new version
       //      (Generator's resume reads `draft.script`, so future navigation prefills the fixed text).
