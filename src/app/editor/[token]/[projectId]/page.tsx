@@ -3,6 +3,7 @@
 import { use, useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { compressVideo, isCompressionSupported } from '@/lib/compress-video';
+import { downloadCrossOriginFile } from '@/lib/download-file';
 import { HeroAction } from '@/components/dashboard/HeroAction';
 
 interface ProjectData {
@@ -304,7 +305,22 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
             <div className="space-y-2">
               {data.voiceovers.map(v => (
                 <div key={v.id} className="p-2 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
-                  <p className="text-xs mb-1 truncate" style={{ color: 'var(--text-primary)' }}>{v.name}</p>
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <p className="text-xs truncate flex-1 min-w-0" style={{ color: 'var(--text-primary)' }}>{v.name}</p>
+                    <button
+                      onClick={() => downloadCrossOriginFile(v.url, v.name).catch(e => alert(`Download failed: ${e instanceof Error ? e.message : 'unknown error'}`))}
+                      className="text-[11px] px-2 py-1 rounded transition-colors flex items-center gap-1 shrink-0 hover:bg-white/10"
+                      style={{ color: '#a78bfa', background: 'rgba(124,58,237,0.12)' }}
+                      title="Download voiceover file"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="7 10 12 15 17 10" />
+                        <line x1="12" y1="15" x2="12" y2="3" />
+                      </svg>
+                      Download
+                    </button>
+                  </div>
                   <audio src={v.url} controls className="w-full" style={{ height: 32 }} />
                 </div>
               ))}
