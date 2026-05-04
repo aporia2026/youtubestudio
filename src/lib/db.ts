@@ -135,6 +135,20 @@ export async function initDatabase() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `;
+  // Schema-drift heal: some deployments have a leftover `workspace_id NOT NULL`
+  // column from a multi-tenant variant of this app. The codebase is single-
+  // user (see login page) and never reads or writes workspace_id, so the
+  // column is dead weight blocking INSERTs. Drop it.
+  try {
+    await sql`ALTER TABLE projects DROP COLUMN IF EXISTS workspace_id`;
+  } catch (err) {
+    // CASCADE may be required if a view or FK depends on it. Try once more.
+    try {
+      await sql`ALTER TABLE projects DROP COLUMN IF EXISTS workspace_id CASCADE`;
+    } catch {
+      console.warn('initDatabase: could not drop projects.workspace_id', err);
+    }
+  }
 
   // Scripts table (versioned)
   await sql`

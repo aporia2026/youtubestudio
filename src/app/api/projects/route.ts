@@ -33,12 +33,34 @@ export async function POST(req: NextRequest) {
     const { title, niche, topic, script, modelId } = await req.json();
     if (!title) return NextResponse.json({ error: 'title required' }, { status: 400 });
 
-    // Create project
-    const projResult = await sql`
-      INSERT INTO projects (title, niche, topic, status)
-      VALUES (${title}, ${niche || ''}, ${topic || ''}, 'draft')
-      RETURNING *
-    `;
+    // Create project. Some deployments have a leftover `workspace_id NOT NULL`
+    // column from a multi-tenant fork of this app — see initDatabase notes.
+    // If the first INSERT trips that constraint, drop the column once and
+    // retry so the user doesn't have to manually hit /api/db/init.
+    let projResult;
+    try {
+      projResult = await sql`
+        INSERT INTO projects (title, niche, topic, status)
+        VALUES (${title}, ${niche || ''}, ${topic || ''}, 'draft')
+        RETURNING *
+      `;
+    } catch (insertErr) {
+      const msg = insertErr instanceof Error ? insertErr.message : String(insertErr);
+      if (/workspace_id/i.test(msg) && /not[- ]?null/i.test(msg)) {
+        try {
+          await sql`ALTER TABLE projects DROP COLUMN IF EXISTS workspace_id`;
+        } catch {
+          await sql`ALTER TABLE projects DROP COLUMN IF EXISTS workspace_id CASCADE`;
+        }
+        projResult = await sql`
+          INSERT INTO projects (title, niche, topic, status)
+          VALUES (${title}, ${niche || ''}, ${topic || ''}, 'draft')
+          RETURNING *
+        `;
+      } else {
+        throw insertErr;
+      }
+    }
     const project = projResult.rows[0];
 
     // If a script is provided, save it
