@@ -24,6 +24,7 @@ import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { productionDocToVideoConfig } from '@/remotion/utils';
 import type { BrandKit } from '@/remotion/types';
+import { STYLE_PICKER_OPTIONS } from '@/lib/production-doc-styles';
 
 // Dynamically import VideoPlayer — Remotion uses browser-only APIs (WebGL, Canvas)
 const VideoPlayer = dynamic(
@@ -104,6 +105,14 @@ interface ProductionRow {
   visual_description: string;
   stock_search_terms: string;
   ai_image_prompt: string;
+  /**
+   * Optional editor overlay — when set, the editor composites a real-world
+   * asset (logo, screenshot, photo) on top of the AI-generated image in
+   * post. Populated only for styles with mixing rules (e.g. Doodle
+   * Explainer); empty string for everything else. Old history entries
+   * predating this field will simply read `undefined`.
+   */
+  overlay_stock_terms?: string;
   on_screen_text: string;
   notes: string;
 }
@@ -142,16 +151,9 @@ interface VisualRef {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const STYLE_PRESETS = [
-  { id: 'cinematic',    label: 'Cinematic' },
-  { id: 'animation_2d', label: '2D Animation' },
-  { id: 'animation_3d', label: '3D Animation' },
-  { id: 'documentary', label: 'Documentary' },
-  { id: 'stock',       label: 'Stock Photo' },
-  { id: 'tech',        label: 'Tech / SaaS' },
-  { id: 'viral',       label: 'Viral / Trendy' },
-  { id: 'whiteboard',  label: 'Whiteboard' },
-];
+// Picker options come from the shared built-in registry (imported at top of
+// file) so the picker, the prompt builder, and the API route never drift.
+const STYLE_PRESETS = STYLE_PICKER_OPTIONS;
 
 const VISUAL_TYPE_COLORS: Record<string, { bg: string; color: string }> = {
   'Title Card':       { bg: 'rgba(124,58,237,0.15)', color: '#a78bfa' },
@@ -187,9 +189,13 @@ function escapeCsvCell(value: string): string {
 }
 
 function exportToCsv(doc: ProductionDoc, rowImages: RowImageState[]) {
+  // Only include the Overlay column if at least one row carries an overlay
+  // term — older docs / non-mixing styles render byte-identical to before.
+  const showOverlay = doc.rows.some(r => r.overlay_stock_terms?.trim());
   const headers = [
     'Timecode', 'Script Text', 'Visual Type', 'Visual Description',
     'Stock Search Terms', 'AI Image Prompt', 'Image URL', 'Stock Search URL',
+    ...(showOverlay ? ['Overlay (real asset)'] : []),
     'On-Screen Text', 'Notes',
   ];
   const rows = doc.rows.map((r, i) => [
@@ -201,6 +207,7 @@ function exportToCsv(doc: ProductionDoc, rowImages: RowImageState[]) {
     r.ai_image_prompt,
     rowImages[i]?.imageUrl || '',
     rowImages[i]?.searchUrl || '',
+    ...(showOverlay ? [r.overlay_stock_terms || ''] : []),
     r.on_screen_text,
     r.notes,
   ].map(escapeCsvCell).join(','));
@@ -1517,9 +1524,20 @@ function ProductionDocPage() {
             <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
               Generating AI images with Grok…
             </span>
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-              {imageProgress.done} / {imageProgress.total}
-            </span>
+            <div className="flex items-center gap-3">
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                {imageProgress.done} / {imageProgress.total}
+              </span>
+              {/* Stop — same AbortController also cancels in-flight image fetches */}
+              <button
+                onClick={cancelGeneration}
+                className="text-xs px-2 py-0.5 rounded transition-colors"
+                style={{ background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)' }}
+                title="Cancel remaining image generations"
+              >
+                ✕ Stop
+              </button>
+            </div>
           </div>
           <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
             <div
@@ -1600,12 +1618,18 @@ function ProductionDocPage() {
           </div>
 
           {/* ── Desktop table */}
+          {(() => {
+            // Conditionally surface the Overlay column when any row carries
+            // an overlay term (Doodle Explainer / mixing-style rows). On a
+            // pure-style doc this collapses back to the original layout.
+            const showOverlay = doc.rows.some(r => r.overlay_stock_terms?.trim());
+            return (
           <div className="glass rounded-xl overflow-hidden">
             <div className="overflow-x-auto hidden md:block">
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
                 <thead>
                   <tr style={{ background: 'var(--bg-card)', borderBottom: '1px solid var(--border)' }}>
-                    {['#', 'Time', 'Script Text', 'Visual Type', 'Visual Description', 'Stock Terms', 'Image', 'AI Prompt', 'On-Screen Text', 'Notes'].map(h => (
+                    {['#', 'Time', 'Script Text', 'Visual Type', 'Visual Description', 'Stock Terms', 'Image', 'AI Prompt', ...(showOverlay ? ['Overlay'] : []), 'On-Screen Text', 'Notes'].map(h => (
                       <th key={h} style={{
                         padding: '10px 12px', textAlign: 'left', fontWeight: 600,
                         color: 'var(--text-secondary)', whiteSpace: 'nowrap',
@@ -1684,6 +1708,27 @@ function ProductionDocPage() {
                             <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>—</span>
                           )}
                         </td>
+                        {/* Overlay (real asset to composite) — only shown when the doc has at least one */}
+                        {showOverlay && (
+                          <td style={{ padding: '8px 12px', maxWidth: 160, borderRight: '1px solid var(--border)' }}>
+                            {row.overlay_stock_terms?.trim() ? (
+                              <div className="flex flex-wrap gap-1">
+                                {row.overlay_stock_terms.split(',').map((t, ti) => (
+                                  <span
+                                    key={ti}
+                                    className="px-1.5 py-0.5 rounded text-xs font-medium"
+                                    style={{ background: 'rgba(245,158,11,0.15)', color: '#fbbf24', whiteSpace: 'nowrap' }}
+                                    title="Real asset to composite over the AI image — search for this and overlay it in post"
+                                  >
+                                    {t.trim()}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>—</span>
+                            )}
+                          </td>
+                        )}
                         {/* On-screen text */}
                         <td style={{ padding: '8px 12px', borderRight: '1px solid var(--border)' }}>
                           {row.on_screen_text ? (
@@ -1775,6 +1820,8 @@ function ProductionDocPage() {
               })}
             </div>
           </div>
+            );
+          })()}
 
           {/* ── Video Preview & Render ─────────────────────────────────────── */}
           <div className="mt-6 glass rounded-xl overflow-hidden">

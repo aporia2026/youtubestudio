@@ -3,6 +3,7 @@ import { generateText } from '@/lib/ai';
 import { productionDocPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
+import { getBuiltInStyle } from '@/lib/production-doc-styles';
 
 export const maxDuration = 300;
 
@@ -32,8 +33,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Script is too short — need at least 20 words' }, { status: 400 });
     }
 
+    // Resolve the picker slug (e.g. "doodle_explainer") into a full style
+    // object so the prompt builder can inject the suffix + mixing rules.
+    const style = stylePreset ? getBuiltInStyle(stylePreset) : null;
+
     const { system, user } = productionDocPrompt({
-      script, niche, topic, speakingPaceWpm, stylePreset, creativeBrief,
+      script, niche, topic, speakingPaceWpm, style, creativeBrief,
       startTimecodeSeconds: typeof startTimecodeSeconds === 'number' ? startTimecodeSeconds : 0,
       isChunk: isChunk === true,
     });
