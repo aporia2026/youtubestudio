@@ -57,7 +57,8 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ project, script: savedScript });
   } catch (err: unknown) {
-    console.error(err);
-    return NextResponse.json({ error: 'Failed to create project' }, { status: 500 });
+    console.error('POST /api/projects failed:', err);
+    const detail = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({ error: `Failed to create project: ${detail}` }, { status: 500 });
   }
 }

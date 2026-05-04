@@ -78,10 +78,12 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: item.title || 'Untitled', niche: '', topic: item.notes ?? '' }),
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     setCreatingProject(false);
     if (!res.ok || !data.project) {
-      toast.error('Could not create project');
+      const detail = data?.error ? `: ${data.error}` : '';
+      toast.error(`Could not create project${detail}`);
+      console.error('ensureProject failed', { status: res.status, data });
       return null;
     }
     onPatch(item.id, { project_id: data.project.id });
