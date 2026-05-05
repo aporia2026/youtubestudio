@@ -39,6 +39,7 @@ import migration0039 from './0039_published_videos_idempotency';
 import migration0040 from './0040_create_prediction_outcomes';
 import migration0041 from './0041_create_video_analytics_history';
 import migration0042 from './0042_add_traffic_source_breakdown';
+import migration0043 from './0043_create_video_search_terms';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -86,6 +87,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0040,
   migration0041,
   migration0042,
+  migration0043,
 ]);
 
 /**

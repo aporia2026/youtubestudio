@@ -60,6 +60,7 @@ export type AppFeature =
   | 'fix-the-dip'
   | 'cannibalization'
   | 'comment-triage'
+  | 'seo-title-rewrite'
   // Automate
   | 'ask-studio'
   // Foundation
@@ -108,6 +109,7 @@ export const APP_FEATURES: AppFeatureSpec[] = [
   { id: 'fix-the-dip', label: 'Fix the Dip', description: 'Diagnoses retention dips and suggests rewrites', section: 'grow', defaultModelId: SONNET },
   { id: 'cannibalization', label: 'Cannibalization', description: 'Finds videos competing with each other for the same query', section: 'grow', defaultModelId: HAIKU },
   { id: 'comment-triage', label: 'Comment Triage', description: 'Sorts comments by signal: questions, bugs, ideas, hate', section: 'grow', defaultModelId: HAIKU },
+  { id: 'seo-title-rewrite', label: 'SEO Title Rewrite', description: 'Rewrites a title to capture missed search demand from underperforming queries', section: 'grow', defaultModelId: SONNET },
 
   // ─── Automate ────────────────────────────────────────────────────────
   { id: 'ask-studio', label: 'Ask Studio', description: 'Conversational analytics — natural-language questions over your channel data', section: 'automate', defaultModelId: HAIKU },

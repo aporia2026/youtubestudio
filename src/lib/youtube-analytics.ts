@@ -497,6 +497,25 @@ export async function syncVideoAnalytics(opts: SyncOptions): Promise<VideoAnalyt
     } catch {
       trafficSourceBreakdown = null;
     }
+
+    // Phase 9.3 — fan out to search-term sync. Lazy import keeps the
+    // search-terms module out of the critical path for callers that
+    // don't need it (e.g. tests that mock-out only the live sync).
+    // Soft-fails so the parent sync still completes.
+    try {
+      const { syncSearchTermsForVideo } = await import('./search-terms');
+      await syncSearchTermsForVideo({
+        workspaceId: opts.workspaceId,
+        channelDbId: opts.channelDbId,
+        youtubeChannelId: opts.youtubeChannelId,
+        youtubeVideoId: opts.youtubeVideoId,
+        accessToken: tokenInfo.token,
+        startDate: range.startDate,
+        endDate: range.endDate,
+      });
+    } catch {
+      // already logged inside syncSearchTermsForVideo
+    }
   }
 
   const dataSource = chooseDataSource(data, analytics, retention, hadAnalyticsScope);
