@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
+import { EMAIL_LIST_RE } from '@/lib/email-list';
 
 /**
  * GET /api/insights/preferences
@@ -30,7 +31,9 @@ export const GET = apiRoute.authed(async (session) => {
   });
 });
 
-const EMAIL_LIST_RE = /^[\w.+-]+@[\w-]+(?:\.[\w-]+)+(?:\s*,\s*[\w.+-]+@[\w-]+(?:\.[\w-]+)+)*$/;
+// Phase 9.8.3 — EMAIL_LIST_RE is now imported from @/lib/email-list,
+// which is also used by the weekly-digest cron's parseEmailRecipients
+// so route validation and dispatch agree on what's a valid value.
 
 export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   let body: unknown;
@@ -49,6 +52,12 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         ? b.email_recipients.trim()
         : undefined; // means "leave unchanged"
 
+  // Phase 9.8.3 — length cap is FIRST so a megabyte of garbage doesn't
+  // exercise the regex (no ReDoS path today, but order-of-operations
+  // hygiene matches the audit-hardened pattern).
+  if (recipientsRaw && recipientsRaw.length > 1024) {
+    return NextResponse.json({ error: 'email_recipients exceeds 1KB cap.' }, { status: 400 });
+  }
   // Validate the email list when provided + non-empty. NULL or empty
   // string is a valid "clear the override" signal.
   if (recipientsRaw && recipientsRaw.length > 0 && !EMAIL_LIST_RE.test(recipientsRaw)) {
@@ -56,9 +65,6 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       { error: 'email_recipients must be a comma-separated list of valid email addresses.' },
       { status: 400 },
     );
-  }
-  if (recipientsRaw && recipientsRaw.length > 1024) {
-    return NextResponse.json({ error: 'email_recipients exceeds 1KB cap.' }, { status: 400 });
   }
 
   try {

@@ -249,16 +249,24 @@ export async function syncSearchTermsForVideo(opts: {
   if (parsed.length === 0) return 0;
 
   const capped = parsed.slice(0, PER_SYNC_ROW_CAP);
-  // Single transaction: insert all rows for one captured_at tick.
-  // We use ON CONFLICT DO NOTHING so a race in the cron (rare —
-  // captured_at is per-call NOW()) doesn't break.
+  // Phase 9.8.3 — share ONE captured_at across every row in this
+  // sync invocation, computed in JS. The previous code relied on
+  // `DEFAULT NOW()`, which Postgres evaluates per-statement, so each
+  // of the 50 INSERTs got a slightly different ms-precision timestamp
+  // and the (workspace, video, search_term, captured_at) PK never
+  // deduped within the loop. Worse, two parallel cron invocations
+  // (Vercel can double-fire) wrote ~100 rows total — twice the
+  // intended storage. Now: one sync = one captured_at, the PK
+  // collapses double-fires via ON CONFLICT DO NOTHING.
+  const capturedAt = new Date().toISOString();
   let inserted = 0;
   for (const r of capped) {
     try {
       const result = await sql`
         INSERT INTO video_search_terms (
           workspace_id, youtube_video_id, channel_id,
-          search_term, impressions, views, ctr_percentage
+          search_term, impressions, views, ctr_percentage,
+          captured_at
         ) VALUES (
           ${opts.workspaceId}::uuid,
           ${opts.youtubeVideoId},
@@ -266,7 +274,8 @@ export async function syncSearchTermsForVideo(opts: {
           ${r.search_term},
           ${r.impressions},
           ${r.views},
-          ${r.ctr_percentage}
+          ${r.ctr_percentage},
+          ${capturedAt}::timestamptz
         )
         ON CONFLICT (workspace_id, youtube_video_id, search_term, captured_at) DO NOTHING
       `;
