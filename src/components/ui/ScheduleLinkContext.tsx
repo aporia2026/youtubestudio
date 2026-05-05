@@ -307,12 +307,19 @@ export function useRegisterScheduleWriteBack(handle: ScheduleSaverHandle): void 
   const nextKey = handle.nextStatus?.key;
   const nextLabel = handle.nextStatus?.label;
 
+  // Why: depend on `registerSaver` (stable useCallback) — NOT `ctx`. The
+  // provider's `value` useMemo recomputes whenever `saver` changes, so
+  // `ctx` is a new reference after every register call. Keying on `ctx`
+  // creates a feedback loop: register → setSaverState → new ctx → effect
+  // re-fires → register → … which pegs CPU at idle and OOMs the tab.
+  const registerSaver = ctx?.registerSaver;
+
   // Two-effect setup: the first registers a fresh snapshot whenever the
   // primitive flags change (overwriting in place — no null-then-set
   // flicker). The second runs only on unmount, clearing the saver so the
   // banner doesn't render a stale Save button after the page is gone.
   useEffect(() => {
-    if (!ctx) return;
+    if (!registerSaver) return;
     const snapshot: ScheduleSaverHandle = {
       artifactLabel,
       isReady,
@@ -323,13 +330,13 @@ export function useRegisterScheduleWriteBack(handle: ScheduleSaverHandle): void 
       describeSaved: () => handleRef.current.describeSaved?.() ?? '',
       onSaved: () => handleRef.current.onSaved?.(),
     };
-    ctx.registerSaver(snapshot);
-  }, [ctx, artifactLabel, isReady, isDirty, notReadyReason, nextKey, nextLabel]);
+    registerSaver(snapshot);
+  }, [registerSaver, artifactLabel, isReady, isDirty, notReadyReason, nextKey, nextLabel]);
 
   useEffect(() => {
-    if (!ctx) return;
-    return () => { ctx.registerSaver(null); };
-  }, [ctx]);
+    if (!registerSaver) return;
+    return () => { registerSaver(null); };
+  }, [registerSaver]);
 }
 
 /**
