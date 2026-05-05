@@ -48,7 +48,8 @@
     "src/app/api/cron/poll-publishing/route.ts":                     { "maxDuration": 300 },
     "src/app/api/cron/capture-prediction-outcomes/route.ts":         { "maxDuration": 300 },
     "src/app/api/cron/snapshot-analytics/route.ts":                  { "maxDuration": 300 },
-    "src/app/api/cron/tag-video-formats/route.ts":                   { "maxDuration": 300 }
+    "src/app/api/cron/tag-video-formats/route.ts":                   { "maxDuration": 300 },
+    "src/app/api/cron/detect-breakouts/route.ts":                    { "maxDuration": 300 }
   },
   "crons": [
     {
@@ -70,6 +71,10 @@
     {
       "path": "/api/cron/tag-video-formats",
       "schedule": "30 2 * * *"
+    },
+    {
+      "path": "/api/cron/detect-breakouts",
+      "schedule": "45 */6 * * *"
     }
   ]
 }

@@ -39,6 +39,12 @@ export const WORKFLOW_TRIGGER_EVENTS = [
     description: 'When a Publish-to-YouTube row flips to "live" — useful for "post to Slack when published" or "schedule a 7-day analytics snapshot".',
     payload_fields: ['publish_id', 'youtube_video_id', 'youtube_url', 'channel_db_id', 'project_id', 'schedule_item_id', 'title', 'privacy_status'],
   },
+  {
+    type: 'video_breakout_detected',
+    label: 'Video breakout detected',
+    description: 'When a video\'s first-48h velocity exceeds the channel\'s 90th percentile (Phase 9.5). Fires once per video — react fast: boost ad spend, post on socials, schedule a follow-up.',
+    payload_fields: ['video_id', 'channel_db_id', 'velocity_views_per_hour', 'percentile', 'channel_p90', 'hours_since_publish', 'title'],
+  },
 ] as const;
 
 export type WorkflowTriggerEventType = (typeof WORKFLOW_TRIGGER_EVENTS)[number]['type'];
