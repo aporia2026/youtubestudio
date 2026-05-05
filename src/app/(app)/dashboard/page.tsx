@@ -248,6 +248,17 @@ export default function DashboardPage() {
                 ))}
               </div>
             ) : null}
+            {/* Phase 9.7 — link to the catalog explorer for users who
+                want to slice every video themselves rather than wait
+                for the dashboard's curated list. */}
+            <div style={{ marginTop: 12, textAlign: 'right' }}>
+              <Link
+                href="/insights/catalog"
+                style={{ fontSize: 11, color: 'var(--text-secondary)', textDecoration: 'none' }}
+              >
+                Browse all videos →
+              </Link>
+            </div>
           </Section>
 
           <Section title="Cadence — last 4 weeks" empty="No channels yet — add one in /channel.">

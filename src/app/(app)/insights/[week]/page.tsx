@@ -40,12 +40,18 @@ export default async function InsightsWeekPage({ params }: PageProps) {
 
   return (
     <div style={{ padding: 24, maxWidth: 800, margin: '0 auto' }}>
-      <div style={{ marginBottom: 16 }}>
+      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Link
           href="/dashboard"
           style={{ fontSize: 12, color: 'var(--text-muted)', textDecoration: 'none' }}
         >
           ← Dashboard
+        </Link>
+        <Link
+          href="/insights/catalog"
+          style={{ fontSize: 12, color: '#7c3aed', textDecoration: 'none' }}
+        >
+          Browse all videos →
         </Link>
       </div>
 
