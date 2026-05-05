@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getAuthorizationUrlForSheets } from '@/lib/google-oauth';
 import { ensureGoogleAuthSchema } from '@/lib/db';
 import { requireUser, SessionError } from '@/lib/session';
-import { logger } from '@/lib/logger';
+import { domainErrorResponse } from '@/lib/route-helpers';
 
 export async function GET() {
   try {
@@ -10,14 +10,14 @@ export async function GET() {
     await ensureGoogleAuthSchema();
     const url = await getAuthorizationUrlForSheets(session.ws);
     return NextResponse.redirect(url);
-  } catch (err: unknown) {
+  } catch (err) {
+    // Preserve bespoke SessionError → 401/403 mapping; the helper handles everything else.
     if (err instanceof SessionError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
-    logger.error('Google Sheets OAuth initiation error', { detail: err instanceof Error ? err.message : String(err) });
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Failed to start OAuth' },
-      { status: 500 },
-    );
+    return domainErrorResponse(err, {
+      op: 'auth: google-sheets oauth start',
+      fallbackMessage: 'Could not start Google Sheets sign-in — please try again.',
+    });
   }
 }

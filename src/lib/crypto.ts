@@ -1,4 +1,5 @@
 import { randomBytes, createCipheriv, createDecipheriv, createHash } from 'crypto';
+import { logger } from './logger';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 16;
@@ -30,11 +31,12 @@ function getKey(): Buffer {
   const fallback = process.env.AUTH_SECRET;
   if (fallback) {
     if (!warnedFallback) {
-      // Emit a single line per process so log scrapers can alert on
-      // it. Uses console.warn directly because importing the structured
-      // logger would create a dependency cycle (logger imports nothing
-      // crypto-related but several callers are early-init code paths).
-      console.warn(
+      // Phase 8.6.5 — emit through the structured logger so the
+      // workspace's log-scraper alert rules pick it up. Earlier
+      // comment claimed a logger ↔ crypto cycle existed; verified
+      // false (logger only depends on request-context + AsyncLocalStorage),
+      // so importing logger here is safe.
+      logger.warn(
         'crypto: ENCRYPTION_KEY is unset — falling back to AUTH_SECRET. ' +
           'These should be independent secrets. Set ENCRYPTION_KEY=$AUTH_SECRET in your env to silence this warning, ' +
           'then rotate AUTH_SECRET to a fresh value (sessions re-issue on next login; OAuth tokens keep decrypting).',

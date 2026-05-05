@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getValidAccessToken } from '@/lib/google-oauth';
 import { listMyVideosOAuth } from '@/lib/youtube';
+import { domainErrorResponse } from '@/lib/route-helpers';
 
 export async function GET(req: NextRequest) {
   const channelDbId = req.nextUrl.searchParams.get('channelId');
@@ -20,10 +21,10 @@ export async function GET(req: NextRequest) {
     const maxResults = Math.min(Math.max(parseInt(req.nextUrl.searchParams.get('limit') || '30') || 30, 1), 50);
     const videos = await listMyVideosOAuth(accessToken, maxResults);
     return NextResponse.json({ videos });
-  } catch (err: unknown) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Failed to fetch videos' },
-      { status: 500 },
-    );
+  } catch (err) {
+    return domainErrorResponse(err, {
+      op: 'youtube: list videos',
+      fallbackMessage: 'Could not fetch videos — please try again.',
+    });
   }
 }

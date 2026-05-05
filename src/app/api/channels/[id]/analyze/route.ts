@@ -4,6 +4,7 @@ import { generateText, getDefaultModel } from '@/lib/ai';
 import { channelAnalysisPrompt } from '@/lib/prompts';
 import { fetchChannelVideos } from '@/lib/youtube';
 import { makeSpendContext } from '@/lib/ai-spend';
+import { domainErrorResponse } from '@/lib/route-helpers';
 
 export const maxDuration = 300;
 
@@ -51,7 +52,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     });
 
     return NextResponse.json({ analysis });
-  } catch (err: unknown) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Analysis failed' }, { status: 500 });
+  } catch (err) {
+    return domainErrorResponse(err, {
+      op: 'channels: analyze',
+      fallbackMessage: 'Could not analyze channel — please try again.',
+    });
   }
 }

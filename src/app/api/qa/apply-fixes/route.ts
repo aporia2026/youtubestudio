@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateTextStream, getDefaultModel } from '@/lib/ai';
 import { applyFixesPrompt } from '@/lib/prompts';
 import { logger } from '@/lib/logger';
+import { domainErrorResponse } from '@/lib/route-helpers';
 
 export const maxDuration = 300;
 
@@ -81,9 +82,10 @@ export async function POST(req: NextRequest) {
         'X-Accel-Buffering': 'no',
       },
     });
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Apply fixes failed';
-    logger.error('apply-fixes pre-flight error', { detail: err instanceof Error ? err.message : String(err) });
-    return NextResponse.json({ error: msg }, { status: 500 });
+  } catch (err) {
+    return domainErrorResponse(err, {
+      op: 'qa: apply-fixes pre-flight',
+      fallbackMessage: 'Apply fixes failed — please try again.',
+    });
   }
 }

@@ -121,14 +121,48 @@ export function PublishToYoutubeModal({
     setSubmitting(false);
   }, [open, defaultChannelId, defaultSourceVideoUrl, defaultTitle, defaultDescription, defaultTags, defaultThumbnailUrl]);
 
-  // Escape-to-close + initial focus on the title input. Both standard
-  // dialog-accessibility patterns. Focus shifts to the title because
-  // it's the first user-editable field; the channel picker is below
-  // the source-URL paste, which usually arrives pre-filled.
+  // Escape-to-close + initial focus on the title input + Tab trap.
+  // Phase 8.6.5 — initial-focus alone wasn't enough to honour the
+  // aria-modal="true" contract; pressing Tab from the last input would
+  // escape into background page elements (the schedule-item form, the
+  // sidebar). Now Tab/Shift-Tab on the boundaries wraps focus back
+  // inside the dialog. Focus shifts to the title because it's the
+  // first user-editable field; the channel picker is below the
+  // source-URL paste, which usually arrives pre-filled.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        onClose();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const dlg = dialogRef.current;
+      if (!dlg) return;
+      // Build the focusable set fresh on every Tab — the modal grows /
+      // shrinks as the user uploads / removes thumbnails, so caching
+      // the list at mount would go stale.
+      const focusables = dlg.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0]!;
+      const last = focusables[focusables.length - 1]!;
+      const active = document.activeElement as HTMLElement | null;
+      // Shift-Tab from the first element wraps to the last; Tab from
+      // the last element wraps to the first.
+      if (e.shiftKey && active === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      } else if (active && !dlg.contains(active)) {
+        // Background element somehow stole focus (e.g. via hash link)
+        // — yank it back to the first focusable.
+        e.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener('keydown', onKey);
     // requestAnimationFrame so the input exists in the DOM before

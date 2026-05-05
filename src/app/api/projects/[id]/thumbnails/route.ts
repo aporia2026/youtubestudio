@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { isR2Configured, buildThumbnailKey, getImagesUploadUrl, getImagesDownloadUrl, getImagesBucket } from '@/lib/r2';
 import { logger } from '@/lib/logger';
+import { domainErrorResponse } from '@/lib/route-helpers';
 
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -83,8 +84,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     return NextResponse.json({ uploadUrl, asset: rows[0] }, { status: 201 });
   } catch (err) {
-    logger.error('POST thumbnails error', { detail: err instanceof Error ? err.message : String(err) });
-    const msg = err instanceof Error ? err.message : 'Unknown error';
-    return NextResponse.json({ error: `Failed: ${msg}` }, { status: 500 });
+    return domainErrorResponse(err, {
+      op: 'projects: thumbnails create',
+      fallbackMessage: 'Could not create thumbnail — please try again.',
+    });
   }
 }

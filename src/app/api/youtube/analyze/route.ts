@@ -7,6 +7,7 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { getCachedReference, upsertCachedReference, touchReference } from '@/lib/reference-cache-db';
 import { makeSpendContext } from '@/lib/ai-spend';
 import { logger } from '@/lib/logger';
+import { domainErrorResponse } from '@/lib/route-helpers';
 
 export const maxDuration = 300; // 5 minutes — deep analysis takes time
 
@@ -238,12 +239,11 @@ export async function POST(req: NextRequest) {
       warnings,
       cached: false,
     });
-  } catch (err: unknown) {
-    logger.error('Video analyze error', { detail: err instanceof Error ? err.message : String(err) });
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Analysis failed' },
-      { status: 500 },
-    );
+  } catch (err) {
+    return domainErrorResponse(err, {
+      op: 'youtube: deep video analyze',
+      fallbackMessage: 'Could not analyze video — please try again.',
+    });
   }
 }
 

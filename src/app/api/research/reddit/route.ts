@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { logger } from '@/lib/logger';
+import { domainErrorResponse } from '@/lib/route-helpers';
 
 export const maxDuration = 60;
 
@@ -362,11 +363,10 @@ export async function POST(req: NextRequest) {
     resultsCache.set(cacheKey, { data: response, expiresAt: Date.now() + CACHE_TTL });
 
     return NextResponse.json(response);
-  } catch (err: unknown) {
-    logger.error('Reddit research error', { detail: err instanceof Error ? err.message : String(err) });
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Reddit research failed' },
-      { status: 500 },
-    );
+  } catch (err) {
+    return domainErrorResponse(err, {
+      op: 'research: reddit',
+      fallbackMessage: 'Reddit research failed — please try again.',
+    });
   }
 }

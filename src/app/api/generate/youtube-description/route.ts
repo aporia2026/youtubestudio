@@ -4,7 +4,7 @@ import { youtubeDescriptionPrompt } from '@/lib/prompts';
 import { getTemplate } from '@/lib/templates-db';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { makeSpendContext } from '@/lib/ai-spend';
-import { logger } from '@/lib/logger';
+import { domainErrorResponse } from '@/lib/route-helpers';
 
 export const maxDuration = 180;
 
@@ -85,8 +85,9 @@ export async function POST(req: NextRequest) {
     const description = postProcess(raw);
     return NextResponse.json({ description });
   } catch (err) {
-    logger.error('youtube-description generate error', { detail: err instanceof Error ? err.message : String(err) });
-    const msg = err instanceof Error ? err.message : 'Generation failed';
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return domainErrorResponse(err, {
+      op: 'generate: youtube-description',
+      fallbackMessage: 'Description generation failed — please try again.',
+    });
   }
 }

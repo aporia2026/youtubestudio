@@ -55,15 +55,27 @@ describe('crypto.encrypt / crypto.decrypt', () => {
 describe('crypto: ENCRYPTION_KEY independence (audit C6)', () => {
   const origEnc = process.env.ENCRYPTION_KEY;
   const origAuth = process.env.AUTH_SECRET;
-  let warnSpy: ReturnType<typeof vi.spyOn>;
+  // Phase 8.6.5 — fallback warning now goes through logger.warn, which
+  // writes JSON to process.stderr (not console.warn). Capture stderr
+  // writes so tests can assert on the structured-log line.
+  let stderrWrites: string[];
+  let originalWrite: typeof process.stderr.write;
 
   beforeEach(() => {
-    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    stderrWrites = [];
+    originalWrite = process.stderr.write;
+    // Direct monkey-patch is cleaner than vi.spyOn here — process.stderr.write
+    // is overloaded with two signatures and vi.spyOn picks one, breaking
+    // the type check.
+    process.stderr.write = ((chunk: unknown) => {
+      stderrWrites.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
   });
   afterEach(() => {
     process.env.ENCRYPTION_KEY = origEnc;
     process.env.AUTH_SECRET = origAuth;
-    warnSpy.mockRestore();
+    process.stderr.write = originalWrite;
     vi.resetModules();
   });
 
@@ -74,7 +86,7 @@ describe('crypto: ENCRYPTION_KEY independence (audit C6)', () => {
     const mod = await import('@/lib/crypto');
     const ct = mod.encrypt('hello');
     expect(mod.decrypt(ct)).toBe('hello');
-    expect(warnSpy.mock.calls.find((c) => String(c[0]).includes('ENCRYPTION_KEY is unset'))).toBeUndefined();
+    expect(stderrWrites.find((line) => line.includes('ENCRYPTION_KEY is unset'))).toBeUndefined();
   });
 
   it('falls back to AUTH_SECRET when ENCRYPTION_KEY is unset and warns once', async () => {
@@ -85,8 +97,13 @@ describe('crypto: ENCRYPTION_KEY independence (audit C6)', () => {
     mod.encrypt('a');
     mod.encrypt('b');
     mod.encrypt('c');
-    const fallbackWarns = warnSpy.mock.calls.filter((c) => String(c[0]).includes('ENCRYPTION_KEY is unset'));
+    const fallbackWarns = stderrWrites.filter((line) =>
+      line.includes('ENCRYPTION_KEY is unset'),
+    );
     expect(fallbackWarns.length).toBe(1);
+    // Phase 8.6.5 — assert the warning is the structured-log shape so
+    // it routes through workspace alert rules rather than plain stderr.
+    expect(fallbackWarns[0]).toMatch(/"level":"warn"/);
   });
 
   it('throws when both env vars are unset', async () => {
