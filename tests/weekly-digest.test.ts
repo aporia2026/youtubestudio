@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  escapeHtml,
   getDigestWeekWindow,
   markdownToBasicHtml,
   summariseInputs,
@@ -77,15 +78,68 @@ Views were up.
     expect(html).toContain('Some random ! text');
   });
 
-  it('does NOT emit script/iframe/style tags from arbitrary input', () => {
-    // The renderer only emits a fixed set of tags. Even when the
-    // model misbehaves, the output flows through this whitelist.
+  it('escapes raw <script> from arbitrary input (Phase 9.8.1)', () => {
+    // The output flows to dangerouslySetInnerHTML on the permalink
+    // page AND to email HTML. The renderer must escape everything
+    // before emitting the few tags it owns; otherwise a malicious
+    // model output / a YouTube title containing a tag would land
+    // verbatim in the DOM.
     const html = markdownToBasicHtml('<script>alert(1)</script>');
-    // Treated as a paragraph; the literal <script>...</script> string
-    // ends up inside <p> but the renderer never adds a real script tag.
-    // (This isn't full XSS protection — it's defence-in-depth on a
-    //  controlled prompt.) We just assert the structural property.
-    expect(html.startsWith('<div')).toBe(true);
+    // Literal <script> must NOT appear as a real tag.
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('</script>');
+    // It must appear as text (entities).
+    expect(html).toContain('&lt;script&gt;');
+    expect(html).toContain('&lt;/script&gt;');
+  });
+
+  it('escapes <img onerror=> attempts from arbitrary input', () => {
+    const html = markdownToBasicHtml('See <img src=x onerror="alert(1)">');
+    expect(html).not.toMatch(/<img\b/);
+    expect(html).toContain('&lt;img');
+    expect(html).toContain('onerror=&quot;');
+  });
+
+  it('escapes attribute-injection attempts in headings', () => {
+    // A heading whose text contains a quote/closing-tag tries to
+    // break out of the wrapping <h1>. Escape pass must neutralise.
+    const html = markdownToBasicHtml('# Hello "world" <iframe src=//evil>');
+    expect(html).not.toMatch(/<iframe\b/);
+    expect(html).toContain('&quot;world&quot;');
+    expect(html).toContain('&lt;iframe');
+  });
+
+  it('escapes ampersands so existing entities don\'t double-decode', () => {
+    const html = markdownToBasicHtml('Tom & Jerry');
+    expect(html).toContain('Tom &amp; Jerry');
+    expect(html).not.toContain('Tom & Jerry'); // literal & must be encoded
+  });
+
+  it('preserves intentional **bold** through the escape pass', () => {
+    const html = markdownToBasicHtml('A **really** important point.');
+    expect(html).toContain('<strong>really</strong>');
+  });
+
+  it('does NOT let bold-regex span across `**` chars in escaped HTML', () => {
+    // Edge case: the bold regex is `[^*]+?` so a `**` in the middle
+    // can't be smuggled. Confirm.
+    const html = markdownToBasicHtml('**a** plain **b**');
+    expect(html).toContain('<strong>a</strong>');
+    expect(html).toContain('<strong>b</strong>');
+  });
+});
+
+describe('escapeHtml', () => {
+  it('escapes the five HTML-special chars', () => {
+    expect(escapeHtml('& < > " \'')).toBe('&amp; &lt; &gt; &quot; &#39;');
+  });
+  it('handles input with no special chars unchanged', () => {
+    expect(escapeHtml('hello world')).toBe('hello world');
+  });
+  it('escapes ampersand FIRST so other entities don\'t collide', () => {
+    // Buggy implementations replace & last and end up with &amp;lt;.
+    expect(escapeHtml('<')).toBe('&lt;');
+    expect(escapeHtml('&lt;')).toBe('&amp;lt;');
   });
 });
 

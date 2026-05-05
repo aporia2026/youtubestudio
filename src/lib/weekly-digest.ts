@@ -117,6 +117,27 @@ export function getDigestWeekWindow(now: Date): DigestWeekWindow {
 }
 
 /**
+ * Escape HTML special characters before they reach an element body.
+ * The four-char set covers the only chars that can break out of a
+ * tag body or attribute. Pure: no DOM dep.
+ *
+ * Phase 9.8.1 — required because the AI's Markdown output (and any
+ * YouTube title interpolated into the prompt) is untrusted input
+ * that flows to dangerouslySetInnerHTML on the permalink page AND
+ * into email HTML. Earlier comment claimed "controlled prompt"
+ * defence-in-depth; that was security theatre — there was no
+ * actual escape pass before this fix.
+ */
+export function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
  * Minimal Markdown → HTML conversion for the email body. We keep it
  * inline (no parser dep) because the digest's structure is highly
  * controlled (we own the prompt, we get back a known shape):
@@ -125,8 +146,13 @@ export function getDigestWeekWindow(now: Date): DigestWeekWindow {
  *   - Bold (**x**) → <strong>
  *   - Paragraphs (blank-line separated)
  *
- * Anything weirder gets passed through as a paragraph. Output is
- * inline-styled because email clients strip <style> blocks.
+ * Phase 9.8.1 hardening: every line is HTML-escaped FIRST, then the
+ * `**bold**` substitution emits literal <strong> tags. This means
+ * the only HTML elements in the output are the ones we explicitly
+ * write — model-emitted `<script>` lands as `&lt;script&gt;` text.
+ * Output is safe for `dangerouslySetInnerHTML` and for email HTML.
+ *
+ * Output is inline-styled because email clients strip <style> blocks.
  */
 export function markdownToBasicHtml(md: string): string {
   const lines = md.split(/\r?\n/);
@@ -151,7 +177,14 @@ export function markdownToBasicHtml(md: string): string {
   };
 
   for (const raw of lines) {
-    const line = raw.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    // Order matters: escape FIRST, then re-emit our own tags via the
+    // bold replace. Any HTML-shaped chars in `raw` become entities;
+    // only `<strong>` from our pattern survives.
+    const escaped = escapeHtml(raw);
+    const line = escaped.replace(
+      /\*\*([^*]+?)\*\*/g,
+      '<strong>$1</strong>',
+    );
     if (/^# /.test(line)) {
       flushList(); flushPara();
       blocks.push(`<h1 style="font-size: 22px; margin: 16px 0 8px; color: #111827;">${line.slice(2)}</h1>`);

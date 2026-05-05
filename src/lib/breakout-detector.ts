@@ -16,13 +16,17 @@
  *   - `qualifiesAsBreakout` — applies the threshold logic given a
  *     candidate's velocity + the channel's percentile baseline
  *
- * DB orchestrator `detectAndFireBreakouts` joins everything and
- * dispatches the events through the existing webhook + workflow
- * fan-out (lazy import to avoid cycles).
+ * DB orchestrator `detectAndFireBreakouts` joins everything in a
+ * single CTE query (Phase 9.8.2 — was N+1, would time out at scale)
+ * and dispatches the events through the existing webhook + workflow
+ * fan-out. Dispatch is awaited inline (Phase 9.8.2 — was fire-and-
+ * forget which loses notifications when Vercel freezes the function
+ * after the cron's response promise resolves).
  */
 import { sql } from '@vercel/postgres';
 import { logger } from './logger';
 import { computeViewVelocityPerHour, percentileOfVelocity } from './analytics-history';
+import { escapeSlackText } from './slack-escape';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -133,189 +137,218 @@ const RECENT_PUBLISH_LOOKBACK_DAYS = 7;
  * across the last 90 days, and fire `video_breakout_detected` for
  * qualifiers.
  *
- * Skip rules:
- *   - Already fired (UNIQUE catches this; we also pre-check to count
- *     accurately).
- *   - Less than 6h of trajectory data (window too narrow for a
- *     meaningful velocity).
- *   - Channel has fewer than 5 prior video velocities to baseline
- *     against.
+ * Phase 9.8.2 — rewritten as a single CTE query. The previous version
+ * was N+1 (1 outer SELECT + 1 query per candidate's channel + N
+ * trajectory queries per video on that channel) — at 100 candidates
+ * × 200 videos/channel × 5ms it would routinely exceed the cron's
+ * 300s timeout. The new shape:
  *
- * Bounded at 100 candidates per run to cap the cost; the cron runs
- * every 6h so a backlog clears within a day.
+ *   1. velocities CTE: per-video first-48h velocity for every
+ *      workspace's videos in the last 90 days.
+ *   2. channel_p90 CTE: percentile_cont(0.9) per (workspace, channel)
+ *      with a min-population guard of 5.
+ *   3. Final SELECT: candidates published in the last 7 days, not yet
+ *      fired, whose velocity strictly exceeds the channel's p90,
+ *      annotated with a CUME_DIST() percentile rank within the
+ *      population. One round-trip total.
+ *
+ * Skip rules:
+ *   - Already fired (UNIQUE catches this).
+ *   - Less than 2 history rows in the window (`HAVING COUNT(*) >= 2`).
+ *   - Channel has fewer than 5 prior video velocities to baseline
+ *     against (`HAVING COUNT(*) >= 5` in channel_p90).
+ *   - Velocity ≤ p90 (strict-greater prevents flat-channel self-fires).
+ *
+ * Dispatch is awaited inline so Vercel's freeze-after-response
+ * semantics can't drop the notification.
  */
+
+interface QualifyingBreakout {
+  workspace_id: string;
+  youtube_video_id: string;
+  channel_id: string;
+  title: string | null;
+  published_at: string;
+  velocity_per_hour: number;
+  channel_p90: number;
+  pop_size: number;
+  percentile: number;
+}
+
 export async function detectAndFireBreakouts(
   opts: { limit?: number } = {},
 ): Promise<DetectorResult> {
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
 
-  // Candidate set: published in last RECENT_PUBLISH_LOOKBACK_DAYS days,
-  // not already fired, not older than FIRST_WINDOW_HOURS (the math
-  // requires the trajectory to fit in the window).
-  const { rows: candidates } = await sql<BreakoutCandidate>`
+  // Single-query channel-population join. PG `percentile_cont` is the
+  // continuous 90th percentile; CUME_DIST() gives the candidate's
+  // fraction-of-population-≤ value (matches percentileOfVelocity's
+  // semantics in the JS lib).
+  //
+  // The first/last view samples come from `array_agg(views ORDER BY
+  // captured_at)` rather than MIN/MAX so a YouTube re-count
+  // (views go down) yields a negative velocity that drops out of the
+  // > p90 filter — same behaviour the JS computeFirstWindowVelocity
+  // had before.
+  const { rows: qualifiers } = await sql<QualifyingBreakout>`
+    WITH velocities AS (
+      SELECT
+        h.workspace_id,
+        h.youtube_video_id,
+        va.channel_id,
+        va.published_at,
+        va.title,
+        CASE
+          WHEN MAX(h.captured_at) - MIN(h.captured_at) < INTERVAL '1 hour' THEN NULL
+          ELSE
+            ((array_agg(h.views ORDER BY h.captured_at DESC))[1] -
+             (array_agg(h.views ORDER BY h.captured_at ASC))[1])::numeric /
+            (EXTRACT(EPOCH FROM (MAX(h.captured_at) - MIN(h.captured_at))) / 3600.0)
+        END AS velocity_per_hour
+      FROM video_analytics_history h
+      JOIN video_analytics va
+        ON va.workspace_id     = h.workspace_id
+       AND va.youtube_video_id = h.youtube_video_id
+      WHERE va.published_at IS NOT NULL
+        AND va.channel_id IS NOT NULL
+        AND h.captured_at >= va.published_at
+        AND h.captured_at <= (va.published_at + (${`${FIRST_WINDOW_HOURS} hours`})::interval)
+        AND va.published_at > (NOW() - (${`${POPULATION_LOOKBACK_DAYS} days`})::interval)
+      GROUP BY h.workspace_id, h.youtube_video_id, va.channel_id, va.published_at, va.title
+      HAVING COUNT(*) >= 2
+    ),
+    channel_p90 AS (
+      SELECT
+        workspace_id,
+        channel_id,
+        percentile_cont(0.9) WITHIN GROUP (ORDER BY velocity_per_hour) AS p90,
+        COUNT(*)::int AS pop_size
+      FROM velocities
+      WHERE velocity_per_hour IS NOT NULL
+      GROUP BY workspace_id, channel_id
+      HAVING COUNT(*) >= 5
+    )
     SELECT
-      va.workspace_id,
-      va.youtube_video_id,
-      va.channel_id,
-      va.title,
-      va.published_at::text AS published_at
-    FROM video_analytics va
+      v.workspace_id::text AS workspace_id,
+      v.youtube_video_id,
+      v.channel_id::text AS channel_id,
+      v.title,
+      v.published_at::text AS published_at,
+      v.velocity_per_hour::float AS velocity_per_hour,
+      p.p90::float AS channel_p90,
+      p.pop_size,
+      CUME_DIST() OVER (
+        PARTITION BY v.workspace_id, v.channel_id
+        ORDER BY v.velocity_per_hour
+      )::float AS percentile
+    FROM velocities v
+    JOIN channel_p90 p
+      ON p.workspace_id = v.workspace_id
+     AND p.channel_id   = v.channel_id
     LEFT JOIN video_breakout_fires bf
-      ON bf.workspace_id     = va.workspace_id
-     AND bf.youtube_video_id = va.youtube_video_id
+      ON bf.workspace_id     = v.workspace_id
+     AND bf.youtube_video_id = v.youtube_video_id
     WHERE bf.workspace_id IS NULL
-      AND va.published_at IS NOT NULL
-      AND va.published_at > (NOW() - (${`${RECENT_PUBLISH_LOOKBACK_DAYS} days`})::interval)
-      AND va.channel_id IS NOT NULL
-    ORDER BY va.published_at DESC
+      AND v.published_at > (NOW() - (${`${RECENT_PUBLISH_LOOKBACK_DAYS} days`})::interval)
+      AND v.velocity_per_hour IS NOT NULL
+      AND v.velocity_per_hour > p.p90
+    ORDER BY v.velocity_per_hour DESC
     LIMIT ${limit}
   `;
 
   let fired = 0;
-  let skippedNoData = 0;
   let errors = 0;
 
-  for (const c of candidates) {
+  for (const q of qualifiers) {
     try {
-      // Trajectory of THIS video — every history row within the
-      // first-48h window.
-      const { rows: traj } = await sql<HistoryRow>`
-        SELECT views, captured_at::text AS captured_at
-          FROM video_analytics_history
-         WHERE workspace_id     = ${c.workspace_id}::uuid
-           AND youtube_video_id = ${c.youtube_video_id}
-           AND captured_at      >= ${c.published_at}::timestamptz
-           AND captured_at      <= (${c.published_at}::timestamptz + (${`${FIRST_WINDOW_HOURS} hours`})::interval)
-         ORDER BY captured_at ASC
-      `;
-      if (traj.length < 2) {
-        skippedNoData += 1;
-        continue;
-      }
-      const velocity = computeFirstWindowVelocity(traj, c.published_at, FIRST_WINDOW_HOURS);
-      if (velocity === null) {
-        skippedNoData += 1;
-        continue;
-      }
-
-      // Channel population: every other video on this channel
-      // published in the last 90 days, with their first-48h
-      // velocities precomputed via the same trajectory query.
-      const { rows: channelHistoryAgg } = await sql<{
-        youtube_video_id: string;
-        published_at: string;
-      }>`
-        SELECT youtube_video_id, published_at::text AS published_at
-          FROM video_analytics
-         WHERE workspace_id = ${c.workspace_id}::uuid
-           AND channel_id   = ${c.channel_id}::uuid
-           AND youtube_video_id <> ${c.youtube_video_id}
-           AND published_at IS NOT NULL
-           AND published_at > (NOW() - (${`${POPULATION_LOOKBACK_DAYS} days`})::interval)
-         LIMIT 200
-      `;
-      const population: number[] = [];
-      for (const row of channelHistoryAgg) {
-        const { rows: rTraj } = await sql<HistoryRow>`
-          SELECT views, captured_at::text AS captured_at
-            FROM video_analytics_history
-           WHERE workspace_id     = ${c.workspace_id}::uuid
-             AND youtube_video_id = ${row.youtube_video_id}
-             AND captured_at      >= ${row.published_at}::timestamptz
-             AND captured_at      <= (${row.published_at}::timestamptz + (${`${FIRST_WINDOW_HOURS} hours`})::interval)
-           ORDER BY captured_at ASC
-        `;
-        if (rTraj.length < 2) continue;
-        const v = computeFirstWindowVelocity(rTraj, row.published_at, FIRST_WINDOW_HOURS);
-        if (v !== null) population.push(v);
-      }
-
-      const decision = qualifiesAsBreakout(velocity, population);
-      if (!decision.qualifies) continue;
-
       const hoursSincePublish =
-        hoursBetween(c.published_at, new Date().toISOString()) ?? 0;
+        hoursBetween(q.published_at, new Date().toISOString()) ?? 0;
 
-      // Insert the fire row first (UNIQUE catches duplicate detection
-      // races); only emit the event if WE wrote the row.
+      // Insert first; UNIQUE catches the duplicate-detection race
+      // between two cron ticks. Only emit the event if WE wrote
+      // the row (rowCount > 0).
       const ins = await sql`
         INSERT INTO video_breakout_fires (
           workspace_id, youtube_video_id, channel_id,
           velocity_views_per_hour, percentile, channel_p90, hours_since_publish
         ) VALUES (
-          ${c.workspace_id}::uuid,
-          ${c.youtube_video_id},
-          ${c.channel_id}::uuid,
-          ${decision.velocity},
-          ${decision.percentile},
-          ${decision.channel_p90},
+          ${q.workspace_id}::uuid,
+          ${q.youtube_video_id},
+          ${q.channel_id}::uuid,
+          ${q.velocity_per_hour},
+          ${q.percentile},
+          ${q.channel_p90},
           ${hoursSincePublish}
         )
         ON CONFLICT (workspace_id, youtube_video_id) DO NOTHING
       `;
-      if ((ins.rowCount ?? 0) > 0) {
-        fired += 1;
-        // Lazy-import the event dispatchers to avoid pulling them
-        // into every analytics consumer. Failures are warned, not
-        // thrown — the fire row is the source of truth.
-        void (async () => {
-          try {
-            const { dispatchWorkflowEvent } = await import('./workflows');
-            const { dispatchWebhookEvent } = await import('./webhooks');
-            const payload = {
-              video_id: c.youtube_video_id,
-              channel_db_id: c.channel_id,
-              velocity_views_per_hour: Math.round(decision.velocity * 100) / 100,
-              percentile: Math.round(decision.percentile * 1000) / 1000,
-              channel_p90: Math.round(decision.channel_p90 * 100) / 100,
-              hours_since_publish: Math.round(hoursSincePublish * 10) / 10,
-              title: c.title,
-            };
-            await Promise.allSettled([
-              dispatchWorkflowEvent(c.workspace_id, {
-                type: 'video_breakout_detected',
-                payload,
-              }),
-              dispatchWebhookEvent(c.workspace_id, {
-                type: 'video_breakout_detected',
-                title: '🚀 Breakout detected',
-                detail: `${c.title ?? c.youtube_video_id} — ${payload.velocity_views_per_hour}/hr (channel p90: ${payload.channel_p90}/hr)`,
-                fields: {
-                  video_id: payload.video_id,
-                  channel_db_id: payload.channel_db_id,
-                  velocity_views_per_hour: payload.velocity_views_per_hour,
-                  percentile: payload.percentile,
-                  channel_p90: payload.channel_p90,
-                  hours_since_publish: payload.hours_since_publish,
-                  title: payload.title,
-                },
-                url: `https://youtu.be/${c.youtube_video_id}`,
-              }),
-            ]);
-          } catch (err) {
-            logger.warn('breakout event dispatch failed', {
-              workspace_id: c.workspace_id,
-              youtube_video_id: c.youtube_video_id,
-              detail: err instanceof Error ? err.message : String(err),
-            });
-          }
-        })();
+      if ((ins.rowCount ?? 0) === 0) continue;
+
+      fired += 1;
+
+      // Phase 9.8.2 — await inline. The previous fire-and-forget
+      // `void (async () => ...)()` could drop notifications because
+      // Vercel freezes the function after the cron's response
+      // promise resolves; pending microtasks may not run.
+      try {
+        const { dispatchWorkflowEvent } = await import('./workflows');
+        const { dispatchWebhookEvent } = await import('./webhooks');
+        const safeTitle = q.title ? escapeSlackText(q.title) : null;
+        const payload = {
+          video_id: q.youtube_video_id,
+          channel_db_id: q.channel_id,
+          velocity_views_per_hour: Math.round(q.velocity_per_hour * 100) / 100,
+          percentile: Math.round(q.percentile * 1000) / 1000,
+          channel_p90: Math.round(q.channel_p90 * 100) / 100,
+          hours_since_publish: Math.round(hoursSincePublish * 10) / 10,
+          title: q.title, // raw title for the workflow trigger payload
+        };
+        await Promise.allSettled([
+          dispatchWorkflowEvent(q.workspace_id, {
+            type: 'video_breakout_detected',
+            payload,
+          }),
+          // Webhook detail flows through Slack's mrkdwn; escape user-
+          // controlled values so a malicious title can't smuggle in
+          // a `<https://attacker/phish|Open Studio>` link.
+          dispatchWebhookEvent(q.workspace_id, {
+            type: 'video_breakout_detected',
+            title: '🚀 Breakout detected',
+            detail: `${safeTitle ?? q.youtube_video_id} — ${payload.velocity_views_per_hour}/hr (channel p90: ${payload.channel_p90}/hr)`,
+            fields: {
+              video_id: payload.video_id,
+              channel_db_id: payload.channel_db_id,
+              velocity_views_per_hour: payload.velocity_views_per_hour,
+              percentile: payload.percentile,
+              channel_p90: payload.channel_p90,
+              hours_since_publish: payload.hours_since_publish,
+              title: safeTitle,
+            },
+            url: `https://youtu.be/${q.youtube_video_id}`,
+          }),
+        ]);
+      } catch (err) {
+        logger.warn('breakout event dispatch failed', {
+          workspace_id: q.workspace_id,
+          youtube_video_id: q.youtube_video_id,
+          detail: err instanceof Error ? err.message : String(err),
+        });
       }
     } catch (err) {
       errors += 1;
       logger.warn('breakout detector failed for one video', {
-        workspace_id: c.workspace_id,
-        youtube_video_id: c.youtube_video_id,
+        workspace_id: q.workspace_id,
+        youtube_video_id: q.youtube_video_id,
         detail: err instanceof Error ? err.message : String(err),
       });
     }
   }
 
   return {
-    scanned: candidates.length,
+    scanned: qualifiers.length,
     fired,
-    skipped_already_fired: 0, // candidates query already excludes them
-    skipped_no_data: skippedNoData,
+    skipped_already_fired: 0, // single query already excludes them
+    skipped_no_data: 0, // single query already excludes them
     errors,
   };
 }
