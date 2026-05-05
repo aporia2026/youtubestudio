@@ -240,25 +240,31 @@ export async function tagVideoFormat(opts: TagVideoOptions): Promise<VideoFormat
     return null;
   }
 
-  // PG TEXT[] literal: '{a,b,c}'. Topics are user-supplied in the
-  // weakest sense (model output) so strip any control / quote chars
-  // defensively before formatting.
-  const topicsLiteral = `{${parsed.topics
-    .map((t) => `"${t.replace(/[\\"]/g, '').replace(/[\x00-\x1f]/g, '')}"`)
-    .join(',')}}`;
+  // Phase 9.8.3 — pass topics as a parameterised JS array via
+  // sql.query so the pg driver handles escape correctly. The
+  // previous "manually built {a,b,c} literal + strip backslash and
+  // quote chars" pattern was safe-by-sanitisation: a future char
+  // outside the strip set (e.g. `{` or `}`) would corrupt the
+  // literal. Parameterised binding is correct-by-construction.
+  // We still strip control chars (some Postgres versions reject
+  // them in TEXT regardless of binding).
+  const topics = parsed.topics.map((t) =>
+    t.replace(/[\x00-\x1f]/g, ''),
+  );
 
-  await sql`
+  await sql.query(
+    `
     INSERT INTO video_format_tags (
       workspace_id, youtube_video_id, channel_id,
       format, topics, confidence, ai_model
     ) VALUES (
-      ${opts.workspaceId}::uuid,
-      ${opts.youtubeVideoId},
-      ${opts.channelDbId}::uuid,
-      ${parsed.format},
-      ${topicsLiteral}::text[],
-      ${parsed.confidence},
-      ${modelId}
+      $1::uuid,
+      $2,
+      $3::uuid,
+      $4,
+      $5::text[],
+      $6,
+      $7
     )
     ON CONFLICT (workspace_id, youtube_video_id) DO UPDATE SET
       channel_id = EXCLUDED.channel_id,
@@ -267,7 +273,17 @@ export async function tagVideoFormat(opts: TagVideoOptions): Promise<VideoFormat
       confidence = EXCLUDED.confidence,
       ai_model   = EXCLUDED.ai_model,
       tagged_at  = NOW()
-  `;
+    `,
+    [
+      opts.workspaceId,
+      opts.youtubeVideoId,
+      opts.channelDbId,
+      parsed.format,
+      topics,
+      parsed.confidence,
+      modelId,
+    ],
+  );
 
   return {
     workspace_id: opts.workspaceId,

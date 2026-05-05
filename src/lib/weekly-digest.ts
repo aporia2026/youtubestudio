@@ -240,15 +240,22 @@ async function aggregateViewsForWindow(
   windowStart: string,
   windowEnd: string,
 ): Promise<ViewsAggregate> {
-  // Sum of (max-views - min-views) per video over the window — the
-  // workspace's total view-count growth during the period. Mean CTR
-  // and AVP are taken from the LATEST snapshot per video that landed
-  // in the window (we don't cumulative-mean those — they're rates).
+  // Phase 9.8.3 — switched from MAX(views) - MIN(views) to
+  // (last_in_window - first_in_window) via array_agg. The MAX-MIN
+  // form over-counted on volatile re-counts: e.g. 100 → 500 → 300 →
+  // 100 has MAX-MIN = 400 even though the net delta is 0.
+  // last-first gives the correct net (100 - 100 = 0); the outer
+  // GREATEST(..., 0) clamps the rare YouTube-mid-window-recount
+  // case where last < first.
+  //
+  // Mean CTR and AVP are still taken from window-wide AVG — they're
+  // rates not running totals, so the aggregation makes sense.
   const { rows } = await sql<ViewsAggregate>`
     WITH window_rows AS (
       SELECT
         youtube_video_id,
-        MAX(views) - MIN(views) AS views_gained,
+        (array_agg(views ORDER BY captured_at DESC))[1]
+          - (array_agg(views ORDER BY captured_at ASC))[1] AS views_gained,
         AVG(NULLIF(ctr_percentage, 0)) AS mean_ctr,
         AVG(NULLIF(average_view_percentage, 0)) AS mean_avp
       FROM video_analytics_history

@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
+  CATALOG_PAGE_SIZE,
   DEFAULT_FILTER,
   DEFAULT_SORT,
   SORT_FIELDS,
@@ -34,7 +35,9 @@ interface ChannelLite {
   name: string;
 }
 
-const PAGE_SIZE = 50;
+// Phase 9.8.3 — sourced from the shared types module so the server
+// clamp and the page paginator can never drift.
+const PAGE_SIZE = CATALOG_PAGE_SIZE;
 
 const SORT_LABEL: Record<SortField, string> = {
   published_at: 'Published',
@@ -161,7 +164,17 @@ export default function CatalogPage() {
     setSort(v.sort);
   }
 
-  async function deleteSaved(id: string) {
+  async function deleteSaved(id: string, name: string) {
+    // Phase 9.8.3 — confirm before delete. Saved views are workspace-
+    // wide (any teammate can see / delete any view), so a fat-finger
+    // by Alice deletes Bob's view. Confirm bounds the blast radius.
+    if (
+      !window.confirm(
+        `Delete saved view "${name}"? This can't be undone.`,
+      )
+    ) {
+      return;
+    }
     const res = await fetch(`/api/catalog/saved-views/${id}`, { method: 'DELETE' });
     if (res.ok) setSavedViews((vs) => vs.filter((v) => v.id !== id));
   }
@@ -364,7 +377,7 @@ export default function CatalogPage() {
                   {v.name}
                 </button>
                 <button
-                  onClick={() => deleteSaved(v.id)}
+                  onClick={() => deleteSaved(v.id, v.name)}
                   style={{
                     background: 'transparent',
                     border: 'none',
@@ -431,14 +444,14 @@ export default function CatalogPage() {
               <tbody>
                 {loading && data === null && (
                   <tr>
-                    <td colSpan={11} style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)' }}>
+                    <td colSpan={10} style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)' }}>
                       Loading…
                     </td>
                   </tr>
                 )}
                 {data && data.rows.length === 0 && (
                   <tr>
-                    <td colSpan={11} style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)' }}>
+                    <td colSpan={10} style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)' }}>
                       No videos match these filters.
                     </td>
                   </tr>

@@ -213,6 +213,11 @@ async function fetchSearchTermRows(
 // DB sync + read
 // ---------------------------------------------------------------------------
 
+// Phase 9.8.3 — must match `maxResults: '50'` in fetchSearchTermRows
+// above. If the API call ever truncates to fewer rows than this cap
+// allows, the cap is no-op; the API never returns more, so the cap
+// is a defence-in-depth bound. Don't bump this without bumping the
+// API param too.
 const PER_SYNC_ROW_CAP = 50;
 
 /**

@@ -121,6 +121,14 @@ export const DEFAULT_FILTER: CatalogFilter = {
 
 export const DEFAULT_SORT: CatalogSort = { field: 'published_at', dir: 'desc' };
 
+/**
+ * Catalog page size. Shared between the page (which paginates the
+ * UI) and the server (which clamps the limit param). Phase 9.8.3 —
+ * exported here so a future change to one stays in sync with the
+ * other.
+ */
+export const CATALOG_PAGE_SIZE = 50;
+
 // ---------------------------------------------------------------------------
 // Pure helpers (used by both the client URL/saved-view-loader path AND
 // the server route's body parser)
