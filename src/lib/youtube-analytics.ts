@@ -57,6 +57,16 @@ export interface RetentionPoint {
 
 export type DataSource = 'data' | 'analytics' | 'mixed' | 'partial';
 
+/**
+ * Phase 9.2 — `insightTrafficSourceType` breakdown. Keys are YouTube's
+ * source enum (BROWSE, SEARCH, SUGGESTED, EXTERNAL, SHORTS_FEED,
+ * CHANNEL, PLAYLIST, NOTIFICATION, OTHER, etc.), values are absolute
+ * view counts over the synced window. Stored on the live row only;
+ * percentages are computed at read time so view-count drift doesn't
+ * require a re-write.
+ */
+export type TrafficSourceBreakdown = Record<string, number>;
+
 export interface VideoAnalyticsRow extends DataApiSnapshot, AnalyticsApiSnapshot {
   workspace_id: string;
   youtube_video_id: string;
@@ -65,6 +75,8 @@ export interface VideoAnalyticsRow extends DataApiSnapshot, AnalyticsApiSnapshot
   retention_curve: RetentionPoint[] | null;
   data_source: DataSource;
   fetched_at: Date;
+  /** Phase 9.2 — null until the first sync writes it. */
+  traffic_source_breakdown: TrafficSourceBreakdown | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +206,55 @@ export function parseAnalyticsRow(raw: unknown): AnalyticsApiSnapshot {
 }
 
 /** Parse the multi-row retention-curve response. */
+/**
+ * Phase 9.2 — parse the `insightTrafficSourceType` x `views` API
+ * response into a `{ SOURCE: viewCount }` map. Pure: no DB, no I/O.
+ *
+ * The API returns `{ rows: [[sourceTypeString, viewCount], ...] }`.
+ * Source-type strings come back lowercase or mixed-case depending on
+ * region — we uppercase + canonicalise to the documented enum so
+ * downstream code can switch on stable keys.
+ *
+ * Drops rows where the source is missing or the count is non-finite;
+ * sums duplicate source-types defensively (the API has been observed
+ * to split certain sources by sub-type that we don't currently care
+ * about).
+ */
+export function parseTrafficSourceRows(raw: unknown): TrafficSourceBreakdown | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as { rows?: unknown };
+  if (!Array.isArray(obj.rows)) return null;
+  const out: TrafficSourceBreakdown = {};
+  for (const r of obj.rows) {
+    if (!Array.isArray(r) || r.length < 2) continue;
+    const src = typeof r[0] === 'string' ? r[0].toUpperCase() : null;
+    const count = typeof r[1] === 'number' ? r[1] : Number(r[1]);
+    if (!src || !Number.isFinite(count)) continue;
+    out[src] = (out[src] ?? 0) + count;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
+ * Phase 9.2 — pure helper turning a TrafficSourceBreakdown into a
+ * percentage map. Sums the values, then normalises each entry to its
+ * share. Returns an empty object for null / empty input — the
+ * dashboard hides the card when there's nothing to show.
+ */
+export function trafficSourcePercentages(
+  breakdown: TrafficSourceBreakdown | null,
+): Record<string, number> {
+  if (!breakdown) return {};
+  let total = 0;
+  for (const v of Object.values(breakdown)) total += v;
+  if (total === 0) return {};
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(breakdown)) {
+    out[k] = (v / total) * 100;
+  }
+  return out;
+}
+
 export function parseRetentionRows(raw: unknown): RetentionPoint[] | null {
   const map = indexColumns(raw);
   if (!map) return null;
@@ -293,6 +354,33 @@ async function fetchAnalyticsApiVideo(
   return res.json();
 }
 
+/**
+ * Phase 9.2 — fetch the per-video `insightTrafficSourceType` breakdown.
+ * Soft-fails to null on any HTTP error or missing-scope response so
+ * the parent sync still completes (matches the retention curve
+ * pattern). Pure stats fetch, no auth refresh.
+ */
+async function fetchTrafficSources(
+  accessToken: string,
+  youtubeChannelId: string,
+  videoId: string,
+  range: DateRange,
+): Promise<unknown> {
+  const params = new URLSearchParams({
+    ids: `channel==${youtubeChannelId}`,
+    metrics: 'views',
+    dimensions: 'insightTrafficSourceType',
+    filters: `video==${videoId}`,
+    startDate: range.startDate,
+    endDate: range.endDate,
+  });
+  const res = await fetch(`${ANALYTICS_API_BASE}?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
 async function fetchRetentionCurve(
   accessToken: string,
   youtubeChannelId: string,
@@ -369,6 +457,11 @@ export async function syncVideoAnalytics(opts: SyncOptions): Promise<VideoAnalyt
     subscribers_gained: null,
   };
   let retention: RetentionPoint[] | null = null;
+  // Phase 9.2 — null when the channel lacks analytics scope, the API
+  // call fails, or the parser rejects the shape. Stored as null in
+  // that case rather than an empty object so the dashboard card can
+  // distinguish "no data yet" from "all sources zero" cleanly.
+  let trafficSourceBreakdown: TrafficSourceBreakdown | null = null;
 
   if (hadAnalyticsScope && opts.youtubeChannelId) {
     try {
@@ -393,6 +486,17 @@ export async function syncVideoAnalytics(opts: SyncOptions): Promise<VideoAnalyt
     } catch {
       retention = null;
     }
+    try {
+      const trafficRaw = await fetchTrafficSources(
+        tokenInfo.token,
+        opts.youtubeChannelId,
+        opts.youtubeVideoId,
+        range,
+      );
+      trafficSourceBreakdown = trafficRaw ? parseTrafficSourceRows(trafficRaw) : null;
+    } catch {
+      trafficSourceBreakdown = null;
+    }
   }
 
   const dataSource = chooseDataSource(data, analytics, retention, hadAnalyticsScope);
@@ -403,6 +507,7 @@ export async function syncVideoAnalytics(opts: SyncOptions): Promise<VideoAnalyt
       views, likes, comments, duration_seconds, published_at, title, thumbnail_url,
       impressions, ctr_percentage, average_view_duration_seconds,
       average_view_percentage, subscribers_gained, retention_curve,
+      traffic_source_breakdown,
       data_source, fetched_at
     ) VALUES (
       ${opts.workspaceId}::uuid, ${opts.youtubeVideoId}, ${opts.channelDbId}::uuid,
@@ -413,6 +518,7 @@ export async function syncVideoAnalytics(opts: SyncOptions): Promise<VideoAnalyt
       ${analytics.average_view_duration_seconds},
       ${analytics.average_view_percentage}, ${analytics.subscribers_gained},
       ${retention ? JSON.stringify(retention) : null}::jsonb,
+      ${trafficSourceBreakdown ? JSON.stringify(trafficSourceBreakdown) : null}::jsonb,
       ${dataSource}, NOW()
     )
     ON CONFLICT (workspace_id, youtube_video_id) DO UPDATE SET
@@ -440,6 +546,10 @@ export async function syncVideoAnalytics(opts: SyncOptions): Promise<VideoAnalyt
         video_analytics.subscribers_gained
       ),
       retention_curve = COALESCE(EXCLUDED.retention_curve, video_analytics.retention_curve),
+      traffic_source_breakdown = COALESCE(
+        EXCLUDED.traffic_source_breakdown,
+        video_analytics.traffic_source_breakdown
+      ),
       data_source = EXCLUDED.data_source,
       fetched_at = EXCLUDED.fetched_at
   `;
@@ -486,6 +596,7 @@ export async function readVideoAnalyticsRow(
       title, thumbnail_url,
       impressions, ctr_percentage, average_view_duration_seconds,
       average_view_percentage, subscribers_gained, retention_curve,
+      traffic_source_breakdown,
       data_source, fetched_at
     FROM video_analytics
     WHERE workspace_id = ${workspaceId}::uuid
