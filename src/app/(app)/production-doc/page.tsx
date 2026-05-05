@@ -10,6 +10,7 @@ import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ScheduleLinkProvider, ScheduleSaverRegistration } from '@/components/ui/ScheduleLinkContext';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
+import { IMAGE_MODELS, DEFAULT_IMAGE_MODEL, getImageModelSpec } from '@/lib/image-models';
 import {
   saveProductionDocEntry,
   getProductionDocHistory,
@@ -485,6 +486,17 @@ function ProductionDocPage() {
   // Per-session override only. The canonical default is set in
   // Settings → Model Defaults and resolved server-side.
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('production-doc'));
+  const [imageModel, setImageModel] = useState<string>(() => {
+    if (typeof window === 'undefined') return DEFAULT_IMAGE_MODEL;
+    try {
+      const saved = localStorage.getItem('prodoc_image_model');
+      if (saved && getImageModelSpec(saved)) return saved;
+    } catch { /* ignore */ }
+    return DEFAULT_IMAGE_MODEL;
+  });
+  useEffect(() => {
+    try { localStorage.setItem('prodoc_image_model', imageModel); } catch { /* ignore */ }
+  }, [imageModel]);
   const [speakingPace, setSpeakingPace] = useState(135);
   const [actualDuration, setActualDuration] = useState(''); // "mm:ss" of actual voiceover recording
   const [stylePreset, setStylePreset] = useState('cinematic');
@@ -847,7 +859,7 @@ function ProductionDocPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal,
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, model: imageModel }),
       });
       const data = await safeJson(res);
       if (!res.ok) throw new Error((data.error as string) || 'Failed');
@@ -1648,6 +1660,25 @@ function ProductionDocPage() {
             className="input-field font-mono text-xs leading-relaxed"
             style={{ minHeight: 200, resize: 'vertical' }}
           />
+        </div>
+
+        {/* Image model — used for per-shot AI images */}
+        <div>
+          <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+            Image Model
+          </label>
+          <select
+            value={imageModel}
+            onChange={e => setImageModel(e.target.value)}
+            className="input-field w-full text-sm"
+          >
+            {IMAGE_MODELS.map(m => (
+              <option key={m.value} value={m.value}>
+                {m.label}
+                {m.hint ? ` — ${m.hint}` : ''}
+              </option>
+            ))}
+          </select>
         </div>
 
         {/* Model + Generate */}

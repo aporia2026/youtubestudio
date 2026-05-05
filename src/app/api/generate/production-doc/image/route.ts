@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { put } from '@vercel/blob';
 import { logger } from '@/lib/logger';
+import { buildKieImageInput, getImageModelSpec, DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from '@/lib/image-models';
 
 export const maxDuration = 300;
 
@@ -78,19 +79,28 @@ export async function POST(req: NextRequest) {
     const { limited } = checkRateLimit(`prodoc-img:${getClientIP(req)}`, 30, 60_000);
     if (limited) return NextResponse.json({ error: 'Rate limited' }, { status: 429 });
 
-    let body: { prompt?: string };
+    let body: { prompt?: string; model?: string };
     try {
       body = await req.json();
     } catch {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
     }
 
-    const { prompt } = body;
+    const { prompt, model } = body;
     if (!prompt?.trim()) {
       return NextResponse.json({ error: 'prompt is required' }, { status: 400 });
     }
     if (prompt.trim().length > 1500) {
       return NextResponse.json({ error: 'Prompt too long — maximum 1500 characters' }, { status: 400 });
+    }
+
+    const modelValue = model?.trim() || DEFAULT_IMAGE_MODEL;
+    const spec = getImageModelSpec(modelValue);
+    if (!spec) {
+      return NextResponse.json(
+        { error: `Unknown image model: ${modelValue}. Valid: ${IMAGE_MODELS.map(m => m.value).join(', ')}` },
+        { status: 400 },
+      );
     }
 
     const apiKey = process.env.KIE_API_KEY;
@@ -109,12 +119,8 @@ export async function POST(req: NextRequest) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'grok-imagine/text-to-image',
-          input: {
-            prompt: prompt.trim(),
-            nsfw_checker: true,
-            aspect_ratio: '16:9',
-          },
+          model: spec.kieModel,
+          input: buildKieImageInput(spec.value, prompt.trim()),
         }),
       });
       if (createRes.status !== 502 && createRes.status !== 503 && createRes.status !== 504) break;
