@@ -62,6 +62,7 @@ export type AppFeature =
   | 'comment-triage'
   | 'seo-title-rewrite'
   | 'video-format-tagger'
+  | 'weekly-insight-digest'
   // Automate
   | 'ask-studio'
   // Foundation
@@ -112,6 +113,7 @@ export const APP_FEATURES: AppFeatureSpec[] = [
   { id: 'comment-triage', label: 'Comment Triage', description: 'Sorts comments by signal: questions, bugs, ideas, hate', section: 'grow', defaultModelId: HAIKU },
   { id: 'seo-title-rewrite', label: 'SEO Title Rewrite', description: 'Rewrites a title to capture missed search demand from underperforming queries', section: 'grow', defaultModelId: SONNET },
   { id: 'video-format-tagger', label: 'Video Format Tagger', description: 'Auto-classifies a video by format + topic for attribution analytics', section: 'grow', defaultModelId: HAIKU },
+  { id: 'weekly-insight-digest', label: 'Weekly Insight Digest', description: 'Synthesises week-over-week analytics into a 1-page Monday digest', section: 'grow', defaultModelId: SONNET },
 
   // ─── Automate ────────────────────────────────────────────────────────
   { id: 'ask-studio', label: 'Ask Studio', description: 'Conversational analytics — natural-language questions over your channel data', section: 'automate', defaultModelId: HAIKU },

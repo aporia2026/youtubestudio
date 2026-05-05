@@ -49,7 +49,8 @@
     "src/app/api/cron/capture-prediction-outcomes/route.ts":         { "maxDuration": 300 },
     "src/app/api/cron/snapshot-analytics/route.ts":                  { "maxDuration": 300 },
     "src/app/api/cron/tag-video-formats/route.ts":                   { "maxDuration": 300 },
-    "src/app/api/cron/detect-breakouts/route.ts":                    { "maxDuration": 300 }
+    "src/app/api/cron/detect-breakouts/route.ts":                    { "maxDuration": 300 },
+    "src/app/api/cron/weekly-insight-digest/route.ts":               { "maxDuration": 300 }
   },
   "crons": [
     {
@@ -75,6 +76,10 @@
     {
       "path": "/api/cron/detect-breakouts",
       "schedule": "45 */6 * * *"
+    },
+    {
+      "path": "/api/cron/weekly-insight-digest",
+      "schedule": "0 9 * * 1"
     }
   ]
 }
