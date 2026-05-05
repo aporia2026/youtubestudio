@@ -61,6 +61,7 @@ export type AppFeature =
   | 'cannibalization'
   | 'comment-triage'
   | 'seo-title-rewrite'
+  | 'video-format-tagger'
   // Automate
   | 'ask-studio'
   // Foundation
@@ -110,6 +111,7 @@ export const APP_FEATURES: AppFeatureSpec[] = [
   { id: 'cannibalization', label: 'Cannibalization', description: 'Finds videos competing with each other for the same query', section: 'grow', defaultModelId: HAIKU },
   { id: 'comment-triage', label: 'Comment Triage', description: 'Sorts comments by signal: questions, bugs, ideas, hate', section: 'grow', defaultModelId: HAIKU },
   { id: 'seo-title-rewrite', label: 'SEO Title Rewrite', description: 'Rewrites a title to capture missed search demand from underperforming queries', section: 'grow', defaultModelId: SONNET },
+  { id: 'video-format-tagger', label: 'Video Format Tagger', description: 'Auto-classifies a video by format + topic for attribution analytics', section: 'grow', defaultModelId: HAIKU },
 
   // ─── Automate ────────────────────────────────────────────────────────
   { id: 'ask-studio', label: 'Ask Studio', description: 'Conversational analytics — natural-language questions over your channel data', section: 'automate', defaultModelId: HAIKU },

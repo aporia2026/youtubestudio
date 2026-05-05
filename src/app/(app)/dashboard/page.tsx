@@ -7,6 +7,7 @@ import type { DashboardSummary } from '@/lib/dashboard-summary';
 import { CompetitorSignalsCard } from '@/components/dashboard/CompetitorSignalsCard';
 import { PredictionAccuracyCard } from '@/components/dashboard/PredictionAccuracyCard';
 import { TrafficSourceCard } from '@/components/dashboard/TrafficSourceCard';
+import { FormatAttributionCard } from '@/components/dashboard/FormatAttributionCard';
 
 // -- Quick action shortcuts -------------------------------------------------
 // Six high-frequency actions surfaced as gradient cards above the operational
@@ -181,6 +182,7 @@ export default function DashboardPage() {
         >
           <CompetitorSignalsCard />
           <TrafficSourceCard />
+          <FormatAttributionCard />
           <PredictionAccuracyCard />
           <Section title="Today's publishes" empty="Nothing scheduled for today.">
             {summary.today_publishes.length > 0 ? (
