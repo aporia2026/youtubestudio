@@ -13,7 +13,7 @@
  * channels don't benefit from this view.
  */
 import { useEffect, useState } from 'react';
-import type { FormatStats, VideoFormat } from '@/lib/format-tags';
+import type { FormatStats, VideoFormat } from '@/lib/format-tags-types';
 
 interface SummaryResponse {
   stats: FormatStats[];

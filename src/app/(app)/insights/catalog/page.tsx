@@ -21,8 +21,8 @@ import {
   type CatalogVideoRow,
   type SavedView,
   type SortField,
-} from '@/lib/catalog-explorer';
-import { VIDEO_FORMATS, type VideoFormat } from '@/lib/format-tags';
+} from '@/lib/catalog-explorer-types';
+import { VIDEO_FORMATS, type VideoFormat } from '@/lib/format-tags-types';
 
 interface VideosResponse {
   rows: CatalogVideoRow[];

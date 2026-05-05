@@ -18,36 +18,21 @@ import { generateText } from './ai';
 import { logger } from './logger';
 import { getEffectiveModelId } from './model-defaults';
 import { parseLlmJson } from './parse-llm-json';
+import {
+  VIDEO_FORMATS,
+  isVideoFormat,
+  type FormatStats,
+  type VideoFormat,
+} from './format-tags-types';
+
+// Re-export for back-compat with existing callers (tests, server libs)
+// that import from this module directly.
+export { VIDEO_FORMATS, isVideoFormat };
+export type { FormatStats, VideoFormat };
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-/**
- * The fixed enum of formats. Application-validated; the column is
- * TEXT in Postgres (not an enum type) because adding a value to a
- * Postgres enum requires a migration, and we want to evolve this set
- * without one.
- */
-export const VIDEO_FORMATS = [
-  'explainer',
-  'list',
-  'story',
-  'tutorial',
-  'commentary',
-  'interview',
-  'vlog',
-  'showcase',
-  'other',
-] as const;
-
-export type VideoFormat = (typeof VIDEO_FORMATS)[number];
-
-const VIDEO_FORMAT_SET = new Set<VideoFormat>(VIDEO_FORMATS);
-
-export function isVideoFormat(s: string): s is VideoFormat {
-  return VIDEO_FORMAT_SET.has(s as VideoFormat);
-}
 
 export interface VideoFormatTag {
   workspace_id: string;
@@ -60,17 +45,8 @@ export interface VideoFormatTag {
   tagged_at: string;
 }
 
-export interface FormatStats {
-  format: VideoFormat;
-  video_count: number;
-  /** Mean AVP across the videos in this bucket. Null when none of
-   *  the videos had AVP synced. */
-  mean_avp: number | null;
-  /** Mean CTR across the videos in this bucket. */
-  mean_ctr: number | null;
-  /** Mean view count across the videos. */
-  mean_views: number | null;
-}
+// FormatStats moved to format-tags-types.ts so the dashboard card
+// can import without dragging server deps into the browser bundle.
 
 // ---------------------------------------------------------------------------
 // Pure helpers
