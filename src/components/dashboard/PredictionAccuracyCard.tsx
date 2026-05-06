@@ -61,7 +61,18 @@ export function PredictionAccuracyCard() {
   // publish — until then the card would just be noise.
   if (loading || !summary || summary.outcome_count === 0) return null;
 
-  const headline = buildTrendHeadline(summary.trend);
+  // Phase 8.6.2 — single-outcome state can't have a trend (the
+  // older/recent split is empty). Show a clearer "trend will start
+  // after next publish" headline rather than the misleading-but-
+  // technically-correct "Predictor accuracy is steady".
+  const headline =
+    summary.outcome_count < 2
+      ? {
+          text:
+            'First captured outcome — trend lines will appear once a second video crosses the 14-day window.',
+          tone: 'neutral' as const,
+        }
+      : buildTrendHeadline(summary.trend);
   const lastCaptured = summary.last_captured_at
     ? formatRelative(summary.last_captured_at)
     : null;

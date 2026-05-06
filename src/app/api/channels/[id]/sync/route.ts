@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
 import { fetchChannelData, fetchMyChannelOAuth } from '@/lib/youtube';
 import { getValidAccessToken } from '@/lib/google-oauth';
+import { domainErrorResponse } from '@/lib/route-helpers';
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -52,7 +53,10 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     `;
 
     return NextResponse.json({ success: true, method: 'api_key' });
-  } catch (err: unknown) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Sync failed' }, { status: 500 });
+  } catch (err) {
+    return domainErrorResponse(err, {
+      op: 'channels: sync',
+      fallbackMessage: 'Could not sync channel — please try again.',
+    });
   }
 }

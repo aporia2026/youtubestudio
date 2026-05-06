@@ -7,6 +7,7 @@ import { getTemplate } from '@/lib/templates-db';
 import { getSession } from '@/lib/session';
 import { resolveBrandKitForRequest } from '@/lib/channel-brand-kit';
 import { logger } from '@/lib/logger';
+import { domainErrorResponse } from '@/lib/route-helpers';
 
 export const maxDuration = 300;
 
@@ -210,11 +211,10 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ result });
-  } catch (err: unknown) {
-    logger.error('QA analyze error', { detail: err instanceof Error ? err.message : String(err) });
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'QA analysis failed' },
-      { status: 500 }
-    );
+  } catch (err) {
+    return domainErrorResponse(err, {
+      op: 'qa: analyze',
+      fallbackMessage: 'QA analysis failed — please try again.',
+    });
   }
 }

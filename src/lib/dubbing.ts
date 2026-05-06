@@ -147,17 +147,19 @@ async function upsertDubRow(args: UpsertArgs): Promise<string> {
  * a 'ready' row. Audit C5 + M12.
  */
 async function markFailed(dubId: string, message: string): Promise<void> {
-  // Refuse to overwrite a 'ready' row.
+  // Refuse to overwrite any terminal row. Phase 8.6.3 — also exclude
+  // 'failed' so a second error path can't overwrite the first error
+  // message. The first error wins.
   const r = await sql`
     UPDATE dubbed_voiceovers
        SET status = 'failed',
            error_message = ${message},
            updated_at = NOW()
      WHERE id = ${dubId}::uuid
-       AND status != 'ready'
+       AND status NOT IN ('ready', 'failed')
   `;
   if ((r.rowCount ?? 0) === 0) {
-    logger.warn('dub: markFailed refused (row already ready or missing)', { dubId });
+    logger.warn('dub: markFailed refused (row already terminal or missing)', { dubId });
   }
 }
 

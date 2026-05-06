@@ -5,6 +5,7 @@ import { isR2Configured, buildNarrationKey, getNarrationUploadUrl, getNarrationD
 import { notifyNarratorTake } from '@/lib/notify';
 import { ALLOWED_AUDIO_MIME_TYPES, resolveAudioMime } from '@/lib/narrator-utils';
 import { logger } from '@/lib/logger';
+import { domainErrorResponse } from '@/lib/route-helpers';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -114,9 +115,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
       contentType: resolvedContentType,
     }, { status: 201 });
   } catch (err) {
-    logger.error('upload take error', { detail: err instanceof Error ? err.message : String(err) });
-    const msg = err instanceof Error ? err.message : 'Unknown error';
-    return NextResponse.json({ error: `Failed to start upload: ${msg}` }, { status: 500 });
+    return domainErrorResponse(err, {
+      op: 'narrate: section take upload presign',
+      fallbackMessage: 'Could not start upload — please try again.',
+    });
   }
 }
 

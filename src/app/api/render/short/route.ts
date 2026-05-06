@@ -3,7 +3,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs/promises';
 import { sql } from '@vercel/postgres';
-import { apiRoute } from '@/lib/route-helpers';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { getShort } from '@/lib/shorts';
 import { buildShortVideoConfig } from '@/lib/shorts-render';
 import type { ShortVideoConfig } from '@/lib/shorts-render-types';
@@ -89,7 +89,16 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       accentColor: typeof b.accentColor === 'string' ? b.accentColor : undefined,
     });
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+    return domainErrorResponse(err, {
+      op: 'render-short: build config',
+      knownPatterns: [
+        // buildShortVideoConfig surfaces user-actionable validation messages.
+        { match: /Cannot render Short/, status: 400 },
+        { match: /voiceover not generated/, status: 400 },
+      ],
+      fallbackStatus: 400,
+      fallbackMessage: 'Invalid Short configuration — please review and try again.',
+    });
   }
 
   await ensureTable();

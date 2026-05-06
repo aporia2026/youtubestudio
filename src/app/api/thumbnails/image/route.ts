@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
-import { logger } from '@/lib/logger';
+import { domainErrorResponse } from '@/lib/route-helpers';
 
 export const maxDuration = 300;
 
@@ -186,11 +186,16 @@ export async function POST(req: NextRequest) {
     const imageUrl = await pollForResult(taskId, apiKey);
 
     return NextResponse.json({ imageUrl, taskId });
-  } catch (err: unknown) {
-    logger.error('Thumbnail image generation error', { detail: err instanceof Error ? err.message : String(err) });
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Image generation failed' },
-      { status: 500 },
-    );
+  } catch (err) {
+    return domainErrorResponse(err, {
+      op: 'thumbnails: image generate',
+      knownPatterns: [
+        // requireKieKey throws this when the env var is missing
+        { match: /KIE_API_KEY environment variable is not configured/, status: 500 },
+        // Kie.ai upstream availability messages thrown explicitly above
+        { match: /Kie\.ai is temporarily unavailable/, status: 503 },
+      ],
+      fallbackMessage: 'Image generation failed — please try again.',
+    });
   }
 }

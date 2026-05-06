@@ -4,6 +4,7 @@ import {
   aggregateAccuracy,
   computeDeltaMetrics,
   interpolateCurve,
+  parseDeltaMetrics,
   type DeltaMetrics,
 } from '@/lib/prediction-outcomes';
 import type { RetentionPoint } from '@/lib/retention-predictor-types';
@@ -130,6 +131,26 @@ describe('computeDeltaMetrics', () => {
     expect(positions[positions.length - 1]).toBe(1);
     expect(positions).toHaveLength(11);
   });
+
+  it('handles wildly different curve sample densities (100-pt vs 3-pt)', () => {
+    // Realistic case: actual curve from YouTube has 100 samples,
+    // predicted has 3. Both are interpolated at fixed positions, so
+    // density doesn't matter — but the contract should still hold.
+    const dense: RetentionPoint[] = Array.from({ length: 100 }, (_, i) => ({
+      position: i / 99,
+      retention: Math.max(0, 1 - i / 99 * 0.7), // 1 → 0.3 linear
+    }));
+    const sparse: RetentionPoint[] = [
+      { position: 0, retention: 1 },
+      { position: 0.5, retention: 0.65 },
+      { position: 1, retention: 0.3 },
+    ];
+    const m = computeDeltaMetrics(sparse, dense);
+    expect(m.per_segment_deltas).toHaveLength(11);
+    // The two curves describe approximately the same shape, so MAE
+    // should be small (well under 5pp).
+    expect(m.mae_pct).toBeLessThan(5);
+  });
 });
 
 describe('aggregateAccuracy', () => {
@@ -220,5 +241,90 @@ describe('aggregateAccuracy', () => {
       { delta_metrics: metric(3), captured_at: '2026-01-01T00:00:00Z' },
     ]);
     expect(out.last_captured_at).toBe('2026-01-04T00:00:00Z');
+  });
+
+  it('single-outcome state has null trend deltas (no older half to split)', () => {
+    // Phase 8.6.2 — surfaces the case the dashboard re-headlines as
+    // "first outcome captured." With one outcome, mid = floor(1/2) = 0,
+    // so olderHalf is empty and every bucket's delta_pct is null.
+    const out = aggregateAccuracy([
+      { delta_metrics: metric(7), captured_at: '2026-01-01T00:00:00Z' },
+    ]);
+    expect(out.outcome_count).toBe(1);
+    expect(out.overall_mae_pct).toBeCloseTo(7, 5);
+    for (const t of out.trend) {
+      expect(t.delta_pct).toBeNull();
+    }
+    // The bucket aggregation should still reflect the single outcome.
+    for (const b of out.buckets) {
+      expect(b.outcome_count).toBe(1);
+    }
+  });
+});
+
+describe('parseDeltaMetrics (defensive JSONB parser)', () => {
+  it('returns empty-state for non-objects', () => {
+    expect(parseDeltaMetrics(null)).toEqual({
+      mae_pct: 0,
+      biggest_miss_at_pct: 0,
+      biggest_miss_direction: 'none',
+      per_segment_deltas: [],
+    });
+    expect(parseDeltaMetrics('not an object')).toEqual({
+      mae_pct: 0,
+      biggest_miss_at_pct: 0,
+      biggest_miss_direction: 'none',
+      per_segment_deltas: [],
+    });
+  });
+
+  it('clamps mae_pct to [0, 100] when JSONB carries garbage', () => {
+    const out = parseDeltaMetrics({
+      mae_pct: -50,
+      biggest_miss_at_pct: 0.3,
+      biggest_miss_direction: 'over',
+      per_segment_deltas: [],
+    });
+    expect(out.mae_pct).toBe(0);
+    const huge = parseDeltaMetrics({
+      mae_pct: 500,
+      biggest_miss_at_pct: 0.3,
+      biggest_miss_direction: 'over',
+      per_segment_deltas: [],
+    });
+    expect(huge.mae_pct).toBe(100);
+  });
+
+  it('clamps position outside [0, 1] in stored segments', () => {
+    const out = parseDeltaMetrics({
+      mae_pct: 5,
+      biggest_miss_at_pct: 7, // out of range — must clamp to 1
+      biggest_miss_direction: 'under',
+      per_segment_deltas: [
+        { position: -0.2, predicted: 1.5, actual: -0.3, delta: 2.0 },
+      ],
+    });
+    expect(out.biggest_miss_at_pct).toBe(1);
+    expect(out.per_segment_deltas[0]).toEqual({
+      position: 0,
+      predicted: 1,
+      actual: 0,
+      delta: 1, // clamped to [-1, 1]
+    });
+  });
+
+  it('drops NaN values from mae_pct and biggest_miss_at_pct', () => {
+    const out = parseDeltaMetrics({
+      mae_pct: Number.NaN,
+      biggest_miss_at_pct: Number.POSITIVE_INFINITY,
+      biggest_miss_direction: 'totally-bogus',
+      per_segment_deltas: 'also-bogus',
+    });
+    expect(out.mae_pct).toBe(0);
+    expect(out.biggest_miss_at_pct).toBe(0);
+    // Bogus direction → fall through to 'none'.
+    expect(out.biggest_miss_direction).toBe('none');
+    // Non-array segments → empty array.
+    expect(out.per_segment_deltas).toEqual([]);
   });
 });

@@ -61,7 +61,25 @@ export async function ensureChannelNamesSchema() {
   }
 }
 
-/** Idempotent setup for competitor tables + rich columns. Cheap to call repeatedly. */
+/**
+ * Idempotent setup for competitor tables + rich columns. Cheap to call
+ * repeatedly. Pre-dates the migration framework but still owns the
+ * fresh-install CREATE for these tables — the migration framework
+ * only ALTERs them (workspace_id backfill via _workspace_scoped_tables,
+ * UNIQUE re-shape via 0038).
+ *
+ * Phase 8.6.4 — removed the inline `channel_id TEXT NOT NULL UNIQUE`
+ * from the competitor_channels CREATE. The legacy global-UNIQUE on
+ * channel_id was replaced by migration 0038 with a workspace-scoped
+ * UNIQUE(workspace_id, channel_id), so fresh installs no longer need
+ * the global one. Same fix for competitor_videos.video_id where
+ * cross-workspace duplication is fine (different workspaces tracking
+ * the same competitor video shouldn't conflict).
+ *
+ * Migration 0038 is still applied on top to drop the legacy named
+ * constraint if it exists from pre-Phase-8 deployments — that's why
+ * those `IF EXISTS` clauses are written defensively.
+ */
 let competitorMigrated = false;
 export async function ensureCompetitorSchema() {
   if (competitorMigrated) return;
@@ -70,7 +88,7 @@ export async function ensureCompetitorSchema() {
     await sql`
       CREATE TABLE IF NOT EXISTS competitor_channels (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        channel_id TEXT NOT NULL UNIQUE,
+        channel_id TEXT NOT NULL,
         title TEXT NOT NULL,
         custom_url TEXT,
         description TEXT,
@@ -87,7 +105,7 @@ export async function ensureCompetitorSchema() {
       CREATE TABLE IF NOT EXISTS competitor_videos (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         competitor_id UUID NOT NULL REFERENCES competitor_channels(id) ON DELETE CASCADE,
-        video_id TEXT NOT NULL UNIQUE,
+        video_id TEXT NOT NULL,
         title TEXT NOT NULL,
         published_at TIMESTAMPTZ,
         view_count INTEGER DEFAULT 0,

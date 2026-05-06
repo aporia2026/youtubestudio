@@ -22,6 +22,7 @@ import { parseLlmJson } from './parse-llm-json';
 import { logger } from './logger';
 import { getEffectiveModelId } from './model-defaults';
 import { findFewShotOutcomes } from './prediction-outcomes';
+import { normalizeCurve } from './retention-curve-utils';
 import {
   MAX_FEW_SHOT_EXAMPLES,
   MIN_SCRIPT_CHARS,
@@ -31,6 +32,10 @@ import {
   type RetentionPredictionRow,
   type SegmentExplanation,
 } from './retention-predictor-types';
+
+// Backwards-compat re-export — many tests/callers import normalizeCurve
+// from this module. The canonical home is now retention-curve-utils.
+export { normalizeCurve };
 
 export type {
   RetentionPoint,
@@ -131,30 +136,6 @@ export function countSpokenWords(text: string): number {
 
 export function estimateDurationSeconds(wordCount: number): number {
   return Math.max(1, Math.round(wordCount / RETENTION_WORDS_PER_SECOND));
-}
-
-/**
- * Coerce arbitrary JSON into a RetentionPoint[] with bounded values. Drops
- * any entry that doesn't have finite numeric position + retention. Sorts
- * ascending by position so the curve is monotonic-x even when the input
- * arrived shuffled.
- */
-export function normalizeCurve(raw: unknown): RetentionPoint[] {
-  if (!Array.isArray(raw)) return [];
-  const out: RetentionPoint[] = [];
-  for (const entry of raw) {
-    if (!entry || typeof entry !== 'object') continue;
-    const e = entry as Record<string, unknown>;
-    const p = typeof e.position === 'number' ? e.position : null;
-    const r = typeof e.retention === 'number' ? e.retention : null;
-    if (p === null || r === null || !Number.isFinite(p) || !Number.isFinite(r)) continue;
-    out.push({
-      position: Math.max(0, Math.min(1, p)),
-      retention: Math.max(0, Math.min(1, r)),
-    });
-  }
-  out.sort((a, b) => a.position - b.position);
-  return out;
 }
 
 /** Average view percentage = area under the retention curve (trapezoidal
@@ -438,25 +419,43 @@ export async function predictRetention(args: PredictRetentionArgs): Promise<{
     channelDbId: args.channelDbId,
     limit: MAX_FEW_SHOT_EXAMPLES,
   });
-  const examples: FewShotExample[] =
-    outcomeExamples.length > 0
-      ? outcomeExamples.map((o) => ({
-          youtube_video_id: o.youtube_video_id,
-          title: o.title,
-          duration_seconds: o.duration_seconds,
-          retention_curve: o.retention_curve,
-          predicted_curve: o.predicted_curve,
-          miss_summary: {
-            mae_pct: o.delta_metrics.mae_pct,
-            biggest_miss_at_pct: o.delta_metrics.biggest_miss_at_pct,
-            biggest_miss_direction: o.delta_metrics.biggest_miss_direction,
-          },
-        }))
-      : await findFewShotExamples({
-          workspaceId: args.workspaceId,
-          channelDbId: args.channelDbId,
-          limit: MAX_FEW_SHOT_EXAMPLES,
-        });
+  const outcomeAsFewShot: FewShotExample[] = outcomeExamples.map((o) => ({
+    youtube_video_id: o.youtube_video_id,
+    title: o.title,
+    duration_seconds: o.duration_seconds,
+    retention_curve: o.retention_curve,
+    predicted_curve: o.predicted_curve,
+    miss_summary: {
+      mae_pct: o.delta_metrics.mae_pct,
+      biggest_miss_at_pct: o.delta_metrics.biggest_miss_at_pct,
+      biggest_miss_direction: o.delta_metrics.biggest_miss_direction,
+    },
+  }));
+
+  // Phase 8.6.2 — mixed-warm pad. If the workspace has SOME outcomes
+  // but fewer than MAX_FEW_SHOT_EXAMPLES, top up with raw analytics
+  // rows for videos that don't yet have a captured outcome. Without
+  // this, an early-stage channel with 1 outcome silently loses 4
+  // example slots' worth of curve diversity. Excludes any
+  // youtube_video_id already present so the same video isn't duplicated
+  // across the outcome + raw layers.
+  const seenIds = new Set(outcomeAsFewShot.map((e) => e.youtube_video_id));
+  const padNeeded = MAX_FEW_SHOT_EXAMPLES - outcomeAsFewShot.length;
+  const padding =
+    padNeeded > 0
+      ? (
+          await findFewShotExamples({
+            workspaceId: args.workspaceId,
+            channelDbId: args.channelDbId,
+            // Over-pull so we still have padNeeded after de-dup against
+            // the outcome ids — small constant, cheap.
+            limit: padNeeded + outcomeAsFewShot.length,
+          })
+        )
+          .filter((e) => !seenIds.has(e.youtube_video_id))
+          .slice(0, padNeeded)
+      : [];
+  const examples: FewShotExample[] = [...outcomeAsFewShot, ...padding];
 
   const { system, user } = buildRetentionPredictionPrompt({
     script,

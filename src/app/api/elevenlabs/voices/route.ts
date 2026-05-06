@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getVoices } from '@/lib/elevenlabs';
+import { domainErrorResponse } from '@/lib/route-helpers';
 
 export async function GET(req: NextRequest) {
   const apiKey = req.headers.get('x-eleven-api-key') || process.env.ELEVENLABS_API_KEY || '';
@@ -8,10 +9,10 @@ export async function GET(req: NextRequest) {
   try {
     const voices = await getVoices(apiKey);
     return NextResponse.json({ voices });
-  } catch (err: unknown) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Failed to fetch voices' },
-      { status: 500 }
-    );
+  } catch (err) {
+    return domainErrorResponse(err, {
+      op: 'elevenlabs: list voices',
+      fallbackMessage: 'Could not fetch voices — please try again.',
+    });
   }
 }

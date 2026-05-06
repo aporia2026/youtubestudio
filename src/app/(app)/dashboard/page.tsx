@@ -6,6 +6,8 @@ import { motion } from 'framer-motion';
 import type { DashboardSummary } from '@/lib/dashboard-summary';
 import { CompetitorSignalsCard } from '@/components/dashboard/CompetitorSignalsCard';
 import { PredictionAccuracyCard } from '@/components/dashboard/PredictionAccuracyCard';
+import { TrafficSourceCard } from '@/components/dashboard/TrafficSourceCard';
+import { FormatAttributionCard } from '@/components/dashboard/FormatAttributionCard';
 
 // -- Quick action shortcuts -------------------------------------------------
 // Six high-frequency actions surfaced as gradient cards above the operational
@@ -179,6 +181,8 @@ export default function DashboardPage() {
           style={{ display: 'flex', flexDirection: 'column', gap: 18 }}
         >
           <CompetitorSignalsCard />
+          <TrafficSourceCard />
+          <FormatAttributionCard />
           <PredictionAccuracyCard />
           <Section title="Today's publishes" empty="Nothing scheduled for today.">
             {summary.today_publishes.length > 0 ? (
@@ -244,6 +248,17 @@ export default function DashboardPage() {
                 ))}
               </div>
             ) : null}
+            {/* Phase 9.7 — link to the catalog explorer for users who
+                want to slice every video themselves rather than wait
+                for the dashboard's curated list. */}
+            <div style={{ marginTop: 12, textAlign: 'right' }}>
+              <Link
+                href="/insights/catalog"
+                style={{ fontSize: 11, color: 'var(--text-secondary)', textDecoration: 'none' }}
+              >
+                Browse all videos →
+              </Link>
+            </div>
           </Section>
 
           <Section title="Cadence — last 4 weeks" empty="No channels yet — add one in /channel.">

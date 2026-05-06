@@ -18,6 +18,7 @@ import {
   publishVideoToYouTube,
   type PublishStatus,
 } from '@/lib/publishing';
+import { parseIdempotencyKey } from '@/lib/publishing-types';
 
 // Worst-case path: fetch a 256MB MP4 + multipart-upload it to YouTube.
 // 300s is the Vercel Pro ceiling and matches the existing render route.
@@ -56,13 +57,13 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   }
   const b = (body ?? {}) as Record<string, unknown>;
 
-  // Audit C7 — idempotency key. Header is the standard transport;
-  // body field is also accepted as a courtesy for clients that can't
-  // easily set headers. Cap at 200 chars to bound the index.
+  // Audit C7 + Phase 8.6.3 — idempotency key. Header is the standard
+  // transport; body field is accepted as a courtesy for clients that
+  // can't set headers. parseIdempotencyKey enforces both the 200-char
+  // cap and the unreserved-URI charset.
   const headerKey = req.headers.get('idempotency-key');
   const bodyKey = typeof b.idempotencyKey === 'string' ? b.idempotencyKey : null;
-  const rawKey = headerKey || bodyKey;
-  const idempotencyKey = rawKey && rawKey.length > 0 && rawKey.length <= 200 ? rawKey : null;
+  const idempotencyKey = parseIdempotencyKey(headerKey || bodyKey);
 
   const channelDbId = typeof b.channelDbId === 'string' ? b.channelDbId.trim() : '';
   const sourceVideoUrl = typeof b.sourceVideoUrl === 'string' ? b.sourceVideoUrl.trim() : '';

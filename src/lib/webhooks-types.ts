@@ -40,6 +40,16 @@ export const WEBHOOK_EVENT_TYPES = [
     description: 'Fires when a Publish-to-YouTube row flips to "live" (YouTube finished processing the upload).',
   },
   {
+    type: 'video_breakout_detected',
+    label: 'Video breakout detected',
+    description: 'Fires when a video\'s first-48h view velocity exceeds the channel\'s 90th percentile (Phase 9.5).',
+  },
+  {
+    type: 'weekly_insight_digest',
+    label: 'Weekly insight digest ready',
+    description: 'Fires Mondays after the AI synthesises the week\'s analytics into a 1-page summary (Phase 9.6).',
+  },
+  {
     type: 'test',
     label: 'Test event',
     description: 'Manual test from the /webhooks page. Always sends regardless of filters.',

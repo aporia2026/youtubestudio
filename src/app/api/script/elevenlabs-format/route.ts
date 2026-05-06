@@ -3,6 +3,7 @@ import { generateText } from '@/lib/ai';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { makeSpendContext } from '@/lib/ai-spend';
 import { resolveFeatureModel } from '@/lib/model-defaults';
+import { domainErrorResponse } from '@/lib/route-helpers';
 
 /**
  * Convert a raw narration script into an ElevenLabs-ready format.
@@ -116,9 +117,10 @@ export async function POST(req: NextRequest) {
   try {
     await Promise.all(tasks);
   } catch (err) {
-    return NextResponse.json({
-      error: err instanceof Error ? err.message : 'Format failed',
-    }, { status: 502 });
+    return domainErrorResponse(err, {
+      op: 'script: elevenlabs-format',
+      fallbackMessage: 'Could not format script — please try again.',
+    });
   }
 
   return NextResponse.json({ formatted: out });

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isR2Configured, getNarrationUploadUrl, getNarrationDownloadUrl } from '@/lib/r2';
-import { logger } from '@/lib/logger';
+import { domainErrorResponse } from '@/lib/route-helpers';
 
 // Audio mime types we accept. Browsers report .m4a as 'audio/x-m4a' on some
 // platforms and 'audio/mp4' on others — both included.
@@ -61,10 +61,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     return NextResponse.json({ uploadUrl, downloadUrl, r2Key, r2Bucket: bucket }, { status: 201 });
   } catch (err) {
-    logger.error('voiceover-upload error', { detail: err instanceof Error ? err.message : String(err) });
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Failed to issue upload URL' },
-      { status: 500 },
-    );
+    return domainErrorResponse(err, {
+      op: 'projects: voiceover-upload presign',
+      fallbackMessage: 'Could not issue upload URL — please try again.',
+    });
   }
 }

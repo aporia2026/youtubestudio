@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
 import { fetchChannelVideos, listMyVideosOAuth } from '@/lib/youtube';
 import { getValidAccessToken, revokeOAuth } from '@/lib/google-oauth';
-import { apiRoute } from '@/lib/route-helpers';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 
 export const GET = apiRoute.authed(
   async (session, _req, ctx: { params: Promise<{ id: string }> }) => {
@@ -42,8 +42,11 @@ export const GET = apiRoute.authed(
       // Strip sensitive fields before sending to client
       const { api_credentials: _, ...safeChannel } = channel as Record<string, unknown>;
       return NextResponse.json({ channel: safeChannel, videos });
-    } catch (err: unknown) {
-      return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed' }, { status: 500 });
+    } catch (err) {
+      return domainErrorResponse(err, {
+        op: 'channels: get',
+        fallbackMessage: 'Could not load channel — please try again.',
+      });
     }
   },
 );
@@ -68,8 +71,11 @@ export const DELETE = apiRoute.authed(
          WHERE id = ${id} AND workspace_id = ${session.ws}::uuid
       `;
       return NextResponse.json({ success: true });
-    } catch (err: unknown) {
-      return NextResponse.json({ error: err instanceof Error ? err.message : 'Delete failed' }, { status: 500 });
+    } catch (err) {
+      return domainErrorResponse(err, {
+        op: 'channels: delete',
+        fallbackMessage: 'Could not delete channel — please try again.',
+      });
     }
   },
 );
