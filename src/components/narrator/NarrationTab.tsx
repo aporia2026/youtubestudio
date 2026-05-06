@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { AssignDialog } from './AssignDialog';
 import { AudioPlayer } from './AudioPlayer';
 import { TakeReview } from './TakeReview';
+import { downloadCrossOriginFile } from '@/lib/download-file';
 
 interface Assignment {
   id: string;
@@ -68,6 +69,14 @@ interface NarrationTabProps {
   scriptId: string;
   scriptText: string;
   scriptVersion: number;
+  /** Used as the prefix when the owner downloads narration audio. */
+  projectTitle?: string;
+}
+
+/** Sanitize a project title into a filename-safe base. */
+function safeFilenameBase(s: string | undefined): string {
+  const cleaned = (s || '').replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-').toLowerCase().slice(0, 60);
+  return cleaned || 'narration';
 }
 
 const STATUS_COLORS: Record<string, { bg: string; text: string }> = {
@@ -78,7 +87,12 @@ const STATUS_COLORS: Record<string, { bg: string; text: string }> = {
   retake: { bg: 'rgba(239,68,68,0.15)', text: '#ef4444' },
 };
 
-export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }: NarrationTabProps) {
+export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, projectTitle }: NarrationTabProps) {
+  const filenameBase = safeFilenameBase(projectTitle);
+  const handleDownload = (takeId: string, name: string) => {
+    downloadCrossOriginFile(`/api/narrator/takes/${takeId}/audio`, name)
+      .catch(e => toast.error(`Download failed: ${e instanceof Error ? e.message : 'unknown error'}`));
+  };
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
   const [loading, setLoading] = useState(true);
@@ -321,6 +335,19 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
             </div>
             <div className="flex items-center gap-2">
               <button
+                onClick={() => activeAssignment.full_audio_take_id && handleDownload(activeAssignment.full_audio_take_id, `${filenameBase}-full-narration`)}
+                className="text-[10px] px-2 py-0.5 rounded transition-colors cursor-pointer flex items-center gap-1"
+                style={{ color: '#a78bfa', background: 'rgba(124,58,237,0.1)', border: '1px solid rgba(124,58,237,0.3)' }}
+                title="Download full narration"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                Download
+              </button>
+              <button
                 onClick={() => setReviewingTakeId(reviewingTakeId === activeAssignment.full_audio_take_id ? null : (activeAssignment.full_audio_take_id || null))}
                 className="text-[10px] px-2 py-0.5 rounded transition-colors cursor-pointer flex items-center gap-1.5"
                 style={{
@@ -418,6 +445,18 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion }:
                               </button>
                             ))}
                           </div>
+                          <button
+                            onClick={() => handleDownload(take.id, `${filenameBase}-section-${section.section_number}-take-${take.take_number}`)}
+                            className="text-[10px] px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center"
+                            style={{ color: '#a78bfa', background: 'rgba(124,58,237,0.1)', border: '1px solid rgba(124,58,237,0.3)' }}
+                            title={`Download Take ${take.take_number}`}
+                          >
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                              <polyline points="7 10 12 15 17 10" />
+                              <line x1="12" y1="15" x2="12" y2="3" />
+                            </svg>
+                          </button>
                           <button
                             onClick={() => setReviewingTakeId(reviewing ? null : take.id)}
                             className="text-[10px] px-2 py-0.5 rounded transition-colors cursor-pointer flex items-center gap-1.5"

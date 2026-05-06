@@ -708,6 +708,7 @@ export default function ProjectDetailPage() {
           scriptId={activeScript?.id || ''}
           scriptText={activeScript?.content || ''}
           scriptVersion={activeScript?.version || 1}
+          projectTitle={project!.title}
         />
       )}
 
