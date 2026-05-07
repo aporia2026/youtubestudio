@@ -14,6 +14,8 @@ import { IMAGE_MODELS, DEFAULT_IMAGE_MODEL, getImageModelSpec } from '@/lib/imag
 import {
   saveProductionDocEntry,
   getProductionDocHistory,
+  getProductionDocHistoryCached,
+  getVoiceoverHistory,
   updateProductionDocEntry,
   deleteProductionDocEntry,
   clearProductionDocHistory,
@@ -553,7 +555,10 @@ function ProductionDocPage() {
   const [doc, setDoc] = useState<ProductionDoc | null>(null);
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
-  const [historyItems, setHistoryItems] = useState<ProductionDocHistoryEntry[]>(() => getProductionDocHistory());
+  // Initial state from localStorage cache so the panel paints instantly;
+  // useEffect below pulls the canonical list from the server (migration 0049).
+  const [historyItems, setHistoryItems] = useState<ProductionDocHistoryEntry[]>(() => getProductionDocHistoryCached());
+  useEffect(() => { getProductionDocHistory().then(setHistoryItems).catch(() => {}); }, []);
   // Track which history entry the current on-screen doc belongs to, so row-image
   // generations (fire-and-forget after the doc is saved) can patch back onto the
   // same entry instead of being lost.
@@ -650,7 +655,9 @@ function ProductionDocPage() {
       const imgMap: Record<number, string> = {};
       rowImages.forEach((r, i) => { if (r?.imageUrl) imgMap[i] = r.imageUrl; });
       if (Object.keys(imgMap).length > 0) {
-        updateProductionDocEntry(historyEntryId, { rowImages: imgMap });
+        // Fire-and-forget — the lib updates the localStorage cache
+        // synchronously, then PATCHes the server in the background.
+        updateProductionDocEntry(historyEntryId, { rowImages: imgMap }).catch(() => {});
       }
     }
   }, [doc, rowImages, historyEntryId]);
@@ -686,12 +693,14 @@ function ProductionDocPage() {
       const stored = JSON.parse(localStorage.getItem('video_brand_kit') || '{}') as Partial<BrandKit>;
       if (stored.primaryColor) setBrandKit(b => ({ ...b, ...stored }));
     } catch { /* ignore */ }
-    try {
-      const history = JSON.parse(localStorage.getItem('voiceover_history') || '[]') as Array<{ audioUrl?: string }>;
-      if (Array.isArray(history) && history.length > 0 && history[0]?.audioUrl) {
-        setVoiceoverUrl(history[0].audioUrl);
-      }
-    } catch { /* ignore */ }
+    // Pre-fill the voiceover URL from the user's most recent voiceover.
+    // Goes through the server-synced history (migration 0049) so a voiceover
+    // recorded on another device shows up here too.
+    getVoiceoverHistory()
+      .then((history) => {
+        if (history.length > 0 && history[0]?.audioUrl) setVoiceoverUrl(history[0].audioUrl);
+      })
+      .catch(() => { /* ignore — no prefill is fine */ });
   }, []);
 
   // Load prefill from generator / QA pages. Functional setters so a
@@ -1114,7 +1123,7 @@ function ProductionDocPage() {
       }
 
       setDoc(result);
-      const savedEntry = saveProductionDocEntry({
+      const savedEntry = await saveProductionDocEntry({
         title: result.title || topic || niche,
         niche: result.niche || niche,
         topic,
@@ -1127,7 +1136,8 @@ function ProductionDocPage() {
         script: script.trim() || undefined,
       });
       setHistoryEntryId(savedEntry.id);
-      setHistoryItems(getProductionDocHistory());
+      // Optimistic prepend — see voiceover/generator save handlers.
+      setHistoryItems((prev) => [savedEntry, ...prev.filter((p) => p.id !== savedEntry.id)]);
       appendLog(`✓ ${result.rows.length} shots generated`);
       toast.success(`Production doc ready — ${result.rows.length} shots`);
 
@@ -2263,8 +2273,14 @@ function ProductionDocPage() {
             toast.info('Older entry — only metadata was saved. Re-generate to produce the doc.');
           }
         }}
-        onDelete={(id) => { deleteProductionDocEntry(id); setHistoryItems(getProductionDocHistory()); }}
-        onClearAll={() => { clearProductionDocHistory(); setHistoryItems([]); }}
+        onDelete={(id) => {
+          setHistoryItems((prev) => prev.filter((e) => e.id !== id));
+          deleteProductionDocEntry(id).catch(() => {});
+        }}
+        onClearAll={() => {
+          setHistoryItems([]);
+          clearProductionDocHistory().catch(() => {});
+        }}
       />
 
       {styleManagerOpen && (

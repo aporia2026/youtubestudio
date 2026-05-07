@@ -12,7 +12,7 @@ import { ModelSelector } from '@/components/ui/ModelSelector';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { DraftsBanner } from '@/components/ui/DraftsBanner';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
-import { getSeoHistory, saveSeoEntry, deleteSeoEntry, clearSeoHistory, getRecentTopics, type SeoHistoryEntry } from '@/lib/history';
+import { getSeoHistory, getSeoHistoryCached, saveSeoEntry, deleteSeoEntry, clearSeoHistory, getRecentTopics, type SeoHistoryEntry } from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
 
@@ -89,7 +89,10 @@ function SeoPage() {
   const [result, setResult] = useState<SeoResult | null>(null);
   const [activeTab, setActiveTab] = useState<'titles' | 'description' | 'tags'>('titles');
   const [expandedTitle, setExpandedTitle] = useState<number | null>(null);
-  const [historyItems, setHistoryItems] = useState<SeoHistoryEntry[]>(() => getSeoHistory());
+  // Initial state from localStorage cache so the panel paints instantly;
+  // useEffect below pulls the canonical list from the server (migration 0049).
+  const [historyItems, setHistoryItems] = useState<SeoHistoryEntry[]>(() => getSeoHistoryCached());
+  useEffect(() => { getSeoHistory().then(setHistoryItems).catch(() => {}); }, []);
   const [draftId, setDraftId] = useState<string | null>(() => getActiveDraft()?.id || null);
   // Identity of the last result that was successfully pushed to the schedule
   // item via the banner button. Drives the dirty indicator.
@@ -207,7 +210,7 @@ function SeoPage() {
           },
         });
       }
-      saveSeoEntry({
+      const savedSeo = await saveSeoEntry({
         topic, niche, modelId,
         titlesCount: titles.length,
         bestTitle: bestTitle?.title || topic,
@@ -218,7 +221,8 @@ function SeoPage() {
         targetKeywords: targetKeywords.trim() || undefined,
         existingTitle: existingTitle.trim() || undefined,
       });
-      setHistoryItems(getSeoHistory());
+      // Optimistic prepend — see voiceover/generator save handlers.
+      setHistoryItems((prev) => [savedSeo, ...prev.filter((p) => p.id !== savedSeo.id)]);
       // Save draft
       const draft = saveDraft({
         id: draftId || undefined, title: topic, niche, step: 'seo',
@@ -802,8 +806,14 @@ function SeoPage() {
             toast.info('Older entry — only metadata was saved. Click Generate to re-run with these inputs.');
           }
         }}
-        onDelete={(id) => { deleteSeoEntry(id); setHistoryItems(getSeoHistory()); }}
-        onClearAll={() => { clearSeoHistory(); setHistoryItems([]); }}
+        onDelete={(id) => {
+          setHistoryItems((prev) => prev.filter((e) => e.id !== id));
+          deleteSeoEntry(id).catch(() => {});
+        }}
+        onClearAll={() => {
+          setHistoryItems([]);
+          clearSeoHistory().catch(() => {});
+        }}
       />
     </div>
     </ScheduleLinkProvider>

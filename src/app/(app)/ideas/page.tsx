@@ -11,7 +11,7 @@ import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId, getModelById } from '@/lib/ai-models';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { SeriesPicker } from '@/components/ui/SeriesPicker';
-import { getIdeasHistory, saveIdeas, deleteIdeasEntry, clearIdeasHistory, type IdeasHistoryEntry } from '@/lib/history';
+import { getIdeasHistory, getIdeasHistoryCached, saveIdeas, deleteIdeasEntry, clearIdeasHistory, type IdeasHistoryEntry } from '@/lib/history';
 
 // Collect every previously-generated title across all history entries —
 // passed as `existingTitles` so the LLM never repeats and the server can
@@ -188,8 +188,9 @@ function IdeasPage() {
   const [useReddit, setUseReddit] = useState(false);
   const [redditSubs, setRedditSubs] = useState('');
 
-  // History
-  const [ideasHistoryItems, setIdeasHistoryItems] = useState<IdeasHistoryEntry[]>(() => getIdeasHistory());
+  // History — instant paint from cache, then refresh from server (migration 0049).
+  const [ideasHistoryItems, setIdeasHistoryItems] = useState<IdeasHistoryEntry[]>(() => getIdeasHistoryCached());
+  useEffect(() => { getIdeasHistory().then(setIdeasHistoryItems).catch(() => {}); }, []);
 
   function restoreIdeas(id: string) {
     const entry = ideasHistoryItems.find(e => e.id === id);
@@ -224,13 +225,13 @@ function IdeasPage() {
   }
 
   function handleDeleteIdeas(id: string) {
-    deleteIdeasEntry(id);
-    setIdeasHistoryItems(getIdeasHistory());
+    setIdeasHistoryItems((prev) => prev.filter((e) => e.id !== id));
+    deleteIdeasEntry(id).catch(() => {});
   }
 
   function handleClearIdeas() {
-    clearIdeasHistory();
     setIdeasHistoryItems([]);
+    clearIdeasHistory().catch(() => {});
   }
 
   useEffect(() => {
@@ -457,7 +458,7 @@ function IdeasPage() {
       setIdeas(generatedIdeas);
       if (generatedIdeas.length > 0) {
         // Save history with the full input context so restore brings it all back.
-        saveIdeas({
+        const savedIdeasEntry = await saveIdeas({
           niche, focus, videoType, modelId, count, ideas: generatedIdeas,
           audience: audience || undefined,
           usedReddit: useReddit,
@@ -465,7 +466,8 @@ function IdeasPage() {
             url: r.url, title: r.title, channelTitle: r.channelTitle, viewCount: r.viewCount,
           })),
         });
-        setIdeasHistoryItems(getIdeasHistory());
+        // Optimistic prepend — see voiceover/generator save handlers.
+        setIdeasHistoryItems((prev) => [savedIdeasEntry, ...prev.filter((p) => p.id !== savedIdeasEntry.id)]);
         // Auto-persist all generated ideas to the database. If this generation is
         // linked to a series, tag the ideas with series_id + part_number so the
         // Script Generator can later pick up the right continuity context.

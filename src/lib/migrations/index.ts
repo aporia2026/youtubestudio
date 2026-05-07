@@ -47,6 +47,7 @@ import migration0045 from './0045_create_video_breakout_fires';
 import migration0046 from './0046_create_insight_digests';
 import migration0047 from './0047_create_saved_catalog_views';
 import migration0048 from './0048_drop_redundant_history_index';
+import migration0049 from './0049_create_user_history';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -102,6 +103,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0046,
   migration0047,
   migration0048,
+  migration0049,
 ]);
 
 /**

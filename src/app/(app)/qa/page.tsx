@@ -17,7 +17,7 @@ import { ScoreRing } from '@/components/ui/ScoreRing';
 import { saveDraft, getActiveDraft } from '@/lib/drafts';
 import { EMPTY_CONSTRAINTS, hasAnyConstraint, type ScriptConstraints } from '@/lib/script-options';
 import { countWords, scoreLabel } from '@/lib/utils';
-import { saveQAEntry, getQAHistory, deleteQAEntry, clearQAHistory, getRecentNiches, type QAHistoryEntry } from '@/lib/history';
+import { saveQAEntry, getQAHistory, getQAHistoryCached, deleteQAEntry, clearQAHistory, getRecentNiches, type QAHistoryEntry } from '@/lib/history';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { TemplateContextPicker } from '@/components/ui/TemplateContextPicker';
@@ -123,7 +123,10 @@ function QAPage() {
   const [applyingFixes, setApplyingFixes] = useState(false);
   const [fixedScript, setFixedScript] = useState('');
   const fixedScriptRef = useRef<HTMLDivElement>(null);
-  const [qaHistory, setQaHistory] = useState<QAHistoryEntry[]>(() => getQAHistory());
+  // Initial state from localStorage cache so the panel paints instantly;
+  // useEffect below pulls the canonical list from the server (migration 0049).
+  const [qaHistory, setQaHistory] = useState<QAHistoryEntry[]>(() => getQAHistoryCached());
+  useEffect(() => { getQAHistory().then(setQaHistory).catch(() => {}); }, []);
   const [nicheHints, setNicheHints] = useState<string[]>([]);
   // Linked project + script (set when "Save as Project" is used, or carried from an active draft).
   // When present, QA sessions and fixed-script revisions are persisted to the projects/scripts/qa_sessions tables.
@@ -622,7 +625,7 @@ function QAPage() {
       // (Next-Steps CTA, score rings, tabs, EL buttons all reappear).
       // Entries written before this field existed will only have scriptPreview and
       // restore via a metadata-only fallback with an informational toast.
-      saveQAEntry({
+      const savedQA = await saveQAEntry({
         niche,
         aggressiveness,
         modelId,
@@ -633,7 +636,8 @@ function QAPage() {
         script,
         results: newResults,
       });
-      setQaHistory(getQAHistory());
+      // Optimistic prepend — see voiceover/generator save handlers.
+      setQaHistory((prev) => [savedQA, ...prev.filter((p) => p.id !== savedQA.id)]);
       // Auto-save draft
       const activeDraft = getActiveDraft();
       if (activeDraft) {
@@ -1764,12 +1768,12 @@ function QAPage() {
           }
         }}
         onDelete={id => {
-          deleteQAEntry(id);
-          setQaHistory(getQAHistory());
+          setQaHistory((prev) => prev.filter((e) => e.id !== id));
+          deleteQAEntry(id).catch(() => {});
         }}
         onClearAll={() => {
-          clearQAHistory();
           setQaHistory([]);
+          clearQAHistory().catch(() => {});
         }}
       />
     </div>

@@ -176,7 +176,8 @@ export function ScriptVoiceoverPanel({ script, tone, style, targetDuration, proj
       }
       const data = await res.json();
       setAudioUrl(data.url);
-      // Auto-save to history
+      // Auto-save to history (server-synced via migration 0049).
+      // Fire-and-forget — UI doesn't block on the persistence write.
       saveVoiceover({
         voiceName: selectedVoiceData?.name || 'Unknown',
         voiceId: selectedVoice,
@@ -185,7 +186,7 @@ export function ScriptVoiceoverPanel({ script, tone, style, targetDuration, proj
         charCount: cleanedScript.length,
         audioUrl: data.url,
         tone, style,
-      });
+      }).catch(() => {});
       toast.success('Voiceover generated!');
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Voiceover generation failed');

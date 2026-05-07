@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
+import { wipeHistoryCaches } from '@/lib/history';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -25,6 +26,10 @@ export default function LoginPage() {
       });
 
       if (res.ok) {
+        // Wipe any cached history left behind by a previous user on
+        // this browser so the new session starts with a clean slate.
+        // Defense-in-depth alongside the per-cache scope envelope.
+        wipeHistoryCaches();
         router.push('/');
         router.refresh();
       } else {

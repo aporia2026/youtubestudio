@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { wipeHistoryCaches } from '@/lib/history';
 
 /**
  * POST /api/auth/logout, then push to /login. The route already clears the
@@ -24,6 +25,11 @@ export function LogoutButton({
   async function onClick() {
     if (busy) return;
     setBusy(true);
+    // Wipe history caches BEFORE the logout fetch so even a fast
+    // navigation can't leak the previous user's cached entries to
+    // the next person on this browser. Defense-in-depth alongside
+    // the per-cache scope envelope.
+    wipeHistoryCaches();
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
     } catch {

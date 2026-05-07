@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { productionDocToVideoConfig, msToFrame, ProductionDoc, RowImageState } from '@/remotion/utils';
 import type { BrandKit, VideoConfig, VideoShot, SceneType } from '@/remotion/types';
 import { DEFAULT_BRAND_KIT } from '@/remotion/types';
+import { getVoiceoverHistory } from '@/lib/history';
 
 const VideoPlayer = dynamic(
   () => import('@/components/video/VideoPlayer').then(m => m.VideoPlayer),
@@ -181,10 +182,14 @@ export default function VideoStudioPage() {
         }
       }
     } catch { /* ignore */ }
-    try {
-      const history = JSON.parse(localStorage.getItem('voiceover_history') || '[]') as Array<{ audioUrl?: string }>;
-      if (Array.isArray(history) && history[0]?.audioUrl) setVoiceoverUrl(history[0].audioUrl);
-    } catch { /* ignore */ }
+    // Pre-fill the voiceover URL from the user's most recent voiceover.
+    // Server-synced history (migration 0049) so a recording made on another
+    // device shows up here too.
+    getVoiceoverHistory()
+      .then((history) => {
+        if (history.length > 0 && history[0]?.audioUrl) setVoiceoverUrl(history[0].audioUrl);
+      })
+      .catch(() => { /* ignore — no prefill is fine */ });
     try {
       const stored = JSON.parse(localStorage.getItem('video_brand_kit') || '{}') as Partial<BrandKit>;
       if (stored.primaryColor) setBrandKit(b => ({ ...b, ...stored }));

@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
-import { getRecentNiches } from '@/lib/history';
+import { getRecentNiches, primeHistoryCaches } from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 
 interface Candidate {
@@ -307,7 +307,15 @@ export default function ChannelNamingPage() {
     } catch { /* ignore */ }
   }, []);
   useEffect(() => { fetchSaved(); }, [fetchSaved]);
-  useEffect(() => { setNicheHints(getRecentNiches()); }, []);
+  // Prime the localStorage history caches on a fresh device so the
+  // niche autocomplete has suggestions even when the user hasn't
+  // opened any of the seven generator panels yet on this PC.
+  // primeHistoryCaches() resolves when all seven kinds have been
+  // fetched; we then re-read the aggregated niche list.
+  useEffect(() => {
+    setNicheHints(getRecentNiches());
+    primeHistoryCaches().then(() => setNicheHints(getRecentNiches())).catch(() => {});
+  }, []);
 
   async function saveCandidate(c: Candidate) {
     setSavingHandle(c.handle);

@@ -12,7 +12,7 @@ import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { DraftsBanner } from '@/components/ui/DraftsBanner';
-import { getThumbnailHistory, saveThumbnailEntry, updateThumbnailEntry, deleteThumbnailEntry, clearThumbnailHistory, type ThumbnailHistoryEntry } from '@/lib/history';
+import { getThumbnailHistory, getThumbnailHistoryCached, saveThumbnailEntry, updateThumbnailEntry, deleteThumbnailEntry, clearThumbnailHistory, type ThumbnailHistoryEntry } from '@/lib/history';
 import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
 
 interface TextOverlaySettings {
@@ -143,7 +143,10 @@ function ThumbnailsPage() {
   const [showScript, setShowScript] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [result, setResult] = useState<GenerateResult | null>(null);
-  const [historyItems, setHistoryItems] = useState<ThumbnailHistoryEntry[]>(() => getThumbnailHistory());
+  // Initial state from localStorage cache so the panel paints instantly;
+  // useEffect below pulls the canonical list from the server (migration 0049).
+  const [historyItems, setHistoryItems] = useState<ThumbnailHistoryEntry[]>(() => getThumbnailHistoryCached());
+  useEffect(() => { getThumbnailHistory().then(setHistoryItems).catch(() => {}); }, []);
   const [draftId, setDraftId] = useState<string | null>(() => getActiveDraft()?.id || null);
   // Track which history entry the current on-screen concepts belong to, so image
   // generations (which happen after the concept-save) can be patched back onto
@@ -280,7 +283,7 @@ function ThumbnailsPage() {
       // Save history with the full result so clicking an entry later brings back
       // the concept cards, CTR rings, and all the score breakdowns — not just
       // the title/best-concept metadata.
-      const savedEntry = saveThumbnailEntry({
+      const savedEntry = await saveThumbnailEntry({
         title, niche, modelId,
         conceptsCount: concepts.length,
         bestConceptName: best?.concept_name || 'Untitled',
@@ -291,7 +294,8 @@ function ThumbnailsPage() {
         imageModel,
       });
       setHistoryEntryId(savedEntry.id);
-      setHistoryItems(getThumbnailHistory());
+      // Optimistic prepend — see voiceover/generator save handlers.
+      setHistoryItems((prev) => [savedEntry, ...prev.filter((p) => p.id !== savedEntry.id)]);
       const draft = saveDraft({
         id: draftId || undefined, title, niche, step: 'thumbnails',
         topic: title, modelId, thumbnailConcept: best?.concept_name,
@@ -391,9 +395,11 @@ function ThumbnailsPage() {
       setGeneratedImages(prev => {
         const next = { ...prev, [idx]: data.imageUrl };
         // Patch the image URL back onto the history entry so it's there on restore.
+        // Fire-and-forget: updateThumbnailEntry mutates the localStorage cache
+        // synchronously, then PATCHes the server in the background.
         if (historyEntryId) {
-          updateThumbnailEntry(historyEntryId, { generatedImages: next });
-          setHistoryItems(getThumbnailHistory());
+          updateThumbnailEntry(historyEntryId, { generatedImages: next }).catch(() => {});
+          setHistoryItems(getThumbnailHistoryCached());
         }
         return next;
       });
@@ -993,8 +999,14 @@ function ThumbnailsPage() {
             toast.info('Older entry — only metadata was saved. Click Generate to produce the concepts again.');
           }
         }}
-        onDelete={(id) => { deleteThumbnailEntry(id); setHistoryItems(getThumbnailHistory()); }}
-        onClearAll={() => { clearThumbnailHistory(); setHistoryItems([]); }}
+        onDelete={(id) => {
+          setHistoryItems((prev) => prev.filter((e) => e.id !== id));
+          deleteThumbnailEntry(id).catch(() => {});
+        }}
+        onClearAll={() => {
+          setHistoryItems([]);
+          clearThumbnailHistory().catch(() => {});
+        }}
       />
     </div>
     </ScheduleLinkProvider>

@@ -24,7 +24,7 @@ import { TemplateContextPicker, buildCombinedContext } from '@/components/ui/Tem
 import { ReferenceLibraryPicker, type PickedReference } from '@/components/ui/ReferenceLibraryPicker';
 import { fetchPriorParts, formatPriorPartsForPrompt, saveSeriesPart } from '@/lib/series';
 import { EMPTY_CONSTRAINTS, type ScriptConstraints } from '@/lib/script-options';
-import { getScriptHistory, saveScript as saveScriptToHistory, deleteScriptEntry, clearScriptHistory, getRecentTopics, type ScriptHistoryEntry } from '@/lib/history';
+import { getScriptHistory, getScriptHistoryCached, saveScript as saveScriptToHistory, deleteScriptEntry, clearScriptHistory, getRecentTopics, type ScriptHistoryEntry } from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
 import { createStreamThrottle } from '@/lib/stream-throttle';
@@ -137,7 +137,10 @@ function GeneratorPage() {
   const [showRefs, setShowRefs] = useState(false);
 
   // History & drafts
-  const [historyItems, setHistoryItems] = useState<ScriptHistoryEntry[]>(() => getScriptHistory());
+  // Initial state from localStorage cache so the panel paints instantly;
+  // useEffect below pulls the canonical list from the server (migration 0049).
+  const [historyItems, setHistoryItems] = useState<ScriptHistoryEntry[]>(() => getScriptHistoryCached());
+  useEffect(() => { getScriptHistory().then(setHistoryItems).catch(() => {}); }, []);
   const [draftId, setDraftId] = useState<string | null>(() => getActiveDraft()?.id || null);
 
   // Series linkage (optional). If set, generate() fetches prior parts as
@@ -258,7 +261,8 @@ function GeneratorPage() {
         throttle.flush(); // guarantee final value reaches state even on early exit
       }
       // Save the refined version as a new history entry so both versions are recoverable.
-      saveScriptToHistory({
+      // Await so the subsequent getScriptHistory() reflects the new row instead of racing it.
+      await saveScriptToHistory({
         topic, niche, tone, style, duration, modelId,
         script: refined, wordCount: countWords(refined),
         audience: audience || undefined,
@@ -271,8 +275,14 @@ function GeneratorPage() {
         seriesId: seriesId || undefined,
         seriesTitle: seriesTitle || undefined,
         partNumber: seriesId ? partNumber : undefined,
-      });
-      setHistoryItems(getScriptHistory());
+      }).then((saved) => {
+        // Prepend the canonical server row to state. A blind
+        // getScriptHistory() refetch here can miss the new row if it
+        // lands on a read replica before the INSERT has propagated;
+        // using the returned row sidesteps that. The next page load
+        // / mount-effect will reconcile any cap-trim.
+        setHistoryItems((prev) => [saved, ...prev.filter((p) => p.id !== saved.id)]);
+      }).catch(() => {});
       // Update draft too — the current script is now the refined one.
       const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: refined, wordCount: countWords(refined), constraints, seriesId: seriesId || undefined, seriesTitle: seriesTitle || undefined, partNumber: seriesId ? partNumber : undefined });
       setDraftId(draft.id);
@@ -352,13 +362,16 @@ function GeneratorPage() {
   }
 
   function handleDeleteScript(id: string) {
-    deleteScriptEntry(id);
-    setHistoryItems(getScriptHistory());
+    // Fire-and-forget: the cache is updated synchronously inside
+    // deleteScriptEntry, so the next refetch reflects the deletion
+    // immediately. Optimistic UI update for snappiness.
+    setHistoryItems((prev) => prev.filter((e) => e.id !== id));
+    deleteScriptEntry(id).catch(() => {});
   }
 
   function handleClearScripts() {
-    clearScriptHistory();
     setHistoryItems([]);
+    clearScriptHistory().catch(() => {});
   }
 
   async function addReference() {
@@ -507,8 +520,9 @@ function GeneratorPage() {
 
     // Previously-generated scripts from history — fed to both endpoints so
     // the LLM doesn't repeat hooks/angles it has used for this user before.
-    // Cap at ~6 recent entries to keep the prompt compact.
-    const previousScripts = getScriptHistory().slice(0, 6).map(e => e.script).filter(Boolean);
+    // Cap at ~6 recent entries to keep the prompt compact. Read from cache
+    // (sync, no network round-trip) — the page-mount fetch keeps this fresh.
+    const previousScripts = getScriptHistoryCached().slice(0, 6).map(e => e.script).filter(Boolean);
 
     // Resolve the picked style template (if any) and merge with the freeform
     // "extra context" textarea. The merged string takes the place of the old
@@ -622,7 +636,7 @@ function GeneratorPage() {
         });
         setShowSave(true);
         const finalScript = data.script ?? '';
-        saveScriptToHistory({
+        const savedQA = await saveScriptToHistory({
           topic, niche, tone, style, duration, modelId,
           script: finalScript, wordCount: countWords(finalScript),
           audience: audience || undefined,
@@ -636,7 +650,8 @@ function GeneratorPage() {
           seriesTitle: seriesTitle || undefined,
           partNumber: seriesId ? partNumber : undefined,
         });
-        setHistoryItems(getScriptHistory());
+        // Optimistic prepend — see comment on the refine-save above.
+        setHistoryItems((prev) => [savedQA, ...prev.filter((p) => p.id !== savedQA.id)]);
         const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: finalScript, wordCount: countWords(finalScript), constraints, seriesId: seriesId || undefined, seriesTitle: seriesTitle || undefined, partNumber: seriesId ? partNumber : undefined });
         setDraftId(draft.id);
         // If this is a series part, persist it to the series so cross-device Part N+1 can pull it.
@@ -738,7 +753,7 @@ function GeneratorPage() {
       setShowSave(true);
       // Auto-save to history — include audience/context/refs/constraints/series
       // so restoring brings back the full input context, not just the output.
-      saveScriptToHistory({
+      const savedAuto = await saveScriptToHistory({
         topic, niche, tone, style, duration, modelId,
         script: full, wordCount: countWords(full),
         audience: audience || undefined,
@@ -752,7 +767,8 @@ function GeneratorPage() {
         seriesTitle: seriesTitle || undefined,
         partNumber: seriesId ? partNumber : undefined,
       });
-      setHistoryItems(getScriptHistory());
+      // Optimistic prepend — see comment on the refine-save above.
+      setHistoryItems((prev) => [savedAuto, ...prev.filter((p) => p.id !== savedAuto.id)]);
       // Auto-save draft
       const draft = saveDraft({ id: draftId || undefined, title: topic, niche, step: 'script', topic, tone, style, duration, modelId, script: full, wordCount: countWords(full), constraints, seriesId: seriesId || undefined, seriesTitle: seriesTitle || undefined, partNumber: seriesId ? partNumber : undefined });
       setDraftId(draft.id);

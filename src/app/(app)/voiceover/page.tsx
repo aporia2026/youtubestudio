@@ -14,7 +14,7 @@ import { cleanScriptForVoiceover } from '@/lib/voiceover-presets';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
 import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
-import { getVoiceoverHistory, saveVoiceover, deleteVoiceoverEntry, type VoiceoverHistoryEntry } from '@/lib/history';
+import { getVoiceoverHistory, getVoiceoverHistoryCached, saveVoiceover, deleteVoiceoverEntry, clearVoiceoverHistory, type VoiceoverHistoryEntry } from '@/lib/history';
 import { saveDraft, getActiveDraft } from '@/lib/drafts';
 
 interface ElevenVoice {
@@ -66,8 +66,9 @@ function VoiceoverStudio() {
   const audioRef = useRef<HTMLAudioElement>(null);
   const previewRef = useRef<HTMLAudioElement>(null);
 
-  // History
-  const [voHistoryItems, setVoHistoryItems] = useState<VoiceoverHistoryEntry[]>(() => getVoiceoverHistory());
+  // History — instant paint from cache, then refresh from server (migration 0049).
+  const [voHistoryItems, setVoHistoryItems] = useState<VoiceoverHistoryEntry[]>(() => getVoiceoverHistoryCached());
+  useEffect(() => { getVoiceoverHistory().then(setVoHistoryItems).catch(() => {}); }, []);
 
   function restoreVoiceover(id: string) {
     const entry = voHistoryItems.find(e => e.id === id);
@@ -193,7 +194,7 @@ function VoiceoverStudio() {
       // Save to history with the full text + settings so clicking a past entry
       // rehydrates everything (text, voice, sliders, model) — not just audio+preview.
       const voiceName = voices.find(v => v.voice_id === selectedVoice)?.name || 'Unknown';
-      saveVoiceover({
+      const savedVo = await saveVoiceover({
         voiceName,
         voiceId: selectedVoice,
         modelId: settings.model_id,
@@ -205,7 +206,10 @@ function VoiceoverStudio() {
         text,
         settings: { ...settings },
       });
-      setVoHistoryItems(getVoiceoverHistory());
+      // Optimistic prepend instead of refetching — a blind GET here
+      // can hit a read replica before the INSERT propagates and
+      // miss the new row.
+      setVoHistoryItems((prev) => [savedVo, ...prev.filter((p) => p.id !== savedVo.id)]);
       // Save draft so leaving the page doesn't lose the voiceover.
       try {
         const active = getActiveDraft();
@@ -630,8 +634,14 @@ function VoiceoverStudio() {
           preview: e.textPreview,
         }))}
         onRestore={restoreVoiceover}
-        onDelete={(id) => { deleteVoiceoverEntry(id); setVoHistoryItems(getVoiceoverHistory()); }}
-        onClearAll={() => { localStorage.removeItem('voiceover_history'); setVoHistoryItems([]); }}
+        onDelete={(id) => {
+          setVoHistoryItems((prev) => prev.filter((e) => e.id !== id));
+          deleteVoiceoverEntry(id).catch(() => {});
+        }}
+        onClearAll={() => {
+          setVoHistoryItems([]);
+          clearVoiceoverHistory().catch(() => {});
+        }}
       />
     </div>
     </ScheduleLinkProvider>
