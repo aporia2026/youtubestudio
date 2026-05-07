@@ -64,23 +64,26 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     // Mirror stitch flow: publish the approved audio as a project voiceover
     // so the Voiceover tab + render pipeline see it without a manual step.
     // De-dupe by metadata.assignment_id so re-approving doesn't multiply rows.
-    // r2_bucket / r2_key are NOT included in the column list — those are
-    // editor-side additions (added in ensureEditorSchema) that may not exist
-    // on every DB; the values still travel through metadata for traceability.
+    // Populate r2_bucket / r2_key so the owner + editor read paths can
+    // re-presign on the narration bucket — without these the stored URL is
+    // a 7-day presign that 404s for editors after expiry.
     // Wrapped in try/catch so a media_asset hiccup doesn't block the
     // user-facing approve+notify flow — that's the core promise.
     const projectTitle = await sql`SELECT title FROM projects WHERE id = ${assignment.project_id} LIMIT 1`
       .then(r => (r.rows[0]?.title as string | undefined) || 'Untitled');
     const assetName = `Narration — ${assignment.narrator_name || 'Narrator'}`;
+    const narrationBucket = process.env.R2_NARRATION_BUCKET_NAME || 'narration';
     try {
       // workspace_id is NOT NULL on media_assets since migration 0013 — pull
       // it from the parent project (FROM projects p) to satisfy the
       // constraint while keeping the existing dedupe NOT EXISTS guard.
       await sql`
-        INSERT INTO media_assets (project_id, type, source, name, url, blob_pathname, size_bytes, duration_seconds, metadata, workspace_id)
+        INSERT INTO media_assets (project_id, type, source, name, url, blob_pathname, r2_bucket, r2_key, size_bytes, duration_seconds, metadata, workspace_id)
         SELECT
           ${assignment.project_id}::uuid, 'voiceover', 'upload', ${assetName},
-          ${assignment.full_audio_url}, NULL, NULL,
+          ${assignment.full_audio_url}, NULL,
+          ${narrationBucket}, ${assignment.full_audio_r2_key},
+          NULL,
           ${assignment.full_audio_duration_seconds},
           ${JSON.stringify({
             narrator_id: assignment.narrator_id,

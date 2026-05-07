@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getEditorByPersonalToken } from '@/lib/team-db';
 import { bumpEditorAssignmentAccess, getEditorAssignment } from '@/lib/editor-db';
-import { getImagesDownloadUrl } from '@/lib/r2';
-import { getDownloadPresignedUrl } from '@/lib/r2';
+import { getImagesDownloadUrl, getNarrationDownloadUrl, getDownloadPresignedUrl } from '@/lib/r2';
 import { logger } from '@/lib/logger';
 
 interface MediaRow {
@@ -55,14 +54,32 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
       ORDER BY created_at DESC
     `;
 
-    // Refresh presigned URLs on R2-backed assets. Decide which bucket-aware
-    // presigner to use based on the stored r2_bucket — images vs videos.
+    // Refresh presigned URLs on R2-backed assets. Three buckets in play —
+    // images, narration, review/videos — pick the matching presigner based
+    // on the stored r2_bucket.
+    //
+    // Narrator-approved voiceovers from earlier builds were inserted with
+    // r2_key/r2_bucket left NULL on the column and the values tucked into
+    // metadata. Fall back to those so existing rows heal themselves on read
+    // instead of serving an expired presign that 404s for the editor.
     const imagesBucket = process.env.R2_IMAGES_BUCKET_NAME || 'images';
+    const narrationBucket = process.env.R2_NARRATION_BUCKET_NAME || 'narration';
     const refreshed = await Promise.all((mediaRows as MediaRow[]).map(async (r) => {
-      if (!r.r2_key) return r;
+      const meta = r.metadata || {};
+      const r2Key = r.r2_key || (typeof meta.r2_key === 'string' ? meta.r2_key as string : null);
+      // Narrator full-narration rows are tagged in metadata; treat them as
+      // narration-bucket even if the bucket column wasn't populated.
+      const r2Bucket = r.r2_bucket || (meta.full_narration === true ? narrationBucket : null);
+      if (!r2Key) return r;
       try {
-        const isImages = r.r2_bucket === imagesBucket;
-        const url = isImages ? await getImagesDownloadUrl(r.r2_key) : await getDownloadPresignedUrl(r.r2_key);
+        let url: string;
+        if (r2Bucket === imagesBucket) {
+          url = await getImagesDownloadUrl(r2Key);
+        } else if (r2Bucket === narrationBucket) {
+          url = await getNarrationDownloadUrl(r2Key);
+        } else {
+          url = await getDownloadPresignedUrl(r2Key);
+        }
         return { ...r, url };
       } catch { return r; }
     }));
