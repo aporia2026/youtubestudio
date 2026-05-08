@@ -42,10 +42,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
     const { rows: projectRows } = await sql`SELECT title FROM projects WHERE id = ${projectId} LIMIT 1`;
     const projectTitle = projectRows[0]?.title || 'Project';
 
-    // Ensure a review_project exists for this assignment
+    // Ensure a review_project exists for this assignment. workspace_id is
+    // NOT NULL on review_projects since migration 0013 — copy it from the
+    // assignment so the new project lands in the same tenant.
     let reviewProjectId: string | undefined = (assignment.review_project_id as string | null) ?? undefined;
     if (!reviewProjectId) {
-      const reviewProject = await createReviewProject(projectTitle, note || `Video edits by ${editor.name}`);
+      const reviewProject = await createReviewProject(
+        projectTitle,
+        note || `Video edits by ${editor.name}`,
+        assignment.workspace_id as string,
+      );
       reviewProjectId = reviewProject.id as string;
       await updateEditorAssignment(assignment.id, { review_project_id: reviewProjectId, status: 'submitted' });
     } else if (assignment.status === 'editing' || assignment.status === 'assigned') {

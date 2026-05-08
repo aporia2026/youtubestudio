@@ -33,7 +33,13 @@ export function isR2Configured(): boolean {
 export async function getUploadUrlForBucket(bucket: string, key: string, contentType: string): Promise<string> {
   const client = getR2Client();
   const command = new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType });
-  return getSignedUrl(client, command, { expiresIn: 3600 });
+  // 4 hours. Browsers compress + PUT large videos sequentially, and on
+  // home-grade upload bandwidth a 4 GB compressed render can take 1-2h to
+  // finish a single PUT. The previous 1h TTL silently 403'd mid-upload —
+  // the XHR surfaced it as a generic network error after a long delay,
+  // looking like a hang. 4h covers the realistic worst case; anything past
+  // that is a connection problem we can't paper over with TTL.
+  return getSignedUrl(client, command, { expiresIn: 4 * 60 * 60 });
 }
 
 export async function getDownloadUrlForBucket(bucket: string, key: string, publicBaseUrl?: string): Promise<string> {

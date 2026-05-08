@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
+import { uploadReviewVideo, UploadError, type UploadProgress } from '@/lib/upload-video-client';
 
 interface Collaborator {
   id: string;
@@ -49,6 +50,18 @@ interface ProductionDocAsset {
   size_bytes?: number | null;
   metadata?: Record<string, unknown> | null;
   created_at: string;
+}
+
+interface EditorUploadVersion {
+  id: string;
+  version_number: number;
+  thumbnail_url: string | null;
+  duration_ms: number | null;
+  uploaded_by: string | null;
+  file_size: number | null;
+  created_at: string;
+  review_project_id: string;
+  unresolved_comment_count: number;
 }
 
 const PROD_DOC_ACCEPT = '.pdf,.docx,.doc,.xlsx,.xls,.csv,.txt,.json,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain,application/json';
@@ -111,18 +124,30 @@ export function EditorTab({ projectId }: Props) {
   const refInputRef = useRef<HTMLInputElement>(null);
   const thumbInputRef = useRef<HTMLInputElement>(null);
 
+  // Editor-video upload state — owner uploads a finished video the editor
+  // sent through Upwork. Goes through the same review_versions / comments
+  // pipeline the editor's own dashboard upload does.
+  const [editorUploads, setEditorUploads] = useState<EditorUploadVersion[]>([]);
+  const [editorReviewProjectId, setEditorReviewProjectId] = useState<string | null>(null);
+  const [editorUploadingForId, setEditorUploadingForId] = useState<string | null>(null);
+  const [editorUploadProgress, setEditorUploadProgress] = useState<UploadProgress | null>(null);
+  const [editorUploadNote, setEditorUploadNote] = useState('');
+  const [editorEnableCompression, setEditorEnableCompression] = useState(true);
+  const [editorUploadController, setEditorUploadController] = useState<AbortController | null>(null);
+
   useEffect(() => { load(); }, [projectId]);
 
   async function load() {
     setLoading(true);
     try {
-      const [a, c, refs, thumbs, mediaRes] = await Promise.all([
+      const [a, c, refs, thumbs, mediaRes, uploadsRes] = await Promise.all([
         fetch(`/api/projects/${projectId}/editors`).then(r => r.ok ? r.json() : []),
         fetch(`/api/team/collaborators?role=editor`).then(r => r.ok ? r.json() : []),
         fetch(`/api/projects/${projectId}/image-refs`).then(r => r.ok ? r.json() : []),
         fetch(`/api/projects/${projectId}/thumbnails`).then(r => r.ok ? r.json() : []),
         // Production-doc attachments live on the unified media table.
         fetch(`/api/projects/${projectId}/media`).then(r => r.ok ? r.json() : { assets: [] }),
+        fetch(`/api/projects/${projectId}/editor-uploads`).then(r => r.ok ? r.json() : { versions: [], reviewProjectId: null }),
       ]);
       // production-doc attachments are stored as type='document' +
       // metadata.kind='production_doc' (the type column has a fixed CHECK
@@ -135,6 +160,8 @@ export function EditorTab({ projectId }: Props) {
       setEditors(c);
       setImageRefs(refs);
       setThumbnails(thumbs);
+      setEditorUploads((uploadsRes?.versions ?? []) as EditorUploadVersion[]);
+      setEditorReviewProjectId((uploadsRes?.reviewProjectId as string | null) ?? null);
     } catch {} finally { setLoading(false); }
   }
 
@@ -390,6 +417,114 @@ export function EditorTab({ projectId }: Props) {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to detach');
     }
+  }
+
+  // ── Editor-video upload (owner side) ──────────────────────────────────────
+  // Owner downloads a video from Upwork (or wherever the editor sent it),
+  // drops it here, and the file flows through the same compress → presign
+  // → R2 PUT → metadata-confirm pipeline the editor's own dashboard uses.
+  // Lands as a new review_version on the editor's assignment so it shows
+  // up in their dashboard automatically and the owner can leave timestamped
+  // comments through the existing /reviews/[id] surface.
+
+  function startEditorUpload(file: File) {
+    // Mirror the server-side filter in /api/projects/[id]/editor-uploads:
+    // only non-completed assignments are eligible. A completed assignment
+    // shouldn't accept new versions silently.
+    const eligible = assignments.filter(a => a.status !== 'completed');
+    if (eligible.length === 0) {
+      toast.error('Assign an editor to this project before uploading their video.');
+      return;
+    }
+    if (eligible.length > 1) {
+      toast.error('This project has multiple active editors. Multi-editor support coming soon — for now, complete or revoke the unused assignments.');
+      return;
+    }
+    runEditorUpload(file, eligible[0].id);
+  }
+
+  async function runEditorUpload(file: File, assignmentId: string) {
+    if (!file.type.startsWith('video/')) {
+      toast.error('Please choose a video file');
+      return;
+    }
+    const controller = new AbortController();
+    setEditorUploadController(controller);
+    setEditorUploadingForId(assignmentId);
+    setEditorUploadProgress({
+      phase: 'compressing',
+      compressFraction: 0,
+      uploadPercent: 0,
+      compressionSavedPct: null,
+    });
+
+    try {
+      await uploadReviewVideo({
+        file,
+        enableCompression: editorEnableCompression,
+        signal: controller.signal,
+        onProgress: state => setEditorUploadProgress(state),
+        uploadThumbnail: async blob => {
+          // Same /api/upload contract the editor's dashboard uses for thumbnails.
+          try {
+            const fd = new FormData();
+            fd.append('file', blob, 'thumbnail.jpg');
+            fd.append('type', 'image');
+            const r = await fetch('/api/upload', { method: 'POST', body: fd });
+            if (!r.ok) return null;
+            return (await r.json()).url ?? null;
+          } catch {
+            return null;
+          }
+        },
+        reservePresignedUrl: async input => {
+          const note = editorUploadNote.trim();
+          const res = await fetch(`/api/projects/${projectId}/editor-uploads`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fileName: input.fileName,
+              contentType: input.contentType,
+              fileSize: input.fileSize,
+              editorAssignmentId: assignmentId,
+              note: note || undefined,
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || `Server returned ${res.status}`);
+          }
+          const body = await res.json();
+          return { uploadUrl: body.uploadUrl, versionId: body.versionId };
+        },
+        confirmMetadata: async input => {
+          await fetch(`/api/projects/${projectId}/editor-uploads`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(input),
+          });
+        },
+      });
+      toast.success('Video uploaded — editor sees it on their dashboard');
+      setEditorUploadNote('');
+      await load();
+    } catch (err) {
+      if (err instanceof UploadError && err.code === 'ABORTED') {
+        // Cancel is intentional — quiet toast, no error styling.
+        toast('Upload cancelled');
+      } else {
+        const msg = err instanceof Error ? err.message : 'Upload failed';
+        toast.error(`Upload failed: ${msg}`);
+      }
+    } finally {
+      setEditorUploadingForId(null);
+      setEditorUploadProgress(null);
+      setEditorUploadController(null);
+    }
+  }
+
+  function cancelEditorUpload() {
+    editorUploadController?.abort();
   }
 
   if (loading) {
@@ -703,6 +838,207 @@ export function EditorTab({ projectId }: Props) {
               );
             })}
           </div>
+        )}
+      </div>
+
+      {/* Editor's finished video — owner uploads a video they received from
+          the editor (e.g. via Upwork) so it shows up on the editor's
+          dashboard and the owner can leave timestamped comments through
+          /reviews/[id] just like an editor-direct upload. Same compress →
+          presign → R2 PUT → confirm pipeline as the editor's own dashboard
+          (shared via @/lib/upload-video-client) so cancel + timeouts +
+          stall detection all work the same way. */}
+      <div className="glass rounded-xl p-5">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+            Editor&apos;s finished video
+          </h3>
+          {editorReviewProjectId && editorUploads.length > 0 && (
+            <a
+              href={`/reviews/${editorReviewProjectId}`}
+              target="_blank"
+              rel="noreferrer"
+              className="text-[11px] px-2.5 py-1 rounded-full font-medium"
+              style={{ background: 'rgba(124,58,237,0.15)', color: '#a78bfa' }}
+              title="Watch the latest version + leave timestamped comments"
+            >
+              Open review ↗
+            </a>
+          )}
+        </div>
+        <p className="text-[11px] mb-3" style={{ color: 'var(--text-muted)' }}>
+          Drop a finished video the editor sent you (e.g. an Upwork delivery). It lands as a new version on the editor&apos;s dashboard and you can leave timestamped comments from <span style={{ color: 'var(--text-secondary)' }}>Open review</span>.
+        </p>
+
+        {(() => {
+          const eligible = assignments.filter(a => a.status !== 'completed');
+          if (eligible.length === 0) {
+            return (
+              <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>
+                Assign an editor first — uploads attach to their active assignment so it appears on their dashboard.
+              </p>
+            );
+          }
+          if (eligible.length > 1) {
+            return (
+              <p className="text-xs text-center py-6" style={{ color: '#f59e0b' }}>
+                This project has multiple active editors. Complete or revoke the unused assignments before uploading so the file is attributed to the right person.
+              </p>
+            );
+          }
+          return null;
+        })() ?? (
+          <>
+            <textarea
+              value={editorUploadNote}
+              onChange={e => setEditorUploadNote(e.target.value)}
+              placeholder="Optional note to the editor (e.g. 'Final cut from Upwork delivery, May 9')"
+              className="w-full px-3 py-2 rounded-lg text-sm mb-3 resize-none"
+              rows={2}
+              disabled={!!editorUploadingForId}
+              style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+            />
+
+            {editorUploadingForId && editorUploadProgress ? (
+              <div>
+                {editorUploadProgress.phase === 'compressing' && (
+                  <>
+                    <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
+                      <div className="h-full transition-all"
+                        style={{
+                          width: `${Math.round(editorUploadProgress.compressFraction * 100)}%`,
+                          background: 'linear-gradient(90deg, #f59e0b, #ef4444)',
+                        }} />
+                    </div>
+                    <p className="text-xs mt-1 text-center" style={{ color: 'var(--text-muted)' }}>
+                      Compressing in your browser… {Math.round(editorUploadProgress.compressFraction * 100)}%
+                    </p>
+                  </>
+                )}
+                {(editorUploadProgress.phase === 'probing' || editorUploadProgress.phase === 'reserving') && (
+                  <p className="text-xs text-center py-2" style={{ color: 'var(--text-muted)' }}>
+                    Preparing upload…
+                  </p>
+                )}
+                {editorUploadProgress.phase === 'uploading' && (
+                  <>
+                    <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
+                      <div className="h-full transition-all"
+                        style={{
+                          width: `${editorUploadProgress.uploadPercent}%`,
+                          background: 'linear-gradient(90deg, #7c3aed, #06b6d4)',
+                        }} />
+                    </div>
+                    <p className="text-xs mt-1 text-center" style={{ color: 'var(--text-muted)' }}>
+                      Uploading… {editorUploadProgress.uploadPercent}%
+                      {editorUploadProgress.compressionSavedPct != null && (
+                        <span className="ml-2" style={{ color: '#22c55e' }}>
+                          (saved {editorUploadProgress.compressionSavedPct}% via browser compression)
+                        </span>
+                      )}
+                    </p>
+                  </>
+                )}
+                {editorUploadProgress.phase === 'confirming' && (
+                  <p className="text-xs text-center py-2" style={{ color: 'var(--text-muted)' }}>
+                    Finishing up…
+                  </p>
+                )}
+                <div className="flex justify-end mt-2">
+                  <button
+                    onClick={cancelEditorUpload}
+                    className="text-[11px] px-3 py-1 rounded cursor-pointer"
+                    style={{ background: 'rgba(239,68,68,0.10)', color: '#ef4444' }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <label className="flex items-center justify-center gap-2 p-4 rounded-lg border-2 border-dashed cursor-pointer transition-colors hover:border-purple-500/50"
+                  style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
+                  <input type="file" accept="video/*" className="hidden"
+                    onChange={e => {
+                      const f = e.target.files?.[0];
+                      if (f) startEditorUpload(f);
+                      if (e.target) e.target.value = '';
+                    }}
+                  />
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="17 8 12 3 7 8" />
+                    <line x1="12" y1="3" x2="12" y2="15" />
+                  </svg>
+                  <span className="text-sm">Click to choose the video the editor sent you</span>
+                </label>
+                <label className="flex items-center gap-2 mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  <input
+                    type="checkbox"
+                    checked={editorEnableCompression}
+                    onChange={e => setEditorEnableCompression(e.target.checked)}
+                  />
+                  <span>Auto-compress before upload (faster, smaller — runs in your browser)</span>
+                </label>
+              </>
+            )}
+
+            {editorUploads.length > 0 && (
+              <div className="mt-4 space-y-2">
+                <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>
+                  Uploaded versions
+                </p>
+                {editorUploads.map(v => {
+                  const sizeMB = v.file_size != null ? (v.file_size / 1024 / 1024).toFixed(1) : null;
+                  return (
+                    <div key={v.id} className="p-2 rounded-lg flex items-center gap-3"
+                      style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}>
+                      {v.thumbnail_url ? (
+                        <img src={v.thumbnail_url} alt="" className="w-16 h-9 object-cover rounded shrink-0" />
+                      ) : (
+                        <div className="w-16 h-9 rounded flex items-center justify-center shrink-0"
+                          style={{ background: 'var(--bg-secondary)' }}>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                            style={{ color: 'var(--text-muted)' }}>
+                            <polygon points="5 3 19 12 5 21 5 3" />
+                          </svg>
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
+                          v{v.version_number}
+                          {v.uploaded_by && (
+                            <span className="ml-2 text-[10px] font-normal" style={{ color: 'var(--text-muted)' }}>
+                              · {v.uploaded_by}
+                            </span>
+                          )}
+                        </p>
+                        <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                          {new Date(v.created_at).toLocaleDateString()}
+                          {sizeMB ? ` · ${sizeMB} MB` : ''}
+                        </p>
+                      </div>
+                      {v.unresolved_comment_count > 0 && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full font-medium"
+                          style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>
+                          💬 {v.unresolved_comment_count} unresolved
+                        </span>
+                      )}
+                      <a
+                        href={`/reviews/${v.review_project_id}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[10px] px-2 py-1 rounded shrink-0"
+                        style={{ background: 'rgba(124,58,237,0.15)', color: '#a78bfa' }}
+                      >
+                        Review ↗
+                      </a>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
         )}
       </div>
 

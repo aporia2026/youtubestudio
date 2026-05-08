@@ -101,23 +101,29 @@ export async function ensureReviewSchema() {
 
 // -- Projects ----------------------------------------------------------------
 
-export async function createProject(title: string, description?: string) {
+export async function createProject(title: string, description: string | undefined, workspaceId: string) {
   await ensureReviewSchema();
+  // workspace_id is NOT NULL on review_projects since migration 0013. Skipping
+  // it here used to throw a Postgres NOT NULL violation on the editor's very
+  // first upload — a 500 returned only after compression + thumbnail probe
+  // had already eaten minutes in the browser, so it felt like a hang.
   const { rows } = await sql`
-    INSERT INTO review_projects (title, description)
-    VALUES (${title}, ${description ?? null})
+    INSERT INTO review_projects (title, description, workspace_id)
+    VALUES (${title}, ${description ?? null}, ${workspaceId}::uuid)
     RETURNING *
   `;
   return rows[0];
 }
 
-export async function listProjects() {
+export async function listProjects(workspaceId: string) {
   await ensureReviewSchema();
+  // Tenant-scoped: review_projects.workspace_id is NOT NULL since 0013.
   const { rows } = await sql`
     SELECT p.*,
       (SELECT COUNT(*)::int FROM review_versions v WHERE v.project_id = p.id) AS version_count,
       (SELECT COUNT(*)::int FROM review_share_links s WHERE s.project_id = p.id) AS link_count
     FROM review_projects p
+    WHERE p.workspace_id = ${workspaceId}::uuid
     ORDER BY p.updated_at DESC
   `;
   return rows;

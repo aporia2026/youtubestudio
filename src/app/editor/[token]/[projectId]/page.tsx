@@ -2,9 +2,9 @@
 
 import { use, useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
-import { compressVideo, isCompressionSupported } from '@/lib/compress-video';
 import { downloadCrossOriginFile } from '@/lib/download-file';
 import { HeroAction } from '@/components/dashboard/HeroAction';
+import { uploadReviewVideo, UploadError, type UploadProgress } from '@/lib/upload-video-client';
 
 interface ProjectData {
   editor: { id: string; name: string; color: string };
@@ -43,11 +43,8 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
   const [data, setData] = useState<ProjectData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [compressing, setCompressing] = useState(false);
-  const [compressProgress, setCompressProgress] = useState(0);
-  const [compressionSavedPct, setCompressionSavedPct] = useState<number | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
+  const [uploadController, setUploadController] = useState<AbortController | null>(null);
   const [skipCompression, setSkipCompression] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     return window.localStorage?.getItem('skipVideoCompression') === '1';
@@ -85,104 +82,61 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
 
   async function handleUpload(originalFile: File) {
     if (!originalFile.type.startsWith('video/')) { alert('Please choose a video file'); return; }
-    setUploading(true);
-    setUploadProgress(0);
-    setCompressionSavedPct(null);
+    const controller = new AbortController();
+    setUploadController(controller);
+    setUploadProgress({
+      phase: 'compressing',
+      compressFraction: 0,
+      uploadPercent: 0,
+      compressionSavedPct: null,
+    });
 
-    let file: File = originalFile;
-
-    // Browser-side compression — same flow as the owner-side review upload.
-    // Cuts file size, fixes faststart, falls back to original on any failure.
-    if (!skipCompression && originalFile.size >= 5 * 1024 * 1024) {
-      try {
-        const supported = await isCompressionSupported();
-        if (supported) {
-          setCompressing(true);
-          setCompressProgress(0);
-          const result = await compressVideo(originalFile, p => setCompressProgress(p.fraction));
-          if (result.compressedSize < result.originalSize) {
-            file = result.file;
-            setCompressionSavedPct(Math.round((1 - result.compressedSize / result.originalSize) * 100));
-          }
-        }
-      } catch (err) {
-        console.warn('Compression failed, uploading original:', err);
-      } finally {
-        setCompressing(false);
-      }
-    }
-
+    let createdVersionId: string | null = null;
     try {
-      // Probe video metadata
-      let duration_ms: number | undefined;
-      let width: number | undefined;
-      let height: number | undefined;
-      let thumbnail_url: string | undefined;
-      try {
-        const videoEl = document.createElement('video');
-        videoEl.preload = 'metadata';
-        videoEl.muted = true;
-        const objectUrl = URL.createObjectURL(file);
-        videoEl.src = objectUrl;
-        await new Promise<void>(resolve => {
-          videoEl.onloadedmetadata = () => { videoEl.currentTime = 1; };
-          videoEl.onseeked = () => resolve();
-          videoEl.onerror = () => resolve();
-        });
-        duration_ms = isFinite(videoEl.duration) ? Math.round(videoEl.duration * 1000) : undefined;
-        width = videoEl.videoWidth || undefined;
-        height = videoEl.videoHeight || undefined;
-        // Capture a JPEG thumbnail
-        try {
-          const canvas = document.createElement('canvas');
-          canvas.width = Math.min(width || 640, 640);
-          canvas.height = Math.round(canvas.width * ((height || 360) / (width || 640)));
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-            const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/jpeg', 0.8));
-            if (blob) {
-              const fd = new FormData();
-              fd.append('file', blob, 'thumbnail.jpg');
-              fd.append('type', 'image');
-              const upRes = await fetch('/api/upload', { method: 'POST', body: fd });
-              if (upRes.ok) thumbnail_url = (await upRes.json()).url;
-            }
+      const result = await uploadReviewVideo({
+        file: originalFile,
+        enableCompression: !skipCompression,
+        signal: controller.signal,
+        onProgress: state => setUploadProgress(state),
+        uploadThumbnail: async blob => {
+          try {
+            const fd = new FormData();
+            fd.append('file', blob, 'thumbnail.jpg');
+            fd.append('type', 'image');
+            const r = await fetch('/api/upload', { method: 'POST', body: fd });
+            if (!r.ok) return null;
+            return (await r.json()).url ?? null;
+          } catch {
+            return null;
           }
-        } catch {}
-        URL.revokeObjectURL(objectUrl);
-      } catch {}
-
-      // 1. Reserve the version + get presigned URL
-      const reserveRes = await fetch(`/api/editor/${token}/projects/${projectId}/upload-video`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileName: file.name, contentType: file.type, fileSize: file.size, note: uploadNote || undefined }),
+        },
+        reservePresignedUrl: async input => {
+          const res = await fetch(`/api/editor/${token}/projects/${projectId}/upload-video`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fileName: input.fileName,
+              contentType: input.contentType,
+              fileSize: input.fileSize,
+              note: uploadNote || undefined,
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || `Server returned ${res.status}`);
+          }
+          const body = await res.json();
+          return { uploadUrl: body.uploadUrl, versionId: body.versionId };
+        },
+        confirmMetadata: async input => {
+          await fetch(`/api/editor/${token}/projects/${projectId}/upload-video`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(input),
+          });
+        },
       });
-      if (!reserveRes.ok) {
-        const err = await reserveRes.json().catch(() => ({}));
-        throw new Error(err.error || `Server returned ${reserveRes.status}`);
-      }
-      const { uploadUrl, versionId } = await reserveRes.json();
-
-      // 2. PUT to R2
-      await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.upload.addEventListener('progress', evt => { if (evt.lengthComputable) setUploadProgress(Math.round((evt.loaded / evt.total) * 100)); });
-        xhr.addEventListener('load', () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`R2 rejected upload (HTTP ${xhr.status}). Check bucket CORS.`)));
-        xhr.addEventListener('error', () => reject(new Error('Network error uploading to R2 — check bucket CORS')));
-        xhr.open('PUT', uploadUrl);
-        xhr.setRequestHeader('Content-Type', file.type);
-        xhr.send(file);
-      });
-
-      // 3. PATCH metadata
-      await fetch(`/api/editor/${token}/projects/${projectId}/upload-video`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ versionId, thumbnail_url, duration_ms, width, height }),
-      }).catch(() => {});
-
+      createdVersionId = result.versionId;
       setUploadNote('');
       await load();
 
@@ -190,11 +144,11 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
       // from the previous version. If any exist, open the fix-notes modal
       // so the editor can describe what they changed for each.
       try {
-        const r = await fetch(`/api/editor/${token}/projects/${projectId}/previous-comments?versionId=${versionId}`);
+        const r = await fetch(`/api/editor/${token}/projects/${projectId}/previous-comments?versionId=${createdVersionId}`);
         if (r.ok) {
           const body = await r.json();
           if (body.previousVersion && Array.isArray(body.comments) && body.comments.length > 0) {
-            setFixNotesVersionId(versionId);
+            setFixNotesVersionId(createdVersionId);
             setFixNotesPrevious({ versionNumber: body.previousVersion.version_number, comments: body.comments });
             const initial: Record<string, { text: string; resolveOriginal: boolean }> = {};
             for (const c of body.comments) initial[c.id] = { text: '', resolveOriginal: true };
@@ -203,12 +157,20 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
         }
       } catch {}
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Upload failed';
-      alert(`Upload failed: ${msg}`);
+      if (e instanceof UploadError && e.code === 'ABORTED') {
+        // Cancel was intentional — no error noise.
+      } else {
+        const msg = e instanceof Error ? e.message : 'Upload failed';
+        alert(`Upload failed: ${msg}`);
+      }
     } finally {
-      setUploading(false);
-      setUploadProgress(0);
+      setUploadController(null);
+      setUploadProgress(null);
     }
+  }
+
+  function cancelUpload() {
+    uploadController?.abort();
   }
 
   if (loading) return <div className="flex items-center justify-center min-h-screen"><div className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: '#7c3aed', borderTopColor: 'transparent' }} /></div>;
@@ -500,34 +462,48 @@ export default function EditorProjectPage({ params }: { params: Promise<{ token:
           placeholder="Optional note (e.g. 'Cut down the intro by 10s, swapped Track B-roll')"
           className="w-full px-3 py-2 rounded-lg text-sm mb-3 resize-none"
           rows={2}
-          disabled={uploading}
+          disabled={!!uploadProgress}
           style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
         />
 
-        {uploading ? (
+        {uploadProgress ? (
           <div>
-            {compressing ? (
+            {uploadProgress.phase === 'compressing' && (
               <>
                 <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
-                  <div className="h-full transition-all" style={{ width: `${Math.round(compressProgress * 100)}%`, background: 'linear-gradient(90deg, #f59e0b, #ef4444)' }} />
+                  <div className="h-full transition-all" style={{ width: `${Math.round(uploadProgress.compressFraction * 100)}%`, background: 'linear-gradient(90deg, #f59e0b, #ef4444)' }} />
                 </div>
                 <p className="text-xs mt-1 text-center" style={{ color: 'var(--text-muted)' }}>
-                  Compressing in your browser… {Math.round(compressProgress * 100)}%
+                  Compressing in your browser… {Math.round(uploadProgress.compressFraction * 100)}%
                 </p>
               </>
-            ) : (
+            )}
+            {(uploadProgress.phase === 'probing' || uploadProgress.phase === 'reserving') && (
+              <p className="text-xs text-center py-2" style={{ color: 'var(--text-muted)' }}>Preparing upload…</p>
+            )}
+            {uploadProgress.phase === 'uploading' && (
               <>
                 <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
-                  <div className="h-full transition-all" style={{ width: `${uploadProgress}%`, background: 'linear-gradient(90deg, #7c3aed, #06b6d4)' }} />
+                  <div className="h-full transition-all" style={{ width: `${uploadProgress.uploadPercent}%`, background: 'linear-gradient(90deg, #7c3aed, #06b6d4)' }} />
                 </div>
                 <p className="text-xs mt-1 text-center" style={{ color: 'var(--text-muted)' }}>
-                  Uploading… {uploadProgress}%
-                  {compressionSavedPct != null && (
-                    <span className="ml-2" style={{ color: '#22c55e' }}>(saved {compressionSavedPct}% via browser compression)</span>
+                  Uploading… {uploadProgress.uploadPercent}%
+                  {uploadProgress.compressionSavedPct != null && (
+                    <span className="ml-2" style={{ color: '#22c55e' }}>(saved {uploadProgress.compressionSavedPct}% via browser compression)</span>
                   )}
                 </p>
               </>
             )}
+            {uploadProgress.phase === 'confirming' && (
+              <p className="text-xs text-center py-2" style={{ color: 'var(--text-muted)' }}>Finishing up…</p>
+            )}
+            <div className="flex justify-end mt-2">
+              <button onClick={cancelUpload}
+                className="text-[11px] px-3 py-1 rounded cursor-pointer"
+                style={{ background: 'rgba(239,68,68,0.10)', color: '#ef4444' }}>
+                Cancel
+              </button>
+            </div>
           </div>
         ) : (
           <>
