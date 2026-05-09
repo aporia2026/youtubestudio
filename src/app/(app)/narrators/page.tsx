@@ -111,6 +111,36 @@ export default function NarratorsPage() {
 
   return (
     <div className="max-w-5xl mx-auto px-6 py-10">
+      {/* Sunset banner — points to /team-hub. Per the team-hub plan
+          (2026-05-09) this page is being phased out two weeks after the
+          hub ships, once we've verified the hub covers everything this
+          page does. Until then, both surfaces work. */}
+      <a
+        href="/team-hub"
+        className="block mb-6 rounded-xl px-4 py-3 transition-colors"
+        style={{
+          background: 'linear-gradient(90deg, rgba(124,58,237,0.12), rgba(6,182,212,0.12))',
+          border: '1px solid rgba(124,58,237,0.35)',
+        }}
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+              Manage every team member in one place at /team-hub
+            </p>
+            <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              The new Team Hub covers narrators, video editors, reviewers, and channel editors with a single dashboard. This page is scheduled to be removed.
+            </p>
+          </div>
+          <span
+            className="text-xs px-3 py-1.5 rounded-md font-medium shrink-0"
+            style={{ background: 'rgba(124,58,237,0.25)', color: '#fff', border: '1px solid rgba(124,58,237,0.5)' }}
+          >
+            Open Team Hub →
+          </span>
+        </div>
+      </a>
+
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>Narrators</h1>

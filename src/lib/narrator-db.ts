@@ -665,6 +665,11 @@ export async function createTakeComment(fields: {
   author_role: 'owner' | 'narrator';
   parent_id?: string | null;
   fix_for_comment_id?: string | null;
+  /** Set true when the workspace owner is acting as the named author
+   *  (team-hub "Act as them" escalation). Default false matches every
+   *  existing caller. Backed by the boolean column added in migration
+   *  0050. */
+  posted_by_owner?: boolean;
 }) {
   await ensureNarratorSchema();
   // Coerce a reversed/equal range to null so weird input doesn't end up as
@@ -683,7 +688,7 @@ export async function createTakeComment(fields: {
   const ws = await resolveWorkspaceIdForTake(fields.take_id);
   const { rows } = await sql`
     INSERT INTO narration_take_comments
-      (take_id, timestamp_ms, end_timestamp_ms, text, author_name, author_color, author_role, parent_id, fix_for_comment_id, workspace_id)
+      (take_id, timestamp_ms, end_timestamp_ms, text, author_name, author_color, author_role, parent_id, fix_for_comment_id, workspace_id, posted_by_owner)
     VALUES (
       ${fields.take_id},
       ${Math.max(0, Math.round(fields.timestamp_ms))},
@@ -694,7 +699,8 @@ export async function createTakeComment(fields: {
       ${fields.author_role},
       ${fields.parent_id ?? null},
       ${fields.fix_for_comment_id ?? null},
-      ${ws}
+      ${ws},
+      ${fields.posted_by_owner ?? false}
     )
     RETURNING *
   `;
