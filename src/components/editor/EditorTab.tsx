@@ -52,6 +52,22 @@ interface ProductionDocAsset {
   created_at: string;
 }
 
+interface VoiceoverAsset {
+  id: string;
+  project_id: string;
+  project_title?: string | null;
+  name: string;
+  url: string;
+  source: string | null;
+  r2_bucket?: string | null;
+  r2_key?: string | null;
+  blob_pathname?: string | null;
+  size_bytes?: number | null;
+  duration_seconds?: number | null;
+  metadata?: Record<string, unknown> | null;
+  created_at: string;
+}
+
 interface EditorUploadVersion {
   id: string;
   version_number: number;
@@ -65,6 +81,11 @@ interface EditorUploadVersion {
 }
 
 const PROD_DOC_ACCEPT = '.pdf,.docx,.doc,.xlsx,.xls,.csv,.txt,.json,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain,application/json';
+
+// Matches the ALLOWED_AUDIO list on /api/projects/[id]/voiceover-upload — the
+// presign endpoint rejects anything else, so we mirror it here to fail fast
+// in the browser rather than round-trip a bad file.
+const VOICEOVER_ACCEPT = '.mp3,.m4a,.aac,.wav,.ogg,.webm,.flac,audio/mpeg,audio/mp4,audio/x-m4a,audio/aac,audio/wav,audio/x-wav,audio/ogg,audio/webm,audio/flac';
 
 interface Props { projectId: string }
 
@@ -93,6 +114,7 @@ export function EditorTab({ projectId }: Props) {
   const [imageRefs, setImageRefs] = useState<ImageAsset[]>([]);
   const [thumbnails, setThumbnails] = useState<ImageAsset[]>([]);
   const [productionDocs, setProductionDocs] = useState<ProductionDocAsset[]>([]);
+  const [voiceovers, setVoiceovers] = useState<VoiceoverAsset[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Production-doc state — three add paths (file upload / Google-Sheet URL /
@@ -108,6 +130,18 @@ export function EditorTab({ projectId }: Props) {
   const [prodDocLibError, setProdDocLibError] = useState<string | null>(null);
   const [attachingProdDoc, setAttachingProdDoc] = useState<string | null>(null);
   const prodDocInputRef = useRef<HTMLInputElement>(null);
+
+  // Voiceover state — same three-state shape as production-doc (upload busy
+  // flag, library modal, attach-in-flight id). Voiceovers reuse the existing
+  // /voiceover-upload presign route + /voiceover-library picker so this UI
+  // is a thin wrapper around endpoints the project page already uses.
+  const [uploadingVoiceover, setUploadingVoiceover] = useState(false);
+  const [showVoiceoverLibrary, setShowVoiceoverLibrary] = useState(false);
+  const [voiceoverLibrary, setVoiceoverLibrary] = useState<VoiceoverAsset[]>([]);
+  const [voiceoverLibLoading, setVoiceoverLibLoading] = useState(false);
+  const [voiceoverLibError, setVoiceoverLibError] = useState<string | null>(null);
+  const [attachingVoiceover, setAttachingVoiceover] = useState<string | null>(null);
+  const voiceoverInputRef = useRef<HTMLInputElement>(null);
 
   // Assign UI state
   const [showAssign, setShowAssign] = useState(false);
@@ -151,11 +185,14 @@ export function EditorTab({ projectId }: Props) {
       ]);
       // production-doc attachments are stored as type='document' +
       // metadata.kind='production_doc' (the type column has a fixed CHECK
-      // enum so we lean on the metadata key for the subtype).
-      const allAssets = (mediaRes?.assets ?? []) as Array<ProductionDocAsset & { type?: string }>;
+      // enum so we lean on the metadata key for the subtype). Voiceovers
+      // are first-class type='voiceover' rows on the same table so they
+      // come back in the same response — split by type here.
+      const allAssets = (mediaRes?.assets ?? []) as Array<(ProductionDocAsset & VoiceoverAsset) & { type?: string }>;
       setProductionDocs(
         allAssets.filter(m => m.type === 'document' && (m.metadata as { kind?: string } | null)?.kind === 'production_doc'),
       );
+      setVoiceovers(allAssets.filter(m => m.type === 'voiceover'));
       setAssignments(a);
       setEditors(c);
       setImageRefs(refs);
@@ -413,6 +450,129 @@ export function EditorTab({ projectId }: Props) {
       const res = await fetch(`/api/media/${assetId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(`Failed (${res.status})`);
       setProductionDocs(prev => prev.filter(a => a.id !== assetId));
+      toast.success('Detached');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to detach');
+    }
+  }
+
+  // ── Voiceover flows ──────────────────────────────────────────────────────
+  // Two add paths (upload / library pick), one detach. Mirrors the production
+  // doc flow but uses the existing /voiceover-upload (R2 narration bucket
+  // presign) and /voiceover-library (workspace-scoped picker) routes the
+  // project page already relies on. Narrator-approved voiceovers land here
+  // automatically because /api/narrator/.../approve-full inserts the same
+  // media_assets row this UI reads.
+  async function uploadVoiceover(file: File) {
+    setUploadingVoiceover(true);
+    try {
+      const presignRes = await fetch(`/api/projects/${projectId}/voiceover-upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileName: file.name, contentType: file.type || 'audio/mpeg' }),
+      });
+      if (!presignRes.ok) {
+        const err = await presignRes.json().catch(() => ({}));
+        throw new Error(err.error || `Server returned ${presignRes.status}`);
+      }
+      const { uploadUrl, downloadUrl, r2Key, r2Bucket } = await presignRes.json();
+
+      const putRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type || 'audio/mpeg' },
+        body: file,
+      });
+      if (!putRes.ok) throw new Error(`R2 upload failed (HTTP ${putRes.status}). Check bucket CORS.`);
+
+      const registerRes = await fetch(`/api/projects/${projectId}/media`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'voiceover',
+          source: 'upload',
+          name: file.name,
+          url: downloadUrl,
+          r2_bucket: r2Bucket,
+          r2_key: r2Key,
+          size_bytes: file.size,
+        }),
+      });
+      if (!registerRes.ok) {
+        const err = await registerRes.json().catch(() => ({}));
+        throw new Error(err.error || `Failed to register voiceover (${registerRes.status})`);
+      }
+      toast.success('Voiceover uploaded');
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Upload failed');
+    } finally {
+      setUploadingVoiceover(false);
+    }
+  }
+
+  async function openVoiceoverLibrary() {
+    setShowVoiceoverLibrary(true);
+    setVoiceoverLibLoading(true);
+    setVoiceoverLibError(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/voiceover-library`);
+      if (!res.ok) throw new Error(`Failed to load library (${res.status})`);
+      const data = await res.json();
+      setVoiceoverLibrary((data?.voiceovers ?? []) as VoiceoverAsset[]);
+    } catch (e) {
+      setVoiceoverLibError(e instanceof Error ? e.message : 'Failed to load library');
+    } finally {
+      setVoiceoverLibLoading(false);
+    }
+  }
+
+  async function attachExistingVoiceover(item: VoiceoverAsset) {
+    if (attachingVoiceover) return;
+    setAttachingVoiceover(item.id);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/media`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'voiceover',
+          // Matches the project page's attach contract: r2-link when the
+          // underlying file lives in R2 (most cases), url for externally
+          // hosted voiceovers.
+          source: item.r2_key ? 'r2-link' : 'url',
+          name: item.name || 'Linked voiceover',
+          url: item.url,
+          r2_bucket: item.r2_bucket,
+          r2_key: item.r2_key,
+          blob_pathname: item.blob_pathname,
+          size_bytes: item.size_bytes,
+          duration_seconds: item.duration_seconds,
+          metadata: {
+            ...(item.metadata || {}),
+            linked_from_asset_id: item.id,
+            linked_from_project_id: item.project_id,
+          },
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Failed to attach (${res.status})`);
+      }
+      toast.success('Voiceover attached');
+      setShowVoiceoverLibrary(false);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to attach');
+    } finally {
+      setAttachingVoiceover(null);
+    }
+  }
+
+  async function deleteVoiceover(assetId: string) {
+    if (!confirm('Detach this voiceover from the project? The original audio file in R2 (or library) is not removed.')) return;
+    try {
+      const res = await fetch(`/api/media/${assetId}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(`Failed (${res.status})`);
+      setVoiceovers(prev => prev.filter(a => a.id !== assetId));
       toast.success('Detached');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to detach');
@@ -841,6 +1001,114 @@ export function EditorTab({ projectId }: Props) {
         )}
       </div>
 
+      {/* Voiceover — owner attaches the narration the editor should cut to.
+          Two add paths (upload audio file / pick from workspace library);
+          narrator-approved voiceovers already land on this project via
+          /api/narrator/.../approve-full and show up in the list automatically
+          because both writers go through the same media_assets row. Files
+          live in the R2 narration bucket; library picks reuse the same key
+          so the audio isn't duplicated. */}
+      <div className="glass rounded-xl p-5">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Voiceover</h3>
+        </div>
+        <p className="text-[11px] mb-3" style={{ color: 'var(--text-muted)' }}>
+          Attach the narration the editor should cut to. Upload an audio file (MP3 / WAV / M4A / AAC / OGG / FLAC), or pick from your workspace library. Narrator-approved voiceovers appear here automatically.
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+          {/* Upload */}
+          <div>
+            <p className="text-[10px] uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>Upload audio</p>
+            <input
+              ref={voiceoverInputRef}
+              type="file"
+              accept={VOICEOVER_ACCEPT}
+              className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (f) uploadVoiceover(f); if (e.target) e.target.value = ''; }}
+            />
+            <button
+              onClick={() => voiceoverInputRef.current?.click()}
+              disabled={uploadingVoiceover}
+              className="w-full px-3 py-2 rounded-lg text-xs font-medium cursor-pointer disabled:opacity-50"
+              style={{ background: 'rgba(124,58,237,0.15)', color: '#7c3aed', border: '1px solid rgba(124,58,237,0.25)' }}
+            >
+              {uploadingVoiceover ? 'Uploading…' : '🎙️ Upload'}
+            </button>
+          </div>
+
+          {/* Library */}
+          <div>
+            <p className="text-[10px] uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>Pick from library</p>
+            <button
+              onClick={openVoiceoverLibrary}
+              className="w-full px-3 py-2 rounded-lg text-xs font-medium cursor-pointer"
+              style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+              title="Reuse a voiceover attached to another project in this workspace"
+            >
+              📚 Browse library
+            </button>
+          </div>
+        </div>
+
+        {voiceovers.length === 0 ? (
+          <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>No voiceover attached yet</p>
+        ) : (
+          <div className="space-y-2">
+            {voiceovers.map(v => {
+              const meta = (v.metadata || {}) as { linked_from_asset_id?: string; full_narration?: boolean };
+              const isLinked = !!meta.linked_from_asset_id;
+              const fromNarrator = !!meta.full_narration;
+              return (
+                <div
+                  key={v.id}
+                  className="p-2.5 rounded-lg"
+                  style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="text-base">🎙️</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>{v.name}</p>
+                      <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                        {fromNarrator ? 'Narrator-approved' : (isLinked ? 'Linked from library' : (v.r2_key ? 'Uploaded file' : 'External URL'))}
+                        {v.size_bytes ? ` · ${(v.size_bytes / 1024 / 1024).toFixed(1)} MB` : ''}
+                        {v.duration_seconds ? ` · ${Math.round(v.duration_seconds)}s` : ''}
+                        {v.created_at ? ` · added ${timeAgo(v.created_at)}` : ''}
+                      </p>
+                    </div>
+                    <a
+                      href={v.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[11px] px-2 py-1 rounded shrink-0"
+                      style={{ background: 'rgba(124,58,237,0.15)', color: '#a78bfa' }}
+                    >
+                      Open ↗
+                    </a>
+                    <button
+                      onClick={() => deleteVoiceover(v.id)}
+                      className="text-[11px] px-2 py-1 rounded shrink-0"
+                      style={{ background: 'rgba(239,68,68,0.10)', color: '#ef4444' }}
+                    >
+                      Detach
+                    </button>
+                  </div>
+                  {v.url && (
+                    <audio
+                      controls
+                      preload="none"
+                      src={v.url}
+                      className="w-full mt-2"
+                      style={{ height: 32 }}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {/* Editor's finished video — owner uploads a video they received from
           the editor (e.g. via Upwork) so it shows up on the editor's
           dashboard and the owner can leave timestamped comments through
@@ -1125,6 +1393,102 @@ export function EditorTab({ projectId }: Props) {
                         >
                           {attachingProdDoc === item.id ? 'Attaching…' : 'Attach'}
                         </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Voiceover library modal — workspace-scoped picker. Same attach
+          semantics as production docs: insert a new media_assets row on this
+          project that points at the same R2 key, so the audio file isn't
+          duplicated and a single narrator-approved voiceover can be reused
+          across multiple videos. */}
+      {showVoiceoverLibrary && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: 'rgba(0,0,0,0.6)' }}
+          onClick={() => setShowVoiceoverLibrary(false)}
+        >
+          <div
+            className="rounded-2xl w-[min(720px,92vw)] max-h-[85vh] flex flex-col"
+            style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+              <div>
+                <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Voiceover library</h3>
+                <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  Pick a voiceover from another project to attach here.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowVoiceoverLibrary(false)}
+                className="text-xs px-2 py-1 rounded"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-3 py-3">
+              {voiceoverLibLoading && (
+                <div className="flex items-center justify-center py-12">
+                  <div className="w-5 h-5 border-2 border-t-transparent rounded-full animate-spin"
+                    style={{ borderColor: '#7c3aed', borderTopColor: 'transparent' }} />
+                </div>
+              )}
+              {!voiceoverLibLoading && voiceoverLibError && (
+                <p className="text-xs text-center py-8" style={{ color: '#ef4444' }}>{voiceoverLibError}</p>
+              )}
+              {!voiceoverLibLoading && !voiceoverLibError && voiceoverLibrary.length === 0 && (
+                <p className="text-xs text-center py-12" style={{ color: 'var(--text-muted)' }}>
+                  No voiceovers in your workspace yet.
+                </p>
+              )}
+              {!voiceoverLibLoading && !voiceoverLibError && voiceoverLibrary.length > 0 && (
+                <div className="space-y-2">
+                  {voiceoverLibrary.map(item => {
+                    const itemMeta = (item.metadata || {}) as { full_narration?: boolean };
+                    const fromNarrator = !!itemMeta.full_narration;
+                    return (
+                      <div
+                        key={item.id}
+                        className="p-2.5 rounded-lg"
+                        style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="text-base">🎙️</span>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>{item.name}</p>
+                            <p className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>
+                              {item.project_title || '—'}
+                              {item.size_bytes ? ` · ${(item.size_bytes / 1024 / 1024).toFixed(1)} MB` : ''}
+                              {item.duration_seconds ? ` · ${Math.round(item.duration_seconds)}s` : ''}
+                              {fromNarrator ? ' · Narrator-approved' : ''}
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => attachExistingVoiceover(item)}
+                            disabled={attachingVoiceover === item.id}
+                            className="text-[11px] px-2.5 py-1 rounded shrink-0 cursor-pointer disabled:opacity-50"
+                            style={{ background: '#7c3aed', color: 'white' }}
+                          >
+                            {attachingVoiceover === item.id ? 'Attaching…' : 'Attach'}
+                          </button>
+                        </div>
+                        {item.url && (
+                          <audio
+                            controls
+                            preload="none"
+                            src={item.url}
+                            className="w-full mt-2"
+                            style={{ height: 32 }}
+                          />
+                        )}
                       </div>
                     );
                   })}
