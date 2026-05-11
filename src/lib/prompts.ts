@@ -910,15 +910,30 @@ export function seoOptimizationPrompt({
   script,
   targetKeywords,
   existingTitle,
+  additionalContext,
 }: {
   topic: string;
   niche: string;
   script?: string;
   targetKeywords?: string;
   existingTitle?: string;
+  /** Reusable SEO template + per-call extra rules merged by the
+   *  client. Surfaced as USER DIRECTION at the top of the user prompt
+   *  so the model applies it to every output (title shortlist,
+   *  description body, hashtags, tags, chapters) — not just the
+   *  field it appears closest to. Skipped when empty. */
+  additionalContext?: string;
 }): { system: string; user: string } {
   return {
     system: `You are the world's top YouTube SEO strategist. You've optimized metadata for channels with 50M+ subscribers. You understand YouTube's algorithm, search ranking factors, and click psychology at an expert level.
+
+## RULE PRECEDENCE (READ FIRST):
+If the user message opens with a "USER DIRECTION" block, treat every rule there as a HARD RULE the SEO package must satisfy — applies equally to titles, description, hashtags, tags, and chapter labels. The user's rules override any conflicting default in this prompt (length targets, structure suggestions, hashtag count, brand voice, etc.). Do not soften, summarise, or reinterpret them — match their wording where relevant and verify in the JSON that you actually honoured each rule.
+
+## GROUND CLAIMS IN CURRENT, VERIFIABLE REALITY:
+- The description, chapter labels, and any "year"/"month"/"recently"-style markers must use current, accurate references — fabricated dates or fake citations tank YouTube's quality signals and the viewer's trust.
+- Prefer concrete, recent framings (e.g. "2025 guide", "this quarter") only when you're confident they're accurate; otherwise drop the time marker and keep the substance.
+- Never invent statistics, named studies, or quoted experts into the description. A vivid true generality beats a fake specific.
 
 ## YOUR SEO KNOWLEDGE:
 
@@ -954,7 +969,12 @@ export function seoOptimizationPrompt({
 5. Keyword relevance (title > description > tags > transcript)`,
 
     user: `Generate a COMPLETE, publish-ready SEO optimization package for this YouTube video.
+${additionalContext && additionalContext.trim() ? `
+## USER DIRECTION — HARD RULES (apply to every field below: titles, description, hashtags, tags, chapters):
+${additionalContext.trim()}
 
+These rules are binding. Re-read them before you produce the description in particular — that's where they matter most. If anything else in this brief conflicts with a rule here, the user direction wins.
+` : ''}
 **Topic:** ${topic}
 **Niche:** ${niche}
 ${existingTitle ? `**Current Title:** ${existingTitle}` : ''}

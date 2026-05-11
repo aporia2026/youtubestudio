@@ -11,6 +11,10 @@ type FieldType =
   | 'idea'
   | 'qa'
   | 'production_doc'
+  // SEO Optimizer covers titles + description + tags + chapters in one
+  // pass, so we expose a single umbrella `seo` template type rather than
+  // forcing the user to juggle separate title / description templates.
+  | 'seo'
   | 'other';
 
 interface Template {

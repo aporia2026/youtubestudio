@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { listTemplates, createTemplate, type TemplateFieldType } from '@/lib/templates-db';
 import { logger } from '@/lib/logger';
 
-const VALID_TYPES: TemplateFieldType[] = ['script', 'youtube_description', 'title', 'thumbnail', 'idea', 'qa', 'production_doc', 'other'];
+const VALID_TYPES: TemplateFieldType[] = ['script', 'youtube_description', 'title', 'thumbnail', 'idea', 'qa', 'production_doc', 'seo', 'other'];
 
 export async function GET(req: NextRequest) {
   try {

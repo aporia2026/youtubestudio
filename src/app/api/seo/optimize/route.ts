@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Rate limited — try again in ${Math.ceil(resetIn / 1000)}s` }, { status: 429 });
     }
 
-    const { modelId, topic, niche, script, targetKeywords, existingTitle } = await req.json();
+    const { modelId, topic, niche, script, targetKeywords, existingTitle, additionalContext } = await req.json();
 
     if (!topic || !niche) {
       return NextResponse.json({ error: 'topic and niche are required' }, { status: 400 });
@@ -30,6 +30,7 @@ export async function POST(req: NextRequest) {
       script,
       targetKeywords,
       existingTitle,
+      additionalContext: typeof additionalContext === 'string' && additionalContext.trim() ? additionalContext : undefined,
     });
 
     const raw = await generateText({

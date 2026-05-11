@@ -15,6 +15,7 @@ import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { getSeoHistory, getSeoHistoryCached, saveSeoEntry, deleteSeoEntry, clearSeoHistory, getRecentTopics, type SeoHistoryEntry } from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
+import { TemplateContextPicker, buildCombinedContext } from '@/components/ui/TemplateContextPicker';
 
 interface TitleBreakdownEntry {
   score: number;
@@ -85,6 +86,12 @@ function SeoPage() {
   const [targetKeywords, setTargetKeywords] = useState('');
   const [script, setScript] = useState('');
   const [existingTitle, setExistingTitle] = useState('');
+  // Saved SEO style template + per-call extra rules. Merged into one
+  // `additionalContext` string and shipped as USER DIRECTION to the
+  // SEO prompt — applies to titles, description, hashtags, tags, and
+  // chapter labels in a single pass.
+  const [seoTemplateId, setSeoTemplateId] = useState<string | null>(null);
+  const [seoContext, setSeoContext] = useState('');
   const [generating, setGenerating] = useState(false);
   const [result, setResult] = useState<SeoResult | null>(null);
   const [activeTab, setActiveTab] = useState<'titles' | 'description' | 'tags'>('titles');
@@ -153,6 +160,23 @@ function SeoPage() {
     if (!niche) { toast.error('Please select a niche'); return; }
     setGenerating(true);
     setResult(null);
+    // Pull the selected SEO template's content (if any) and merge with
+    // the freeform context the user typed for this run. Same handoff
+    // pattern as Script Generator / QA so the prompt's USER DIRECTION
+    // block carries both reusable rules and one-off direction together.
+    let mergedContext = seoContext;
+    if (seoTemplateId) {
+      try {
+        const tplRes = await fetch(`/api/templates/${seoTemplateId}`);
+        if (tplRes.ok) {
+          const { template } = await tplRes.json();
+          mergedContext = buildCombinedContext(template?.content, seoContext);
+        }
+      } catch {
+        // Network blip — fall through with the per-call context only
+        // so the user still gets a generation instead of a blocking error.
+      }
+    }
     try {
       const res = await fetch('/api/seo/optimize', {
         method: 'POST',
@@ -164,6 +188,7 @@ function SeoPage() {
           script: script.trim() || undefined,
           targetKeywords: targetKeywords.trim() || undefined,
           existingTitle: existingTitle.trim() || undefined,
+          additionalContext: mergedContext.trim() || undefined,
         }),
       });
       if (!res.ok) {
@@ -425,6 +450,21 @@ function SeoPage() {
                 onChange={e => setExistingTitle(e.target.value)}
               />
             </div>
+
+            {/* SEO context / saved templates — applies to titles + description
+                + hashtags + tags + chapters in this run. Saved templates show
+                up in the dropdown so the user doesn't have to retype the rules
+                they care about (e.g. "always include channel pillars in the
+                description, never use ALL CAPS in titles"). */}
+            <TemplateContextPicker
+              fieldType="seo"
+              label="SEO style template"
+              templateId={seoTemplateId}
+              onTemplateChange={setSeoTemplateId}
+              context={seoContext}
+              onContextChange={setSeoContext}
+              compact
+            />
 
             {/* Generate Button */}
             <button

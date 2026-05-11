@@ -25,6 +25,12 @@ export type TemplateFieldType =
   | 'idea'
   | 'qa'
   | 'production_doc'
+  // SEO Optimizer covers titles + description + tags + chapters in a
+  // single AI pass, so a single umbrella `seo` template type is cleaner
+  // than asking users to maintain separate title / description templates
+  // for the same workflow. The DB column is free-text, so no migration
+  // is needed for this addition.
+  | 'seo'
   | 'other';
 
 export interface PromptTemplate {
