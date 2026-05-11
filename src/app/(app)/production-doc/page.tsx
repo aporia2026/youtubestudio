@@ -478,8 +478,14 @@ export default function ProductionDocPageWrapper() {
 function ProductionDocPage() {
   const search = useSearchParams();
   const scheduleItemId = getScheduleLinkId(search);
+  // Direct project handoff (e.g. from the project detail page's "Send to
+  // Production Doc" button). Mirrors the schedule-item path but pulls the
+  // metadata + active script straight off /api/projects/[id] so the
+  // owner doesn't need a schedule item in the loop.
+  const projectIdParam = search.get('projectId');
   const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
   const [schedulePrefilled, setSchedulePrefilled] = useState(false);
+  const [projectPrefilled, setProjectPrefilled] = useState(false);
 
   // — Inputs
   const [script, setScript] = useState('');
@@ -619,11 +625,63 @@ function ProductionDocPage() {
      
   }, [scheduleItemId, schedulePrefilled]);
 
+  // Project-link preload: when launched from `/projects/[id]` via the
+  // "Send to Production Doc" button, pull title + niche + active script
+  // off the project so the user starts with the same context they'd get
+  // from a schedule item, without needing a schedule item at all.
+  // Functional setters keep manual edits made before the fetch resolves.
+  useEffect(() => {
+    if (!projectIdParam || projectPrefilled || scheduleItemId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [projectRes, scriptsRes] = await Promise.all([
+          fetch(`/api/projects/${projectIdParam}`),
+          fetch(`/api/projects/${projectIdParam}/scripts`),
+        ]);
+        if (cancelled) return;
+        if (!projectRes.ok) return;
+        const projectData = await projectRes.json();
+        const project: {
+          title?: string;
+          topic?: string;
+          niche?: string;
+          youtube_description?: string | null;
+        } | undefined = projectData?.project;
+        if (!project) return;
+        setProjectPrefilled(true);
+        const title = (project.title || project.topic || '').trim();
+        const projectNiche = (project.niche || '').trim();
+        if (title) setTopic(curr => curr || title);
+        if (projectNiche) setNiche(curr => curr || projectNiche);
+        // Seed the creative brief with the published description if there
+        // is one — the same role `prevDescription` plays in the schedule-
+        // item handoff. The prod-doc generator weights it as a scene-
+        // shaping hint; the user can wipe / edit before generating.
+        const desc = (project.youtube_description || '').trim();
+        if (desc) setCreativeBrief(curr => curr || desc);
+        if (scriptsRes.ok) {
+          const scriptsData = await scriptsRes.json();
+          type ScriptRow = { id: string; content: string; is_active?: boolean };
+          const scripts: ScriptRow[] = Array.isArray(scriptsData?.scripts) ? scriptsData.scripts : [];
+          const active = scripts.find(s => s.is_active) ?? scripts[0];
+          if (active?.content) setScript(curr => curr || active.content);
+        }
+        toast.message(`Loaded context from "${title || 'project'}"`);
+      } catch {
+        // Best-effort prefill — leave the page blank and let the user start fresh.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [projectIdParam, projectPrefilled, scheduleItemId]);
+
   // Restore last result from localStorage after mount (useEffect so SSR is unaffected).
-  // Skip restore on a handoff (schedule-link, generator, QA) so the new script
-  // starts a fresh session — and discard the saved draft so it doesn't resurface.
+  // Skip restore on a handoff (schedule-link, generator, QA, project) so the
+  // new script starts a fresh session — and discard the saved draft so it
+  // doesn't resurface.
   useEffect(() => {
     const fromHandoff = !!scheduleItemId
+      || !!projectIdParam
       || search.get('from') === 'generator'
       || search.get('from') === 'qa'
       || !!localStorage.getItem('prodoc_prefill');
