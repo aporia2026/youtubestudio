@@ -113,6 +113,15 @@ export function scriptGenerationPrompt({
 
 You specialize in the "${niche}" niche. Your scripts consistently score 85+ on brutal quality reviews because you internalize these standards AS YOU WRITE:
 
+## RULE PRECEDENCE (READ THIS FIRST):
+If the user's brief contains a "USER DIRECTION" block at the top of the user message, treat every rule in it as a HARD RULE that overrides any conflicting default in this system prompt or the structure template below. Example: if USER DIRECTION says "6 sections" and the default structure says "4 main sections", you produce 6. If USER DIRECTION says "open cold with the first title", you skip the warm-up entirely. User direction never gets softened, summarised, or reinterpreted.
+
+## GROUND EVERY CLAIM IN CURRENT, VERIFIABLE REALITY:
+- Use specific, recent data — named sources, real incidents, actual numbers, exact dates. The viewer must feel they're hearing fresh reporting, not a recycled blog post.
+- Prefer concrete examples from the last 24 months when the topic admits them. Evergreen analogies are fine for framing but never the whole substance.
+- Do NOT fabricate statistics, quotes, recent events, or names. If you're not confident a specific number / date / quote is accurate, omit it or pick a different real example you do know — never invent. A vivid, true generality beats a fake specific.
+- "Recently…" / "In a 2025 study…" / "Last quarter…" claims must be ones you actually know. If you can't ground the recency, drop the time marker and keep the substance.
+
 ## YOUR WRITING DNA:
 
 **HOOK MASTERY** (first 10-15 seconds):
@@ -159,7 +168,12 @@ You specialize in the "${niche}" niche. Your scripts consistently score 85+ on b
 - Plan the section budget BEFORE you start writing. If a section runs short, expand it with another concrete example or a deeper layer of insight — never with empty calories${brandKitBlock}`,
 
     user: `Write a complete, publish-ready YouTube script that would score 85+ on a Nuclear QA review.
+${additionalContext && additionalContext.trim() ? `
+## USER DIRECTION — HARD RULES (override every default below when they conflict):
+${additionalContext.trim()}
 
+These rules are binding. Read them again before you start writing, and again before you stop. If anything below this block conflicts with a rule here, the user direction wins — re-budget word counts, change the section count, skip openings, adjust structure as needed to comply.
+` : ''}
 **Topic:** ${topic}
 **Niche:** ${niche}
 **Target Duration:** ${targetDurationMinutes} minutes
@@ -167,7 +181,6 @@ You specialize in the "${niche}" niche. Your scripts consistently score 85+ on b
 **Tone:** ${tone || 'Engaging, authoritative but friendly'}
 **Style:** ${style || 'Educational explainer'}
 **Target Audience:** ${targetAudience || 'General audience interested in ' + niche}
-${additionalContext ? `**Additional Context:** ${additionalContext}` : ''}
 ${referenceContext ? `\n## REFERENCE VIDEO ANALYSIS (deep analysis of videos you must learn from):
 
 ${referenceContext}
@@ -190,7 +203,9 @@ ${constraints?.skipHook
 
 2. **INTRO** (~${budget.intro} spoken words / 20-40 seconds): Quick context. Why should THEY care? What's at stake for them personally? Tease the structure: "By the end of this video, you'll know X, Y, and Z."
 
-3. **MAIN CONTENT** (~${budget.main} spoken words total — this is the bulk of the script): 4 distinct sections, each ~${budget.perMainSection} spoken words. Each section MUST contain:
+3. **MAIN CONTENT** (~${budget.main} spoken words total — this is the bulk of the script): ${additionalContext && additionalContext.trim()
+  ? `by default 4 distinct sections, each ~${budget.perMainSection} spoken words. **If USER DIRECTION at the top of this brief specifies a different section count, follow the user's count and split ~${budget.main} words evenly across them instead — do NOT keep 4 sections out of inertia.**`
+  : `4 distinct sections, each ~${budget.perMainSection} spoken words.`} Each section MUST contain:
    - A mini-hook that re-engages attention
    - At least 2 specific examples with real names, numbers, dates
    - At least one analogy or visual metaphor
@@ -219,8 +234,12 @@ ${buildConstraintsPromptBlock(constraints)}
 ## FINAL CHECK BEFORE YOU FINISH:
 1. Count the spoken words in your draft silently (everything outside [brackets]). It must be at least ${minWords}. The count is for your own verification — do NOT write it into the script.
 2. If you are below ${minWords} spoken words, you are NOT done. Go back to the most underdeveloped sections and expand them with more concrete examples, more specific data, deeper exploration — never with filler, repetition, or generic statements.
-3. Re-scan and DELETE any line containing a word count, running total, duration estimate, citation marker, or meta-commentary before output. None of those exist in the final script.
-4. Only output when the spoken-word total is in the ${minWords}–${maxWords} range AND no metadata lines remain.
+3. Re-scan and DELETE any line containing a word count, running total, duration estimate, citation marker, or meta-commentary before output. None of those exist in the final script.${additionalContext && additionalContext.trim() ? `
+4. **Re-read the USER DIRECTION block at the top of this brief.** For each rule there, point to the exact passage of your draft that satisfies it. If any rule is unsatisfied — wrong section count, wrong opening style, missing element, anything — rewrite the affected passage NOW before output. User direction is binding; an otherwise-great script that ignores it is a failure.
+5. Sanity-check every specific data point (numbers, dates, quotes, named events). If you're not confident a specific is accurate, replace it with a real example you do know — never leave a fabricated specific in the final script.
+6. Only output when the spoken-word total is in the ${minWords}–${maxWords} range, every USER DIRECTION rule is satisfied, and no metadata lines remain.` : `
+4. Sanity-check every specific data point (numbers, dates, quotes, named events). If you're not confident a specific is accurate, replace it with a real example you do know — never leave a fabricated specific in the final script.
+5. Only output when the spoken-word total is in the ${minWords}–${maxWords} range AND no metadata lines remain.`}
 
 Write the complete script now. Make it exceptional, AND make it the right length.`,
   };
@@ -358,12 +377,25 @@ CRITICAL QA CRITERIA YOU MUST ALWAYS CHECK:
   return {
     system: `You are a world-class YouTube content strategist and script analyst. You have deep expertise in the "${niche}" niche. ${aggressivenessInstructions[aggressiveness]}
 
+## RULE PRECEDENCE (READ FIRST):
+If the user prompt opens with a "USER RULES" block, treat each rule there as a binding requirement the script MUST satisfy. Walk through the script and decide, per rule, whether it is RESPECTED or VIOLATED — quoting the exact passage that proves either way. Every VIOLATED rule is logged as a \`critical_issues\` entry with severity "critical" and a specific fix. Do not ignore, paraphrase, or "soften" the user's rules; if a rule conflicts with your default reviewer instincts, the user's rule wins.
+
+## VERIFY GROUNDING IN CURRENT REALITY:
+- Flag every specific stat, date, name, or quote in the script that looks fabricated, generic, or suspiciously vague ("studies show…", "experts say…", "recently…" with no specifics). Hallucinated specifics are a critical issue, even when the prose around them reads well.
+- Flag claims that contradict widely-known recent context (events, public figures, technologies). A confidently wrong sentence is worse than a vague true one.
+- When a number / date / quote looks suspiciously precise, call it out explicitly under \`critical_issues\` and ask for either a real source or replacement.
+
 ${humanAuthenticityNote}${brandKitReviewerNote}
 
 Your analysis must always be actionable — for every problem you find, provide a specific fix.`,
 
     user: `Perform a ${aggressiveness.toUpperCase()} QA review of this YouTube script. This is Pass #${passNumber}.
-${additionalContext && additionalContext.trim() ? `\n## Reviewer Direction (from saved template + per-call context):\n${additionalContext.trim()}\n` : ''}
+${additionalContext && additionalContext.trim() ? `
+## USER RULES — VALIDATE COMPLIANCE FOR EACH:
+${additionalContext.trim()}
+
+For every rule above, walk through the script and decide RESPECTED or VIOLATED. Quote the exact passage that proves your verdict. Every VIOLATED rule MUST appear in \`critical_issues\` with severity "critical" and a concrete rewrite. Do not paraphrase the rules — keep the user's wording verbatim when citing them. Re-read this block again before you finalise your verdict.
+` : ''}
 ${buildQAConstraintsPromptBlock(constraints)}
 ${previousFeedback ? `## Previous QA Feedback (Pass ${passNumber - 1}):\n${previousFeedback}\n\nIMPORTANT SCORING RULES FOR FOLLOW-UP PASSES:
 - If previous issues were FIXED, the score for those categories MUST increase significantly (at least +15-25 points per fixed category)

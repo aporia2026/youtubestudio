@@ -59,32 +59,91 @@ export function TemplateContextPicker({
 }: Props) {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [loading, setLoading] = useState(true);
+  // Save-as-template UI state. Inline name input + button instead of a
+  // modal so the user can save without leaving their flow.
+  const [showSavePanel, setShowSavePanel] = useState(false);
+  const [saveName, setSaveName] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  async function reload(): Promise<Template[]> {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/templates?field_type=${fieldType}`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      const list: Template[] = data.templates || [];
+      setTemplates(list);
+      return list;
+    } catch {
+      return [];
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      setLoading(true);
-      try {
-        const res = await fetch(`/api/templates?field_type=${fieldType}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (cancelled) return;
-          const list: Template[] = data.templates || [];
-          setTemplates(list);
-          // Auto-select the user's default template the first time we see it.
-          if (autoSelectDefault && templateId === null) {
-            const def = list.find(t => t.is_default);
-            if (def) onTemplateChange(def.id);
-          }
-        }
-      } catch {} finally { if (!cancelled) setLoading(false); }
+      const list = await reload();
+      if (cancelled) return;
+      // Auto-select the user's default template the first time we see it.
+      if (autoSelectDefault && templateId === null) {
+        const def = list.find((t) => t.is_default);
+        if (def) onTemplateChange(def.id);
+      }
     }
     load();
-    function onVisible() { if (!document.hidden) load(); }
+    function onVisible() {
+      if (!document.hidden) load();
+    }
     document.addEventListener('visibilitychange', onVisible);
-    return () => { cancelled = true; document.removeEventListener('visibilitychange', onVisible); };
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', onVisible);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fieldType]);
+
+  async function handleSaveAsTemplate() {
+    const name = saveName.trim();
+    const content = context.trim();
+    if (!name) {
+      setSaveError('Give the template a name first');
+      return;
+    }
+    if (!content) {
+      setSaveError('Type some context above before saving');
+      return;
+    }
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const res = await fetch('/api/templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ field_type: fieldType, name, content }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setSaveError((data as { error?: string }).error || `Save failed (${res.status})`);
+        return;
+      }
+      const data: { template: Template } = await res.json();
+      // Refresh the list so the new template appears in the dropdown,
+      // and auto-select it so the user can see it landed.
+      await reload();
+      onTemplateChange(data.template.id);
+      // Clearing `context` after save would surprise the user mid-task —
+      // keep their text, just close the save panel.
+      setShowSavePanel(false);
+      setSaveName('');
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  }
 
   const selected = templates.find(t => t.id === templateId) || null;
 
@@ -125,9 +184,22 @@ export function TemplateContextPicker({
       </div>
 
       <div>
-        <label className="text-[11px] uppercase tracking-wider font-semibold mb-1.5 block" style={{ color: 'var(--text-muted)' }}>
-          Extra context for this generation
-        </label>
+        <div className="flex items-center justify-between mb-1.5">
+          <label className="text-[11px] uppercase tracking-wider font-semibold" style={{ color: 'var(--text-muted)' }}>
+            Extra context for this generation
+          </label>
+          {context.trim().length > 0 && !showSavePanel && (
+            <button
+              type="button"
+              onClick={() => { setShowSavePanel(true); setSaveError(null); }}
+              className="text-[10px] hover:underline"
+              style={{ color: '#a78bfa' }}
+              title="Save this context as a reusable template"
+            >
+              💾 Save as template
+            </button>
+          )}
+        </div>
         <textarea
           value={context}
           onChange={e => onContextChange(e.target.value)}
@@ -138,6 +210,52 @@ export function TemplateContextPicker({
           className="w-full px-3 py-2 rounded-lg text-sm resize-y"
           style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
         />
+        {showSavePanel && (
+          <div
+            className="mt-2 p-2.5 rounded-lg space-y-2"
+            style={{ background: 'rgba(124,58,237,0.08)', border: '1px solid rgba(124,58,237,0.3)' }}
+          >
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={saveName}
+                onChange={(e) => setSaveName(e.target.value)}
+                placeholder="Template name (e.g. &quot;Cold open · 6 sections&quot;)"
+                className="flex-1 px-2.5 py-1.5 rounded-md text-sm outline-none"
+                style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { e.preventDefault(); handleSaveAsTemplate(); }
+                  if (e.key === 'Escape') { setShowSavePanel(false); setSaveName(''); setSaveError(null); }
+                }}
+              />
+              <button
+                type="button"
+                onClick={handleSaveAsTemplate}
+                disabled={saving}
+                className="text-xs font-medium px-3 py-1.5 rounded-md disabled:opacity-50"
+                style={{ background: '#7c3aed', color: 'white' }}
+              >
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setShowSavePanel(false); setSaveName(''); setSaveError(null); }}
+                disabled={saving}
+                className="text-xs px-2 py-1.5 rounded-md"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                Cancel
+              </button>
+            </div>
+            {saveError && (
+              <p className="text-[11px]" style={{ color: '#ef4444' }}>{saveError}</p>
+            )}
+            <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              Saves the text above as a reusable template. Available next time from the dropdown.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );
