@@ -1134,6 +1134,8 @@ function ProductionDocPage() {
         stylePreset,
         doc: result,
         script: script.trim() || undefined,
+        videoTitle: scheduleItem?.title?.trim() || topic.trim() || undefined,
+        scheduleItemId: scheduleItemId || undefined,
       });
       setHistoryEntryId(savedEntry.id);
       // Optimistic prepend — see voiceover/generator save handlers.
@@ -2236,7 +2238,7 @@ function ProductionDocPage() {
         items={historyItems.map(e => ({
           id: e.id,
           timestamp: e.timestamp,
-          label: e.title,
+          label: e.videoTitle || e.title,
           sublabel: `${e.niche} · ${e.shotCount} shots · ${e.totalDuration} · ${e.stylePreset}`,
         }))}
         onRestore={(id) => {

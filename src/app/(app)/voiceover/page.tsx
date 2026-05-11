@@ -205,6 +205,8 @@ function VoiceoverStudio() {
         style: '',
         text,
         settings: { ...settings },
+        videoTitle: scheduleItem?.title?.trim() || undefined,
+        scheduleItemId: scheduleItemId || undefined,
       });
       // Optimistic prepend instead of refetching — a blind GET here
       // can hit a read replica before the INSERT propagates and
@@ -610,7 +612,14 @@ function VoiceoverStudio() {
                   </div>
                   {!projectId && (
                     <div className="mt-2">
-                      <SaveAsProject script={text} niche="" topic="" variant="secondary" className="w-full" label="Save as New Project" />
+                      <SaveAsProject
+                        script={text}
+                        niche={scheduleItem?.pillar ?? ''}
+                        topic={scheduleItem?.title ?? ''}
+                        variant="secondary"
+                        className="w-full"
+                        label="Save as New Project"
+                      />
                     </div>
                   )}
                 </motion.div>
@@ -629,8 +638,10 @@ function VoiceoverStudio() {
         items={voHistoryItems.map(e => ({
           id: e.id,
           timestamp: e.timestamp,
-          label: e.voiceName,
-          sublabel: `${e.charCount.toLocaleString()} chars · ${e.tone} · ${e.style}`,
+          label: e.videoTitle || e.voiceName,
+          sublabel: e.videoTitle
+            ? `${e.voiceName} · ${e.charCount.toLocaleString()} chars`
+            : `${e.charCount.toLocaleString()} chars · ${e.tone} · ${e.style}`,
           preview: e.textPreview,
         }))}
         onRestore={restoreVoiceover}

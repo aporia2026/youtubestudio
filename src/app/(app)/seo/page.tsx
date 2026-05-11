@@ -220,6 +220,8 @@ function SeoPage() {
         script: script.trim() || undefined,
         targetKeywords: targetKeywords.trim() || undefined,
         existingTitle: existingTitle.trim() || undefined,
+        videoTitle: scheduleItem?.title?.trim() || topic.trim() || undefined,
+        scheduleItemId: scheduleItemId || undefined,
       });
       // Optimistic prepend — see voiceover/generator save handlers.
       setHistoryItems((prev) => [savedSeo, ...prev.filter((p) => p.id !== savedSeo.id)]);
@@ -782,8 +784,9 @@ function SeoPage() {
         items={historyItems.map(e => ({
           id: e.id,
           timestamp: e.timestamp,
-          label: e.bestTitle,
+          label: e.videoTitle || e.bestTitle,
           sublabel: `${e.niche} · ${e.titlesCount} titles · Best: ${e.bestScore}/100 · ${e.tagsCount} tags`,
+          preview: e.videoTitle && e.bestTitle && e.bestTitle !== e.videoTitle ? `Top title: ${e.bestTitle}` : undefined,
         }))}
         onRestore={(id) => {
           const entry = historyItems.find(e => e.id === id);

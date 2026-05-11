@@ -465,6 +465,8 @@ function IdeasPage() {
           refs: refs.filter(r => !r.loading).map(r => ({
             url: r.url, title: r.title, channelTitle: r.channelTitle, viewCount: r.viewCount,
           })),
+          videoTitle: scheduleItem?.title?.trim() || undefined,
+          scheduleItemId: scheduleItemId || undefined,
         });
         // Optimistic prepend — see voiceover/generator save handlers.
         setIdeasHistoryItems((prev) => [savedIdeasEntry, ...prev.filter((p) => p.id !== savedIdeasEntry.id)]);
@@ -1251,8 +1253,10 @@ function IdeasPage() {
         items={ideasHistoryItems.map(e => ({
           id: e.id,
           timestamp: e.timestamp,
-          label: `${e.niche} — ${e.ideas.length} ideas`,
-          sublabel: `${e.focus} · ${e.videoType || 'any'} · ${e.count} requested`,
+          label: e.videoTitle || `${e.niche} — ${e.ideas.length} ideas`,
+          sublabel: e.videoTitle
+            ? `${e.niche} · ${e.ideas.length} ideas · ${e.focus} · ${e.videoType || 'any'}`
+            : `${e.focus} · ${e.videoType || 'any'} · ${e.count} requested`,
           preview: e.ideas.slice(0, 3).map(i => (i as Record<string, string>).title || '').join(' | '),
         }))}
         onRestore={restoreIdeas}

@@ -275,6 +275,8 @@ function GeneratorPage() {
         seriesId: seriesId || undefined,
         seriesTitle: seriesTitle || undefined,
         partNumber: seriesId ? partNumber : undefined,
+        videoTitle: scheduleItem?.title?.trim() || topic.trim() || undefined,
+        scheduleItemId: scheduleItemId || undefined,
       }).then((saved) => {
         // Prepend the canonical server row to state. A blind
         // getScriptHistory() refetch here can miss the new row if it
@@ -649,6 +651,8 @@ function GeneratorPage() {
           seriesId: seriesId || undefined,
           seriesTitle: seriesTitle || undefined,
           partNumber: seriesId ? partNumber : undefined,
+          videoTitle: scheduleItem?.title?.trim() || topic.trim() || undefined,
+          scheduleItemId: scheduleItemId || undefined,
         });
         // Optimistic prepend — see comment on the refine-save above.
         setHistoryItems((prev) => [savedQA, ...prev.filter((p) => p.id !== savedQA.id)]);
@@ -766,6 +770,8 @@ function GeneratorPage() {
         seriesId: seriesId || undefined,
         seriesTitle: seriesTitle || undefined,
         partNumber: seriesId ? partNumber : undefined,
+        videoTitle: scheduleItem?.title?.trim() || topic.trim() || undefined,
+        scheduleItemId: scheduleItemId || undefined,
       });
       // Optimistic prepend — see comment on the refine-save above.
       setHistoryItems((prev) => [savedAuto, ...prev.filter((p) => p.id !== savedAuto.id)]);
@@ -1715,7 +1721,7 @@ function GeneratorPage() {
         items={historyItems.map(e => ({
           id: e.id,
           timestamp: e.timestamp,
-          label: e.topic,
+          label: e.videoTitle || e.topic || 'Untitled',
           sublabel: `${e.niche} · ${e.tone} · ${e.duration}min · ${e.wordCount} words`,
           preview: e.script.slice(0, 150),
         }))}

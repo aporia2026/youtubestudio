@@ -635,6 +635,8 @@ function QAPage() {
         passCount: newResults.length,
         script,
         results: newResults,
+        videoTitle: scheduleItem?.title?.trim() || topic.trim() || undefined,
+        scheduleItemId: scheduleItemId || undefined,
       });
       // Optimistic prepend — see voiceover/generator save handlers.
       setQaHistory((prev) => [savedQA, ...prev.filter((p) => p.id !== savedQA.id)]);
@@ -1696,8 +1698,10 @@ function QAPage() {
         items={qaHistory.map(e => ({
           id: e.id,
           timestamp: e.timestamp,
-          label: `Score ${e.overallScore}/100 · ${e.aggressiveness.charAt(0).toUpperCase() + e.aggressiveness.slice(1)}`,
-          sublabel: `${e.niche} · Pass ${e.passCount}`,
+          label: e.videoTitle || `Score ${e.overallScore}/100 · ${e.aggressiveness.charAt(0).toUpperCase() + e.aggressiveness.slice(1)}`,
+          sublabel: e.videoTitle
+            ? `Score ${e.overallScore}/100 · ${e.aggressiveness} · ${e.niche} · Pass ${e.passCount}`
+            : `${e.niche} · Pass ${e.passCount}`,
           preview: e.verdict,
         }))}
         onRestore={id => {

@@ -293,6 +293,8 @@ function ThumbnailsPage() {
         script: script.trim() || undefined,
         description: description.trim() || undefined,
         imageModel,
+        videoTitle: scheduleItem?.title?.trim() || title.trim() || undefined,
+        scheduleItemId: scheduleItemId || undefined,
       });
       setHistoryEntryId(savedEntry.id);
       // Optimistic prepend — see voiceover/generator save handlers.
@@ -973,7 +975,7 @@ function ThumbnailsPage() {
         items={historyItems.map(e => ({
           id: e.id,
           timestamp: e.timestamp,
-          label: e.title,
+          label: e.videoTitle || e.title,
           sublabel: `${e.niche} · ${e.conceptsCount} concepts · Best: ${e.bestConceptName} (${e.bestScore}/100)`,
         }))}
         onRestore={(id) => {

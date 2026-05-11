@@ -60,6 +60,14 @@ export interface ScriptHistoryEntry {
   seriesId?: string;
   seriesTitle?: string;
   partNumber?: number;
+  // The planned video's title at save time — the linked schedule item's
+  // title when there is one, else whatever the user typed into `topic`.
+  // Stamped onto every history kind so the history panel can show *which
+  // video* this entry belongs to, regardless of whether the entry itself
+  // is voice-, idea-, QA-, or thumbnail-shaped. Optional for forward
+  // compatibility with rows written before this field existed.
+  videoTitle?: string;
+  scheduleItemId?: string;
 }
 
 export interface IdeasHistoryEntry {
@@ -74,6 +82,8 @@ export interface IdeasHistoryEntry {
   audience?: string;
   usedReddit?: boolean;
   refs?: Array<{ url: string; title: string; channelTitle?: string; viewCount?: number }>;
+  videoTitle?: string;
+  scheduleItemId?: string;
 }
 
 export interface VoiceoverHistoryEntry {
@@ -95,6 +105,8 @@ export interface VoiceoverHistoryEntry {
     use_speaker_boost: boolean;
     model_id: string;
   };
+  videoTitle?: string;
+  scheduleItemId?: string;
 }
 
 export interface SeoHistoryEntry {
@@ -111,6 +123,8 @@ export interface SeoHistoryEntry {
   script?: string;
   targetKeywords?: string;
   existingTitle?: string;
+  videoTitle?: string;
+  scheduleItemId?: string;
 }
 
 export interface ThumbnailHistoryEntry {
@@ -128,6 +142,8 @@ export interface ThumbnailHistoryEntry {
   script?: string;
   description?: string;
   imageModel?: string;
+  videoTitle?: string;
+  scheduleItemId?: string;
 }
 
 export interface QAHistoryEntry {
@@ -144,6 +160,8 @@ export interface QAHistoryEntry {
   results?: unknown[];
   /** @deprecated Older entries used the singular field. */
   result?: unknown;
+  videoTitle?: string;
+  scheduleItemId?: string;
 }
 
 export interface ProductionDocHistoryEntry {
@@ -160,6 +178,8 @@ export interface ProductionDocHistoryEntry {
   doc?: unknown;
   script?: string;
   rowImages?: Record<number, string>;
+  videoTitle?: string;
+  scheduleItemId?: string;
 }
 
 // ---------------------------------------------------------------------------
