@@ -149,6 +149,14 @@ export async function ensureNarratorSchema() {
     // also runs ADD COLUMN IF NOT EXISTS on the same column, so the two
     // paths converge.
     try { await sql`ALTER TABLE narration_take_comments ADD COLUMN IF NOT EXISTS workspace_id UUID`; } catch {}
+    // Migration 0050 adds posted_by_owner to the comment tables for the
+    // team-hub "Act as <collaborator>" escalation. createTakeComment INSERTs
+    // the column unconditionally, so a database that hasn't yet run 0050
+    // fails with "column does not exist" → the route returns the generic
+    // "Failed to create comment" 500. Heal it here so the column is present
+    // even when migrations haven't been applied yet on this deploy.
+    try { await sql`ALTER TABLE narration_take_comments ADD COLUMN IF NOT EXISTS posted_by_owner BOOLEAN NOT NULL DEFAULT false`; } catch {}
+    try { await sql`ALTER TABLE narrator_comments ADD COLUMN IF NOT EXISTS posted_by_owner BOOLEAN NOT NULL DEFAULT false`; } catch {}
     // Filter-by-resolved is the most common list query (the panel defaults
     // to "unresolved"). Partial index keeps it cheap.
     try { await sql`CREATE INDEX IF NOT EXISTS idx_narration_take_comments_unresolved ON narration_take_comments(take_id) WHERE resolved = false`; } catch {}

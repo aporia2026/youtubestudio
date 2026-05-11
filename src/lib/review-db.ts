@@ -69,6 +69,12 @@ export async function ensureReviewSchema() {
     // owner can then see the fix note alongside their original feedback on
     // the v2 timeline.
     try { await sql`ALTER TABLE review_comments ADD COLUMN IF NOT EXISTS fix_for_comment_id UUID REFERENCES review_comments(id) ON DELETE SET NULL`; } catch {}
+    // Migration 0050 adds posted_by_owner across the three comment tables for
+    // the team-hub "Act as <collaborator>" escalation. The activity feed in
+    // team-hub-activity-db reads c.posted_by_owner from review_comments, so
+    // a database that hasn't yet run 0050 surfaces "column does not exist"
+    // there. Heal it here on the same idempotent pattern.
+    try { await sql`ALTER TABLE review_comments ADD COLUMN IF NOT EXISTS posted_by_owner BOOLEAN NOT NULL DEFAULT false`; } catch {}
 
     await sql`
       CREATE TABLE IF NOT EXISTS review_share_links (
