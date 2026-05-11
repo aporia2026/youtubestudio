@@ -94,6 +94,10 @@ export const DEFAULT_STUCK_THRESHOLDS: Record<string, number> = {
   recording: 7,
   editing: 14,
   ready: 7,
+  // The upload queue is deliberately user-controlled — items sit here
+  // in manual order until the creator decides to ship them — so a
+  // stuck-stage warning would be noise.
+  upload_queue: Infinity,
   published: Infinity,
 };
 

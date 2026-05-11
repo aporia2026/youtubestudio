@@ -13,13 +13,29 @@ type Props = {
   channels: Channel[];
   onSelect: (id: string) => void;
   onPatch: (id: string, patch: Partial<ScheduleItem>) => void;
+  /** Called when the user reorders cards inside a `manual_order` column
+   *  (currently only the Upload Queue). Receives the new full ordering of
+   *  item ids in that column; the caller persists them via
+   *  POST /api/schedule/reorder and updates local state. */
+  onReorder?: (status: string, orderedIds: string[]) => void;
 };
 
 /** WIP limit (visual warning, not enforced). Tuned for a solo-creator flow. */
 const SOFT_CAP = 8;
 
-export function KanbanView({ items, statuses, channels, onSelect, onPatch }: Props) {
+/** Statuses whose Kanban column is ordered manually (by `position`) rather
+ *  than by scheduled date. Currently just the Upload Queue, but kept as a
+ *  set so adding more later — e.g. an "Ideas backlog" the creator
+ *  prioritises by hand — is a one-line change. */
+const MANUAL_ORDER_STATUSES = new Set<string>(['upload_queue']);
+
+export function KanbanView({ items, statuses, channels, onSelect, onPatch, onReorder }: Props) {
   const [dragOver, setDragOver] = useState<string | null>(null);
+  // While a drag is active, where the dragged card would land if dropped
+  // right now. `index` is the slot in the column's array; cleared on
+  // dragend / drop so a finished drag doesn't leave a stale insertion
+  // line behind.
+  const [dropIndicator, setDropIndicator] = useState<{ status: string; index: number } | null>(null);
 
   const byStatus = useMemo(() => {
     const map = new Map<string, ScheduleItem[]>();
@@ -28,14 +44,27 @@ export function KanbanView({ items, statuses, channels, onSelect, onPatch }: Pro
       if (!map.has(it.status)) map.set(it.status, []);
       map.get(it.status)!.push(it);
     }
-    // Sort within column by scheduled date (nulls last), then by title.
-    for (const arr of map.values()) {
-      arr.sort((a, b) => {
-        const aTime = a.scheduled_for ? new Date(a.scheduled_for).getTime() : Infinity;
-        const bTime = b.scheduled_for ? new Date(b.scheduled_for).getTime() : Infinity;
-        if (aTime !== bTime) return aTime - bTime;
-        return a.title.localeCompare(b.title);
-      });
+    // Sort within column. Manual-order columns honour `position` (set by
+    // the drag-to-reorder flow), tie-breaking by newest-first so newly-
+    // added items show up at the top instead of getting buried. Every
+    // other column keeps the date-driven sort the rest of the UI relies
+    // on for "next up by calendar".
+    for (const [statusKey, arr] of map.entries()) {
+      if (MANUAL_ORDER_STATUSES.has(statusKey)) {
+        arr.sort((a, b) => {
+          if (a.position !== b.position) return a.position - b.position;
+          // Tie-breaker: newer first, mirroring the list endpoint's
+          // created_at DESC fallback.
+          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+        });
+      } else {
+        arr.sort((a, b) => {
+          const aTime = a.scheduled_for ? new Date(a.scheduled_for).getTime() : Infinity;
+          const bTime = b.scheduled_for ? new Date(b.scheduled_for).getTime() : Infinity;
+          if (aTime !== bTime) return aTime - bTime;
+          return a.title.localeCompare(b.title);
+        });
+      }
     }
     return map;
   }, [items, statuses]);
@@ -44,8 +73,34 @@ export function KanbanView({ items, statuses, channels, onSelect, onPatch }: Pro
     e.preventDefault();
     const id = e.dataTransfer.getData('text/plain');
     setDragOver(null);
-    const item = items.find(i => i.id === id);
-    if (!item || item.status === targetStatus) return;
+    const indicator = dropIndicator;
+    setDropIndicator(null);
+    const item = items.find((i) => i.id === id);
+    if (!item) return;
+
+    // Intra-column reorder for manual-order columns. The dragged item is
+    // moved to the indicator's index — if no indicator was captured (drop
+    // landed on empty space) it goes to the end.
+    if (item.status === targetStatus && MANUAL_ORDER_STATUSES.has(targetStatus) && onReorder) {
+      const column = byStatus.get(targetStatus) ?? [];
+      const fromIdx = column.findIndex((c) => c.id === id);
+      if (fromIdx < 0) return;
+      let targetIdx = indicator?.status === targetStatus ? indicator.index : column.length;
+      // Removing the item first means the post-removal indices shift; if
+      // the indicator was past the item's old slot, decrement so the
+      // user-visible insertion point doesn't drift by one.
+      if (targetIdx > fromIdx) targetIdx -= 1;
+      if (targetIdx === fromIdx) return;
+      const next = column.slice();
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(targetIdx, 0, moved);
+      onReorder(targetStatus, next.map((c) => c.id));
+      return;
+    }
+
+    // Cross-column drop (or a manual-order column without a reorder
+    // handler wired up) → status change, existing behaviour.
+    if (item.status === targetStatus) return;
     onPatch(id, { status: targetStatus });
   }
 
@@ -106,7 +161,15 @@ export function KanbanView({ items, statuses, channels, onSelect, onPatch }: Pro
                   Drop items here
                 </div>
               )}
-              {columnItems.map(it => {
+              {columnItems.map((it, cardIdx) => {
+                const isManualOrderColumn = MANUAL_ORDER_STATUSES.has(st.key);
+                const showInsertAbove =
+                  isManualOrderColumn && dropIndicator?.status === st.key && dropIndicator.index === cardIdx;
+                const showInsertBelow =
+                  isManualOrderColumn &&
+                  dropIndicator?.status === st.key &&
+                  dropIndicator.index === cardIdx + 1 &&
+                  cardIdx === columnItems.length - 1;
                 const stuck = isStuck(it);
                 const days = daysInStage(it);
                 const primaryChannel = it.channels?.[0];
@@ -116,13 +179,39 @@ export function KanbanView({ items, statuses, channels, onSelect, onPatch }: Pro
                 const checklistTotal = it.checklist?.length ?? 0;
                 const checklistDone = it.checklist?.filter(c => c.done).length ?? 0;
                 return (
+                  <div key={it.id}>
+                    {showInsertAbove && (
+                      <div
+                        className="h-0.5 -mt-1 mb-1 rounded-full"
+                        style={{ background: st.color, boxShadow: `0 0 6px ${st.color}` }}
+                      />
+                    )}
                   <motion.div
-                    key={it.id}
                     draggable
                     // framer-motion narrows onDragStart to pointer drag events (for its own
                     // gesture system). Cast to React.DragEvent so we can reach dataTransfer
                     // for the native HTML5 drag the `draggable` attribute enables.
                     onDragStart={(e) => (e as unknown as React.DragEvent).dataTransfer.setData('text/plain', it.id)}
+                    onDragEnd={() => setDropIndicator(null)}
+                    onDragOver={
+                      isManualOrderColumn
+                        ? (e) => {
+                            // Above/below the card's vertical midpoint decides
+                            // whether the insertion line snaps before or after.
+                            // Without midpoint logic, dropping on the card itself
+                            // is ambiguous and users invariably miss by one slot.
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            const before = e.clientY < rect.top + rect.height / 2;
+                            const index = before ? cardIdx : cardIdx + 1;
+                            setDragOver(st.key);
+                            setDropIndicator((d) =>
+                              d?.status === st.key && d.index === index ? d : { status: st.key, index },
+                            );
+                          }
+                        : undefined
+                    }
                     onClick={() => onSelect(it.id)}
                     whileHover={{ y: -2 }}
                     className="p-2.5 rounded-md cursor-pointer"
@@ -232,6 +321,13 @@ export function KanbanView({ items, statuses, channels, onSelect, onPatch }: Pro
                       </div>
                     )}
                   </motion.div>
+                    {showInsertBelow && (
+                      <div
+                        className="h-0.5 mt-1 rounded-full"
+                        style={{ background: st.color, boxShadow: `0 0 6px ${st.color}` }}
+                      />
+                    )}
+                  </div>
                 );
               })}
             </div>

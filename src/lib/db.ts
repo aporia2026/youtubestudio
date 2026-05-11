@@ -562,7 +562,11 @@ export const DEFAULT_SCHEDULE_STATUSES = [
   { key: 'recording', label: 'Recording', color: '#f59e0b', position: 2 },
   { key: 'editing', label: 'Editing', color: '#06b6d4', position: 3 },
   { key: 'ready', label: 'Ready', color: '#10b981', position: 4 },
-  { key: 'published', label: 'Published', color: '#3b82f6', position: 5 },
+  // Items the creator has lined up to upload, in the order they intend to
+  // ship. The Kanban column sorts by `position` (manual drag order) instead
+  // of `scheduled_for` so the next-up video is always at the top.
+  { key: 'upload_queue', label: 'Upload Queue', color: '#f97316', position: 5 },
+  { key: 'published', label: 'Published', color: '#3b82f6', position: 6 },
 ];
 
 /** Idempotent setup for the series feature. A series is a cross-device grouping

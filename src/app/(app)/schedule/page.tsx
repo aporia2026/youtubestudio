@@ -183,6 +183,29 @@ function SchedulePage() {
     if (patch.channel_ids) fetchCounts();
   }, [fetchItems, fetchCounts]);
 
+  /** Persist a manual reorder (currently driven by the Upload Queue
+   *  Kanban column). Optimistically rewrites each item's `position` to its
+   *  1-based slot in `orderedIds` so the sort is stable even before the
+   *  server responds, then POSTs the new ordering to the batch endpoint.
+   *  Rollback re-fetches on failure rather than trying to remember the
+   *  prior order — a stale local positions array vs the server's
+   *  authoritative one would diverge silently. */
+  const reorderItems = useCallback(async (_status: string, orderedIds: string[]) => {
+    setItems(curr => {
+      const idToPosition = new Map(orderedIds.map((id, i) => [id, i + 1]));
+      return curr.map(it => (idToPosition.has(it.id) ? { ...it, position: idToPosition.get(it.id)! } : it));
+    });
+    const res = await fetch('/api/schedule/reorder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: orderedIds }),
+    });
+    if (!res.ok) {
+      toast.error('Reorder failed');
+      fetchItems();
+    }
+  }, [fetchItems]);
+
   const deleteItem = useCallback(async (id: string, alsoChildren = false) => {
     const res = await fetch(`/api/schedule/${id}?children=${alsoChildren}`, { method: 'DELETE' });
     if (res.ok) {
@@ -420,7 +443,7 @@ function SchedulePage() {
             <div className="py-20 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>
           ) : view === 'kanban' ? (
             <KanbanView items={displayItems} statuses={statuses} channels={channels}
-              onSelect={setSelected} onPatch={patchItem} />
+              onSelect={setSelected} onPatch={patchItem} onReorder={reorderItems} />
           ) : view === 'list' ? (
             <ListView items={displayItems} statuses={statuses} channels={channels}
               onSelect={setSelected} onPatch={patchItem} onDelete={deleteItem}
