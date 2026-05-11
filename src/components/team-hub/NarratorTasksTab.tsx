@@ -456,6 +456,21 @@ function NarratorTableRow({
         >
           {task.project_title || 'Untitled'}
         </a>
+        {(task.latest_take_duration_seconds != null || task.spoken_word_count > 0) && (
+          <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+            {task.latest_take_duration_seconds != null && (
+              <span title="Length of the most recent narration upload">
+                {formatNarrationDuration(task.latest_take_duration_seconds)}
+              </span>
+            )}
+            {task.latest_take_duration_seconds != null && task.spoken_word_count > 0 && ' · '}
+            {task.spoken_word_count > 0 && (
+              <span title="Spoken words in the script (production cues stripped)">
+                {task.spoken_word_count.toLocaleString()} narrated words
+              </span>
+            )}
+          </div>
+        )}
       </td>
       <td className="px-3 py-2.5">
         <select
@@ -552,12 +567,28 @@ function NarratorTaskRow({ task, narratorId, onChangeStatus, onChangeDeadline, o
           >
             {task.project_title || 'Untitled project'}
           </a>
-          <div className="flex items-center gap-2 mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          <div className="flex items-center gap-x-2 flex-wrap mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
             <span>
               {task.approved_sections}/{task.total_sections} approved
             </span>
             <span>·</span>
             <span>Last accessed {timeAgo(task.last_accessed_at)}</span>
+            {task.latest_take_duration_seconds != null && (
+              <>
+                <span>·</span>
+                <span title="Length of the most recent narration upload">
+                  {formatNarrationDuration(task.latest_take_duration_seconds)}
+                </span>
+              </>
+            )}
+            {task.spoken_word_count > 0 && (
+              <>
+                <span>·</span>
+                <span title="Spoken words in the script (production cues stripped)">
+                  {task.spoken_word_count.toLocaleString()} narrated words
+                </span>
+              </>
+            )}
           </div>
         </div>
 
@@ -720,6 +751,20 @@ function CopyShareLink({ token }: { token: string }) {
 }
 
 // ── Pure helpers ────────────────────────────────────────────────────
+
+/** Render a take's duration as `M:SS` (or `H:MM:SS` over an hour). Round
+ *  to whole seconds so we don't show jittery fractions from the NUMERIC
+ *  column. Returns empty string for non-finite / negative input so callers
+ *  can fall back to omitting the segment entirely. */
+function formatNarrationDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '';
+  const total = Math.round(seconds);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
 
 interface Buckets {
   urgent: NarratorTaskRow[];

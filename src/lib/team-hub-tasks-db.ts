@@ -13,6 +13,7 @@
  * even if a malicious caller forges the collaborator id in the URL.
  */
 import { sql } from '@vercel/postgres';
+import { countWords } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
 // Editor tasks
@@ -211,6 +212,60 @@ export interface NarratorTaskRow {
    *  "Open take comments" action. NULL when the narrator hasn't uploaded
    *  any takes yet. */
   latest_take_id: string | null;
+  /** Duration in seconds of the narrator's most recent narration upload —
+   *  the assignment's cached `full_audio_duration_seconds` when they
+   *  uploaded a single full-script file, otherwise the most recent
+   *  per-section take's `duration_seconds`. NULL when nothing has been
+   *  uploaded yet. */
+  latest_take_duration_seconds: number | null;
+  /** Count of *spoken* words across all real script sections, with
+   *  production cues / metadata stripped via `stripProductionCues`.
+   *  Gives the owner a quick read on how much narration the assignment
+   *  actually contains, independent of bracketed direction. */
+  spoken_word_count: number;
+}
+
+/** Raw row shape returned by the narrator-tasks query — kept separate
+ *  from `NarratorTaskRow` so the post-processing step in `getNarratorTasks`
+ *  is unit-testable without spinning up Postgres. NUMERIC columns can come
+ *  back as either `string` or `number` depending on the driver's type
+ *  parser configuration, so the post-processor coerces. */
+export interface NarratorTaskQueryRow extends Omit<NarratorTaskRow, 'latest_take_duration_seconds' | 'spoken_word_count'> {
+  full_audio_duration_seconds: number | string | null;
+  latest_section_take_duration_seconds: number | string | null;
+  scripts_joined: string | null;
+}
+
+/** Pure post-processor: coerce numeric duration to a real `number`,
+ *  prefer the cached full-audio duration when present, and compute the
+ *  spoken-word count off the aggregated script text. Exported for tests. */
+export function projectNarratorTaskRow(raw: NarratorTaskQueryRow): NarratorTaskRow {
+  const full = raw.full_audio_duration_seconds;
+  const perSection = raw.latest_section_take_duration_seconds;
+  let latestTakeDurationSeconds: number | null = null;
+  if (full != null && full !== '') {
+    const n = Number(full);
+    if (Number.isFinite(n)) latestTakeDurationSeconds = n;
+  } else if (perSection != null && perSection !== '') {
+    const n = Number(perSection);
+    if (Number.isFinite(n)) latestTakeDurationSeconds = n;
+  }
+  return {
+    id: raw.id,
+    project_id: raw.project_id,
+    project_title: raw.project_title,
+    status: raw.status,
+    deadline: raw.deadline,
+    share_token: raw.share_token,
+    last_accessed_at: raw.last_accessed_at,
+    created_at: raw.created_at,
+    updated_at: raw.updated_at,
+    total_sections: raw.total_sections,
+    approved_sections: raw.approved_sections,
+    latest_take_id: raw.latest_take_id,
+    latest_take_duration_seconds: latestTakeDurationSeconds,
+    spoken_word_count: countWords(raw.scripts_joined ?? ''),
+  };
 }
 
 /**
@@ -226,7 +281,13 @@ export async function getNarratorTasks(
   workspaceId: string,
   narratorId: string,
 ): Promise<NarratorTaskRow[]> {
-  const { rows } = await sql<NarratorTaskRow>`
+  // Section 0 is filtered out of every subquery: it's a synthetic holder
+  // for the full-script audio path and would otherwise (a) inflate progress
+  // counts, (b) duplicate the take into the "latest per-section take"
+  // subquery, and (c) double-count its script_text into the aggregate.
+  // The full-audio path surfaces via the assignment-level cached duration
+  // instead — see `projectNarratorTaskRow`.
+  const { rows } = await sql<NarratorTaskQueryRow>`
     SELECT
       a.id,
       a.project_id,
@@ -237,6 +298,7 @@ export async function getNarratorTasks(
       a.last_accessed_at,
       a.created_at,
       a.updated_at,
+      a.full_audio_duration_seconds,
       COALESCE(ss.total_sections, 0)::int AS total_sections,
       COALESCE(ss.approved_sections, 0)::int AS approved_sections,
       (
@@ -246,7 +308,22 @@ export async function getNarratorTasks(
          WHERE s.assignment_id = a.id
          ORDER BY t.created_at DESC
          LIMIT 1
-      ) AS latest_take_id
+      ) AS latest_take_id,
+      (
+        SELECT t.duration_seconds
+          FROM narrator_takes t
+          JOIN narrator_sections s ON s.id = t.section_id
+         WHERE s.assignment_id = a.id
+           AND s.section_number != 0
+         ORDER BY t.created_at DESC
+         LIMIT 1
+      ) AS latest_section_take_duration_seconds,
+      (
+        SELECT COALESCE(string_agg(s.script_text, E'\n\n' ORDER BY s.section_number), '')
+          FROM narrator_sections s
+         WHERE s.assignment_id = a.id
+           AND s.section_number != 0
+      ) AS scripts_joined
       FROM narrator_assignments a
       LEFT JOIN projects p ON p.id = a.project_id
       LEFT JOIN (
@@ -261,5 +338,5 @@ export async function getNarratorTasks(
        AND a.workspace_id = ${workspaceId}
      ORDER BY a.updated_at DESC
   `;
-  return rows;
+  return rows.map(projectNarratorTaskRow);
 }
