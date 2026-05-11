@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from '@/lib/dubbing-languages';
+import { downloadHref } from '@/lib/download-file';
 
 interface ProjectListItem {
   id: string;
@@ -438,7 +439,7 @@ export default function DubPage() {
                       <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                         {d.status === 'ready' && d.audio_url && (
                           <a
-                            href={d.audio_url}
+                            href={downloadHref(d.audio_url, `dub-${d.target_language || 'audio'}.mp3`)}
                             download
                             className="hover:underline"
                             style={{ fontSize: 12, color: 'var(--text-secondary)' }}

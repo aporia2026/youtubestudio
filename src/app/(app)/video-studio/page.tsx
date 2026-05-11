@@ -7,6 +7,7 @@ import { productionDocToVideoConfig, msToFrame, ProductionDoc, RowImageState } f
 import type { BrandKit, VideoConfig, VideoShot, SceneType } from '@/remotion/types';
 import { DEFAULT_BRAND_KIT } from '@/remotion/types';
 import { getVoiceoverHistory } from '@/lib/history';
+import { downloadHref } from '@/lib/download-file';
 
 const VideoPlayer = dynamic(
   () => import('@/components/video/VideoPlayer').then(m => m.VideoPlayer),
@@ -1197,8 +1198,8 @@ function ExportTab({ settings, onSettings, renderStatus, renderProgress, renderO
 
         {renderOutputUrl && (
           <a
-            href={renderOutputUrl}
-            download
+            href={downloadHref(renderOutputUrl, 'video-studio-render.mp4')}
+            download="video-studio-render.mp4"
             className="w-full py-2.5 rounded-xl text-sm font-semibold text-center flex items-center justify-center gap-2 transition-colors"
             style={{ background: 'rgba(16,185,129,0.15)', color: '#34d399', border: '1px solid rgba(16,185,129,0.25)' }}
           >

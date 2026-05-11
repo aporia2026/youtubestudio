@@ -1,16 +1,48 @@
 /**
- * Force a "Save As" download for cross-origin URLs (Vercel Blob, R2, etc.).
+ * Resolve a download URL the browser can hit without tripping CORS.
  *
- * Why fetch + object URL instead of `<a href={url} download>`: the `download`
- * attribute is ignored cross-origin — the browser navigates to the URL and
- * tries to render it inline instead. Fetching the file lets us hand the
- * browser a same-origin blob URL, which respects the download intent.
+ * Same-origin URLs are returned unchanged. Cross-origin URLs are routed
+ * through `/api/download-proxy`, which streams the bytes back with
+ * `Content-Disposition: attachment`. Without this hop, two failure modes
+ * surface to users:
+ *   - `fetch(url)` rejects with "Failed to fetch" when the upstream (R2,
+ *     Vercel Blob, AI providers) doesn't send Access-Control-Allow-Origin.
+ *   - `<a href={url} download>` is silently ignored cross-origin — the
+ *     browser navigates to the file instead of saving it.
+ */
+export function downloadHref(url: string, name?: string): string {
+  if (!url) return url;
+  if (typeof window === 'undefined') return url;
+  // Root-relative path is same-origin by definition; protocol-relative URLs
+  // (`//host/path`) are not, so guard against the second slash.
+  if (url.startsWith('/') && !url.startsWith('//')) return url;
+  try {
+    const parsed = new URL(url, window.location.href);
+    if (parsed.origin === window.location.origin) return parsed.toString();
+  } catch {
+    return url;
+  }
+  const params = new URLSearchParams({ u: url });
+  if (name) params.set('name', name);
+  return `/api/download-proxy?${params.toString()}`;
+}
+
+/**
+ * Trigger a "Save As" download for any URL — same-origin or cross-origin.
  *
- * Requires the source to send `Access-Control-Allow-Origin` headers. Vercel
- * Blob does this by default for `access: 'public'` URLs.
+ * Cross-origin URLs are routed through `/api/download-proxy` so we don't
+ * depend on the upstream sending CORS headers. Falls back to fetching as a
+ * blob so the browser still respects the requested filename even when the
+ * upstream's URL has no extension (ElevenLabs / stitched narration).
  */
 export async function downloadCrossOriginFile(url: string, name: string): Promise<void> {
-  const res = await fetch(url);
+  const target = downloadHref(url, name);
+  let res: Response;
+  try {
+    res = await fetch(target);
+  } catch {
+    throw new Error('Network error — check your connection and try again.');
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const blob = await res.blob();
   const filename = ensureExtension(name, blob.type);

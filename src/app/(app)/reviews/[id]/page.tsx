@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { compressVideo, isCompressionSupported } from '@/lib/compress-video';
+import { downloadHref } from '@/lib/download-file';
 
 interface Version {
   id: string;
@@ -615,7 +616,7 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
                   </div>
                   {v.video_url && (
                     <a
-                      href={v.video_url}
+                      href={downloadHref(v.video_url, `v${v.version_number}.mp4`)}
                       download={`v${v.version_number}.mp4`}
                       onClick={e => e.stopPropagation()}
                       className="p-1.5 rounded-lg transition-colors hover:bg-white/10 cursor-pointer opacity-0 group-hover:opacity-100"

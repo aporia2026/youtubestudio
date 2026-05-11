@@ -61,6 +61,15 @@ const PUBLIC_PATHS: readonly string[] = [
   '/api/public',
   '/unsubscribe',
   '/api/notifications/unsubscribe',
+  // Same-origin download proxy. Streams bytes from an allowlisted host
+  // (R2 buckets we own, etc.) with `Content-Disposition: attachment` so
+  // the browser saves instead of navigating. Public because the editor /
+  // narrator portals — which hit it for voiceover + render downloads —
+  // are themselves token-authenticated rather than session-authenticated.
+  // The upstream URL is still authenticated by the presigned R2 signature
+  // it carries, so this route grants no access the caller doesn't already
+  // have.
+  '/api/download-proxy',
 ];
 
 /** Path prefixes that grant a token-portal exemption — anything matching any

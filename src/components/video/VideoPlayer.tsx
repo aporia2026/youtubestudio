@@ -5,6 +5,7 @@ import { Player, PlayerRef } from '@remotion/player';
 import { YouTubeVideo } from '@/remotion/compositions/YouTubeVideo';
 import { VideoConfig } from '@/remotion/types';
 import { totalFrames } from '@/remotion/utils';
+import { downloadHref } from '@/lib/download-file';
 
 interface VideoPlayerProps {
   config: VideoConfig;
@@ -130,8 +131,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         <div className="flex items-center gap-3">
           {outputUrl && (
             <a
-              href={outputUrl}
-              download
+              href={downloadHref(outputUrl, 'video-render.mp4')}
+              download="video-render.mp4"
               className="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-500 text-white text-sm font-semibold transition-colors flex items-center gap-2"
             >
               <DownloadIcon />

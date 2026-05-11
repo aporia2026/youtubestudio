@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
 import { TARGET_DURATION_SECONDS_DEFAULT, type ShortRow } from '@/lib/shorts-types';
+import { downloadHref } from '@/lib/download-file';
 
 interface ProjectListItem {
   id: string;
@@ -431,7 +432,7 @@ function ShortCard({
               style={{ flex: 1, height: 32 }}
             />
             <a
-              href={short.voiceover_audio_url}
+              href={downloadHref(short.voiceover_audio_url, `short-${short.id.slice(0, 8)}-voiceover`)}
               download
               className="hover:underline"
               style={{ fontSize: 12, color: 'var(--text-secondary)' }}
@@ -562,7 +563,7 @@ function ShortRenderRow({ short }: { short: ShortRow }) {
           <div style={{ flex: 1, fontSize: 12, color: 'var(--text-secondary)' }}>
             <div>1080×1920 MP4 ready.</div>
             <a
-              href={outputUrl}
+              href={downloadHref(outputUrl, `short-${short.id.slice(0, 8)}.mp4`)}
               download={`short-${short.id.slice(0, 8)}.mp4`}
               className="hover:underline"
               style={{ color: 'var(--text-primary)', fontSize: 11 }}
