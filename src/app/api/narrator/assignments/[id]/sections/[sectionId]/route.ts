@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { updateSection, createNarratorComment } from '@/lib/narrator-db';
 import { notifyRetakeRequested } from '@/lib/notify';
+import { dispatchNarrationHookFireAndForget } from '@/lib/auto-pipeline/narrator-hook';
 import { logger } from '@/lib/logger';
 
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string; sectionId: string }> }) {
@@ -29,6 +30,16 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     });
 
     if (!section) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+
+    // Auto-pipeline bridge: when this approval completes the
+    // narration set for a linked pipeline_run_video, advance it
+    // to narration_complete. Fire-and-forget — the narrator
+    // response shouldn't wait on the pipeline. The hook itself
+    // short-circuits when there's no linked pipeline or sections
+    // remain pending.
+    if (status === 'approved') {
+      dispatchNarrationHookFireAndForget(assignmentId);
+    }
 
     // Fire-and-forget: notify narrator on retake
     if (status === 'retake') {

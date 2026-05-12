@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getAssignment, updateSection, updateAssignment } from '@/lib/narrator-db';
 import { notifyAssignmentApproved } from '@/lib/notify';
+import { dispatchNarrationHookFireAndForget } from '@/lib/auto-pipeline/narrator-hook';
 import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
@@ -106,6 +107,11 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     } catch (mediaErr) {
       logger.error('approve-full: media_asset insert skipped', { detail: mediaErr instanceof Error ? mediaErr.message : String(mediaErr) });
     }
+
+    // Auto-pipeline bridge: a full-audio approval completes the
+    // assignment, so advance the linked pipeline_run_video (if
+    // any) past waiting_narration. Fire-and-forget.
+    dispatchNarrationHookFireAndForget(id);
 
     // Fire-and-forget — don't block the response on email I/O.
     if (assignment.narrator_id) {

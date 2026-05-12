@@ -163,6 +163,16 @@ export default function NewPipelinePage() {
           ← All batches
         </Link>
         <h1 className="text-2xl font-semibold mt-2">Start a batch</h1>
+        <p className="text-xs text-zinc-500 mt-1">
+          Need to tune a preset?{' '}
+          <Link href="/pipeline/presets" className="underline">
+            Manage presets
+          </Link>{' '}
+          ·{' '}
+          <Link href="/pipeline/thumbnail-templates" className="underline">
+            Thumbnail templates
+          </Link>
+        </p>
       </header>
 
       {error && (
