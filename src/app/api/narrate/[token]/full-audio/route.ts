@@ -23,7 +23,12 @@ import { runAlignmentForAssignment } from '@/lib/alignment';
 import { domainErrorResponse } from '@/lib/route-helpers';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+// The PATCH handler fires forced alignment fire-and-forget after
+// confirming the upload. Forced alignment on a 14-min file takes ~3-4
+// min of ElevenLabs processing — well past the 60s default. Bumping to
+// the Pro plan's Fluid Compute cap so the background run actually
+// finishes; the synchronous PATCH work still returns in <1s.
+export const maxDuration = 800;
 
 // Whole-script uploads can be ~90min stereo WAV (~900MB). Per-section uploads
 // stay capped at 500MB; this path needs more headroom because the narrator may

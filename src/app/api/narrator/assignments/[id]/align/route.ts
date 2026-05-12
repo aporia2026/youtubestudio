@@ -8,10 +8,14 @@ import { runAlignmentForAssignment } from '@/lib/alignment';
 import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
-// Forced alignment on a ~14min file finishes in well under a minute in
-// practice, but Vercel's default is 60s — bump to the same envelope the
-// stitch route uses so we have headroom for the occasional slow request.
-export const maxDuration = 300;
+// ElevenLabs' published processing-time formula for Scribe-family
+// endpoints is roughly `duration × 0.3 + overhead`. For a 14-min file
+// that's ~3-4 min of pure processing; add R2 download + multipart
+// upload + the response trip and we routinely exceed 300s. Use the Pro
+// plan's Fluid Compute ceiling (800s) so the function lives long enough
+// for any narration under ~30 min. If a longer audio file ever needs
+// alignment, the right next step is chunking — not bumping past 800s.
+export const maxDuration = 800;
 
 /**
  * Owner-side route. Runs forced alignment for the assignment's full-audio
