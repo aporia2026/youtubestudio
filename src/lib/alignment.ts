@@ -39,6 +39,18 @@ export interface AlignmentRunResult {
 }
 
 /**
+ * Strip URL-like substrings from an error message before it's written to
+ * the DB and rendered to the reviewer. Forced-alignment errors can carry
+ * pre-signed R2 URLs in their text — never let those reach the browser.
+ */
+function sanitizeErrorDetail(detail: string): string {
+  return detail
+    .replace(/https?:\/\/\S+/g, '<url>')
+    .slice(0, 240)
+    .trim();
+}
+
+/**
  * Run forced alignment for an assignment's full-audio take, idempotently.
  *
  *   - `skipped` — no full-audio take yet, or another worker already owns
@@ -46,42 +58,56 @@ export interface AlignmentRunResult {
  *   - `ready`   — alignment_json persisted; UI will pick it up on next read.
  *   - `failed`  — alignment_error persisted; UI shows a retry affordance.
  *
- * Never throws. Internal errors are caught, sanitised, and stored on the
- * take so the reviewer-facing string is short and safe.
+ * Never throws. The outer try-catch covers EVERY failure path including
+ * the DB queries that run before the inner "actual work" — without that,
+ * a busted migration or transient SQL error would leave the take stuck
+ * at 'pending' with the orchestrator's exception swallowed by the
+ * caller's fire-and-forget catch.
  */
 export async function runAlignmentForAssignment(assignmentId: string): Promise<AlignmentRunResult> {
-  const take = await getFullAudioTakeWithAlignment(assignmentId);
-  if (!take) {
-    return { status: 'skipped', reason: 'no full-audio take' };
-  }
-  if (take.alignment_status === 'running') {
-    return { status: 'skipped', reason: 'already running' };
-  }
-
-  // Budget check happens before claim so we don't burn a status transition
-  // when over cap. Approximate — adds the new take's duration to the
-  // already-aligned monthly total.
-  const monthlySeconds = await getCurrentMonthAlignmentSeconds();
-  const projectedSeconds = monthlySeconds + (take.duration_seconds || 0);
-  const projectedCostUsd = (projectedSeconds / 3600) * ELEVENLABS_SCRIBE_USD_PER_HOUR;
-  const budgetUsd = getMonthlyBudgetUsd();
-  if (projectedCostUsd > budgetUsd) {
-    await setTakeAlignmentFailed(
-      take.take_id,
-      `Monthly alignment budget exceeded ($${budgetUsd.toFixed(2)}). Try again next month or raise ELEVENLABS_ALIGNMENT_BUDGET_USD.`,
-    );
-    return { status: 'failed', reason: 'budget' };
-  }
-
-  const claimed = await claimTakeAlignment(take.take_id);
-  if (!claimed) {
-    return { status: 'skipped', reason: 'lost claim race' };
-  }
+  // Track the take id in closure scope so the outer catch can record the
+  // failure even if the throw happened during a pre-claim DB query.
+  let takeIdForCatch: string | null = null;
 
   try {
+    logger.info('alignment: starting', { assignmentId });
+
+    const take = await getFullAudioTakeWithAlignment(assignmentId);
+    if (!take) {
+      logger.info('alignment: skipped — no full-audio take', { assignmentId });
+      return { status: 'skipped', reason: 'no full-audio take' };
+    }
+    takeIdForCatch = take.take_id;
+
+    if (take.alignment_status === 'running') {
+      logger.info('alignment: skipped — already running', { assignmentId, takeId: take.take_id });
+      return { status: 'skipped', reason: 'already running' };
+    }
+
+    // Budget check happens before claim so we don't burn a status transition
+    // when over cap. Approximate — adds the new take's duration to the
+    // already-aligned monthly total.
+    const monthlySeconds = await getCurrentMonthAlignmentSeconds();
+    const projectedSeconds = monthlySeconds + (take.duration_seconds || 0);
+    const projectedCostUsd = (projectedSeconds / 3600) * ELEVENLABS_SCRIBE_USD_PER_HOUR;
+    const budgetUsd = getMonthlyBudgetUsd();
+    if (projectedCostUsd > budgetUsd) {
+      await setTakeAlignmentFailed(
+        take.take_id,
+        `Monthly alignment budget exceeded ($${budgetUsd.toFixed(2)}). Try again next month or raise ELEVENLABS_ALIGNMENT_BUDGET_USD.`,
+      );
+      return { status: 'failed', reason: 'budget' };
+    }
+
+    const claimed = await claimTakeAlignment(take.take_id);
+    if (!claimed) {
+      logger.info('alignment: skipped — lost claim race', { assignmentId, takeId: take.take_id });
+      return { status: 'skipped', reason: 'lost claim race' };
+    }
+
     const apiKey = process.env.ELEVENLABS_API_KEY;
     if (!apiKey) {
-      await setTakeAlignmentFailed(take.take_id, 'ElevenLabs API key not configured.');
+      await setTakeAlignmentFailed(take.take_id, 'ElevenLabs API key not configured on the server.');
       return { status: 'failed', reason: 'no api key' };
     }
 
@@ -102,11 +128,16 @@ export async function runAlignmentForAssignment(assignmentId: string): Promise<A
     if (!audioRes.ok) {
       await setTakeAlignmentFailed(
         take.take_id,
-        `Audio fetch failed (${audioRes.status}). The narrator may need to re-upload.`,
+        `Audio fetch failed (HTTP ${audioRes.status}). The narrator may need to re-upload.`,
       );
       return { status: 'failed', reason: 'audio fetch' };
     }
     const audioBlob = await audioRes.blob();
+    logger.info('alignment: audio fetched', {
+      assignmentId,
+      takeId: take.take_id,
+      bytes: audioBlob.size,
+    });
 
     // SQL rows from getRealSectionsForAssignment are untyped; we read only
     // script_text, which the narrator_sections schema guarantees is present.
@@ -119,6 +150,13 @@ export async function runAlignmentForAssignment(assignmentId: string): Promise<A
       return { status: 'failed', reason: 'empty script' };
     }
 
+    logger.info('alignment: calling ElevenLabs', {
+      assignmentId,
+      takeId: take.take_id,
+      audioBytes: audioBlob.size,
+      scriptChars: script.length,
+    });
+
     const alignment = await forceAlign(apiKey, {
       audioBlob,
       audioFilename: 'narration.mp3',
@@ -126,16 +164,22 @@ export async function runAlignmentForAssignment(assignmentId: string): Promise<A
     });
 
     await setTakeAlignmentReady(take.take_id, alignment);
+    logger.info('alignment: ready', { assignmentId, takeId: take.take_id });
     return { status: 'ready' };
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    logger.error('forced alignment failed', { assignmentId, detail });
-    // Surface a user-facing string, not the raw exception. Length-capped at
-    // the DB write so we don't leak signed URLs even by accident.
-    const friendly = detail.includes('ElevenLabs')
-      ? 'ElevenLabs alignment service returned an error. Retry in a moment.'
-      : 'Alignment failed unexpectedly. Retry in a moment.';
-    await setTakeAlignmentFailed(take.take_id, friendly);
+    const rawDetail = err instanceof Error ? err.message : String(err);
+    const safeDetail = sanitizeErrorDetail(rawDetail);
+    logger.error('forced alignment failed', { assignmentId, detail: rawDetail });
+    if (takeIdForCatch) {
+      try {
+        await setTakeAlignmentFailed(takeIdForCatch, `Alignment failed: ${safeDetail}`);
+      } catch (writeErr) {
+        logger.error('alignment: also failed to record failure', {
+          assignmentId,
+          detail: writeErr instanceof Error ? writeErr.message : String(writeErr),
+        });
+      }
+    }
     return { status: 'failed', reason: 'exception' };
   }
 }

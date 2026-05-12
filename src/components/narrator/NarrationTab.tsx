@@ -250,7 +250,19 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
     async function poll() {
       try {
         const res = await fetch(`/api/narrator/assignments/${activeAssignment!.id}/align`);
-        if (!res.ok) return;
+        if (!res.ok) {
+          // 500 most commonly means migration 0051 hasn't run on this DB
+          // (the alignment_* columns are missing). Surface it instead of
+          // letting the UI sit at "Sync queued…" forever.
+          if (!cancelled) {
+            setAlignmentState({
+              status: 'failed',
+              error: `Sync endpoint error (HTTP ${res.status}). The alignment migration may not have run on this database — run \`npm run db:migrate\` and reload.`,
+              alignment: null,
+            });
+          }
+          return;
+        }
         const data: { status: AlignmentStatus; error: string | null; hasAlignment: boolean } = await res.json();
         if (cancelled) return;
 
