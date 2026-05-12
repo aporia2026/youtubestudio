@@ -407,52 +407,71 @@ function OutliersTab(): React.ReactElement {
   const [videos, setVideos] = useState<OutlierVideo[] | null>(null);
   const [filters, setFilters] = useState<OutlierFilters>(DEFAULT_FILTERS);
 
-  const onSubmit = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault();
-      const trimmed = niche.trim();
-      if (trimmed.length === 0) {
-        setError('Type a niche to scan for outliers.');
+  // Extracted from the submit handler so a preset click can fetch
+  // with an explicit niche string instead of waiting on a state
+  // round-trip from `setNiche`.
+  const fetchOutliers = useCallback(async (nicheText: string) => {
+    const trimmed = nicheText.trim();
+    if (trimmed.length === 0) {
+      setError('Type a niche or click a preset that has one.');
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/niche-finder/outliers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ niche: trimmed }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError((body as { error?: string }).error ?? 'Something went wrong.');
         return;
       }
-      setSubmitting(true);
-      setError(null);
-      try {
-        const res = await fetch('/api/niche-finder/outliers', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ niche: trimmed }),
-        });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          setError((body as { error?: string }).error ?? 'Something went wrong.');
-          return;
-        }
-        type Resp = { videos: OutlierVideo[]; fetchOk: boolean };
-        const data = body as Resp;
-        if (!data.fetchOk) {
-          setError('No videos returned for that niche. Try a different search.');
-          setVideos([]);
-          return;
-        }
-        setVideos(data.videos);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Network error');
-      } finally {
-        setSubmitting(false);
+      type Resp = { videos: OutlierVideo[]; fetchOk: boolean };
+      const data = body as Resp;
+      if (!data.fetchOk) {
+        setError('No videos returned for that niche. Try a different search.');
+        setVideos([]);
+        return;
       }
+      setVideos(data.videos);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Network error');
+    } finally {
+      setSubmitting(false);
+    }
+  }, []);
+
+  const onSubmit = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault();
+      void fetchOutliers(niche);
     },
-    [niche],
+    [fetchOutliers, niche],
   );
 
+  // Preset click semantics:
+  //   - Always apply the filter set.
+  //   - If the preset declared a nicheHint and the niche input is
+  //     empty, seed it.
+  //   - If we now have a non-empty niche, auto-fetch — the operator
+  //     clicked a one-click action, they shouldn't have to also
+  //     press "Find outliers". Filters are applied client-side once
+  //     results land.
   const onApplyPreset = useCallback(
     (presetFilters: OutlierFilters, nicheHint?: string) => {
       setFilters(presetFilters);
+      const nextNiche = niche.trim().length > 0 ? niche : nicheHint?.trim() ?? '';
       if (nicheHint && niche.trim().length === 0) {
         setNiche(nicheHint);
       }
+      if (nextNiche.length > 0 && !submitting) {
+        void fetchOutliers(nextNiche);
+      }
     },
-    [niche],
+    [fetchOutliers, niche, submitting],
   );
 
   // Filtering runs entirely client-side on the already-fetched
@@ -464,7 +483,15 @@ function OutliersTab(): React.ReactElement {
   }, [videos, filters]);
 
   return (
-    <div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      {/* Preset bar lives ABOVE the form so it's the first thing
+          the operator sees — discovery shortcut, not a follow-up. */}
+      <OutlierPresetBar
+        currentFilters={filters}
+        currentNiche={niche}
+        onApplyPreset={onApplyPreset}
+      />
+
       <form onSubmit={onSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 600 }}>
         <input
           autoFocus
@@ -481,17 +508,12 @@ function OutliersTab(): React.ReactElement {
         </button>
         <div style={{ fontSize: 12, color: '#64748b' }}>
           Shows videos that punch above their channel size (views ÷ subscribers). The bigger the number, the bigger the
-          outlier.
+          outlier. Click a preset above for a one-click shortcut.
         </div>
       </form>
 
       {videos && videos.length > 0 && (
-        <div style={{ marginTop: 24, display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <OutlierPresetBar
-            currentFilters={filters}
-            currentNiche={niche}
-            onApplyPreset={onApplyPreset}
-          />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <OutlierFilterBar
             value={filters}
             onChange={setFilters}
