@@ -230,16 +230,22 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
     } catch { toast.error('Failed'); }
   }
 
-  // Alignment fetch + polling. Issues a status read on every poll, and a
-  // one-shot full-payload read the moment status flips to 'ready'. Runs
-  // only when the synced player is selected (no point spending API
-  // bandwidth on a classic-mode user) and a full-audio take exists.
+  // Alignment fetch + polling. Issues a status read on every poll, a
+  // one-shot full-payload read the moment status flips to 'ready', and a
+  // one-time POST to kick off alignment when the status starts at
+  // 'pending'. The kick matters for any take that was uploaded before
+  // migration 0051 went live (or whose narrator-PATCH-side auto-trigger
+  // never fired) — without it the status would loop "Sync queued…"
+  // forever because nothing's actually running. Runs only when the
+  // synced player is selected (no point spending API bandwidth on a
+  // classic-mode user) and a full-audio take exists.
   useEffect(() => {
     if (syncMode !== 'synced') return;
     if (!activeAssignment?.id || !activeAssignment.full_audio_take_id) return;
 
     let cancelled = false;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let kicked = false; // Per-effect-instance: re-kick on assignment change but not on every poll.
 
     async function poll() {
       try {
@@ -270,6 +276,21 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
           }
           // No need to keep polling once we have the alignment.
           return;
+        }
+
+        // One-time kick: if the take is sitting at 'pending' and nothing
+        // has claimed it yet, POST to start the alignment now. The route
+        // is idempotent — the orchestrator's atomic claim guards against
+        // a double-trigger if the narrator's PATCH-side fire-and-forget
+        // already ran but the status read raced ahead of the running
+        // flip. Don't re-kick on subsequent pending polls (the orchestrator
+        // will have moved status to 'running' by then anyway).
+        if (data.status === 'pending' && !kicked) {
+          kicked = true;
+          fetch(`/api/narrator/assignments/${activeAssignment!.id}/align`, { method: 'POST' })
+            .catch(() => {
+              // Failures surface on the next status poll as 'failed' + error string.
+            });
         }
 
         // Re-poll while still pending/running; back off when failed so the

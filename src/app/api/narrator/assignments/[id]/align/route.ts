@@ -10,18 +10,28 @@ export const runtime = 'nodejs';
 export const maxDuration = 300;
 
 /**
- * Owner-side route. Runs (or re-runs) forced alignment for the assignment's
- * full-audio take and writes the result to `narrator_takes.alignment_json`.
+ * Owner-side route. Kicks off (or re-kicks) forced alignment for the
+ * assignment's full-audio take. Returns immediately — the orchestrator
+ * runs asynchronously and writes its result to
+ * `narrator_takes.alignment_json`; callers poll the GET below for
+ * status. Idempotent: the orchestrator's atomic 'running' claim
+ * collapses concurrent kicks into one execution.
  *
- * Idempotent — the orchestrator's atomic 'running' claim means parallel
- * invocations resolve to one execution.
+ * Returning fast matters because forced alignment of a 14-min file takes
+ * 10-30s. If the browser awaits the response, a page navigation aborts
+ * the fetch and (under some Vercel runtime configurations) the function
+ * — leaving the take stuck at 'running' until the 5-minute stale-claim
+ * reclaim. Fire-and-forget on the server side, with the 5-minute reclaim
+ * as the backstop, sidesteps that whole class of failure.
  *
  * Surfaces:
- *   - "Retry sync" button on the Narration tab's synced player when
- *     alignment_status='failed'.
+ *   - Auto-kick from the Narration tab's polling effect when status
+ *     starts at 'pending' (covers takes uploaded before migration 0051
+ *     went live).
+ *   - "Retry sync" button when alignment_status='failed'.
  *   - Manual diagnostic (curl) for ops.
  *
- * The auto-trigger from a narrator upload completion lives in
+ * The auto-trigger from a fresh narrator upload completion lives in
  * /api/narrate/[token]/full-audio PATCH — that path calls
  * `runAlignmentForAssignment` directly without going through this route.
  */
@@ -39,8 +49,17 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       );
     }
 
-    const result = await runAlignmentForAssignment(id);
-    return NextResponse.json({ result });
+    // Fire-and-forget: the orchestrator owns the state machine and never
+    // throws (errors are caught + recorded as alignment_error). The
+    // client polls GET for the result.
+    runAlignmentForAssignment(id).catch((e) => {
+      logger.error('align trigger background error', {
+        assignmentId: id,
+        detail: e instanceof Error ? e.message : String(e),
+      });
+    });
+
+    return NextResponse.json({ ok: true, started: true });
   } catch (err) {
     logger.error('align route error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to run alignment' }, { status: 500 });
