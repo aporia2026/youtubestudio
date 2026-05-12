@@ -34,6 +34,7 @@ export const PIPELINE_STAGES = [
   'generating_production_doc',
   'generating_thumbnail',
   'assigning_to_editor',
+  'generating_seo',
   // ─── waiting on a human (cron skips) ──────────────────────────────
   'awaiting_script_gate',
   'waiting_narration',
@@ -45,6 +46,7 @@ export const PIPELINE_STAGES = [
   'production_doc_failed',
   'thumbnail_failed',
   'editor_assignment_failed',
+  'seo_failed',
   'cancelled_by_user',
   'cost_cap_exceeded',
 ] as const;
@@ -62,6 +64,7 @@ export const ACTIVE_STAGES: ReadonlySet<PipelineStage> = new Set<PipelineStage>(
   'generating_production_doc',
   'generating_thumbnail',
   'assigning_to_editor',
+  'generating_seo',
 ]);
 
 /** Stages where the cron does nothing — a human action moves them. */
@@ -79,6 +82,7 @@ export const TERMINAL_STAGES: ReadonlySet<PipelineStage> = new Set<PipelineStage
   'production_doc_failed',
   'thumbnail_failed',
   'editor_assignment_failed',
+  'seo_failed',
   'cancelled_by_user',
   'cost_cap_exceeded',
 ]);
@@ -91,6 +95,7 @@ export const FAILURE_STAGES: ReadonlySet<PipelineStage> = new Set<PipelineStage>
   'production_doc_failed',
   'thumbnail_failed',
   'editor_assignment_failed',
+  'seo_failed',
   'cost_cap_exceeded',
 ]);
 
@@ -176,6 +181,10 @@ export interface PipelinePreset {
   /** FK to thumbnail_template_presets — feeds the
    *  generating_thumbnail handler. Null = use built-in defaults. */
   thumbnail_template_id: string | null;
+  /** FK to prompt_templates (field_type='seo') — feeds the
+   *  generating_seo handler. Null = skip the SEO step entirely
+   *  (advance editor → done with no SEO generation). */
+  seo_template_id: string | null;
 }
 
 // ─── createPipelineRun input ────────────────────────────────────────

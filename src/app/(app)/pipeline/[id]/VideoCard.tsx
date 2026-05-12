@@ -24,6 +24,20 @@ interface VideoDetailResponse {
     created_at: string;
   } | null;
   latestProductionDoc: Record<string, unknown> | null;
+  latestSeoOutput: {
+    seo?: SeoOutput;
+    template_applied?: boolean;
+    template_id?: string | null;
+    model_used?: string;
+  } | null;
+}
+
+interface SeoOutput {
+  titles?: Array<{ title: string; score?: number; character_count?: number; style?: string }>;
+  description?: { above_fold?: string; full_description?: string; hashtags?: string[] };
+  tags?: Array<{ tag: string; type?: string; relevance?: number }>;
+  chapters?: Array<{ timestamp: string; title: string }>;
+  seo_analysis?: { primary_keyword?: string; secondary_keywords?: string[] };
 }
 
 const STAGE_LABEL: Record<string, string> = {
@@ -39,12 +53,14 @@ const STAGE_LABEL: Record<string, string> = {
   generating_production_doc: 'Generating shot list',
   generating_thumbnail: 'Generating thumbnail',
   assigning_to_editor: 'Assigning to editor',
+  generating_seo: 'Generating SEO metadata',
   done: 'Done',
   qa_failed_after_max_retries: 'QA failed (max retries)',
   narration_abandoned: 'Narration abandoned',
   production_doc_failed: 'Shot list failed',
   thumbnail_failed: 'Thumbnail failed',
   editor_assignment_failed: 'Editor assignment failed',
+  seo_failed: 'SEO step failed',
   cancelled_by_user: 'Cancelled',
   cost_cap_exceeded: 'Cost cap exceeded',
 };
@@ -56,6 +72,7 @@ const TERMINAL: ReadonlySet<string> = new Set([
   'production_doc_failed',
   'thumbnail_failed',
   'editor_assignment_failed',
+  'seo_failed',
   'cancelled_by_user',
   'cost_cap_exceeded',
 ]);
@@ -66,6 +83,7 @@ const FAILED: ReadonlySet<string> = new Set([
   'production_doc_failed',
   'thumbnail_failed',
   'editor_assignment_failed',
+  'seo_failed',
   'cost_cap_exceeded',
 ]);
 
@@ -267,6 +285,16 @@ export default function VideoCard({
                 </details>
               )}
 
+              {/* SEO output panel — surfaces titles / description /
+                  tags / chapters from the generating_seo stage. */}
+              {detail.latestSeoOutput?.seo && (
+                <SeoOutputPanel
+                  seo={detail.latestSeoOutput.seo}
+                  templateApplied={detail.latestSeoOutput.template_applied === true}
+                  modelUsed={detail.latestSeoOutput.model_used ?? null}
+                />
+              )}
+
               {/* Kill anywhere except terminal */}
               {!isTerminal && video.stage !== 'awaiting_script_gate' && (
                 <div className="pt-2 border-t border-zinc-100 dark:border-zinc-900">
@@ -411,6 +439,132 @@ function FixGroup({ title, colorClass, items }: { title: string; colorClass: str
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+function SeoOutputPanel({
+  seo,
+  templateApplied,
+  modelUsed,
+}: {
+  seo: SeoOutput;
+  templateApplied: boolean;
+  modelUsed: string | null;
+}) {
+  const [copied, setCopied] = useState<string | null>(null);
+  const titles = seo.titles ?? [];
+  const tags = seo.tags ?? [];
+  const chapters = seo.chapters ?? [];
+
+  function copy(label: string, value: string) {
+    void navigator.clipboard.writeText(value).then(() => {
+      setCopied(label);
+      setTimeout(() => setCopied(null), 1500);
+    });
+  }
+
+  return (
+    <div className="rounded-md border border-zinc-200 dark:border-zinc-800 p-3">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs font-medium text-zinc-700 dark:text-zinc-300">SEO metadata</div>
+        <div className="text-xs text-zinc-500">
+          {templateApplied ? 'Template applied' : 'No template'}
+          {modelUsed && <span className="ml-2">· {modelUsed}</span>}
+        </div>
+      </div>
+
+      {titles.length > 0 && (
+        <details open className="mb-3">
+          <summary className="cursor-pointer text-xs font-medium text-zinc-600 dark:text-zinc-400">
+            Title candidates ({titles.length})
+          </summary>
+          <ul className="mt-2 space-y-1">
+            {titles.slice(0, 8).map((t, idx) => (
+              <li key={idx} className="flex items-start gap-2 text-sm">
+                <span className="text-xs text-zinc-400 font-mono w-6 shrink-0 pt-0.5">#{idx + 1}</span>
+                <span className="flex-1">{t.title}</span>
+                {typeof t.score === 'number' && (
+                  <span className="text-xs text-zinc-500 shrink-0">{t.score}/100</span>
+                )}
+                <button
+                  onClick={() => copy(`title-${idx}`, t.title)}
+                  className="text-xs text-zinc-500 hover:underline shrink-0"
+                  type="button"
+                >
+                  {copied === `title-${idx}` ? '✓' : 'copy'}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      {seo.description?.full_description && (
+        <details className="mb-3">
+          <summary className="cursor-pointer text-xs font-medium text-zinc-600 dark:text-zinc-400">
+            Description
+          </summary>
+          <div className="mt-2 text-sm whitespace-pre-wrap p-2 rounded bg-zinc-50 dark:bg-zinc-900 max-h-64 overflow-y-auto">
+            {seo.description.full_description}
+          </div>
+          <button
+            onClick={() => copy('desc', seo.description!.full_description!)}
+            className="mt-2 text-xs text-zinc-500 hover:underline"
+            type="button"
+          >
+            {copied === 'desc' ? '✓ copied' : 'copy description'}
+          </button>
+        </details>
+      )}
+
+      {tags.length > 0 && (
+        <details className="mb-3">
+          <summary className="cursor-pointer text-xs font-medium text-zinc-600 dark:text-zinc-400">
+            Tags ({tags.length})
+          </summary>
+          <div className="mt-2 flex flex-wrap gap-1">
+            {tags.map((t, idx) => (
+              <span
+                key={idx}
+                className="text-xs px-2 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300"
+                title={t.type ?? undefined}
+              >
+                {t.tag}
+              </span>
+            ))}
+          </div>
+          <button
+            onClick={() => copy('tags', tags.map((t) => t.tag).join(', '))}
+            className="mt-2 text-xs text-zinc-500 hover:underline"
+            type="button"
+          >
+            {copied === 'tags' ? '✓ copied' : 'copy comma-separated'}
+          </button>
+        </details>
+      )}
+
+      {chapters.length > 0 && (
+        <details>
+          <summary className="cursor-pointer text-xs font-medium text-zinc-600 dark:text-zinc-400">
+            Chapters ({chapters.length})
+          </summary>
+          <ul className="mt-2 space-y-0.5 text-sm font-mono">
+            {chapters.map((c, idx) => (
+              <li key={idx}>
+                <span className="text-zinc-500">{c.timestamp}</span> {c.title}
+              </li>
+            ))}
+          </ul>
+          <button
+            onClick={() => copy('chapters', chapters.map((c) => `${c.timestamp} ${c.title}`).join('\n'))}
+            className="mt-2 text-xs text-zinc-500 hover:underline"
+            type="button"
+          >
+            {copied === 'chapters' ? '✓ copied' : 'copy as block'}
+          </button>
+        </details>
+      )}
     </div>
   );
 }

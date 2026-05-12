@@ -23,6 +23,7 @@ export const GET = apiRoute.authed(async (session) => {
     narration_deadline_days: number;
     video_editor_collaborator_id: string | null;
     thumbnail_template_id: string | null;
+    seo_template_id: string | null;
     updated_at: string;
   }>(
     `
@@ -36,6 +37,7 @@ export const GET = apiRoute.authed(async (session) => {
            narration_deadline_days,
            video_editor_collaborator_id::text AS video_editor_collaborator_id,
            thumbnail_template_id::text AS thumbnail_template_id,
+           seo_template_id::text AS seo_template_id,
            updated_at::text AS updated_at
       FROM pipeline_presets
      WHERE workspace_id = $1::uuid
@@ -77,6 +79,10 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     typeof b.thumbnail_template_id === 'string' && b.thumbnail_template_id.length > 0
       ? b.thumbnail_template_id
       : null;
+  const seoTemplateId =
+    typeof b.seo_template_id === 'string' && b.seo_template_id.length > 0
+      ? b.seo_template_id
+      : null;
   const ideaContext = isObject(b.idea_context) ? b.idea_context : null;
   const scriptRules = isObject(b.script_rules) ? b.script_rules : null;
   const fallbackChains = isObject(b.fallback_chains) ? b.fallback_chains : null;
@@ -89,13 +95,13 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         idea_context_jsonb, script_rules_jsonb, target_spoken_words,
         qa_min_score, qa_max_iterations, script_gate_enabled,
         narration_deadline_days, fallback_chains_jsonb,
-        video_editor_collaborator_id, thumbnail_template_id, created_by
+        video_editor_collaborator_id, thumbnail_template_id, seo_template_id, created_by
       ) VALUES (
         $1::uuid, $2, $3, $4,
         $5::jsonb, $6::jsonb, $7,
         $8, $9, $10,
         $11, $12::jsonb,
-        $13::uuid, $14::uuid, $15::uuid
+        $13::uuid, $14::uuid, $15::uuid, $16::uuid
       )
       RETURNING id::text AS id
       `,
@@ -114,6 +120,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         fallbackChains ? JSON.stringify(fallbackChains) : null,
         videoEditorCollaboratorId,
         thumbnailTemplateId,
+        seoTemplateId,
         session.uid,
       ],
     );

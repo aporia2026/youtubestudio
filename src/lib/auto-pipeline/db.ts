@@ -105,7 +105,7 @@ export async function claimNextVideo(tickId: string): Promise<{
            p.qa_min_score, p.qa_max_iterations, p.script_gate_enabled,
            p.production_doc_style_id, p.narration_deadline_days,
            p.fallback_chains_jsonb, p.video_editor_collaborator_id,
-           p.thumbnail_template_id
+           p.thumbnail_template_id, p.seo_template_id
       FROM pipeline_presets p
       JOIN pipeline_runs r ON r.preset_id = p.id
      WHERE r.id = $1::uuid
@@ -335,7 +335,7 @@ export async function getPresetForWorkspace(
            qa_min_score, qa_max_iterations, script_gate_enabled,
            production_doc_style_id, narration_deadline_days,
            fallback_chains_jsonb, video_editor_collaborator_id,
-           thumbnail_template_id
+           thumbnail_template_id, seo_template_id
       FROM pipeline_presets
      WHERE id = $1::uuid AND workspace_id = $2::uuid
     `,

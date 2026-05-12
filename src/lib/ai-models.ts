@@ -291,6 +291,13 @@ export const DEFAULT_FALLBACK_CHAINS: Partial<Record<AppFeature, string[]>> = {
   // row is its own call. Same flagship chain — Haiku-tier models
   // routinely break the row schema.
   'production-doc': ['claude-sonnet-4-6', 'gpt-5.5', 'kie-claude-sonnet-4-6'],
+
+  // SEO optimizer: produces titles + description + tags + chapters
+  // in a single JSON pass. Mid-pipeline, runs after the editor
+  // handoff. Same flagship chain — title quality is the gatekeeper
+  // metric and Haiku-tier models routinely emit shorter / less
+  // optimised candidates.
+  'seo-optimizer': ['claude-sonnet-4-6', 'gpt-5.5', 'kie-claude-sonnet-4-6'],
 };
 
 /** Lookup the configured fallback chain for a feature, or `null` when

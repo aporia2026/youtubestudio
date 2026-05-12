@@ -30,6 +30,7 @@ interface PresetFull {
   fallback_chains: Record<string, string[]> | null;
   video_editor_collaborator_id: string | null;
   thumbnail_template_id: string | null;
+  seo_template_id: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -52,6 +53,7 @@ const ROW_SHAPE = `
   fallback_chains_jsonb AS fallback_chains,
   video_editor_collaborator_id::text AS video_editor_collaborator_id,
   thumbnail_template_id::text AS thumbnail_template_id,
+  seo_template_id::text AS seo_template_id,
   created_by::text AS created_by,
   created_at::text AS created_at,
   updated_at::text AS updated_at
@@ -116,6 +118,9 @@ export const PATCH = apiRoute.authed<{ id: string }>(async (session, req: NextRe
     if (b.thumbnail_template_id !== undefined) {
       patch.thumbnail_template_id = b.thumbnail_template_id === null ? null : asUuidOrThrow(b.thumbnail_template_id, 'thumbnail_template_id');
     }
+    if (b.seo_template_id !== undefined) {
+      patch.seo_template_id = b.seo_template_id === null ? null : asUuidOrThrow(b.seo_template_id, 'seo_template_id');
+    }
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Invalid input' }, { status: 400 });
   }
@@ -151,6 +156,7 @@ export const PATCH = apiRoute.authed<{ id: string }>(async (session, req: NextRe
              fallback_chains_jsonb = CASE WHEN $19::boolean THEN $20::jsonb ELSE fallback_chains_jsonb END,
              video_editor_collaborator_id = CASE WHEN $21::boolean THEN $22::uuid ELSE video_editor_collaborator_id END,
              thumbnail_template_id = CASE WHEN $23::boolean THEN $24::uuid ELSE thumbnail_template_id END,
+             seo_template_id = CASE WHEN $25::boolean THEN $26::uuid ELSE seo_template_id END,
              updated_at = NOW()
        WHERE id = $1::uuid AND workspace_id = $2::uuid
       RETURNING ${ROW_SHAPE}
@@ -172,6 +178,7 @@ export const PATCH = apiRoute.authed<{ id: string }>(async (session, req: NextRe
         patch.fallback_chains_jsonb !== undefined, patch.fallback_chains_jsonb ? JSON.stringify(patch.fallback_chains_jsonb) : null,
         patch.video_editor_collaborator_id !== undefined, patch.video_editor_collaborator_id ?? null,
         patch.thumbnail_template_id !== undefined, patch.thumbnail_template_id ?? null,
+        patch.seo_template_id !== undefined, patch.seo_template_id ?? null,
       ],
     );
     if (rows.length === 0) return NextResponse.json({ error: 'Preset not found.' }, { status: 404 });

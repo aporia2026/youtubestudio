@@ -116,9 +116,27 @@ export const GET = apiRoute.authed<{ id: string }>(async (session, _req, ctx) =>
   );
   const latestProductionDoc = prodDocRows[0]?.metadata_jsonb ?? null;
 
+  // Latest SEO artefact for the published-metadata panel.
+  const { rows: seoRows } = await sql.query<{
+    metadata_jsonb: Record<string, unknown> | null;
+  }>(
+    `
+    SELECT metadata_jsonb
+      FROM pipeline_stage_artefacts
+     WHERE pipeline_run_video_id = $1::uuid
+       AND stage = 'generating_seo'
+       AND artefact_kind = 'seo_output'
+     ORDER BY attempt_number DESC
+     LIMIT 1
+    `,
+    [videoId],
+  );
+  const latestSeoOutput = seoRows[0]?.metadata_jsonb ?? null;
+
   return NextResponse.json({
     video: videoRows[0],
     latestAppliedFixes,
     latestProductionDoc,
+    latestSeoOutput,
   });
 });

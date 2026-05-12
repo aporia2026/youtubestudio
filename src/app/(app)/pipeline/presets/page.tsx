@@ -15,6 +15,7 @@ interface PresetRow {
   narration_deadline_days: number;
   video_editor_collaborator_id: string | null;
   thumbnail_template_id: string | null;
+  seo_template_id: string | null;
   updated_at: string;
 }
 
@@ -119,6 +120,7 @@ export default function PresetsListPage() {
                   <span>{p.narration_deadline_days}d narration deadline</span>
                   {p.video_editor_collaborator_id && <span>· editor configured</span>}
                   {p.thumbnail_template_id && <span>· thumbnail template configured</span>}
+                  {p.seo_template_id && <span>· SEO template configured</span>}
                 </div>
               </div>
               <div className="ml-4 flex gap-2 shrink-0">

@@ -15,6 +15,12 @@ interface ThumbnailTemplateRow {
   name: string;
 }
 
+interface SeoTemplateRow {
+  id: string;
+  name: string;
+  is_default: boolean;
+}
+
 interface FullPreset {
   id: string;
   name: string;
@@ -31,10 +37,11 @@ interface FullPreset {
   fallback_chains: Record<string, string[]> | null;
   video_editor_collaborator_id: string | null;
   thumbnail_template_id: string | null;
+  seo_template_id: string | null;
 }
 
 /** Features the auto-pipeline routes through generateTextWithFallback. */
-const PIPELINE_FEATURES = ['idea-generator', 'script-generator', 'critic-panel', 'production-doc'] as const;
+const PIPELINE_FEATURES = ['idea-generator', 'script-generator', 'critic-panel', 'production-doc', 'seo-optimizer'] as const;
 
 export default function PresetForm({
   presetId,
@@ -60,6 +67,7 @@ export default function PresetForm({
   const [narrationDeadlineDays, setNarrationDeadlineDays] = useState(7);
   const [videoEditorId, setVideoEditorId] = useState<string>('');
   const [thumbnailTemplateId, setThumbnailTemplateId] = useState<string>('');
+  const [seoTemplateId, setSeoTemplateId] = useState<string>('');
   const [ideaContextJson, setIdeaContextJson] = useState('{}');
   const [scriptRulesJson, setScriptRulesJson] = useState('{}');
   const [fallbackChains, setFallbackChains] = useState<Record<string, string[]>>({});
@@ -67,6 +75,7 @@ export default function PresetForm({
   // Reference data for selectors
   const [editors, setEditors] = useState<Collaborator[]>([]);
   const [thumbnailTemplates, setThumbnailTemplates] = useState<ThumbnailTemplateRow[]>([]);
+  const [seoTemplates, setSeoTemplates] = useState<SeoTemplateRow[]>([]);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -76,9 +85,10 @@ export default function PresetForm({
   useEffect(() => {
     void (async () => {
       try {
-        const [editorsRes, tplsRes, presetRes] = await Promise.all([
+        const [editorsRes, tplsRes, seoTplsRes, presetRes] = await Promise.all([
           fetch('/api/team/collaborators?role=editor', { cache: 'no-store' }).catch(() => null),
           fetch('/api/thumbnail-templates', { cache: 'no-store' }).catch(() => null),
+          fetch('/api/templates?field_type=seo', { cache: 'no-store' }).catch(() => null),
           presetId
             ? fetch(`/api/auto-pipeline/presets/${presetId}`, { cache: 'no-store' })
             : Promise.resolve(null),
@@ -91,6 +101,12 @@ export default function PresetForm({
         if (tplsRes && tplsRes.ok) {
           const data = await tplsRes.json();
           setThumbnailTemplates((data.templates as ThumbnailTemplateRow[]) ?? []);
+        }
+        if (seoTplsRes && seoTplsRes.ok) {
+          const data = await seoTplsRes.json();
+          // /api/templates returns the array directly (legacy shape).
+          const rows = Array.isArray(data) ? data : (data.templates ?? []);
+          setSeoTemplates(rows as SeoTemplateRow[]);
         }
         if (presetRes && presetRes.ok) {
           const data = await presetRes.json();
@@ -105,6 +121,7 @@ export default function PresetForm({
           setNarrationDeadlineDays(p.narration_deadline_days);
           setVideoEditorId(p.video_editor_collaborator_id ?? '');
           setThumbnailTemplateId(p.thumbnail_template_id ?? '');
+          setSeoTemplateId(p.seo_template_id ?? '');
           setIdeaContextJson(JSON.stringify(p.idea_context ?? {}, null, 2));
           setScriptRulesJson(JSON.stringify(p.script_rules ?? {}, null, 2));
           setFallbackChains(p.fallback_chains ?? {});
@@ -163,6 +180,7 @@ export default function PresetForm({
       fallback_chains: Object.keys(cleanChains).length > 0 ? cleanChains : null,
       video_editor_collaborator_id: videoEditorId || null,
       thumbnail_template_id: thumbnailTemplateId || null,
+      seo_template_id: seoTemplateId || null,
     };
 
     setSaving(true);
@@ -351,6 +369,24 @@ export default function PresetForm({
             <option value="">— Use defaults —</option>
             {thumbnailTemplates.map((t) => (
               <option key={t.id} value={t.id}>{t.name}</option>
+            ))}
+          </select>
+        </Field>
+
+        <Field
+          label="SEO template"
+          hint="Runs after the editor assignment. Generates title candidates, description, tags, and chapters from the script. Leave blank to skip the SEO step entirely. Manage saved SEO templates on /seo."
+        >
+          <select
+            value={seoTemplateId}
+            onChange={(e) => setSeoTemplateId(e.target.value)}
+            className="w-full px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
+          >
+            <option value="">— Skip SEO step —</option>
+            {seoTemplates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}{t.is_default ? ' (default)' : ''}
+              </option>
             ))}
           </select>
         </Field>

@@ -27,14 +27,14 @@ import type { StageHandlerContext, StageOutcome } from '../types';
 export async function handleAssignToEditor(ctx: StageHandlerContext): Promise<StageOutcome> {
   const { video, preset } = ctx;
 
-  // No configured editor → no auto-assignment, just terminate.
-  // Per the plan: this is an opt-in feature; null is a deliberate
-  // "I'll assign manually" signal.
+  // No configured editor → no auto-assignment, just advance to
+  // the SEO step (which may also skip if no template is linked,
+  // in which case the row reaches `done`).
   if (!preset.video_editor_collaborator_id) {
     logger.info('auto-pipeline: editor auto-assign skipped (no editor configured on preset)', {
       pipeline_video_id: video.id,
     });
-    return { kind: 'advance', nextStage: 'done' };
+    return { kind: 'advance', nextStage: 'generating_seo' };
   }
 
   if (!video.project_id) {
@@ -108,7 +108,7 @@ export async function handleAssignToEditor(ctx: StageHandlerContext): Promise<St
 
   return {
     kind: 'advance',
-    nextStage: 'done',
+    nextStage: 'generating_seo',
     persist: { editor_assignment_id: assignment.id },
   };
 }

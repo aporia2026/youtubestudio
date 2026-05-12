@@ -28,6 +28,7 @@ import { handleNarrationComplete } from './stages/narration-complete';
 import { handleGenerateProductionDoc } from './stages/generate-production-doc';
 import { handleGenerateThumbnail } from './stages/generate-thumbnail';
 import { handleAssignToEditor } from './stages/assign-to-editor';
+import { handleGenerateSeo } from './stages/generate-seo';
 import { logger } from '../logger';
 import type {
   PipelineRunVideoRow,
@@ -64,6 +65,7 @@ const STAGE_HANDLERS: Record<string, StageHandler | undefined> = {
   generating_production_doc: handleGenerateProductionDoc,
   generating_thumbnail: handleGenerateThumbnail,
   assigning_to_editor: handleAssignToEditor,
+  generating_seo: handleGenerateSeo,
 };
 
 /**
