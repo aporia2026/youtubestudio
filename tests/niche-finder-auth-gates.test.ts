@@ -27,6 +27,8 @@ import * as outliersRoute from '@/app/api/niche-finder/outliers/route';
 import * as watchlistRoute from '@/app/api/niche-finder/watchlist/route';
 import * as watchlistBySlugRoute from '@/app/api/niche-finder/watchlist/[slug]/route';
 import * as rescoreCronRoute from '@/app/api/cron/rescore-niche-watchlist/route';
+import * as outlierPresetsRoute from '@/app/api/niche-finder/outliers/presets/route';
+import * as outlierPresetByIdRoute from '@/app/api/niche-finder/outliers/presets/[id]/route';
 
 type NextReqInit = ConstructorParameters<typeof NextRequest>[1];
 
@@ -120,6 +122,30 @@ describe('niche-finder routes refuse anonymous traffic', () => {
     const DELETE = (watchlistBySlugRoute as unknown as { DELETE: (req: NextRequest, ctx: { params: Promise<{ slug: string }> }) => Promise<Response> }).DELETE;
     const req = makeReq('http://localhost/api/niche-finder/watchlist/history', { method: 'DELETE' });
     const res = await DELETE(req, { params: Promise.resolve({ slug: 'history' }) });
+    expect(res.status).toBe(401);
+  });
+
+  it('GET /api/niche-finder/outliers/presets returns 401 with no session', async () => {
+    const GET = (outlierPresetsRoute as unknown as { GET: (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response> }).GET;
+    const req = makeReq('http://localhost/api/niche-finder/outliers/presets');
+    const res = await GET(req, { params: Promise.resolve({}) });
+    expect(res.status).toBe(401);
+  });
+
+  it('POST /api/niche-finder/outliers/presets returns 401 with no session', async () => {
+    const POST = (outlierPresetsRoute as unknown as { POST: (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response> }).POST;
+    const req = makeReq('http://localhost/api/niche-finder/outliers/presets', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'x', nicheQuery: 'history', filters: {} }),
+    });
+    const res = await POST(req, { params: Promise.resolve({}) });
+    expect(res.status).toBe(401);
+  });
+
+  it('DELETE /api/niche-finder/outliers/presets/[id] returns 401 with no session', async () => {
+    const DELETE = (outlierPresetByIdRoute as unknown as { DELETE: (req: NextRequest, ctx: { params: Promise<{ id: string }> }) => Promise<Response> }).DELETE;
+    const req = makeReq('http://localhost/api/niche-finder/outliers/presets/some-id', { method: 'DELETE' });
+    const res = await DELETE(req, { params: Promise.resolve({ id: 'some-id' }) });
     expect(res.status).toBe(401);
   });
 

@@ -14,13 +14,20 @@
  * not the results (re-renders cheap from the cache on resubmit
  * within the 7-day TTL).
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { slugifyNiche } from '@/lib/niche-finder/slug';
 import type { DiscoveryResultItem } from '@/lib/niche-finder/discoveries-db';
 import type { OutlierVideo } from '@/lib/niche-finder/outliers';
+import {
+  DEFAULT_FILTERS,
+  filterAndSortOutliers,
+  type OutlierFilters,
+} from '@/lib/niche-finder/outlier-filters';
 import { DiscoveryCard } from '@/components/niche-finder/DiscoveryCard';
 import { OutlierCard } from '@/components/niche-finder/OutlierCard';
+import { OutlierFilterBar } from '@/components/niche-finder/OutlierFilterBar';
+import { OutlierPresetBar } from '@/components/niche-finder/OutlierPresetBar';
 
 type TabKey = 'type' | 'interests' | 'channel' | 'category' | 'outliers';
 
@@ -398,6 +405,7 @@ function OutliersTab(): React.ReactElement {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [videos, setVideos] = useState<OutlierVideo[] | null>(null);
+  const [filters, setFilters] = useState<OutlierFilters>(DEFAULT_FILTERS);
 
   const onSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -437,6 +445,24 @@ function OutliersTab(): React.ReactElement {
     [niche],
   );
 
+  const onApplyPreset = useCallback(
+    (presetFilters: OutlierFilters, nicheHint?: string) => {
+      setFilters(presetFilters);
+      if (nicheHint && niche.trim().length === 0) {
+        setNiche(nicheHint);
+      }
+    },
+    [niche],
+  );
+
+  // Filtering runs entirely client-side on the already-fetched
+  // array so dialling controls is instant — no re-fetch, no extra
+  // quota burn.
+  const filteredVideos = useMemo(() => {
+    if (!videos) return null;
+    return filterAndSortOutliers(videos, filters);
+  }, [videos, filters]);
+
   return (
     <div>
       <form onSubmit={onSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 600 }}>
@@ -458,11 +484,58 @@ function OutliersTab(): React.ReactElement {
           outlier.
         </div>
       </form>
-      {videos && (
-        <div style={{ marginTop: 24, display: 'grid', gap: 10 }}>
-          {videos.map((v) => (
-            <OutlierCard key={v.videoId} video={v} />
-          ))}
+
+      {videos && videos.length > 0 && (
+        <div style={{ marginTop: 24, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <OutlierPresetBar
+            currentFilters={filters}
+            currentNiche={niche}
+            onApplyPreset={onApplyPreset}
+          />
+          <OutlierFilterBar
+            value={filters}
+            onChange={setFilters}
+            onReset={() => setFilters(DEFAULT_FILTERS)}
+          />
+          <div style={{ fontSize: 12, color: '#64748b' }}>
+            {filteredVideos?.length ?? 0} of {videos.length} videos matching your filters
+          </div>
+          {filteredVideos && filteredVideos.length > 0 ? (
+            <div style={{ display: 'grid', gap: 10 }}>
+              {filteredVideos.map((v) => (
+                <OutlierCard key={v.videoId} video={v} />
+              ))}
+            </div>
+          ) : (
+            <div
+              style={{
+                padding: 24,
+                textAlign: 'center',
+                color: '#94a3b8',
+                background: 'rgba(255,255,255,0.02)',
+                border: '1px dashed rgba(255,255,255,0.10)',
+                borderRadius: 12,
+                fontSize: 13,
+              }}
+            >
+              No videos match these filters. Loosen one or hit{' '}
+              <button
+                onClick={() => setFilters(DEFAULT_FILTERS)}
+                style={{
+                  background: 'transparent',
+                  color: '#22c55e',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: 0,
+                  fontSize: 13,
+                  textDecoration: 'underline',
+                }}
+              >
+                Reset
+              </button>
+              .
+            </div>
+          )}
         </div>
       )}
     </div>
