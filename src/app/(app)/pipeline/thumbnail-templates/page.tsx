@@ -13,7 +13,15 @@ interface Template {
   updated_at: string;
 }
 
-const POSITIONS = ['top-left', 'top-center', 'top-right', 'center', 'bottom-left', 'bottom-center', 'bottom-right'];
+const POSITIONS = [
+  'top-left',
+  'top-center',
+  'top-right',
+  'center',
+  'bottom-left',
+  'bottom-center',
+  'bottom-right',
+];
 
 export default function ThumbnailTemplatesPage() {
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -40,7 +48,12 @@ export default function ThumbnailTemplatesPage() {
   }, []);
 
   async function deleteTemplate(id: string) {
-    if (!confirm('Delete this thumbnail template? Any preset that references it will fall back to defaults.')) return;
+    if (
+      !confirm(
+        "Delete this thumbnail template? Any preset that references it will fall back to defaults.",
+      )
+    )
+      return;
     try {
       const res = await fetch(`/api/thumbnail-templates/${id}`, { method: 'DELETE' });
       if (!res.ok) {
@@ -54,28 +67,32 @@ export default function ThumbnailTemplatesPage() {
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <header className="flex items-center justify-between mb-6">
+    <div className="container mx-auto px-4 py-8 max-w-4xl">
+      <div className="flex items-start justify-between mb-6 gap-3 flex-wrap">
         <div>
-          <Link href="/pipeline" className="text-sm text-zinc-500 hover:underline">
+          <Link
+            href="/pipeline"
+            className="text-sm hover:underline"
+            style={{ color: 'var(--text-muted)' }}
+          >
             ← Pipeline
           </Link>
-          <h1 className="text-2xl font-semibold mt-2">Thumbnail templates</h1>
-          <p className="text-sm text-zinc-500 mt-1">
-            Reusable thumbnail configurations. Link a template to a pipeline preset and every batch uses it for the
-            thumbnail generation step.
+          <h1 className="text-2xl font-bold gradient-text mt-2">Thumbnail templates</h1>
+          <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
+            Reusable thumbnail configurations. Link a template to a pipeline preset and every batch uses it
+            for the thumbnail generation step.
           </p>
         </div>
-        <button
-          onClick={() => setEditing('new')}
-          className="bg-zinc-900 dark:bg-zinc-100 text-zinc-100 dark:text-zinc-900 px-4 py-2 rounded-md text-sm font-medium"
-        >
-          New template
+        <button onClick={() => setEditing('new')} className="btn-primary text-sm">
+          ＋ New template
         </button>
-      </header>
+      </div>
 
       {error && (
-        <div className="mb-4 p-3 rounded-md bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-sm">
+        <div
+          className="mb-4 p-3 rounded text-sm"
+          style={{ background: 'rgba(239,68,68,0.10)', color: '#f87171' }}
+        >
           {error}
         </div>
       )}
@@ -93,41 +110,47 @@ export default function ThumbnailTemplatesPage() {
       )}
 
       {loading ? (
-        <div className="text-sm text-zinc-500">Loading…</div>
+        <div className="text-sm" style={{ color: 'var(--text-muted)' }}>Loading…</div>
       ) : templates.length === 0 ? (
-        <div className="border border-dashed border-zinc-300 dark:border-zinc-700 rounded-lg p-8 text-center text-sm text-zinc-500">
-          No thumbnail templates yet. Click <strong>New template</strong> to create one.
+        <div className="glass rounded-xl p-10 text-center" style={{ borderStyle: 'dashed' }}>
+          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            No thumbnail templates yet. Click <strong>New template</strong> to create one.
+          </p>
         </div>
       ) : (
         <ul className="space-y-3">
           {templates.map((t) => (
-            <li
-              key={t.id}
-              className="border border-zinc-200 dark:border-zinc-800 rounded-md p-4 flex items-start justify-between"
-            >
+            <li key={t.id} className="glass rounded-xl p-4 flex items-start justify-between gap-3">
               <div className="flex-1 min-w-0">
-                <div className="font-medium">{t.name}</div>
-                <div className="text-xs text-zinc-500 mt-1 space-x-3">
+                <div className="font-semibold" style={{ color: 'var(--text-primary)' }}>{t.name}</div>
+                <div className="text-xs mt-1 flex gap-3 flex-wrap" style={{ color: 'var(--text-muted)' }}>
                   <span>{t.include_text ? 'With text overlay' : 'Image only'}</span>
-                  <span>{t.image_references.length} reference image{t.image_references.length === 1 ? '' : 's'}</span>
+                  <span>
+                    {t.image_references.length} reference image{t.image_references.length === 1 ? '' : 's'}
+                  </span>
                   <span>Updated {new Date(t.updated_at).toLocaleDateString()}</span>
                 </div>
                 {t.context_description && (
-                  <div className="text-sm text-zinc-600 dark:text-zinc-400 mt-2 line-clamp-2">
+                  <div
+                    className="text-sm mt-2 line-clamp-2"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
                     {t.context_description}
                   </div>
                 )}
               </div>
-              <div className="ml-4 flex gap-2 shrink-0">
+              <div className="flex gap-2 shrink-0">
                 <button
                   onClick={() => setEditing(t)}
-                  className="text-xs text-zinc-600 dark:text-zinc-400 hover:underline"
+                  className="btn-secondary text-xs"
+                  style={{ padding: '6px 12px' }}
                 >
                   Edit
                 </button>
                 <button
                   onClick={() => void deleteTemplate(t.id)}
-                  className="text-xs text-red-600 dark:text-red-400 hover:underline"
+                  className="btn-danger text-xs"
+                  style={{ padding: '6px 12px' }}
                 >
                   Delete
                 </button>
@@ -155,7 +178,9 @@ function TemplateForm({
   const [contextDescription, setContextDescription] = useState(template?.context_description ?? '');
   const [includeText, setIncludeText] = useState(template?.include_text ?? false);
   const [overlayText, setOverlayText] = useState(template?.text_overlay_config?.text ?? '');
-  const [overlayPosition, setOverlayPosition] = useState(template?.text_overlay_config?.position ?? 'center');
+  const [overlayPosition, setOverlayPosition] = useState(
+    template?.text_overlay_config?.position ?? 'center',
+  );
   const [refsText, setRefsText] = useState((template?.image_references ?? []).join('\n'));
   const [saving, setSaving] = useState(false);
 
@@ -205,8 +230,10 @@ function TemplateForm({
   }
 
   return (
-    <div className="border border-zinc-200 dark:border-zinc-800 rounded-lg p-5 mb-5 bg-zinc-50/50 dark:bg-zinc-900/30">
-      <h2 className="font-medium mb-4">{template ? 'Edit template' : 'New template'}</h2>
+    <div className="glass-bright rounded-xl p-6 mb-6">
+      <h2 className="text-sm font-semibold mb-5" style={{ color: 'var(--text-primary)' }}>
+        {template ? 'Edit template' : 'New template'}
+      </h2>
 
       <div className="space-y-4">
         <Field label="Name">
@@ -215,7 +242,7 @@ function TemplateForm({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. 'Cinematic dark-tone'"
-            className="w-full px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
+            className="input-field"
           />
         </Field>
 
@@ -228,7 +255,7 @@ function TemplateForm({
             onChange={(e) => setContextDescription(e.target.value)}
             rows={4}
             placeholder="e.g. 'Cinematic dark-tone composition. Warm key light from screen-left, shallow depth of field, centered human subject reacting to a hidden object.'"
-            className="w-full px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
+            className="input-field"
           />
         </Field>
 
@@ -241,32 +268,38 @@ function TemplateForm({
             onChange={(e) => setRefsText(e.target.value)}
             rows={3}
             placeholder="https://example.com/inspo-1.jpg&#10;https://example.com/inspo-2.jpg"
-            className="w-full px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent font-mono"
+            className="input-field"
+            style={{ fontFamily: 'var(--font-mono), monospace', fontSize: 12 }}
           />
         </Field>
 
         <Field label="Text overlay?">
-          <label className="flex items-center gap-2 text-sm">
+          <label
+            className="flex items-center gap-2 text-sm cursor-pointer"
+            style={{ color: 'var(--text-primary)' }}
+          >
             <input
               type="checkbox"
               checked={includeText}
               onChange={(e) => setIncludeText(e.target.checked)}
+              style={{ accentColor: 'var(--accent-purple)' }}
             />
             <span>Include large text overlay on the thumbnail</span>
           </label>
           {includeText && (
-            <div className="mt-2 space-y-2 pl-6">
+            <div className="mt-3 space-y-2 pl-6">
               <input
                 type="text"
                 value={overlayText}
                 onChange={(e) => setOverlayText(e.target.value)}
                 placeholder="Override text (default: video title)"
-                className="w-full px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
+                className="input-field"
               />
               <select
                 value={overlayPosition}
                 onChange={(e) => setOverlayPosition(e.target.value)}
-                className="w-48 px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
+                className="input-field"
+                style={{ maxWidth: 240 }}
               >
                 {POSITIONS.map((p) => (
                   <option key={p} value={p}>
@@ -279,18 +312,14 @@ function TemplateForm({
         </Field>
       </div>
 
-      <div className="mt-5 flex justify-end gap-2">
-        <button
-          onClick={onClose}
-          disabled={saving}
-          className="px-4 py-2 rounded-md text-sm border border-zinc-300 dark:border-zinc-700 disabled:opacity-50"
-        >
+      <div className="mt-6 flex justify-end gap-2">
+        <button onClick={onClose} disabled={saving} className="btn-secondary text-sm">
           Cancel
         </button>
         <button
           onClick={() => void save()}
           disabled={saving || !name.trim()}
-          className="bg-zinc-900 dark:bg-zinc-100 text-zinc-100 dark:text-zinc-900 px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50"
+          className="btn-primary text-sm"
         >
           {saving ? 'Saving…' : template ? 'Save changes' : 'Create template'}
         </button>
@@ -302,9 +331,15 @@ function TemplateForm({
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="block text-sm font-medium mb-1">{label}</label>
-      {hint && <div className="text-xs text-zinc-500 mb-1.5">{hint}</div>}
+      <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+        {label}
+      </label>
       {children}
+      {hint && (
+        <p className="mt-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
+          {hint}
+        </p>
+      )}
     </div>
   );
 }

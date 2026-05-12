@@ -39,121 +39,165 @@ export default function PipelineListPage() {
   }, []);
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <header className="mb-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold">Auto-pipeline</h1>
-            <p className="text-sm text-zinc-500 mt-1">
-              One-click batch creation: idea → script → AI script review → narration → production doc → thumbnail → editor.
-            </p>
-          </div>
-          <Link
-            href="/pipeline/new"
-            className="bg-zinc-900 dark:bg-zinc-100 text-zinc-100 dark:text-zinc-900 px-4 py-2 rounded-md text-sm font-medium hover:opacity-90"
-          >
-            New batch
-          </Link>
+    <div className="container mx-auto px-4 py-8 max-w-6xl">
+      <div className="flex items-start justify-between mb-2 gap-3 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold gradient-text mb-1">Auto-pipeline</h1>
+          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            One-click batch creation: idea → script → AI script review → narration → production doc → thumbnail → editor → SEO.
+          </p>
         </div>
-        <nav className="mt-3 flex gap-4 text-xs">
-          <Link href="/pipeline/presets" className="text-zinc-500 hover:underline">
-            Manage presets
-          </Link>
-          <Link href="/pipeline/thumbnail-templates" className="text-zinc-500 hover:underline">
-            Thumbnail templates
-          </Link>
-        </nav>
-      </header>
+        <Link href="/pipeline/new" className="btn-primary text-sm no-underline">
+          ＋ New batch
+        </Link>
+      </div>
+
+      <nav className="flex gap-4 text-xs mb-6" style={{ color: 'var(--text-muted)' }}>
+        <Link
+          href="/pipeline/presets"
+          className="hover:underline"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          Manage presets
+        </Link>
+        <Link
+          href="/pipeline/thumbnail-templates"
+          className="hover:underline"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          Thumbnail templates
+        </Link>
+      </nav>
 
       {error && (
-        <div className="mb-4 p-3 rounded-md bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-sm">
+        <div
+          className="mb-4 p-3 rounded text-sm"
+          style={{ background: 'rgba(239,68,68,0.10)', color: '#f87171' }}
+        >
           {error}
         </div>
       )}
 
       {loading ? (
-        <div className="text-sm text-zinc-500">Loading…</div>
+        <div className="text-sm" style={{ color: 'var(--text-muted)' }}>
+          Loading…
+        </div>
       ) : runs.length === 0 ? (
-        <div className="border border-dashed border-zinc-300 dark:border-zinc-700 rounded-lg p-8 text-center">
-          <p className="text-sm text-zinc-500">
-            No pipeline runs yet. <Link href="/pipeline/new" className="underline">Start your first batch</Link>.
+        <div
+          className="glass rounded-xl p-10 text-center"
+          style={{ borderStyle: 'dashed' }}
+        >
+          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            No pipeline runs yet.{' '}
+            <Link href="/pipeline/new" className="underline" style={{ color: 'var(--accent-purple-bright)' }}>
+              Start your first batch
+            </Link>
+            .
           </p>
         </div>
       ) : (
-        <table className="w-full text-sm">
-          <thead className="border-b border-zinc-200 dark:border-zinc-800 text-zinc-500 text-left">
-            <tr>
-              <th className="py-2 pr-3 font-medium">Preset</th>
-              <th className="py-2 px-3 font-medium">Status</th>
-              <th className="py-2 px-3 font-medium">Videos</th>
-              <th className="py-2 px-3 font-medium">Spend</th>
-              <th className="py-2 px-3 font-medium">Created</th>
-              <th className="py-2 pl-3"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {runs.map((r) => (
-              <tr key={r.id} className="border-b border-zinc-100 dark:border-zinc-900">
-                <td className="py-3 pr-3">
-                  <Link href={`/pipeline/${r.id}`} className="font-medium hover:underline">
-                    {r.preset_name}
-                  </Link>
-                </td>
-                <td className="py-3 px-3">
-                  <StatusBadge status={r.status} />
-                </td>
-                <td className="py-3 px-3 text-zinc-600 dark:text-zinc-300">
-                  {r.video_count_done}/{r.video_count_total} done
-                  {r.video_count_failed > 0 && (
-                    <span className="ml-2 text-red-600 dark:text-red-400">
-                      ({r.video_count_failed} failed)
-                    </span>
-                  )}
-                </td>
-                <td className="py-3 px-3 text-zinc-600 dark:text-zinc-300">
-                  ${Number(r.actual_cost_usd).toFixed(2)}
-                  {r.estimated_cost_usd && (
-                    <span className="text-zinc-400 ml-1">/ est ${Number(r.estimated_cost_usd).toFixed(2)}</span>
-                  )}
-                </td>
-                <td className="py-3 px-3 text-zinc-500">
-                  {new Date(r.created_at).toLocaleDateString()}
-                </td>
-                <td className="py-3 pl-3 text-right">
-                  <Link
-                    href={`/pipeline/${r.id}`}
-                    className="text-xs text-zinc-600 dark:text-zinc-400 hover:underline"
-                  >
-                    Open →
-                  </Link>
-                </td>
+        <div className="glass rounded-xl overflow-hidden">
+          <table className="w-full text-sm">
+            <thead
+              className="text-left"
+              style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}
+            >
+              <tr>
+                <Th>Preset</Th>
+                <Th>Status</Th>
+                <Th>Videos</Th>
+                <Th>Spend</Th>
+                <Th>Created</Th>
+                <Th> </Th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {runs.map((r, idx) => (
+                <tr
+                  key={r.id}
+                  style={{
+                    borderTop: idx === 0 ? 'none' : '1px solid var(--border)',
+                  }}
+                >
+                  <Td>
+                    <Link
+                      href={`/pipeline/${r.id}`}
+                      className="font-medium hover:underline"
+                      style={{ color: 'var(--text-primary)' }}
+                    >
+                      {r.preset_name}
+                    </Link>
+                  </Td>
+                  <Td>
+                    <StatusBadge status={r.status} />
+                  </Td>
+                  <Td>
+                    <span style={{ color: 'var(--text-secondary)' }}>
+                      {r.video_count_done}/{r.video_count_total} done
+                    </span>
+                    {r.video_count_failed > 0 && (
+                      <span className="ml-2" style={{ color: '#f87171' }}>
+                        ({r.video_count_failed} failed)
+                      </span>
+                    )}
+                  </Td>
+                  <Td>
+                    <span style={{ color: 'var(--text-secondary)' }}>
+                      ${Number(r.actual_cost_usd).toFixed(2)}
+                    </span>
+                    {r.estimated_cost_usd && (
+                      <span className="ml-1" style={{ color: 'var(--text-muted)' }}>
+                        / est ${Number(r.estimated_cost_usd).toFixed(2)}
+                      </span>
+                    )}
+                  </Td>
+                  <Td>
+                    <span style={{ color: 'var(--text-muted)' }}>
+                      {new Date(r.created_at).toLocaleDateString()}
+                    </span>
+                  </Td>
+                  <Td>
+                    <Link
+                      href={`/pipeline/${r.id}`}
+                      className="text-xs hover:underline"
+                      style={{ color: 'var(--text-secondary)' }}
+                    >
+                      Open →
+                    </Link>
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
 }
 
+function Th({ children }: { children: React.ReactNode }) {
+  return <th className="py-2.5 px-4 font-semibold text-xs uppercase tracking-wider">{children}</th>;
+}
+
+function Td({ children }: { children: React.ReactNode }) {
+  return <td className="py-3 px-4">{children}</td>;
+}
+
 function StatusBadge({ status }: { status: RunRow['status'] }) {
-  const styles: Record<RunRow['status'], string> = {
-    idea_ranking: 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300',
-    running: 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300',
-    paused: 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300',
-    done: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300',
-    cancelled: 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400',
+  const styles: Record<RunRow['status'], { bg: string; color: string; label: string }> = {
+    idea_ranking: { bg: 'rgba(245,158,11,0.15)', color: '#fbbf24', label: 'Ranking ideas' },
+    running: { bg: 'rgba(6,182,212,0.15)', color: '#22d3ee', label: 'Running' },
+    paused: { bg: 'rgba(85,85,119,0.20)', color: 'var(--text-secondary)', label: 'Paused' },
+    done: { bg: 'rgba(16,185,129,0.15)', color: '#34d399', label: 'Done' },
+    cancelled: { bg: 'rgba(85,85,119,0.20)', color: 'var(--text-muted)', label: 'Cancelled' },
   };
-  const labels: Record<RunRow['status'], string> = {
-    idea_ranking: 'Ranking ideas',
-    running: 'Running',
-    paused: 'Paused',
-    done: 'Done',
-    cancelled: 'Cancelled',
-  };
+  const s = styles[status];
   return (
-    <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${styles[status]}`}>
-      {labels[status]}
+    <span
+      className="inline-block px-2 py-0.5 rounded text-xs font-medium"
+      style={{ background: s.bg, color: s.color }}
+    >
+      {s.label}
     </span>
   );
 }

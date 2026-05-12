@@ -138,7 +138,6 @@ export default function NewPipelinePage() {
         throw new Error(data.error || `HTTP ${res.status}`);
       }
       const { id } = await res.json();
-      // Refresh presets list + auto-select the new one.
       const listRes = await fetch('/api/auto-pipeline/presets', { cache: 'no-store' });
       if (listRes.ok) {
         const data = await listRes.json();
@@ -153,17 +152,25 @@ export default function NewPipelinePage() {
   }
 
   if (loading) {
-    return <div className="p-6 text-sm text-zinc-500">Loading…</div>;
+    return (
+      <div className="container mx-auto px-4 py-8 max-w-3xl text-sm" style={{ color: 'var(--text-muted)' }}>
+        Loading…
+      </div>
+    );
   }
 
   return (
-    <div className="p-6 max-w-3xl mx-auto">
-      <header className="mb-6">
-        <Link href="/pipeline" className="text-sm text-zinc-500 hover:underline">
+    <div className="container mx-auto px-4 py-8 max-w-3xl">
+      <div className="mb-6">
+        <Link
+          href="/pipeline"
+          className="text-sm hover:underline"
+          style={{ color: 'var(--text-muted)' }}
+        >
           ← All batches
         </Link>
-        <h1 className="text-2xl font-semibold mt-2">Start a batch</h1>
-        <p className="text-xs text-zinc-500 mt-1">
+        <h1 className="text-2xl font-bold gradient-text mt-2">Start a batch</h1>
+        <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
           Need to tune a preset?{' '}
           <Link href="/pipeline/presets" className="underline">
             Manage presets
@@ -173,51 +180,55 @@ export default function NewPipelinePage() {
             Thumbnail templates
           </Link>
         </p>
-      </header>
+      </div>
 
       {error && (
-        <div className="mb-4 p-3 rounded-md bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-sm">
+        <div
+          className="mb-4 p-3 rounded text-sm"
+          style={{ background: 'rgba(239,68,68,0.10)', color: '#f87171' }}
+        >
           {error}
         </div>
       )}
 
       {presets.length === 0 ? (
-        <div className="border border-zinc-200 dark:border-zinc-800 rounded-lg p-5 mb-6">
-          <h2 className="font-medium mb-2">Create your first preset</h2>
-          <p className="text-sm text-zinc-500 mb-3">
+        <div className="glass rounded-xl p-6">
+          <h2 className="text-sm font-semibold mb-2">Create your first preset</h2>
+          <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
             Presets bundle the rules and contexts every video in a batch uses — niche, script tone, QA score
             threshold, model choices, narrator deadline. You can refine them later from the same screen.
           </p>
-          <div className="space-y-2">
-            <input
-              type="text"
-              placeholder="Preset name (e.g. 'Productivity 8-min explainers')"
-              value={presetName}
-              onChange={(e) => setPresetName(e.target.value)}
-              className="w-full px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
-            />
-            <input
-              type="text"
-              placeholder="Niche (optional)"
-              value={presetNiche}
-              onChange={(e) => setPresetNiche(e.target.value)}
-              className="w-full px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
-            />
-            <button
-              onClick={createQuickPreset}
-              className="bg-zinc-900 dark:bg-zinc-100 text-zinc-100 dark:text-zinc-900 px-4 py-2 rounded-md text-sm font-medium"
-            >
+          <div className="space-y-3">
+            <Field label="Preset name">
+              <input
+                type="text"
+                placeholder="e.g. 'Productivity 8-min explainers'"
+                value={presetName}
+                onChange={(e) => setPresetName(e.target.value)}
+                className="input-field"
+              />
+            </Field>
+            <Field label="Niche (optional)">
+              <input
+                type="text"
+                placeholder="e.g. productivity"
+                value={presetNiche}
+                onChange={(e) => setPresetNiche(e.target.value)}
+                className="input-field"
+              />
+            </Field>
+            <button onClick={createQuickPreset} className="btn-primary text-sm">
               Create preset
             </button>
           </div>
         </div>
       ) : (
-        <>
+        <div className="space-y-6">
           <Section title="Preset">
             <select
               value={presetId}
               onChange={(e) => setPresetId(e.target.value)}
-              className="w-full px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
+              className="input-field"
             >
               {presets.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -226,7 +237,7 @@ export default function NewPipelinePage() {
               ))}
             </select>
             {selectedPreset && (
-              <p className="text-xs text-zinc-500 mt-2">
+              <p className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
                 Script gate: {selectedPreset.script_gate_enabled ? 'on (you approve each script)' : 'off (fully unattended)'} ·
                 QA threshold: {selectedPreset.qa_min_score}/100 ·
                 Max retries: {selectedPreset.qa_max_iterations} ·
@@ -236,33 +247,19 @@ export default function NewPipelinePage() {
           </Section>
 
           <Section title="Mode">
-            <div className="flex gap-2">
-              <button
+            <div className="flex gap-3">
+              <ModeCard
+                active={mode === 'fresh'}
                 onClick={() => setMode('fresh')}
-                className={`flex-1 px-3 py-3 rounded-md border text-left text-sm ${
-                  mode === 'fresh'
-                    ? 'border-zinc-900 dark:border-zinc-100 bg-zinc-50 dark:bg-zinc-900'
-                    : 'border-zinc-300 dark:border-zinc-700'
-                }`}
-              >
-                <div className="font-medium">Generate fresh ideas</div>
-                <div className="text-xs text-zinc-500 mt-0.5">
-                  Brainstorm N new ideas, you drag-rank them once, the pipeline runs.
-                </div>
-              </button>
-              <button
+                title="Generate fresh ideas"
+                subtitle="Brainstorm N new ideas, you drag-rank them once, the pipeline runs."
+              />
+              <ModeCard
+                active={mode === 'existing'}
                 onClick={() => setMode('existing')}
-                className={`flex-1 px-3 py-3 rounded-md border text-left text-sm ${
-                  mode === 'existing'
-                    ? 'border-zinc-900 dark:border-zinc-100 bg-zinc-50 dark:bg-zinc-900'
-                    : 'border-zinc-300 dark:border-zinc-700'
-                }`}
-              >
-                <div className="font-medium">Use existing idea(s)</div>
-                <div className="text-xs text-zinc-500 mt-0.5">
-                  Pick from your saved ideas. Skip idea-gen, go straight to script.
-                </div>
-              </button>
+                title="Use existing idea(s)"
+                subtitle="Pick from your saved ideas. Skip idea-gen, go straight to script."
+              />
             </div>
           </Section>
 
@@ -274,65 +271,80 @@ export default function NewPipelinePage() {
                 max={50}
                 value={count}
                 onChange={(e) => setCount(Math.max(1, Math.min(50, parseInt(e.target.value, 10) || 1)))}
-                className="w-32 px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
+                className="input-field"
+                style={{ maxWidth: 140 }}
               />
-              <p className="text-xs text-zinc-500 mt-2">
-                {count} video{count !== 1 ? 's' : ''} will be created. After the ideas are generated, drag-rank them to set
-                priority — the pipeline runs in that order.
+              <p className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
+                {count} video{count !== 1 ? 's' : ''} will be created. After the ideas are generated,
+                drag-rank them to set priority — the pipeline runs in that order.
               </p>
             </Section>
           ) : (
             <Section title="Pick ideas">
               {ideas.length === 0 ? (
-                <p className="text-sm text-zinc-500">
-                  No saved ideas in this workspace yet. Switch to fresh mode or save some ideas first from the
-                  Ideas page.
+                <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                  No saved ideas in this workspace yet. Switch to fresh mode or save some ideas first from
+                  the Ideas page.
                 </p>
               ) : (
                 <>
-                  <p className="text-xs text-zinc-500 mb-2">
+                  <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
                     Selected order = priority. {selectedIdeaIds.length} selected.
                   </p>
-                  <ul className="max-h-96 overflow-y-auto border border-zinc-200 dark:border-zinc-800 rounded-md divide-y divide-zinc-100 dark:divide-zinc-900">
-                    {ideas.map((idea) => {
-                      const selected = selectedIdeaIds.includes(idea.id);
-                      const position = selected ? selectedIdeaIds.indexOf(idea.id) + 1 : null;
-                      return (
-                        <li
-                          key={idea.id}
-                          className={`px-3 py-2 cursor-pointer text-sm flex items-start gap-3 ${
-                            selected ? 'bg-zinc-50 dark:bg-zinc-900' : ''
-                          }`}
-                          onClick={() => toggleIdea(idea.id)}
-                        >
-                          <div className="w-6 shrink-0 text-zinc-500 text-xs font-mono pt-0.5">
-                            {position ? `#${position}` : '·'}
-                          </div>
-                          <div className="flex-1">
-                            <div className="font-medium">{idea.title}</div>
-                            {idea.hook && (
-                              <div className="text-xs text-zinc-500 mt-0.5 line-clamp-2">{idea.hook}</div>
-                            )}
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
+                  <div
+                    className="rounded-lg overflow-hidden"
+                    style={{ border: '1px solid var(--border)', maxHeight: 384, overflowY: 'auto' }}
+                  >
+                    <ul>
+                      {ideas.map((idea, idx) => {
+                        const selected = selectedIdeaIds.includes(idea.id);
+                        const position = selected ? selectedIdeaIds.indexOf(idea.id) + 1 : null;
+                        return (
+                          <li
+                            key={idea.id}
+                            onClick={() => toggleIdea(idea.id)}
+                            className="px-3 py-2 cursor-pointer text-sm flex items-start gap-3 transition-colors"
+                            style={{
+                              background: selected ? 'rgba(124,58,237,0.10)' : 'transparent',
+                              borderTop: idx === 0 ? 'none' : '1px solid var(--border)',
+                            }}
+                          >
+                            <div
+                              className="w-6 shrink-0 text-xs font-mono pt-0.5"
+                              style={{ color: selected ? 'var(--accent-purple-bright)' : 'var(--text-muted)' }}
+                            >
+                              {position ? `#${position}` : '·'}
+                            </div>
+                            <div className="flex-1">
+                              <div className="font-medium" style={{ color: 'var(--text-primary)' }}>
+                                {idea.title}
+                              </div>
+                              {idea.hook && (
+                                <div className="text-xs mt-0.5 line-clamp-2" style={{ color: 'var(--text-muted)' }}>
+                                  {idea.hook}
+                                </div>
+                              )}
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
                 </>
               )}
             </Section>
           )}
 
-          <div className="mt-6 flex justify-end">
+          <div className="flex justify-end">
             <button
               onClick={submit}
               disabled={submitting}
-              className="bg-zinc-900 dark:bg-zinc-100 text-zinc-100 dark:text-zinc-900 px-5 py-2 rounded-md text-sm font-medium disabled:opacity-50"
+              className="btn-primary text-sm"
             >
               {submitting ? 'Starting…' : 'Start batch'}
             </button>
           </div>
-        </>
+        </div>
       )}
     </div>
   );
@@ -340,9 +352,55 @@ export default function NewPipelinePage() {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="mb-6">
-      <h2 className="text-sm font-medium mb-2 text-zinc-700 dark:text-zinc-300">{title}</h2>
+    <section>
+      <h2 className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--text-secondary)' }}>
+        {title}
+      </h2>
       {children}
     </section>
+  );
+}
+
+function ModeCard({
+  active,
+  onClick,
+  title,
+  subtitle,
+}: {
+  active: boolean;
+  onClick: () => void;
+  title: string;
+  subtitle: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex-1 px-4 py-3 rounded-lg text-left text-sm transition-all"
+      style={{
+        background: active ? 'rgba(124,58,237,0.10)' : 'var(--bg-card)',
+        border: `1px solid ${active ? 'var(--accent-purple-bright)' : 'var(--border)'}`,
+        boxShadow: active ? '0 0 0 3px rgba(124,58,237,0.15)' : 'none',
+      }}
+    >
+      <div className="font-semibold" style={{ color: 'var(--text-primary)' }}>{title}</div>
+      <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>{subtitle}</div>
+    </button>
+  );
+}
+
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <label className="block text-xs font-semibold mb-1" style={{ color: 'var(--text-secondary)' }}>
+        {label}
+      </label>
+      {children}
+      {hint && (
+        <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+          {hint}
+        </p>
+      )}
+    </div>
   );
 }

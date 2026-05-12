@@ -44,7 +44,12 @@ export default function PresetsListPage() {
   }, []);
 
   async function deletePreset(id: string) {
-    if (!confirm('Delete this preset? Runs that already used it will still exist but the preset can\'t be re-selected.')) return;
+    if (
+      !confirm(
+        "Delete this preset? Runs that already used it will still exist but the preset can't be re-selected.",
+      )
+    )
+      return;
     try {
       const res = await fetch(`/api/auto-pipeline/presets/${id}`, { method: 'DELETE' });
       if (!res.ok) {
@@ -58,28 +63,32 @@ export default function PresetsListPage() {
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <header className="flex items-center justify-between mb-6">
+    <div className="container mx-auto px-4 py-8 max-w-4xl">
+      <div className="flex items-start justify-between mb-6 gap-3 flex-wrap">
         <div>
-          <Link href="/pipeline" className="text-sm text-zinc-500 hover:underline">
+          <Link
+            href="/pipeline"
+            className="text-sm hover:underline"
+            style={{ color: 'var(--text-muted)' }}
+          >
             ← Pipeline
           </Link>
-          <h1 className="text-2xl font-semibold mt-2">Pipeline presets</h1>
-          <p className="text-sm text-zinc-500 mt-1">
+          <h1 className="text-2xl font-bold gradient-text mt-2">Pipeline presets</h1>
+          <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
             Reusable batch configurations. Each batch picks a preset for its rules, score thresholds, model
             fallback chains, narrator deadline, editor + thumbnail template.
           </p>
         </div>
-        <button
-          onClick={() => setEditingId('new')}
-          className="bg-zinc-900 dark:bg-zinc-100 text-zinc-100 dark:text-zinc-900 px-4 py-2 rounded-md text-sm font-medium"
-        >
-          New preset
+        <button onClick={() => setEditingId('new')} className="btn-primary text-sm">
+          ＋ New preset
         </button>
-      </header>
+      </div>
 
       {error && (
-        <div className="mb-4 p-3 rounded-md bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-sm">
+        <div
+          className="mb-4 p-3 rounded text-sm"
+          style={{ background: 'rgba(239,68,68,0.10)', color: '#f87171' }}
+        >
           {error}
         </div>
       )}
@@ -97,42 +106,52 @@ export default function PresetsListPage() {
       )}
 
       {loading ? (
-        <div className="text-sm text-zinc-500">Loading…</div>
+        <div className="text-sm" style={{ color: 'var(--text-muted)' }}>
+          Loading…
+        </div>
       ) : presets.length === 0 ? (
-        <div className="border border-dashed border-zinc-300 dark:border-zinc-700 rounded-lg p-8 text-center text-sm text-zinc-500">
-          No presets yet. Click <strong>New preset</strong> to create one.
+        <div className="glass rounded-xl p-10 text-center" style={{ borderStyle: 'dashed' }}>
+          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            No presets yet. Click <strong>New preset</strong> to create one.
+          </p>
         </div>
       ) : (
         <ul className="space-y-3">
           {presets.map((p) => (
-            <li
-              key={p.id}
-              className="border border-zinc-200 dark:border-zinc-800 rounded-md p-4 flex items-start justify-between"
-            >
+            <li key={p.id} className="glass rounded-xl p-4 flex items-start justify-between gap-3">
               <div className="flex-1 min-w-0">
-                <div className="font-medium">{p.name}</div>
-                <div className="text-xs text-zinc-500 mt-1 flex gap-3 flex-wrap">
+                <div className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  {p.name}
+                </div>
+                <div
+                  className="text-xs mt-1 flex gap-3 flex-wrap"
+                  style={{ color: 'var(--text-muted)' }}
+                >
                   {p.niche && <span>{p.niche}</span>}
                   <span>Defaults to {p.ideas_count_default} ideas</span>
                   <span>QA ≥ {p.qa_min_score}</span>
                   <span>Max {p.qa_max_iterations} retries</span>
                   <span>Script gate {p.script_gate_enabled ? 'on' : 'off'}</span>
                   <span>{p.narration_deadline_days}d narration deadline</span>
-                  {p.video_editor_collaborator_id && <span>· editor configured</span>}
-                  {p.thumbnail_template_id && <span>· thumbnail template configured</span>}
-                  {p.seo_template_id && <span>· SEO template configured</span>}
+                </div>
+                <div className="mt-2 flex gap-2 flex-wrap">
+                  {p.video_editor_collaborator_id && <Pill color="green">Editor configured</Pill>}
+                  {p.thumbnail_template_id && <Pill color="cyan">Thumbnail template</Pill>}
+                  {p.seo_template_id && <Pill color="purple">SEO template</Pill>}
                 </div>
               </div>
-              <div className="ml-4 flex gap-2 shrink-0">
+              <div className="flex gap-2 shrink-0">
                 <button
                   onClick={() => setEditingId(p.id)}
-                  className="text-xs text-zinc-600 dark:text-zinc-400 hover:underline"
+                  className="btn-secondary text-xs"
+                  style={{ padding: '6px 12px' }}
                 >
                   Edit
                 </button>
                 <button
                   onClick={() => void deletePreset(p.id)}
-                  className="text-xs text-red-600 dark:text-red-400 hover:underline"
+                  className="btn-danger text-xs"
+                  style={{ padding: '6px 12px' }}
                 >
                   Delete
                 </button>
@@ -142,5 +161,22 @@ export default function PresetsListPage() {
         </ul>
       )}
     </div>
+  );
+}
+
+function Pill({ children, color }: { children: React.ReactNode; color: 'green' | 'cyan' | 'purple' }) {
+  const palette: Record<'green' | 'cyan' | 'purple', { bg: string; color: string }> = {
+    green: { bg: 'rgba(16,185,129,0.15)', color: '#34d399' },
+    cyan: { bg: 'rgba(6,182,212,0.15)', color: '#22d3ee' },
+    purple: { bg: 'rgba(124,58,237,0.15)', color: '#a78bfa' },
+  };
+  const s = palette[color];
+  return (
+    <span
+      className="text-xs px-2 py-0.5 rounded font-medium"
+      style={{ background: s.bg, color: s.color }}
+    >
+      {children}
+    </span>
   );
 }

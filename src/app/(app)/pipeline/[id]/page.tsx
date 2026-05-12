@@ -71,20 +71,31 @@ export default function PipelineDetailPage({ params }: { params: Promise<{ id: s
 
   useEffect(() => {
     void refresh();
-    // Light polling — every 10s. Heavy enough to feel live but
-    // doesn't hammer the DB.
     const t = setInterval(() => void refresh(), 10_000);
     return () => clearInterval(t);
   }, [refresh]);
 
-  if (loading) return <div className="p-6 text-sm text-zinc-500">Loading…</div>;
+  if (loading) {
+    return (
+      <div className="container mx-auto px-4 py-8 max-w-5xl text-sm" style={{ color: 'var(--text-muted)' }}>
+        Loading…
+      </div>
+    );
+  }
   if (error || !run) {
     return (
-      <div className="p-6">
-        <Link href="/pipeline" className="text-sm text-zinc-500 hover:underline">
+      <div className="container mx-auto px-4 py-8 max-w-5xl">
+        <Link
+          href="/pipeline"
+          className="text-sm hover:underline"
+          style={{ color: 'var(--text-muted)' }}
+        >
           ← All batches
         </Link>
-        <div className="mt-4 p-3 rounded-md bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-sm">
+        <div
+          className="mt-4 p-3 rounded text-sm"
+          style={{ background: 'rgba(239,68,68,0.10)', color: '#f87171' }}
+        >
           {error || 'Run not found.'}
         </div>
       </div>
@@ -92,26 +103,30 @@ export default function PipelineDetailPage({ params }: { params: Promise<{ id: s
   }
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
-      <header className="mb-6">
-        <Link href="/pipeline" className="text-sm text-zinc-500 hover:underline">
-          ← All batches
-        </Link>
-        <div className="flex items-baseline justify-between mt-2">
-          <h1 className="text-2xl font-semibold">{run.preset_name}</h1>
-          <div className="text-sm text-zinc-500">
-            ${Number(run.actual_cost_usd).toFixed(2)}
-            {run.estimated_cost_usd && (
-              <span className="text-zinc-400 ml-1">/ est ${Number(run.estimated_cost_usd).toFixed(2)}</span>
-            )}
-          </div>
+    <div className="container mx-auto px-4 py-8 max-w-5xl">
+      <Link
+        href="/pipeline"
+        className="text-sm hover:underline"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        ← All batches
+      </Link>
+      <div className="flex items-baseline justify-between mt-2 gap-3 flex-wrap">
+        <h1 className="text-2xl font-bold gradient-text">{run.preset_name}</h1>
+        <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+          ${Number(run.actual_cost_usd).toFixed(2)}
+          {run.estimated_cost_usd && (
+            <span className="ml-1" style={{ color: 'var(--text-muted)' }}>
+              / est ${Number(run.estimated_cost_usd).toFixed(2)}
+            </span>
+          )}
         </div>
-        <p className="text-sm text-zinc-500 mt-1">
-          {run.ideas_count} videos · QA threshold {run.qa_min_score} ·
-          Script gate {run.script_gate_enabled ? 'on' : 'off'} · Created{' '}
-          {new Date(run.created_at).toLocaleString()}
-        </p>
-      </header>
+      </div>
+      <p className="text-sm mt-1 mb-6" style={{ color: 'var(--text-muted)' }}>
+        {run.ideas_count} videos · QA threshold {run.qa_min_score} ·
+        Script gate {run.script_gate_enabled ? 'on' : 'off'} · Created{' '}
+        {new Date(run.created_at).toLocaleString()}
+      </p>
 
       {run.status === 'idea_ranking' ? (
         <RankView
@@ -187,8 +202,8 @@ function RankView({
 
   if (pendingIdeas) {
     return (
-      <div className="border border-dashed border-zinc-300 dark:border-zinc-700 rounded-lg p-8 text-center">
-        <p className="text-sm text-zinc-500">
+      <div className="glass rounded-xl p-10 text-center" style={{ borderStyle: 'dashed' }}>
+        <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
           Generating ideas… come back in a minute. This page refreshes every 10 seconds.
         </p>
       </div>
@@ -197,14 +212,15 @@ function RankView({
 
   return (
     <>
-      <p className="text-sm text-zinc-500 mb-3">
-        Drag to rank. Order = priority (top runs first). When you&apos;re happy, click <strong>Start the
-        batch</strong> and the pipeline runs unattended.
+      <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>
+        Drag to rank. Order = priority (top runs first). When you&apos;re happy, click{' '}
+        <strong>Start the batch</strong> and the pipeline runs unattended.
       </p>
       <ul className="space-y-2 mb-6">
         {rankOrder.map((id, idx) => {
           const v = byId.get(id);
           if (!v) return null;
+          const dragging = dragIdx === idx;
           return (
             <li
               key={id}
@@ -212,18 +228,30 @@ function RankView({
               onDragStart={() => onDragStart(idx)}
               onDragOver={(e) => onDragOver(e, idx)}
               onDragEnd={onDragEnd}
-              className={`flex items-start gap-3 p-3 rounded-md border bg-zinc-50 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 cursor-move ${
-                dragIdx === idx ? 'opacity-50' : ''
-              }`}
+              className="flex items-start gap-3 p-3 rounded-lg cursor-move transition-all"
+              style={{
+                background: dragging ? 'rgba(124,58,237,0.10)' : 'var(--bg-card)',
+                border: `1px solid ${dragging ? 'var(--accent-purple-bright)' : 'var(--border)'}`,
+                opacity: dragging ? 0.7 : 1,
+              }}
             >
-              <div className="w-8 shrink-0 text-zinc-500 text-sm font-mono pt-0.5">#{idx + 1}</div>
+              <div
+                className="w-8 shrink-0 text-sm font-mono pt-0.5"
+                style={{ color: 'var(--accent-purple-bright)' }}
+              >
+                #{idx + 1}
+              </div>
               <div className="flex-1">
-                <div className="font-medium text-sm">{v.idea_title}</div>
+                <div className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>
+                  {v.idea_title}
+                </div>
                 {v.idea_hook && (
-                  <div className="text-xs text-zinc-500 mt-0.5 line-clamp-2">{v.idea_hook}</div>
+                  <div className="text-xs mt-0.5 line-clamp-2" style={{ color: 'var(--text-muted)' }}>
+                    {v.idea_hook}
+                  </div>
                 )}
               </div>
-              <div className="text-xs text-zinc-400">⋮⋮</div>
+              <div className="text-xs" style={{ color: 'var(--text-muted)' }}>⋮⋮</div>
             </li>
           );
         })}
@@ -232,7 +260,7 @@ function RankView({
         <button
           onClick={() => void onCommit()}
           disabled={committing || rankOrder.length === 0}
-          className="bg-zinc-900 dark:bg-zinc-100 text-zinc-100 dark:text-zinc-900 px-5 py-2 rounded-md text-sm font-medium disabled:opacity-50"
+          className="btn-primary text-sm"
         >
           {committing ? 'Starting…' : 'Start the batch'}
         </button>

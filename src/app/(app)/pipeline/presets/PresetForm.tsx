@@ -40,8 +40,13 @@ interface FullPreset {
   seo_template_id: string | null;
 }
 
-/** Features the auto-pipeline routes through generateTextWithFallback. */
-const PIPELINE_FEATURES = ['idea-generator', 'script-generator', 'critic-panel', 'production-doc', 'seo-optimizer'] as const;
+const PIPELINE_FEATURES = [
+  'idea-generator',
+  'script-generator',
+  'critic-panel',
+  'production-doc',
+  'seo-optimizer',
+] as const;
 
 export default function PresetForm({
   presetId,
@@ -56,7 +61,6 @@ export default function PresetForm({
 }) {
   const isNew = presetId === null;
 
-  // Form state
   const [name, setName] = useState('');
   const [niche, setNiche] = useState('');
   const [ideasCountDefault, setIdeasCountDefault] = useState(5);
@@ -72,7 +76,6 @@ export default function PresetForm({
   const [scriptRulesJson, setScriptRulesJson] = useState('{}');
   const [fallbackChains, setFallbackChains] = useState<Record<string, string[]>>({});
 
-  // Reference data for selectors
   const [editors, setEditors] = useState<Collaborator[]>([]);
   const [thumbnailTemplates, setThumbnailTemplates] = useState<ThumbnailTemplateRow[]>([]);
   const [seoTemplates, setSeoTemplates] = useState<SeoTemplateRow[]>([]);
@@ -81,7 +84,6 @@ export default function PresetForm({
   const [saving, setSaving] = useState(false);
   const [internalError, setInternalError] = useState<string | null>(null);
 
-  // Load preset + reference data.
   useEffect(() => {
     void (async () => {
       try {
@@ -104,7 +106,6 @@ export default function PresetForm({
         }
         if (seoTplsRes && seoTplsRes.ok) {
           const data = await seoTplsRes.json();
-          // /api/templates returns the array directly (legacy shape).
           const rows = Array.isArray(data) ? data : (data.templates ?? []);
           setSeoTemplates(rows as SeoTemplateRow[]);
         }
@@ -158,9 +159,6 @@ export default function PresetForm({
       return;
     }
 
-    // Filter out empty fallback chains (we only persist non-empty
-    // overrides; empty chains would force a degenerate single-
-    // model resolver fallback that's unnecessarily noisy).
     const cleanChains: Record<string, string[]> = {};
     for (const [k, v] of Object.entries(fallbackChains)) {
       if (Array.isArray(v) && v.length > 0) cleanChains[k] = v;
@@ -212,23 +210,30 @@ export default function PresetForm({
 
   if (loading) {
     return (
-      <div className="border border-zinc-200 dark:border-zinc-800 rounded-lg p-5 mb-5">
-        <div className="text-sm text-zinc-500">Loading preset…</div>
+      <div className="glass rounded-xl p-5 mb-5">
+        <div className="text-sm" style={{ color: 'var(--text-muted)' }}>
+          Loading preset…
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="border border-zinc-200 dark:border-zinc-800 rounded-lg p-5 mb-5 bg-zinc-50/50 dark:bg-zinc-900/30">
-      <h2 className="font-medium mb-4">{isNew ? 'New preset' : 'Edit preset'}</h2>
+    <div className="glass-bright rounded-xl p-6 mb-6">
+      <h2 className="text-sm font-semibold mb-5" style={{ color: 'var(--text-primary)' }}>
+        {isNew ? 'New preset' : 'Edit preset'}
+      </h2>
 
       {internalError && (
-        <div className="mb-4 p-2 rounded-md bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-xs">
+        <div
+          className="mb-4 p-2 rounded text-xs"
+          style={{ background: 'rgba(239,68,68,0.10)', color: '#f87171' }}
+        >
           {internalError}
         </div>
       )}
 
-      <div className="space-y-5">
+      <div className="space-y-6">
         <SectionHeader title="Basics" />
 
         <Field label="Name">
@@ -236,18 +241,18 @@ export default function PresetForm({
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
+            className="input-field"
           />
         </Field>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <Field label="Niche">
             <input
               type="text"
               value={niche}
               onChange={(e) => setNiche(e.target.value)}
               placeholder="e.g. productivity"
-              className="w-full px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
+              className="input-field"
             />
           </Field>
           <Field label="Default ideas per batch">
@@ -257,7 +262,7 @@ export default function PresetForm({
               max={50}
               value={ideasCountDefault}
               onChange={(e) => setIdeasCountDefault(parseInt(e.target.value, 10) || 1)}
-              className="w-full px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
+              className="input-field"
             />
           </Field>
         </div>
@@ -273,8 +278,11 @@ export default function PresetForm({
             min={50}
             max={50000}
             value={targetSpokenWords}
-            onChange={(e) => setTargetSpokenWords(e.target.value === '' ? '' : Math.max(50, parseInt(e.target.value, 10) || 50))}
-            className="w-48 px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
+            onChange={(e) =>
+              setTargetSpokenWords(e.target.value === '' ? '' : Math.max(50, parseInt(e.target.value, 10) || 50))
+            }
+            className="input-field"
+            style={{ maxWidth: 200 }}
           />
         </Field>
 
@@ -282,11 +290,12 @@ export default function PresetForm({
           label="Script gate"
           hint="When on, you review each script before the AI script review runs. Saves token spend on dud ideas."
         >
-          <label className="flex items-center gap-2 text-sm">
+          <label className="flex items-center gap-2 text-sm cursor-pointer" style={{ color: 'var(--text-primary)' }}>
             <input
               type="checkbox"
               checked={scriptGateEnabled}
               onChange={(e) => setScriptGateEnabled(e.target.checked)}
+              style={{ accentColor: 'var(--accent-purple)' }}
             />
             <span>Pause for my approval after each script draft</span>
           </label>
@@ -301,13 +310,14 @@ export default function PresetForm({
             onChange={(e) => setScriptRulesJson(e.target.value)}
             rows={5}
             spellCheck={false}
-            className="w-full px-3 py-2 text-xs rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent font-mono"
+            className="input-field"
+            style={{ fontFamily: 'var(--font-mono), monospace', fontSize: 12 }}
           />
         </Field>
 
         <SectionHeader title="AI script review (QA)" />
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <Field label="Minimum passing score">
             <input
               type="number"
@@ -315,7 +325,7 @@ export default function PresetForm({
               max={100}
               value={qaMinScore}
               onChange={(e) => setQaMinScore(Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0)))}
-              className="w-full px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
+              className="input-field"
             />
           </Field>
           <Field label="Max retry iterations">
@@ -324,8 +334,10 @@ export default function PresetForm({
               min={0}
               max={10}
               value={qaMaxIterations}
-              onChange={(e) => setQaMaxIterations(Math.max(0, Math.min(10, parseInt(e.target.value, 10) || 0)))}
-              className="w-full px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
+              onChange={(e) =>
+                setQaMaxIterations(Math.max(0, Math.min(10, parseInt(e.target.value, 10) || 0)))
+              }
+              className="input-field"
             />
           </Field>
         </div>
@@ -341,7 +353,8 @@ export default function PresetForm({
             onChange={(e) => setIdeaContextJson(e.target.value)}
             rows={4}
             spellCheck={false}
-            className="w-full px-3 py-2 text-xs rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent font-mono"
+            className="input-field"
+            style={{ fontFamily: 'var(--font-mono), monospace', fontSize: 12 }}
           />
         </Field>
 
@@ -353,8 +366,11 @@ export default function PresetForm({
             min={1}
             max={90}
             value={narrationDeadlineDays}
-            onChange={(e) => setNarrationDeadlineDays(Math.max(1, Math.min(90, parseInt(e.target.value, 10) || 1)))}
-            className="w-32 px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
+            onChange={(e) =>
+              setNarrationDeadlineDays(Math.max(1, Math.min(90, parseInt(e.target.value, 10) || 1)))
+            }
+            className="input-field"
+            style={{ maxWidth: 160 }}
           />
         </Field>
 
@@ -364,11 +380,13 @@ export default function PresetForm({
           <select
             value={thumbnailTemplateId}
             onChange={(e) => setThumbnailTemplateId(e.target.value)}
-            className="w-full px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
+            className="input-field"
           >
             <option value="">— Use defaults —</option>
             {thumbnailTemplates.map((t) => (
-              <option key={t.id} value={t.id}>{t.name}</option>
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
             ))}
           </select>
         </Field>
@@ -380,12 +398,13 @@ export default function PresetForm({
           <select
             value={seoTemplateId}
             onChange={(e) => setSeoTemplateId(e.target.value)}
-            className="w-full px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
+            className="input-field"
           >
             <option value="">— Skip SEO step —</option>
             {seoTemplates.map((t) => (
               <option key={t.id} value={t.id}>
-                {t.name}{t.is_default ? ' (default)' : ''}
+                {t.name}
+                {t.is_default ? ' (default)' : ''}
               </option>
             ))}
           </select>
@@ -398,30 +417,37 @@ export default function PresetForm({
           <select
             value={videoEditorId}
             onChange={(e) => setVideoEditorId(e.target.value)}
-            className="w-full px-3 py-2 text-sm rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent"
+            className="input-field"
           >
             <option value="">— No auto-assign (terminate at done) —</option>
             {editors.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.name}{c.email ? ` (${c.email})` : ''}
+                {c.name}
+                {c.email ? ` (${c.email})` : ''}
               </option>
             ))}
           </select>
         </Field>
 
-        <SectionHeader
-          title="Advanced — model fallback chains"
-          collapsible
-          open={advancedOpen}
-          onToggle={() => setAdvancedOpen((v) => !v)}
-        />
+        <button
+          onClick={() => setAdvancedOpen((v) => !v)}
+          type="button"
+          className="w-full text-left flex items-center gap-2 pt-2 pb-1 text-xs uppercase tracking-widest font-bold transition-colors rounded hover:opacity-80"
+          style={{ color: 'var(--accent-purple-bright)' }}
+        >
+          <span>{advancedOpen ? '▾' : '▸'}</span>
+          <span>Advanced — model fallback chains</span>
+        </button>
 
         {advancedOpen && (
-          <div className="space-y-3 pl-2 border-l-2 border-zinc-200 dark:border-zinc-800">
-            <p className="text-xs text-zinc-500">
-              Each pipeline stage tries models in order on transient failure (rate-limit / 5xx / timeout / empty
-              output). Refusals and unknown errors short-circuit — they never fall through. Leave empty to use
-              the built-in defaults shown as placeholders.
+          <div
+            className="space-y-4 pl-3"
+            style={{ borderLeft: '2px solid var(--border-bright)' }}
+          >
+            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              Each pipeline stage tries models in order on transient failure (rate-limit / 5xx / timeout /
+              empty output). Refusals and unknown errors short-circuit — they never fall through. Leave empty
+              to use the built-in defaults shown as placeholders.
             </p>
             {PIPELINE_FEATURES.map((feature) => {
               const spec = APP_FEATURES.find((f) => f.id === feature);
@@ -443,17 +469,13 @@ export default function PresetForm({
       </div>
 
       <div className="mt-6 flex justify-end gap-2">
-        <button
-          onClick={onClose}
-          disabled={saving}
-          className="px-4 py-2 rounded-md text-sm border border-zinc-300 dark:border-zinc-700 disabled:opacity-50"
-        >
+        <button onClick={onClose} disabled={saving} className="btn-secondary text-sm">
           Cancel
         </button>
         <button
           onClick={() => void save()}
           disabled={saving || !name.trim()}
-          className="bg-zinc-900 dark:bg-zinc-100 text-zinc-100 dark:text-zinc-900 px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50"
+          className="btn-primary text-sm"
         >
           {saving ? 'Saving…' : isNew ? 'Create preset' : 'Save changes'}
         </button>
@@ -492,28 +514,35 @@ function FallbackChainEditor({
   return (
     <div className="text-sm">
       <div className="flex items-center justify-between mb-1">
-        <span className="font-medium">{label}</span>
+        <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>{label}</span>
         <button
           onClick={addEntry}
-          className="text-xs text-zinc-600 dark:text-zinc-400 hover:underline"
+          className="text-xs hover:underline"
+          style={{ color: 'var(--accent-purple-bright)' }}
           type="button"
         >
           + Add model
         </button>
       </div>
       {currentChain.length === 0 ? (
-        <div className="text-xs text-zinc-500 mb-1">
-          Using default: <code>{placeholder}</code>
+        <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Using default: <code style={{ fontFamily: 'var(--font-mono), monospace' }}>{placeholder}</code>
         </div>
       ) : (
         <ul className="space-y-1">
           {currentChain.map((id, idx) => (
             <li key={idx} className="flex gap-2 items-center">
-              <span className="w-6 text-xs text-zinc-500 font-mono">#{idx + 1}</span>
+              <span
+                className="w-6 text-xs font-mono shrink-0"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                #{idx + 1}
+              </span>
               <select
                 value={id}
                 onChange={(e) => setAt(idx, e.target.value)}
-                className="flex-1 px-2 py-1 text-xs rounded border border-zinc-300 dark:border-zinc-700 bg-transparent"
+                className="input-field flex-1"
+                style={{ padding: '6px 10px', fontSize: 12 }}
               >
                 {AI_MODELS.map((m) => (
                   <option key={m.id} value={m.id}>
@@ -523,7 +552,8 @@ function FallbackChainEditor({
               </select>
               <button
                 onClick={() => removeAt(idx)}
-                className="text-xs text-red-600 dark:text-red-400 hover:underline"
+                className="text-xs hover:underline"
+                style={{ color: '#f87171' }}
                 type="button"
               >
                 Remove
@@ -537,40 +567,29 @@ function FallbackChainEditor({
   );
 }
 
-function SectionHeader({
-  title,
-  collapsible,
-  open,
-  onToggle,
-}: {
-  title: string;
-  collapsible?: boolean;
-  open?: boolean;
-  onToggle?: () => void;
-}) {
-  if (collapsible) {
-    return (
-      <button
-        onClick={onToggle}
-        type="button"
-        className="w-full text-left flex items-center gap-2 pt-2 pb-1 text-xs uppercase tracking-wide font-medium text-zinc-500"
-      >
-        <span>{open ? '▾' : '▸'}</span>
-        <span>{title}</span>
-      </button>
-    );
-  }
+function SectionHeader({ title }: { title: string }) {
   return (
-    <div className="pt-2 pb-1 text-xs uppercase tracking-wide font-medium text-zinc-500">{title}</div>
+    <div
+      className="pt-2 pb-1 text-xs uppercase tracking-widest font-bold"
+      style={{ color: 'var(--accent-purple-bright)' }}
+    >
+      {title}
+    </div>
   );
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="block text-sm font-medium mb-1">{label}</label>
-      {hint && <div className="text-xs text-zinc-500 mb-1.5">{hint}</div>}
+      <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+        {label}
+      </label>
       {children}
+      {hint && (
+        <p className="mt-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
+          {hint}
+        </p>
+      )}
     </div>
   );
 }

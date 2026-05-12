@@ -135,7 +135,6 @@ export default function VideoCard({
         throw new Error(data.error || `HTTP ${res.status}`);
       }
       onChanged();
-      // Re-fetch detail to show the new state immediately.
       void loadDetail();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : 'Action failed');
@@ -147,56 +146,82 @@ export default function VideoCard({
   const isFailed = FAILED.has(video.stage);
   const isTerminal = TERMINAL.has(video.stage);
   const isOverdue = video.stage === 'narration_overdue';
+  const isAwaitingGate = video.stage === 'awaiting_script_gate';
+
+  const borderColor = isFailed
+    ? 'rgba(239,68,68,0.4)'
+    : isAwaitingGate
+    ? 'var(--accent-purple-bright)'
+    : isOverdue
+    ? 'var(--accent-yellow)'
+    : 'var(--border)';
 
   return (
     <div
-      className={`border rounded-lg ${
-        isFailed
-          ? 'border-red-200 dark:border-red-950'
-          : isOverdue
-          ? 'border-amber-200 dark:border-amber-950'
-          : 'border-zinc-200 dark:border-zinc-800'
-      }`}
+      className="rounded-xl overflow-hidden glass"
+      style={{ border: `1px solid ${borderColor}` }}
     >
       <button
         onClick={toggle}
-        className="w-full p-4 text-left flex items-center gap-4"
+        className="w-full p-4 text-left flex items-center gap-4 cursor-pointer transition-colors"
+        style={{ background: expanded ? 'rgba(124,58,237,0.05)' : 'transparent' }}
       >
-        <div className="w-8 text-zinc-500 text-sm font-mono shrink-0">#{video.priority}</div>
+        <div
+          className="w-8 text-sm font-mono shrink-0"
+          style={{ color: 'var(--accent-purple-bright)' }}
+        >
+          #{video.priority}
+        </div>
         <div className="flex-1 min-w-0">
-          <div className="font-medium text-sm truncate">{video.idea_title || '(idea pending)'}</div>
-          <div className="text-xs text-zinc-500 mt-0.5 flex items-center gap-3 flex-wrap">
-            <span className={isFailed ? 'text-red-600 dark:text-red-400' : ''}>
+          <div className="font-medium text-sm truncate" style={{ color: 'var(--text-primary)' }}>
+            {video.idea_title || '(idea pending)'}
+          </div>
+          <div className="text-xs mt-1 flex items-center gap-3 flex-wrap">
+            <span
+              style={{
+                color: isFailed ? '#f87171' : isAwaitingGate ? 'var(--accent-purple-bright)' : 'var(--text-secondary)',
+              }}
+            >
               {STAGE_LABEL[video.stage] ?? video.stage}
             </span>
             {video.script_word_count != null && (
-              <span>{video.script_word_count} spoken words</span>
+              <span style={{ color: 'var(--text-muted)' }}>{video.script_word_count} spoken words</span>
             )}
             {video.critic_overall_score != null && (
-              <span>QA score: {video.critic_overall_score}/100</span>
+              <span style={{ color: 'var(--text-muted)' }}>QA score: {video.critic_overall_score}/100</span>
             )}
-            {video.retry_count > 0 && <span>{video.retry_count} retry/retries</span>}
-            <span>${Number(video.cost_usd).toFixed(2)}</span>
+            {video.retry_count > 0 && (
+              <span style={{ color: 'var(--text-muted)' }}>{video.retry_count} retry/retries</span>
+            )}
+            <span style={{ color: 'var(--text-muted)' }}>${Number(video.cost_usd).toFixed(2)}</span>
           </div>
         </div>
-        <span className="text-zinc-400 shrink-0">{expanded ? '▾' : '▸'}</span>
+        <span className="shrink-0" style={{ color: 'var(--text-muted)' }}>
+          {expanded ? '▾' : '▸'}
+        </span>
       </button>
 
       {expanded && (
-        <div className="px-4 pb-4 border-t border-zinc-100 dark:border-zinc-900">
+        <div className="px-4 pb-4" style={{ borderTop: '1px solid var(--border)' }}>
           {loadingDetail && !detail ? (
-            <div className="py-4 text-sm text-zinc-500">Loading…</div>
+            <div className="py-4 text-sm" style={{ color: 'var(--text-muted)' }}>
+              Loading…
+            </div>
           ) : !detail ? null : (
             <div className="py-4 space-y-4">
               {video.failure_message && (
-                <div className="p-3 rounded-md bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-sm">
-                  <div className="font-medium">Failure: {video.failure_class}</div>
-                  <div className="mt-1 text-xs">{video.failure_message}</div>
+                <div
+                  className="p-3 rounded text-sm"
+                  style={{ background: 'rgba(239,68,68,0.10)', color: '#f87171' }}
+                >
+                  <div className="font-semibold">Failure: {video.failure_class}</div>
+                  <div className="mt-1 text-xs" style={{ opacity: 0.9 }}>
+                    {video.failure_message}
+                  </div>
                 </div>
               )}
 
-              {/* Script gate — inline action panel when awaiting review */}
-              {video.stage === 'awaiting_script_gate' && (
+              {isAwaitingGate && (
                 <ScriptGate
                   scriptContent={detail.video.script_content}
                   scriptWordCount={video.script_word_count}
@@ -209,35 +234,39 @@ export default function VideoCard({
                 />
               )}
 
-              {/* Waiting for narration — manual "narration done" trigger */}
               {(video.stage === 'waiting_narration' || video.stage === 'narration_overdue') && (
-                <div className="p-3 rounded-md bg-zinc-50 dark:bg-zinc-900 text-sm">
-                  <div className="font-medium mb-1">Narration handoff</div>
-                  <div className="text-xs text-zinc-500 mb-3">
+                <div className="p-3 rounded-lg" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                  <div className="font-semibold text-sm mb-1" style={{ color: 'var(--text-primary)' }}>
+                    Narration handoff
+                  </div>
+                  <div className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
                     Deadline:{' '}
                     {video.narration_deadline_at
                       ? new Date(video.narration_deadline_at).toLocaleString()
                       : 'none'}
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 flex-wrap">
                     <button
                       onClick={() => callAction({ action: 'narration_done' })}
                       disabled={!!busyAction}
-                      className="bg-zinc-900 dark:bg-zinc-100 text-zinc-100 dark:text-zinc-900 px-3 py-1.5 rounded-md text-xs font-medium disabled:opacity-50"
+                      className="btn-primary text-xs"
+                      style={{ padding: '6px 12px' }}
                     >
                       Narration is done → continue
                     </button>
                     <button
                       onClick={() => callAction({ action: 'extend_narration', days: 7 })}
                       disabled={!!busyAction}
-                      className="px-3 py-1.5 rounded-md text-xs border border-zinc-300 dark:border-zinc-700 disabled:opacity-50"
+                      className="btn-secondary text-xs"
+                      style={{ padding: '6px 12px' }}
                     >
                       Extend +7 days
                     </button>
                     <button
                       onClick={() => callAction({ action: 'abandon' })}
                       disabled={!!busyAction}
-                      className="px-3 py-1.5 rounded-md text-xs text-red-600 dark:text-red-400 disabled:opacity-50"
+                      className="btn-danger text-xs"
+                      style={{ padding: '6px 12px' }}
                     >
                       Abandon
                     </button>
@@ -245,7 +274,6 @@ export default function VideoCard({
                 </div>
               )}
 
-              {/* Fix list — visible per user's 2026-05-12 requirement */}
               {detail.latestAppliedFixes?.metadata_jsonb?.applied_fixes && (
                 <FixListDisplay
                   fixes={detail.latestAppliedFixes.metadata_jsonb.applied_fixes}
@@ -253,40 +281,42 @@ export default function VideoCard({
                 />
               )}
 
-              {/* Critic verdict summary when one exists */}
-              {detail.video.verdict && (
-                <VerdictSummary verdict={detail.video.verdict} />
-              )}
+              {detail.video.verdict && <VerdictSummary verdict={detail.video.verdict} />}
 
-              {/* Thumbnail preview */}
               {detail.video.thumbnail_url && (
                 <div>
-                  <div className="text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+                  <div className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--text-secondary)' }}>
                     Generated thumbnail
                   </div>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={detail.video.thumbnail_url}
                     alt="Generated thumbnail"
-                    className="max-w-md rounded-md border border-zinc-200 dark:border-zinc-800"
+                    className="max-w-md rounded-lg"
+                    style={{ border: '1px solid var(--border)' }}
                   />
                 </div>
               )}
 
-              {/* Production doc summary */}
               {detail.latestProductionDoc && (
                 <details className="text-sm">
-                  <summary className="cursor-pointer text-zinc-700 dark:text-zinc-300 font-medium">
+                  <summary className="cursor-pointer font-semibold text-xs uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>
                     Shot-by-shot breakdown (JSON)
                   </summary>
-                  <pre className="mt-2 p-3 bg-zinc-50 dark:bg-zinc-900 rounded-md text-xs overflow-x-auto max-h-96">
+                  <pre
+                    className="mt-2 p-3 rounded text-xs overflow-x-auto"
+                    style={{
+                      background: 'var(--bg-primary)',
+                      color: 'var(--text-secondary)',
+                      border: '1px solid var(--border)',
+                      maxHeight: 384,
+                    }}
+                  >
                     {JSON.stringify(detail.latestProductionDoc, null, 2)}
                   </pre>
                 </details>
               )}
 
-              {/* SEO output panel — surfaces titles / description /
-                  tags / chapters from the generating_seo stage. */}
               {detail.latestSeoOutput?.seo && (
                 <SeoOutputPanel
                   seo={detail.latestSeoOutput.seo}
@@ -295,9 +325,8 @@ export default function VideoCard({
                 />
               )}
 
-              {/* Kill anywhere except terminal */}
-              {!isTerminal && video.stage !== 'awaiting_script_gate' && (
-                <div className="pt-2 border-t border-zinc-100 dark:border-zinc-900">
+              {!isTerminal && !isAwaitingGate && (
+                <div className="pt-2" style={{ borderTop: '1px solid var(--border)' }}>
                   <button
                     onClick={() => {
                       if (confirm('Kill this video? It will be marked cancelled and no further work runs.')) {
@@ -305,7 +334,8 @@ export default function VideoCard({
                       }
                     }}
                     disabled={!!busyAction}
-                    className="text-xs text-red-600 dark:text-red-400 hover:underline disabled:opacity-50"
+                    className="text-xs hover:underline disabled:opacity-50"
+                    style={{ color: '#f87171' }}
                   >
                     Kill this video
                   </button>
@@ -313,7 +343,10 @@ export default function VideoCard({
               )}
 
               {actionError && (
-                <div className="p-2 rounded-md bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-xs">
+                <div
+                  className="p-2 rounded text-xs"
+                  style={{ background: 'rgba(239,68,68,0.10)', color: '#f87171' }}
+                >
                   {actionError}
                 </div>
               )}
@@ -347,41 +380,64 @@ function ScriptGate(props: {
   } = props;
 
   if (!scriptContent) {
-    return <div className="text-sm text-zinc-500">Script not loaded.</div>;
+    return (
+      <div className="text-sm" style={{ color: 'var(--text-muted)' }}>
+        Script not loaded.
+      </div>
+    );
   }
 
   const mins = estimatedDurationSeconds ? Math.floor(estimatedDurationSeconds / 60) : 0;
   const secs = estimatedDurationSeconds ? estimatedDurationSeconds % 60 : 0;
 
   return (
-    <div className="rounded-md border border-amber-200 dark:border-amber-950 bg-amber-50/50 dark:bg-amber-950/20 p-4">
-      <div className="flex items-center justify-between mb-3">
-        <div>
-          <div className="font-medium text-sm">Script ready — review and decide</div>
-          <div className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5">
-            {scriptWordCount ?? '?'} spoken words ·{' '}
-            {estimatedDurationSeconds ? `~${mins}m ${secs}s @ 140 wpm` : ''}
-          </div>
+    <div
+      className="rounded-lg p-4"
+      style={{
+        background: 'rgba(124,58,237,0.08)',
+        border: '1px solid var(--accent-purple-bright)',
+      }}
+    >
+      <div className="mb-3">
+        <div className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>
+          Script ready — review and decide
+        </div>
+        <div className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+          {scriptWordCount ?? '?'} spoken words ·{' '}
+          {estimatedDurationSeconds ? `~${mins}m ${secs}s @ 140 wpm` : ''}
         </div>
       </div>
       {ideaTitle && (
-        <div className="text-xs text-zinc-500 mb-2">For: {ideaTitle}</div>
+        <div className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+          For: {ideaTitle}
+        </div>
       )}
-      <div className="max-h-96 overflow-y-auto p-3 rounded-md bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 text-sm whitespace-pre-wrap mb-3">
+      <div
+        className="p-3 rounded text-sm whitespace-pre-wrap mb-3"
+        style={{
+          background: 'var(--bg-primary)',
+          color: 'var(--text-primary)',
+          border: '1px solid var(--border)',
+          maxHeight: 384,
+          overflowY: 'auto',
+        }}
+      >
         {scriptContent}
       </div>
-      <div className="flex gap-2">
+      <div className="flex gap-2 flex-wrap">
         <button
           onClick={onKeep}
           disabled={!!busyAction}
-          className="bg-zinc-900 dark:bg-zinc-100 text-zinc-100 dark:text-zinc-900 px-3 py-1.5 rounded-md text-xs font-medium disabled:opacity-50"
+          className="btn-primary text-xs"
+          style={{ padding: '8px 14px' }}
         >
           Keep → run AI script review
         </button>
         <button
           onClick={onRegenerate}
           disabled={!!busyAction}
-          className="px-3 py-1.5 rounded-md text-xs border border-zinc-300 dark:border-zinc-700 disabled:opacity-50"
+          className="btn-secondary text-xs"
+          style={{ padding: '8px 14px' }}
         >
           Regenerate script
         </button>
@@ -390,7 +446,8 @@ function ScriptGate(props: {
             if (confirm('Kill this video?')) onKill();
           }}
           disabled={!!busyAction}
-          className="px-3 py-1.5 rounded-md text-xs text-red-600 dark:text-red-400 disabled:opacity-50"
+          className="btn-danger text-xs"
+          style={{ padding: '8px 14px' }}
         >
           Kill
         </button>
@@ -404,41 +461,81 @@ function FixListDisplay({ fixes, attemptNumber }: { fixes: FlatFix[]; attemptNum
   const by: Record<FlatFix['severity'], FlatFix[]> = { high: [], medium: [], low: [] };
   for (const f of fixes) by[f.severity].push(f);
   return (
-    <details open className="rounded-md border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 p-3">
-      <summary className="cursor-pointer text-sm font-medium">
+    <details
+      open
+      className="rounded-lg p-3"
+      style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+    >
+      <summary
+        className="cursor-pointer text-sm font-semibold"
+        style={{ color: 'var(--text-primary)' }}
+      >
         Fixes applied in retry #{attemptNumber - 1} ({fixes.length})
       </summary>
-      <div className="mt-3 space-y-2 text-sm">
+      <div className="mt-3 space-y-3 text-sm">
         {by.high.length > 0 && (
-          <FixGroup title="Must fix" colorClass="text-red-700 dark:text-red-400" items={by.high} />
+          <FixGroup title="Must fix" color="#f87171" items={by.high} />
         )}
         {by.medium.length > 0 && (
-          <FixGroup title="Should fix" colorClass="text-amber-700 dark:text-amber-400" items={by.medium} />
+          <FixGroup title="Should fix" color="#fbbf24" items={by.medium} />
         )}
         {by.low.length > 0 && (
-          <FixGroup title="Nice to fix" colorClass="text-zinc-600 dark:text-zinc-400" items={by.low} />
+          <FixGroup title="Nice to fix" color="var(--text-muted)" items={by.low} />
         )}
       </div>
     </details>
   );
 }
 
-function FixGroup({ title, colorClass, items }: { title: string; colorClass: string; items: FlatFix[] }) {
+function FixGroup({ title, color, items }: { title: string; color: string; items: FlatFix[] }) {
   return (
     <div>
-      <div className={`text-xs font-medium uppercase tracking-wide ${colorClass}`}>{title}</div>
+      <div className="text-xs font-semibold uppercase tracking-wider" style={{ color }}>
+        {title}
+      </div>
       <ul className="mt-1 space-y-1 list-disc pl-5">
         {items.map((f) => (
-          <li key={f.id} className="text-sm">
+          <li key={f.id} className="text-sm" style={{ color: 'var(--text-primary)' }}>
             {f.text}
             {f.scriptLineRef && (
-              <span className="block text-xs text-zinc-500 mt-0.5">
+              <span className="block text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
                 re: &quot;{f.scriptLineRef}&quot;
               </span>
             )}
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+function VerdictSummary({ verdict }: { verdict: Record<string, unknown> }) {
+  const overall = typeof verdict.overall_score === 'number' ? verdict.overall_score : null;
+  const summary = typeof verdict.chair_summary === 'string' ? verdict.chair_summary : null;
+  const willPerform = typeof verdict.will_it_perform === 'string' ? verdict.will_it_perform : null;
+  return (
+    <div className="rounded-lg p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+      <div className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--text-secondary)' }}>
+        AI script review
+      </div>
+      {overall !== null && (
+        <div className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>
+          {overall}
+          <span className="text-sm font-normal ml-1" style={{ color: 'var(--text-muted)' }}>
+            / 100
+          </span>
+        </div>
+      )}
+      {summary && (
+        <p className="text-sm mt-2" style={{ color: 'var(--text-secondary)' }}>
+          {summary}
+        </p>
+      )}
+      {willPerform && (
+        <p className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
+          Will it perform: {willPerform}
+        </p>
+      )}
     </div>
   );
 }
@@ -465,10 +562,12 @@ function SeoOutputPanel({
   }
 
   return (
-    <div className="rounded-md border border-zinc-200 dark:border-zinc-800 p-3">
-      <div className="flex items-center justify-between mb-2">
-        <div className="text-xs font-medium text-zinc-700 dark:text-zinc-300">SEO metadata</div>
-        <div className="text-xs text-zinc-500">
+    <div className="rounded-lg p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>
+          SEO metadata
+        </div>
+        <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
           {templateApplied ? 'Template applied' : 'No template'}
           {modelUsed && <span className="ml-2">· {modelUsed}</span>}
         </div>
@@ -476,20 +575,28 @@ function SeoOutputPanel({
 
       {titles.length > 0 && (
         <details open className="mb-3">
-          <summary className="cursor-pointer text-xs font-medium text-zinc-600 dark:text-zinc-400">
+          <summary className="cursor-pointer text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
             Title candidates ({titles.length})
           </summary>
           <ul className="mt-2 space-y-1">
             {titles.slice(0, 8).map((t, idx) => (
               <li key={idx} className="flex items-start gap-2 text-sm">
-                <span className="text-xs text-zinc-400 font-mono w-6 shrink-0 pt-0.5">#{idx + 1}</span>
-                <span className="flex-1">{t.title}</span>
+                <span
+                  className="text-xs font-mono w-6 shrink-0 pt-0.5"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  #{idx + 1}
+                </span>
+                <span className="flex-1" style={{ color: 'var(--text-primary)' }}>{t.title}</span>
                 {typeof t.score === 'number' && (
-                  <span className="text-xs text-zinc-500 shrink-0">{t.score}/100</span>
+                  <span className="text-xs shrink-0" style={{ color: 'var(--text-muted)' }}>
+                    {t.score}/100
+                  </span>
                 )}
                 <button
                   onClick={() => copy(`title-${idx}`, t.title)}
-                  className="text-xs text-zinc-500 hover:underline shrink-0"
+                  className="text-xs hover:underline shrink-0"
+                  style={{ color: 'var(--accent-purple-bright)' }}
                   type="button"
                 >
                   {copied === `title-${idx}` ? '✓' : 'copy'}
@@ -502,15 +609,25 @@ function SeoOutputPanel({
 
       {seo.description?.full_description && (
         <details className="mb-3">
-          <summary className="cursor-pointer text-xs font-medium text-zinc-600 dark:text-zinc-400">
+          <summary className="cursor-pointer text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
             Description
           </summary>
-          <div className="mt-2 text-sm whitespace-pre-wrap p-2 rounded bg-zinc-50 dark:bg-zinc-900 max-h-64 overflow-y-auto">
+          <div
+            className="mt-2 text-sm whitespace-pre-wrap p-3 rounded"
+            style={{
+              background: 'var(--bg-primary)',
+              color: 'var(--text-primary)',
+              border: '1px solid var(--border)',
+              maxHeight: 256,
+              overflowY: 'auto',
+            }}
+          >
             {seo.description.full_description}
           </div>
           <button
             onClick={() => copy('desc', seo.description!.full_description!)}
-            className="mt-2 text-xs text-zinc-500 hover:underline"
+            className="mt-2 text-xs hover:underline"
+            style={{ color: 'var(--accent-purple-bright)' }}
             type="button"
           >
             {copied === 'desc' ? '✓ copied' : 'copy description'}
@@ -520,14 +637,19 @@ function SeoOutputPanel({
 
       {tags.length > 0 && (
         <details className="mb-3">
-          <summary className="cursor-pointer text-xs font-medium text-zinc-600 dark:text-zinc-400">
+          <summary className="cursor-pointer text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
             Tags ({tags.length})
           </summary>
           <div className="mt-2 flex flex-wrap gap-1">
             {tags.map((t, idx) => (
               <span
                 key={idx}
-                className="text-xs px-2 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300"
+                className="text-xs px-2 py-0.5 rounded"
+                style={{
+                  background: 'var(--bg-primary)',
+                  color: 'var(--text-secondary)',
+                  border: '1px solid var(--border)',
+                }}
                 title={t.type ?? undefined}
               >
                 {t.tag}
@@ -536,7 +658,8 @@ function SeoOutputPanel({
           </div>
           <button
             onClick={() => copy('tags', tags.map((t) => t.tag).join(', '))}
-            className="mt-2 text-xs text-zinc-500 hover:underline"
+            className="mt-2 text-xs hover:underline"
+            style={{ color: 'var(--accent-purple-bright)' }}
             type="button"
           >
             {copied === 'tags' ? '✓ copied' : 'copy comma-separated'}
@@ -546,41 +669,26 @@ function SeoOutputPanel({
 
       {chapters.length > 0 && (
         <details>
-          <summary className="cursor-pointer text-xs font-medium text-zinc-600 dark:text-zinc-400">
+          <summary className="cursor-pointer text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
             Chapters ({chapters.length})
           </summary>
           <ul className="mt-2 space-y-0.5 text-sm font-mono">
             {chapters.map((c, idx) => (
-              <li key={idx}>
-                <span className="text-zinc-500">{c.timestamp}</span> {c.title}
+              <li key={idx} style={{ color: 'var(--text-primary)' }}>
+                <span style={{ color: 'var(--text-muted)' }}>{c.timestamp}</span> {c.title}
               </li>
             ))}
           </ul>
           <button
             onClick={() => copy('chapters', chapters.map((c) => `${c.timestamp} ${c.title}`).join('\n'))}
-            className="mt-2 text-xs text-zinc-500 hover:underline"
+            className="mt-2 text-xs hover:underline"
+            style={{ color: 'var(--accent-purple-bright)' }}
             type="button"
           >
             {copied === 'chapters' ? '✓ copied' : 'copy as block'}
           </button>
         </details>
       )}
-    </div>
-  );
-}
-
-function VerdictSummary({ verdict }: { verdict: Record<string, unknown> }) {
-  const overall = typeof verdict.overall_score === 'number' ? verdict.overall_score : null;
-  const summary = typeof verdict.chair_summary === 'string' ? verdict.chair_summary : null;
-  const willPerform = typeof verdict.will_it_perform === 'string' ? verdict.will_it_perform : null;
-  return (
-    <div className="rounded-md border border-zinc-200 dark:border-zinc-800 p-3">
-      <div className="text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">AI script review</div>
-      {overall !== null && (
-        <div className="text-2xl font-semibold">{overall}<span className="text-sm text-zinc-500">/100</span></div>
-      )}
-      {summary && <p className="text-sm text-zinc-700 dark:text-zinc-300 mt-2">{summary}</p>}
-      {willPerform && <p className="text-xs text-zinc-500 mt-2">Will it perform: {willPerform}</p>}
     </div>
   );
 }
