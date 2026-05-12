@@ -22,6 +22,21 @@ const QUICK_ACTIONS: Array<{
   icon: React.ReactNode;
 }> = [
   {
+    // The "do it all in one click" entry — first action on the dashboard
+    // so a user landing on this page sees the auto-pipeline before
+    // anything else. Lightning-bolt icon signals "fast / automatic".
+    label: 'Auto-pipeline',
+    description: 'Idea → script → narration → docs',
+    href: '/pipeline',
+    gradient: 'linear-gradient(135deg, #f97316, #db2777, #7c3aed)',
+    glow: 'rgba(219,39,119,0.4)',
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <path d="M13 2 3 14h7l-1 8 11-14h-7l1-6z" strokeLinejoin="round" />
+      </svg>
+    ),
+  },
+  {
     label: 'Generate script',
     description: 'AI from topic + length',
     href: '/generator',

@@ -90,8 +90,21 @@ const SECTIONS: NavSection[] = [
     // pick an idea → script → review → plan visuals → record voice →
     // assemble video (long-form OR shorts) → translate → finishing
     // touches (thumbnails + SEO).
+    //
+    // Auto-pipeline sits at the TOP of Create as the "do it all in one
+    // click" entry — a lightning bolt icon distinguishes it from the
+    // atomic stage-tools that follow.
     label: 'Create',
     items: [
+      {
+        label: 'Auto-pipeline',
+        href: '/pipeline',
+        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+            <path d="M13 2 3 14h7l-1 8 11-14h-7l1-6z" />
+          </svg>
+        ),
+      },
       {
         label: 'Ideas',
         href: '/ideas',

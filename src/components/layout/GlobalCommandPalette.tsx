@@ -20,6 +20,9 @@ const PAGES: PageEntry[] = [
   { label: 'New Project', href: '/projects/new', group: 'Plan', hint: 'Create' },
 
   // Create
+  { label: 'Auto-pipeline', href: '/pipeline', group: 'Create', hint: 'Idea → script → QA → narration → docs', keywords: ['batch', 'auto', 'pipeline', 'one click', 'automation'] },
+  { label: 'Pipeline presets', href: '/pipeline/presets', group: 'Create', hint: 'Manage auto-pipeline templates', keywords: ['preset', 'template', 'rules'] },
+  { label: 'Thumbnail templates', href: '/pipeline/thumbnail-templates', group: 'Create', hint: 'Reusable thumbnail configs', keywords: ['thumbnail', 'template'] },
   { label: 'Idea Generator', href: '/ideas', group: 'Create', keywords: ['brainstorm'] },
   { label: 'Script Generator', href: '/generator', group: 'Create', keywords: ['write'] },
   { label: 'QA Engine', href: '/qa', group: 'Create', hint: 'Quality check' },
