@@ -3,6 +3,7 @@ import { sql } from '@vercel/postgres';
 import { updateSection, createNarratorComment } from '@/lib/narrator-db';
 import { notifyRetakeRequested } from '@/lib/notify';
 import { dispatchNarrationHookFireAndForget } from '@/lib/auto-pipeline/narrator-hook';
+import { stitchAssignmentVoiceover } from '@/lib/narrator-stitch';
 import { logger } from '@/lib/logger';
 
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string; sectionId: string }> }) {
@@ -39,6 +40,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     // remain pending.
     if (status === 'approved') {
       dispatchNarrationHookFireAndForget(assignmentId);
+      dispatchAutoStitchIfReady(assignmentId);
     }
 
     // Fire-and-forget: notify narrator on retake
@@ -66,4 +68,65 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     logger.error('PUT section error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to update section' }, { status: 500 });
   }
+}
+
+/**
+ * Auto-stitch the assignment's voiceover when this section approval was
+ * the last one outstanding. Fire-and-forget — the narrator response
+ * returns immediately and the stitch (download + concat + Vercel Blob
+ * upload + media_asset insert) runs on the same instance.
+ *
+ * Why this exists: the team-hub UI only calls this PUT route to approve
+ * sections; it never hits the manual stitch endpoint. Without this hook,
+ * an assignment can be fully approved per-section yet leave the project
+ * with no voiceover media_asset — so the Voiceover panel stays empty
+ * and the workspace-wide library can't reuse it.
+ *
+ * Single round-trip predicate: every real section (section_number != 0)
+ * is approved AND no voiceover media_asset already exists for this
+ * assignment (covers both stitched and full-narration uploads).
+ */
+function dispatchAutoStitchIfReady(assignmentId: string): void {
+  void (async () => {
+    const { rows } = await sql<{ should_stitch: boolean }>`
+      SELECT (
+        (SELECT COUNT(*) FROM narrator_sections s
+          WHERE s.assignment_id = ${assignmentId}::uuid
+            AND s.section_number != 0) > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM narrator_sections s
+           WHERE s.assignment_id = ${assignmentId}::uuid
+             AND s.section_number != 0
+             AND s.status != 'approved'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM media_assets m
+           WHERE m.type = 'voiceover'
+             AND m.metadata->>'assignment_id' = ${assignmentId}
+             AND (m.metadata->>'stitched' = 'true'
+                  OR m.metadata->>'full_narration' = 'true')
+        )
+      ) AS should_stitch
+    `;
+    if (!rows[0]?.should_stitch) return;
+
+    const result = await stitchAssignmentVoiceover(assignmentId);
+    if (result.ok) {
+      logger.info('auto-stitch published voiceover', {
+        assignment_id: assignmentId,
+        sections: result.sections,
+        size: result.size,
+      });
+    } else {
+      logger.warn('auto-stitch skipped', {
+        assignment_id: assignmentId,
+        reason: result.reason,
+      });
+    }
+  })().catch((err) => {
+    logger.error('auto-stitch dispatch threw', {
+      assignment_id: assignmentId,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  });
 }
