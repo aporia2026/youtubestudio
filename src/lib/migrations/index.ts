@@ -53,6 +53,7 @@ import migration0051 from './0051_add_narrator_take_alignment';
 import migration0052 from './0052_create_pipeline_tables';
 import migration0053 from './0053_pipeline_thumbnail_editor';
 import migration0054 from './0054_pipeline_seo_step';
+import migration0055 from './0055_create_niche_finder';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -114,6 +115,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0052,
   migration0053,
   migration0054,
+  migration0055,
 ]);
 
 /**
