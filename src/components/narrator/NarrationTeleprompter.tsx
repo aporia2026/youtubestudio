@@ -15,16 +15,11 @@ interface NarrationTeleprompterProps {
   currentMs: number;
   /** Click a word → seek the audio to that word's start. */
   onSeek: (ms: number) => void;
-  /** Optional: called when the reviewer clicks the inline "💬 Comment
-   *  here" chip next to the active word. Parent pauses playback and
-   *  scrolls/focuses the comment input — the chip itself is purely a
-   *  discovery affordance so the reviewer doesn't have to scroll to find
-   *  the input. */
+  /** Optional: called when the reviewer clicks the "Comment" button in
+   *  the sticky bottom bar. Parent pauses playback and scrolls/focuses
+   *  the comment input. The bar is the discovery affordance so the
+   *  reviewer doesn't have to scroll down to find the comment textarea. */
   onCommentHere?: () => void;
-  /** Per-word loss above this threshold renders with a low-confidence
-   *  underline. Default tuned conservatively — flag visibly only when
-   *  the aligner is genuinely uncertain. */
-  lossThreshold?: number;
 }
 
 /**
@@ -32,21 +27,29 @@ interface NarrationTeleprompterProps {
  * timestamps. Replaces the `ScriptFollow` constant-rate approximation for
  * the Narration tab's full-audio review when the synced player is on.
  *
- *   - Each spoken word gets its own clickable span with the exact
- *     start/end times from the aligner.
- *   - The active word (whose [start, end] interval contains `currentMs`)
- *     is highlighted. Already-spoken words fade. Upcoming words sit at
- *     normal contrast so the reviewer can see what's coming next.
- *   - High-loss words (the aligner is uncertain whether the narrator
- *     actually said this word, or said it correctly) get a dotted
- *     underline so the reviewer's eye is drawn straight to likely
- *     misreads.
- *   - Click a word → seek. Auto-scroll mirrors ScriptFollow's behaviour:
- *     soft "third from top" target, suspended for 3s after the user
- *     scrolls manually, re-engaged via a "↻ Re-sync" chip.
+ * Design:
+ *   - Generous typography (18px / 1.9 line-height) for comfortable
+ *     reading at arm's length.
+ *   - The active word gets a rounded purple chip with a soft glow.
+ *     Same horizontal padding on every word so the highlight moving
+ *     between words doesn't cause layout shift.
+ *   - Past words fade to 35% opacity; upcoming words stay full contrast
+ *     so the reviewer can read ahead.
+ *   - Auto-scroll keeps the active word ~40% from the top of the
+ *     viewport (slightly above centre — gives the reviewer breathing
+ *     room to anticipate the next line). Suspended for 3s after the
+ *     reviewer scrolls manually, re-engaged via the "Re-sync" chip.
+ *   - Sticky bottom bar shows the current word + a Comment button.
+ *     Always visible, no layout shift, single tap to pause+comment.
  *
- * Empty word list (alignment failed mid-stream / aligner returned nothing)
- * renders the fallback message so the parent doesn't need to gate on it.
+ * Notes:
+ *   - We deliberately do NOT render per-word "low confidence"
+ *     indicators. ElevenLabs' `loss` is non-zero for nearly every word
+ *     so a naive threshold flags everything; a useful indicator would
+ *     need a relative threshold (e.g. top 5% worst-fit). Defer until
+ *     we have data on what reviewers actually want.
+ *   - Click any word → seek with an 80ms pre-roll so the playhead lands
+ *     just before the word's leading edge.
  */
 export function NarrationTeleprompter({
   sections,
@@ -54,7 +57,6 @@ export function NarrationTeleprompter({
   currentMs,
   onSeek,
   onCommentHere,
-  lossThreshold = 0,
 }: NarrationTeleprompterProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const userScrollAtRef = useRef<number>(0);
@@ -83,14 +85,39 @@ export function NarrationTeleprompter({
 
   const flatWords = useMemo(() => flat.map((e) => e.word), [flat]);
 
+  // Pre-compute a (sectionIdx, localIdx) → flatIdx map so the render
+  // doesn't do an O(N) findIndex inside an O(N) inner loop. With ~2k
+  // words on a 14-min file the original implementation was O(N²) per
+  // render = ~4M comparisons per audioprocess tick. Lookup is now O(1).
+  const flatIdxLookup = useMemo(() => {
+    const map = new Map<string, number>();
+    flat.forEach((entry, idx) => {
+      map.set(`${entry.sectionIdx}:${entry.localIdx}`, idx);
+    });
+    return map;
+  }, [flat]);
+
   const currentSeconds = currentMs / 1000;
   const activeFlatIdx = useMemo(
     () => findActiveWordIndex(flatWords, currentSeconds),
     [flatWords, currentSeconds],
   );
 
-  // Auto-scroll the active word into view. Skipped when the user scrolled
-  // manually within the last 3s.
+  // Active word's text for the sticky bottom bar. Null between words
+  // (activeFlatIdx === -1, ~50ms gaps). Pure derivation — no setState
+  // cascade.
+  const activeWordText = useMemo(
+    () =>
+      activeFlatIdx >= 0 && flat[activeFlatIdx]
+        ? flat[activeFlatIdx].word.text
+        : null,
+    [activeFlatIdx, flat],
+  );
+
+  // Auto-scroll the active word into view. Skipped when the user
+  // scrolled manually within the last 3s. Target is 40% from the top so
+  // the reviewer sees ~half a line above and ~five lines below the
+  // active word — comfortable read-ahead.
   useEffect(() => {
     if (activeFlatIdx < 0) return;
     if (followLocked) return;
@@ -100,13 +127,17 @@ export function NarrationTeleprompter({
     if (!el) return;
     const cRect = container.getBoundingClientRect();
     const eRect = el.getBoundingClientRect();
-    const targetTop = cRect.top + cRect.height / 3;
+    const targetTop = cRect.top + cRect.height * 0.4;
     const delta = eRect.top - targetTop;
+    // Only scroll when the word has drifted far enough off-target — avoids
+    // jitter on every audioprocess tick.
     if (Math.abs(delta) > 8) {
       container.scrollBy({ top: delta, behavior: 'smooth' });
     }
   }, [activeFlatIdx, followLocked]);
 
+  // Watch for user-initiated scroll. Wheel + touchmove are user events;
+  // our own scrollBy() doesn't fire them.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -122,6 +153,7 @@ export function NarrationTeleprompter({
     };
   }, []);
 
+  // Auto-release the follow lock 3s after the last user scroll.
   useEffect(() => {
     if (!followLocked) return;
     const interval = setInterval(() => {
@@ -142,7 +174,7 @@ export function NarrationTeleprompter({
   if (flatWords.length === 0) {
     return (
       <div
-        className="rounded-lg p-3 text-xs italic text-center"
+        className="rounded-xl p-6 text-sm italic text-center"
         style={{ background: 'var(--bg-primary)', color: 'var(--text-muted)' }}
       >
         Sync data is empty. Try retrying alignment from the badge above the player.
@@ -152,114 +184,184 @@ export function NarrationTeleprompter({
 
   return (
     <div
-      className="rounded-lg overflow-hidden"
-      style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}
+      className="rounded-xl overflow-hidden relative"
+      style={{
+        background:
+          'linear-gradient(180deg, rgba(124,58,237,0.05) 0%, rgba(124,58,237,0) 200px), var(--bg-primary)',
+        border: '1px solid var(--border)',
+        boxShadow: '0 1px 0 rgba(255,255,255,0.04) inset',
+      }}
     >
+      {/* Header strip */}
       <div
-        className="flex items-center justify-between px-3 py-1.5"
+        className="flex items-center justify-between px-4 py-2.5"
         style={{ borderBottom: '1px solid var(--border)' }}
       >
-        <span className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-          Script · word-accurate sync
-        </span>
-        <div className="flex gap-1 items-center">
-          {followLocked && (
-            <button
-              onClick={() => {
-                userScrollAtRef.current = 0;
-                setFollowLocked(false);
-              }}
-              className="text-[10px] px-2 py-0.5 rounded transition-colors cursor-pointer"
-              style={{
-                background: 'rgba(34,197,94,0.15)',
-                color: '#22c55e',
-                border: '1px solid rgba(34,197,94,0.3)',
-              }}
-              title="Re-engage auto-follow"
-            >
-              ↻ Re-sync
-            </button>
-          )}
+        <div className="flex items-baseline gap-2">
+          <span
+            className="text-[10px] uppercase tracking-[0.15em] font-semibold"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            Script
+          </span>
+          <span className="text-[10px]" style={{ color: 'rgba(167,139,250,0.55)' }}>
+            · word-accurate sync
+          </span>
         </div>
+        {followLocked && (
+          <button
+            onClick={() => {
+              userScrollAtRef.current = 0;
+              setFollowLocked(false);
+            }}
+            className="text-[10px] px-2 py-1 rounded-md transition-colors cursor-pointer"
+            style={{
+              background: 'rgba(34,197,94,0.12)',
+              color: '#22c55e',
+              border: '1px solid rgba(34,197,94,0.3)',
+            }}
+            title="Re-engage auto-follow"
+          >
+            ↻ Re-sync
+          </button>
+        )}
       </div>
-      <div
-        ref={containerRef}
-        className="px-3 py-3 max-h-72 overflow-y-auto leading-relaxed text-sm"
-        style={{ color: 'var(--text-secondary)', fontFamily: 'Georgia, serif', lineHeight: 1.75 }}
-      >
-        {perSection.map((seg, segIdx) => {
-          const section = sections[seg.sectionIndex];
-          if (!section || seg.words.length === 0) return null;
-          return (
-            <div key={seg.sectionIndex} className={segIdx > 0 ? 'mt-3' : ''}>
-              {section.label && (
-                <div
-                  className="text-[10px] uppercase tracking-wider mb-1"
-                  style={{ color: 'var(--text-muted)' }}
-                >
-                  {section.label}
-                </div>
-              )}
-              <p className="whitespace-pre-wrap">
-                {seg.words.map((w, i) => {
-                  // Recover the flat index so the active-word lookup and the
-                  // scroll target agree on the same DOM node.
-                  const flatIdx = flat.findIndex(
-                    (f) => f.sectionIdx === seg.sectionIndex && f.localIdx === i,
-                  );
-                  const isActive = flatIdx === activeFlatIdx;
-                  const isPast = activeFlatIdx >= 0 && flatIdx < activeFlatIdx;
-                  const lowConfidence = w.loss != null && w.loss > lossThreshold;
-                  return (
-                    <span key={`${seg.sectionIndex}-${i}`} style={{ position: 'relative' }}>
-                      <span
-                        data-flat={flatIdx}
-                        onClick={() => handleWordClick(w)}
-                        className="cursor-pointer transition-colors"
-                        style={{
-                          background: isActive ? 'rgba(124,58,237,0.28)' : 'transparent',
-                          color: isActive ? '#fff' : isPast ? 'var(--text-muted)' : 'var(--text-secondary)',
-                          padding: isActive ? '0 2px' : '0',
-                          borderRadius: 3,
-                          textDecoration: lowConfidence ? 'underline dotted' : 'none',
-                          textDecorationColor: lowConfidence ? 'rgba(239,68,68,0.6)' : undefined,
-                          textUnderlineOffset: lowConfidence ? '3px' : undefined,
-                        }}
-                        title={
-                          lowConfidence
-                            ? `Low confidence — listen carefully. ${w.text} @ ${w.start.toFixed(2)}s`
-                            : `Jump to "${w.text}" @ ${w.start.toFixed(2)}s`
-                        }
-                      >
-                        {w.text}
-                      </span>
-                      {isActive && onCommentHere && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onCommentHere();
-                          }}
-                          className="inline-flex items-center gap-0.5 ml-1 px-1.5 py-0 rounded text-[10px] cursor-pointer transition-opacity"
+
+      {/* Reading body */}
+      <div className="relative">
+        {/* Soft gradient fade at the top of the scroll area — keeps the
+            edge feeling soft instead of a hard cutoff against the header. */}
+        <div
+          aria-hidden
+          className="absolute inset-x-0 top-0 h-6 pointer-events-none z-10"
+          style={{
+            background:
+              'linear-gradient(180deg, var(--bg-primary) 0%, rgba(0,0,0,0) 100%)',
+          }}
+        />
+        <div
+          ref={containerRef}
+          className="px-6 py-7 overflow-y-auto"
+          style={{
+            maxHeight: '480px',
+            color: 'var(--text-secondary)',
+            fontFamily:
+              '-apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", system-ui, sans-serif',
+            fontSize: '18px',
+            lineHeight: 1.9,
+            fontWeight: 400,
+            letterSpacing: '0.005em',
+          }}
+        >
+          {perSection.map((seg, segIdx) => {
+            const section = sections[seg.sectionIndex];
+            if (!section || seg.words.length === 0) return null;
+            return (
+              <section key={seg.sectionIndex} className={segIdx > 0 ? 'mt-8' : ''}>
+                {section.label && (
+                  <h3
+                    className="text-[10px] uppercase tracking-[0.2em] mb-3 font-semibold"
+                    style={{ color: 'rgba(167,139,250,0.7)' }}
+                  >
+                    {section.label}
+                  </h3>
+                )}
+                <p className="whitespace-pre-wrap">
+                  {seg.words.map((w, i) => {
+                    const flatIdx =
+                      flatIdxLookup.get(`${seg.sectionIndex}:${i}`) ?? -1;
+                    const isActive = flatIdx === activeFlatIdx;
+                    const isPast =
+                      activeFlatIdx >= 0 && flatIdx >= 0 && flatIdx < activeFlatIdx;
+                    return (
+                      <span key={`${seg.sectionIndex}-${i}`}>
+                        <span
+                          data-flat={flatIdx}
+                          onClick={() => handleWordClick(w)}
+                          className="cursor-pointer rounded-md transition-all duration-200 ease-out"
                           style={{
-                            background: 'rgba(124,58,237,0.18)',
-                            color: '#a78bfa',
-                            border: '1px solid rgba(124,58,237,0.3)',
-                            verticalAlign: 'middle',
+                            display: 'inline-block',
+                            // Consistent padding on every word so the active
+                            // chip doesn't push siblings around as it moves.
+                            padding: '2px 6px',
+                            margin: '0 -2px',
+                            background: isActive ? '#7c3aed' : 'transparent',
+                            color: isActive
+                              ? '#fff'
+                              : isPast
+                                ? 'var(--text-muted)'
+                                : 'var(--text-secondary)',
+                            opacity: isPast ? 0.45 : 1,
+                            boxShadow: isActive
+                              ? '0 6px 20px rgba(124,58,237,0.45), 0 0 0 1px rgba(167,139,250,0.5) inset'
+                              : 'none',
+                            transform: isActive ? 'translateY(-1px)' : 'translateY(0)',
                           }}
-                          title="Pause and write a comment on this word"
+                          title={`Jump to "${w.text}" — ${w.start.toFixed(2)}s`}
                         >
-                          💬 Comment
-                        </button>
-                      )}
-                      {i < seg.words.length - 1 ? ' ' : ''}
-                    </span>
-                  );
-                })}
-              </p>
-            </div>
-          );
-        })}
+                          {w.text}
+                        </span>
+                        {i < seg.words.length - 1 ? ' ' : ''}
+                      </span>
+                    );
+                  })}
+                </p>
+              </section>
+            );
+          })}
+        </div>
+        {/* Soft gradient fade at the bottom — mirrors the top fade and
+            visually invites the reader to scroll down. */}
+        <div
+          aria-hidden
+          className="absolute inset-x-0 bottom-0 h-8 pointer-events-none"
+          style={{
+            background:
+              'linear-gradient(0deg, var(--bg-primary) 0%, rgba(0,0,0,0) 100%)',
+          }}
+        />
       </div>
+
+      {/* Sticky bottom action bar — always visible, never causes layout
+          shift, single tap to comment at the current playhead. */}
+      {onCommentHere && (
+        <div
+          className="flex items-center justify-between gap-3 px-4 py-2.5"
+          style={{
+            background: 'rgba(0,0,0,0.35)',
+            borderTop: '1px solid var(--border)',
+          }}
+        >
+          <div className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
+            {activeWordText ? (
+              <>
+                Active word:{' '}
+                <span className="font-medium" style={{ color: '#a78bfa' }}>
+                  &ldquo;{activeWordText}&rdquo;
+                </span>
+              </>
+            ) : (
+              'Press play to follow the narration word-by-word'
+            )}
+          </div>
+          <button
+            onClick={onCommentHere}
+            className="shrink-0 text-[11px] px-3 py-1.5 rounded-md transition-all cursor-pointer flex items-center gap-1.5 font-medium hover:brightness-110"
+            style={{
+              background:
+                'linear-gradient(135deg, rgba(124,58,237,0.25) 0%, rgba(124,58,237,0.12) 100%)',
+              color: '#a78bfa',
+              border: '1px solid rgba(124,58,237,0.4)',
+            }}
+            title="Pause and write a comment pinned to this moment"
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+            Comment here
+          </button>
+        </div>
+      )}
     </div>
   );
 }
