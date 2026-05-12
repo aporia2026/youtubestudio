@@ -99,6 +99,27 @@ export function NarrationTeleprompter({
   // composer so the reviewer can still comment without leaving the
   // fullscreen view.
   const [fullscreen, setFullscreen] = useState(false);
+  // Fullscreen font size, in px. Persisted in localStorage so the
+  // reviewer's preference survives reloads. Bounded to a sensible
+  // range (14-32px) so the layout stays usable.
+  const [fullscreenFontSize, setFullscreenFontSize] = useState(22);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const raw = window.localStorage.getItem('narration.fullscreenFontSize.v1');
+    const parsed = raw ? Number(raw) : NaN;
+    if (Number.isFinite(parsed) && parsed >= 14 && parsed <= 32) {
+      setFullscreenFontSize(parsed);
+    }
+  }, []);
+  function nudgeFontSize(delta: number) {
+    setFullscreenFontSize((prev) => {
+      const next = Math.max(14, Math.min(32, prev + delta));
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem('narration.fullscreenFontSize.v1', String(next));
+      }
+      return next;
+    });
+  }
   // Inline composer state — only meaningful when fullscreen is true.
   const [composerOpen, setComposerOpen] = useState(false);
   const [composerText, setComposerText] = useState('');
@@ -378,6 +399,49 @@ export function NarrationTeleprompter({
               ↻ Re-sync
             </button>
           )}
+          {fullscreen && (
+            <>
+              <button
+                onClick={() => nudgeFontSize(-2)}
+                disabled={fullscreenFontSize <= 14}
+                className="text-[10px] px-2 py-1 rounded-md transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center"
+                style={{
+                  background: 'transparent',
+                  color: 'var(--text-muted)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  fontSize: 10,
+                  lineHeight: 1,
+                }}
+                title="Decrease text size"
+              >
+                <span style={{ fontSize: 9 }}>A</span>
+                <span style={{ marginLeft: 1 }}>−</span>
+              </button>
+              <span
+                className="text-[10px] font-mono tabular-nums px-1"
+                style={{ color: 'var(--text-muted)', minWidth: 24, textAlign: 'center' }}
+                title="Current text size"
+              >
+                {fullscreenFontSize}
+              </span>
+              <button
+                onClick={() => nudgeFontSize(2)}
+                disabled={fullscreenFontSize >= 32}
+                className="text-[10px] px-2 py-1 rounded-md transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center"
+                style={{
+                  background: 'transparent',
+                  color: 'var(--text-muted)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  fontSize: 10,
+                  lineHeight: 1,
+                }}
+                title="Increase text size"
+              >
+                <span style={{ fontSize: 12, fontWeight: 600 }}>A</span>
+                <span style={{ marginLeft: 1 }}>+</span>
+              </button>
+            </>
+          )}
           <button
             onClick={() => setFullscreen((v) => !v)}
             className="text-[10px] px-2 py-1 rounded-md transition-colors cursor-pointer flex items-center gap-1"
@@ -432,7 +496,7 @@ export function NarrationTeleprompter({
             color: 'var(--text-secondary)',
             fontFamily:
               '-apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", system-ui, sans-serif',
-            fontSize: fullscreen ? '22px' : '18px',
+            fontSize: fullscreen ? `${fullscreenFontSize}px` : '18px',
             lineHeight: fullscreen ? 2.0 : 1.9,
             fontWeight: 400,
             letterSpacing: '0.005em',
