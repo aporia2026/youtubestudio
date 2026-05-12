@@ -45,6 +45,12 @@ export const WORKFLOW_TRIGGER_EVENTS = [
     description: 'When a video\'s first-48h velocity exceeds the channel\'s 90th percentile (Phase 9.5). Fires once per video — react fast: boost ad spend, post on socials, schedule a follow-up.',
     payload_fields: ['video_id', 'channel_db_id', 'velocity_views_per_hour', 'percentile', 'channel_p90', 'hours_since_publish', 'title'],
   },
+  {
+    type: 'niche_score_spike',
+    label: 'Niche score spike',
+    description: 'When a watched niche\'s combined score jumps (or drops) by at least the configured threshold week-over-week (Phase 13.2.W). Use it to auto-draft ideas when a tracked niche heats up.',
+    payload_fields: ['niche_slug', 'niche_name', 'direction', 'delta', 'combined', 'captured_at'],
+  },
 ] as const;
 
 export type WorkflowTriggerEventType = (typeof WORKFLOW_TRIGGER_EVENTS)[number]['type'];

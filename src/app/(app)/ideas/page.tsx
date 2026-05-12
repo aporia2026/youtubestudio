@@ -277,6 +277,39 @@ function IdeasPage() {
     return () => { cancelled = true; };
   }, [scheduleItemId, schedulePrefilled]);
 
+  // Niche-finder flywheel prefill (Phase 13.2.F). Runs on mount when
+  // ?from=niche-finder is present. Reads the `niche` query param +
+  // sessionStorage entry written by GenerateIdeasButton, sets the
+  // niche, and surfaces a toast so the user knows the prefill came
+  // from a different surface.
+  const [nichePrefillApplied, setNichePrefillApplied] = useState(false);
+  useEffect(() => {
+    if (nichePrefillApplied) return;
+    if (search.get('from') !== 'niche-finder') return;
+    const queryNiche = search.get('niche');
+    if (queryNiche) {
+      setNiche((curr) => curr || queryNiche);
+    }
+    try {
+      const raw = sessionStorage.getItem('niche-finder:ideas-prefill');
+      if (raw) {
+        const parsed = JSON.parse(raw) as { niche?: string; capturedAt?: string };
+        const age = parsed.capturedAt ? Date.now() - Date.parse(parsed.capturedAt) : Number.POSITIVE_INFINITY;
+        if (Number.isFinite(age) && age < 10 * 60 * 1000 && parsed.niche) {
+          setNiche((curr) => curr || parsed.niche!);
+          toast.message(`Loaded niche "${parsed.niche}" from the niche finder`);
+        }
+        sessionStorage.removeItem('niche-finder:ideas-prefill');
+      } else if (queryNiche) {
+        toast.message(`Loaded niche "${queryNiche}" from the niche finder`);
+      }
+    } catch {
+      // sessionStorage parse errors are non-fatal — the niche
+      // query-string fallback above already populated state.
+    }
+    setNichePrefillApplied(true);
+  }, [search, nichePrefillApplied]);
+
   // Load the persisted idea library
   useEffect(() => {
     (async () => {

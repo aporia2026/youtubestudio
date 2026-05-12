@@ -20,6 +20,8 @@ import { slugifyNiche } from '@/lib/niche-finder/slug';
 import { markdownToBasicHtml } from '@/lib/weekly-digest';
 import { ScoreChip } from '@/components/niche-finder/ScoreChip';
 import { RegenerateButton } from '@/components/niche-finder/RegenerateButton';
+import { SaveToWatchlistButton } from '@/components/niche-finder/SaveToWatchlistButton';
+import { GenerateIdeasButton } from '@/components/niche-finder/GenerateIdeasButton';
 
 interface PageProps {
   params: Promise<{ slug: string }>;
@@ -44,7 +46,13 @@ export default async function NicheDeepDivePage({ params }: PageProps) {
         >
           ← Find another niche
         </Link>
-        {report && <RegenerateButton nicheText={report.name} />}
+        {report && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <SaveToWatchlistButton slug={report.slug} name={report.name} />
+            <GenerateIdeasButton nicheName={report.name} clusters={report.clusters} />
+            <RegenerateButton nicheText={report.name} />
+          </div>
+        )}
       </div>
 
       {!report ? (

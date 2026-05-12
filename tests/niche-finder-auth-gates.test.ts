@@ -24,6 +24,9 @@ import * as fromChannelRoute from '@/app/api/niche-finder/discover/from-channel/
 import * as fromInterestsRoute from '@/app/api/niche-finder/discover/from-interests/route';
 import * as fromCategoryRoute from '@/app/api/niche-finder/discover/from-category/route';
 import * as outliersRoute from '@/app/api/niche-finder/outliers/route';
+import * as watchlistRoute from '@/app/api/niche-finder/watchlist/route';
+import * as watchlistBySlugRoute from '@/app/api/niche-finder/watchlist/[slug]/route';
+import * as rescoreCronRoute from '@/app/api/cron/rescore-niche-watchlist/route';
 
 type NextReqInit = ConstructorParameters<typeof NextRequest>[1];
 
@@ -94,5 +97,50 @@ describe('niche-finder routes refuse anonymous traffic', () => {
     });
     const res = await POST(req, { params: Promise.resolve({}) });
     expect(res.status).toBe(401);
+  });
+
+  it('GET /api/niche-finder/watchlist returns 401 with no session', async () => {
+    const GET = (watchlistRoute as unknown as { GET: (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response> }).GET;
+    const req = makeReq('http://localhost/api/niche-finder/watchlist');
+    const res = await GET(req, { params: Promise.resolve({}) });
+    expect(res.status).toBe(401);
+  });
+
+  it('POST /api/niche-finder/watchlist returns 401 with no session', async () => {
+    const POST = (watchlistRoute as unknown as { POST: (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response> }).POST;
+    const req = makeReq('http://localhost/api/niche-finder/watchlist', {
+      method: 'POST',
+      body: JSON.stringify({ nicheSlug: 'history' }),
+    });
+    const res = await POST(req, { params: Promise.resolve({}) });
+    expect(res.status).toBe(401);
+  });
+
+  it('DELETE /api/niche-finder/watchlist/[slug] returns 401 with no session', async () => {
+    const DELETE = (watchlistBySlugRoute as unknown as { DELETE: (req: NextRequest, ctx: { params: Promise<{ slug: string }> }) => Promise<Response> }).DELETE;
+    const req = makeReq('http://localhost/api/niche-finder/watchlist/history', { method: 'DELETE' });
+    const res = await DELETE(req, { params: Promise.resolve({ slug: 'history' }) });
+    expect(res.status).toBe(401);
+  });
+
+  it('POST /api/cron/rescore-niche-watchlist returns 401 without the CRON_SECRET bearer', async () => {
+    const POST = (rescoreCronRoute as unknown as { POST: (req: NextRequest) => Promise<Response> }).POST;
+    // Force the non-localhost branch with a public hostname; the
+    // route's `isLocal` check requires both NODE_ENV!=='production'
+    // AND hostname being localhost/127.0.0.1 to bypass auth, so a
+    // public hostname is enough on its own.
+    const original = process.env.CRON_SECRET;
+    process.env.CRON_SECRET = 'correct-secret';
+    try {
+      const req = makeReq('https://prod.example.com/api/cron/rescore-niche-watchlist', {
+        method: 'POST',
+        headers: { authorization: 'Bearer wrong-secret' },
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(401);
+    } finally {
+      if (original === undefined) delete process.env.CRON_SECRET;
+      else process.env.CRON_SECRET = original;
+    }
   });
 });

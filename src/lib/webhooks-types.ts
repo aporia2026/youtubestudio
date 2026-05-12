@@ -50,6 +50,11 @@ export const WEBHOOK_EVENT_TYPES = [
     description: 'Fires Mondays after the AI synthesises the week\'s analytics into a 1-page summary (Phase 9.6).',
   },
   {
+    type: 'niche_score_spike',
+    label: 'Niche score spike',
+    description: 'Fires when a watched niche\'s combined score moves by at least the alarm threshold week-over-week (Phase 13.2.W).',
+  },
+  {
     type: 'test',
     label: 'Test event',
     description: 'Manual test from the /webhooks page. Always sends regardless of filters.',
