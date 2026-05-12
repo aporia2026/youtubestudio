@@ -126,10 +126,14 @@ export async function runAlignmentForAssignment(assignmentId: string): Promise<A
 
     const audioRes = await fetch(audioUrl);
     if (!audioRes.ok) {
-      await setTakeAlignmentFailed(
-        take.take_id,
-        `Audio fetch failed (HTTP ${audioRes.status}). The narrator may need to re-upload.`,
-      );
+      // 404 means the object isn't reachable at the stored key — could be
+      // a stale presigned URL, a bucket misconfig, or genuinely missing.
+      // Phrase neutrally so the reviewer isn't pushed to chase down a
+      // re-upload before they've decided to.
+      const reason = audioRes.status === 404
+        ? `Audio file not reachable at the stored key (HTTP 404). Sync will become available once the audio is restored.`
+        : `Audio fetch failed (HTTP ${audioRes.status}).`;
+      await setTakeAlignmentFailed(take.take_id, reason);
       return { status: 'failed', reason: 'audio fetch' };
     }
     const audioBlob = await audioRes.blob();

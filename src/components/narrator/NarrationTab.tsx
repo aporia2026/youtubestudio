@@ -762,7 +762,11 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
                 author={{ name: 'Owner', color: '#06b6d4', role: 'owner' }}
                 canDeleteAny
                 teleprompterAlignment={
-                  syncMode === 'synced' && alignmentState.alignment
+                  // In synced mode we always pass the new teleprompter
+                  // (with `alignment: null` when not ready) so the
+                  // reviewer never gets the classic ScriptFollow look
+                  // mid-flight. Classic mode leaves this undefined.
+                  syncMode === 'synced'
                     ? {
                         sections: realSections.map(s => ({ label: s.label, script_text: s.script_text })),
                         alignment: alignmentState.alignment,

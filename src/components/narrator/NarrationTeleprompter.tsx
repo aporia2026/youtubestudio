@@ -2,15 +2,19 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { findActiveWordIndex, sliceAlignmentToSections } from '@/lib/narrator-utils';
+import { stripProductionCues } from '@/lib/utils';
 import type { ForcedAlignmentResponse, ForcedAlignmentWord } from '@/lib/elevenlabs';
 
 interface NarrationTeleprompterProps {
-  /** Sections in the same order they were sent to the aligner — labels render
-   *  as section headers, script_text is unused (we read words from the
-   *  alignment so what's highlighted is exactly what's timed). */
+  /** Sections in the same order they were sent to the aligner. When
+   *  `alignment` is null we render `script_text` directly (production
+   *  cues stripped) instead of the aligner's word array. */
   sections: Array<{ label?: string | null; script_text: string }>;
-  /** Raw ElevenLabs forced-alignment payload. */
-  alignment: ForcedAlignmentResponse;
+  /** Raw ElevenLabs forced-alignment payload. Null when alignment
+   *  failed / is pending / is in flight — the teleprompter then
+   *  renders static text in the same typography so sync mode always
+   *  shows the new design. */
+  alignment: ForcedAlignmentResponse | null;
   /** Current playhead in ms. */
   currentMs: number;
   /** Click a word → seek the audio to that word's start. */
@@ -73,10 +77,12 @@ export function NarrationTeleprompter({
   const [followLocked, setFollowLocked] = useState(false);
   const [hovered, setHovered] = useState(false);
 
-  // Slice the flat alignment into per-section word arrays. Stable across
-  // currentMs changes — only re-computes when sections/alignment do.
+  // Slice the flat alignment into per-section word arrays. Empty when
+  // alignment is null (static-text mode); the renderer falls back to
+  // section.script_text in that branch. Stable across currentMs
+  // changes — only re-computes when sections/alignment do.
   const perSection = useMemo(
-    () => sliceAlignmentToSections(alignment, sections),
+    () => (alignment ? sliceAlignmentToSections(alignment, sections) : []),
     [alignment, sections],
   );
 
@@ -189,16 +195,11 @@ export function NarrationTeleprompter({
     }
   }
 
-  if (flatWords.length === 0) {
-    return (
-      <div
-        className="rounded-xl p-6 text-sm italic text-center"
-        style={{ background: 'var(--bg-primary)', color: 'var(--text-muted)' }}
-      >
-        Sync data is empty. Try retrying alignment from the badge above the player.
-      </div>
-    );
-  }
+  // Static-text mode: alignment isn't ready (failed, pending, or in
+  // flight). Render the script as plain words in the same typography
+  // so sync mode never drops back to the classic ScriptFollow look —
+  // the new design covers both states.
+  const isStaticMode = !alignment || flatWords.length === 0;
 
   // Hover transport overlay — shows whenever the mouse is over the
   // teleprompter and the parent passed an onTogglePlay handler. The
@@ -231,7 +232,7 @@ export function NarrationTeleprompter({
             Script
           </span>
           <span className="text-[10px]" style={{ color: 'rgba(167,139,250,0.55)' }}>
-            · word-accurate sync
+            {isStaticMode ? '· static view' : '· word-accurate sync'}
           </span>
         </div>
         {followLocked && (
@@ -279,62 +280,90 @@ export function NarrationTeleprompter({
             letterSpacing: '0.005em',
           }}
         >
-          {perSection.map((seg, segIdx) => {
-            const section = sections[seg.sectionIndex];
-            if (!section || seg.words.length === 0) return null;
-            return (
-              <section key={seg.sectionIndex} className={segIdx > 0 ? 'mt-8' : ''}>
-                {section.label && (
-                  <h3
-                    className="text-[10px] uppercase tracking-[0.2em] mb-3 font-semibold"
-                    style={{ color: 'rgba(167,139,250,0.7)' }}
-                  >
-                    {section.label}
-                  </h3>
-                )}
-                <p className="whitespace-pre-wrap">
-                  {seg.words.map((w, i) => {
-                    const flatIdx =
-                      flatIdxLookup.get(`${seg.sectionIndex}:${i}`) ?? -1;
-                    const isActive = flatIdx === activeFlatIdx;
-                    const isPast =
-                      activeFlatIdx >= 0 && flatIdx >= 0 && flatIdx < activeFlatIdx;
-                    return (
-                      <span key={`${seg.sectionIndex}-${i}`}>
-                        <span
-                          data-flat={flatIdx}
-                          onClick={() => handleWordClick(w)}
-                          className="cursor-pointer rounded-md transition-all duration-200 ease-out"
-                          style={{
-                            display: 'inline-block',
-                            // Consistent padding on every word so the active
-                            // chip doesn't push siblings around as it moves.
-                            padding: '2px 6px',
-                            margin: '0 -2px',
-                            background: isActive ? '#7c3aed' : 'transparent',
-                            color: isActive
-                              ? '#fff'
-                              : isPast
-                                ? 'var(--text-muted)'
-                                : 'var(--text-secondary)',
-                            opacity: isPast ? 0.45 : 1,
-                            boxShadow: isActive
-                              ? '0 6px 20px rgba(124,58,237,0.45), 0 0 0 1px rgba(167,139,250,0.5) inset'
-                              : 'none',
-                            transform: isActive ? 'translateY(-1px)' : 'translateY(0)',
-                          }}
-                          title={`Jump to "${w.text}" — ${w.start.toFixed(2)}s`}
-                        >
-                          {w.text}
-                        </span>
-                        {i < seg.words.length - 1 ? ' ' : ''}
-                      </span>
-                    );
-                  })}
-                </p>
-              </section>
-            );
-          })}
+          {isStaticMode
+            ? // Static-text branch: no per-word timings, render each
+              // section's spoken text (production cues stripped) in the
+              // same typography as the synced view. No active-word
+              // highlighting, no click-to-seek — there are no word
+              // boundaries to seek to.
+              sections.map((section, segIdx) => {
+                const spoken = stripProductionCues(section.script_text).trim();
+                if (!spoken) return null;
+                return (
+                  <section key={segIdx} className={segIdx > 0 ? 'mt-8' : ''}>
+                    {section.label && (
+                      <h3
+                        className="text-[10px] uppercase tracking-[0.2em] mb-3 font-semibold"
+                        style={{ color: 'rgba(167,139,250,0.7)' }}
+                      >
+                        {section.label}
+                      </h3>
+                    )}
+                    <p className="whitespace-pre-wrap">{spoken}</p>
+                  </section>
+                );
+              })
+            : // Synced branch: render the aligner's word array with the
+              // active-word chip and click-to-seek behaviour.
+              perSection.map((seg, segIdx) => {
+                const section = sections[seg.sectionIndex];
+                if (!section || seg.words.length === 0) return null;
+                return (
+                  <section key={seg.sectionIndex} className={segIdx > 0 ? 'mt-8' : ''}>
+                    {section.label && (
+                      <h3
+                        className="text-[10px] uppercase tracking-[0.2em] mb-3 font-semibold"
+                        style={{ color: 'rgba(167,139,250,0.7)' }}
+                      >
+                        {section.label}
+                      </h3>
+                    )}
+                    <p className="whitespace-pre-wrap">
+                      {seg.words.map((w, i) => {
+                        const flatIdx =
+                          flatIdxLookup.get(`${seg.sectionIndex}:${i}`) ?? -1;
+                        const isActive = flatIdx === activeFlatIdx;
+                        const isPast =
+                          activeFlatIdx >= 0 && flatIdx >= 0 && flatIdx < activeFlatIdx;
+                        return (
+                          <span key={`${seg.sectionIndex}-${i}`}>
+                            <span
+                              data-flat={flatIdx}
+                              onClick={() => handleWordClick(w)}
+                              className="cursor-pointer rounded-md transition-all duration-200 ease-out"
+                              style={{
+                                display: 'inline-block',
+                                // Consistent padding on every word so the
+                                // active chip doesn't push siblings around
+                                // as it moves.
+                                padding: '2px 6px',
+                                margin: '0 -2px',
+                                background: isActive ? '#7c3aed' : 'transparent',
+                                color: isActive
+                                  ? '#fff'
+                                  : isPast
+                                    ? 'var(--text-muted)'
+                                    : 'var(--text-secondary)',
+                                opacity: isPast ? 0.45 : 1,
+                                boxShadow: isActive
+                                  ? '0 6px 20px rgba(124,58,237,0.45), 0 0 0 1px rgba(167,139,250,0.5) inset'
+                                  : 'none',
+                                transform: isActive
+                                  ? 'translateY(-1px)'
+                                  : 'translateY(0)',
+                              }}
+                              title={`Jump to "${w.text}" — ${w.start.toFixed(2)}s`}
+                            >
+                              {w.text}
+                            </span>
+                            {i < seg.words.length - 1 ? ' ' : ''}
+                          </span>
+                        );
+                      })}
+                    </p>
+                  </section>
+                );
+              })}
         </div>
         {/* Soft gradient fade at the bottom — mirrors the top fade and
             visually invites the reader to scroll down. */}
@@ -435,7 +464,9 @@ export function NarrationTeleprompter({
           }}
         >
           <div className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
-            {activeWordText ? (
+            {isStaticMode ? (
+              'Word-accurate sync unavailable for this take'
+            ) : activeWordText ? (
               <>
                 Active word:{' '}
                 <span className="font-medium" style={{ color: '#a78bfa' }}>

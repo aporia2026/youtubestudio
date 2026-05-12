@@ -59,16 +59,23 @@ interface TakeReviewProps {
    *  "Replace full narration with fixes". */
   uploadButtonLabel?: string;
   /** When provided, the inner script-follow panel switches from the
-   *  constant-rate `ScriptFollow` approximation to the word-accurate
-   *  `NarrationTeleprompter` driven by these per-section, per-word
-   *  timings. Used by the Narration tab's "Synced (beta)" A/B mode for
-   *  the full-audio review only — per-section takes leave this
-   *  undefined and keep the classic behaviour. */
+   *  constant-rate `ScriptFollow` approximation to the new
+   *  `NarrationTeleprompter` UI. Used by the Narration tab's "Synced
+   *  (beta)" A/B mode for the full-audio review only — per-section
+   *  takes leave this undefined and keep the classic behaviour.
+   *
+   *  `alignment` is optional: when present, the teleprompter highlights
+   *  the active word in real time; when null (alignment failed,
+   *  pending, or in flight) the teleprompter renders the script
+   *  statically in the same polished typography. Either way, the
+   *  reviewer in synced mode sees the new design — never gets dropped
+   *  back into the classic ScriptFollow look when sync isn't ready. */
   teleprompterAlignment?: {
     /** Sections in the same order they were sent to the aligner. */
     sections: Array<{ label?: string | null; script_text: string }>;
-    /** Raw ElevenLabs forced-alignment payload. */
-    alignment: ForcedAlignmentResponse;
+    /** Raw ElevenLabs forced-alignment payload, or null when not yet
+     *  available. */
+    alignment: ForcedAlignmentResponse | null;
   };
 }
 
