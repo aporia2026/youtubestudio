@@ -35,7 +35,7 @@ export type ScheduleItem = {
   recurrence_parent_id: string | null;
   created_at: string;
   updated_at: string;
-  channels?: Array<{ id: string; name: string; account_color: string | null }>;
+  channels?: Array<{ id: string; name: string; account_color: string | null; niche?: string | null }>;
   // Extended
   stage_entered_at?: string;
   pillar?: string | null;

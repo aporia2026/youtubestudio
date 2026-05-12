@@ -40,6 +40,11 @@ export interface ScheduleItemContext {
   youtubeUrl: string;
   thumbnails: { aUrl: string | null; bUrl: string | null; winner: 'a' | 'b' | null };
   checklist: ChecklistItem[];
+  /** Most recent recorded voiceover duration for this item's project, in
+   *  seconds. Null when the project has no voiceover, has only voiceovers
+   *  saved before duration capture was wired (older ElevenLabs path), or
+   *  the item has no project at all. Consumers format as mm:ss themselves. */
+  voiceoverDurationSeconds: number | null;
 }
 
 export async function fetchScheduleItem(id: string): Promise<ScheduleItem | null> {
@@ -137,21 +142,64 @@ export function getScheduleLinkId(search: URLSearchParams | null | undefined): s
  *  - else the first script,
  *  - else null.
  *
+ *  If the item has no `project_id` but does carry a pinned `script_id`
+ *  (rare orphan state — scripts normally auto-create a project on first
+ *  save), fall back to `/api/scripts/[id]` so the script still loads.
+ *
  *  Returns null (not throws) on any failure so callers can fall through to
  *  their own defaults. Used by QA / SEO / Production Doc preload flows so
  *  they don't each reinvent the same fetch + narrow logic. */
 export async function loadActiveScriptForItem(item: ScheduleItem): Promise<string | null> {
-  if (!item.project_id) return null;
+  if (item.project_id) {
+    try {
+      const res = await fetch(`/api/projects/${item.project_id}/scripts`);
+      if (res.ok) {
+        const data = await res.json();
+        type ScriptRow = { id: string; content: string; is_active?: boolean };
+        const list: ScriptRow[] = Array.isArray(data.scripts) ? data.scripts : [];
+        const active = list.find(s => s.id === item.script_id)
+                    ?? list.find(s => s.is_active)
+                    ?? list[0];
+        if (active?.content) return active.content;
+      }
+    } catch {
+      // fall through to the direct-script path
+    }
+  }
+  if (item.script_id) {
+    try {
+      const res = await fetch(`/api/scripts/${item.script_id}`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      return (data?.script?.content as string | undefined) ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** Find the most recent voiceover asset's duration (seconds) for a project.
+ *  Used by Production Doc to seed the "actual duration" speaking-pace input
+ *  so the user doesn't retype what we already recorded. Returns null when
+ *  there's no voiceover, when none of the rows have a duration_seconds (the
+ *  legacy ElevenLabs save path didn't persist it), or on any fetch failure. */
+async function loadLatestVoiceoverDuration(projectId: string): Promise<number | null> {
   try {
-    const res = await fetch(`/api/projects/${item.project_id}/scripts`);
+    const res = await fetch(`/api/projects/${projectId}/media`);
     if (!res.ok) return null;
     const data = await res.json();
-    type ScriptRow = { id: string; content: string; is_active?: boolean };
-    const list: ScriptRow[] = Array.isArray(data.scripts) ? data.scripts : [];
-    const active = list.find(s => s.id === item.script_id)
-                ?? list.find(s => s.is_active)
-                ?? list[0];
-    return active?.content ?? null;
+    type MediaRow = { type?: string; duration_seconds?: number | null; created_at?: string };
+    const assets: MediaRow[] = Array.isArray(data?.assets) ? data.assets : [];
+    // The endpoint returns DESC by created_at, so the first row with a real
+    // duration is the most recent recording we can use. Avoid Number(null)
+    // (which yields 0 — would render a misleading "0:00 actual").
+    for (const a of assets) {
+      if (a?.type !== 'voiceover') continue;
+      const d = a?.duration_seconds;
+      if (typeof d === 'number' && d > 0) return Math.round(d);
+    }
+    return null;
   } catch {
     return null;
   }
@@ -162,6 +210,10 @@ export interface LoadContextOptions {
    *  Pages that won't display the script (Ideas) should pass false to avoid
    *  the wasted round-trip. */
   withScript?: boolean;
+  /** Pull the project's most recent voiceover duration (one extra GET).
+   *  Defaults to false because only Production Doc displays a speaking-pace
+   *  readout; other pages would pay for the round-trip and discard it. */
+  withVoiceoverDuration?: boolean;
 }
 
 /** Build the full prefill context for a schedule item: optionally pulls the
@@ -173,11 +225,26 @@ export async function loadFullContextForItem(
   opts: LoadContextOptions = {},
 ): Promise<ScheduleItemContext> {
   const withScript = opts.withScript !== false;
-  const script = withScript ? await loadActiveScriptForItem(item) : null;
+  const withVoiceoverDuration = opts.withVoiceoverDuration === true;
+  // Both side-channel fetches are independent of each other and of the item
+  // payload that's already in hand — fire them in parallel so the preload
+  // round-trip stays one wave deep.
+  const [script, voiceoverDurationSeconds] = await Promise.all([
+    withScript ? loadActiveScriptForItem(item) : Promise.resolve(null),
+    withVoiceoverDuration && item.project_id
+      ? loadLatestVoiceoverDuration(item.project_id)
+      : Promise.resolve(null),
+  ]);
+  // Niche resolution: item.pillar is the per-item override the user typed on
+  // the schedule item; the linked channel's niche is the workspace-level
+  // fallback. Pillar wins when set so per-item overrides aren't silently
+  // replaced by the channel default.
+  const pillar = item.pillar?.trim();
+  const channelNiche = item.channels?.find(c => c.niche && c.niche.trim())?.niche?.trim();
   return {
     item,
     topic: item.title,
-    niche: item.pillar ?? '',
+    niche: pillar || channelNiche || '',
     notes: item.notes ?? '',
     script,
     prevDescription: item.yt_description ?? '',
@@ -204,6 +271,7 @@ export async function loadFullContextForItem(
       winner: item.thumbnail_winner ?? null,
     },
     checklist: Array.isArray(item.checklist) ? item.checklist : [],
+    voiceoverDurationSeconds,
   };
 }
 

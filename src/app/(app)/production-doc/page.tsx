@@ -606,11 +606,21 @@ function ProductionDocPage() {
       if (cancelled || !item) return;
       setScheduleItem(item);
       setSchedulePrefilled(true);
-      const ctx = await loadFullContextForItem(item);
+      const ctx = await loadFullContextForItem(item, { withVoiceoverDuration: true });
       if (cancelled) return;
       setTopic(curr => curr || ctx.topic);
       setNiche(curr => curr || ctx.niche);
       if (ctx.script) setScript(prev => prev || ctx.script!);
+      // Pre-fill the "actual duration" mm:ss with the most recent recorded
+      // voiceover for this item's project, so the computed-wpm readout works
+      // on first paint without the user retyping the take length.
+      if (ctx.voiceoverDurationSeconds && ctx.voiceoverDurationSeconds > 0) {
+        const total = ctx.voiceoverDurationSeconds;
+        const mm = Math.floor(total / 60);
+        const ss = total % 60;
+        const formatted = `${mm}:${String(ss).padStart(2, '0')}`;
+        setActualDuration(curr => curr || formatted);
+      }
       // Seed the creative brief with the item's accumulated narrative context
       // (notes, series part, prior published description, editor, open
       // checklist) — the prod-doc generator will weight these as scene-shaping

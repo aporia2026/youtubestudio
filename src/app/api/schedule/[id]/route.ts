@@ -33,7 +33,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
              nc.color AS narrator_collaborator_color,
              nc.personal_token AS narrator_collaborator_token,
              COALESCE(
-               (SELECT json_agg(json_build_object('id', c.id, 'name', c.name, 'account_color', c.account_color))
+               (SELECT json_agg(json_build_object('id', c.id, 'name', c.name, 'account_color', c.account_color, 'niche', c.niche))
                 FROM schedule_item_channels sic
                 JOIN channels c ON c.id = sic.channel_id
                 WHERE sic.item_id = si.id),
