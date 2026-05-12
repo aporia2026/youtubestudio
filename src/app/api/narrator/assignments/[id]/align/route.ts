@@ -14,30 +14,37 @@ export const runtime = 'nodejs';
 export const maxDuration = 300;
 
 /**
- * Owner-side route. Kicks off (or re-kicks) forced alignment for the
- * assignment's full-audio take. Returns immediately — the orchestrator
- * runs asynchronously and writes its result to
- * `narrator_takes.alignment_json`; callers poll the GET below for
- * status. Idempotent: the orchestrator's atomic 'running' claim
- * collapses concurrent kicks into one execution.
+ * Owner-side route. Runs forced alignment for the assignment's full-audio
+ * take and writes the result to `narrator_takes.alignment_json`.
  *
- * Returning fast matters because forced alignment of a 14-min file takes
- * 10-30s. If the browser awaits the response, a page navigation aborts
- * the fetch and (under some Vercel runtime configurations) the function
- * — leaving the take stuck at 'running' until the 5-minute stale-claim
- * reclaim. Fire-and-forget on the server side, with the 5-minute reclaim
- * as the backstop, sidesteps that whole class of failure.
+ * **Synchronous on purpose.** A 14-min file's forced alignment takes
+ * roughly `duration × 0.3 + overhead` per ElevenLabs' published formula
+ * — that's ~3-4 minutes for our typical input. The earlier fire-and-
+ * forget version returned in <1s but the orchestrator's background work
+ * had no guarantee of completing: without `waitUntil`, Vercel may reap
+ * a function instance after the response is sent, leaving the row stuck
+ * at 'running' until the 5-min stale-reclaim. Awaiting here means the
+ * function lives for the full maxDuration (300s = 5 min) and the work
+ * actually finishes.
+ *
+ * Client-side callers (polling auto-kick, "Retry" button) treat the
+ * fetch as fire-and-forget so the UI doesn't block — the GET status
+ * poll keeps the user informed of progress.
+ *
+ * Idempotent: the orchestrator's atomic 'running' claim collapses
+ * concurrent kicks into one execution.
  *
  * Surfaces:
  *   - Auto-kick from the Narration tab's polling effect when status
- *     starts at 'pending' (covers takes uploaded before migration 0051
- *     went live).
+ *     starts at 'pending'.
  *   - "Retry sync" button when alignment_status='failed'.
  *   - Manual diagnostic (curl) for ops.
  *
  * The auto-trigger from a fresh narrator upload completion lives in
- * /api/narrate/[token]/full-audio PATCH — that path calls
- * `runAlignmentForAssignment` directly without going through this route.
+ * /api/narrate/[token]/full-audio PATCH — that path also calls
+ * `runAlignmentForAssignment`, fire-and-forget there because the PATCH
+ * needs to return promptly to the narrator. If the PATCH-side run gets
+ * reaped, the reviewer's auto-kick is the backstop.
  */
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -53,17 +60,8 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       );
     }
 
-    // Fire-and-forget: the orchestrator owns the state machine and never
-    // throws (errors are caught + recorded as alignment_error). The
-    // client polls GET for the result.
-    runAlignmentForAssignment(id).catch((e) => {
-      logger.error('align trigger background error', {
-        assignmentId: id,
-        detail: e instanceof Error ? e.message : String(e),
-      });
-    });
-
-    return NextResponse.json({ ok: true, started: true });
+    const result = await runAlignmentForAssignment(id);
+    return NextResponse.json({ result });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     logger.error('align route error', { detail });
@@ -98,6 +96,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       status: take.alignment_status,
       error: take.alignment_error,
       hasAlignment: take.alignment_json != null,
+      // ISO string of when the orchestrator most recently claimed
+      // 'running'. The UI uses this to render an elapsed-time counter
+      // so the reviewer can see how long the sync has been working
+      // (helps decide whether to wait or hit Stop).
+      startedAt: take.alignment_started_at,
       ...(wantAlignment ? { alignment: take.alignment_json } : {}),
     });
   } catch (err) {

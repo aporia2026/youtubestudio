@@ -91,6 +91,26 @@ interface AlignmentState {
   status: AlignmentStatus;
   error: string | null;
   alignment: ForcedAlignmentResponse | null;
+  /** ISO timestamp from the server marking when the current 'running'
+   *  claim was taken. The UI computes elapsed seconds from this so the
+   *  reviewer can see how long the sync has been working. Null when not
+   *  running. */
+  startedAt: string | null;
+}
+
+/**
+ * Format an elapsed-seconds count as M:SS — used by the "Building word-
+ * level sync…" badge so the reviewer can decide whether to wait or hit
+ * Stop. Caps the display at "10:00+" because anything past 10 minutes
+ * is genuinely broken (function maxDuration is 5 minutes, stale-claim
+ * reclaim is another 5).
+ */
+function formatElapsed(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
+  if (seconds >= 600) return '10:00+';
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
 interface NarrationTabProps {
@@ -137,8 +157,19 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
     status: 'pending',
     error: null,
     alignment: null,
+    startedAt: null,
   });
   const [retryingAlignment, setRetryingAlignment] = useState(false);
+  // Tick once a second while a run is in flight so the elapsed-time
+  // badge stays accurate without the rest of the polling effect
+  // refiring. Polling already runs every 3s but the timer needs 1s
+  // granularity to feel live.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (alignmentState.status !== 'running' || !alignmentState.startedAt) return;
+    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [alignmentState.status, alignmentState.startedAt]);
 
   // Hydrate the sync-mode preference once on mount. Splitting this out of
   // the initial useState lets server-rendering pick 'classic' (matching
@@ -259,11 +290,17 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
               status: 'failed',
               error: `Sync endpoint error (HTTP ${res.status}). The alignment migration may not have run on this database — run \`npm run db:migrate\` and reload.`,
               alignment: null,
+              startedAt: null,
             });
           }
           return;
         }
-        const data: { status: AlignmentStatus; error: string | null; hasAlignment: boolean } = await res.json();
+        const data: {
+          status: AlignmentStatus;
+          error: string | null;
+          hasAlignment: boolean;
+          startedAt?: string | null;
+        } = await res.json();
         if (cancelled) return;
 
         // Surface the live status into the UI even when we don't have the
@@ -272,6 +309,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
           status: data.status,
           error: data.error,
           alignment: data.status === 'ready' ? prev.alignment : null,
+          startedAt: data.status === 'running' ? data.startedAt ?? prev.startedAt : null,
         }));
 
         if (data.status === 'ready' && data.hasAlignment) {
@@ -283,7 +321,12 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
           if (fullRes.ok) {
             const full: { alignment?: ForcedAlignmentResponse } = await fullRes.json();
             if (!cancelled && full.alignment) {
-              setAlignmentState({ status: 'ready', error: null, alignment: full.alignment });
+              setAlignmentState({
+                status: 'ready',
+                error: null,
+                alignment: full.alignment,
+                startedAt: null,
+              });
             }
           }
           // No need to keep polling once we have the alignment.
@@ -326,7 +369,15 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
   async function handleRetryAlignment() {
     if (!activeAssignment || retryingAlignment) return;
     setRetryingAlignment(true);
-    setAlignmentState({ status: 'running', error: null, alignment: null });
+    // Optimistic: the POST will claim 'running' on the server within a
+    // few hundred ms. The next poll picks up the real startedAt; meanwhile
+    // start the timer from now so the reviewer sees movement immediately.
+    setAlignmentState({
+      status: 'running',
+      error: null,
+      alignment: null,
+      startedAt: new Date().toISOString(),
+    });
     try {
       const res = await fetch(`/api/narrator/assignments/${activeAssignment.id}/align`, {
         method: 'POST',
@@ -343,6 +394,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
         status: 'failed',
         error: err instanceof Error ? err.message : 'Retry failed',
         alignment: null,
+        startedAt: null,
       });
     } finally {
       setRetryingAlignment(false);
@@ -359,6 +411,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
       status: 'failed',
       error: 'Cancelled by user',
       alignment: null,
+      startedAt: null,
     });
     try {
       await fetch(`/api/narrator/assignments/${activeAssignment.id}/align`, { method: 'DELETE' });
@@ -556,6 +609,11 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
                     <span className="w-2.5 h-2.5 rounded-full border border-t-transparent animate-spin"
                       style={{ borderColor: '#a78bfa', borderTopColor: 'transparent' }} />
                     Building word-level sync…
+                    {alignmentState.startedAt && (
+                      <span className="font-mono ml-1" style={{ color: 'var(--text-muted)' }}>
+                        {formatElapsed((nowMs - new Date(alignmentState.startedAt).getTime()) / 1000)}
+                      </span>
+                    )}
                   </span>
                 )}
                 {/* Stop button — visible while the sync is queued or in

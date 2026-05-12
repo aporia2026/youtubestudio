@@ -1023,6 +1023,7 @@ export interface TakeAlignmentRow {
   alignment_status: AlignmentStatus;
   alignment_json: unknown | null;
   alignment_error: string | null;
+  alignment_started_at: string | null;
 }
 
 /** Read the full-audio take + its alignment state for an assignment. */
@@ -1037,7 +1038,8 @@ export async function getFullAudioTakeWithAlignment(
            t.duration_seconds,
            t.alignment_status,
            t.alignment_json,
-           t.alignment_error
+           t.alignment_error,
+           t.alignment_started_at
     FROM narrator_assignments a
     JOIN narrator_takes t ON t.id = a.full_audio_take_id
     WHERE a.id = ${assignmentId}
@@ -1054,6 +1056,10 @@ export async function getFullAudioTakeWithAlignment(
     alignment_status: (row.alignment_status as AlignmentStatus) ?? 'pending',
     alignment_json: row.alignment_json ?? null,
     alignment_error: (row.alignment_error as string | null) ?? null,
+    alignment_started_at:
+      row.alignment_started_at == null
+        ? null
+        : new Date(row.alignment_started_at as string).toISOString(),
   };
 }
 
