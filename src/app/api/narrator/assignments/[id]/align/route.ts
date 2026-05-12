@@ -65,8 +65,16 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
 
     return NextResponse.json({ ok: true, started: true });
   } catch (err) {
-    logger.error('align route error', { detail: err instanceof Error ? err.message : String(err) });
-    return NextResponse.json({ error: 'Failed to run alignment' }, { status: 500 });
+    const detail = err instanceof Error ? err.message : String(err);
+    logger.error('align route error', { detail });
+    // Strip URL-shaped substrings before echoing the underlying error to
+    // the client. Without this a Postgres error that includes a signed R2
+    // URL in its detail field would leak to the browser. The truncation
+    // is a hard upper bound — pg error messages routinely run to 1KB+.
+    const safe = detail.replace(/https?:\/\/\S+/g, '<url>').slice(0, 240).trim();
+    return NextResponse.json({
+      error: `Failed to run alignment: ${safe}`,
+    }, { status: 500 });
   }
 }
 

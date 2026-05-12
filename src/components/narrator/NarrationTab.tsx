@@ -583,7 +583,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
                 )}
                 {alignmentState.status === 'failed' && (
                   <>
-                    <span style={{ color: '#ef4444' }} title={alignmentState.error || ''}>
+                    <span style={{ color: '#ef4444' }}>
                       {alignmentState.error === 'Cancelled by user'
                         ? 'Sync cancelled'
                         : 'Sync unavailable'}
@@ -605,6 +605,25 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
               </div>
             )}
           </div>
+          {/* When alignment fails, surface the actual reason directly under
+              the toggle row. Hiding it in a tooltip means the reviewer
+              can't see what's wrong without hovering — and on touch
+              devices, can't see it at all. */}
+          {syncMode === 'synced'
+            && alignmentState.status === 'failed'
+            && alignmentState.error
+            && alignmentState.error !== 'Cancelled by user' && (
+            <div
+              className="mb-2 px-2 py-1.5 rounded text-[11px] leading-snug"
+              style={{
+                background: 'rgba(239,68,68,0.08)',
+                color: '#fca5a5',
+                border: '1px solid rgba(239,68,68,0.2)',
+              }}
+            >
+              <span className="font-mono">{alignmentState.error}</span>
+            </div>
+          )}
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
