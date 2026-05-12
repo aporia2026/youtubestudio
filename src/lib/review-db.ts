@@ -236,6 +236,10 @@ export async function createComment(fields: {
    * global comments inbox.
    */
   author_role: 'owner' | 'editor' | 'reviewer';
+  /** Mirror of the team-hub-activity flag. Set TRUE from the owner-side
+   *  POST route so future backfills (e.g. the global comments inbox) can
+   *  reliably identify owner-authored rows without name matching. */
+  posted_by_owner?: boolean;
   drawing_data?: unknown;
   drawing_thumbnail_url?: string;
   parent_id?: string;
@@ -250,10 +254,11 @@ export async function createComment(fields: {
   // workspace_id is NOT NULL on review_comments since migration 0013 — copy
   // it from the parent review_version so callers don't need session context.
   const { rows } = await sql`
-    INSERT INTO review_comments (version_id, timestamp_ms, end_timestamp_ms, text, author_name, author_color, author_role, drawing_data, drawing_thumbnail_url, parent_id, workspace_id)
+    INSERT INTO review_comments (version_id, timestamp_ms, end_timestamp_ms, text, author_name, author_color, author_role, posted_by_owner, drawing_data, drawing_thumbnail_url, parent_id, workspace_id)
     SELECT ${fields.version_id}::uuid, ${fields.timestamp_ms}, ${endMs},
            ${fields.text}, ${fields.author_name}, ${fields.author_color},
            ${fields.author_role},
+           ${fields.posted_by_owner ?? false},
            ${fields.drawing_data ? JSON.stringify(fields.drawing_data) : null}::jsonb,
            ${fields.drawing_thumbnail_url ?? null},
            ${fields.parent_id ?? null}::uuid,

@@ -23,6 +23,8 @@ interface InboxRow {
   resolved: boolean;
   resolved_at: string | null;
   created_at: string;
+  /** Set when this row is itself a reply. */
+  parent_id: string | null;
   fix_for_comment_id: string | null;
   reply_count: number;
   project_id: string;
@@ -149,6 +151,11 @@ export default function InboxPage() {
     editor: true,
     reviewer: true,
   });
+  // Bulk selection — keyed by comment id. Cleared whenever the visible
+  // list of comments changes (different person, different filter) so a
+  // selection from a previous view can't leak into a fresh batch.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   // Push-state helper — write a single search param without losing the rest.
   const updateParam = useCallback((updates: Record<string, string | null>) => {
@@ -279,7 +286,13 @@ export default function InboxPage() {
 
   const handleSelectPerson = useCallback((role: InboxAuthorRole, author: string) => {
     updateParam({ role, person: author, comment: null });
+    setSelectedIds(new Set());
   }, [updateParam]);
+
+  // Clear selection on filter change — keeping a selection across filters
+  // is confusing (selected ids that are no longer visible still get acted
+  // on) and the user almost certainly meant to start fresh.
+  useEffect(() => { setSelectedIds(new Set()); }, [filter]);
 
   const handleResolve = useCallback(async (row: InboxRow, resolved: boolean) => {
     // Optimistic — flip in local state, then fire the request. Rollback on
@@ -297,6 +310,56 @@ export default function InboxPage() {
       toast.error(err instanceof Error ? err.message : 'Failed to update comment');
     }
   }, []);
+
+  // Bulk resolve/reopen for every selected id. Pre-flight snapshot so a
+  // server error can rollback the optimistic UI; on success we just clear
+  // the selection.
+  const handleBulkResolve = useCallback(async (resolved: boolean) => {
+    if (selectedIds.size === 0 || bulkBusy) return;
+    const targets = rows.filter(r => selectedIds.has(r.id));
+    if (targets.length === 0) return;
+    setBulkBusy(true);
+    const snapshot = new Map(targets.map(r => [r.id, r.resolved]));
+    setRows(prev => prev.map(r => selectedIds.has(r.id) ? { ...r, resolved } : r));
+    try {
+      const res = await fetch('/api/inbox/resolve-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: targets.map(r => ({ source: r.source, commentId: r.id })),
+          resolved,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const updated = typeof data.updated === 'number' ? data.updated : targets.length;
+      toast.success(resolved
+        ? `Resolved ${updated} comment${updated === 1 ? '' : 's'}`
+        : `Reopened ${updated} comment${updated === 1 ? '' : 's'}`);
+      setSelectedIds(new Set());
+    } catch (err) {
+      setRows(prev => prev.map(r => snapshot.has(r.id) ? { ...r, resolved: snapshot.get(r.id)! } : r));
+      toast.error(err instanceof Error ? err.message : 'Bulk update failed');
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [selectedIds, rows, bulkBusy]);
+
+  function toggleSelect(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function selectAllVisible() {
+    setSelectedIds(new Set(visibleRows.map(r => r.id)));
+  }
+
+  function clearSelection() {
+    setSelectedIds(new Set());
+  }
 
   if (loading) {
     return <PageSkeleton title="Inbox" />;
@@ -488,7 +551,71 @@ export default function InboxPage() {
                       </span>
                     </div>
                   </div>
+                  {/* Select-all toggle next to the header — appears even
+                      with zero selections so the user discovers it.
+                      Pattern: Gmail's checkbox in the toolbar. */}
+                  <button
+                    onClick={selectedIds.size === visibleRows.length && visibleRows.length > 0
+                      ? clearSelection : selectAllVisible}
+                    className="text-xs px-2 py-1 rounded-md cursor-pointer"
+                    style={{
+                      background: 'transparent',
+                      border: '1px solid var(--border)',
+                      color: 'var(--text-secondary)',
+                    }}
+                  >
+                    {selectedIds.size === visibleRows.length && visibleRows.length > 0
+                      ? 'Deselect all'
+                      : `Select all (${visibleRows.length})`}
+                  </button>
                 </header>
+              )}
+
+              {/* Sticky bulk action bar — only when something is selected.
+                  Stays in view while the user scrolls so the Resolve
+                  button is always reachable. */}
+              {selectedIds.size > 0 && (
+                <div
+                  className="sticky top-0 z-10 flex items-center gap-2 px-3 py-2 rounded-lg"
+                  style={{
+                    background: 'rgba(124,58,237,0.12)',
+                    border: '1px solid var(--accent-purple)',
+                    backdropFilter: 'blur(8px)',
+                  }}
+                >
+                  <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                    {selectedIds.size} selected
+                  </span>
+                  <button
+                    onClick={clearSelection}
+                    className="text-xs px-2 py-1 rounded-md cursor-pointer"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    Clear
+                  </button>
+                  <div className="ml-auto flex items-center gap-2">
+                    <button
+                      onClick={() => handleBulkResolve(false)}
+                      disabled={bulkBusy}
+                      className="text-xs px-3 py-1.5 rounded-md cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                      style={{
+                        background: 'transparent',
+                        border: '1px solid var(--border)',
+                        color: 'var(--text-secondary)',
+                      }}
+                    >
+                      Reopen
+                    </button>
+                    <button
+                      onClick={() => handleBulkResolve(true)}
+                      disabled={bulkBusy}
+                      className="text-xs px-3 py-1.5 rounded-md font-medium cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                      style={{ background: '#22c55e', color: '#fff' }}
+                    >
+                      {bulkBusy ? 'Resolving…' : `Resolve ${selectedIds.size}`}
+                    </button>
+                  </div>
+                </div>
               )}
 
               {[...visibleRows]
@@ -498,6 +625,8 @@ export default function InboxPage() {
                     key={row.id}
                     row={row}
                     highlight={row.id === focusCommentId}
+                    selected={selectedIds.has(row.id)}
+                    onToggleSelect={() => toggleSelect(row.id)}
                     onResolve={(resolved) => handleResolve(row, resolved)}
                   />
                 ))}
@@ -516,10 +645,14 @@ export default function InboxPage() {
 function CommentCard({
   row,
   highlight,
+  selected,
+  onToggleSelect,
   onResolve,
 }: {
   row: InboxRow;
   highlight: boolean;
+  selected: boolean;
+  onToggleSelect: () => void;
   onResolve: (resolved: boolean) => void;
 }) {
   const sourceLabel = row.source === 'narration'
@@ -529,16 +662,46 @@ function CommentCard({
     ? `${formatTimestamp(row.timestamp_ms)} – ${formatTimestamp(row.end_timestamp_ms)}`
     : formatTimestamp(row.timestamp_ms);
 
+  // Border palette in priority order:
+  //   • selected (purple solid) — strongest signal, beats deep-link
+  //   • highlight (deep-link target, purple glow)
+  //   • default (subtle gray)
+  const borderColor = selected
+    ? 'var(--accent-purple)'
+    : highlight ? 'var(--accent-purple)' : 'var(--border)';
+  const shadow = selected
+    ? '0 0 0 1px var(--accent-purple)'
+    : highlight ? '0 0 0 3px rgba(124,58,237,0.18)' : 'none';
+
   return (
     <article
       className="rounded-xl p-4 transition-all"
       style={{
-        background: 'var(--bg-card)',
-        border: `1px solid ${highlight ? 'var(--accent-purple)' : 'var(--border)'}`,
-        boxShadow: highlight ? '0 0 0 3px rgba(124,58,237,0.18)' : 'none',
+        background: selected ? 'rgba(124,58,237,0.06)' : 'var(--bg-card)',
+        border: `1px solid ${borderColor}`,
+        boxShadow: shadow,
         opacity: row.resolved ? 0.7 : 1,
       }}
     >
+      <div className="flex items-start gap-3">
+        {/* Checkbox — Gmail/Frame.io style. Click-area extends slightly
+            beyond the visual box for comfortable touch targets. */}
+        <button
+          onClick={onToggleSelect}
+          aria-label={selected ? 'Deselect comment' : 'Select comment'}
+          className="shrink-0 mt-0.5 w-4 h-4 rounded flex items-center justify-center cursor-pointer"
+          style={{
+            background: selected ? 'var(--accent-purple)' : 'transparent',
+            border: `1.5px solid ${selected ? 'var(--accent-purple)' : 'var(--text-muted)'}`,
+          }}
+        >
+          {selected && (
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          )}
+        </button>
+        <div className="flex-1 min-w-0">
       <div className="flex items-center gap-2 text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
         <Link
           // Narration comments live under `projects` (the script workspace);
@@ -572,6 +735,13 @@ function CommentCard({
           <span className="text-[10px] px-2 py-0.5 rounded-full font-medium"
             style={{ background: 'rgba(239,68,68,0.12)', color: '#ef4444' }}>
             Unresolved
+          </span>
+        )}
+        {row.parent_id && (
+          <span className="text-[10px] px-2 py-0.5 rounded-full font-medium"
+            style={{ background: 'rgba(139,92,246,0.12)', color: '#a78bfa' }}
+            title="Reply to another comment">
+            ↳ Reply
           </span>
         )}
         {row.fix_for_comment_id && (
@@ -614,6 +784,8 @@ function CommentCard({
               Source removed
             </span>
           )}
+        </div>
+      </div>
         </div>
       </div>
     </article>

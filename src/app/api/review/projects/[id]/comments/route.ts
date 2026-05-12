@@ -30,6 +30,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       author_name: author_name.trim(),
       author_color: author_color || '#7c3aed',
       author_role: 'owner',
+      posted_by_owner: true,
       drawing_data,
       drawing_thumbnail_url,
       parent_id,

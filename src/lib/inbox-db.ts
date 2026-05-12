@@ -34,8 +34,12 @@ export interface InboxComment {
   resolved: boolean;
   resolved_at: string | null;
   created_at: string;
-  /** Top-level rows only — replies (parent_id IS NOT NULL) are excluded. */
-  parent_id: null;
+  /** When set, this row is a reply to another comment. Replies are
+   *  surfaced in the inbox so the owner sees every comment they (or
+   *  collaborators) wrote — even threaded responses. The matching parent
+   *  is reachable via the deep_link, which always lands on the same
+   *  take/version. */
+  parent_id: string | null;
   /** Set when this comment was authored as an editor "fix note" replying to
    *  earlier feedback. The original feedback lives at the same coordinates
    *  on the previous take/version. */
@@ -157,7 +161,6 @@ export async function listInboxComments(
         JOIN narrator_assignments a  ON a.id = s.assignment_id
         JOIN projects p              ON p.id = a.project_id
         WHERE c.workspace_id = ${workspaceId}::uuid
-          AND c.parent_id IS NULL
 
         UNION ALL
 
@@ -187,7 +190,6 @@ export async function listInboxComments(
         JOIN review_versions v       ON v.id = c.version_id
         JOIN review_projects rp      ON rp.id = v.project_id
         WHERE c.workspace_id = ${workspaceId}::uuid
-          AND c.parent_id IS NULL
       )
       SELECT * FROM inbox
        WHERE (${filter}::text = 'all'
@@ -216,13 +218,15 @@ export async function listInboxComments(
 export async function countUnresolvedInbox(workspaceId: string): Promise<number> {
   await Promise.all([ensureReviewSchema(), ensureNarratorSchema()]);
   try {
+    // Counts every unresolved comment (top-level + replies) so the
+    // sidebar badge matches what the inbox page actually displays.
     const { rows } = await sql<{ total: number }>`
       SELECT
         (SELECT COUNT(*)::int FROM narration_take_comments
-          WHERE workspace_id = ${workspaceId}::uuid AND parent_id IS NULL AND resolved = FALSE)
+          WHERE workspace_id = ${workspaceId}::uuid AND resolved = FALSE)
         +
         (SELECT COUNT(*)::int FROM review_comments
-          WHERE workspace_id = ${workspaceId}::uuid AND parent_id IS NULL AND resolved = FALSE)
+          WHERE workspace_id = ${workspaceId}::uuid AND resolved = FALSE)
         AS total
     `;
     return rows[0]?.total ?? 0;
@@ -262,6 +266,81 @@ export async function resolveInboxComment(
     return (rowCount ?? 0) > 0;
   }
   return false;
+}
+
+export interface InboxBulkItem {
+  source: InboxSource;
+  commentId: string;
+}
+
+/**
+ * Apply the same resolved/unresolved state to many comments at once. One
+ * UPDATE per source so a mixed selection (narration + review in the same
+ * batch) costs at most two round-trips. Re-scoped by workspace_id like
+ * every other inbox write — a forged id from another tenant can't be
+ * flipped.
+ *
+ * Returns the number of rows actually flipped so the caller can warn the
+ * user if some items were filtered out (deleted mid-batch, cross-tenant,
+ * etc).
+ */
+export async function resolveInboxCommentsBulk(
+  workspaceId: string,
+  items: InboxBulkItem[],
+  resolved: boolean,
+  resolvedBy: string,
+): Promise<number> {
+  if (items.length === 0) return 0;
+  const narrationIds = items.filter(i => i.source === 'narration').map(i => i.commentId);
+  const reviewIds   = items.filter(i => i.source === 'review').map(i => i.commentId);
+  let total = 0;
+  // Array params require sql.query() rather than the template-literal
+  // form (which only accepts primitives). Same pattern used by messages-db
+  // and auto-pipeline/db. workspace_id is read from the session by the
+  // caller — never trust an id from the request body alone.
+  if (narrationIds.length > 0) {
+    if (resolved) {
+      const { rowCount } = await sql.query(
+        `UPDATE narration_take_comments
+            SET resolved = TRUE, resolved_by = $1, resolved_at = NOW()
+          WHERE workspace_id = $2::uuid
+            AND id = ANY($3::uuid[])`,
+        [resolvedBy, workspaceId, narrationIds],
+      );
+      total += rowCount ?? 0;
+    } else {
+      const { rowCount } = await sql.query(
+        `UPDATE narration_take_comments
+            SET resolved = FALSE, resolved_by = NULL, resolved_at = NULL
+          WHERE workspace_id = $1::uuid
+            AND id = ANY($2::uuid[])`,
+        [workspaceId, narrationIds],
+      );
+      total += rowCount ?? 0;
+    }
+  }
+  if (reviewIds.length > 0) {
+    if (resolved) {
+      const { rowCount } = await sql.query(
+        `UPDATE review_comments
+            SET resolved = TRUE, resolved_by = $1, resolved_at = NOW()
+          WHERE workspace_id = $2::uuid
+            AND id = ANY($3::uuid[])`,
+        [resolvedBy, workspaceId, reviewIds],
+      );
+      total += rowCount ?? 0;
+    } else {
+      const { rowCount } = await sql.query(
+        `UPDATE review_comments
+            SET resolved = FALSE, resolved_by = NULL, resolved_at = NULL
+          WHERE workspace_id = $1::uuid
+            AND id = ANY($2::uuid[])`,
+        [workspaceId, reviewIds],
+      );
+      total += rowCount ?? 0;
+    }
+  }
+  return total;
 }
 
 /**
