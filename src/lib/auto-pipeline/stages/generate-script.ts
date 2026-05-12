@@ -1,0 +1,197 @@
+/**
+ * Stage handler: script generation.
+ *
+ * Active for stage `generating_script`. Two entry paths converge
+ * here:
+ *   - Fresh-mode rows arrive after `handleGenerateIdea` wrote
+ *     idea_id on the video.
+ *   - Existing-mode rows started here with idea_id already set by
+ *     `createPipelineRun`.
+ *
+ * Both paths load the idea from `video_ideas` for its title +
+ * description. Creates a `projects` row if the video doesn't have
+ * one yet (scripts.project_id is NOT NULL — the project is the
+ * organizational unit for the rest of the pipeline). Calls
+ * `scriptGenerationPrompt` + `generateTextWithFallback`. Persists
+ * the script and computes spoken-word count via the canonical
+ * `stripCues` + `countWords` so the gate UI shows the same number
+ * as the narrator portal (single source of truth — rule 2).
+ *
+ * Next state depends on `preset.script_gate_enabled`:
+ *   - enabled (default) → `awaiting_script_gate` (cron stops here)
+ *   - disabled (fully-unattended preset) → `running_qa`
+ */
+import { sql } from '@vercel/postgres';
+import { scriptGenerationPrompt } from '../../prompts';
+import { generateTextWithFallback } from '../../ai';
+import { GenerateFailure } from '../../ai-fallback';
+import { resolveChain } from '../resolve-chain';
+import { countWords } from '../../utils';
+import type { StageHandlerContext, StageOutcome } from '../types';
+
+export async function handleGenerateScript(ctx: StageHandlerContext): Promise<StageOutcome> {
+  const { video, preset } = ctx;
+
+  if (!video.idea_id) {
+    // Should never happen — fresh-mode rows are advanced here only
+    // after idea-gen sets the FK; existing-mode rows are created
+    // with it. Defensive: fail loud.
+    return {
+      kind: 'fail',
+      terminalStage: 'production_doc_failed',
+      failureClass: 'invariant_violation',
+      failureMessage: 'generate-script handler reached without idea_id set.',
+    };
+  }
+
+  // Load the idea — workspace-scoped through the FK chain on
+  // pipeline_run_videos (already validated by claimNextVideo).
+  const { rows: ideaRows } = await sql.query<{
+    title: string;
+    description: string | null;
+    target_audience: string | null;
+    niche: string | null;
+  }>(
+    `
+    SELECT title, description, target_audience, niche
+      FROM video_ideas
+     WHERE id = $1::uuid AND workspace_id = $2::uuid
+    `,
+    [video.idea_id, video.workspace_id],
+  );
+  if (ideaRows.length === 0) {
+    return {
+      kind: 'fail',
+      terminalStage: 'production_doc_failed',
+      failureClass: 'idea_missing',
+      failureMessage: `Idea ${video.idea_id} not found (deleted?).`,
+    };
+  }
+  const idea = ideaRows[0];
+  const niche = idea.niche || preset.niche || '';
+  if (!niche) {
+    return {
+      kind: 'fail',
+      terminalStage: 'production_doc_failed',
+      failureClass: 'config_missing',
+      failureMessage: 'Niche not available on idea or preset — required for script gen.',
+    };
+  }
+
+  // Ensure a project exists. Fresh-mode rows have no project_id
+  // yet; existing-mode rows might either way (depending on
+  // whether the originating idea was tied to a project).
+  let projectId = video.project_id;
+  if (!projectId) {
+    const { rows: pRows } = await sql.query<{ id: string }>(
+      `
+      INSERT INTO projects (workspace_id, title, niche, topic, status)
+      VALUES ($1::uuid, $2, $3, $4, 'in_progress')
+      RETURNING id::text AS id
+      `,
+      [video.workspace_id, idea.title, niche, idea.title],
+    );
+    projectId = pRows[0].id;
+  }
+
+  // Pull preset script rules. All fields optional — the script
+  // generator has sensible defaults.
+  const rules = (preset.script_rules_jsonb ?? {}) as {
+    tone?: string;
+    style?: string;
+    audience?: string;
+    additionalContext?: string;
+    referenceContext?: string;
+    targetDurationMinutes?: number;
+    constraints?: unknown;
+  };
+  const targetDurationMinutes = rules.targetDurationMinutes ?? guessDurationFromSpokenWords(preset.target_spoken_words);
+
+  const chain = await resolveChain('script-generator', preset);
+
+  let result: Awaited<ReturnType<typeof generateTextWithFallback>>;
+  try {
+    result = await generateTextWithFallback(chain, (modelId) => {
+      const prompt = scriptGenerationPrompt({
+        topic: idea.title,
+        niche,
+        targetDurationMinutes,
+        targetAudience: rules.audience ?? idea.target_audience ?? undefined,
+        tone: rules.tone,
+        style: rules.style,
+        additionalContext: rules.additionalContext,
+        referenceContext: rules.referenceContext,
+        constraints: rules.constraints as never,
+      });
+      return {
+        modelId,
+        prompt: prompt.user,
+        systemPrompt: prompt.system,
+        maxTokens: 8000,
+        temperature: 0.7,
+        spend: {
+          workspaceId: video.workspace_id,
+          projectId,
+          featureArea: 'pipeline_script_generation',
+        },
+      };
+    });
+  } catch (err) {
+    if (err instanceof GenerateFailure) {
+      return {
+        kind: 'fail',
+        terminalStage: 'production_doc_failed',
+        failureClass: err.failureClass,
+        failureMessage: err.message.slice(0, 500),
+      };
+    }
+    throw err;
+  }
+
+  // Spoken-word count via the canonical `countWords` helper (which
+  // strips production cues internally — single source of truth
+  // with the narrator portal so the gate's count is honest).
+  const scriptText = result.text;
+  const spokenWordCount = countWords(scriptText);
+  const estimatedDurationSeconds = Math.round((spokenWordCount / 140) * 60);
+
+  // Persist the script. version = 1 for now (qa_retry will bump
+  // this in Friday's retry-loop work).
+  const { rows: sRows } = await sql.query<{ id: string }>(
+    `
+    INSERT INTO scripts
+      (project_id, version, content, word_count, estimated_duration_seconds, ai_model, generation_params, is_active)
+    VALUES ($1::uuid, 1, $2, $3, $4, $5, $6::jsonb, true)
+    RETURNING id::text AS id
+    `,
+    [
+      projectId,
+      scriptText,
+      spokenWordCount,
+      estimatedDurationSeconds,
+      result.modelUsed,
+      JSON.stringify({ pipeline_run_video_id: video.id, fallback_attempts: result.attempts.length }),
+    ],
+  );
+
+  const nextStage = preset.script_gate_enabled ? 'awaiting_script_gate' : 'running_qa';
+
+  return {
+    kind: 'advance',
+    nextStage,
+    persist: {
+      project_id: projectId,
+      script_id: sRows[0].id,
+    },
+  };
+}
+
+/**
+ * When the preset specifies target_spoken_words but not duration,
+ * derive a minute count assuming 140 wpm (the project's standard
+ * speaking pace, matched in `estimateDuration`).
+ */
+function guessDurationFromSpokenWords(words: number | null): number {
+  if (!words || words < 50) return 8; // sane default — 8-minute script
+  return Math.max(1, Math.round(words / 140));
+}

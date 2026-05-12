@@ -14,7 +14,19 @@ End-to-end flow:
    target spoken-word count, critic min-score, max QA iterations,
    production-doc model, image-gen model chain, fallback chains per
    stage. Save as named template per workspace.
-2. **Run batch of N** — generate N ideas, user drag-ranks them once.
+2. **Start a batch — two entry modes (user-decided 2026-05-12):**
+   - **Generate fresh** — pipeline brainstorms N new ideas; user
+     drag-ranks them.
+   - **Use existing idea(s)** — multi-select 1-to-N already-saved
+     `video_ideas` rows; pipeline skips the idea-gen stage entirely
+     and queues them at `stage='generating_script'` with `idea_id`
+     pre-populated. Drag-rank still happens when N > 1.
+   - v1: one mode per batch (no mixing). v1.1 may add mixed mode if
+     the user wants "generate 3 fresh ideas to go with these 2
+     existing ones." Not yet asked for.
+   - Entry surfaces: (a) a "Send to pipeline" button on each card
+     on `/ideas` for the single-idea fast path; (b) a radio toggle
+     on `/pipeline/new` for the multi-select path.
 3. **For each video, in priority order:**
    a. Generate idea (already saved).
    b. Generate script.
@@ -29,6 +41,66 @@ End-to-end flow:
    approved take durations into `final_video_length_seconds`. User can
    override.
 5. **Generate production doc** with the chosen image-gen chain per row.
+6. **Generate thumbnail** (added 2026-05-12) — using the thumbnail
+   template configured on the preset (or workspace default). Renders
+   the configured image-ref set + context + optional text overlay
+   through the image-gen chain. Result attaches to the video row.
+7. **Auto-assign to video editor** (added 2026-05-12) — creates an
+   editor_assignment row tied to the project, with the approved
+   script, the narrator's full-audio voiceover URL, the production
+   doc, and the generated thumbnail attached. The pre-set editor on
+   the preset receives the assignment automatically — no manual
+   "send to editor" click.
+
+### Thumbnail template presets (separate side feature, 2026-05-12)
+
+Independent of the pipeline orchestrator. New table
+`thumbnail_template_presets` (workspace-scoped) for reusable
+configurations:
+
+- `image_references_jsonb` — array of reference image URLs / blob
+  pathnames to pass to the image-gen chain.
+- `context_description` — free-text context the generator uses ("dark
+  cinematic style", "warm yellow lighting", "centered subject").
+- `include_text` boolean — when true, the generator emits a thumbnail
+  with text overlay; when false, image-only.
+- `text_overlay_config_jsonb` — optional, only meaningful when
+  include_text is true. Position, font tier, max chars, etc.
+
+Wires into the pipeline by adding `thumbnail_template_id` (FK
+nullable) on `pipeline_presets`. CRUD surface at
+`/settings?section=thumbnail-templates` (or similar — final
+location during the side-task push).
+
+Pipeline thumbnail handler reads the linked template and feeds its
+contents into the image-gen chain. When no template is linked, the
+handler uses a sensible workspace default (e.g. just the video
+title + niche).
+
+This is its own push — schema added in migration 0053 alongside the
+pipeline thumbnail FK so the columns exist together, but the CRUD
+UI + thumbnail handler implementation come later.
+
+### Starting from existing artefacts (v1 covers idea only)
+
+Schema-wise, every stage's input FK on `pipeline_run_videos` is
+nullable: `idea_id`, `script_id`, `critic_panel_id`,
+`narrator_assignment_id`. The orchestrator dispatches on
+`stage`, not on which FKs are populated — so it generalises:
+
+- **"Start from existing idea"** — v1, building now. Creates the row
+  with `stage='generating_script'` + `idea_id` populated.
+- **"Start from existing script"** — v2 (if requested). Row starts at
+  `stage='running_qa'` + `script_id` populated. Skips idea + script
+  gen entirely.
+- **"Start from existing critic panel verdict"** — v2 (if requested).
+  Row starts at `stage='waiting_narration'` + `critic_panel_id`
+  populated. Useful if a script already shipped through QA outside
+  the pipeline and the user just wants production-doc gen.
+
+Out of scope today, but the schema-level cost of adding them later is
+zero (no new columns) — just orchestrator entry validation +
+additional UI radio options. Don't pre-build; wait for explicit ask.
 
 ## Out of scope (v2+)
 
