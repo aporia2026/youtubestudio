@@ -32,6 +32,15 @@ interface NarrationTeleprompterProps {
    *  toggle playback (pause if playing, resume if paused) without
    *  seeking. */
   onTogglePlay?: () => void;
+  /** Called when the inline composer in fullscreen mode submits a
+   *  comment. Parent posts to the comments API. Should throw on
+   *  failure so the composer can re-enable its submit button and
+   *  surface the error. */
+  onSubmitComment?: (text: string) => Promise<void>;
+  /** Called before opening the inline composer in fullscreen — used to
+   *  pause playback so the reviewer can concentrate on writing without
+   *  the script scrolling past underneath. */
+  onPause?: () => void;
 }
 
 /**
@@ -71,11 +80,96 @@ export function NarrationTeleprompter({
   onCommentHere,
   isPlaying = false,
   onTogglePlay,
+  onSubmitComment,
+  onPause,
 }: NarrationTeleprompterProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const userScrollAtRef = useRef<number>(0);
   const [followLocked, setFollowLocked] = useState(false);
   const [hovered, setHovered] = useState(false);
+  // Fullscreen state: when true, the wrapper pins to position:fixed
+  // inset:0 and the body uses larger typography. Enables the inline
+  // composer so the reviewer can still comment without leaving the
+  // fullscreen view.
+  const [fullscreen, setFullscreen] = useState(false);
+  // Inline composer state — only meaningful when fullscreen is true.
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [composerText, setComposerText] = useState('');
+  const [composerSubmitting, setComposerSubmitting] = useState(false);
+
+  // Esc closes the composer first (if open), otherwise exits
+  // fullscreen. Matches platform convention — one stack of dismissals.
+  useEffect(() => {
+    if (!fullscreen) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        if (composerOpen) setComposerOpen(false);
+        else setFullscreen(false);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [fullscreen, composerOpen]);
+
+  // Body scroll lock while fullscreen — prevents the page underneath
+  // from scrolling when the reviewer scrolls over the gradient fade
+  // edges of the teleprompter.
+  useEffect(() => {
+    if (!fullscreen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [fullscreen]);
+
+  // Auto-focus the composer textarea when it opens so the reviewer can
+  // start typing immediately. Defer past the open transition so the
+  // focus ring doesn't render mid-animation.
+  useEffect(() => {
+    if (!composerOpen) return;
+    const t = setTimeout(() => composerRef.current?.focus(), 150);
+    return () => clearTimeout(t);
+  }, [composerOpen]);
+
+  function openInlineComposer() {
+    // Pause first so the script doesn't scroll past while the reviewer
+    // is mid-sentence. No-op if already paused.
+    if (isPlaying && onPause) onPause();
+    setComposerText('');
+    setComposerOpen(true);
+  }
+
+  async function handleComposerSubmit() {
+    if (!onSubmitComment || composerSubmitting) return;
+    const text = composerText.trim();
+    if (!text) return;
+    setComposerSubmitting(true);
+    try {
+      await onSubmitComment(text);
+      setComposerText('');
+      setComposerOpen(false);
+    } catch (err) {
+      console.error('Inline composer submit failed:', err);
+      // Leave the text in place so the reviewer can retry without
+      // losing their work. The throw bubbles to the caller's toast.
+    } finally {
+      setComposerSubmitting(false);
+    }
+  }
+
+  function onCommentButtonClick() {
+    // In fullscreen we keep the reviewer in fullscreen by opening the
+    // inline composer instead of bouncing them back to the page's
+    // textarea. Out of fullscreen, fall back to the parent's
+    // pause+scroll-to-textarea handler.
+    if (fullscreen && onSubmitComment) {
+      openInlineComposer();
+    } else if (onCommentHere) {
+      onCommentHere();
+    }
+  }
 
   // Slice the flat alignment into per-section word arrays. Empty when
   // alignment is null (static-text mode); the renderer falls back to
@@ -209,15 +303,23 @@ export function NarrationTeleprompter({
 
   return (
     <div
-      className="rounded-xl overflow-hidden relative"
+      className={fullscreen ? 'fixed inset-0 z-50 flex flex-col' : 'rounded-xl overflow-hidden relative'}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      style={{
-        background:
-          'linear-gradient(180deg, rgba(124,58,237,0.05) 0%, rgba(124,58,237,0) 200px), var(--bg-primary)',
-        border: '1px solid var(--border)',
-        boxShadow: '0 1px 0 rgba(255,255,255,0.04) inset',
-      }}
+      style={
+        fullscreen
+          ? {
+              background:
+                'radial-gradient(circle at 50% 0%, rgba(124,58,237,0.08) 0%, rgba(10,10,12,1) 60%), #0a0a0c',
+              backdropFilter: 'blur(4px)',
+            }
+          : {
+              background:
+                'linear-gradient(180deg, rgba(124,58,237,0.05) 0%, rgba(124,58,237,0) 200px), var(--bg-primary)',
+              border: '1px solid var(--border)',
+              boxShadow: '0 1px 0 rgba(255,255,255,0.04) inset',
+            }
+      }
     >
       {/* Header strip */}
       <div
@@ -235,51 +337,88 @@ export function NarrationTeleprompter({
             {isStaticMode ? '· static view' : '· word-accurate sync'}
           </span>
         </div>
-        {followLocked && (
+        <div className="flex items-center gap-1.5">
+          {followLocked && (
+            <button
+              onClick={() => {
+                userScrollAtRef.current = 0;
+                setFollowLocked(false);
+              }}
+              className="text-[10px] px-2 py-1 rounded-md transition-colors cursor-pointer"
+              style={{
+                background: 'rgba(34,197,94,0.12)',
+                color: '#22c55e',
+                border: '1px solid rgba(34,197,94,0.3)',
+              }}
+              title="Re-engage auto-follow"
+            >
+              ↻ Re-sync
+            </button>
+          )}
           <button
-            onClick={() => {
-              userScrollAtRef.current = 0;
-              setFollowLocked(false);
-            }}
-            className="text-[10px] px-2 py-1 rounded-md transition-colors cursor-pointer"
+            onClick={() => setFullscreen((v) => !v)}
+            className="text-[10px] px-2 py-1 rounded-md transition-colors cursor-pointer flex items-center gap-1"
             style={{
-              background: 'rgba(34,197,94,0.12)',
-              color: '#22c55e',
-              border: '1px solid rgba(34,197,94,0.3)',
+              background: fullscreen ? 'rgba(124,58,237,0.18)' : 'transparent',
+              color: fullscreen ? '#a78bfa' : 'var(--text-muted)',
+              border: `1px solid ${fullscreen ? 'rgba(124,58,237,0.4)' : 'rgba(255,255,255,0.08)'}`,
             }}
-            title="Re-engage auto-follow"
+            title={fullscreen ? 'Exit fullscreen (Esc)' : 'Expand to fullscreen'}
           >
-            ↻ Re-sync
+            {fullscreen ? (
+              <>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M9 3v6H3M21 9h-6V3M3 15h6v6M15 21v-6h6" />
+                </svg>
+                Exit fullscreen
+              </>
+            ) : (
+              <>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6" />
+                </svg>
+                Expand
+              </>
+            )}
           </button>
-        )}
+        </div>
       </div>
 
       {/* Reading body */}
-      <div className="relative">
+      <div className={`relative ${fullscreen ? 'flex-1 min-h-0' : ''}`}>
         {/* Soft gradient fade at the top of the scroll area — keeps the
             edge feeling soft instead of a hard cutoff against the header. */}
         <div
           aria-hidden
           className="absolute inset-x-0 top-0 h-6 pointer-events-none z-10"
           style={{
-            background:
-              'linear-gradient(180deg, var(--bg-primary) 0%, rgba(0,0,0,0) 100%)',
+            background: fullscreen
+              ? 'linear-gradient(180deg, #0a0a0c 0%, rgba(0,0,0,0) 100%)'
+              : 'linear-gradient(180deg, var(--bg-primary) 0%, rgba(0,0,0,0) 100%)',
           }}
         />
         <div
           ref={containerRef}
-          className="px-6 py-7 overflow-y-auto"
+          className={fullscreen ? 'h-full overflow-y-auto' : 'overflow-y-auto'}
           style={{
-            maxHeight: '480px',
+            // Fullscreen gets viewport-based height + generous side
+            // padding + a max-width so lines don't stretch to a
+            // squint-wide measure on wide monitors.
+            maxHeight: fullscreen ? '100%' : '480px',
+            padding: fullscreen ? '40px max(48px, 8vw)' : '28px 24px',
             color: 'var(--text-secondary)',
             fontFamily:
               '-apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", system-ui, sans-serif',
-            fontSize: '18px',
-            lineHeight: 1.9,
+            fontSize: fullscreen ? '22px' : '18px',
+            lineHeight: fullscreen ? 2.0 : 1.9,
             fontWeight: 400,
             letterSpacing: '0.005em',
           }}
         >
+          {/* Max-width wrapper so lines stay readable on wide monitors
+              when fullscreen. No-op out of fullscreen because the
+              parent card constrains the width already. */}
+          <div style={fullscreen ? { maxWidth: 920, margin: '0 auto' } : undefined}>
           {isStaticMode
             ? // Static-text branch: no per-word timings, render each
               // section's spoken text (production cues stripped) in the
@@ -364,6 +503,7 @@ export function NarrationTeleprompter({
                   </section>
                 );
               })}
+          </div>
         </div>
         {/* Soft gradient fade at the bottom — mirrors the top fade and
             visually invites the reader to scroll down. */}
@@ -371,8 +511,9 @@ export function NarrationTeleprompter({
           aria-hidden
           className="absolute inset-x-0 bottom-0 h-8 pointer-events-none"
           style={{
-            background:
-              'linear-gradient(0deg, var(--bg-primary) 0%, rgba(0,0,0,0) 100%)',
+            background: fullscreen
+              ? 'linear-gradient(0deg, #0a0a0c 0%, rgba(0,0,0,0) 100%)'
+              : 'linear-gradient(0deg, var(--bg-primary) 0%, rgba(0,0,0,0) 100%)',
           }}
         />
         {/* Hover-to-toggle transport overlay. Surfaces a big centred
@@ -453,48 +594,125 @@ export function NarrationTeleprompter({
         )}
       </div>
 
-      {/* Sticky bottom action bar — always visible, never causes layout
-          shift, single tap to comment at the current playhead. */}
-      {onCommentHere && (
-        <div
-          className="flex items-center justify-between gap-3 px-4 py-2.5"
-          style={{
-            background: 'rgba(0,0,0,0.35)',
-            borderTop: '1px solid var(--border)',
-          }}
-        >
-          <div className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
-            {isStaticMode ? (
-              'Word-accurate sync unavailable for this take'
-            ) : activeWordText ? (
-              <>
-                Active word:{' '}
-                <span className="font-medium" style={{ color: '#a78bfa' }}>
-                  &ldquo;{activeWordText}&rdquo;
-                </span>
-              </>
-            ) : (
-              'Press play to follow the narration word-by-word'
-            )}
-          </div>
-          <button
-            onClick={onCommentHere}
-            className="shrink-0 text-[11px] px-3 py-1.5 rounded-md transition-all cursor-pointer flex items-center gap-1.5 font-medium hover:brightness-110"
+      {/* Sticky bottom action bar — collapses into an inline composer
+          while writing in fullscreen so the reviewer never leaves the
+          fullscreen view to leave a comment. Out of fullscreen the bar
+          falls through to the parent's pause+focus-textarea handler so
+          the existing single-page composer is still where comments
+          land. */}
+      {(onCommentHere || onSubmitComment) &&
+        (composerOpen && fullscreen && onSubmitComment ? (
+          // Inline composer — only in fullscreen. Pause-on-open is
+          // handled by openInlineComposer.
+          <div
+            className="px-4 py-3 flex items-start gap-3"
             style={{
-              background:
-                'linear-gradient(135deg, rgba(124,58,237,0.25) 0%, rgba(124,58,237,0.12) 100%)',
-              color: '#a78bfa',
-              border: '1px solid rgba(124,58,237,0.4)',
+              background: 'rgba(0,0,0,0.45)',
+              borderTop: '1px solid var(--border)',
+              maxWidth: 1100,
+              width: '100%',
+              alignSelf: 'center',
             }}
-            title="Pause and write a comment pinned to this moment"
           >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-            </svg>
-            Comment here
-          </button>
-        </div>
-      )}
+            <div className="flex-1 min-w-0">
+              <div className="text-[10px] uppercase tracking-[0.15em] mb-1.5 font-semibold" style={{ color: 'var(--text-muted)' }}>
+                Comment {activeWordText && (
+                  <span style={{ color: '#a78bfa' }}>
+                    on &ldquo;{activeWordText}&rdquo;
+                  </span>
+                )}
+              </div>
+              <textarea
+                ref={composerRef}
+                value={composerText}
+                onChange={(e) => setComposerText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    handleComposerSubmit();
+                  }
+                }}
+                placeholder="What did you notice at this moment? (⌘/Ctrl+Enter to submit, Esc to cancel)"
+                rows={2}
+                disabled={composerSubmitting}
+                className="w-full text-sm rounded-md p-2 resize-none outline-none transition-colors"
+                style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  color: 'var(--text-primary)',
+                  border: '1px solid rgba(124,58,237,0.35)',
+                  fontFamily: 'inherit',
+                }}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5 pt-5">
+              <button
+                onClick={handleComposerSubmit}
+                disabled={composerSubmitting || !composerText.trim()}
+                className="text-[11px] px-3 py-1.5 rounded-md font-medium text-white cursor-pointer transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{ background: '#7c3aed' }}
+                title="Submit comment (⌘/Ctrl+Enter)"
+              >
+                {composerSubmitting ? 'Posting…' : 'Submit'}
+              </button>
+              <button
+                onClick={() => setComposerOpen(false)}
+                disabled={composerSubmitting}
+                className="text-[11px] px-3 py-1.5 rounded-md cursor-pointer transition-colors disabled:opacity-40"
+                style={{
+                  background: 'transparent',
+                  color: 'var(--text-muted)',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                }}
+                title="Cancel (Esc)"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div
+            className="flex items-center justify-between gap-3 px-4 py-2.5"
+            style={{
+              background: 'rgba(0,0,0,0.35)',
+              borderTop: '1px solid var(--border)',
+            }}
+          >
+            <div className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
+              {isStaticMode ? (
+                'Word-accurate sync unavailable for this take'
+              ) : activeWordText ? (
+                <>
+                  Active word:{' '}
+                  <span className="font-medium" style={{ color: '#a78bfa' }}>
+                    &ldquo;{activeWordText}&rdquo;
+                  </span>
+                </>
+              ) : (
+                'Press play to follow the narration word-by-word'
+              )}
+            </div>
+            <button
+              onClick={onCommentButtonClick}
+              className="shrink-0 text-[11px] px-3 py-1.5 rounded-md transition-all cursor-pointer flex items-center gap-1.5 font-medium hover:brightness-110"
+              style={{
+                background:
+                  'linear-gradient(135deg, rgba(124,58,237,0.25) 0%, rgba(124,58,237,0.12) 100%)',
+                color: '#a78bfa',
+                border: '1px solid rgba(124,58,237,0.4)',
+              }}
+              title={
+                fullscreen && onSubmitComment
+                  ? 'Pause and write a comment pinned to this moment'
+                  : 'Pause and jump to the comment input below'
+              }
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+              Comment here
+            </button>
+          </div>
+        ))}
     </div>
   );
 }

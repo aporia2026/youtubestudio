@@ -265,6 +265,36 @@ export function TakeReview({
     }
   }
 
+  /**
+   * Submit a comment from outside the main textarea (used by the
+   * teleprompter's fullscreen-mode inline composer). Same write path as
+   * the normal submit, but the text comes in as an argument instead of
+   * from `text` state, and there's no range / reply concept — the
+   * fullscreen composer is intentionally simple.
+   */
+  async function submitInlineComment(commentText: string) {
+    const trimmed = commentText.trim();
+    if (!trimmed) return;
+    const liveMs = playerRef.current?.getCurrentMs() ?? currentMs;
+    const res = await fetch(listUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        timestamp_ms: Math.round(liveMs),
+        end_timestamp_ms: null,
+        text: trimmed,
+        author_name: author.name,
+        author_color: author.color,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as { error?: string }).error || `HTTP ${res.status}`);
+    }
+    const created: TakeComment = await res.json();
+    setComments(prev => [...prev, created]);
+  }
+
   async function toggleResolved(commentId: string, resolved: boolean) {
     // Snapshot prior state for rollback. Without this, a network/server
     // failure would leave the UI showing "Resolved" while the DB stays
@@ -355,6 +385,8 @@ export function TakeReview({
           onCommentHere={handleCommentHere}
           isPlaying={playing}
           onTogglePlay={() => playerRef.current?.togglePlay()}
+          onSubmitComment={submitInlineComment}
+          onPause={() => playerRef.current?.pause()}
         />
       ) : (
         <ScriptFollow
