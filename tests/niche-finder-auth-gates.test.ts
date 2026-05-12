@@ -20,6 +20,10 @@ vi.mock('next/headers', () => ({
 
 import * as deepDiveRoute from '@/app/api/niche-finder/deep-dive/route';
 import * as nicheBySlugRoute from '@/app/api/niche-finder/niches/[slug]/route';
+import * as fromChannelRoute from '@/app/api/niche-finder/discover/from-channel/route';
+import * as fromInterestsRoute from '@/app/api/niche-finder/discover/from-interests/route';
+import * as fromCategoryRoute from '@/app/api/niche-finder/discover/from-category/route';
+import * as outliersRoute from '@/app/api/niche-finder/outliers/route';
 
 type NextReqInit = ConstructorParameters<typeof NextRequest>[1];
 
@@ -42,6 +46,53 @@ describe('niche-finder routes refuse anonymous traffic', () => {
     const GET = (nicheBySlugRoute as unknown as { GET: (req: NextRequest, ctx: { params: Promise<{ slug: string }> }) => Promise<Response> }).GET;
     const req = makeReq('http://localhost/api/niche-finder/niches/history');
     const res = await GET(req, { params: Promise.resolve({ slug: 'history' }) });
+    expect(res.status).toBe(401);
+  });
+
+  it('POST /api/niche-finder/discover/from-channel returns 401 with no session', async () => {
+    const POST = (fromChannelRoute as unknown as { POST: (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response> }).POST;
+    const req = makeReq('http://localhost/api/niche-finder/discover/from-channel', {
+      method: 'POST',
+      body: JSON.stringify({ channelUrl: 'https://youtube.com/@example' }),
+    });
+    const res = await POST(req, { params: Promise.resolve({}) });
+    expect(res.status).toBe(401);
+  });
+
+  it('POST /api/niche-finder/discover/from-interests returns 401 with no session', async () => {
+    const POST = (fromInterestsRoute as unknown as { POST: (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response> }).POST;
+    const req = makeReq('http://localhost/api/niche-finder/discover/from-interests', {
+      method: 'POST',
+      body: JSON.stringify({ interests: ['history', 'tech'] }),
+    });
+    const res = await POST(req, { params: Promise.resolve({}) });
+    expect(res.status).toBe(401);
+  });
+
+  it('GET /api/niche-finder/discover/from-category returns 401 with no session', async () => {
+    const GET = (fromCategoryRoute as unknown as { GET: (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response> }).GET;
+    const req = makeReq('http://localhost/api/niche-finder/discover/from-category');
+    const res = await GET(req, { params: Promise.resolve({}) });
+    expect(res.status).toBe(401);
+  });
+
+  it('POST /api/niche-finder/discover/from-category returns 401 with no session', async () => {
+    const POST = (fromCategoryRoute as unknown as { POST: (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response> }).POST;
+    const req = makeReq('http://localhost/api/niche-finder/discover/from-category', {
+      method: 'POST',
+      body: JSON.stringify({ categorySlug: 'finance' }),
+    });
+    const res = await POST(req, { params: Promise.resolve({}) });
+    expect(res.status).toBe(401);
+  });
+
+  it('POST /api/niche-finder/outliers returns 401 with no session', async () => {
+    const POST = (outliersRoute as unknown as { POST: (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response> }).POST;
+    const req = makeReq('http://localhost/api/niche-finder/outliers', {
+      method: 'POST',
+      body: JSON.stringify({ niche: 'history' }),
+    });
+    const res = await POST(req, { params: Promise.resolve({}) });
     expect(res.status).toBe(401);
   });
 });

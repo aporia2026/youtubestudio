@@ -171,20 +171,20 @@ This plan ships in three phases. Phases 1 and 2 land on `phase-1-foundation`; Ph
 
 ### Phase 2 — v1 (discovery, watchlist, flywheel hooks)
 
-**Goal:** add the discovery surface and weekly tracking, and wire the niche-alarm trigger into the existing workflow registry.
+**Goal:** add the discovery surfaces and weekly tracking, and wire the niche-alarm trigger into the existing workflow registry.
 
-**Scope:**
+**Scope (revised 2026-05-13):** the operator asked for *all four* discovery modes that the council pass spelled out — they're additive, not alternatives. Each mode lands as its own sub-item.
 
-- `niche_watchlist` table added in migration 0054.
-- Discovery surface at `/insights/niches` with the Outsider's plain-English form.
-- Watchlist surface at `/insights/niches/watchlist` with sparklines.
-- Weekly rescoring cron.
-- **Flywheel hooks** (Expansionist's contribution, foreseen but not fully built):
-  - New workflow event `niche_score_spike` fired from the rescoring cron when a watchlist niche's combined score jumps by more than the operator's threshold.
-  - Hook into the existing idea generator at `/api/generate/ideas`: a "Generate ideas from this niche" button on the deep-dive that pre-fills the generator with the cluster centroids and top video patterns.
-  - Hook into the A/B title surface: the niche report's "what a 10-video bet looks like" can spawn a draft project per content-angle in one click.
+- **13.2.B — Channel-paste discovery.** Paste a YouTube channel URL (or three video URLs) you admire. We pull the channel's recent uploads, cluster them by topic, score each cluster, and return the 3–5 concept clusters that channel is winning plus headroom for new entrants. This is the First Principles Thinker's v0.5 reframe, deferred from Phase 1 and surfaced here. No new scoring math — reuses the v0.5 pipeline.
+- **13.2.A — Interest-based discovery.** Type three things you'd enjoy talking about + language + region. We AI-expand interests into 20–50 candidate niches, run a lightweight scoring pass on each, and return a ranked grid. Click any → full deep-dive (v0.5 flow).
+- **13.2.C — Curated category browser.** Pre-built taxonomy (Finance / Tech / Gaming / Travel / History / etc.). Operator picks a category, we show ranked sub-niches inside it with the four-score chips. Click → deep-dive. Static taxonomy hand-curated; refreshable.
+- **13.2.D — Outlier finder.** Type a niche, we surface specific *videos* that over-performed for their channel size (views ÷ subs ratio). Different problem shape from A/B/C — answers "what's working *right now* in a niche I'm already in" rather than "what niche should I enter."
+- **Watchlist** (the original Phase 13.2 watchlist scope) is deferred to Phase 13.2.W, separate from this discovery push.
+- **Flywheel hooks** (Expansionist's contribution) — deferred to Phase 13.2.F, separate.
 
-**Ship criteria:** discovery returns at least 5 niches with non-degenerate scores for three test interest inputs; watchlist sparklines populate correctly after two weekly cron runs; the workflow event fires when a synthetic score spike is seeded; the idea-generator integration round-trips.
+Migration 0057 adds the single `niche_discoveries` table that caches A/B/C results per workspace + input hash (so re-running the same discovery within the cache window doesn't re-burn YouTube quota). D is fetch-on-demand, served from the existing `niche_finder_api_cache`.
+
+**Ship criteria:** each discovery mode returns a non-degenerate ranking on a real test input; all four routes are `apiRoute.authed`, workspace-scoped, with auth-gate regression tests; the UI hub at `/insights/niches` has four tabs (Interests / Channel / Categories / Outliers) plus the v0.5 typed-input as the fifth fallback; full test suite stays green.
 
 ### Phase 3 — Productization (audit + multi-tenant gating)
 

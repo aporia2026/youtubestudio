@@ -56,6 +56,7 @@ import migration0054 from './0054_pipeline_seo_step';
 import migration0055 from './0055_create_niche_finder';
 import migration0056 from './0056_add_author_role_to_review_comments';
 import migration0057 from './0057_fix_inbox_owner_backfill';
+import migration0058 from './0058_create_niche_discoveries';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -120,6 +121,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0055,
   migration0056,
   migration0057,
+  migration0058,
 ]);
 
 /**
