@@ -85,6 +85,29 @@ export async function ensureNarratorSchema() {
     // R2 narration bucket migration — old takes lived on Vercel Blob; new ones go to R2
     try { await sql`ALTER TABLE narrator_takes ADD COLUMN IF NOT EXISTS r2_key TEXT`; } catch {}
 
+    // Forced-alignment columns (formally added by migration 0051). Self-
+    // healing here so the Narration tab's synced player works even on
+    // databases where the migration script hasn't been run — matches the
+    // r2_key precedent above and the workspace_id backstops below.
+    try {
+      await sql`
+        ALTER TABLE narrator_takes
+          ADD COLUMN IF NOT EXISTS alignment_json JSONB,
+          ADD COLUMN IF NOT EXISTS alignment_status TEXT NOT NULL DEFAULT 'pending',
+          ADD COLUMN IF NOT EXISTS alignment_error TEXT,
+          ADD COLUMN IF NOT EXISTS alignment_started_at TIMESTAMPTZ
+      `;
+    } catch {}
+    // Status check constraint, added separately so a pre-existing
+    // alignment_status column without the constraint is healed too.
+    try {
+      await sql`
+        ALTER TABLE narrator_takes
+          ADD CONSTRAINT narrator_takes_alignment_status_check
+          CHECK (alignment_status IN ('pending','running','ready','failed'))
+      `;
+    } catch {}
+
     // Workspace tenancy backstop — these columns are formally added by
     // migration 0011 across every tenant-scoped table. Adding them here
     // too means INSERTs that supply workspace_id (createTakeComment,
