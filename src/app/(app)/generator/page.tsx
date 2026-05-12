@@ -33,6 +33,46 @@ const TONES = ['Engaging & Friendly', 'Authoritative & Expert', 'Conversational'
 const STYLES = ['Explainer', 'Story-driven', 'Tutorial', 'Comparison', 'Opinion / Commentary', 'Top 10 List', 'Documentary'];
 const DURATIONS = [3, 5, 7, 10, 12, 15, 20];
 
+// Transient handoff keys we're willing to evict on quota pressure when a fresh
+// prefill won't fit. `qa_session_backup` is the biggest single offender — a
+// multi-pass QA run with the full script can run ~100 KB.
+const TRANSIENT_HANDOFF_KEYS = [
+  'qa_session_backup',
+  'qa_prefill',
+  'voiceover_prefill',
+  'seo_prefill',
+  'thumbnails_prefill',
+  'prodoc_prefill',
+  'generator_prefill',
+];
+
+// Persist a feature-handoff payload to localStorage with quota-fail recovery.
+// Returns true on success. The previous "fire-and-forget setItem then navigate"
+// pattern silently swallowed QuotaExceededError, leaving the click looking dead
+// because the throw happened *before* the location assignment that followed.
+function safeSetPrefill(key: string, payload: unknown): boolean {
+  if (typeof window === 'undefined') return false;
+  const json = JSON.stringify(payload);
+  try {
+    localStorage.setItem(key, json);
+    return true;
+  } catch {
+    for (const k of TRANSIENT_HANDOFF_KEYS) {
+      if (k !== key) {
+        try { localStorage.removeItem(k); } catch { /* ignore */ }
+      }
+    }
+    try {
+      localStorage.setItem(key, json);
+      return true;
+    } catch (err) {
+      console.error('[handoff] localStorage write failed:', err);
+      toast.error('Browser storage is full — clear some space or close other tabs, then retry.');
+      return false;
+    }
+  }
+}
+
 interface VideoAnalysis {
   thumbnail_analysis?: { visual_composition?: string; clickability_score?: string; what_makes_it_click_worthy?: string; text_overlays?: string; colors_and_contrast?: string };
   hook_breakdown?: { opening_technique?: string; first_sentence_verbatim?: string; curiosity_mechanism?: string; emotional_trigger?: string; time_to_hook_seconds?: string };
@@ -1648,7 +1688,7 @@ function GeneratorPage() {
                       if (draftId) saveDraft({ id: draftId, title: topic, niche, step: 'qa', topic, tone, style, duration, modelId, script, wordCount: countWords(script), constraints });
                       // Include constraints in the prefill so QA honors the same exclusions.
                       // `topic` rides along so QA can show the user which script/title they're working on.
-                      localStorage.setItem('qa_prefill', JSON.stringify({ script, niche, constraints, topic }));
+                      if (!safeSetPrefill('qa_prefill', { script, niche, constraints, topic })) return;
                       const sched = scheduleItemId ? `&${SCHEDULE_LINK_PARAM}=${scheduleItemId}` : '';
                       window.location.href = `/qa?from=generator${sched}`;
                     }}
@@ -1659,7 +1699,7 @@ function GeneratorPage() {
                   </button>
                   <button
                     onClick={() => {
-                      localStorage.setItem('voiceover_prefill', JSON.stringify({ script, niche }));
+                      if (!safeSetPrefill('voiceover_prefill', { script, niche })) return;
                       const sched = scheduleItemId ? `&${SCHEDULE_LINK_PARAM}=${scheduleItemId}` : '';
                       window.location.href = `/voiceover?from=generator${sched}`;
                     }}
@@ -1670,7 +1710,7 @@ function GeneratorPage() {
                   </button>
                   <button
                     onClick={() => {
-                      localStorage.setItem('seo_prefill', JSON.stringify({ topic, niche, script }));
+                      if (!safeSetPrefill('seo_prefill', { topic, niche, script })) return;
                       const sched = scheduleItemId ? `&${SCHEDULE_LINK_PARAM}=${scheduleItemId}` : '';
                       window.location.href = `/seo?from=generator${sched}`;
                     }}
@@ -1680,7 +1720,7 @@ function GeneratorPage() {
                   </button>
                   <button
                     onClick={() => {
-                      localStorage.setItem('thumbnails_prefill', JSON.stringify({ title: topic, niche, description: script?.slice(0, 500) }));
+                      if (!safeSetPrefill('thumbnails_prefill', { title: topic, niche, description: script?.slice(0, 500) })) return;
                       const sched = scheduleItemId ? `&${SCHEDULE_LINK_PARAM}=${scheduleItemId}` : '';
                       window.location.href = `/thumbnails?from=generator${sched}`;
                     }}
@@ -1690,7 +1730,7 @@ function GeneratorPage() {
                   </button>
                   <button
                     onClick={() => {
-                      localStorage.setItem('prodoc_prefill', JSON.stringify({ script, niche, topic }));
+                      if (!safeSetPrefill('prodoc_prefill', { script, niche, topic })) return;
                       window.location.href = '/production-doc?from=generator';
                     }}
                     className="btn-secondary text-xs px-3 py-1.5 flex-1 justify-center" style={{ justifyContent: 'center' }}
