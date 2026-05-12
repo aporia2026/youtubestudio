@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { WaveformPlayer, type WaveformPlayerHandle, type TakeCommentMarker } from './WaveformPlayer';
 import { ScriptFollow } from './ScriptFollow';
+import { NarrationTeleprompter } from './NarrationTeleprompter';
+import type { ForcedAlignmentResponse } from '@/lib/elevenlabs';
 
 export interface TakeComment {
   id: string;
@@ -56,6 +58,18 @@ interface TakeReviewProps {
    *  "Upload new take with fixes" but full-audio context wants
    *  "Replace full narration with fixes". */
   uploadButtonLabel?: string;
+  /** When provided, the inner script-follow panel switches from the
+   *  constant-rate `ScriptFollow` approximation to the word-accurate
+   *  `NarrationTeleprompter` driven by these per-section, per-word
+   *  timings. Used by the Narration tab's "Synced (beta)" A/B mode for
+   *  the full-audio review only — per-section takes leave this
+   *  undefined and keep the classic behaviour. */
+  teleprompterAlignment?: {
+    /** Sections in the same order they were sent to the aligner. */
+    sections: Array<{ label?: string | null; script_text: string }>;
+    /** Raw ElevenLabs forced-alignment payload. */
+    alignment: ForcedAlignmentResponse;
+  };
 }
 
 type Filter = 'all' | 'unresolved' | 'resolved';
@@ -90,7 +104,7 @@ function timeAgo(dateStr: string) {
  */
 export function TakeReview({
   takeId, audioUrl, scriptText, initialDurationMs, listUrl, itemUrl, author, compactHeader, canDeleteAny,
-  onUploadNewTake, uploadingNewTake, uploadButtonLabel,
+  onUploadNewTake, uploadingNewTake, uploadButtonLabel, teleprompterAlignment,
 }: TakeReviewProps) {
   const playerRef = useRef<WaveformPlayerHandle>(null);
   const [comments, setComments] = useState<TakeComment[]>([]);
@@ -145,6 +159,21 @@ export function TakeReview({
 
   function seek(ms: number) {
     playerRef.current?.seek(ms);
+  }
+
+  // Called from the synced teleprompter's "💬 Comment here" chip. Pauses
+  // playback (no-op if already paused) and scrolls/focuses the comment
+  // textarea so the reviewer can start typing immediately. The actual
+  // timestamp is read live from the player ref at submit time, so the
+  // chip doesn't need to pass one — it just brings the input into reach.
+  function handleCommentHere() {
+    playerRef.current?.pause();
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Defer focus until after the smooth-scroll starts so the focus ring
+    // doesn't draw the user's eye while the page is still moving.
+    setTimeout(() => ta.focus(), 250);
   }
 
   function handleMarkerClick(commentId: string, ms: number) {
@@ -304,12 +333,22 @@ export function TakeReview({
         onMarkerClick={handleMarkerClick}
       />
 
-      <ScriptFollow
-        scriptText={scriptText}
-        currentMs={currentMs}
-        durationMs={durationMs}
-        onSeek={seek}
-      />
+      {teleprompterAlignment ? (
+        <NarrationTeleprompter
+          sections={teleprompterAlignment.sections}
+          alignment={teleprompterAlignment.alignment}
+          currentMs={currentMs}
+          onSeek={seek}
+          onCommentHere={handleCommentHere}
+        />
+      ) : (
+        <ScriptFollow
+          scriptText={scriptText}
+          currentMs={currentMs}
+          durationMs={durationMs}
+          onSeek={seek}
+        />
+      )}
 
       {/* Comments header */}
       <div className="flex items-center justify-between pt-1">

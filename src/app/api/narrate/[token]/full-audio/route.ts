@@ -9,6 +9,7 @@ import {
   updateAssignment,
   getCurrentFullAudio,
   deleteTake,
+  resetTakeAlignment,
 } from '@/lib/narrator-db';
 import {
   isR2Configured,
@@ -18,6 +19,7 @@ import {
   deleteNarrationObject,
 } from '@/lib/r2';
 import { ALLOWED_AUDIO_MIME_TYPES, resolveAudioMime } from '@/lib/narrator-utils';
+import { runAlignmentForAssignment } from '@/lib/alignment';
 import { domainErrorResponse } from '@/lib/route-helpers';
 
 export const runtime = 'nodejs';
@@ -176,6 +178,27 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ to
         WHERE id = ${assignment.id}
       `;
     }
+
+    // A fresh upload invalidates any prior alignment that was sitting on
+    // the (now-deleted) previous take. The new take starts pending by
+    // default; this call is safe even if the prior take's row is already
+    // gone — it's a no-op when the id doesn't exist.
+    await resetTakeAlignment(takeId);
+
+    // Fire-and-forget alignment trigger. We don't await: the PATCH should
+    // return promptly so the narrator UI can move on. The orchestrator
+    // has its own status machine, so a function-instance death partway
+    // through is recoverable via the 5-minute stale-running reclaim in
+    // claimTakeAlignment + the manual retry button on the reviewer side.
+    // Matches the established fire-and-forget email pattern in
+    // approve-full/route.ts.
+    runAlignmentForAssignment(assignment.id).catch((e) => {
+      logger.error('alignment trigger failed', {
+        assignmentId: assignment.id,
+        detail: e instanceof Error ? e.message : String(e),
+      });
+    });
+
     return NextResponse.json({ ok: true });
   } catch (err) {
     logger.error('PATCH full audio error', { detail: err instanceof Error ? err.message : String(err) });

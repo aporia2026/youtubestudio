@@ -19,6 +19,10 @@ export interface WaveformPlayerHandle {
   seek: (ms: number) => void;
   /** Toggle playback. */
   togglePlay: () => void;
+  /** Pause if playing; no-op if already paused. Used by the teleprompter's
+   *  "Comment here" chip so opening the comment input doesn't accidentally
+   *  start playback when the user was already paused. */
+  pause: () => void;
   /** Current time in ms (live read; useful right before posting a comment). */
   getCurrentMs: () => number;
 }
@@ -200,13 +204,19 @@ export const WaveformPlayer = forwardRef<WaveformPlayerHandle, WaveformPlayerPro
     else ws.play();
   }, []);
 
+  const pause = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws) return;
+    if (ws.isPlaying()) ws.pause();
+  }, []);
+
   const getCurrentMs = useCallback(() => {
     const ws = wsRef.current;
     if (!ws) return currentMs;
     return ws.getCurrentTime() * 1000;
   }, [currentMs]);
 
-  useImperativeHandle(ref, () => ({ seek, togglePlay, getCurrentMs }), [seek, togglePlay, getCurrentMs]);
+  useImperativeHandle(ref, () => ({ seek, togglePlay, pause, getCurrentMs }), [seek, togglePlay, pause, getCurrentMs]);
 
   // Keyboard shortcuts — only when the player is focused so we don't fight
   // the comment textarea.

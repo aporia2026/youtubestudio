@@ -106,3 +106,62 @@ export async function getUserInfo(apiKey: string) {
   if (!res.ok) return null;
   return res.json();
 }
+
+// Forced alignment: given an audio file and the known script text, return
+// per-word + per-character timing in seconds. Used by the Narration tab's
+// synced player to highlight the active word during playback. Unlike pure
+// ASR, this locks recognition to the supplied text — accuracy is much
+// higher on proper nouns / brand names because the model isn't guessing
+// what was said, only when.
+//
+// Endpoint: https://elevenlabs.io/docs/api-reference/forced-alignment/create
+// Billed under the Scribe STT tier (~$0.22/hr as of May 2026).
+
+export interface ForcedAlignmentWord {
+  text: string;
+  start: number;          // seconds from file start
+  end: number;            // seconds from file start
+  loss?: number;          // per-word confidence loss; higher = lower confidence
+}
+
+export interface ForcedAlignmentCharacter {
+  text: string;
+  start: number;
+  end: number;
+}
+
+export interface ForcedAlignmentResponse {
+  words: ForcedAlignmentWord[];
+  characters?: ForcedAlignmentCharacter[];
+  loss?: number;          // overall alignment loss score
+}
+
+export interface ForceAlignOptions {
+  audioBlob: Blob;
+  audioFilename?: string; // hint for ElevenLabs; defaults to 'audio.mp3'
+  text: string;           // script text — production cues should be stripped before calling
+}
+
+export async function forceAlign(
+  apiKey: string,
+  opts: ForceAlignOptions,
+): Promise<ForcedAlignmentResponse> {
+  const form = new FormData();
+  form.append('file', opts.audioBlob, opts.audioFilename || 'audio.mp3');
+  form.append('text', opts.text);
+
+  const res = await fetch('https://api.elevenlabs.io/v1/forced-alignment', {
+    method: 'POST',
+    headers: { 'xi-api-key': apiKey },
+    body: form,
+  });
+
+  if (!res.ok) {
+    // Read the body for a short reason but do not leak it raw — callers
+    // should surface only a sanitised string to end users.
+    const detail = await res.text().catch(() => '');
+    throw new Error(`ElevenLabs forced alignment failed: ${res.status} ${detail.slice(0, 200)}`);
+  }
+
+  return res.json() as Promise<ForcedAlignmentResponse>;
+}

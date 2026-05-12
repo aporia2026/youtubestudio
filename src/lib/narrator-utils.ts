@@ -3,6 +3,7 @@
  */
 
 import { stripProductionCues } from './utils';
+import type { ForcedAlignmentResponse, ForcedAlignmentWord } from './elevenlabs';
 
 // v3 audio tags from ElevenLabs
 const EMOTION_TAGS = ['excited', 'happy', 'sad', 'angry', 'frustrated', 'curious', 'confused', 'serious', 'thoughtful', 'confident', 'nervous', 'surprised', 'whisper', 'shouting', 'mischievously', 'sarcastic'];
@@ -358,4 +359,99 @@ export function resolveAudioMime(contentType: string, fileName: string): string 
 export function isLikelyAudioFile(file: File): boolean {
   if (file.type.startsWith('audio/')) return true;
   return extOf(file.name) in EXTENSION_TO_AUDIO_MIME;
+}
+
+// ─── Forced-alignment helpers (Narration tab synced player) ─────────────────
+//
+// ElevenLabs returns one flat array of words for the whole audio. The
+// Narration tab's synced player needs to know which word belongs to which
+// section so the script can scroll the active section into view and so
+// click-to-seek behaves naturally.
+
+export interface SectionAlignedWords {
+  sectionIndex: number;
+  words: ForcedAlignmentWord[];
+}
+
+// Both helpers only read script_text from each section, so they accept the
+// structural shape rather than the full ScriptSection type — that lets
+// raw SQL rows from getRealSectionsForAssignment flow through without an
+// extra mapping step.
+type AlignmentSectionShape = { script_text: string };
+
+/**
+ * Build the canonical script text sent to the forced-alignment endpoint.
+ * Strips production cues per section so the aligner doesn't try to time
+ * a `[pause]` marker. Joins with a newline so adjacent sections stay
+ * visually / temporally separated in the response. Exported so the
+ * alignment route and the slicer agree on the exact bytes that crossed
+ * the wire.
+ */
+export function buildAlignmentScript(sections: AlignmentSectionShape[]): string {
+  return sections
+    .map((s) => stripProductionCues(s.script_text).trim())
+    .filter((s) => s.length > 0)
+    .join('\n');
+}
+
+/**
+ * Filter out non-word tokens (pure whitespace, ElevenLabs `type === 'spacing'`
+ * entries) so the per-section word count check is apples-to-apples with
+ * the script's tokenised word count.
+ */
+function isSpokenWordToken(w: ForcedAlignmentWord): boolean {
+  return /\S/.test(w.text);
+}
+
+/**
+ * Map the aligner's flat word array onto the per-section structure the
+ * Narration tab renders. Forced alignment guarantees one timed word per
+ * input word in order, so we slice by per-section word counts computed
+ * the same way the script was built for the API call. If the response
+ * happens to include spacing-type tokens, those are dropped first.
+ *
+ * If word counts ever drift (e.g. the aligner failed mid-stream and
+ * returned fewer words than the script has), the trailing sections
+ * receive fewer / no aligned words and the UI's fallback rendering
+ * kicks in — the slicer never throws.
+ */
+export function sliceAlignmentToSections(
+  alignment: ForcedAlignmentResponse,
+  sections: AlignmentSectionShape[],
+): SectionAlignedWords[] {
+  const spoken = (alignment.words || []).filter(isSpokenWordToken);
+
+  const result: SectionAlignedWords[] = [];
+  let offset = 0;
+  for (let i = 0; i < sections.length; i++) {
+    const clean = stripProductionCues(sections[i].script_text).trim();
+    const n = clean ? clean.split(/\s+/).filter(Boolean).length : 0;
+    const take = Math.min(n, Math.max(0, spoken.length - offset));
+    result.push({
+      sectionIndex: i,
+      words: spoken.slice(offset, offset + take),
+    });
+    offset += take;
+  }
+  return result;
+}
+
+/**
+ * Binary-search the active word index at a given audio time. Returns -1
+ * when no word's [start, end] interval contains the time (the typical
+ * "gap between words" case). Words are required to be sorted by `start`
+ * ascending — the aligner guarantees this.
+ */
+export function findActiveWordIndex(words: ForcedAlignmentWord[], timeSeconds: number): number {
+  if (!words.length) return -1;
+  let lo = 0;
+  let hi = words.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const w = words[mid];
+    if (timeSeconds < w.start) hi = mid - 1;
+    else if (timeSeconds >= w.end) lo = mid + 1;
+    else return mid;
+  }
+  return -1;
 }

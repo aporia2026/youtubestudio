@@ -982,3 +982,139 @@ export async function getTakeAssignmentScope(takeId: string) {
   `;
   return (rows[0] as { take_id: string; section_id: string; assignment_id: string }) ?? null;
 }
+
+// ─── Forced-alignment columns on narrator_takes (migration 0051) ────────────
+//
+// The Narration tab's synced player reads `alignment_json` to highlight the
+// active word during playback. These helpers keep the JSONB column writes
+// and the status-machine transitions co-located so nothing flips state
+// without going through them.
+
+export type AlignmentStatus = 'pending' | 'running' | 'ready' | 'failed';
+
+export interface TakeAlignmentRow {
+  take_id: string;
+  r2_key: string | null;
+  audio_url: string | null;
+  duration_seconds: number | null;
+  alignment_status: AlignmentStatus;
+  alignment_json: unknown | null;
+  alignment_error: string | null;
+}
+
+/** Read the full-audio take + its alignment state for an assignment. */
+export async function getFullAudioTakeWithAlignment(
+  assignmentId: string,
+): Promise<TakeAlignmentRow | null> {
+  await ensureNarratorSchema();
+  const { rows } = await sql`
+    SELECT t.id AS take_id,
+           t.r2_key,
+           t.audio_url,
+           t.duration_seconds,
+           t.alignment_status,
+           t.alignment_json,
+           t.alignment_error
+    FROM narrator_assignments a
+    JOIN narrator_takes t ON t.id = a.full_audio_take_id
+    WHERE a.id = ${assignmentId}
+    LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    take_id: row.take_id as string,
+    r2_key: (row.r2_key as string | null) ?? null,
+    audio_url: (row.audio_url as string | null) ?? null,
+    duration_seconds:
+      row.duration_seconds == null ? null : Number(row.duration_seconds),
+    alignment_status: (row.alignment_status as AlignmentStatus) ?? 'pending',
+    alignment_json: row.alignment_json ?? null,
+    alignment_error: (row.alignment_error as string | null) ?? null,
+  };
+}
+
+/**
+ * Atomically transition a take to `running`. Returns true if the
+ * transition happened, false if another worker is actively running the
+ * job. Stale 'running' rows (claimed >5 minutes ago, function instance
+ * presumably died) are reclaimable so a manual retry can recover.
+ */
+export async function claimTakeAlignment(takeId: string): Promise<boolean> {
+  await ensureNarratorSchema();
+  const { rows } = await sql`
+    UPDATE narrator_takes
+    SET alignment_status = 'running',
+        alignment_started_at = NOW(),
+        alignment_error = NULL
+    WHERE id = ${takeId}
+      AND (
+        alignment_status IN ('pending', 'failed', 'ready')
+        OR (
+          alignment_status = 'running'
+          AND (alignment_started_at IS NULL OR alignment_started_at < NOW() - INTERVAL '5 minutes')
+        )
+      )
+    RETURNING id
+  `;
+  return rows.length > 0;
+}
+
+/** Write a successful alignment result. */
+export async function setTakeAlignmentReady(takeId: string, alignmentJson: unknown) {
+  await ensureNarratorSchema();
+  await sql`
+    UPDATE narrator_takes
+    SET alignment_status = 'ready',
+        alignment_json = ${JSON.stringify(alignmentJson)}::jsonb,
+        alignment_error = NULL
+    WHERE id = ${takeId}
+  `;
+}
+
+/** Record a failure reason. The string is rendered to the reviewer; keep it short. */
+export async function setTakeAlignmentFailed(takeId: string, reason: string) {
+  await ensureNarratorSchema();
+  await sql`
+    UPDATE narrator_takes
+    SET alignment_status = 'failed',
+        alignment_error = ${reason.slice(0, 500)}
+    WHERE id = ${takeId}
+  `;
+}
+
+/**
+ * Invalidate any prior alignment on a take — used when a fresh upload
+ * replaces the audio for an assignment so the synced player falls back
+ * to its "sync updating…" state until the new alignment lands.
+ */
+export async function resetTakeAlignment(takeId: string) {
+  await ensureNarratorSchema();
+  await sql`
+    UPDATE narrator_takes
+    SET alignment_status = 'pending',
+        alignment_json = NULL,
+        alignment_error = NULL
+    WHERE id = ${takeId}
+  `;
+}
+
+/**
+ * Soft monthly-spend guard. Sums duration_seconds across full-audio takes
+ * that successfully aligned (status='ready') in the current calendar
+ * month and compares against an env-configurable budget. Approximate
+ * because re-runs of the same take don't move `created_at`, but the
+ * approximation errs on the side of running, not blocking — and the
+ * absolute cost ceiling is small ($0.22/hr).
+ */
+export async function getCurrentMonthAlignmentSeconds(): Promise<number> {
+  await ensureNarratorSchema();
+  const { rows } = await sql`
+    SELECT COALESCE(SUM(duration_seconds), 0) AS total
+    FROM narrator_takes
+    WHERE alignment_status = 'ready'
+      AND created_at >= date_trunc('month', NOW())
+  `;
+  const total = rows[0]?.total;
+  return total == null ? 0 : Number(total);
+}

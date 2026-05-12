@@ -6,6 +6,7 @@ import { AssignDialog } from './AssignDialog';
 import { AudioPlayer } from './AudioPlayer';
 import { TakeReview } from './TakeReview';
 import { downloadCrossOriginFile } from '@/lib/download-file';
+import type { ForcedAlignmentResponse } from '@/lib/elevenlabs';
 
 interface Assignment {
   id: string;
@@ -64,6 +65,34 @@ function isFullNarrationApproved(sections: Section[]): boolean {
   return fullAudioSection?.status === 'approved';
 }
 
+// ─── Synced-player A/B mode ────────────────────────────────────────────────
+//
+// The "Synced (beta)" mode pipes real ElevenLabs forced-alignment timings
+// into TakeReview's inner teleprompter so the highlighted word stays in
+// lockstep with the audio (vs. the classic mode where words are spread
+// evenly across the duration — a constant-rate approximation).
+//
+// Backed by localStorage so the owner's preference survives reloads
+// without a DB column. Default 'classic' so existing users see no
+// behavior change until they opt in.
+
+type SyncMode = 'classic' | 'synced';
+
+const SYNC_MODE_STORAGE_KEY = 'narration.syncMode.v1';
+
+function readSyncMode(): SyncMode {
+  if (typeof window === 'undefined') return 'classic';
+  return window.localStorage.getItem(SYNC_MODE_STORAGE_KEY) === 'synced' ? 'synced' : 'classic';
+}
+
+type AlignmentStatus = 'pending' | 'running' | 'ready' | 'failed' | 'no-take';
+
+interface AlignmentState {
+  status: AlignmentStatus;
+  error: string | null;
+  alignment: ForcedAlignmentResponse | null;
+}
+
 interface NarrationTabProps {
   projectId: string;
   scriptId: string;
@@ -103,6 +132,27 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
   // One at a time so the page stays manageable on long scripts.
   const [reviewingTakeId, setReviewingTakeId] = useState<string | null>(null);
   const [approvingFull, setApprovingFull] = useState(false);
+  const [syncMode, setSyncMode] = useState<SyncMode>('classic');
+  const [alignmentState, setAlignmentState] = useState<AlignmentState>({
+    status: 'pending',
+    error: null,
+    alignment: null,
+  });
+  const [retryingAlignment, setRetryingAlignment] = useState(false);
+
+  // Hydrate the sync-mode preference once on mount. Splitting this out of
+  // the initial useState lets server-rendering pick 'classic' (matching
+  // what the user sees before JS runs) without a hydration mismatch.
+  useEffect(() => {
+    setSyncMode(readSyncMode());
+  }, []);
+
+  function persistSyncMode(mode: SyncMode) {
+    setSyncMode(mode);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(SYNC_MODE_STORAGE_KEY, mode);
+    }
+  }
 
   useEffect(() => { loadAssignments(); }, [projectId]);
 
@@ -178,6 +228,92 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
       setSections(prev => prev.map(s => s.id === sectionId ? { ...s, status: 'retake' } : s));
       toast.success('Retake requested');
     } catch { toast.error('Failed'); }
+  }
+
+  // Alignment fetch + polling. Issues a status read on every poll, and a
+  // one-shot full-payload read the moment status flips to 'ready'. Runs
+  // only when the synced player is selected (no point spending API
+  // bandwidth on a classic-mode user) and a full-audio take exists.
+  useEffect(() => {
+    if (syncMode !== 'synced') return;
+    if (!activeAssignment?.id || !activeAssignment.full_audio_take_id) return;
+
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+    async function poll() {
+      try {
+        const res = await fetch(`/api/narrator/assignments/${activeAssignment!.id}/align`);
+        if (!res.ok) return;
+        const data: { status: AlignmentStatus; error: string | null; hasAlignment: boolean } = await res.json();
+        if (cancelled) return;
+
+        // Surface the live status into the UI even when we don't have the
+        // full alignment payload yet — drives the badge above the player.
+        setAlignmentState((prev) => ({
+          status: data.status,
+          error: data.error,
+          alignment: data.status === 'ready' ? prev.alignment : null,
+        }));
+
+        if (data.status === 'ready' && data.hasAlignment) {
+          // Pull the full payload once; subsequent polls skip this branch
+          // until status flips again.
+          const fullRes = await fetch(
+            `/api/narrator/assignments/${activeAssignment!.id}/align?include=alignment`,
+          );
+          if (fullRes.ok) {
+            const full: { alignment?: ForcedAlignmentResponse } = await fullRes.json();
+            if (!cancelled && full.alignment) {
+              setAlignmentState({ status: 'ready', error: null, alignment: full.alignment });
+            }
+          }
+          // No need to keep polling once we have the alignment.
+          return;
+        }
+
+        // Re-poll while still pending/running; back off when failed so the
+        // user has time to read the error before we hammer the endpoint.
+        if (data.status === 'pending' || data.status === 'running') {
+          pollTimer = setTimeout(poll, 3000);
+        }
+      } catch {
+        // Network blip — try again with the same cadence.
+        if (!cancelled) pollTimer = setTimeout(poll, 5000);
+      }
+    }
+
+    poll();
+    return () => {
+      cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+    };
+  }, [syncMode, activeAssignment?.id, activeAssignment?.full_audio_take_id]);
+
+  async function handleRetryAlignment() {
+    if (!activeAssignment || retryingAlignment) return;
+    setRetryingAlignment(true);
+    setAlignmentState({ status: 'running', error: null, alignment: null });
+    try {
+      const res = await fetch(`/api/narrator/assignments/${activeAssignment.id}/align`, {
+        method: 'POST',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as { error?: string }).error || `HTTP ${res.status}`);
+      }
+      // Polling effect picks up the result; surface the trigger immediately.
+      toast.success('Sync retry started');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not start retry');
+      setAlignmentState({
+        status: 'failed',
+        error: err instanceof Error ? err.message : 'Retry failed',
+        alignment: null,
+      });
+    } finally {
+      setRetryingAlignment(false);
+    }
   }
 
   async function handleApproveFull() {
@@ -320,9 +456,78 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
 
       {/* Full-narration card — surfaces when the narrator chose to upload a
           single audio file covering the whole script. Owner reviews it via
-          the same TakeReview component used per-take. */}
+          the same TakeReview component used per-take.
+
+          Sync mode (A/B): the inner teleprompter switches between the
+          classic constant-rate ScriptFollow and the word-accurate
+          NarrationTeleprompter driven by ElevenLabs forced alignment.
+          Defaults to classic so first-time owners see the existing
+          behavior — flip the toggle above the player to opt in. */}
       {activeAssignment.full_audio_take_id && activeAssignment.full_audio_url && (
         <div className="glass rounded-xl p-4">
+          {/* Sync-mode toggle + status badge. Lives outside the player row so
+              the reviewer sees it whether or not they've expanded the review
+              panel. Status badge only shows in 'synced' mode — pointless
+              noise otherwise. */}
+          <div className="flex items-center justify-between mb-2 pb-2" style={{ borderBottom: '1px dashed rgba(255,255,255,0.06)' }}>
+            <div className="flex items-center gap-1 text-[10px]">
+              {(['classic', 'synced'] as SyncMode[]).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => persistSyncMode(m)}
+                  className="px-2 py-0.5 rounded transition-colors cursor-pointer"
+                  style={{
+                    background: syncMode === m ? 'rgba(124,58,237,0.18)' : 'transparent',
+                    color: syncMode === m ? '#a78bfa' : 'var(--text-muted)',
+                    border: `1px solid ${syncMode === m ? 'rgba(124,58,237,0.3)' : 'rgba(255,255,255,0.06)'}`,
+                  }}
+                  title={
+                    m === 'classic'
+                      ? 'Constant-rate word highlight — works without alignment'
+                      : 'Word-accurate sync from ElevenLabs forced alignment'
+                  }
+                >
+                  {m === 'classic' ? 'Classic' : 'Synced (beta)'}
+                </button>
+              ))}
+            </div>
+            {syncMode === 'synced' && (
+              <div className="flex items-center gap-2 text-[10px]">
+                {alignmentState.status === 'pending' && (
+                  <span style={{ color: 'var(--text-muted)' }}>Sync queued…</span>
+                )}
+                {alignmentState.status === 'running' && (
+                  <span className="flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
+                    <span className="w-2.5 h-2.5 rounded-full border border-t-transparent animate-spin"
+                      style={{ borderColor: '#a78bfa', borderTopColor: 'transparent' }} />
+                    Building word-level sync…
+                  </span>
+                )}
+                {alignmentState.status === 'ready' && alignmentState.alignment && (
+                  <span style={{ color: '#22c55e' }}>✓ Word-accurate sync ready</span>
+                )}
+                {alignmentState.status === 'failed' && (
+                  <>
+                    <span style={{ color: '#ef4444' }} title={alignmentState.error || ''}>
+                      Sync unavailable
+                    </span>
+                    <button
+                      onClick={handleRetryAlignment}
+                      disabled={retryingAlignment}
+                      className="px-2 py-0.5 rounded transition-colors cursor-pointer disabled:opacity-50"
+                      style={{
+                        background: 'rgba(239,68,68,0.12)',
+                        color: '#ef4444',
+                        border: '1px solid rgba(239,68,68,0.3)',
+                      }}
+                    >
+                      {retryingAlignment ? 'Retrying…' : '↻ Retry'}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
@@ -402,6 +607,14 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
                 itemUrl={(id) => `/api/narrator/take-comments/${id}`}
                 author={{ name: 'Owner', color: '#06b6d4', role: 'owner' }}
                 canDeleteAny
+                teleprompterAlignment={
+                  syncMode === 'synced' && alignmentState.alignment
+                    ? {
+                        sections: realSections.map(s => ({ label: s.label, script_text: s.script_text })),
+                        alignment: alignmentState.alignment,
+                      }
+                    : undefined
+                }
               />
             </div>
           ) : (
