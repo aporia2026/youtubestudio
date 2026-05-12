@@ -29,6 +29,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       text: text.trim(),
       author_name: author_name.trim(),
       author_color: author_color || '#7c3aed',
+      author_role: 'owner',
       drawing_data,
       drawing_thumbnail_url,
       parent_id,

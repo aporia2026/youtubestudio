@@ -75,6 +75,13 @@ export async function ensureReviewSchema() {
     // a database that hasn't yet run 0050 surfaces "column does not exist"
     // there. Heal it here on the same idempotent pattern.
     try { await sql`ALTER TABLE review_comments ADD COLUMN IF NOT EXISTS posted_by_owner BOOLEAN NOT NULL DEFAULT false`; } catch {}
+    // Migration 0056 adds author_role so the global comments inbox can group
+    // by role without joining through share_links + collaborators on every
+    // render. Mirror it here for idempotent self-heal on environments that
+    // haven't yet run the formal migration. Values used by app code:
+    // 'owner' | 'editor' | 'reviewer'. No CHECK constraint so future roles
+    // don't require another schema change.
+    try { await sql`ALTER TABLE review_comments ADD COLUMN IF NOT EXISTS author_role TEXT`; } catch {}
 
     await sql`
       CREATE TABLE IF NOT EXISTS review_share_links (
@@ -222,6 +229,13 @@ export async function createComment(fields: {
   text: string;
   author_name: string;
   author_color: string;
+  /**
+   * 'owner' for workspace-owner posts, 'editor' for editor fix notes and
+   * editor-authored review comments, 'reviewer' for everyone else (clients,
+   * anonymous share-link commenters). Drives the role grouping in the
+   * global comments inbox.
+   */
+  author_role: 'owner' | 'editor' | 'reviewer';
   drawing_data?: unknown;
   drawing_thumbnail_url?: string;
   parent_id?: string;
@@ -236,9 +250,10 @@ export async function createComment(fields: {
   // workspace_id is NOT NULL on review_comments since migration 0013 — copy
   // it from the parent review_version so callers don't need session context.
   const { rows } = await sql`
-    INSERT INTO review_comments (version_id, timestamp_ms, end_timestamp_ms, text, author_name, author_color, drawing_data, drawing_thumbnail_url, parent_id, workspace_id)
+    INSERT INTO review_comments (version_id, timestamp_ms, end_timestamp_ms, text, author_name, author_color, author_role, drawing_data, drawing_thumbnail_url, parent_id, workspace_id)
     SELECT ${fields.version_id}::uuid, ${fields.timestamp_ms}, ${endMs},
            ${fields.text}, ${fields.author_name}, ${fields.author_color},
+           ${fields.author_role},
            ${fields.drawing_data ? JSON.stringify(fields.drawing_data) : null}::jsonb,
            ${fields.drawing_thumbnail_url ?? null},
            ${fields.parent_id ?? null}::uuid,

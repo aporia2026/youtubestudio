@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
-import { useParams } from 'next/navigation';
+import { useParams, useSearchParams } from 'next/navigation';
 import { formatBytes, countWords, estimateDuration, formatDuration } from '@/lib/utils';
 import { ScriptVoiceoverPanel } from '@/components/ui/ScriptVoiceoverPanel';
 import { NarrationTab } from '@/components/narrator/NarrationTab';
@@ -59,6 +59,11 @@ interface YoutubeRef {
 
 export default function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
+  // Deep-link targets from the global comments inbox. Captured once so the
+  // values don't fluctuate when the inbox URL pollutes the project URL.
+  const initialReviewTakeId = searchParams.get('take') ?? undefined;
+  const initialCommentId = searchParams.get('comment') ?? undefined;
   const [project, setProject] = useState<Project | null>(null);
   const [scripts, setScripts] = useState<Script[]>([]);
   const [media, setMedia] = useState<MediaAsset[]>([]);
@@ -712,6 +717,9 @@ export default function ProjectDetailPage() {
           scriptText={activeScript?.content || ''}
           scriptVersion={activeScript?.version || 1}
           projectTitle={project!.title}
+          // Inbox deep-link: /projects/<id>?tab=narration&take=<id>&comment=<id>
+          initialReviewTakeId={initialReviewTakeId}
+          initialCommentId={initialCommentId}
         />
       )}
 

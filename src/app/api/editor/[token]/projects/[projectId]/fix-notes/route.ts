@@ -64,12 +64,15 @@ export async function POST(
       if (!orig || orig.project_id !== assignment.review_project_id) continue;
 
       // workspace_id is NOT NULL on review_comments since migration 0013 —
-      // copy it from the parent review_version.
+      // copy it from the parent review_version. author_role is always
+      // 'editor' here by construction (this route is guarded to editor
+      // assignments) so the inbox can group it correctly.
       const { rows: insertRows } = await sql`
         INSERT INTO review_comments
-          (version_id, timestamp_ms, end_timestamp_ms, text, author_name, author_color, fix_for_comment_id, workspace_id)
+          (version_id, timestamp_ms, end_timestamp_ms, text, author_name, author_color, author_role, fix_for_comment_id, workspace_id)
         SELECT ${versionId}::uuid, ${orig.timestamp_ms}, ${orig.end_timestamp_ms},
                ${text}, ${editor.name}, ${editor.color || '#22c55e'},
+               'editor',
                ${orig.id}::uuid, v.workspace_id
           FROM review_versions v WHERE v.id = ${versionId}::uuid
         RETURNING *

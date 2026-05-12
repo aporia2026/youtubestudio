@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { AssignDialog } from './AssignDialog';
 import { AudioPlayer } from './AudioPlayer';
@@ -120,6 +120,13 @@ interface NarrationTabProps {
   scriptVersion: number;
   /** Used as the prefix when the owner downloads narration audio. */
   projectTitle?: string;
+  /** Deep-link from the global comments inbox: auto-open the review
+   *  panel for this take id. Matched against the active assignment's
+   *  full-audio take and against every per-section take. */
+  initialReviewTakeId?: string;
+  /** Deep-link partner of `initialReviewTakeId`: scroll + highlight the
+   *  matching comment once TakeReview has fetched its list. */
+  initialCommentId?: string;
 }
 
 /** Sanitize a project title into a filename-safe base. */
@@ -136,7 +143,7 @@ const STATUS_COLORS: Record<string, { bg: string; text: string }> = {
   retake: { bg: 'rgba(239,68,68,0.15)', text: '#ef4444' },
 };
 
-export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, projectTitle }: NarrationTabProps) {
+export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, projectTitle, initialReviewTakeId, initialCommentId }: NarrationTabProps) {
   const filenameBase = safeFilenameBase(projectTitle);
   const handleDownload = (takeId: string, name: string) => {
     downloadCrossOriginFile(`/api/narrator/takes/${takeId}/audio`, name)
@@ -186,6 +193,22 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
   }
 
   useEffect(() => { loadAssignments(); }, [projectId]);
+
+  // Deep-link from the inbox: once the active assignment + its sections
+  // are loaded, open the review panel for the requested take. We don't
+  // re-trigger if the user manually closes the panel afterwards — the
+  // ref guard ensures the auto-open fires exactly once per take id.
+  const consumedTakeDeepLinkRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!initialReviewTakeId) return;
+    if (consumedTakeDeepLinkRef.current === initialReviewTakeId) return;
+    if (!activeAssignment) return;
+    const isFullAudio = activeAssignment.full_audio_take_id === initialReviewTakeId;
+    const inSection = sections.some(s => s.takes?.some(t => t.id === initialReviewTakeId));
+    if (!isFullAudio && !inSection) return;
+    consumedTakeDeepLinkRef.current = initialReviewTakeId;
+    setReviewingTakeId(initialReviewTakeId);
+  }, [initialReviewTakeId, activeAssignment, sections]);
 
   // Auto-open the assign dialog when arriving via ?assign=1 (e.g. from the
   // Script Generator's "Send to Narrator" button) — but only after data has
@@ -761,6 +784,13 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
                 itemUrl={(id) => `/api/narrator/take-comments/${id}`}
                 author={{ name: 'Owner', color: '#06b6d4', role: 'owner' }}
                 canDeleteAny
+                initialHighlightCommentId={
+                  // Only pass the inbox deep-link target when this TakeReview
+                  // matches the requested take — keeps the comment-highlight
+                  // bound to the correct surface even if a per-section
+                  // TakeReview is also mounted below.
+                  initialReviewTakeId === activeAssignment.full_audio_take_id ? initialCommentId : undefined
+                }
                 teleprompterAlignment={
                   // In synced mode we always pass the new teleprompter
                   // (with `alignment: null` when not ready) so the
@@ -874,6 +904,9 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
                                 itemUrl={(id) => `/api/narrator/take-comments/${id}`}
                                 author={{ name: 'Owner', color: '#06b6d4', role: 'owner' }}
                                 canDeleteAny
+                                initialHighlightCommentId={
+                                  initialReviewTakeId === take.id ? initialCommentId : undefined
+                                }
                               />
                             </div>
                           </div>

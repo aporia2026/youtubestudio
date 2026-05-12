@@ -75,9 +75,13 @@ export interface ReviewPageProps {
   ownerProjectId?: string;
   /** Optional initial version to focus when opened (e.g. ?v=<id>) */
   initialVersionId?: string;
+  /** Comment id to scroll/highlight on mount (deep link from global
+   *  comments inbox or notification). The matching version is expected to
+   *  also be passed in `initialVersionId` so the comment is in view. */
+  initialCommentId?: string;
 }
 
-export function ReviewPage({ token, ownerProjectId, initialVersionId }: ReviewPageProps) {
+export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCommentId }: ReviewPageProps) {
   // Build API endpoints based on mode (token = collaborator, projectId = owner)
   const isOwner = !!ownerProjectId;
   const dataUrl = isOwner ? `/api/review/projects/${ownerProjectId}/playback` : `/api/review/${token}`;
@@ -580,6 +584,7 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId }: ReviewPa
             onToggleAllVersions={() => setShowAllVersionComments(v => !v)}
             pendingDrawing={pendingDrawing}
             onClearDrawing={() => setPendingDrawing(null)}
+            initialHighlightCommentId={initialCommentId}
           />
         </div>
       </div>

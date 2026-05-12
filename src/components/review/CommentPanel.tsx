@@ -29,6 +29,11 @@ interface CommentPanelProps {
   onToggleAllVersions: () => void;
   pendingDrawing: { data: unknown; thumbnail: string } | null;
   onClearDrawing: () => void;
+  /** Deep-link target — when present, the panel scrolls to and highlights
+   *  the matching comment once it's in the list. Used by the global
+   *  comments inbox to land the owner on the exact comment they came
+   *  from. Switches filter to 'all' so a resolved target isn't hidden. */
+  initialHighlightCommentId?: string;
 }
 
 type Filter = 'all' | 'unresolved' | 'resolved';
@@ -36,7 +41,7 @@ type Filter = 'all' | 'unresolved' | 'resolved';
 export function CommentPanel({
   commentsUrl, commentItemUrl, isOwner, canResolve, comments, activeVersionId, permission, author, currentTimeMs,
   onSeek, onCommentAdded, onCommentResolved, onCommentDeleted, showAllVersions, onToggleAllVersions,
-  pendingDrawing, onClearDrawing,
+  pendingDrawing, onClearDrawing, initialHighlightCommentId,
 }: CommentPanelProps) {
   // Effective resolve permission: owner always can; token side respects
   // the server's per-collaborator decision (editors + narrators yes).
@@ -58,6 +63,23 @@ export function CommentPanel({
   const [filter, setFilter] = useState<Filter>('all');
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // Deep-link from the inbox: once the matching comment appears in the
+  // list (it lands after the parent's loadData), light it up and scroll.
+  // Track which id we've already consumed so a re-render with the same
+  // prop doesn't re-trigger the scroll mid-session.
+  const consumedDeepLinkRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!initialHighlightCommentId) return;
+    if (consumedDeepLinkRef.current === initialHighlightCommentId) return;
+    if (!comments.some(c => c.id === initialHighlightCommentId)) return;
+    consumedDeepLinkRef.current = initialHighlightCommentId;
+    setFilter('all');
+    setHighlightedId(initialHighlightCommentId);
+    // Keep the highlight up long enough for the user's eye to find it.
+    const t = setTimeout(() => setHighlightedId(null), 4000);
+    return () => clearTimeout(t);
+  }, [initialHighlightCommentId, comments]);
 
   const filtered = comments.filter(c => {
     if (c.parent_id) return false; // top-level only; replies rendered under parent

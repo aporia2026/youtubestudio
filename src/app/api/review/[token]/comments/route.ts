@@ -60,6 +60,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
       return NextResponse.json({ error: 'Annotation permission required to add drawings' }, { status: 403 });
     }
 
+    // Derive author_role from the share link's collaborator so the global
+    // comments inbox can bucket this row without re-joining at read time.
+    // Anonymous share links (no collaborator) default to 'reviewer'; we
+    // mark anyone whose collaborator role list includes 'editor' as such,
+    // otherwise 'reviewer'.
+    let author_role: 'editor' | 'reviewer' = 'reviewer';
+    if (link.collaborator_id) {
+      const { rows: collabRows } = await sql`
+        SELECT role, roles FROM collaborators WHERE id = ${link.collaborator_id} LIMIT 1
+      `;
+      const collab = collabRows[0];
+      if (collab) {
+        const allRoles: string[] = Array.isArray(collab.roles) && collab.roles.length > 0
+          ? collab.roles
+          : (collab.role ? [collab.role] : []);
+        if (allRoles.includes('editor')) author_role = 'editor';
+      }
+    }
+
     const comment = await createComment({
       version_id,
       timestamp_ms,
@@ -67,6 +86,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
       text: text.trim(),
       author_name: author_name.trim(),
       author_color: author_color || '#7c3aed',
+      author_role,
       drawing_data,
       drawing_thumbnail_url,
       parent_id,

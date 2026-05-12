@@ -77,6 +77,11 @@ interface TakeReviewProps {
      *  available. */
     alignment: ForcedAlignmentResponse | null;
   };
+  /** Deep-link target from the global comments inbox — once the comment
+   *  list has loaded, the matching row is highlighted and scrolled into
+   *  view. Filter is also forced to 'all' so a resolved target isn't
+   *  filtered out. */
+  initialHighlightCommentId?: string;
 }
 
 type Filter = 'all' | 'unresolved' | 'resolved';
@@ -111,7 +116,7 @@ function timeAgo(dateStr: string) {
  */
 export function TakeReview({
   takeId, audioUrl, scriptText, initialDurationMs, listUrl, itemUrl, author, compactHeader, canDeleteAny,
-  onUploadNewTake, uploadingNewTake, uploadButtonLabel, teleprompterAlignment,
+  onUploadNewTake, uploadingNewTake, uploadButtonLabel, teleprompterAlignment, initialHighlightCommentId,
 }: TakeReviewProps) {
   const playerRef = useRef<WaveformPlayerHandle>(null);
   const [comments, setComments] = useState<TakeComment[]>([]);
@@ -151,6 +156,26 @@ export function TakeReview({
       .finally(() => { if (!cancelled) setLoadingComments(false); });
     return () => { cancelled = true; };
   }, [listUrl]);
+
+  // Deep-link from the inbox: highlight + scroll to the matching comment
+  // once it appears in the freshly fetched list. We force the filter to
+  // 'all' so a resolved target isn't filtered out by the default
+  // unresolved-only chip. Tracked in a ref so re-renders with the same
+  // prop don't re-trigger.
+  const consumedDeepLinkRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!initialHighlightCommentId) return;
+    if (consumedDeepLinkRef.current === initialHighlightCommentId) return;
+    if (!comments.some(c => c.id === initialHighlightCommentId)) return;
+    consumedDeepLinkRef.current = initialHighlightCommentId;
+    setFilter('all');
+    setHighlightedId(initialHighlightCommentId);
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => {
+      setHighlightedId(null);
+      highlightTimerRef.current = null;
+    }, 4000);
+  }, [initialHighlightCommentId, comments]);
 
   // Compute marker lanes so overlapping ranges don't all stack on the same row.
   const markers: TakeCommentMarker[] = useMemo(() => {

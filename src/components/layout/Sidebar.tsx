@@ -11,7 +11,7 @@ interface NavItem {
   icon: React.ReactNode;
   /** Optional unread-count source — when set, renders a red pill badge
    *  next to the label fed by the matching hook below. */
-  badge?: 'messages-unread';
+  badge?: 'messages-unread' | 'comments-unread';
 }
 
 interface NavSection {
@@ -81,6 +81,24 @@ const PINNED_TOP: NavItem[] = [
       </svg>
     ),
     badge: 'messages-unread',
+  },
+  {
+    // Comments inbox — every unresolved review/narration comment across
+    // the workspace, grouped by role then person. The red unread pill is
+    // the owner's "you have feedback waiting" signal even when they
+    // aren't on a project page that would surface the per-take badge.
+    // Icon: speech bubble with three dots (universal "comments" mark).
+    label: 'Inbox',
+    href: '/inbox',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+        <circle cx="8.5" cy="12" r="0.6" fill="currentColor" />
+        <circle cx="12"  cy="12" r="0.6" fill="currentColor" />
+        <circle cx="15.5" cy="12" r="0.6" fill="currentColor" />
+      </svg>
+    ),
+    badge: 'comments-unread',
   },
 ];
 
@@ -504,6 +522,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             {item.badge === 'messages-unread' && collapsed && (
               <MessagesUnreadDot />
             )}
+            {item.badge === 'comments-unread' && collapsed && (
+              <CommentsUnreadDot />
+            )}
           </span>
           <AnimatePresence>
             {!collapsed && (
@@ -516,6 +537,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               >
                 {item.label}
                 {item.badge === 'messages-unread' && <MessagesUnreadBadge />}
+                {item.badge === 'comments-unread' && <CommentsUnreadBadge />}
               </motion.span>
             )}
           </AnimatePresence>
@@ -717,6 +739,57 @@ function MessagesUnreadBadge() {
 
 function MessagesUnreadDot() {
   const count = useMessagesUnread();
+  if (count === 0) return null;
+  return (
+    <span
+      className="absolute -top-1 -right-1 rounded-full"
+      style={{ background: '#ef4444', width: 8, height: 8, border: '1.5px solid var(--bg-primary)' }}
+    />
+  );
+}
+
+/**
+ * Same polling rhythm as `useMessagesUnread` — 30s + on window focus.
+ * Counts unresolved top-level comments across the owner's workspace via
+ * the dedicated /api/inbox/unread route so we don't ship the full inbox
+ * payload on every tick.
+ */
+function useCommentsUnread() {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    async function load() {
+      try {
+        const res = await fetch('/api/inbox/unread', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (alive) setCount((data.unread as number) || 0);
+      } catch {}
+    }
+    load();
+    const id = setInterval(load, 30_000);
+    const onFocus = () => load();
+    window.addEventListener('focus', onFocus);
+    return () => { alive = false; clearInterval(id); window.removeEventListener('focus', onFocus); };
+  }, []);
+  return count;
+}
+
+function CommentsUnreadBadge() {
+  const count = useCommentsUnread();
+  if (count === 0) return null;
+  return (
+    <span
+      className="text-[10px] px-1.5 py-0.5 rounded-full font-bold ml-auto"
+      style={{ background: '#ef4444', color: '#fff', minWidth: 18, textAlign: 'center', lineHeight: '14px' }}
+    >
+      {count > 99 ? '99+' : count}
+    </span>
+  );
+}
+
+function CommentsUnreadDot() {
+  const count = useCommentsUnread();
   if (count === 0) return null;
   return (
     <span
