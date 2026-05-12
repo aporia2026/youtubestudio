@@ -75,23 +75,34 @@ const SORT_OPTIONS: { v: SortBy; label: string }[] = [
 ];
 
 export function OutlierFilterBar({ value, onChange, onReset }: FilterBarProps): React.ReactElement {
+  /**
+   * Toggle membership of `v` in a multi-select filter field.
+   *
+   * Takes the value as the final argument so call sites can use the
+   * standard `onClick={() => toggleMulti(...)}` pattern. Earlier
+   * versions of this component returned a curried `(v) => void` and
+   * accidentally invoked it during render, causing an infinite
+   * setState loop. The arrow-wrapped form is the only correct shape.
+   *
+   * If the resulting set is empty OR contains every option, the
+   * field is deleted from the filters object (no-filter ≡ all-options).
+   */
   function toggleMulti<T>(
     field: keyof OutlierFilters,
     options: ReadonlyArray<T>,
     current: ReadonlyArray<T> | undefined,
-  ): (v: T) => void {
-    return (v: T) => {
-      const set = new Set(current ?? []);
-      if (set.has(v)) set.delete(v);
-      else set.add(v);
-      const next: OutlierFilters = { ...value };
-      if (set.size === 0 || set.size === options.length) {
-        delete (next as Record<string, unknown>)[field as string];
-      } else {
-        (next as Record<string, unknown>)[field as string] = Array.from(set);
-      }
-      onChange(next);
-    };
+    v: T,
+  ): void {
+    const set = new Set(current ?? []);
+    if (set.has(v)) set.delete(v);
+    else set.add(v);
+    const next: OutlierFilters = { ...value };
+    if (set.size === 0 || set.size === options.length) {
+      delete (next as Record<string, unknown>)[field as string];
+    } else {
+      (next as Record<string, unknown>)[field as string] = Array.from(set);
+    }
+    onChange(next);
   }
 
   function setScalar<K extends keyof OutlierFilters>(key: K, val: OutlierFilters[K]): void {
@@ -121,7 +132,9 @@ export function OutlierFilterBar({ value, onChange, onReset }: FilterBarProps): 
           <Chip
             key={o.v}
             active={!!value.formats?.includes(o.v)}
-            onClick={toggleMulti('formats', FORMAT_OPTIONS.map((x) => x.v), value.formats)(o.v) as unknown as () => void}
+            onClick={() =>
+              toggleMulti('formats', FORMAT_OPTIONS.map((x) => x.v), value.formats, o.v)
+            }
             label={o.label}
           />
         ))}
@@ -132,10 +145,8 @@ export function OutlierFilterBar({ value, onChange, onReset }: FilterBarProps): 
           <Chip
             key={o.v}
             active={!!value.channelSizes?.includes(o.v)}
-            onClick={
-              toggleMulti('channelSizes', SIZE_OPTIONS.map((x) => x.v), value.channelSizes)(
-                o.v,
-              ) as unknown as () => void
+            onClick={() =>
+              toggleMulti('channelSizes', SIZE_OPTIONS.map((x) => x.v), value.channelSizes, o.v)
             }
             label={o.label}
           />
@@ -180,10 +191,13 @@ export function OutlierFilterBar({ value, onChange, onReset }: FilterBarProps): 
           <Chip
             key={o.v}
             active={!!value.titleLengths?.includes(o.v)}
-            onClick={
-              toggleMulti('titleLengths', TITLE_LENGTH_OPTIONS.map((x) => x.v), value.titleLengths)(
+            onClick={() =>
+              toggleMulti(
+                'titleLengths',
+                TITLE_LENGTH_OPTIONS.map((x) => x.v),
+                value.titleLengths,
                 o.v,
-              ) as unknown as () => void
+              )
             }
             label={o.label}
           />
