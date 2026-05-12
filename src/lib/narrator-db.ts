@@ -1060,19 +1060,58 @@ export async function claimTakeAlignment(takeId: string): Promise<boolean> {
   return rows.length > 0;
 }
 
-/** Write a successful alignment result. */
-export async function setTakeAlignmentReady(takeId: string, alignmentJson: unknown) {
+/**
+ * Write a successful alignment result. Guarded by `alignment_status =
+ * 'running'` so a result that lands after the reviewer hit "Stop" (which
+ * flips status to 'failed') doesn't overwrite the user's intent. Returns
+ * true if the row was actually updated.
+ */
+export async function setTakeAlignmentReady(takeId: string, alignmentJson: unknown): Promise<boolean> {
   await ensureNarratorSchema();
-  await sql`
+  const { rows } = await sql`
     UPDATE narrator_takes
     SET alignment_status = 'ready',
         alignment_json = ${JSON.stringify(alignmentJson)}::jsonb,
         alignment_error = NULL
     WHERE id = ${takeId}
+      AND alignment_status = 'running'
+    RETURNING id
   `;
+  return rows.length > 0;
 }
 
-/** Record a failure reason. The string is rendered to the reviewer; keep it short. */
+/**
+ * Reviewer-initiated cancellation: flip an in-flight run to 'failed' with
+ * a user-friendly reason so the polling UI can offer "Retry" instead of
+ * sitting on "Building word-level sync…". The actual ElevenLabs fetch
+ * keeps running server-side (we can't reach into a peer function instance
+ * to abort it) but its eventual setTakeAlignmentReady is a no-op because
+ * status is no longer 'running'.
+ *
+ * Only acts on pending/running rows — already-ready / already-failed
+ * takes are left alone (re-cancelling a settled state would be a UX bug,
+ * not a feature).
+ */
+export async function cancelTakeAlignment(takeId: string): Promise<boolean> {
+  await ensureNarratorSchema();
+  const { rows } = await sql`
+    UPDATE narrator_takes
+    SET alignment_status = 'failed',
+        alignment_error = 'Cancelled by user'
+    WHERE id = ${takeId}
+      AND alignment_status IN ('pending', 'running')
+    RETURNING id
+  `;
+  return rows.length > 0;
+}
+
+/**
+ * Record a failure reason. The string is rendered to the reviewer; keep
+ * it short. Guarded on `alignment_status IN ('pending','running')` so a
+ * cancellation that already landed ('failed' with "Cancelled by user")
+ * isn't overwritten by an orchestrator error that arrives later, and a
+ * successful 'ready' state isn't downgraded.
+ */
 export async function setTakeAlignmentFailed(takeId: string, reason: string) {
   await ensureNarratorSchema();
   await sql`
@@ -1080,6 +1119,7 @@ export async function setTakeAlignmentFailed(takeId: string, reason: string) {
     SET alignment_status = 'failed',
         alignment_error = ${reason.slice(0, 500)}
     WHERE id = ${takeId}
+      AND alignment_status IN ('pending', 'running')
   `;
 }
 

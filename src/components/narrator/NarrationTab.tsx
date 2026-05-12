@@ -349,6 +349,28 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
     }
   }
 
+  async function handleStopAlignment() {
+    if (!activeAssignment) return;
+    // Optimistic flip so the spinner disappears immediately. The polling
+    // effect will pick up the server-side state on the next tick, but
+    // there's no reason to make the reviewer watch the spinner one more
+    // beat after they explicitly asked it to stop.
+    setAlignmentState({
+      status: 'failed',
+      error: 'Cancelled by user',
+      alignment: null,
+    });
+    try {
+      await fetch(`/api/narrator/assignments/${activeAssignment.id}/align`, { method: 'DELETE' });
+      toast.success('Sync cancelled');
+    } catch (err) {
+      // Best-effort — the optimistic flip already moved the UI; surface
+      // only as a toast so the reviewer knows the server-side cancel may
+      // not have landed (the in-flight run will still wrap up on its own).
+      toast.error(err instanceof Error ? err.message : 'Could not reach server to cancel');
+    }
+  }
+
   async function handleApproveFull() {
     if (!activeAssignment || approvingFull) return;
     if (!confirm('Approve this full narration? This marks the assignment complete and the narrator gets notified.')) return;
@@ -536,13 +558,35 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
                     Building word-level sync…
                   </span>
                 )}
+                {/* Stop button — visible while the sync is queued or in
+                    flight so the reviewer is never trapped watching the
+                    spinner. Cancels the server-side run; the in-flight
+                    ElevenLabs fetch still wraps up on its own, but its
+                    result is discarded by the status guard in
+                    setTakeAlignmentReady. */}
+                {(alignmentState.status === 'pending' || alignmentState.status === 'running') && (
+                  <button
+                    onClick={handleStopAlignment}
+                    className="px-2 py-0.5 rounded transition-colors cursor-pointer"
+                    style={{
+                      background: 'rgba(255,255,255,0.06)',
+                      color: 'var(--text-muted)',
+                      border: '1px solid rgba(255,255,255,0.1)',
+                    }}
+                    title="Stop the sync — you can retry later"
+                  >
+                    ✕ Stop
+                  </button>
+                )}
                 {alignmentState.status === 'ready' && alignmentState.alignment && (
                   <span style={{ color: '#22c55e' }}>✓ Word-accurate sync ready</span>
                 )}
                 {alignmentState.status === 'failed' && (
                   <>
                     <span style={{ color: '#ef4444' }} title={alignmentState.error || ''}>
-                      Sync unavailable
+                      {alignmentState.error === 'Cancelled by user'
+                        ? 'Sync cancelled'
+                        : 'Sync unavailable'}
                     </span>
                     <button
                       onClick={handleRetryAlignment}

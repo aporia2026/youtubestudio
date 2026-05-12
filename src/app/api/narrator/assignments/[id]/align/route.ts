@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAssignment, getFullAudioTakeWithAlignment } from '@/lib/narrator-db';
+import {
+  cancelTakeAlignment,
+  getAssignment,
+  getFullAudioTakeWithAlignment,
+} from '@/lib/narrator-db';
 import { runAlignmentForAssignment } from '@/lib/alignment';
 import { logger } from '@/lib/logger';
 
@@ -91,5 +95,26 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   } catch (err) {
     logger.error('align status error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to read status' }, { status: 500 });
+  }
+}
+
+/**
+ * Reviewer-initiated cancel. Flips a pending/running alignment to
+ * 'failed' with reason "Cancelled by user" so the polling UI offers a
+ * Retry chip instead of the "Building word-level sync…" spinner. The
+ * actual in-flight ElevenLabs fetch keeps running server-side — we
+ * can't abort it across function instances — but its eventual success
+ * write is guarded by status='running' so the cancel sticks.
+ */
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params;
+    const take = await getFullAudioTakeWithAlignment(id);
+    if (!take) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    const cancelled = await cancelTakeAlignment(take.take_id);
+    return NextResponse.json({ cancelled });
+  } catch (err) {
+    logger.error('align cancel error', { detail: err instanceof Error ? err.message : String(err) });
+    return NextResponse.json({ error: 'Failed to cancel alignment' }, { status: 500 });
   }
 }
