@@ -7,6 +7,8 @@ export { AI_MODELS, getDefaultModel, getModelById } from './ai-models';
 import { getModelById } from './ai-models';
 import { KIE_MODEL_MAP } from './ai-models';
 import { cookies } from 'next/headers';
+import { runFallbackChain, type FallbackChainResult } from './ai-fallback';
+import { logger } from './logger';
 
 async function getPerplexityKey(): Promise<string> {
   if (process.env.PERPLEXITY_API_KEY) return process.env.PERPLEXITY_API_KEY;
@@ -664,6 +666,56 @@ function rewriteGoogleError(err: unknown, modelId: string): Error {
     );
   }
   return err instanceof Error ? err : new Error(String(err));
+}
+
+// ============================================================
+// Fallback wrapper — try a chain of models on transient failures.
+// Refusals + unknown errors short-circuit (council-mandated;
+// silently retrying a refusal would ship content the primary
+// declined to produce). See ./ai-fallback.ts for the classifier.
+// ============================================================
+
+/**
+ * Try each model in `chain` in order; on a transient failure
+ * (5xx / rate-limit / timeout / empty/malformed response) move to
+ * the next; on a refusal or unknown error, short-circuit and
+ * throw `GenerateFailure` with the attempt history.
+ *
+ * The chain-loop logic + classifier live in
+ * [./ai-fallback.ts](./ai-fallback.ts) (pure, unit-testable with no
+ * provider SDK imports). This function is a thin shim that supplies
+ * the real `generateText` as the chain's call function.
+ *
+ * `buildOpts(modelId)` lets the caller customise per-model options
+ * (e.g. different max_tokens for Haiku vs Sonnet) — the typical
+ * caller returns the same options with the modelId swapped.
+ */
+export async function generateTextWithFallback(
+  chain: readonly string[],
+  buildOpts: (modelId: string) => GenerateOptions,
+): Promise<FallbackChainResult> {
+  return runFallbackChain(
+    chain,
+    (modelId) => generateText(buildOpts(modelId)),
+    {
+      isKnownModel: (id) => !!getModelById(id),
+      onAttempt: (attempt) => {
+        if (attempt.failureClass) {
+          logger.warn('generateTextWithFallback: attempt failed', {
+            model_id: attempt.modelId,
+            failure_class: attempt.failureClass,
+            duration_ms: attempt.durationMs,
+            detail: attempt.failureMessage?.slice(0, 200),
+          });
+        } else {
+          logger.info('generateTextWithFallback: attempt succeeded', {
+            model_id: attempt.modelId,
+            duration_ms: attempt.durationMs,
+          });
+        }
+      },
+    },
+  );
 }
 
 // ============================================================

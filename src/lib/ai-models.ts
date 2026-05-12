@@ -248,6 +248,58 @@ export const KIE_MODEL_MAP: Record<string, KieModelConfig> = {
   'kie-gpt-5-4-codex': { kieModelId: 'gpt-5.4-codex', endpointType: 'codex-responses' },
 };
 
+/**
+ * Default fallback chains per feature, used by the auto-pipeline
+ * orchestrator and `generateTextWithFallback`. Each chain is an
+ * ordered list: try the first model; on a transient failure
+ * (5xx / rate-limit / timeout / empty/malformed response) move to
+ * the next; on a content refusal or unclassified failure, surface
+ * the error instead of falling through (refusal is a content signal,
+ * not a transient error — fallback would ship content the primary
+ * model declined to produce).
+ *
+ * Strategy: cross-provider primary → cross-provider backup → same-model
+ * via alternate route (Kie) for resilience to upstream-provider
+ * outages. The user can override this entirely per
+ * `pipeline_presets.fallback_chains_jsonb`; this registry is the
+ * out-of-the-box default when no override exists.
+ *
+ * v1 wires the chains into the four auto-pipeline features only.
+ * Other features keep the single-model behaviour from Phase 6.2
+ * until a future ticket retrofits them.
+ *
+ * Model ids must exist in `AI_MODELS`. The orchestrator validates
+ * via `getModelById` before each attempt and skips unknown entries.
+ */
+export const DEFAULT_FALLBACK_CHAINS: Partial<Record<AppFeature, string[]>> = {
+  // Idea brainstorming: needs decent capability but fires N times per
+  // batch; Haiku as last-resort fallback keeps cost bounded when both
+  // flagship providers are down.
+  'idea-generator': ['claude-sonnet-4-6', 'gpt-5.5-mini', 'claude-haiku-4-5-20251001'],
+
+  // Script gen: the most quality-sensitive call. Cross-provider
+  // backup, then same Sonnet via Kie as alternate route. No Haiku
+  // tier — a degraded script defeats the point of QA-looping it.
+  'script-generator': ['claude-sonnet-4-6', 'gpt-5.5', 'kie-claude-sonnet-4-6'],
+
+  // Critic panel: multi-call deliberation. Same chain as script-gen —
+  // critics scoring against a Haiku-grade script would skew low and
+  // burn the QA loop on noise.
+  'critic-panel': ['claude-sonnet-4-6', 'gpt-5.5', 'kie-claude-sonnet-4-6'],
+
+  // Production doc: structured JSON output, cost-sensitive when each
+  // row is its own call. Same flagship chain — Haiku-tier models
+  // routinely break the row schema.
+  'production-doc': ['claude-sonnet-4-6', 'gpt-5.5', 'kie-claude-sonnet-4-6'],
+};
+
+/** Lookup the configured fallback chain for a feature, or `null` when
+ *  no chain is registered. The caller decides what to do with `null`
+ *  — single-shot callers fall back to `resolveFeatureModelId`. */
+export function getDefaultFallbackChain(feature: AppFeature): readonly string[] | null {
+  return DEFAULT_FALLBACK_CHAINS[feature] ?? null;
+}
+
 export function getDefaultModel(): AIModel {
   return AI_MODELS[0];
 }
