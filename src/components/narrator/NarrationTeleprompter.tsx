@@ -20,6 +20,14 @@ interface NarrationTeleprompterProps {
    *  the comment input. The bar is the discovery affordance so the
    *  reviewer doesn't have to scroll down to find the comment textarea. */
   onCommentHere?: () => void;
+  /** Whether the underlying audio is currently playing. Drives the
+   *  hover-to-pause overlay — when true, hovering the reading area
+   *  surfaces a big centred Pause button so the reviewer can stop at
+   *  the exact word without aiming for the small waveform play button. */
+  isPlaying?: boolean;
+  /** Called when the reviewer clicks the hover Pause button. Should
+   *  pause playback at the current position (no seek). */
+  onPause?: () => void;
 }
 
 /**
@@ -57,10 +65,13 @@ export function NarrationTeleprompter({
   currentMs,
   onSeek,
   onCommentHere,
+  isPlaying = false,
+  onPause,
 }: NarrationTeleprompterProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const userScrollAtRef = useRef<number>(0);
   const [followLocked, setFollowLocked] = useState(false);
+  const [hovered, setHovered] = useState(false);
 
   // Slice the flat alignment into per-section word arrays. Stable across
   // currentMs changes — only re-computes when sections/alignment do.
@@ -182,9 +193,13 @@ export function NarrationTeleprompter({
     );
   }
 
+  const showPauseOverlay = hovered && isPlaying && !!onPause;
+
   return (
     <div
       className="rounded-xl overflow-hidden relative"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         background:
           'linear-gradient(180deg, rgba(124,58,237,0.05) 0%, rgba(124,58,237,0) 200px), var(--bg-primary)',
@@ -320,6 +335,53 @@ export function NarrationTeleprompter({
               'linear-gradient(0deg, var(--bg-primary) 0%, rgba(0,0,0,0) 100%)',
           }}
         />
+        {/* Hover-to-pause overlay. Only mounts while playing AND the
+            mouse is over the teleprompter. Lets the reviewer stop at
+            the exact word currently highlighted without aiming for the
+            small waveform play button. Fades in with a 150ms
+            transition; pointer-events-none on the backdrop so the
+            words underneath stay clickable when the button is hidden. */}
+        {onPause && (
+          <div
+            aria-hidden={!showPauseOverlay}
+            className="absolute inset-0 flex items-center justify-center transition-opacity duration-150 z-20"
+            style={{
+              opacity: showPauseOverlay ? 1 : 0,
+              pointerEvents: showPauseOverlay ? 'auto' : 'none',
+              background:
+                'radial-gradient(circle at center, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0.1) 60%, rgba(0,0,0,0) 100%)',
+            }}
+          >
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onPause();
+              }}
+              className="flex items-center justify-center rounded-full transition-transform hover:scale-105 active:scale-95"
+              style={{
+                width: 72,
+                height: 72,
+                background: 'rgba(124,58,237,0.92)',
+                border: '1px solid rgba(167,139,250,0.55)',
+                boxShadow:
+                  '0 12px 40px rgba(0,0,0,0.45), 0 0 0 6px rgba(124,58,237,0.18)',
+                cursor: 'pointer',
+              }}
+              title="Pause at this word"
+            >
+              <svg
+                width="26"
+                height="26"
+                viewBox="0 0 24 24"
+                fill="#fff"
+                aria-label="Pause"
+              >
+                <rect x="6" y="4" width="4" height="16" rx="1" />
+                <rect x="14" y="4" width="4" height="16" rx="1" />
+              </svg>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Sticky bottom action bar — always visible, never causes layout

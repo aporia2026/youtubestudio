@@ -111,6 +111,11 @@ export function TakeReview({
   const [loadingComments, setLoadingComments] = useState(true);
   const [currentMs, setCurrentMs] = useState(0);
   const [durationMs, setDurationMs] = useState(initialDurationMs || 0);
+  // Tracked so the synced teleprompter knows whether to show its hover-
+  // to-pause overlay. WaveformPlayer is the source of truth for play
+  // state; we mirror it here so the prop down to NarrationTeleprompter
+  // stays cheap.
+  const [playing, setPlaying] = useState(false);
   const [filter, setFilter] = useState<Filter>('all');
   const [text, setText] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -331,6 +336,7 @@ export function TakeReview({
         onTimeUpdate={setCurrentMs}
         onDurationChange={setDurationMs}
         onMarkerClick={handleMarkerClick}
+        onPlayStateChange={setPlaying}
       />
 
       {teleprompterAlignment ? (
@@ -340,6 +346,8 @@ export function TakeReview({
           currentMs={currentMs}
           onSeek={seek}
           onCommentHere={handleCommentHere}
+          isPlaying={playing}
+          onPause={() => playerRef.current?.pause()}
         />
       ) : (
         <ScriptFollow
