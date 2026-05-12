@@ -20,14 +20,14 @@ interface NarrationTeleprompterProps {
    *  the comment input. The bar is the discovery affordance so the
    *  reviewer doesn't have to scroll down to find the comment textarea. */
   onCommentHere?: () => void;
-  /** Whether the underlying audio is currently playing. Drives the
-   *  hover-to-pause overlay — when true, hovering the reading area
-   *  surfaces a big centred Pause button so the reviewer can stop at
-   *  the exact word without aiming for the small waveform play button. */
+  /** Whether the underlying audio is currently playing. Drives the icon
+   *  shown by the hover transport overlay — Pause when playing, Play
+   *  when paused. */
   isPlaying?: boolean;
-  /** Called when the reviewer clicks the hover Pause button. Should
-   *  pause playback at the current position (no seek). */
-  onPause?: () => void;
+  /** Called when the reviewer clicks the hover transport button. Should
+   *  toggle playback (pause if playing, resume if paused) without
+   *  seeking. */
+  onTogglePlay?: () => void;
 }
 
 /**
@@ -66,7 +66,7 @@ export function NarrationTeleprompter({
   onSeek,
   onCommentHere,
   isPlaying = false,
-  onPause,
+  onTogglePlay,
 }: NarrationTeleprompterProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const userScrollAtRef = useRef<number>(0);
@@ -180,6 +180,13 @@ export function NarrationTeleprompter({
     // leading edge — the playhead lands ~80ms before the word's start.
     const targetMs = Math.max(0, Math.round(word.start * 1000) - 80);
     onSeek(targetMs);
+    // If audio was paused, start playback from the clicked word —
+    // matches reviewer intuition ("click means 'go and play from
+    // here'"). When audio was already playing, seek alone is enough;
+    // togglePlay would pause it.
+    if (!isPlaying && onTogglePlay) {
+      onTogglePlay();
+    }
   }
 
   if (flatWords.length === 0) {
@@ -193,7 +200,11 @@ export function NarrationTeleprompter({
     );
   }
 
-  const showPauseOverlay = hovered && isPlaying && !!onPause;
+  // Hover transport overlay — shows whenever the mouse is over the
+  // teleprompter and the parent passed an onTogglePlay handler. The
+  // icon swaps based on play state so the same affordance handles both
+  // "pause at this word" and "resume from here".
+  const showTransportOverlay = hovered && !!onTogglePlay;
 
   return (
     <div
@@ -335,19 +346,27 @@ export function NarrationTeleprompter({
               'linear-gradient(0deg, var(--bg-primary) 0%, rgba(0,0,0,0) 100%)',
           }}
         />
-        {/* Hover-to-pause overlay. Only mounts while playing AND the
-            mouse is over the teleprompter. Lets the reviewer stop at
-            the exact word currently highlighted without aiming for the
-            small waveform play button. Fades in with a 150ms
-            transition; pointer-events-none on the backdrop so the
-            words underneath stay clickable when the button is hidden. */}
-        {onPause && (
+        {/* Hover-to-toggle transport overlay. Surfaces a big centred
+            button whenever the mouse is over the teleprompter — Pause
+            when playing, Play when paused — so the reviewer can stop
+            at the exact word currently highlighted (or resume from
+            there) without aiming for the small waveform transport.
+            Fades in with a 150ms transition; pointer-events-none on
+            the backdrop so the words underneath stay clickable when
+            the button is hidden. */}
+        {onTogglePlay && (
           <div
-            aria-hidden={!showPauseOverlay}
+            aria-hidden={!showTransportOverlay}
             className="absolute inset-0 flex items-center justify-center transition-opacity duration-150 z-20"
             style={{
-              opacity: showPauseOverlay ? 1 : 0,
-              pointerEvents: showPauseOverlay ? 'auto' : 'none',
+              opacity: showTransportOverlay ? 1 : 0,
+              // Backdrop is ALWAYS pointer-events: none — only the button
+              // catches clicks. Otherwise the dimmed area around the
+              // button would swallow clicks meant for the words
+              // underneath, defeating click-to-seek. Hover detection
+              // still works because mouseenter on the outer wrapper
+              // bubbles from the words below the (transparent) backdrop.
+              pointerEvents: 'none',
               background:
                 'radial-gradient(circle at center, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0.1) 60%, rgba(0,0,0,0) 100%)',
             }}
@@ -355,7 +374,7 @@ export function NarrationTeleprompter({
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                onPause();
+                onTogglePlay();
               }}
               className="flex items-center justify-center rounded-full transition-transform hover:scale-105 active:scale-95"
               style={{
@@ -366,19 +385,40 @@ export function NarrationTeleprompter({
                 boxShadow:
                   '0 12px 40px rgba(0,0,0,0.45), 0 0 0 6px rgba(124,58,237,0.18)',
                 cursor: 'pointer',
+                // Only the button itself receives clicks. Disabled when
+                // overlay is hidden so a stray click in the centre
+                // doesn't accidentally toggle playback.
+                pointerEvents: showTransportOverlay ? 'auto' : 'none',
               }}
-              title="Pause at this word"
+              title={isPlaying ? 'Pause at this word' : 'Play from this word'}
             >
-              <svg
-                width="26"
-                height="26"
-                viewBox="0 0 24 24"
-                fill="#fff"
-                aria-label="Pause"
-              >
-                <rect x="6" y="4" width="4" height="16" rx="1" />
-                <rect x="14" y="4" width="4" height="16" rx="1" />
-              </svg>
+              {isPlaying ? (
+                <svg
+                  width="26"
+                  height="26"
+                  viewBox="0 0 24 24"
+                  fill="#fff"
+                  aria-label="Pause"
+                >
+                  <rect x="6" y="4" width="4" height="16" rx="1" />
+                  <rect x="14" y="4" width="4" height="16" rx="1" />
+                </svg>
+              ) : (
+                <svg
+                  width="26"
+                  height="26"
+                  viewBox="0 0 24 24"
+                  fill="#fff"
+                  aria-label="Play"
+                  // Optical centring: the play triangle's visual centre
+                  // sits slightly left of its bounding box, so nudge
+                  // the icon right by 2px to feel centred in the
+                  // circle.
+                  style={{ marginLeft: 2 }}
+                >
+                  <path d="M7 4 L20 12 L7 20 Z" />
+                </svg>
+              )}
             </button>
           </div>
         )}

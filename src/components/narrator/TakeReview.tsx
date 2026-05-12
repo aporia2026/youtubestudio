@@ -347,7 +347,7 @@ export function TakeReview({
           onSeek={seek}
           onCommentHere={handleCommentHere}
           isPlaying={playing}
-          onPause={() => playerRef.current?.pause()}
+          onTogglePlay={() => playerRef.current?.togglePlay()}
         />
       ) : (
         <ScriptFollow
