@@ -17,6 +17,11 @@ interface NarrationTeleprompterProps {
   alignment: ForcedAlignmentResponse | null;
   /** Current playhead in ms. */
   currentMs: number;
+  /** Total audio duration in ms. Used by the fullscreen transport bar
+   *  for the scrub width + time readout. Optional because the
+   *  non-fullscreen view doesn't render a transport bar (the
+   *  WaveformPlayer above the teleprompter is the source of truth). */
+  durationMs?: number;
   /** Click a word → seek the audio to that word's start. */
   onSeek: (ms: number) => void;
   /** Optional: called when the reviewer clicks the "Comment" button in
@@ -76,6 +81,7 @@ export function NarrationTeleprompter({
   sections,
   alignment,
   currentMs,
+  durationMs = 0,
   onSeek,
   onCommentHere,
   isPlaying = false,
@@ -157,6 +163,23 @@ export function NarrationTeleprompter({
     } finally {
       setComposerSubmitting(false);
     }
+  }
+
+  /** M:SS formatter for the fullscreen transport readout. */
+  function formatClock(ms: number): string {
+    if (!Number.isFinite(ms) || ms < 0) return '0:00';
+    const totalSec = Math.floor(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  }
+
+  /** Seek to the click position on the scrub bar. */
+  function handleScrubClick(e: React.MouseEvent<HTMLDivElement>) {
+    if (durationMs <= 0) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    onSeek(pct * durationMs);
   }
 
   function onCommentButtonClick() {
@@ -593,6 +616,119 @@ export function NarrationTeleprompter({
           </div>
         )}
       </div>
+
+      {/* Fullscreen-only transport bar. Out of fullscreen, the
+          WaveformPlayer above the teleprompter already provides scrub +
+          transport — duplicating it here would be confusing. In
+          fullscreen the WaveformPlayer is hidden behind the overlay,
+          so the reviewer needs a way to scrub, skip, and read the
+          time without exiting. The bar drives the same audio element
+          via the parent's onSeek / onTogglePlay handlers — no second
+          WaveSurfer instance. */}
+      {fullscreen && (
+        <div
+          className="px-6 py-3 flex items-center gap-4"
+          style={{
+            background: 'rgba(0,0,0,0.45)',
+            borderTop: '1px solid rgba(255,255,255,0.06)',
+          }}
+        >
+          {/* Transport buttons — play/pause, skip back 5s, skip
+              forward 5s. Mirrors the WaveformPlayer's transport so
+              keyboard/mouse muscle memory carries over. */}
+          {onTogglePlay && (
+            <button
+              onClick={onTogglePlay}
+              className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center transition-colors cursor-pointer"
+              style={{
+                background: isPlaying ? 'rgba(124,58,237,0.85)' : 'rgba(124,58,237,0.2)',
+                border: `1px solid rgba(167,139,250,${isPlaying ? 0.55 : 0.3})`,
+              }}
+              title={isPlaying ? 'Pause' : 'Play'}
+            >
+              {isPlaying ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="#fff">
+                  <rect x="6" y="4" width="4" height="16" rx="1" />
+                  <rect x="14" y="4" width="4" height="16" rx="1" />
+                </svg>
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="#a78bfa" style={{ marginLeft: 2 }}>
+                  <path d="M7 4 L20 12 L7 20 Z" />
+                </svg>
+              )}
+            </button>
+          )}
+          <button
+            onClick={() => onSeek(Math.max(0, currentMs - 5000))}
+            className="shrink-0 text-[11px] px-2.5 py-1.5 rounded-md cursor-pointer transition-colors flex items-center gap-1"
+            style={{
+              background: 'rgba(255,255,255,0.04)',
+              color: 'var(--text-muted)',
+              border: '1px solid rgba(255,255,255,0.08)',
+            }}
+            title="Back 5 seconds"
+          >
+            ◀ 5s
+          </button>
+          <button
+            onClick={() =>
+              onSeek(
+                durationMs > 0
+                  ? Math.min(durationMs, currentMs + 5000)
+                  : currentMs + 5000,
+              )
+            }
+            className="shrink-0 text-[11px] px-2.5 py-1.5 rounded-md cursor-pointer transition-colors flex items-center gap-1"
+            style={{
+              background: 'rgba(255,255,255,0.04)',
+              color: 'var(--text-muted)',
+              border: '1px solid rgba(255,255,255,0.08)',
+            }}
+            title="Forward 5 seconds"
+          >
+            5s ▶
+          </button>
+          {/* Scrub bar — click anywhere to seek. Filled portion shows
+              progress; faint track fills the remainder. Disabled
+              (no-op) before duration is known. */}
+          <div
+            onClick={handleScrubClick}
+            className="flex-1 h-1.5 rounded-full relative cursor-pointer"
+            style={{
+              background: 'rgba(255,255,255,0.08)',
+              cursor: durationMs > 0 ? 'pointer' : 'default',
+            }}
+            title={durationMs > 0 ? 'Click to seek' : 'Loading…'}
+          >
+            <div
+              className="h-full rounded-full transition-[width] duration-100 ease-out"
+              style={{
+                width: durationMs > 0 ? `${(currentMs / durationMs) * 100}%` : '0%',
+                background: 'linear-gradient(90deg, #7c3aed 0%, #a78bfa 100%)',
+                boxShadow: '0 0 8px rgba(124,58,237,0.5)',
+              }}
+            />
+            {durationMs > 0 && (
+              <div
+                aria-hidden
+                className="absolute top-1/2 w-3 h-3 rounded-full pointer-events-none"
+                style={{
+                  left: `${(currentMs / durationMs) * 100}%`,
+                  transform: 'translate(-50%, -50%)',
+                  background: '#fff',
+                  boxShadow: '0 0 0 2px #7c3aed, 0 2px 8px rgba(0,0,0,0.5)',
+                }}
+              />
+            )}
+          </div>
+          <span
+            className="shrink-0 text-[11px] font-mono tabular-nums"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            {formatClock(currentMs)} / {formatClock(durationMs)}
+          </span>
+        </div>
+      )}
 
       {/* Sticky bottom action bar — collapses into an inline composer
           while writing in fullscreen so the reviewer never leaves the

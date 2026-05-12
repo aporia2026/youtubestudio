@@ -381,6 +381,7 @@ export function TakeReview({
           sections={teleprompterAlignment.sections}
           alignment={teleprompterAlignment.alignment}
           currentMs={currentMs}
+          durationMs={durationMs}
           onSeek={seek}
           onCommentHere={handleCommentHere}
           isPlaying={playing}
