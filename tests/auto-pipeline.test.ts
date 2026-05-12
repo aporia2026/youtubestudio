@@ -195,11 +195,11 @@ describe('orchestrator dispatch (getStageHandler)', () => {
     expect(a).toBe(b);
   });
 
-  it('running_qa + qa_retry dispatch to the same handler (Tuesday: retry is alias; Friday will split them)', () => {
+  it('running_qa + qa_retry dispatch to different handlers (running_qa scores; qa_retry regenerates with fixes)', () => {
     const a = getStageHandler('running_qa');
     const b = getStageHandler('qa_retry');
     expect(a).not.toBeNull();
     expect(b).not.toBeNull();
-    expect(a).toBe(b);
+    expect(a).not.toBe(b);
   });
 });

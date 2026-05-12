@@ -162,23 +162,55 @@ export async function handleRunCriticPanel(ctx: StageHandlerContext): Promise<St
     };
   }
 
-  // v1 (Tuesday): record score, advance regardless. The retry
-  // loop ships Friday. The verdict is already on critic_panels;
-  // we just attach the panel_id to the video.
+  // Threshold decision (Friday — retry loop with applied fixes):
+  //
+  //   - score >= threshold  → waiting_narration (success path)
+  //   - score < threshold AND retry_count < max → qa_retry
+  //     (the qa_retry handler regenerates the script with the
+  //     panel's fix list applied, then re-routes to running_qa)
+  //   - score < threshold AND retry_count >= max → terminal
+  //     failure (qa_failed_after_max_retries)
   logger.info('auto-pipeline: critic panel completed', {
     pipeline_video_id: video.id,
     panel_id: panel.id,
     overall_score: verdict.overall_score,
     threshold: preset.qa_min_score,
     retry_count: video.retry_count,
+    max_retries: preset.qa_max_iterations,
   });
 
+  const passedThreshold = verdict.overall_score >= preset.qa_min_score;
+
+  if (passedThreshold) {
+    return {
+      kind: 'advance',
+      nextStage: 'waiting_narration',
+      persist: {
+        critic_panel_id: panel.id,
+        narration_deadline_at: new Date(Date.now() + preset.narration_deadline_days * 24 * 60 * 60 * 1000),
+      },
+    };
+  }
+
+  if (video.retry_count >= preset.qa_max_iterations) {
+    return {
+      kind: 'fail',
+      terminalStage: 'qa_failed_after_max_retries',
+      failureClass: 'qa_below_threshold',
+      failureMessage: `Score ${verdict.overall_score} below threshold ${preset.qa_min_score} after ${video.retry_count + 1} attempts (max ${preset.qa_max_iterations}). Critic verdict is preserved on critic_panels.${panel.id} for review.`,
+    };
+  }
+
+  // Retry-allowed path. The qa_retry handler reads the most recent
+  // critic_panel for this video, builds the prompt augment from
+  // its verdict, regenerates the script, then routes back to
+  // running_qa. critic_panel_id stays attached on the video so the
+  // retry handler can find it without re-querying by video.
   return {
     kind: 'advance',
-    nextStage: 'waiting_narration',
+    nextStage: 'qa_retry',
     persist: {
       critic_panel_id: panel.id,
-      narration_deadline_at: new Date(Date.now() + preset.narration_deadline_days * 24 * 60 * 60 * 1000),
     },
   };
 }

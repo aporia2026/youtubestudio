@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { sql } from '@vercel/postgres';
 import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import {
   createPipelineRun,
@@ -6,22 +7,52 @@ import {
 } from '@/lib/auto-pipeline/create-run';
 
 /**
- * POST /api/auto-pipeline/runs
+ * GET  — list this workspace's pipeline runs (newest first).
+ * POST — create a new run (fresh OR existing-idea mode).
  *
- * Creates a new pipeline batch. Two mutually-exclusive modes in v1
- * (mixed mode is a deliberate v1.1 ticket):
- *
- *   - Fresh:    { presetId, countToGenerate, channelId? }
- *   - Existing: { presetId, existingIdeaIds: string[], channelId? }
- *
- * Returns `{ runId, videoIds }` on success. `videoIds` is in
- * priority order (1-indexed within the run) so the caller can
- * deep-link to "rank these ideas."
- *
- * Workspace tenancy is enforced inside `createPipelineRun` —
- * cross-workspace `presetId` or `existingIdeaIds` produce a clean
- * "not found" without leaking existence (Phase 8.1 pattern).
+ * Per the Phase 8.1 pattern, every query is workspace-scoped.
  */
+export const GET = apiRoute.authed(async (session) => {
+  const { rows } = await sql.query<{
+    id: string;
+    preset_id: string;
+    preset_name: string;
+    status: string;
+    ideas_count: number;
+    estimated_cost_usd: string | null;
+    actual_cost_usd: string;
+    created_at: string;
+    completed_at: string | null;
+    video_count_total: number;
+    video_count_done: number;
+    video_count_failed: number;
+  }>(
+    `
+    SELECT r.id::text AS id,
+           r.preset_id::text AS preset_id,
+           p.name AS preset_name,
+           r.status,
+           r.ideas_count,
+           r.estimated_cost_usd::text AS estimated_cost_usd,
+           r.actual_cost_usd::text AS actual_cost_usd,
+           r.created_at::text AS created_at,
+           r.completed_at::text AS completed_at,
+           COUNT(v.id) AS video_count_total,
+           COUNT(v.id) FILTER (WHERE v.stage = 'done') AS video_count_done,
+           COUNT(v.id) FILTER (WHERE v.stage IN ('qa_failed_after_max_retries','narration_abandoned','production_doc_failed','thumbnail_failed','editor_assignment_failed','cancelled_by_user','cost_cap_exceeded')) AS video_count_failed
+      FROM pipeline_runs r
+      JOIN pipeline_presets p ON p.id = r.preset_id
+      LEFT JOIN pipeline_run_videos v ON v.pipeline_run_id = r.id
+     WHERE r.workspace_id = $1::uuid
+     GROUP BY r.id, p.name
+     ORDER BY r.created_at DESC
+     LIMIT 100
+    `,
+    [session.ws],
+  );
+  return NextResponse.json({ runs: rows });
+});
+
 export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   let body: unknown;
   try {
@@ -63,9 +94,6 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     return NextResponse.json(result, { status: 201 });
   } catch (err) {
     if (err instanceof CreatePipelineRunError) {
-      // User-facing validation / not-found errors — 4xx, not 5xx.
-      // The 'preset_not_found' / 'idea_not_found' codes already
-      // mask cross-workspace existence per Phase 8.1.
       const status =
         err.code === 'preset_not_found' || err.code === 'idea_not_found' ? 404 : 400;
       return NextResponse.json({ error: err.message, code: err.code }, { status });

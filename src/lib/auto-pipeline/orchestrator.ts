@@ -23,6 +23,7 @@ import { claimNextVideo, advanceStage, failStage, releaseClaim } from './db';
 import { handleGenerateIdea } from './stages/generate-idea';
 import { handleGenerateScript } from './stages/generate-script';
 import { handleRunCriticPanel } from './stages/run-critic-panel';
+import { handleQaRetry } from './stages/qa-retry';
 import { handleNarrationComplete } from './stages/narration-complete';
 import { handleGenerateProductionDoc } from './stages/generate-production-doc';
 import { handleGenerateThumbnail } from './stages/generate-thumbnail';
@@ -49,16 +50,16 @@ import { isActiveStage } from './types';
  *     orchestrator can also choose to write `generating_idea`
  *     mid-flight in a future revision. Both names route to the
  *     same handler so either is fine.
- *   - `qa_retry` aliases to `running_qa` for Tuesday — the retry
- *     loop is Friday's work, so today both states just run the
- *     panel and advance.
+ *   - `qa_retry` is its own handler (regenerates the script with
+ *     applied fixes from the prior verdict), separate from
+ *     `running_qa` (which runs the critic panel).
  */
 const STAGE_HANDLERS: Record<string, StageHandler | undefined> = {
   queued: handleGenerateIdea,
   generating_idea: handleGenerateIdea,
   generating_script: handleGenerateScript,
   running_qa: handleRunCriticPanel,
-  qa_retry: handleRunCriticPanel,
+  qa_retry: handleQaRetry,
   narration_complete: handleNarrationComplete,
   generating_production_doc: handleGenerateProductionDoc,
   generating_thumbnail: handleGenerateThumbnail,
