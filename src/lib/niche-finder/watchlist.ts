@@ -13,7 +13,9 @@
  * boolean threshold flag. No I/O — easy to unit-test.
  */
 import { sql } from '@vercel/postgres';
+import { randomUUID } from 'node:crypto';
 import type { NicheScores } from './types';
+import type { BrowseFilters } from './browse-filters';
 
 /** Per-week snapshot stored inside `niche_watchlist.weekly_history`. */
 export interface WatchlistSnapshot {
@@ -27,6 +29,13 @@ export interface WatchlistSnapshot {
   fit_label: string;
 }
 
+/** Kind of row in `niche_watchlist`:
+ *  - `'niche'` (default) — saved niche with weekly re-scoring history.
+ *  - `'search'` — saved Browse-Categories filter spec, replayable
+ *    against currently-cached taxonomy scores.
+ */
+export type WatchlistRowKind = 'niche' | 'search';
+
 export interface NicheWatchlistRow {
   workspace_id: string;
   niche_slug: string;
@@ -35,6 +44,32 @@ export interface NicheWatchlistRow {
   alarm_threshold: number | null;
   created_at: string;
   last_rescored_at: string | null;
+  /** Optional — present from migration 0062 onward. Defaults to 'niche'
+   *  on rows that pre-date the migration. */
+  kind?: WatchlistRowKind;
+  /** Saved-search filter spec — null on niche rows. */
+  search_spec?: BrowseFilters | null;
+  /** User-supplied label for the saved search — null on niche rows. */
+  search_label?: string | null;
+  /** Count of matches the last time the search was run. */
+  last_match_count?: number | null;
+}
+
+/** Synthetic slug prefix for saved-search rows (so the table's existing
+ *  PK `(workspace_id, niche_slug)` keeps doing its job without a real
+ *  niche slug). Search slugs are NOT exposed in URLs — the watchlist UI
+ *  treats them as opaque ids. */
+export const SAVED_SEARCH_SLUG_PREFIX = 'search-';
+
+/** Generate a fresh slug for a new saved search. The trailing UUID
+ *  segment is collision-proof in practice; the prefix makes the column
+ *  self-documenting if anyone reads the raw table. */
+export function newSavedSearchSlug(): string {
+  return `${SAVED_SEARCH_SLUG_PREFIX}${randomUUID()}`;
+}
+
+export function isSavedSearchSlug(slug: string): boolean {
+  return slug.startsWith(SAVED_SEARCH_SLUG_PREFIX);
 }
 
 /** Cap on history length per row. 26 weeks = 6 months — enough for
@@ -87,27 +122,33 @@ export async function removeFromWatchlist(workspaceId: string, nicheSlug: string
   return (rowCount ?? 0) > 0;
 }
 
-/** List the workspace's watchlist, newest-first. */
+/** List the workspace's watched niches, newest-first. Filters out
+ *  saved-search rows so the watchlist page and cron stay free of
+ *  filter-spec entries. */
 export async function listWatchlist(workspaceId: string): Promise<NicheWatchlistRow[]> {
   const { rows } = await sql<NicheWatchlistRow>`
     SELECT workspace_id::text, niche_slug, niche_name,
-      weekly_history, alarm_threshold, created_at, last_rescored_at
+      weekly_history, alarm_threshold, created_at, last_rescored_at,
+      kind, search_spec, search_label, last_match_count
     FROM niche_watchlist
     WHERE workspace_id = ${workspaceId}::uuid
+      AND kind = 'niche'
     ORDER BY created_at DESC
     LIMIT 100
   `;
   return rows;
 }
 
-/** Get a single watchlist row. NULL if not present. */
+/** Get a single watchlist row by slug. Works for both kinds — callers
+ *  that need to distinguish should branch on `.kind`. */
 export async function getWatchlistEntry(
   workspaceId: string,
   nicheSlug: string,
 ): Promise<NicheWatchlistRow | null> {
   const { rows } = await sql<NicheWatchlistRow>`
     SELECT workspace_id::text, niche_slug, niche_name,
-      weekly_history, alarm_threshold, created_at, last_rescored_at
+      weekly_history, alarm_threshold, created_at, last_rescored_at,
+      kind, search_spec, search_label, last_match_count
     FROM niche_watchlist
     WHERE workspace_id = ${workspaceId}::uuid AND niche_slug = ${nicheSlug}
     LIMIT 1
@@ -115,15 +156,115 @@ export async function getWatchlistEntry(
   return rows[0] ?? null;
 }
 
-/** All rows across all workspaces — used by the cron. */
+/** All niche rows across all workspaces — used by the weekly re-score
+ *  cron. Saved-search rows are excluded; they don't get re-scored. */
 export async function listAllWatchlistRows(): Promise<NicheWatchlistRow[]> {
   const { rows } = await sql<NicheWatchlistRow>`
     SELECT workspace_id::text, niche_slug, niche_name,
-      weekly_history, alarm_threshold, created_at, last_rescored_at
+      weekly_history, alarm_threshold, created_at, last_rescored_at,
+      kind, search_spec, search_label, last_match_count
     FROM niche_watchlist
+    WHERE kind = 'niche'
     ORDER BY workspace_id, niche_slug
   `;
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Saved-search CRUD (migration 0062+)
+// ---------------------------------------------------------------------------
+
+export interface SavedSearchRow {
+  workspace_id: string;
+  niche_slug: string; // synthetic 'search-<uuid>' — opaque to the UI
+  search_label: string;
+  search_spec: BrowseFilters;
+  last_match_count: number | null;
+  last_rescored_at: string | null; // re-used as "last run at"
+  created_at: string;
+}
+
+/** Insert a new saved-search row. Generates a fresh synthetic slug.
+ *  The `niche_name` column is set to the search label so existing
+ *  text-only watchlist queries still return something readable. */
+export async function addSavedSearch(args: {
+  workspaceId: string;
+  label: string;
+  spec: BrowseFilters;
+}): Promise<SavedSearchRow> {
+  const slug = newSavedSearchSlug();
+  const label = args.label.trim().slice(0, 80) || 'Untitled search';
+  const { rows } = await sql<SavedSearchRow>`
+    INSERT INTO niche_watchlist (
+      workspace_id, niche_slug, niche_name, weekly_history,
+      alarm_threshold, kind, search_spec, search_label, last_match_count
+    )
+    VALUES (
+      ${args.workspaceId}::uuid,
+      ${slug},
+      ${label},
+      '[]'::jsonb,
+      NULL,
+      'search',
+      ${JSON.stringify(args.spec)}::jsonb,
+      ${label},
+      NULL
+    )
+    RETURNING workspace_id::text, niche_slug, search_label, search_spec,
+      last_match_count, last_rescored_at, created_at
+  `;
+  return rows[0];
+}
+
+/** List all saved searches for a workspace, newest-first. Capped at 50
+ *  to stop a runaway client from bloating the list. */
+export async function listSavedSearches(workspaceId: string): Promise<SavedSearchRow[]> {
+  const { rows } = await sql<SavedSearchRow>`
+    SELECT workspace_id::text, niche_slug, search_label, search_spec,
+      last_match_count, last_rescored_at, created_at
+    FROM niche_watchlist
+    WHERE workspace_id = ${workspaceId}::uuid
+      AND kind = 'search'
+    ORDER BY created_at DESC
+    LIMIT 50
+  `;
+  return rows;
+}
+
+/** Delete a saved search. Returns true when a row was removed.
+ *  Cross-workspace ids return false (not 403) to avoid existence
+ *  leaks, mirroring the existing preset-delete pattern. */
+export async function removeSavedSearch(
+  workspaceId: string,
+  searchSlug: string,
+): Promise<boolean> {
+  if (!isSavedSearchSlug(searchSlug)) return false;
+  const { rowCount } = await sql`
+    DELETE FROM niche_watchlist
+    WHERE workspace_id = ${workspaceId}::uuid
+      AND niche_slug = ${searchSlug}
+      AND kind = 'search'
+  `;
+  return (rowCount ?? 0) > 0;
+}
+
+/** Update the cached "last match count" + "last run at" for a saved
+ *  search. Called whenever the user re-runs the search so the
+ *  watchlist page can show fresh numbers without re-running on render. */
+export async function updateSavedSearchRunStamp(args: {
+  workspaceId: string;
+  searchSlug: string;
+  matchCount: number;
+}): Promise<void> {
+  if (!isSavedSearchSlug(args.searchSlug)) return;
+  await sql`
+    UPDATE niche_watchlist
+    SET last_match_count = ${args.matchCount},
+        last_rescored_at = NOW()
+    WHERE workspace_id = ${args.workspaceId}::uuid
+      AND niche_slug = ${args.searchSlug}
+      AND kind = 'search'
+  `;
 }
 
 /** Append a snapshot, trim to HISTORY_MAX, update last_rescored_at. */

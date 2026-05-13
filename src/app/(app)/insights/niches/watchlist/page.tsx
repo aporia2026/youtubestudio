@@ -9,12 +9,19 @@
  */
 import Link from 'next/link';
 import { requireUser } from '@/lib/session';
-import { listWatchlist } from '@/lib/niche-finder/watchlist';
+import { listSavedSearches, listWatchlist } from '@/lib/niche-finder/watchlist';
 import { Sparkline } from '@/components/niche-finder/Sparkline';
+import { SavedSearchesSection } from '@/components/niche-finder/SavedSearchesSection';
 
 export default async function WatchlistPage() {
   const session = await requireUser();
-  const rows = await listWatchlist(session.ws);
+  // Niche rows + saved-search rows in parallel — they share a table
+  // but the read paths are independent (the listWatchlist function
+  // filters by kind='niche' since migration 0062).
+  const [rows, savedSearches] = await Promise.all([
+    listWatchlist(session.ws),
+    listSavedSearches(session.ws),
+  ]);
 
   return (
     <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto', color: '#e2e8f0' }}>
@@ -30,6 +37,17 @@ export default async function WatchlistPage() {
         <code style={codeStyle}>niche_score_spike</code> workflow event when a niche moves by more than the alarm
         threshold (default 10 points).
       </p>
+
+      <SavedSearchesSection
+        initialRows={savedSearches.map((r) => ({
+          niche_slug: r.niche_slug,
+          search_label: r.search_label,
+          search_spec: r.search_spec,
+          last_match_count: r.last_match_count,
+          last_rescored_at: r.last_rescored_at,
+          created_at: r.created_at,
+        }))}
+      />
 
       {rows.length === 0 ? (
         <EmptyState />

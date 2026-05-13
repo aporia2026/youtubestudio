@@ -37,6 +37,7 @@ import { BrowseFilterBar } from '@/components/niche-finder/BrowseFilterBar';
 import { BrowsePresetBar } from '@/components/niche-finder/BrowsePresetBar';
 import { BrowseQuadrantView } from '@/components/niche-finder/BrowseQuadrantView';
 import { NicheFinderModelPicker } from '@/components/niche-finder/NicheFinderModelPicker';
+import { CrossCategorySearchModal } from '@/components/niche-finder/CrossCategorySearchModal';
 import type { NicheScores } from '@/lib/niche-finder/types';
 
 type TabKey = 'type' | 'interests' | 'channel' | 'category' | 'outliers';
@@ -363,6 +364,7 @@ function CategoryTab(): React.ReactElement {
   const [region, setRegion] = useState('US');
   const [showQuadrant, setShowQuadrant] = useState(false);
   const [highlightedSlug, setHighlightedSlug] = useState<string | null>(null);
+  const [crossCatOpen, setCrossCatOpen] = useState(false);
 
   /** Convert a TaxonomyChildPayload[] into the shape filterAndSortDiscoveries
    *  expects (DiscoveryResultItem). We drop unscored nodes here — they
@@ -543,7 +545,43 @@ function CategoryTab(): React.ReactElement {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      <Breadcrumb crumbs={crumbs} onJump={jumpTo} />
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          flexWrap: 'wrap',
+        }}
+      >
+        <Breadcrumb crumbs={crumbs} onJump={jumpTo} />
+        <button
+          type="button"
+          onClick={() => setCrossCatOpen(true)}
+          title="Search every niche you've already scored across all categories"
+          style={{
+            padding: '6px 12px',
+            background: 'rgba(34,197,94,0.10)',
+            color: '#86efac',
+            border: '1px solid rgba(34,197,94,0.45)',
+            borderRadius: 8,
+            fontSize: 12,
+            fontWeight: 500,
+            cursor: 'pointer',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          ✦ Find sweet spot across all
+        </button>
+      </div>
+
+      <CrossCategorySearchModal
+        open={crossCatOpen}
+        spec={filters}
+        language={language}
+        region={region}
+        onClose={() => setCrossCatOpen(false)}
+      />
 
       {/* Header bar: model picker (sub-niche/micro-niche levels only)
           and brainstorm-more button. */}

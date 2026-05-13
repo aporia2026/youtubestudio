@@ -52,6 +52,7 @@
     "src/app/api/cron/detect-breakouts/route.ts":                    { "maxDuration": 300 },
     "src/app/api/cron/weekly-insight-digest/route.ts":               { "maxDuration": 300 },
     "src/app/api/cron/rescore-niche-watchlist/route.ts":             { "maxDuration": 300 },
+    "src/app/api/cron/niche-taxonomy-sweep/route.ts":                { "maxDuration": 300 },
     "src/app/api/cron/run-pipeline/route.ts":                        { "maxDuration": 300 }
   },
   "crons": [
@@ -86,6 +87,10 @@
     {
       "path": "/api/cron/rescore-niche-watchlist",
       "schedule": "0 4 * * 0"
+    },
+    {
+      "path": "/api/cron/niche-taxonomy-sweep",
+      "schedule": "30 3 * * *"
     },
     {
       "path": "/api/cron/run-pipeline",

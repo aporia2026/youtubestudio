@@ -295,3 +295,88 @@ export function isScoreFresh(scoredAt: string | null): boolean {
   if (!Number.isFinite(t)) return false;
   return Date.now() - t < SCORE_FRESHNESS_MS;
 }
+
+// ---------------------------------------------------------------------------
+// Cross-category scan helpers
+// ---------------------------------------------------------------------------
+
+/** A scored leaf-or-near-leaf node with enough ancestor info to render
+ *  a category breadcrumb in the UI. Used by the cross-category sweet-
+ *  spot scanner. `grandparent_name` is NULL when the node is a sub-
+ *  niche (only one level above it to walk). */
+export interface ScoredNodeWithPath {
+  id: string;
+  slug: string;
+  name: string;
+  level: TaxonomyLevel;
+  rationale: string | null;
+  parent_id: string | null;
+  parent_name: string | null;
+  grandparent_id: string | null;
+  grandparent_name: string | null;
+  scores: NicheScores;
+  sample_size: number;
+  scored_at: string;
+}
+
+/** Pull every scored sub-niche + micro-niche for a workspace in a
+ *  given locale, joined with up to two levels of ancestor name. Used
+ *  by the cross-category sweet-spot scanner — no YouTube / no AI
+ *  calls, this is a pure cached-data read.
+ *
+ *  Category-level nodes are excluded (they're navigation, not
+ *  destinations, and never have score rows in the first place). */
+export async function listScoredLeavesForLocale(args: {
+  workspaceId: string;
+  language: string;
+  region: string;
+}): Promise<ScoredNodeWithPath[]> {
+  const { rows } = await sql<ScoredNodeWithPath>`
+    SELECT
+      n.id::text,
+      n.slug,
+      n.name,
+      n.level,
+      n.rationale,
+      n.parent_id::text,
+      p.name AS parent_name,
+      p.parent_id::text AS grandparent_id,
+      g.name AS grandparent_name,
+      s.scores,
+      s.sample_size,
+      s.scored_at
+    FROM niche_taxonomy_nodes n
+    INNER JOIN niche_taxonomy_scores s
+      ON s.node_id = n.id AND s.workspace_id = ${args.workspaceId}::uuid
+    LEFT JOIN niche_taxonomy_nodes p ON p.id = n.parent_id
+    LEFT JOIN niche_taxonomy_nodes g ON g.id = p.parent_id
+    WHERE n.language = ${args.language}
+      AND n.region = ${args.region}
+      AND n.level IN ('subniche', 'microniche')
+    ORDER BY s.scored_at DESC
+  `;
+  return rows;
+}
+
+/** Find the N stalest scored nodes across all workspaces. Used by the
+ *  nightly sweep cron to prioritise re-scoring. Skips nodes whose
+ *  scores are still fresh; orders by `scored_at` ascending so the
+ *  oldest scores get refreshed first. */
+export interface StaleScoreRow {
+  workspace_id: string;
+  node_id: string;
+  scored_at: string;
+}
+
+export async function listStalestScores(limit: number): Promise<StaleScoreRow[]> {
+  const cutoffMs = Date.now() - SCORE_FRESHNESS_MS;
+  const cutoffIso = new Date(cutoffMs).toISOString();
+  const { rows } = await sql<StaleScoreRow>`
+    SELECT workspace_id::text, node_id::text, scored_at
+    FROM niche_taxonomy_scores
+    WHERE scored_at < ${cutoffIso}::timestamptz
+    ORDER BY scored_at ASC
+    LIMIT ${limit}
+  `;
+  return rows;
+}
