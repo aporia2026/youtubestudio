@@ -12,6 +12,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "db:migrate": "tsx --env-file-if-exists=.env.local scripts/migrate.ts up",
+    "set-password": "tsx --env-file-if-exists=.env.local scripts/set-password.ts",
+    "diagnose-login": "tsx --env-file-if-exists=.env.local scripts/diagnose-login.ts",
     "db:status": "tsx --env-file-if-exists=.env.local scripts/migrate.ts status",
     "deploy:remotion": "tsx --env-file-if-exists=.env.local scripts/deploy-remotion-site.ts",
     "smoke:lambda": "tsx --env-file-if-exists=.env.local scripts/lambda-smoke.ts",
