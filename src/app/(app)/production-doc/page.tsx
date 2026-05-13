@@ -22,6 +22,7 @@ import {
   getRecentNiches,
   getRecentTopics,
   type ProductionDocHistoryEntry,
+  type VoiceoverHistoryEntry,
 } from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
@@ -397,7 +398,160 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+function ImageLightbox({ imageUrl, onClose }: { imageUrl: string; onClose: () => void }) {
+  const [downloading, setDownloading] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [onClose]);
+
+  async function handleDownload() {
+    if (downloading) return;
+    setDownloading(true);
+    try {
+      // Fetch as blob so cross-origin R2 URLs save instead of navigating.
+      // The browser ignores `download` on cross-origin anchors without
+      // matching CORS headers, so a fetch-then-objectURL is the reliable path.
+      const res = await fetch(imageUrl, { mode: 'cors' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const filename = (() => {
+        try {
+          const u = new URL(imageUrl);
+          const tail = u.pathname.split('/').filter(Boolean).pop();
+          if (tail && /\.[a-z0-9]{2,5}$/i.test(tail)) return tail;
+        } catch { /* fall through */ }
+        const ext = blob.type.includes('png') ? 'png' : blob.type.includes('webp') ? 'webp' : 'jpg';
+        return `image-${Date.now()}.${ext}`;
+      })();
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      // CORS-blocked or offline — open the raw URL in a new tab as a fallback
+      // so the user can right-click → Save As. Better than a silent failure.
+      window.open(imageUrl, '_blank', 'noopener,noreferrer');
+      toast.message('Download blocked by browser. Opened in a new tab instead.');
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1000,
+        background: 'rgba(0,0,0,0.85)',
+        backdropFilter: 'blur(4px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 24,
+        cursor: 'zoom-out',
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          position: 'absolute',
+          top: 16,
+          right: 16,
+          display: 'flex',
+          gap: 8,
+        }}
+      >
+        <button
+          type="button"
+          onClick={handleDownload}
+          disabled={downloading}
+          aria-label="Download image"
+          title="Download image"
+          style={{
+            height: 36,
+            padding: '0 14px',
+            borderRadius: 18,
+            background: 'rgba(255,255,255,0.10)',
+            border: '1px solid rgba(255,255,255,0.20)',
+            color: '#fff',
+            fontSize: 12,
+            fontWeight: 500,
+            cursor: downloading ? 'wait' : 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            opacity: downloading ? 0.7 : 1,
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          {downloading ? 'Downloading…' : 'Download'}
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close preview"
+          title="Close (Esc)"
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 18,
+            background: 'rgba(255,255,255,0.10)',
+            border: '1px solid rgba(255,255,255,0.20)',
+            color: '#fff',
+            fontSize: 18,
+            lineHeight: 1,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          ✕
+        </button>
+      </div>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={imageUrl}
+        alt="Full preview"
+        onClick={e => e.stopPropagation()}
+        style={{
+          maxWidth: '92vw',
+          maxHeight: '92vh',
+          objectFit: 'contain',
+          borderRadius: 8,
+          boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+          cursor: 'default',
+        }}
+      />
+    </div>
+  );
+}
+
 function ImageCell({ state, onRetry }: { state: RowImageState; onRetry: () => void }) {
+  const [previewOpen, setPreviewOpen] = useState(false);
+
   if (state.status === 'idle') return null;
 
   if (state.status === 'search') {
@@ -429,21 +583,37 @@ function ImageCell({ state, onRetry }: { state: RowImageState; onRetry: () => vo
 
   if (state.status === 'done' && state.imageUrl) {
     return (
-      <a href={state.imageUrl} target="_blank" rel="noopener noreferrer" title="Open full image">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={state.imageUrl}
-          alt="AI generated"
+      <>
+        <button
+          type="button"
+          onClick={() => setPreviewOpen(true)}
+          title="Click to preview full size"
           style={{
-            width: 80,
-            height: 50,
-            objectFit: 'cover',
-            borderRadius: 5,
-            border: '1px solid var(--border)',
+            padding: 0,
+            background: 'transparent',
+            border: 'none',
+            cursor: 'zoom-in',
             display: 'block',
           }}
-        />
-      </a>
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={state.imageUrl}
+            alt="AI generated"
+            style={{
+              width: 80,
+              height: 50,
+              objectFit: 'cover',
+              borderRadius: 5,
+              border: '1px solid var(--border)',
+              display: 'block',
+            }}
+          />
+        </button>
+        {previewOpen && (
+          <ImageLightbox imageUrl={state.imageUrl} onClose={() => setPreviewOpen(false)} />
+        )}
+      </>
     );
   }
 
@@ -463,6 +633,390 @@ function ImageCell({ state, onRetry }: { state: RowImageState; onRetry: () => vo
   }
 
   return null;
+}
+
+// ─── Voiceover picker ─────────────────────────────────────────────────────────
+
+function relativeTime(ts: number): string {
+  const diff = Date.now() - ts;
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} hr ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d} d ago`;
+  return new Date(ts).toLocaleDateString();
+}
+
+/**
+ * Pick the best-matching voiceover for the current production doc.
+ *
+ * Precedence:
+ *   1. Same schedule item — strongest signal, can't ambiguously match.
+ *   2. videoTitle that matches the doc's title or topic (case/whitespace insensitive).
+ *   3. Most recent — fallback so the field isn't empty for users who skip
+ *      schedule items / haven't named their doc yet.
+ */
+function pickBestVoiceover(
+  list: VoiceoverHistoryEntry[],
+  scheduleItemId: string | null | undefined,
+  candidates: Array<string | null | undefined>,
+): VoiceoverHistoryEntry | null {
+  if (list.length === 0) return null;
+
+  if (scheduleItemId) {
+    const byItem = list.find(v => v.scheduleItemId === scheduleItemId && v.audioUrl);
+    if (byItem) return byItem;
+  }
+
+  const norm = (s: string | null | undefined) =>
+    (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const titles = candidates.map(norm).filter(Boolean);
+  if (titles.length > 0) {
+    const byTitle = list.find(v => {
+      if (!v.audioUrl) return false;
+      const vt = norm(v.videoTitle);
+      if (!vt) return false;
+      return titles.includes(vt);
+    });
+    if (byTitle) return byTitle;
+  }
+
+  // Final fallback: most recent entry that actually has an audio URL.
+  return list.find(v => v.audioUrl) ?? null;
+}
+
+interface VoiceoverPickerProps {
+  /** Current URL (controlled — keeps Remotion player API untouched). */
+  value: string;
+  /** Setter that also persists "user touched this" intent. */
+  onChange: (url: string, source: 'auto' | 'manual' | 'clear') => void;
+  /** Schedule item id we're linked to, if any (strongest match signal). */
+  scheduleItemId: string | null | undefined;
+  /** Title candidates to match against entry.videoTitle (in priority order). */
+  titleCandidates: Array<string | null | undefined>;
+}
+
+function VoiceoverPicker({
+  value,
+  onChange,
+  scheduleItemId,
+  titleCandidates,
+}: VoiceoverPickerProps) {
+  const [entries, setEntries] = useState<VoiceoverHistoryEntry[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [autoMatchedId, setAutoMatchedId] = useState<string | null>(null);
+  const userTouchedRef = useRef(false);
+  const playingIdRef = useRef<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playingId, setPlayingId] = useState<string | null>(null);
+
+  // Initial load of the library.
+  useEffect(() => {
+    let cancelled = false;
+    getVoiceoverHistory()
+      .then(list => {
+        if (cancelled) return;
+        setEntries(list);
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLoaded(true);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Auto-match — re-runs when matching context changes (e.g. schedule item
+  // resolved after first paint, doc title generated). Skips silently once
+  // the user has clicked something to avoid clobbering their choice.
+  // Stringify title candidates so the effect doesn't refire on every render
+  // from a new array identity carrying the same values.
+  const titleKey = titleCandidates.filter(Boolean).join('||');
+  useEffect(() => {
+    if (!loaded || userTouchedRef.current) return;
+    const match = pickBestVoiceover(entries, scheduleItemId, titleCandidates);
+    if (match?.audioUrl && match.audioUrl !== value) {
+      onChange(match.audioUrl, 'auto');
+      setAutoMatchedId(match.id);
+    } else if (match?.id) {
+      setAutoMatchedId(match.id);
+    }
+    // titleCandidates is captured via titleKey; suppress exhaustive-deps for
+    // the array identity warning that doesn't reflect a real dependency change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, entries, scheduleItemId, titleKey]);
+
+  // Stop preview audio if the picker unmounts or the popover closes.
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, []);
+
+  function togglePreview(entry: VoiceoverHistoryEntry) {
+    if (!entry.audioUrl) return;
+    if (playingIdRef.current === entry.id && audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+      playingIdRef.current = null;
+      setPlayingId(null);
+      return;
+    }
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    const audio = new Audio(entry.audioUrl);
+    audio.onended = () => {
+      if (playingIdRef.current === entry.id) {
+        playingIdRef.current = null;
+        setPlayingId(null);
+      }
+    };
+    audio.onerror = () => {
+      playingIdRef.current = null;
+      setPlayingId(null);
+      toast.error('Could not play preview');
+    };
+    audioRef.current = audio;
+    playingIdRef.current = entry.id;
+    setPlayingId(entry.id);
+    audio.play().catch(() => {
+      playingIdRef.current = null;
+      setPlayingId(null);
+    });
+  }
+
+  function selectEntry(entry: VoiceoverHistoryEntry) {
+    userTouchedRef.current = true;
+    onChange(entry.audioUrl, 'manual');
+    setOpen(false);
+  }
+
+  function clearSelection() {
+    userTouchedRef.current = true;
+    onChange('', 'clear');
+    setOpen(false);
+  }
+
+  const selected = entries.find(e => e.audioUrl === value) || null;
+  const matchedToCurrent = selected && autoMatchedId === selected.id;
+
+  // ─── Trigger button (collapsed state) ──────────────────────────────────
+  const triggerLabel = (() => {
+    if (!loaded) return 'Loading voiceovers…';
+    if (selected) {
+      const title = selected.videoTitle?.trim();
+      return title
+        ? `${selected.voiceName} · ${title}`
+        : `${selected.voiceName} (${relativeTime(selected.timestamp)})`;
+    }
+    if (value) return 'External URL set';
+    if (entries.length === 0) return 'No voiceovers in library yet';
+    return 'Select a voiceover…';
+  })();
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="input-field text-xs"
+        style={{
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          textAlign: 'left',
+          cursor: 'pointer',
+        }}
+      >
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: selected ? '#a78bfa' : 'var(--text-muted)', flexShrink: 0 }}>
+            <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+            <path d="M21 19a2 2 0 0 1-2 2h-1v-7h3zM3 19a2 2 0 0 0 2 2h1v-7H3z" />
+          </svg>
+          <span style={{
+            color: selected || value ? 'var(--text-primary)' : 'var(--text-muted)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}>
+            {triggerLabel}
+          </span>
+          {matchedToCurrent && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded-full whitespace-nowrap"
+              style={{ background: 'rgba(168,85,247,0.18)', color: '#c084fc', flexShrink: 0 }}
+              title="Auto-matched to this video"
+            >
+              auto-matched
+            </span>
+          )}
+        </span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s', flexShrink: 0 }}>
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </button>
+
+      {open && (
+        <>
+          {/* Click-outside catcher */}
+          <div
+            onClick={() => setOpen(false)}
+            style={{ position: 'fixed', inset: 0, zIndex: 40 }}
+          />
+          <div
+            style={{
+              position: 'absolute',
+              top: 'calc(100% + 4px)',
+              left: 0,
+              right: 0,
+              zIndex: 50,
+              maxHeight: 340,
+              overflowY: 'auto',
+              background: 'var(--bg-elevated, #181818)',
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              boxShadow: '0 10px 30px rgba(0,0,0,0.45)',
+              padding: 4,
+            }}
+          >
+            {entries.length === 0 ? (
+              <div
+                className="text-xs px-3 py-4 text-center"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                No voiceovers yet. Record one in <strong style={{ color: 'var(--text-secondary)' }}>Voiceover Studio</strong>.
+              </div>
+            ) : (
+              <>
+                {value && (
+                  <button
+                    type="button"
+                    onClick={clearSelection}
+                    className="text-xs w-full text-left px-3 py-2 rounded"
+                    style={{
+                      color: '#f87171',
+                      background: 'transparent',
+                    }}
+                    onMouseEnter={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.08)')}
+                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    ✕ Clear voiceover (silent video)
+                  </button>
+                )}
+                {entries.map(entry => {
+                  const isSelected = entry.audioUrl === value;
+                  const isAutoMatch = entry.id === autoMatchedId;
+                  return (
+                    <div
+                      key={entry.id}
+                      className="flex items-start gap-2 px-2 py-2 rounded"
+                      style={{
+                        background: isSelected ? 'rgba(168,85,247,0.14)' : 'transparent',
+                        cursor: 'pointer',
+                      }}
+                      onMouseEnter={e => {
+                        if (!isSelected) e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
+                      }}
+                      onMouseLeave={e => {
+                        if (!isSelected) e.currentTarget.style.background = 'transparent';
+                      }}
+                      onClick={() => selectEntry(entry)}
+                    >
+                      <button
+                        type="button"
+                        onClick={e => { e.stopPropagation(); togglePreview(entry); }}
+                        title={playingId === entry.id ? 'Stop preview' : 'Play preview'}
+                        style={{
+                          width: 26,
+                          height: 26,
+                          flexShrink: 0,
+                          marginTop: 2,
+                          borderRadius: 13,
+                          background: playingId === entry.id ? 'rgba(168,85,247,0.25)' : 'rgba(255,255,255,0.08)',
+                          border: 'none',
+                          color: playingId === entry.id ? '#c084fc' : 'var(--text-secondary)',
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        {playingId === entry.id ? (
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                            <rect x="6" y="5" width="4" height="14" rx="1" />
+                            <rect x="14" y="5" width="4" height="14" rx="1" />
+                          </svg>
+                        ) : (
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M8 5v14l11-7z" />
+                          </svg>
+                        )}
+                      </button>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="flex items-center gap-1.5" style={{ minWidth: 0 }}>
+                          <span
+                            className="text-xs font-medium"
+                            style={{
+                              color: isSelected ? '#c084fc' : 'var(--text-primary)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {entry.voiceName}
+                          </span>
+                          {isAutoMatch && !isSelected && (
+                            <span
+                              className="text-[9px] px-1 py-0.5 rounded"
+                              style={{ background: 'rgba(168,85,247,0.18)', color: '#c084fc' }}
+                            >
+                              match
+                            </span>
+                          )}
+                          <span
+                            className="text-[10px] ml-auto whitespace-nowrap"
+                            style={{ color: 'var(--text-muted)' }}
+                          >
+                            {relativeTime(entry.timestamp)}
+                          </span>
+                        </div>
+                        {entry.videoTitle && (
+                          <div
+                            className="text-[10px] truncate"
+                            style={{ color: 'var(--text-secondary)' }}
+                          >
+                            {entry.videoTitle}
+                          </div>
+                        )}
+                        <div
+                          className="text-[10px] truncate"
+                          style={{ color: 'var(--text-muted)' }}
+                        >
+                          {entry.charCount.toLocaleString()} chars · {entry.textPreview.slice(0, 60)}
+                          {entry.textPreview.length > 60 ? '…' : ''}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
@@ -755,20 +1309,17 @@ function ProductionDocPage() {
   const [renderOutputUrl, setRenderOutputUrl] = useState<string | null>(null);
   const renderPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Load brand kit + voiceover URL from localStorage on client only
+  // Load brand kit from localStorage on client only. The voiceover URL is
+  // handled by <VoiceoverPicker>, which fetches the library, picks the best
+  // match for this video (schedule item → title → most recent), and yields
+  // a URL through onChange. Centralising that logic in the picker keeps the
+  // page free of stale "latest" prefills when the doc is actually for a
+  // different video.
   useEffect(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('video_brand_kit') || '{}') as Partial<BrandKit>;
       if (stored.primaryColor) setBrandKit(b => ({ ...b, ...stored }));
     } catch { /* ignore */ }
-    // Pre-fill the voiceover URL from the user's most recent voiceover.
-    // Goes through the server-synced history (migration 0049) so a voiceover
-    // recorded on another device shows up here too.
-    getVoiceoverHistory()
-      .then((history) => {
-        if (history.length > 0 && history[0]?.audioUrl) setVoiceoverUrl(history[0].audioUrl);
-      })
-      .catch(() => { /* ignore — no prefill is fine */ });
   }, []);
 
   // Load prefill from generator / QA pages. Functional setters so a
@@ -2219,20 +2770,20 @@ function ProductionDocPage() {
 
             {showVideoPreview && (
               <div className="px-5 pb-5 space-y-4" style={{ borderTop: '1px solid var(--border)' }}>
-                {/* Voiceover URL input */}
+                {/* Voiceover picker — pulls from the workspace library and
+                    auto-matches by schedule item / video title when possible. */}
                 <div className="pt-4">
                   <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
-                    Voiceover URL
+                    Voiceover
                     <span className="ml-2 font-normal" style={{ color: 'var(--text-muted)' }}>
-                      (optional — auto-filled from your latest Voiceover Studio generation)
+                      (optional, auto-matched from your Voiceover library when we know which video this is)
                     </span>
                   </label>
-                  <input
-                    type="url"
+                  <VoiceoverPicker
                     value={voiceoverUrl}
-                    onChange={e => setVoiceoverUrl(e.target.value)}
-                    placeholder="https://...vercel-storage.com/voiceover/..."
-                    className="input-field text-xs"
+                    onChange={(url) => setVoiceoverUrl(url)}
+                    scheduleItemId={scheduleItemId}
+                    titleCandidates={[scheduleItem?.title, doc?.title, topic]}
                   />
                 </div>
 
