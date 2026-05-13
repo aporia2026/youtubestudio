@@ -36,11 +36,15 @@ export const LowerThird: React.FC<LowerThirdProps> = ({
   const entranceFrame = Math.max(0, frame - delay);
   const entrance = spring({ frame: entranceFrame, fps, config: SPRING_SNAPPY, from: 0, to: 1 });
 
-  // Exit — slide back out
+  // Exit — slide back out as the scene approaches its end.
+  // framesUntilEnd counts DOWN from totalFrames to 0, so to keep interpolate's
+  // inputRange strictly increasing (Remotion throws otherwise) we flip both
+  // ranges: at framesUntilEnd=0 we want progress=1 (fully exited); at
+  // framesUntilEnd=exitBeforeEnd we want progress=0 (haven't started).
   const framesUntilEnd = totalFrames - frame;
   const isExiting = framesUntilEnd <= exitBeforeEnd;
   const exitProgress = isExiting
-    ? interpolate(framesUntilEnd, [exitBeforeEnd, 0], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' })
+    ? interpolate(framesUntilEnd, [0, exitBeforeEnd], [1, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' })
     : 0;
 
   const translateX = interpolate(entrance, [0, 1], [-width * 0.6, 0]) + exitProgress * -width * 0.6;
