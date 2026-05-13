@@ -210,7 +210,15 @@ export function OutlierCard({ video }: { video: OutlierVideo }): React.ReactElem
               </span>
             )}
           </div>
-          <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div
+            style={{
+              marginTop: 8,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              flexWrap: 'wrap',
+            }}
+          >
             {monet ? (
               <MonetizationPill
                 status={monet.status}
@@ -264,11 +272,17 @@ function MonetizationPill({
   loading: boolean;
 }): React.ReactElement {
   const tone = STATUS_TONE[status];
-  const tooltip = `${reason}${cached ? ' (cached)' : ''}`;
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        flexWrap: 'wrap',
+      }}
+    >
       <span
-        title={tooltip}
+        title={reason}
         style={{
           padding: '2px 8px',
           background: tone.bg,
@@ -281,6 +295,16 @@ function MonetizationPill({
         }}
       >
         {tone.label}
+      </span>
+      <span
+        style={{
+          fontSize: 11,
+          color: '#64748b',
+          fontStyle: 'italic',
+        }}
+      >
+        {reason}
+        {cached && ' (cached)'}
       </span>
       <button
         type="button"

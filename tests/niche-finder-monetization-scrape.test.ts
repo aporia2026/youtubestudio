@@ -149,6 +149,34 @@ describe('detectMonetizationFromPlayerResponse', () => {
     expect(r.reason.toLowerCase()).toContain('live');
   });
 
+  it('returns unknown for Shorts (duration <= 60s) since static page lacks signal', () => {
+    // Real YouTube watch pages for Shorts don't populate adPlacements
+    // regardless of monetization, so we can't tell from a static fetch.
+    const r = detectMonetizationFromPlayerResponse({
+      playabilityStatus: { status: 'OK' },
+      videoDetails: { lengthSeconds: '30' },
+    });
+    expect(r.status).toBe('unknown');
+    expect(r.reason.toLowerCase()).toContain('short');
+  });
+
+  it('respects the 60s boundary — 61s is treated as regular video', () => {
+    const r = detectMonetizationFromPlayerResponse({
+      playabilityStatus: { status: 'OK' },
+      videoDetails: { lengthSeconds: '61' },
+    });
+    expect(r.status).toBe('not-monetized');
+  });
+
+  it('handles numeric lengthSeconds (not only string)', () => {
+    const r = detectMonetizationFromPlayerResponse({
+      playabilityStatus: { status: 'OK' },
+      videoDetails: { lengthSeconds: 45 },
+    });
+    expect(r.status).toBe('unknown');
+    expect(r.reason.toLowerCase()).toContain('short');
+  });
+
   it('ignores non-array adPlacements / playerAds (treats as missing)', () => {
     const r = detectMonetizationFromPlayerResponse({
       playabilityStatus: { status: 'OK' },

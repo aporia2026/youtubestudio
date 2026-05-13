@@ -65,8 +65,16 @@ export interface PlayerResponseLike {
   playabilityStatus?: { status?: string; reason?: string };
   adPlacements?: unknown[];
   playerAds?: unknown[];
-  videoDetails?: { isLiveContent?: boolean };
+  videoDetails?: {
+    isLiveContent?: boolean;
+    lengthSeconds?: string | number;
+  };
 }
+
+/** Duration ceiling for "this is a YouTube Short" detection. The
+ *  watch-page JSON doesn't carry an explicit Shorts flag, so we
+ *  fall back on the 60-second duration cap that YouTube uses. */
+const SHORTS_MAX_SECONDS = 60;
 
 // ---------------------------------------------------------------------------
 // Pure helpers — no I/O, fixture-testable.
@@ -181,6 +189,22 @@ export function detectMonetizationFromPlayerResponse(
     return {
       status: 'unknown',
       reason: 'Live content uses a different ad model; static check is unreliable.',
+    };
+  }
+
+  // Shorts don't populate `adPlacements` on the static watch page
+  // even when they're monetized via the Shorts revenue share, so a
+  // static check can't distinguish monetized from non-monetized
+  // Shorts. Be honest about it rather than mislabel everything as
+  // not-monetized.
+  const lengthRaw = response.videoDetails?.lengthSeconds;
+  const lengthSec =
+    typeof lengthRaw === 'string' ? parseInt(lengthRaw, 10) :
+    typeof lengthRaw === 'number' ? lengthRaw : NaN;
+  if (Number.isFinite(lengthSec) && lengthSec > 0 && lengthSec <= SHORTS_MAX_SECONDS) {
+    return {
+      status: 'unknown',
+      reason: 'Shorts use a different ad model; static check is unreliable.',
     };
   }
 
