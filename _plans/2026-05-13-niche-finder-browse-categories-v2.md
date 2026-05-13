@@ -1,7 +1,11 @@
 ---
 title: Niche Finder — Browse Categories v2 (extreme filters + hierarchical engine + sweet-spot scanner)
 date: 2026-05-13
-status: draft (awaiting approval before any code lands)
+status: done — all three PRs landed on phase-1-foundation
+delivered:
+  - PR1 048e7a3 — extreme filters + presets + quadrant view (bundled with PR2)
+  - PR2 048e7a3 — hierarchical AI taxonomy + provider-agnostic model picker
+  - PR3 b430177 — saved searches + cross-category sweet-spot scanner + nightly sweep
 shape: 3 staged PRs, lazy compute + nightly sweep, watchlist-extended saved searches
 owner: info@flexelent.com
 ---
