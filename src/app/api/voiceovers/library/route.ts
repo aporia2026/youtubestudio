@@ -2,16 +2,12 @@ import { NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
 import { apiRoute } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
-import { getNarrationDownloadUrl } from '@/lib/r2';
 
 interface LibraryRow {
   id: string;
   project_id: string | null;
   project_title: string | null;
   name: string | null;
-  url: string | null;
-  r2_bucket: string | null;
-  r2_key: string | null;
   duration_seconds: number | null;
   metadata: Record<string, unknown> | null;
   created_at: string;
@@ -46,16 +42,18 @@ export interface VoiceoverLibraryEntry {
  * resolve the schedule-item linkage here via the JSONB custom_fields
  * pointer that's stamped on schedule_items when an assignment is created.
  *
- * R2-backed rows get a freshly presigned URL on read so playback works
- * past the original 7-day TTL — same pattern the existing
- * /api/projects/[id]/voiceover-library route already uses.
+ * `audioUrl` is always the same-origin proxy `/api/voiceovers/[id]/audio`,
+ * never the raw R2 / Blob URL. Routing through the proxy is what makes
+ * Remotion's `<Audio>` happy: the player fetches bytes for decoding and
+ * needs CORS-clean, presign-stable URLs that don't 403 mid-playback.
+ * The proxy 302's to Vercel Blob for non-R2 rows so we don't waste a hop
+ * on storage that already has permissive CORS.
  */
 export const GET = apiRoute.authed(async (session) => {
   try {
     const { rows } = await sql<LibraryRow>`
       SELECT m.id, m.project_id, p.title AS project_title,
-             m.name, m.url, m.r2_bucket, m.r2_key,
-             m.duration_seconds, m.metadata, m.created_at,
+             m.name, m.duration_seconds, m.metadata, m.created_at,
              a.narrator_id, c.name AS narrator_name,
              (m.metadata->>'assignment_id') AS assignment_id,
              si.id AS schedule_item_id
@@ -79,34 +77,26 @@ export const GET = apiRoute.authed(async (session) => {
       LIMIT 200
     `;
 
-    const narrationBucket = process.env.R2_NARRATION_BUCKET_NAME || 'narration';
-    const entries: VoiceoverLibraryEntry[] = await Promise.all(
-      rows.map(async (r): Promise<VoiceoverLibraryEntry> => {
-        let url = r.url || '';
-        if (r.r2_key && r.r2_bucket === narrationBucket) {
-          try { url = await getNarrationDownloadUrl(r.r2_key); }
-          catch { /* fall back to stored url */ }
-        }
-        const meta = r.metadata || {};
-        const source: VoiceoverLibraryEntry['source'] =
-          meta.stitched === true ? 'narrator_stitched'
-          : meta.full_narration === true ? 'narrator_full'
-          : 'other';
-        return {
-          id: r.id,
-          audioUrl: url,
-          name: r.name || 'Voiceover',
-          narratorName: r.narrator_name,
-          projectId: r.project_id,
-          projectTitle: r.project_title,
-          assignmentId: r.assignment_id,
-          scheduleItemId: r.schedule_item_id,
-          durationSeconds: r.duration_seconds,
-          timestamp: new Date(r.created_at).getTime(),
-          source,
-        };
-      }),
-    );
+    const entries: VoiceoverLibraryEntry[] = rows.map((r): VoiceoverLibraryEntry => {
+      const meta = r.metadata || {};
+      const source: VoiceoverLibraryEntry['source'] =
+        meta.stitched === true ? 'narrator_stitched'
+        : meta.full_narration === true ? 'narrator_full'
+        : 'other';
+      return {
+        id: r.id,
+        audioUrl: `/api/voiceovers/${r.id}/audio`,
+        name: r.name || 'Voiceover',
+        narratorName: r.narrator_name,
+        projectId: r.project_id,
+        projectTitle: r.project_title,
+        assignmentId: r.assignment_id,
+        scheduleItemId: r.schedule_item_id,
+        durationSeconds: r.duration_seconds,
+        timestamp: new Date(r.created_at).getTime(),
+        source,
+      };
+    });
 
     return NextResponse.json({ voiceovers: entries });
   } catch (err) {
