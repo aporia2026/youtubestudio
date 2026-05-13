@@ -13,6 +13,7 @@
 import { useState } from 'react';
 import type { OutlierVideo } from '@/lib/niche-finder/outliers';
 import { parseDurationToSeconds } from '@/lib/niche-finder/scoring/shared';
+import { isLikelyMonetized } from '@/lib/niche-finder/outlier-filters';
 import type {
   MonetizationCheckResult,
   MonetizationStatus,
@@ -74,6 +75,10 @@ const STATUS_TONE: Record<MonetizationStatus, { fg: string; bg: string; border: 
 
 export function OutlierCard({ video }: { video: OutlierVideo }): React.ReactElement {
   const duration = formatDuration(video.durationIso);
+  const likelyMonet = isLikelyMonetized({
+    subscriberCount: video.subscriberCount,
+    durationIso: video.durationIso,
+  });
   const [monet, setMonet] = useState<MonetizationCheckResult | null>(null);
   const [monetLoading, setMonetLoading] = useState(false);
   const [monetError, setMonetError] = useState<string | null>(null);
@@ -186,6 +191,24 @@ export function OutlierCard({ video }: { video: OutlierVideo }): React.ReactElem
             >
               {video.outlierScore.toFixed(1)}× ({video.classification})
             </span>
+            {!monet && (
+              <span
+                title={
+                  likelyMonet
+                    ? 'Heuristic: channel meets the YPP minimum (≥1K subs) and the video clears the mid-roll floor (≥8 min). Click "Check monetization" for the verified answer.'
+                    : 'Heuristic: channel below YPP minimum (1K subs) and/or video below the mid-roll floor (8 min). Click "Check monetization" for the verified answer.'
+                }
+                style={{
+                  marginLeft: 8,
+                  fontSize: 11,
+                  fontWeight: 500,
+                  color: likelyMonet ? '#86efac' : '#94a3b8',
+                  fontStyle: 'italic',
+                }}
+              >
+                · {likelyMonet ? 'Likely monetized' : 'Likely not monetized'}
+              </span>
+            )}
           </div>
           <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
             {monet ? (
