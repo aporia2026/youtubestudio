@@ -4,9 +4,19 @@
  * One video surfaced by the outlier finder (mode D). Shows the
  * thumbnail (with a duration badge), title, view-count, channel
  * name + size, and the outlier score with its classification.
+ *
+ * The "Check monetization" button at the bottom of the card runs a
+ * single watch-page scrape via /api/niche-finder/monetization-check
+ * — see _plans/2026-05-13-monetization-on-demand-check.md for why
+ * this is lazy on-demand instead of auto-checking every result.
  */
+import { useState } from 'react';
 import type { OutlierVideo } from '@/lib/niche-finder/outliers';
 import { parseDurationToSeconds } from '@/lib/niche-finder/scoring/shared';
+import type {
+  MonetizationCheckResult,
+  MonetizationStatus,
+} from '@/lib/niche-finder/monetization-scrape';
 
 const TONE_BG: Record<OutlierVideo['classification'], string> = {
   underperformer: 'rgba(100, 116, 139, 0.10)',
@@ -41,8 +51,59 @@ function formatDuration(iso: string): string | null {
   return `${m}:${ss}`;
 }
 
+const STATUS_TONE: Record<MonetizationStatus, { fg: string; bg: string; border: string; label: string }> = {
+  monetized: {
+    fg: '#86efac',
+    bg: 'rgba(34,197,94,0.12)',
+    border: 'rgba(34,197,94,0.40)',
+    label: 'Monetized',
+  },
+  'not-monetized': {
+    fg: '#cbd5e1',
+    bg: 'rgba(100,116,139,0.10)',
+    border: 'rgba(100,116,139,0.30)',
+    label: 'Not monetized',
+  },
+  unknown: {
+    fg: '#fbbf24',
+    bg: 'rgba(245,158,11,0.10)',
+    border: 'rgba(245,158,11,0.30)',
+    label: 'Unknown',
+  },
+};
+
 export function OutlierCard({ video }: { video: OutlierVideo }): React.ReactElement {
   const duration = formatDuration(video.durationIso);
+  const [monet, setMonet] = useState<MonetizationCheckResult | null>(null);
+  const [monetLoading, setMonetLoading] = useState(false);
+  const [monetError, setMonetError] = useState<string | null>(null);
+
+  async function checkMonetization(e: React.MouseEvent): Promise<void> {
+    e.preventDefault();
+    e.stopPropagation();
+    if (monetLoading) return;
+    setMonetLoading(true);
+    setMonetError(null);
+    try {
+      const res = await fetch('/api/niche-finder/monetization-check', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ videoId: video.videoId, forceRefresh: !!monet }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as { error?: string } | null;
+        setMonetError(data?.error ?? `Request failed (${res.status}).`);
+        return;
+      }
+      const data = (await res.json()) as MonetizationCheckResult;
+      setMonet(data);
+    } catch (err) {
+      setMonetError(err instanceof Error ? err.message : 'Network error.');
+    } finally {
+      setMonetLoading(false);
+    }
+  }
+
   return (
     <a
       href={`https://www.youtube.com/watch?v=${video.videoId}`}
@@ -126,8 +187,96 @@ export function OutlierCard({ video }: { video: OutlierVideo }): React.ReactElem
               {video.outlierScore.toFixed(1)}× ({video.classification})
             </span>
           </div>
+          <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+            {monet ? (
+              <MonetizationPill
+                status={monet.status}
+                reason={monet.reason}
+                cached={monet.cached}
+                onRecheck={checkMonetization}
+                loading={monetLoading}
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={checkMonetization}
+                disabled={monetLoading}
+                title="Fetches the YouTube watch page and parses ad placements. The API doesn't publish monetization status directly — this is a one-off scrape, cached for 7 days."
+                style={{
+                  padding: '3px 8px',
+                  background: 'transparent',
+                  color: monetLoading ? '#475569' : '#94a3b8',
+                  border: '1px solid #334155',
+                  borderRadius: 6,
+                  fontSize: 11,
+                  cursor: monetLoading ? 'wait' : 'pointer',
+                }}
+              >
+                {monetLoading ? 'Checking…' : 'Check monetization'}
+              </button>
+            )}
+            {monetError && (
+              <span style={{ fontSize: 11, color: '#f87171' }} title={monetError}>
+                Check failed
+              </span>
+            )}
+          </div>
         </div>
       </div>
     </a>
+  );
+}
+
+function MonetizationPill({
+  status,
+  reason,
+  cached,
+  onRecheck,
+  loading,
+}: {
+  status: MonetizationStatus;
+  reason: string;
+  cached: boolean;
+  onRecheck: (e: React.MouseEvent) => void;
+  loading: boolean;
+}): React.ReactElement {
+  const tone = STATUS_TONE[status];
+  const tooltip = `${reason}${cached ? ' (cached)' : ''}`;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <span
+        title={tooltip}
+        style={{
+          padding: '2px 8px',
+          background: tone.bg,
+          color: tone.fg,
+          border: `1px solid ${tone.border}`,
+          borderRadius: 999,
+          fontSize: 11,
+          fontWeight: 600,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {tone.label}
+      </span>
+      <button
+        type="button"
+        onClick={onRecheck}
+        disabled={loading}
+        title="Re-check (skips the 7-day cache)"
+        aria-label="Re-check monetization"
+        style={{
+          padding: '1px 6px',
+          background: 'transparent',
+          color: loading ? '#475569' : '#64748b',
+          border: '1px solid transparent',
+          borderRadius: 4,
+          fontSize: 10,
+          cursor: loading ? 'wait' : 'pointer',
+        }}
+      >
+        {loading ? '…' : '↻'}
+      </button>
+    </span>
   );
 }
