@@ -198,6 +198,14 @@ export function buildThumbnailKey(projectId: string, fileName: string): string {
   return `thumbnails/${projectId}/${Date.now()}-${sanitized}`;
 }
 
+/** Build an R2 key for a transient reference image used as input to the
+ *  thumbnail concept generator. No project scoping — these are uploaded
+ *  from the standalone thumbnails page before any project exists. */
+export function buildThumbnailReferenceKey(fileName: string): string {
+  const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return `thumbnail-refs/${Date.now()}-${sanitized}`;
+}
+
 /** Build an R2 key for an uploaded production-doc attachment (PDF/DOCX/XLSX/
  *  CSV/TXT/JSON). Lives in the images bucket under a prod-docs/ prefix —
  *  treats that bucket as a generic static-asset store rather than spinning

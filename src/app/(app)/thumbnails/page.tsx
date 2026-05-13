@@ -314,23 +314,32 @@ function ThumbnailsPage() {
 
   async function uploadReferenceImage(file: File) {
     if (!file.type.startsWith('image/')) { toast.error('Please select an image file'); return; }
-    // /api/upload is a Next route handler and hits Vercel's ~4.5 MB body cap.
-    // Reject larger files here so the user sees a clear message instead of an opaque server failure.
-    if (file.size > 4 * 1024 * 1024) { toast.error('Image must be under 4MB'); return; }
+    // Direct browser → R2 upload (presigned PUT) so we bypass Vercel's
+    // ~4.5 MB API body cap. Mirrors the voiceover-upload flow in
+    // projects/[id]/page.tsx. The 10 MB cap is enforced on both sides:
+    // here for instant feedback, and in the presign route as the source
+    // of truth.
+    if (file.size > 10 * 1024 * 1024) { toast.error('Image must be under 10MB'); return; }
     setUploadingRef(true);
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('type', 'image');
-      const res = await fetch('/api/upload', { method: 'POST', body: formData });
-      if (!res.ok) {
-        // Surface the server's actual error so failures aren't silent.
-        const data = await res.json().catch(() => ({}));
-        throw new Error((data && data.error) ? data.error : `Upload failed (${res.status})`);
+      const presignRes = await fetch('/api/uploads/thumbnail-reference', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileName: file.name, contentType: file.type, fileSize: file.size }),
+      });
+      if (!presignRes.ok) {
+        const data = await presignRes.json().catch(() => ({}));
+        throw new Error((data && data.error) ? data.error : `Presign failed (${presignRes.status})`);
       }
-      const data = await res.json();
-      setReferenceImageUrl(data.url);
-      setRefPreviewUrl(data.url);
+      const { uploadUrl, downloadUrl } = await presignRes.json();
+      const putRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type },
+        body: file,
+      });
+      if (!putRes.ok) throw new Error(`R2 upload failed (${putRes.status})`);
+      setReferenceImageUrl(downloadUrl);
+      setRefPreviewUrl(downloadUrl);
       toast.success('Reference image uploaded');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to upload reference image');
