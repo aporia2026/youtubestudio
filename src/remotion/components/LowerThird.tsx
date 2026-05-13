@@ -49,6 +49,12 @@ export const LowerThird: React.FC<LowerThirdProps> = ({
 
   const translateX = interpolate(entrance, [0, 1], [-width * 0.6, 0]) + exitProgress * -width * 0.6;
 
+  // Multi-line text (e.g. stacked stats) needs the bar to stretch with
+  // the text box, slightly smaller type, and pre-line so \n is honored.
+  // Single-line text keeps the original nowrap behavior so long titles
+  // don't wrap awkwardly across the lower-third bar.
+  const isMultiLine = text.includes('\n');
+
   return (
     <div
       style={{
@@ -58,7 +64,7 @@ export const LowerThird: React.FC<LowerThirdProps> = ({
         transform: `translateX(${translateX}px)`,
         willChange: 'transform',
         display: 'flex',
-        alignItems: 'center',
+        alignItems: 'stretch',
         gap: 0,
       }}
     >
@@ -66,7 +72,6 @@ export const LowerThird: React.FC<LowerThirdProps> = ({
       <div
         style={{
           width: 8,
-          height: '100%',
           minHeight: 56,
           background: brand.primaryColor,
           borderRadius: '3px 0 0 3px',
@@ -77,18 +82,21 @@ export const LowerThird: React.FC<LowerThirdProps> = ({
       <div
         style={{
           background: 'rgba(0,0,0,0.82)',
-          padding: '10px 24px',
+          padding: isMultiLine ? '14px 24px' : '10px 24px',
           borderRadius: '0 6px 6px 0',
+          display: 'flex',
+          alignItems: 'center',
         }}
       >
         <span
           style={{
             fontFamily: brand.fontFamily,
-            fontSize: 36,
+            fontSize: isMultiLine ? 32 : 36,
             fontWeight: 700,
             color: '#FFFFFF',
             letterSpacing: 0.5,
-            whiteSpace: 'nowrap',
+            whiteSpace: isMultiLine ? 'pre-line' : 'nowrap',
+            lineHeight: isMultiLine ? 1.25 : 1,
           }}
         >
           {text}

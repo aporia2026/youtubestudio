@@ -26,20 +26,11 @@ export type {
   ShortVideoConfig,
 } from './shorts-render-types';
 
-/**
- * Strip [VISUAL: ...] / [PAUSE] / [SFX: ...] markers from a Short
- * script so they don't show up in burned-in captions. Same regex used
- * elsewhere for TTS prep, kept duplicated to avoid an import cycle
- * with shorts.ts.
- */
-export function stripScriptMarkers(text: string): string {
-  return text
-    .replace(/\[VISUAL[^\]]*\]/g, '')
-    .replace(/\[PAUSE[^\]]*\]/g, '')
-    .replace(/\[SFX[^\]]*\]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+// Re-export under the legacy name so existing call sites in this file
+// continue to work. New code should import `stripProductionMarkers`
+// directly from `./script-markers`.
+import { stripProductionMarkers } from './script-markers';
+export { stripProductionMarkers as stripScriptMarkers };
 
 /** Approximate word count. Used for proportional caption timing. */
 export function countWords(text: string): number {
@@ -64,7 +55,7 @@ export function splitScriptIntoCaptions(
   durationMs: number,
   targetWordsPerChunk = 4,
 ): ShortCaptionChunk[] {
-  const cleaned = stripScriptMarkers(script);
+  const cleaned = stripProductionMarkers(script);
   if (!cleaned || durationMs <= 0) return [];
 
   // 1. Word stream with whether each word ends a sentence.

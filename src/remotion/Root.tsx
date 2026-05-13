@@ -1,5 +1,6 @@
 import React from 'react';
 import { Composition, registerRoot } from 'remotion';
+import './fonts'; // side-effect: loads Inter via @remotion/google-fonts before first frame
 import { YouTubeVideo } from './compositions/YouTubeVideo';
 import type { YouTubeVideoProps } from './compositions/YouTubeVideo';
 import { ShortVideo } from './compositions/ShortVideo';

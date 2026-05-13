@@ -8,6 +8,7 @@ import { getShort } from '@/lib/shorts';
 import { buildShortVideoConfig } from '@/lib/shorts-render';
 import type { ShortVideoConfig } from '@/lib/shorts-render-types';
 import { logger } from '@/lib/logger';
+import { remotionWebpackOverride } from '@/lib/remotion-bundler';
 
 // Vertical Shorts render — same Remotion bundler/renderer pattern as
 // /api/render/video. Vercel Pro 300s ceiling is enough for typical
@@ -173,7 +174,7 @@ async function startRender(
     const rootEntry = path.join(process.cwd(), 'src', 'remotion', 'Root.tsx');
     const bundled = await bundle({
       entryPoint: rootEntry,
-      webpackOverride: (cfg) => cfg,
+      webpackOverride: remotionWebpackOverride,
       onProgress: (p) => {
         updateJob(renderId, { progress: 0.05 + p * 0.30 }).catch(() => {});
       },
