@@ -32,6 +32,8 @@ import { SectionThumbnailCard } from '@/components/production-doc/SectionThumbna
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
 import { brollRowSignatureInput } from '@/lib/broll-types';
 import { productionDocToVideoConfig } from '@/remotion/utils';
+import { stripProductionMarkers } from '@/lib/script-markers';
+import { buildCanonicalScript, scriptDriftRatio } from '@/lib/voiceover-alignment';
 import type { BrandKit, ThumbnailTransitionConfig, VideoThumbnail } from '@/remotion/types';
 
 // Dynamically import VideoPlayer — Remotion uses browser-only APIs (WebGL, Canvas)
@@ -41,6 +43,13 @@ const VideoPlayer = dynamic(
 );
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Same-origin proxy path the voiceover-alignment cache accepts. Mirrors
+ *  the validator in `/api/voiceovers/align`. ElevenLabs-direct entries
+ *  (raw Vercel Blob URLs) deliberately do NOT match — those need to be
+ *  saved into the workspace library first so the proxy can serve them. */
+const VOICEOVER_PROXY_PATH_RE =
+  /^\/api\/voiceovers\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/audio$/i;
 
 /** Safely parse a fetch response as JSON. On non-JSON bodies (e.g. Vercel timeout HTML),
  *  throws an error with the first 200 chars of the body for easier debugging. */
@@ -344,6 +353,83 @@ function VideoPreviewBrandBar({ onBrandChange }: { onBrandChange: (b: Partial<Br
       <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
         (changes apply on play)
       </span>
+    </div>
+  );
+}
+
+/**
+ * Voiceover-aligned scene-timing pill. Four states — `syncing` is the
+ * only one with a spinner; `ready` is a calm green checkmark; `stale`
+ * and `failed` offer a re-align action. `unsupported` and `idle` are
+ * both informational and never block the user — silent when there's
+ * nothing useful to say.
+ *
+ * Visual choices target the lazy user (rule 10): one glance at the
+ * green check confirms scenes will land on the narration; anything
+ * else has a one-line explanation and (where applicable) a single
+ * obvious button.
+ */
+function AlignmentPill({
+  status,
+  detail,
+  onRealign,
+}: {
+  status: 'idle' | 'syncing' | 'ready' | 'stale' | 'failed' | 'unsupported';
+  detail: string | null;
+  onRealign: () => void;
+}) {
+  if (status === 'idle') return null;
+
+  const palette: Record<typeof status, { bg: string; fg: string; dot: string; label: string }> = {
+    syncing:     { bg: 'rgba(59,130,246,0.10)',  fg: '#60a5fa', dot: '#60a5fa', label: 'Syncing scenes to voiceover…' },
+    ready:       { bg: 'rgba(16,185,129,0.10)',  fg: '#34d399', dot: '#34d399', label: 'Synced to voiceover' },
+    stale:       { bg: 'rgba(245,158,11,0.12)',  fg: '#fbbf24', dot: '#fbbf24', label: 'Re-align needed' },
+    failed:      { bg: 'rgba(239,68,68,0.10)',   fg: '#f87171', dot: '#f87171', label: 'Alignment failed' },
+    unsupported: { bg: 'rgba(148,163,184,0.10)', fg: '#94a3b8', dot: '#94a3b8', label: 'Alignment unavailable' },
+  };
+  const p = palette[status];
+  const showRealign = status === 'stale' || status === 'failed';
+
+  return (
+    <div
+      className="mt-2 flex items-start gap-2 text-xs rounded-md px-3 py-2"
+      style={{ background: p.bg, color: p.fg }}
+    >
+      <span className="flex-shrink-0 mt-0.5">
+        {status === 'syncing' ? (
+          <svg width="12" height="12" viewBox="0 0 24 24" className="animate-spin" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+          </svg>
+        ) : status === 'ready' ? (
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+        ) : (
+          <span
+            className="inline-block w-2 h-2 rounded-full"
+            style={{ background: p.dot }}
+            aria-hidden
+          />
+        )}
+      </span>
+      <span className="flex-1 leading-snug">
+        <span className="font-medium">{p.label}</span>
+        {detail && (
+          <span className="block opacity-75 mt-0.5" style={{ color: 'var(--text-muted)' }}>
+            {detail}
+          </span>
+        )}
+      </span>
+      {showRealign && (
+        <button
+          type="button"
+          onClick={onRealign}
+          className="flex-shrink-0 text-xs underline underline-offset-2 hover:no-underline"
+          style={{ color: p.fg }}
+        >
+          Re-align
+        </button>
+      )}
     </div>
   );
 }
@@ -1487,6 +1573,21 @@ function ProductionDocPage() {
   const [renderOutputUrl, setRenderOutputUrl] = useState<string | null>(null);
   const renderPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // — Voiceover-aligned scene timing (per _plans/2026-05-13-voiceover-aligned-scene-timing.md)
+  // Mirrors the four-state pill near the Render button: idle → syncing →
+  // ready (success) | stale (drift > 20% after a prior alignment) |
+  // failed (server returned a reason) | unsupported (voiceover URL isn't
+  // a same-origin proxy path).
+  type AlignmentPillStatus = 'idle' | 'syncing' | 'ready' | 'stale' | 'failed' | 'unsupported';
+  const [alignmentStatus, setAlignmentStatus] = useState<AlignmentPillStatus>('idle');
+  const [alignmentDetail, setAlignmentDetail] = useState<string | null>(null);
+  // `alignedAtScript` is the canonical script frozen at the moment of
+  // the last successful alignment. The drift check compares it against
+  // the current script to decide whether soft re-align is enough or a
+  // fresh API call is needed.
+  const [alignedAtScript, setAlignedAtScript] = useState<string | null>(null);
+  const alignmentReqRef = useRef(0);
+
   // Load brand kit from localStorage on client only. The voiceover URL is
   // handled by <VoiceoverPicker>, which fetches the library, picks the best
   // match for this video (schedule item → title → most recent), and yields
@@ -2049,6 +2150,128 @@ function ProductionDocPage() {
     ? Math.round(wordCount / (actualDurationSecs / 60))
     : speakingPace;
 
+  // ── Voiceover-aligned scene timing ───────────────────────────────────────────
+
+  /**
+   * Canonical script seen by the alignment cache. Memoised so the
+   * drift-check effect doesn't recompute on every render, and so the
+   * dependency comparison (string equality) is cheap.
+   */
+  const canonicalScript = React.useMemo(() => {
+    if (!doc) return '';
+    return buildCanonicalScript(doc.rows.map((r) => stripProductionMarkers(r.script_text)));
+  }, [doc]);
+
+  /**
+   * Trigger an alignment request. Tracked by an incrementing request
+   * id so a slow in-flight response can't clobber a newer one if the
+   * user clicks "Re-align" twice in a row.
+   */
+  const runAlignment = useCallback(async (opts?: { forceRefresh?: boolean }) => {
+    if (!doc || !voiceoverUrl) return;
+    if (!VOICEOVER_PROXY_PATH_RE.test(voiceoverUrl)) return;
+    if (!canonicalScript.trim()) return;
+
+    const reqId = ++alignmentReqRef.current;
+    setAlignmentStatus('syncing');
+    setAlignmentDetail(null);
+
+    try {
+      const res = await fetch('/api/voiceovers/align', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          audioPath: voiceoverUrl,
+          rowScripts: doc.rows.map((r) => r.script_text),
+          forceRefresh: opts?.forceRefresh ?? false,
+        }),
+      });
+      if (reqId !== alignmentReqRef.current) return;
+      const data = (await safeJson(res)) as { status?: string; reason?: string };
+      if (!res.ok) {
+        setAlignmentStatus('failed');
+        setAlignmentDetail(typeof data.reason === 'string' ? data.reason : 'Alignment request failed.');
+        return;
+      }
+      if (data.status === 'ready') {
+        setAlignmentStatus('ready');
+        setAlignmentDetail(null);
+        setAlignedAtScript(canonicalScript);
+      } else {
+        setAlignmentStatus('failed');
+        setAlignmentDetail(typeof data.reason === 'string' ? data.reason : 'Alignment failed.');
+      }
+    } catch (err) {
+      if (reqId !== alignmentReqRef.current) return;
+      setAlignmentStatus('failed');
+      setAlignmentDetail(err instanceof Error ? err.message : 'Alignment request errored.');
+    }
+  }, [doc, voiceoverUrl, canonicalScript]);
+
+  /**
+   * Re-alignment policy (see plan section 'Re-alignment policy'):
+   *   - no prior alignment      → run after a 600ms settle delay
+   *   - drift ≤ 5%              → soft re-align, cursor walk absorbs it
+   *   - 5% < drift ≤ 20%        → background re-align after 1s debounce
+   *   - drift > 20%             → 'stale' pill, manual re-align or
+   *                               re-record needed
+   *
+   * Voiceover-change handling is folded in via `lastVoiceoverUrlRef`
+   * so a single effect reset gets the new audio's anchor cleared
+   * atomically — splitting that into a second effect would flash
+   * "Synced to voiceover" for one render against the OLD audio
+   * before the clear propagated.
+   */
+  const lastVoiceoverUrlRef = useRef<string>(voiceoverUrl);
+  useEffect(() => {
+    // Voiceover changed → clear the anchor and exit. The state update
+    // triggers another effect run with the cleared anchor, which then
+    // proceeds through the normal "no prior alignment" branch below.
+    if (lastVoiceoverUrlRef.current !== voiceoverUrl) {
+      lastVoiceoverUrlRef.current = voiceoverUrl;
+      if (alignedAtScript !== null) {
+        setAlignedAtScript(null);
+        setAlignmentStatus('idle');
+        setAlignmentDetail(null);
+        return;
+      }
+    }
+
+    if (!doc || !voiceoverUrl) {
+      setAlignmentStatus('idle');
+      setAlignmentDetail(null);
+      return;
+    }
+    if (!VOICEOVER_PROXY_PATH_RE.test(voiceoverUrl)) {
+      setAlignmentStatus('unsupported');
+      setAlignmentDetail('Save this voiceover to the workspace library to enable scene sync.');
+      return;
+    }
+    if (!canonicalScript.trim()) {
+      setAlignmentStatus('idle');
+      return;
+    }
+
+    if (!alignedAtScript) {
+      const timer = setTimeout(() => { void runAlignment(); }, 600);
+      return () => clearTimeout(timer);
+    }
+
+    const drift = scriptDriftRatio(alignedAtScript, canonicalScript);
+    if (drift <= 0.05) {
+      setAlignmentStatus('ready');
+      setAlignmentDetail(null);
+      return;
+    }
+    if (drift > 0.20) {
+      setAlignmentStatus('stale');
+      setAlignmentDetail(`Script drifted ~${Math.round(drift * 100)}% since the last alignment.`);
+      return;
+    }
+    const timer = setTimeout(() => { void runAlignment(); }, 1000);
+    return () => clearTimeout(timer);
+  }, [doc, voiceoverUrl, canonicalScript, alignedAtScript, runAlignment]);
+
   // ── Video render ─────────────────────────────────────────────────────────────
 
   async function startVideoRender() {
@@ -2058,11 +2281,29 @@ function ProductionDocPage() {
     setRenderProgress(0);
     setRenderOutputUrl(null);
 
+    // Pass the alignment hint when the cache is warm AND the URL is a
+    // proxy path the server-side route accepts. Falsy `voiceoverUrl`,
+    // ElevenLabs-direct Blob URLs, and any non-ready alignment state
+    // make the server fall back to estimated timing — same as today.
+    const body: Record<string, unknown> = { config };
+    if (
+      alignmentStatus === 'ready' &&
+      voiceoverUrl &&
+      VOICEOVER_PROXY_PATH_RE.test(voiceoverUrl)
+    ) {
+      body.voiceoverAlignment = {
+        audioPath: voiceoverUrl,
+        rowScripts: doc.rows.map((r) => r.script_text),
+      };
+    } else if (alignmentStatus === 'syncing' || alignmentStatus === 'stale') {
+      toast.warning('Rendering with estimated timing — voiceover alignment not ready.');
+    }
+
     try {
       const res = await fetch('/api/render/video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config }),
+        body: JSON.stringify(body),
       });
       const data = await res.json() as { renderId?: string; error?: string };
       if (!res.ok || !data.renderId) throw new Error(data.error || 'Failed to start render');
@@ -3002,6 +3243,16 @@ function ProductionDocPage() {
                     projectId={scheduleItem?.project_id ?? projectIdParam}
                     titleCandidates={[scheduleItem?.title, doc?.title, topic]}
                   />
+                  {/* Voiceover-aligned scene timing pill. Sits directly
+                      under the picker — same visual locus as the data
+                      it talks about, so a lazy user sees both at once. */}
+                  {voiceoverUrl && (
+                    <AlignmentPill
+                      status={alignmentStatus}
+                      detail={alignmentDetail}
+                      onRealign={() => { void runAlignment({ forceRefresh: true }); }}
+                    />
+                  )}
                 </div>
 
                 {/* Brand kit quick-config */}

@@ -1,5 +1,11 @@
 import { VideoShot, VideoConfig, inferSceneType, DEFAULT_BRAND_KIT, BrandKit, VideoThumbnail, ThumbnailTransitionConfig } from './types';
 import { stripProductionMarkers } from '@/lib/script-markers';
+import {
+  alignRowsToWords,
+  snapMsToFrame,
+  type AlignedRow,
+} from '@/lib/voiceover-alignment';
+import type { ForcedAlignmentResponse } from '@/lib/elevenlabs';
 
 // ─── Timecode Parsing ──────────────────────────────────────────────────────────
 
@@ -122,6 +128,13 @@ export interface RowImageState {
 /**
  * Convert a ProductionDoc + its generated image URLs into a VideoConfig
  * ready to pass to the Remotion composition.
+ *
+ * When `alignment` is supplied, per-shot `startMs` / `durationMs` are
+ * re-derived from the aligner's word-level timestamps so every scene
+ * transition lands exactly where the narration's row starts. See
+ * `_plans/2026-05-13-voiceover-aligned-scene-timing.md`. Without
+ * `alignment`, behaviour is identical to the pre-alignment code path —
+ * estimated timecodes from the doc are used verbatim.
  */
 export function productionDocToVideoConfig(
   doc: ProductionDoc,
@@ -129,6 +142,7 @@ export function productionDocToVideoConfig(
   voiceoverUrl?: string,
   musicUrl?: string,
   brand?: Partial<BrandKit>,
+  alignment?: ForcedAlignmentResponse,
 ): VideoConfig {
   const fps = 30;
   const totalMs = parseDurationToMs(doc.total_duration) || 60_000;
@@ -159,7 +173,7 @@ export function productionDocToVideoConfig(
     };
   });
 
-  return {
+  const config: VideoConfig = {
     fps,
     width: 1920,
     height: 1080,
@@ -170,6 +184,76 @@ export function productionDocToVideoConfig(
     brand: { ...DEFAULT_BRAND_KIT, ...brand },
     showCaptions: true,
     thumbnail: doc.thumbnail,
+  };
+
+  return alignment ? realignVideoConfig(config, alignment).config : config;
+}
+
+// ─── Voiceover-aligned re-timing ──────────────────────────────────────────────
+
+export interface RealignResult {
+  /** New VideoConfig with shot startMs / durationMs swapped for
+   *  frame-snapped, voiceover-aligned values. Identity-equal to the
+   *  input when no aligned rows were produced. */
+  config: VideoConfig;
+  /** Per-row alignment outcome — `source: 'aligned'` for rows whose
+   *  timing came from the aligner, `'estimated'` for fallbacks. The
+   *  render route logs this for cost / health telemetry; the
+   *  production-doc UI uses the aggregate `aligned` count to colour
+   *  the pill. */
+  alignedRows: AlignedRow[];
+}
+
+/**
+ * Re-time an already-built VideoConfig using a ForcedAlignmentResponse.
+ *
+ * The render route hits this when the client has pre-warmed the
+ * voiceover alignment cache: it reuses `config.shots[].scriptText`
+ * (already passed through `stripProductionMarkers` by
+ * `productionDocToVideoConfig`) as the per-row script and the existing
+ * `startMs` as the fallback. Frame snapping uses `config.fps` so the
+ * resulting timings sit exactly on Remotion frame boundaries — no
+ * sub-frame jitter at scene boundaries.
+ *
+ * Pure: returns a new VideoConfig + a new shots array; the input is
+ * not mutated. Empty `config.shots` short-circuits to `config` unchanged.
+ */
+export function realignVideoConfig(
+  config: VideoConfig,
+  alignment: ForcedAlignmentResponse,
+): RealignResult {
+  if (!config.shots.length) return { config, alignedRows: [] };
+
+  const rowScripts = config.shots.map((s) => s.scriptText ?? '');
+  const fallbackStartMs = config.shots.map((s) => s.startMs);
+  const lastShot = config.shots[config.shots.length - 1];
+  const fallbackTotalMs = lastShot.startMs + lastShot.durationMs;
+
+  const alignedRows = alignRowsToWords({
+    rowScripts,
+    fallbackStartMs,
+    fallbackTotalMs,
+    alignment,
+  });
+
+  // Build the new shots in one pass. Frame-snapping happens here, not
+  // in `alignRowsToWords`, so the pure helper can be tested against
+  // exact aligner values without an fps round-trip.
+  const newShots: VideoShot[] = config.shots.map((shot, i) => {
+    const aligned = alignedRows[i];
+    if (!aligned) return shot;
+    const startMs = snapMsToFrame(aligned.startMs, config.fps);
+    const endMs = snapMsToFrame(aligned.endMs, config.fps);
+    // Defensive: a single-frame minimum protects the render route's
+    // `durationMs > 0` validator if the aligner produced a degenerate
+    // [start, end] interval. One frame at 30 fps = 33.33 ms.
+    const durationMs = Math.max(endMs - startMs, 1000 / config.fps);
+    return { ...shot, startMs, durationMs };
+  });
+
+  return {
+    config: { ...config, shots: newShots },
+    alignedRows,
   };
 }
 

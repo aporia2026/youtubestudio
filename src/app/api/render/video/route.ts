@@ -17,6 +17,12 @@ import {
   shouldKillForOverspend,
   killOverspendingRender,
 } from '@/lib/remotion-lambda-quotas';
+import {
+  ensureAlignmentForVoiceover,
+  buildCanonicalScript,
+} from '@/lib/voiceover-alignment-cache';
+import { stripProductionMarkers } from '@/lib/script-markers';
+import { realignVideoConfig } from '@/remotion/utils';
 
 // ─── Backend selection ────────────────────────────────────────────────────────
 
@@ -84,12 +90,101 @@ async function ensureTable() {
   await sql`ALTER TABLE render_jobs ADD COLUMN IF NOT EXISTS estimated_cost   REAL`;
 }
 
+// ─── Voiceover alignment resolution ───────────────────────────────────────────
+
+/**
+ * Same-origin shape the production-doc page sends. Identical to the
+ * one `/api/voiceovers/align` validates — duplicated here on purpose
+ * so the render route doesn't depend on internal imports from the
+ * other route module.
+ */
+const VOICEOVER_PATH_RE =
+  /^\/api\/voiceovers\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/audio$/i;
+
+interface VoiceoverAlignmentRequest {
+  audioPath: string;
+  rowScripts: string[];
+}
+
+/**
+ * Validate the optional `voiceoverAlignment` block. Returns `null`
+ * when it's absent or shaped wrong (failure is non-fatal — we just
+ * render with estimated timing). On valid input, returns the
+ * trimmed payload ready to feed `ensureAlignmentForVoiceover`.
+ */
+function validateAlignmentRequest(raw: unknown): VoiceoverAlignmentRequest | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.audioPath !== 'string' || !VOICEOVER_PATH_RE.test(r.audioPath)) return null;
+  if (!Array.isArray(r.rowScripts) || r.rowScripts.length === 0) return null;
+  if (r.rowScripts.length > 500) return null;
+  for (const s of r.rowScripts) {
+    if (typeof s !== 'string') return null;
+  }
+  return { audioPath: r.audioPath, rowScripts: r.rowScripts as string[] };
+}
+
+/**
+ * Resolve voiceover alignment and apply it to the config. Returns the
+ * (possibly re-timed) config plus a brief telemetry record. Failure
+ * is silent — render proceeds with estimated timing and the failure
+ * reason is logged. The plan calls for this non-fatal posture so a
+ * busted ElevenLabs key never blocks a render.
+ */
+async function maybeRealignConfig(
+  config: VideoConfig,
+  alignmentReq: VoiceoverAlignmentRequest,
+  origin: string,
+): Promise<{ config: VideoConfig; telemetry: Record<string, unknown> }> {
+  const stripped = alignmentReq.rowScripts.map((s) => stripProductionMarkers(s));
+  const canonicalScript = buildCanonicalScript(stripped);
+  if (!canonicalScript.trim()) {
+    return { config, telemetry: { aligned: false, reason: 'empty-script' } };
+  }
+  const absoluteUrl = new URL(alignmentReq.audioPath, origin).toString();
+
+  const result = await ensureAlignmentForVoiceover(absoluteUrl, canonicalScript).catch((err) => {
+    // `ensureAlignmentForVoiceover` already swallows expected failures
+    // into a typed result — this catch only fires on truly unexpected
+    // errors (e.g. DB outage during the cache read). Render keeps going.
+    logger.warn('[render] alignment resolution threw', {
+      detail: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  });
+
+  if (!result || result.status !== 'ready') {
+    return {
+      config,
+      telemetry: {
+        aligned: false,
+        reason: result?.status === 'failed' ? result.reason : 'unavailable',
+      },
+    };
+  }
+
+  const realigned = realignVideoConfig(config, result.alignment);
+  const alignedCount = realigned.alignedRows.filter((r) => r.source === 'aligned').length;
+  const estimatedCount = realigned.alignedRows.length - alignedCount;
+
+  return {
+    config: realigned.config,
+    telemetry: {
+      aligned: true,
+      cached: result.cached,
+      alignedCount,
+      estimatedCount,
+      costUsd: result.cost,
+    },
+  };
+}
+
 // ─── POST /api/render/video — start a render job ──────────────────────────────
 
 export async function POST(req: NextRequest) {
-  let body: { config?: VideoConfig };
+  let body: { config?: VideoConfig; voiceoverAlignment?: unknown };
   try {
-    body = await req.json() as { config?: VideoConfig };
+    body = await req.json() as { config?: VideoConfig; voiceoverAlignment?: unknown };
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
@@ -98,6 +193,19 @@ export async function POST(req: NextRequest) {
   const validationError = validateConfig(config as VideoConfig);
   if (validationError) {
     return NextResponse.json({ error: validationError }, { status: 400 });
+  }
+
+  // Optional voiceover alignment resolution. Runs before the render
+  // job is created so an alignment-time DB outage doesn't leave an
+  // orphan 'pending' row; once we're past this block, the config is
+  // the final input to the renderer.
+  let effectiveConfig = config as VideoConfig;
+  let alignmentTelemetry: Record<string, unknown> = { aligned: false, reason: 'not-requested' };
+  const alignmentReq = validateAlignmentRequest(body.voiceoverAlignment);
+  if (alignmentReq) {
+    const resolved = await maybeRealignConfig(effectiveConfig, alignmentReq, req.nextUrl.origin);
+    effectiveConfig = resolved.config;
+    alignmentTelemetry = resolved.telemetry;
   }
 
   try {
@@ -134,9 +242,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Failed to create render job' }, { status: 500 });
   }
 
+  // Log alignment outcome alongside the renderId so a failed alignment
+  // shows up in the same trace as the render that proceeded without it.
+  logger.info('[render] alignment outcome', { renderId, ...alignmentTelemetry });
+
   if (backend === 'lambda') {
     try {
-      await startLambdaRender(renderId, config as VideoConfig);
+      await startLambdaRender(renderId, effectiveConfig);
     } catch (err) {
       logger.error('[render] Lambda kickoff failed', { detail: err instanceof Error ? err.message : String(err) });
       await updateJob(renderId, {
@@ -146,16 +258,16 @@ export async function POST(req: NextRequest) {
       }).catch(() => {});
       return NextResponse.json({ error: 'Failed to start Lambda render' }, { status: 500 });
     }
-    return NextResponse.json({ renderId, backend }, { status: 202 });
+    return NextResponse.json({ renderId, backend, alignment: alignmentTelemetry }, { status: 202 });
   }
 
   // Vercel path — render runs synchronously in this function instance,
   // maxDuration = 300 keeps it alive long enough for short/medium videos.
-  startRender(renderId, config as VideoConfig).catch(err => {
+  startRender(renderId, effectiveConfig).catch(err => {
     logger.error('[render] Fatal render error', { detail: err instanceof Error ? err.message : String(err) });
   });
 
-  return NextResponse.json({ renderId, backend }, { status: 202 });
+  return NextResponse.json({ renderId, backend, alignment: alignmentTelemetry }, { status: 202 });
 }
 
 // ─── GET /api/render/video?renderId=xxx — poll render status ──────────────────

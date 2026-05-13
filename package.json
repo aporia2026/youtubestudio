@@ -15,6 +15,7 @@
     "db:status": "tsx --env-file-if-exists=.env.local scripts/migrate.ts status",
     "deploy:remotion": "tsx --env-file-if-exists=.env.local scripts/deploy-remotion-site.ts",
     "smoke:lambda": "tsx --env-file-if-exists=.env.local scripts/lambda-smoke.ts",
+    "smoke:align": "tsx --env-file-if-exists=.env.local scripts/align-smoke.ts",
     "remotion": "dotenv -e .env.local -- remotion",
     "remotion:lambda": "dotenv -e .env.local -- remotion lambda"
   },
