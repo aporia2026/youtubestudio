@@ -18,6 +18,9 @@ import type {
   MonetizationCheckResult,
   MonetizationStatus,
 } from '@/lib/niche-finder/monetization-scrape';
+import { FavoriteButton } from './FavoriteButton';
+import type { FavoriteSourceTab } from '@/lib/niche-finder/favorites';
+import type { NicheScores } from '@/lib/niche-finder/types';
 
 const TONE_BG: Record<OutlierVideo['classification'], string> = {
   underperformer: 'rgba(100, 116, 139, 0.10)',
@@ -73,7 +76,28 @@ const STATUS_TONE: Record<MonetizationStatus, { fg: string; bg: string; border: 
   },
 };
 
-export function OutlierCard({ video }: { video: OutlierVideo }): React.ReactElement {
+interface OutlierCardProps {
+  video: OutlierVideo;
+  /** Which tab the card is rendered on. Stamped on the favorite if
+   *  the operator hearts it. Defaults to 'outliers' since that's the
+   *  primary host today. */
+  sourceTab?: FavoriteSourceTab;
+  /** When the surrounding tab knows which niche these outliers came
+   *  from, pass it here. Favoriting a video then auto-attaches under
+   *  this niche (the hybrid niche-assignment heuristic). When null,
+   *  the FavoriteButton opens the picker modal. */
+  activeNicheContext?: {
+    slug: string;
+    name: string;
+    scores: NicheScores;
+  } | null;
+}
+
+export function OutlierCard({
+  video,
+  sourceTab = 'outliers',
+  activeNicheContext = null,
+}: OutlierCardProps): React.ReactElement {
   const duration = formatDuration(video.durationIso);
   const likelyMonet = isLikelyMonetized({
     subscriberCount: video.subscriberCount,
@@ -154,6 +178,31 @@ export function OutlierCard({ video }: { video: OutlierVideo }): React.ReactElem
                 {duration}
               </span>
             )}
+            <div style={{ position: 'absolute', top: 4, right: 4 }}>
+              <FavoriteButton
+                kind="video"
+                video={{
+                  videoId: video.videoId,
+                  channelId: video.channelId,
+                  title: video.title,
+                  thumbnailUrl: video.thumbnailUrl,
+                  viewCount: video.viewCount,
+                  publishedAt: video.publishedAt,
+                  outlierScore: video.outlierScore,
+                  classification: video.classification,
+                  durationIso: video.durationIso,
+                  channelTitle: video.channelTitle,
+                  subscriberCount: video.subscriberCount,
+                }}
+                activeNicheContext={
+                  activeNicheContext
+                    ? { ...activeNicheContext, sourceTab }
+                    : null
+                }
+                sourceTab={sourceTab}
+                variant="overlay"
+              />
+            </div>
           </div>
         )}
         <div style={{ minWidth: 0, flex: 1 }}>

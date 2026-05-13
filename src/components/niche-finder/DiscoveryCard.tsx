@@ -9,12 +9,17 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { NicheScores } from '@/lib/niche-finder/types';
 import { isSweetSpot } from '@/lib/niche-finder/browse-filters';
+import { FavoriteButton } from './FavoriteButton';
+import type { FavoriteSourceTab } from '@/lib/niche-finder/favorites';
 
 interface DiscoveryCardProps {
   slug: string;
   name: string;
   rationale?: string;
   scores: NicheScores;
+  /** Which tab the operator was on when this card was rendered.
+   *  Stamped on the favorite row if they heart it. */
+  sourceTab: FavoriteSourceTab;
   /** When true, the card pulses + outlines green and scrolls itself
    *  into view. Used by the Browse quadrant chart so clicking a bubble
    *  surfaces the matching card. */
@@ -31,6 +36,7 @@ export function DiscoveryCard({
   name,
   rationale,
   scores,
+  sourceTab,
   highlighted = false,
   onDrill,
 }: DiscoveryCardProps): React.ReactElement {
@@ -89,7 +95,7 @@ export function DiscoveryCard({
     >
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <div style={{ fontSize: 16, fontWeight: 600, color: '#e2e8f0' }}>{name}</div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: '#e2e8f0', flex: 1, minWidth: 0 }}>{name}</div>
           {sweetSpot && (
             <span
               title="High demand, room to enter, and ≥ $10 per 1k views"
@@ -108,6 +114,14 @@ export function DiscoveryCard({
               Sweet spot
             </span>
           )}
+          <FavoriteButton
+            kind="niche"
+            slug={slug}
+            name={name}
+            scores={scores}
+            sourceTab={sourceTab}
+            variant="inline"
+          />
         </div>
         {rationale && (
           <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4, lineHeight: 1.4 }}>{rationale}</div>

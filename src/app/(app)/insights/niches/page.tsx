@@ -38,9 +38,14 @@ import { BrowsePresetBar } from '@/components/niche-finder/BrowsePresetBar';
 import { BrowseQuadrantView } from '@/components/niche-finder/BrowseQuadrantView';
 import { NicheFinderModelPicker } from '@/components/niche-finder/NicheFinderModelPicker';
 import { CrossCategorySearchModal } from '@/components/niche-finder/CrossCategorySearchModal';
+import { FavoritesTab } from '@/components/niche-finder/FavoritesTab';
 import type { NicheScores } from '@/lib/niche-finder/types';
+import {
+  PLACEHOLDER_NICHE_SCORES,
+  type FavoriteSourceTab,
+} from '@/lib/niche-finder/favorites';
 
-type TabKey = 'type' | 'interests' | 'channel' | 'category' | 'outliers';
+type TabKey = 'type' | 'interests' | 'channel' | 'category' | 'outliers' | 'favorites';
 
 const TABS: { key: TabKey; label: string; hint: string }[] = [
   { key: 'type', label: 'Type a niche', hint: 'I already know the niche I want to look at.' },
@@ -48,6 +53,7 @@ const TABS: { key: TabKey; label: string; hint: string }[] = [
   { key: 'channel', label: 'From a channel', hint: 'Show me what a channel I admire is winning at.' },
   { key: 'category', label: 'Browse categories', hint: 'Browse curated, monetization-tilted niches.' },
   { key: 'outliers', label: 'Outlier videos', hint: 'What videos are over-performing in a niche right now?' },
+  { key: 'favorites', label: '♥ Favorites', hint: 'Niches and videos you saved — your shortlist for production.' },
 ];
 
 // ─── Taxonomy payload shapes ────────────────────────────────────────────────
@@ -121,6 +127,7 @@ export default function NicheHubPage(): React.ReactElement {
       {tab === 'interests' && <InterestsTab />}
       {tab === 'channel' && <ChannelTab />}
       {tab === 'category' && <CategoryTab />}
+      {tab === 'favorites' && <FavoritesTab />}
       {tab === 'outliers' && <OutliersTab />}
     </div>
   );
@@ -259,7 +266,7 @@ function InterestsTab(): React.ReactElement {
           Takes about 45 seconds: we propose 8 niches from your interests and score each against real YouTube data.
         </div>
       </form>
-      {results && <ResultsGrid results={results} />}
+      {results && <ResultsGrid results={results} sourceTab="interests" />}
     </div>
   );
 }
@@ -337,7 +344,7 @@ function ChannelTab(): React.ReactElement {
           We fetch the channel&apos;s 50 most recent uploads and cluster them by topic. About 15 seconds.
         </div>
       </form>
-      {results && <ResultsGrid results={results} />}
+      {results && <ResultsGrid results={results} sourceTab="channel" />}
     </div>
   );
 }
@@ -882,6 +889,7 @@ function TaxonomyGrid({
           name={r.name}
           rationale={r.rationale}
           scores={r.scores}
+          sourceTab="category"
           highlighted={r.slug === highlightedSlug}
           onDrill={
             childLevelIsLeaf
@@ -1075,7 +1083,24 @@ function OutliersTab(): React.ReactElement {
           {filteredVideos && filteredVideos.length > 0 ? (
             <div style={{ display: 'grid', gap: 10 }}>
               {filteredVideos.map((v) => (
-                <OutlierCard key={v.videoId} video={v} />
+                <OutlierCard
+                  key={v.videoId}
+                  video={v}
+                  sourceTab="outliers"
+                  activeNicheContext={
+                    // Outliers tab is unambiguous: every video in this list
+                    // came from a single niche search. Scores are placeholder
+                    // (no deep-dive runs on outlier search); a later deep-dive
+                    // overwrites them. This keeps favoriting a one-click action.
+                    niche.trim().length > 0
+                      ? {
+                          slug: slugifyNiche(niche),
+                          name: niche.trim(),
+                          scores: PLACEHOLDER_NICHE_SCORES,
+                        }
+                      : null
+                  }
+                />
               ))}
             </div>
           ) : (
@@ -1118,9 +1143,13 @@ function OutliersTab(): React.ReactElement {
 
 function ResultsGrid({
   results,
+  sourceTab,
   highlightedSlug,
 }: {
   results: DiscoveryResultItem[];
+  /** Which tab the grid is rendering for. Stamped on the favorite row
+   *  when the operator hearts a card. */
+  sourceTab: FavoriteSourceTab;
   /** Optional — when set, the matching card pulses + scrolls into view.
    *  Used by the category tab's quadrant chart to surface a clicked bubble. */
   highlightedSlug?: string | null;
@@ -1144,6 +1173,7 @@ function ResultsGrid({
           name={r.name}
           rationale={r.rationale}
           scores={r.scores}
+          sourceTab={sourceTab}
           highlighted={r.slug === highlightedSlug}
         />
       ))}
