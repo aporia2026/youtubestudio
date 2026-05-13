@@ -41,6 +41,13 @@ export type SortBy = 'outlier' | 'views' | 'subsDesc' | 'subsAsc' | 'newest' | '
 /** Mid-roll floor (matches scoring/monetization.ts). */
 const MID_ROLL_FLOOR_SECONDS = 8 * 60;
 
+/** YouTube Partner Program minimum subscriber count — one of the
+ *  two gates that allow a channel to monetize (the other is 4,000
+ *  watch hours, which the public API doesn't expose). The Data API
+ *  doesn't publish per-video monetization status for channels we
+ *  don't own, so this is a *heuristic*, not ground truth. */
+export const YPP_MIN_SUBSCRIBERS = 1000;
+
 /** Shorts cap. Anything ≤ 60s reads as a YouTube Short for our purposes;
  *  the durationIso is the only signal we have here (the Data API doesn't
  *  cleanly expose the Shorts flag). */
@@ -117,6 +124,10 @@ export interface OutlierFilters {
   titleLengths?: ReadonlyArray<TitleLength>;
   /** Only show videos from channels with ≥3 hits in the set. */
   consistentWinnersOnly?: boolean;
+  /** Restrict to videos that *plausibly* monetize: channel meets
+   *  the YPP subscriber minimum (1K) AND duration clears the
+   *  mid-roll floor (8 min). Heuristic; see `isLikelyMonetized`. */
+  likelyMonetized?: boolean;
   /** Sort order — default is outlier-score descending. */
   sortBy?: SortBy;
 
@@ -164,6 +175,30 @@ export function activeRange(
   if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
   if (lo <= 0 && hi >= ceiling) return null;
   return [Math.max(0, lo), Math.min(ceiling, hi)];
+}
+
+/** Heuristic — true when a video is *plausibly* monetized. The
+ *  YouTube Data API doesn't publish per-video monetization status
+ *  for channels we don't own, so we approximate with two visible
+ *  prerequisites:
+ *
+ *    1. Channel meets the YPP subscriber minimum (≥ 1,000 subs).
+ *    2. Duration clears the mid-roll ad floor (≥ 8 minutes), the
+ *       point at which YouTube allows in-stream ads other than
+ *       a pre/post-roll.
+ *
+ *  This will mis-label channels that meet both gates but have
+ *  opted out of monetization, and channels that monetize without
+ *  mid-rolls (e.g. sponsorship-only Shorts creators). Treat as a
+ *  filter signal, not a definitive answer. */
+export function isLikelyMonetized(video: {
+  subscriberCount: number;
+  durationIso: string;
+}): boolean {
+  if (!Number.isFinite(video.subscriberCount)) return false;
+  if (video.subscriberCount < YPP_MIN_SUBSCRIBERS) return false;
+  const seconds = parseDurationToSeconds(video.durationIso);
+  return seconds >= MID_ROLL_FLOOR_SECONDS;
 }
 
 export const DEFAULT_FILTERS: OutlierFilters = Object.freeze({
@@ -224,6 +259,7 @@ export function filterAndSortOutliers(
     if (minOutlier > 0 && v.outlierScore < minOutlier) return false;
     if (windowDays > 0 && ageDays(v.publishedAt, nowMs) > windowDays) return false;
     if (consistentWinners && !consistentWinners.has(v.channelId)) return false;
+    if (filters.likelyMonetized && !isLikelyMonetized(v)) return false;
 
     if (durationRange) {
       const sec = parseDurationToSeconds(v.durationIso);

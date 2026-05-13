@@ -319,6 +319,12 @@ export function OutlierFilterBar({ value, onChange, onReset }: FilterBarProps): 
           onClick={() => setScalar('consistentWinnersOnly', !value.consistentWinnersOnly)}
           label="Consistent winners only (≥3 hits per channel)"
         />
+        <Chip
+          active={!!value.likelyMonetized}
+          onClick={() => setScalar('likelyMonetized', !value.likelyMonetized)}
+          label="Likely monetized (≥1K subs, ≥8min)"
+          title="Heuristic — the YouTube API doesn't publish monetization status for other channels. Filters to videos whose channel meets the YPP minimum (1K subs) and whose duration clears the mid-roll floor (8 min)."
+        />
       </Row>
 
       <Row label="Sort by">
@@ -521,14 +527,17 @@ function Chip({
   active,
   onClick,
   label,
+  title,
 }: {
   active: boolean;
   onClick: () => void;
   label: string;
+  title?: string;
 }): React.ReactElement {
   return (
     <button
       onClick={onClick}
+      title={title}
       style={{
         padding: '4px 10px',
         background: active ? 'rgba(34,197,94,0.15)' : 'transparent',

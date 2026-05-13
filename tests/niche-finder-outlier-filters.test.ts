@@ -19,6 +19,8 @@ import {
   getBuiltinPreset,
   DEFAULT_FILTERS,
   activeRange,
+  isLikelyMonetized,
+  YPP_MIN_SUBSCRIBERS,
   DURATION_RANGE_MAX_SEC,
   SUBS_RANGE_MAX,
   VIEWS_RANGE_MAX,
@@ -321,6 +323,34 @@ describe('filterAndSortOutliers', () => {
 // Range fields (precise numeric sliders)
 // ---------------------------------------------------------------------------
 
+describe('isLikelyMonetized', () => {
+  it('requires both gates: subs >= YPP_MIN AND duration >= 8min', () => {
+    expect(isLikelyMonetized({ subscriberCount: 50_000, durationIso: 'PT15M' })).toBe(true);
+  });
+
+  it('rejects channels under the YPP subscriber minimum', () => {
+    expect(isLikelyMonetized({ subscriberCount: 999, durationIso: 'PT15M' })).toBe(false);
+  });
+
+  it('rejects videos below the 8-minute mid-roll floor', () => {
+    expect(isLikelyMonetized({ subscriberCount: 50_000, durationIso: 'PT7M59S' })).toBe(false);
+  });
+
+  it('accepts exact boundary values (1K subs, exactly 8 min)', () => {
+    expect(
+      isLikelyMonetized({ subscriberCount: YPP_MIN_SUBSCRIBERS, durationIso: 'PT8M' }),
+    ).toBe(true);
+  });
+
+  it('rejects when subscriberCount is non-finite', () => {
+    expect(isLikelyMonetized({ subscriberCount: Number.NaN, durationIso: 'PT15M' })).toBe(false);
+  });
+
+  it('rejects when durationIso is unparseable', () => {
+    expect(isLikelyMonetized({ subscriberCount: 50_000, durationIso: 'garbage' })).toBe(false);
+  });
+});
+
 describe('activeRange', () => {
   it('returns null for undefined input', () => {
     expect(activeRange(undefined, 100)).toBeNull();
@@ -476,6 +506,21 @@ describe('filterAndSortOutliers — range fields', () => {
       NOW,
     );
     expect(out.map((x) => x.videoId)).toEqual(['b']);
+  });
+
+  it('likelyMonetized requires subs >= 1K AND duration >= 8min', () => {
+    const videos = [
+      // Fails on duration only
+      v({ videoId: 'short-big', subscriberCount: 50_000, durationIso: 'PT3M' }),
+      // Fails on subs only
+      v({ videoId: 'long-tiny', subscriberCount: 500, durationIso: 'PT15M' }),
+      // Passes both gates
+      v({ videoId: 'eligible', subscriberCount: 50_000, durationIso: 'PT15M' }),
+      // Edge: exactly at both thresholds
+      v({ videoId: 'on-floor', subscriberCount: 1000, durationIso: 'PT8M' }),
+    ];
+    const out = filterAndSortOutliers(videos, { likelyMonetized: true }, NOW);
+    expect(out.map((x) => x.videoId).sort()).toEqual(['eligible', 'on-floor']);
   });
 
   it('domain ceilings are positive and ordered sensibly', () => {
