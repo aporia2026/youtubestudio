@@ -958,20 +958,31 @@ function SkeletonDiscoveryCard({
 
 // ─── Tab: outliers ──────────────────────────────────────────────────────────
 
+/** General-search source ids — bypass the niche-text flow and read
+ *  from a different upstream. Each is rendered as its own chip
+ *  above the preset bar. */
+type OutlierSearchSource = 'breakouts' | 'trending' | 'favorites';
+
 function OutliersTab(): React.ReactElement {
   const [niche, setNiche] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [videos, setVideos] = useState<OutlierVideo[] | null>(null);
   const [filters, setFilters] = useState<OutlierFilters>(DEFAULT_FILTERS);
+  /** Label of the most-recent fetch — surfaces in the results
+   *  heading so a general-source fetch tells the operator
+   *  "YouTube trending — US" instead of looking like an empty niche. */
+  const [resultLabel, setResultLabel] = useState<string | null>(null);
 
-  // Extracted from the submit handler so a preset click can fetch
-  // with an explicit niche string instead of waiting on a state
-  // round-trip from `setNiche`.
+  /** Shared response shape across niche + general sources. */
+  type OutliersResp = { niche: string; videos: OutlierVideo[]; fetchOk: boolean };
+
+  /** Per-niche fetch — preserves the legacy entry point used by the
+   *  preset bar (which carries a niche hint). */
   const fetchOutliers = useCallback(async (nicheText: string) => {
     const trimmed = nicheText.trim();
     if (trimmed.length === 0) {
-      setError('Type a niche or click a preset that has one.');
+      setError('Type a niche above, or click a general-search chip to browse without one.');
       return;
     }
     setSubmitting(true);
@@ -980,17 +991,60 @@ function OutliersTab(): React.ReactElement {
       const res = await fetch('/api/niche-finder/outliers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ niche: trimmed }),
+        body: JSON.stringify({ source: 'niche', niche: trimmed }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setError((body as { error?: string }).error ?? 'Something went wrong.');
         return;
       }
-      type Resp = { videos: OutlierVideo[]; fetchOk: boolean };
-      const data = body as Resp;
+      const data = body as OutliersResp;
+      setResultLabel(data.niche ?? trimmed);
       if (!data.fetchOk) {
         setError('No videos returned for that niche. Try a different search.');
+        setVideos([]);
+        return;
+      }
+      setVideos(data.videos);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Network error');
+    } finally {
+      setSubmitting(false);
+    }
+  }, []);
+
+  /** General-source fetch — empties the niche input + hits the
+   *  source-discriminated path on the same endpoint. The empty-niche
+   *  state IS the source switch: typing repopulates the input and
+   *  flips control back to the per-niche flow naturally. */
+  const fetchGeneralSource = useCallback(async (source: OutlierSearchSource) => {
+    setSubmitting(true);
+    setError(null);
+    setNiche('');
+    try {
+      const res = await fetch('/api/niche-finder/outliers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError((body as { error?: string }).error ?? 'Something went wrong.');
+        return;
+      }
+      const data = body as OutliersResp;
+      setResultLabel(data.niche ?? source);
+      if (!data.fetchOk || data.videos.length === 0) {
+        // Source-specific empty-state copy beats a generic "no results."
+        if (source === 'breakouts') {
+          setError('No breakouts in the last 90 days on your connected channels.');
+        } else if (source === 'trending') {
+          setError('Could not load YouTube trending. Try again in a moment.');
+        } else {
+          setError(
+            'No favorites with real scores yet — favorite a niche from another tab and run a deep-dive first.',
+          );
+        }
         setVideos([]);
         return;
       }
@@ -1042,6 +1096,14 @@ function OutliersTab(): React.ReactElement {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      {/* General-search chip row — three sources that bypass the
+          niche-text flow. Empty niche input is fine; the chip is
+          self-contained and triggers its own fetch. */}
+      <GeneralSearchChips
+        onPick={(source) => void fetchGeneralSource(source)}
+        disabled={submitting}
+      />
+
       {/* Preset bar lives ABOVE the form so it's the first thing
           the operator sees — discovery shortcut, not a follow-up. */}
       <OutlierPresetBar
@@ -1065,8 +1127,9 @@ function OutliersTab(): React.ReactElement {
           {submitting ? 'Scanning…' : 'Find outliers'}
         </button>
         <div style={{ fontSize: 12, color: '#64748b' }}>
-          Shows videos that punch above their channel size (views ÷ subscribers). The bigger the number, the bigger the
-          outlier. Click a preset above for a one-click shortcut.
+          Type a niche above and click <strong>Find outliers</strong>, OR click a
+          <strong> general-search chip</strong> at the top to browse without a niche term.
+          Outlier = views ÷ subscribers — the bigger the number, the bigger the outlier.
         </div>
       </form>
 
@@ -1077,7 +1140,12 @@ function OutliersTab(): React.ReactElement {
             onChange={setFilters}
             onReset={() => setFilters(DEFAULT_FILTERS)}
           />
-          <div style={{ fontSize: 12, color: '#64748b' }}>
+          <div style={{ fontSize: 12, color: '#94a3b8' }}>
+            {resultLabel && (
+              <span style={{ color: '#cbd5e1', fontWeight: 500, marginRight: 8 }}>
+                {resultLabel} —
+              </span>
+            )}
             {filteredVideos?.length ?? 0} of {videos.length} videos matching your filters
           </div>
           {filteredVideos && filteredVideos.length > 0 ? (
@@ -1136,6 +1204,87 @@ function OutliersTab(): React.ReactElement {
         </div>
       )}
     </div>
+  );
+}
+
+/** Three-chip row above the per-niche preset bar. Lets the operator
+ *  fetch outliers from one of three sources without typing a niche.
+ *  Each source has distinct semantics — see /lib/niche-finder/outliers-general.ts. */
+function GeneralSearchChips({
+  onPick,
+  disabled,
+}: {
+  onPick: (source: OutlierSearchSource) => void;
+  disabled: boolean;
+}): React.ReactElement {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div
+        style={{
+          fontSize: 10,
+          color: '#64748b',
+          textTransform: 'uppercase',
+          letterSpacing: 0.6,
+          fontWeight: 600,
+        }}
+      >
+        General search · no niche text needed
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <GeneralSearchChip
+          label="Breakouts on my channels"
+          tooltip="Videos on your connected channels that the breakout detector fired on in the last 90 days. Free — re-fetches current view counts to score against today's subscriber count."
+          onClick={() => onPick('breakouts')}
+          disabled={disabled}
+        />
+        <GeneralSearchChip
+          label="YouTube trending"
+          tooltip="YouTube's regional 'most popular' chart. Mostly mega-channels, so outlier scores will skew low — useful for spotting the rare small channel that broke through."
+          onClick={() => onPick('trending')}
+          disabled={disabled}
+        />
+        <GeneralSearchChip
+          label="Across my favorited niches"
+          tooltip="Top outliers across your first few favorited niches (with real deep-dive scores). Repeat clicks are cheap thanks to the 7-day YouTube fetch cache."
+          onClick={() => onPick('favorites')}
+          disabled={disabled}
+        />
+      </div>
+    </div>
+  );
+}
+
+function GeneralSearchChip({
+  label,
+  tooltip,
+  onClick,
+  disabled,
+}: {
+  label: string;
+  tooltip: string;
+  onClick: () => void;
+  disabled: boolean;
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={tooltip}
+      style={{
+        padding: '6px 12px',
+        background: disabled ? 'rgba(255,255,255,0.02)' : 'transparent',
+        color: disabled ? '#475569' : '#86efac',
+        border: `1px solid ${disabled ? '#1e293b' : 'rgba(34,197,94,0.40)'}`,
+        borderRadius: 999,
+        fontSize: 12,
+        fontWeight: 500,
+        cursor: disabled ? 'wait' : 'pointer',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {label}
+    </button>
   );
 }
 
