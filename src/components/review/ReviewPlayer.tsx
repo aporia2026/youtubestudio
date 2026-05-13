@@ -65,6 +65,21 @@ export const ReviewPlayer = forwardRef<HTMLVideoElement, ReviewPlayerProps>(
     const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const stallAttemptsRef = useRef(0);
 
+    // Optional dev-only timing instrumentation. Toggle on in DevTools via
+    // `localStorage.reviewPlayerTiming = '1'`. We capture cold-start and
+    // stall stats so we can compare felt smoothness before/after changes.
+    const timingRef = useRef<{
+      enabled: boolean;
+      srcSetAt: number;
+      loadedMetadataAt: number | null;
+      loadedDataAt: number | null;
+      canPlayThroughAt: number | null;
+      stallCount: number;
+      totalStallMs: number;
+      currentStallStartedAt: number | null;
+      reported: boolean;
+    } | null>(null);
+
     // Floating "+10s" / "1.5×" / "Loop A set" toast — shown briefly when a
     // keyboard shortcut fires, so the user gets visual confirmation that a
     // headless action took effect.
@@ -278,7 +293,32 @@ export const ReviewPlayer = forwardRef<HTMLVideoElement, ReviewPlayerProps>(
     useEffect(() => {
       const v = videoRef.current;
       if (!v) return;
-      const STALL_RECOVERY_MS = 3500;
+      // Larger threshold so brief network blips don't get treated as a
+      // stall worth nudging — earlier 3500ms occasionally compounded with
+      // the user's own seeks during a slow-buffer window. Two attempts
+      // (was 3) is plenty for a transient stall; anything more typically
+      // means the file is genuinely unreachable.
+      const STALL_RECOVERY_MS = 6000;
+      const MAX_STALL_ATTEMPTS = 2;
+
+      // Initialise timing instrumentation for this src. Guarded by a
+      // localStorage flag so it's silent in production.
+      try {
+        const enabled = typeof window !== 'undefined' && window.localStorage?.getItem('reviewPlayerTiming') === '1';
+        timingRef.current = {
+          enabled,
+          srcSetAt: performance.now(),
+          loadedMetadataAt: null,
+          loadedDataAt: null,
+          canPlayThroughAt: null,
+          stallCount: 0,
+          totalStallMs: 0,
+          currentStallStartedAt: null,
+          reported: false,
+        };
+      } catch {
+        timingRef.current = null;
+      }
 
       function clearStallTimer() {
         if (stallTimerRef.current) {
@@ -291,9 +331,7 @@ export const ReviewPlayer = forwardRef<HTMLVideoElement, ReviewPlayerProps>(
         stallTimerRef.current = setTimeout(() => {
           const v = videoRef.current;
           if (!v || v.paused) return;
-          // Cap recovery attempts so we don't infinite-loop on a truly broken
-          // file. After 3 nudges, just leave the spinner up.
-          if (stallAttemptsRef.current >= 3) return;
+          if (stallAttemptsRef.current >= MAX_STALL_ATTEMPTS) return;
           stallAttemptsRef.current += 1;
           try {
             const t = v.currentTime;
@@ -305,10 +343,54 @@ export const ReviewPlayer = forwardRef<HTMLVideoElement, ReviewPlayerProps>(
         }, STALL_RECOVERY_MS);
       }
 
-      function onWaiting() { setBuffering(true); armStallTimer(); }
-      function onStalled() { setBuffering(true); armStallTimer(); }
-      function onPlaying() { setBuffering(false); clearStallTimer(); stallAttemptsRef.current = 0; }
-      function onCanPlay() { setBuffering(false); clearStallTimer(); }
+      function markStallStart() {
+        const t = timingRef.current;
+        if (!t || t.currentStallStartedAt != null) return;
+        t.currentStallStartedAt = performance.now();
+        t.stallCount += 1;
+      }
+      function markStallEnd() {
+        const t = timingRef.current;
+        if (!t || t.currentStallStartedAt == null) return;
+        t.totalStallMs += performance.now() - t.currentStallStartedAt;
+        t.currentStallStartedAt = null;
+      }
+      function reportTiming(label: string) {
+        const t = timingRef.current;
+        if (!t || !t.enabled || t.reported) return;
+        t.reported = true;
+        try {
+          console.info('[ReviewPlayer timing]', {
+            label,
+            time_to_metadata_ms: t.loadedMetadataAt != null ? Math.round(t.loadedMetadataAt - t.srcSetAt) : null,
+            time_to_first_frame_ms: t.loadedDataAt != null ? Math.round(t.loadedDataAt - t.srcSetAt) : null,
+            time_to_canplaythrough_ms: t.canPlayThroughAt != null ? Math.round(t.canPlayThroughAt - t.srcSetAt) : null,
+            stall_count: t.stallCount,
+            total_stall_ms: Math.round(t.totalStallMs),
+          });
+        } catch {}
+      }
+
+      function onLoadedMetadata() {
+        const t = timingRef.current;
+        if (t && t.loadedMetadataAt == null) t.loadedMetadataAt = performance.now();
+      }
+      function onLoadedData() {
+        const t = timingRef.current;
+        if (t && t.loadedDataAt == null) t.loadedDataAt = performance.now();
+      }
+      function onWaiting() { setBuffering(true); armStallTimer(); markStallStart(); }
+      function onStalled() { setBuffering(true); armStallTimer(); markStallStart(); }
+      function onPlaying() { setBuffering(false); clearStallTimer(); stallAttemptsRef.current = 0; markStallEnd(); }
+      function onCanPlay() { setBuffering(false); clearStallTimer(); markStallEnd(); }
+      function onCanPlayThrough() {
+        setBuffering(false); clearStallTimer(); markStallEnd();
+        const t = timingRef.current;
+        if (t && t.canPlayThroughAt == null) {
+          t.canPlayThroughAt = performance.now();
+          reportTiming('canplaythrough');
+        }
+      }
       function onSeeking() { setBuffering(true); }
       function onSeeked() { setBuffering(false); }
       function onProgress() {
@@ -341,22 +423,29 @@ export const ReviewPlayer = forwardRef<HTMLVideoElement, ReviewPlayerProps>(
         } catch {}
       }
 
+      v.addEventListener('loadedmetadata', onLoadedMetadata);
+      v.addEventListener('loadeddata', onLoadedData);
       v.addEventListener('waiting', onWaiting);
       v.addEventListener('stalled', onStalled);
       v.addEventListener('playing', onPlaying);
       v.addEventListener('canplay', onCanPlay);
-      v.addEventListener('canplaythrough', onCanPlay);
+      v.addEventListener('canplaythrough', onCanPlayThrough);
       v.addEventListener('seeking', onSeeking);
       v.addEventListener('seeked', onSeeked);
       v.addEventListener('progress', onProgress);
       v.addEventListener('error', onError);
       return () => {
         clearStallTimer();
+        // If we never made it to canplaythrough (e.g. user navigated away),
+        // still emit whatever we did capture so timing data isn't lost.
+        reportTiming('unmount');
+        v.removeEventListener('loadedmetadata', onLoadedMetadata);
+        v.removeEventListener('loadeddata', onLoadedData);
         v.removeEventListener('waiting', onWaiting);
         v.removeEventListener('stalled', onStalled);
         v.removeEventListener('playing', onPlaying);
         v.removeEventListener('canplay', onCanPlay);
-        v.removeEventListener('canplaythrough', onCanPlay);
+        v.removeEventListener('canplaythrough', onCanPlayThrough);
         v.removeEventListener('seeking', onSeeking);
         v.removeEventListener('seeked', onSeeked);
         v.removeEventListener('progress', onProgress);
@@ -465,6 +554,11 @@ export const ReviewPlayer = forwardRef<HTMLVideoElement, ReviewPlayerProps>(
           // large files. 'auto' tells the browser to buffer ahead as far as
           // network conditions allow, which is what reviewers want.
           preload="auto"
+          // Tell Chromium to prioritise this byte-range fetch over the
+          // hover-preview's (which is preload="metadata" + lazy-mounted).
+          // React's video typings don't list fetchPriority yet, so we
+          // spread the lowercase HTML attribute through.
+          {...({ fetchpriority: 'high' } as Record<string, string>)}
         />
 
         {/* Canvas overlay for annotations */}

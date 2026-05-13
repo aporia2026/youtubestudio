@@ -34,6 +34,18 @@ interface CommentPanelProps {
    *  comments inbox to land the owner on the exact comment they came
    *  from. Switches filter to 'all' so a resolved target isn't hidden. */
   initialHighlightCommentId?: string;
+  /** Read-only feedback rows from prior versions, used to surface "did v1
+   *  actually get fixed in v2?" while watching the new version. Each row
+   *  carries a derived status badge. Empty when on v1 or when no eligible
+   *  prior comments exist. */
+  priorVersionRows?: Array<{
+    comment: ReviewComment;
+    status: 'fixed' | 'resolved' | 'open';
+  }>;
+  /** External highlight pulse — bumping `nonce` re-fires scroll-into-view
+   *  + transient highlight for the matching comment. The timeline calls
+   *  this via a parent-owned callback when the user clicks a marker. */
+  pulseHighlightCommentId?: { id: string; nonce: number } | null;
 }
 
 type Filter = 'all' | 'unresolved' | 'resolved';
@@ -41,7 +53,7 @@ type Filter = 'all' | 'unresolved' | 'resolved';
 export function CommentPanel({
   commentsUrl, commentItemUrl, isOwner, canResolve, comments, activeVersionId, permission, author, currentTimeMs,
   onSeek, onCommentAdded, onCommentResolved, onCommentDeleted, showAllVersions, onToggleAllVersions,
-  pendingDrawing, onClearDrawing, initialHighlightCommentId,
+  pendingDrawing, onClearDrawing, initialHighlightCommentId, priorVersionRows, pulseHighlightCommentId,
 }: CommentPanelProps) {
   // Effective resolve permission: owner always can; token side respects
   // the server's per-collaborator decision (editors + narrators yes).
@@ -62,7 +74,34 @@ export function CommentPanel({
   }
   const [filter, setFilter] = useState<Filter>('all');
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  // Collapsed by default when the user has lots of prior-version feedback
+  // to avoid burying the current-version comments below a long list. We
+  // surface the unresolved count in the header so the affordance is still
+  // obvious.
+  const [priorOpen, setPriorOpen] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // Latest priorVersionRows captured for the pulse effect below. The effect
+  // intentionally does NOT include `priorVersionRows` in its dep array
+  // because ReviewPage rebuilds the array on every render — including it
+  // would re-fire the highlight pulse on every comments poll. The ref
+  // lets us read the latest rows at the time of the click without making
+  // the effect react to the rows themselves.
+  const priorVersionRowsRef = useRef(priorVersionRows);
+  useEffect(() => { priorVersionRowsRef.current = priorVersionRows; }, [priorVersionRows]);
+
+  // External highlight pulse — fired by the timeline when a marker is
+  // clicked. We re-run on every `nonce` bump, even if the id is the same
+  // as last time, so two consecutive clicks both pulse-and-scroll.
+  useEffect(() => {
+    if (!pulseHighlightCommentId) return;
+    const { id } = pulseHighlightCommentId;
+    setFilter('all');
+    setHighlightedId(id);
+    if (priorVersionRowsRef.current?.some(r => r.comment.id === id)) setPriorOpen(true);
+    const t = setTimeout(() => setHighlightedId(null), 2000);
+    return () => clearTimeout(t);
+  }, [pulseHighlightCommentId]);
 
   // Deep-link from the inbox: once the matching comment appears in the
   // list (it lands after the parent's loadData), light it up and scroll.
@@ -151,6 +190,20 @@ export function CommentPanel({
 
       {/* Comment list */}
       <div ref={listRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
+        {/* Prior-version section. Only renders when there are prior comments
+            available (i.e. the user is viewing v2+). Each row links back to
+            the timestamp on the current version and shows a status badge
+            so the reviewer can quickly verify which feedback was actually
+            fixed in this version. */}
+        {priorVersionRows && priorVersionRows.length > 0 && (
+          <PriorVersionsSection
+            rows={priorVersionRows}
+            open={priorOpen}
+            onToggleOpen={() => setPriorOpen(o => !o)}
+            highlightedId={highlightedId}
+            onJump={(commentId, ms) => handleSeekToComment(commentId, ms)}
+          />
+        )}
         {filtered.length === 0 ? (
           <div className="text-center py-10">
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
@@ -222,5 +275,157 @@ export function CommentPanel({
         />
       )}
     </div>
+  );
+}
+
+// ─── Prior versions section ─────────────────────────────────────────────
+// Read-only list of feedback from earlier versions, with a per-row status
+// badge so the reviewer can scan "did this get fixed?" without flipping
+// versions. Clicking a row seeks the current video to that timestamp and
+// pulses the highlight (handled by the parent's handleSeekToComment).
+
+interface PriorVersionsSectionProps {
+  rows: Array<{ comment: ReviewComment; status: 'fixed' | 'resolved' | 'open' }>;
+  open: boolean;
+  onToggleOpen: () => void;
+  highlightedId: string | null;
+  onJump: (commentId: string, ms: number) => void;
+}
+
+function formatTimePanel(ms: number) {
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function PriorVersionsSection({ rows, open, onToggleOpen, highlightedId, onJump }: PriorVersionsSectionProps) {
+  const openCount = rows.filter(r => r.status === 'open').length;
+  const fixedCount = rows.filter(r => r.status === 'fixed').length;
+  return (
+    <div
+      className="mb-2 rounded-lg overflow-hidden"
+      style={{ border: '1px solid var(--border)', background: 'rgba(255,255,255,0.02)' }}
+    >
+      <button
+        onClick={onToggleOpen}
+        className="w-full flex items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-white/[0.03] cursor-pointer"
+      >
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          style={{ color: 'var(--text-muted)', transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 120ms' }}
+        >
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+        <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>
+          From previous versions
+        </span>
+        <span className="ml-auto flex items-center gap-1">
+          {openCount > 0 && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded-full font-mono"
+              style={{ background: 'rgba(234,179,8,0.15)', color: '#eab308' }}
+              title={`${openCount} still open`}
+            >
+              {openCount} open
+            </span>
+          )}
+          {fixedCount > 0 && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded-full font-mono"
+              style={{ background: 'rgba(34,197,94,0.12)', color: '#22c55e' }}
+              title={`${fixedCount} fixed in a later version`}
+            >
+              {fixedCount} fixed
+            </span>
+          )}
+        </span>
+      </button>
+      {open && (
+        <div className="px-2 pb-2 space-y-1.5">
+          {rows.map(({ comment, status }) => (
+            <PriorVersionRow
+              key={comment.id}
+              comment={comment}
+              status={status}
+              highlighted={highlightedId === comment.id}
+              onJump={() => onJump(comment.id, comment.timestamp_ms)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface PriorVersionRowProps {
+  comment: ReviewComment;
+  status: 'fixed' | 'resolved' | 'open';
+  highlighted: boolean;
+  onJump: () => void;
+}
+
+function PriorVersionRow({ comment, status, highlighted, onJump }: PriorVersionRowProps) {
+  const isRange = comment.end_timestamp_ms != null && comment.end_timestamp_ms > comment.timestamp_ms;
+  const badge = status === 'fixed'
+    ? { label: 'Fixed', color: '#22c55e', bg: 'rgba(34,197,94,0.12)' }
+    : status === 'resolved'
+      ? { label: 'Resolved', color: '#06b6d4', bg: 'rgba(6,182,212,0.12)' }
+      : { label: 'Open', color: '#eab308', bg: 'rgba(234,179,8,0.15)' };
+  // Dim rows that have already been dealt with so the reviewer's eye lands
+  // on what still needs attention.
+  const dimmed = status !== 'open';
+  return (
+    <button
+      data-comment-id={comment.id}
+      onClick={onJump}
+      className="w-full text-left p-2 rounded-md cursor-pointer transition-colors hover:bg-white/[0.04]"
+      style={{
+        background: highlighted ? 'rgba(124,58,237,0.1)' : 'transparent',
+        border: highlighted ? '1px solid rgba(124,58,237,0.3)' : '1px solid transparent',
+        opacity: dimmed ? 0.6 : 1,
+      }}
+    >
+      <div className="flex items-center gap-1.5 mb-1">
+        <span
+          className="text-[10px] font-mono px-1 py-0.5 rounded shrink-0"
+          style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--text-muted)' }}
+        >
+          v{comment.version_number ?? '?'}
+        </span>
+        <span
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded shrink-0"
+          style={{ background: 'rgba(124,58,237,0.1)', color: '#a78bfa' }}
+        >
+          {isRange
+            ? `${formatTimePanel(comment.timestamp_ms)}–${formatTimePanel(comment.end_timestamp_ms!)}`
+            : formatTimePanel(comment.timestamp_ms)}
+        </span>
+        <span
+          className="text-[10px] font-medium truncate"
+          style={{ color: comment.author_color }}
+          title={comment.author_name}
+        >
+          {comment.author_name}
+        </span>
+        <span
+          className="ml-auto text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0"
+          style={{ background: badge.bg, color: badge.color }}
+        >
+          {badge.label}
+        </span>
+      </div>
+      <p
+        className="text-[11px] leading-snug line-clamp-2"
+        style={{ color: 'var(--text-secondary)' }}
+      >
+        {comment.text}
+      </p>
+    </button>
   );
 }

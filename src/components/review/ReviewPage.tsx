@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { toast } from 'sonner';
 import { ReviewPlayer } from './ReviewPlayer';
-import { ReviewTimeline } from './ReviewTimeline';
+import { ReviewTimeline, type PriorComment } from './ReviewTimeline';
 import { CommentPanel } from './CommentPanel';
 import { AuthorSetup } from './AuthorSetup';
 import { VersionSelector } from './VersionSelector';
@@ -86,8 +86,6 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
   const isOwner = !!ownerProjectId;
   const dataUrl = isOwner ? `/api/review/projects/${ownerProjectId}/playback` : `/api/review/${token}`;
   const commentsUrl = isOwner ? `/api/review/projects/${ownerProjectId}/comments` : `/api/review/${token}/comments`;
-  const commentsListUrl = (versionId: string) =>
-    isOwner ? `/api/review/projects/${ownerProjectId}/comments?versionId=${versionId}` : `/api/review/${token}/comments?versionId=${versionId}`;
   const commentItemUrl = (commentId: string) =>
     isOwner ? `/api/review/projects/${ownerProjectId}/comments/${commentId}` : `/api/review/${token}/comments/${commentId}`;
   const [data, setData] = useState<ReviewData | null>(null);
@@ -102,6 +100,15 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
   const [compareMode, setCompareMode] = useState<'off' | 'side-by-side' | 'onion-skin' | 'swipe'>('off');
   const [compareVersionId, setCompareVersionId] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  // Marker → panel highlight pulse. Bumping `nonce` re-fires the panel's
+  // scroll-into-view + transient highlight, even if the same id is clicked
+  // again. Tracked here (not in CommentPanel) so the timeline can pulse it
+  // when the user clicks a marker.
+  const [markerPulse, setMarkerPulse] = useState<{ id: string; nonce: number } | null>(null);
+  // Was the video playing when the user grabbed the scrubber? Captured at
+  // mousedown and used by `handleSeekEnd` to resume play on release. Pausing
+  // during drag stops decode-loop seek thrash on large mp4s.
+  const wasPlayingBeforeScrubRef = useRef(false);
   const correctedFileInputRef = useRef<HTMLInputElement>(null);
   // Drawing state
   const [isDrawing, setIsDrawing] = useState(false);
@@ -332,20 +339,25 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
     await loadData();
   }
 
-  // Poll for new comments every 30s
+  // Poll for fresh comments every 30s. We deliberately hit the full
+  // `dataUrl` (which returns all-versions comments) instead of the
+  // active-version-only listing, so the prior-version timeline ghosts and
+  // the "From previous versions" panel section don't silently disappear
+  // 30 seconds after the page loads. Only `comments` is merged back —
+  // versions / project metadata are preserved so we don't get unrelated
+  // re-renders flickering the player.
   useEffect(() => {
     if (!activeVersionId) return;
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(commentsListUrl(activeVersionId));
+        const res = await fetch(dataUrl);
         if (res.ok) {
-          const freshComments = await res.json();
-          setData(prev => prev ? { ...prev, comments: freshComments } : prev);
+          const fresh: ReviewData = await res.json();
+          setData(prev => prev ? { ...prev, comments: fresh.comments } : prev);
         }
       } catch {}
     }, 30000);
     return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataUrl, activeVersionId]);
 
   const handleAuthorSave = useCallback((name: string) => {
@@ -360,6 +372,34 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
     if (videoRef.current) {
       videoRef.current.currentTime = ms / 1000;
     }
+  }, []);
+
+  // Called once when the user grabs the scrubber. Pause if currently
+  // playing so we don't fight the decode loop with rapid seeks, and
+  // remember the prior state so we can restore it on release.
+  const handleSeekStart = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    wasPlayingBeforeScrubRef.current = !v.paused;
+    if (!v.paused) v.pause();
+  }, []);
+
+  // Called once when the user releases the scrubber. Resume play if and
+  // only if we paused on grab.
+  const handleSeekEnd = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (wasPlayingBeforeScrubRef.current) {
+      v.play().catch(() => {});
+    }
+    wasPlayingBeforeScrubRef.current = false;
+  }, []);
+
+  // Pulse the panel's highlight + scroll-into-view for the matching
+  // comment. Used both by current-version markers (existing flow) and the
+  // new prior-version ghost markers.
+  const handleMarkerClick = useCallback((commentId: string) => {
+    setMarkerPulse({ id: commentId, nonce: Date.now() });
   }, []);
 
   const handleCommentAdded = useCallback(async (comment: ReviewComment) => {
@@ -418,9 +458,52 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
   if (!data) return null;
 
   const activeVersion = data.versions.find(v => v.id === activeVersionId) || data.versions[0];
+  const activeVersionNumber = activeVersion?.version_number ?? 0;
   const versionComments = showAllVersionComments
     ? data.comments
     : data.comments.filter(c => c.version_id === activeVersionId);
+
+  // ─── Prior-version surfacing ─────────────────────────────────────────
+  // For every top-level comment from an EARLIER version, decide whether
+  // it's been fixed (an editor posted a fix-note on this or any later
+  // version pointing at it), resolved (the original was marked resolved
+  // without a fix-note), or still open. The reviewer uses this to spot v1
+  // feedback they want to verify while watching v2.
+  //
+  // Fix-notes themselves and replies are intentionally excluded — they
+  // aren't independent feedback items.
+  const fixedCommentIds = new Set(
+    data.comments.map(c => c.fix_for_comment_id).filter((x): x is string => !!x)
+  );
+  const priorVersionRows: Array<{ comment: ReviewComment; status: 'fixed' | 'resolved' | 'open' }> = data.comments
+    .filter(c =>
+      !c.parent_id &&
+      !c.fix_for_comment_id &&
+      c.version_number != null &&
+      c.version_number < activeVersionNumber
+    )
+    .sort((a, b) => a.timestamp_ms - b.timestamp_ms)
+    .map(c => {
+      const status: 'fixed' | 'resolved' | 'open' = fixedCommentIds.has(c.id)
+        ? 'fixed'
+        : c.resolved
+          ? 'resolved'
+          : 'open';
+      return { comment: c, status };
+    });
+
+  // Timeline ghost markers — slim mapping of the rows above.
+  const priorTimelineMarkers: PriorComment[] = priorVersionRows.map(({ comment, status }) => ({
+    id: comment.id,
+    timestamp_ms: comment.timestamp_ms,
+    end_timestamp_ms: comment.end_timestamp_ms,
+    color: comment.author_color,
+    versionNumber: comment.version_number ?? 0,
+    status,
+    authorName: comment.author_name,
+    text: comment.text,
+    hasDrawing: !!comment.drawing_data,
+  }));
 
   return (
     <>
@@ -554,6 +637,11 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
                   durationMs={activeVersion.duration_ms || 0}
                   comments={versionComments}
                   onSeek={handleSeek}
+                  onSeekStart={handleSeekStart}
+                  onSeekEnd={handleSeekEnd}
+                  onCommentMarkerClick={handleMarkerClick}
+                  onPriorMarkerClick={handleMarkerClick}
+                  priorComments={priorTimelineMarkers}
                   videoUrl={activeVersion.video_url}
                   bufferedPct={bufferedPct}
                 />
@@ -585,6 +673,8 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
             pendingDrawing={pendingDrawing}
             onClearDrawing={() => setPendingDrawing(null)}
             initialHighlightCommentId={initialCommentId}
+            priorVersionRows={priorVersionRows}
+            pulseHighlightCommentId={markerPulse}
           />
         </div>
       </div>
