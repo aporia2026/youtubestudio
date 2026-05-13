@@ -32,7 +32,7 @@ import type { Migration } from './types';
  * children.
  */
 const migration: Migration = {
-  id: '0061_create_niche_taxonomy',
+  id: '0064_create_niche_taxonomy',
   description: 'Phase 13.2 — hierarchical niche taxonomy (nodes + per-workspace scores)',
 
   async up(client) {

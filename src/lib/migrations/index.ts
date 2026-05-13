@@ -62,6 +62,8 @@ import migration0060 from './0060_create_niche_search_presets';
 import migration0061 from './0061_reheal_workspace_unique_constraints';
 import migration0062 from './0062_create_project_channels';
 import migration0063 from './0063_create_niche_favorites';
+import migration0064 from './0064_create_niche_taxonomy';
+import migration0065 from './0065_extend_watchlist_for_searches';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -132,6 +134,8 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0061,
   migration0062,
   migration0063,
+  migration0064,
+  migration0065,
 ]);
 
 /**

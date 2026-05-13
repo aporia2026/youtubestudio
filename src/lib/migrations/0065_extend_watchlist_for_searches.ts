@@ -25,7 +25,7 @@ import type { Migration } from './types';
  * waste, but it keeps the existing niche-row CRUD untouched.
  */
 const migration: Migration = {
-  id: '0062_extend_watchlist_for_searches',
+  id: '0065_extend_watchlist_for_searches',
   description: 'Phase 13.2 follow-up — saved Browse Categories filter searches via niche_watchlist',
 
   async up(client) {
