@@ -22,7 +22,6 @@ import {
   getRecentNiches,
   getRecentTopics,
   type ProductionDocHistoryEntry,
-  type VoiceoverHistoryEntry,
 } from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
@@ -651,24 +650,71 @@ function relativeTime(ts: number): string {
 }
 
 /**
+ * Unified voiceover record for the picker. Merges two underlying sources:
+ *
+ *   - ElevenLabs voiceovers from the per-user history (scoped by uid via
+ *     /api/history). Linked to a video by scheduleItemId / videoTitle.
+ *   - Workspace media_assets of type='voiceover'. These cover narrator-
+ *     approved full uploads and stitched section assemblies (see
+ *     /api/voiceovers/library). Linked by projectId + assignmentId, and
+ *     by scheduleItemId via the narrator_assignment_id pointer that the
+ *     assignment-create flow writes into schedule_items.custom_fields.
+ */
+interface VoiceoverItem {
+  id: string;
+  source: 'elevenlabs' | 'narrator_full' | 'narrator_stitched' | 'media_asset';
+  audioUrl: string;
+  voiceName: string;
+  /** Optional narrator/role for `narrator_*` entries, used as a sublabel. */
+  badgeLabel: string | null;
+  videoTitle: string | null;
+  projectId: string | null;
+  assignmentId: string | null;
+  scheduleItemId: string | null;
+  timestamp: number;
+  /** Optional summary line for ElevenLabs entries (char count + text preview). */
+  summary: string | null;
+}
+
+function sourceLabel(s: VoiceoverItem['source']): string {
+  switch (s) {
+    case 'elevenlabs':         return 'ElevenLabs';
+    case 'narrator_full':      return 'Narrator';
+    case 'narrator_stitched':  return 'Narrator (stitched)';
+    case 'media_asset':        return 'Library';
+  }
+}
+
+/**
  * Pick the best-matching voiceover for the current production doc.
  *
  * Precedence:
- *   1. Same schedule item — strongest signal, can't ambiguously match.
- *   2. videoTitle that matches the doc's title or topic (case/whitespace insensitive).
- *   3. Most recent — fallback so the field isn't empty for users who skip
+ *   1. Same schedule item — strongest signal, works for both ElevenLabs
+ *      (entry.scheduleItemId) and narrator (resolved server-side from
+ *      schedule_items.custom_fields).
+ *   2. Same project — narrator audio is project-scoped, so a project
+ *      match is almost as strong as a schedule-item match for those rows.
+ *   3. videoTitle / projectTitle match against the doc's known titles
+ *      (case/whitespace insensitive).
+ *   4. Most recent — fallback so the field isn't empty for users who skip
  *      schedule items / haven't named their doc yet.
  */
 function pickBestVoiceover(
-  list: VoiceoverHistoryEntry[],
+  list: VoiceoverItem[],
   scheduleItemId: string | null | undefined,
+  projectId: string | null | undefined,
   candidates: Array<string | null | undefined>,
-): VoiceoverHistoryEntry | null {
+): VoiceoverItem | null {
   if (list.length === 0) return null;
 
   if (scheduleItemId) {
     const byItem = list.find(v => v.scheduleItemId === scheduleItemId && v.audioUrl);
     if (byItem) return byItem;
+  }
+
+  if (projectId) {
+    const byProject = list.find(v => v.projectId === projectId && v.audioUrl);
+    if (byProject) return byProject;
   }
 
   const norm = (s: string | null | undefined) =>
@@ -678,8 +724,7 @@ function pickBestVoiceover(
     const byTitle = list.find(v => {
       if (!v.audioUrl) return false;
       const vt = norm(v.videoTitle);
-      if (!vt) return false;
-      return titles.includes(vt);
+      return vt && titles.includes(vt);
     });
     if (byTitle) return byTitle;
   }
@@ -695,6 +740,8 @@ interface VoiceoverPickerProps {
   onChange: (url: string, source: 'auto' | 'manual' | 'clear') => void;
   /** Schedule item id we're linked to, if any (strongest match signal). */
   scheduleItemId: string | null | undefined;
+  /** Project id derived from schedule item or URL param. Matches narrator audio. */
+  projectId: string | null | undefined;
   /** Title candidates to match against entry.videoTitle (in priority order). */
   titleCandidates: Array<string | null | undefined>;
 }
@@ -703,9 +750,10 @@ function VoiceoverPicker({
   value,
   onChange,
   scheduleItemId,
+  projectId,
   titleCandidates,
 }: VoiceoverPickerProps) {
-  const [entries, setEntries] = useState<VoiceoverHistoryEntry[]>([]);
+  const [items, setItems] = useState<VoiceoverItem[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [open, setOpen] = useState(false);
   const [autoMatchedId, setAutoMatchedId] = useState<string | null>(null);
@@ -714,19 +762,78 @@ function VoiceoverPicker({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
 
-  // Initial load of the library.
+  // Initial load — fetch both sources in parallel and merge. Failures on
+  // one source don't block the other; an offline media_assets call still
+  // shows the user's ElevenLabs history and vice versa.
   useEffect(() => {
     let cancelled = false;
-    getVoiceoverHistory()
-      .then(list => {
-        if (cancelled) return;
-        setEntries(list);
-        setLoaded(true);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setLoaded(true);
-      });
+
+    const elevenlabsPromise = getVoiceoverHistory()
+      .then(list => list.map((e): VoiceoverItem => ({
+        id: `el:${e.id}`,
+        source: 'elevenlabs',
+        audioUrl: e.audioUrl,
+        voiceName: e.voiceName,
+        badgeLabel: null,
+        videoTitle: e.videoTitle ?? null,
+        projectId: null,
+        assignmentId: null,
+        scheduleItemId: e.scheduleItemId ?? null,
+        timestamp: e.timestamp,
+        summary: e.textPreview
+          ? `${e.charCount.toLocaleString()} chars · ${e.textPreview.slice(0, 60)}${e.textPreview.length > 60 ? '…' : ''}`
+          : null,
+      })))
+      .catch(() => [] as VoiceoverItem[]);
+
+    type LibraryRow = {
+      id: string;
+      audioUrl: string;
+      name: string;
+      narratorName: string | null;
+      projectId: string | null;
+      projectTitle: string | null;
+      assignmentId: string | null;
+      scheduleItemId: string | null;
+      timestamp: number;
+      source: 'narrator_full' | 'narrator_stitched' | 'other';
+    };
+    const libraryPromise = fetch('/api/voiceovers/library', { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : { voiceovers: [] as LibraryRow[] })
+      .then((data: { voiceovers?: LibraryRow[] }) => (data.voiceovers || []).map((e): VoiceoverItem => ({
+        id: `lib:${e.id}`,
+        source: e.source === 'other' ? 'media_asset' : e.source,
+        audioUrl: e.audioUrl,
+        voiceName: e.narratorName || e.name || 'Narrator',
+        badgeLabel: e.source === 'narrator_stitched' ? 'stitched' : (e.source === 'narrator_full' ? 'full upload' : null),
+        videoTitle: e.projectTitle,
+        projectId: e.projectId,
+        assignmentId: e.assignmentId,
+        scheduleItemId: e.scheduleItemId,
+        timestamp: e.timestamp,
+        summary: null,
+      })))
+      .catch(() => [] as VoiceoverItem[]);
+
+    Promise.all([elevenlabsPromise, libraryPromise]).then(([a, b]) => {
+      if (cancelled) return;
+      // Dedupe on audioUrl — if the same blob URL shows up under both sources
+      // (rare, but possible if a narrator approval was also logged to history)
+      // we keep the first occurrence, which preserves source ordering.
+      const seen = new Set<string>();
+      const merged: VoiceoverItem[] = [];
+      for (const item of [...a, ...b].sort((x, y) => y.timestamp - x.timestamp)) {
+        if (!item.audioUrl || seen.has(item.audioUrl)) continue;
+        seen.add(item.audioUrl);
+        merged.push(item);
+      }
+      setItems(merged);
+      setLoaded(true);
+    }).catch(() => {
+      if (cancelled) return;
+      setLoaded(true);
+    });
+
     return () => { cancelled = true; };
   }, []);
 
@@ -738,7 +845,7 @@ function VoiceoverPicker({
   const titleKey = titleCandidates.filter(Boolean).join('||');
   useEffect(() => {
     if (!loaded || userTouchedRef.current) return;
-    const match = pickBestVoiceover(entries, scheduleItemId, titleCandidates);
+    const match = pickBestVoiceover(items, scheduleItemId, projectId, titleCandidates);
     if (match?.audioUrl && match.audioUrl !== value) {
       onChange(match.audioUrl, 'auto');
       setAutoMatchedId(match.id);
@@ -748,7 +855,7 @@ function VoiceoverPicker({
     // titleCandidates is captured via titleKey; suppress exhaustive-deps for
     // the array identity warning that doesn't reflect a real dependency change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded, entries, scheduleItemId, titleKey]);
+  }, [loaded, items, scheduleItemId, projectId, titleKey]);
 
   // Stop preview audio if the picker unmounts or the popover closes.
   useEffect(() => {
@@ -760,9 +867,9 @@ function VoiceoverPicker({
     };
   }, []);
 
-  function togglePreview(entry: VoiceoverHistoryEntry) {
-    if (!entry.audioUrl) return;
-    if (playingIdRef.current === entry.id && audioRef.current) {
+  function togglePreview(item: VoiceoverItem) {
+    if (!item.audioUrl) return;
+    if (playingIdRef.current === item.id && audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
       playingIdRef.current = null;
@@ -773,9 +880,9 @@ function VoiceoverPicker({
       audioRef.current.pause();
       audioRef.current = null;
     }
-    const audio = new Audio(entry.audioUrl);
+    const audio = new Audio(item.audioUrl);
     audio.onended = () => {
-      if (playingIdRef.current === entry.id) {
+      if (playingIdRef.current === item.id) {
         playingIdRef.current = null;
         setPlayingId(null);
       }
@@ -786,17 +893,17 @@ function VoiceoverPicker({
       toast.error('Could not play preview');
     };
     audioRef.current = audio;
-    playingIdRef.current = entry.id;
-    setPlayingId(entry.id);
+    playingIdRef.current = item.id;
+    setPlayingId(item.id);
     audio.play().catch(() => {
       playingIdRef.current = null;
       setPlayingId(null);
     });
   }
 
-  function selectEntry(entry: VoiceoverHistoryEntry) {
+  function selectItem(item: VoiceoverItem) {
     userTouchedRef.current = true;
-    onChange(entry.audioUrl, 'manual');
+    onChange(item.audioUrl, 'manual');
     setOpen(false);
   }
 
@@ -806,7 +913,7 @@ function VoiceoverPicker({
     setOpen(false);
   }
 
-  const selected = entries.find(e => e.audioUrl === value) || null;
+  const selected = items.find(i => i.audioUrl === value) || null;
   const matchedToCurrent = selected && autoMatchedId === selected.id;
 
   // ─── Trigger button (collapsed state) ──────────────────────────────────
@@ -819,7 +926,7 @@ function VoiceoverPicker({
         : `${selected.voiceName} (${relativeTime(selected.timestamp)})`;
     }
     if (value) return 'External URL set';
-    if (entries.length === 0) return 'No voiceovers in library yet';
+    if (items.length === 0) return 'No voiceovers in library yet';
     return 'Select a voiceover…';
   })();
 
@@ -881,7 +988,7 @@ function VoiceoverPicker({
               left: 0,
               right: 0,
               zIndex: 50,
-              maxHeight: 340,
+              maxHeight: 380,
               overflowY: 'auto',
               background: 'var(--bg-elevated, #181818)',
               border: '1px solid var(--border)',
@@ -890,12 +997,12 @@ function VoiceoverPicker({
               padding: 4,
             }}
           >
-            {entries.length === 0 ? (
+            {items.length === 0 ? (
               <div
                 className="text-xs px-3 py-4 text-center"
                 style={{ color: 'var(--text-muted)' }}
               >
-                No voiceovers yet. Record one in <strong style={{ color: 'var(--text-secondary)' }}>Voiceover Studio</strong>.
+                No voiceovers yet. Record one in <strong style={{ color: 'var(--text-secondary)' }}>Voiceover Studio</strong> or assign a <strong style={{ color: 'var(--text-secondary)' }}>Narrator</strong> to a project.
               </div>
             ) : (
               <>
@@ -914,12 +1021,20 @@ function VoiceoverPicker({
                     ✕ Clear voiceover (silent video)
                   </button>
                 )}
-                {entries.map(entry => {
-                  const isSelected = entry.audioUrl === value;
-                  const isAutoMatch = entry.id === autoMatchedId;
+                {items.map(item => {
+                  const isSelected = item.audioUrl === value;
+                  const isAutoMatch = item.id === autoMatchedId;
+                  const srcColor =
+                    item.source === 'elevenlabs' ? '#60a5fa'
+                    : item.source.startsWith('narrator') ? '#34d399'
+                    : 'var(--text-muted)';
+                  const srcBg =
+                    item.source === 'elevenlabs' ? 'rgba(59,130,246,0.14)'
+                    : item.source.startsWith('narrator') ? 'rgba(16,185,129,0.14)'
+                    : 'rgba(255,255,255,0.06)';
                   return (
                     <div
-                      key={entry.id}
+                      key={item.id}
                       className="flex items-start gap-2 px-2 py-2 rounded"
                       style={{
                         background: isSelected ? 'rgba(168,85,247,0.14)' : 'transparent',
@@ -931,28 +1046,28 @@ function VoiceoverPicker({
                       onMouseLeave={e => {
                         if (!isSelected) e.currentTarget.style.background = 'transparent';
                       }}
-                      onClick={() => selectEntry(entry)}
+                      onClick={() => selectItem(item)}
                     >
                       <button
                         type="button"
-                        onClick={e => { e.stopPropagation(); togglePreview(entry); }}
-                        title={playingId === entry.id ? 'Stop preview' : 'Play preview'}
+                        onClick={e => { e.stopPropagation(); togglePreview(item); }}
+                        title={playingId === item.id ? 'Stop preview' : 'Play preview'}
                         style={{
                           width: 26,
                           height: 26,
                           flexShrink: 0,
                           marginTop: 2,
                           borderRadius: 13,
-                          background: playingId === entry.id ? 'rgba(168,85,247,0.25)' : 'rgba(255,255,255,0.08)',
+                          background: playingId === item.id ? 'rgba(168,85,247,0.25)' : 'rgba(255,255,255,0.08)',
                           border: 'none',
-                          color: playingId === entry.id ? '#c084fc' : 'var(--text-secondary)',
+                          color: playingId === item.id ? '#c084fc' : 'var(--text-secondary)',
                           cursor: 'pointer',
                           display: 'inline-flex',
                           alignItems: 'center',
                           justifyContent: 'center',
                         }}
                       >
-                        {playingId === entry.id ? (
+                        {playingId === item.id ? (
                           <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
                             <rect x="6" y="5" width="4" height="14" rx="1" />
                             <rect x="14" y="5" width="4" height="14" rx="1" />
@@ -974,8 +1089,22 @@ function VoiceoverPicker({
                               whiteSpace: 'nowrap',
                             }}
                           >
-                            {entry.voiceName}
+                            {item.voiceName}
                           </span>
+                          <span
+                            className="text-[9px] px-1 py-0.5 rounded whitespace-nowrap"
+                            style={{ background: srcBg, color: srcColor }}
+                          >
+                            {sourceLabel(item.source)}
+                          </span>
+                          {item.badgeLabel && (
+                            <span
+                              className="text-[9px] px-1 py-0.5 rounded whitespace-nowrap"
+                              style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--text-muted)' }}
+                            >
+                              {item.badgeLabel}
+                            </span>
+                          )}
                           {isAutoMatch && !isSelected && (
                             <span
                               className="text-[9px] px-1 py-0.5 rounded"
@@ -988,24 +1117,25 @@ function VoiceoverPicker({
                             className="text-[10px] ml-auto whitespace-nowrap"
                             style={{ color: 'var(--text-muted)' }}
                           >
-                            {relativeTime(entry.timestamp)}
+                            {relativeTime(item.timestamp)}
                           </span>
                         </div>
-                        {entry.videoTitle && (
+                        {item.videoTitle && (
                           <div
                             className="text-[10px] truncate"
                             style={{ color: 'var(--text-secondary)' }}
                           >
-                            {entry.videoTitle}
+                            {item.videoTitle}
                           </div>
                         )}
-                        <div
-                          className="text-[10px] truncate"
-                          style={{ color: 'var(--text-muted)' }}
-                        >
-                          {entry.charCount.toLocaleString()} chars · {entry.textPreview.slice(0, 60)}
-                          {entry.textPreview.length > 60 ? '…' : ''}
-                        </div>
+                        {item.summary && (
+                          <div
+                            className="text-[10px] truncate"
+                            style={{ color: 'var(--text-muted)' }}
+                          >
+                            {item.summary}
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -2783,6 +2913,7 @@ function ProductionDocPage() {
                     value={voiceoverUrl}
                     onChange={(url) => setVoiceoverUrl(url)}
                     scheduleItemId={scheduleItemId}
+                    projectId={scheduleItem?.project_id ?? projectIdParam}
                     titleCandidates={[scheduleItem?.title, doc?.title, topic]}
                   />
                 </div>
