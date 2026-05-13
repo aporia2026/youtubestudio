@@ -24,6 +24,8 @@ import {
   snapshotFromScores,
 } from '@/lib/niche-finder/watchlist';
 import { runDeepDive } from '@/lib/niche-finder/run-deep-dive';
+import { getFavorite, isPlaceholderScores } from '@/lib/niche-finder/favorites';
+import { kickoffBrief } from '@/lib/niche-finder/brief-runner';
 
 export const maxDuration = 300;
 
@@ -80,6 +82,38 @@ export async function POST(req: NextRequest) {
             combined: snapshot.combined,
             triggerCapturedAt: spike.trigger_captured_at!,
           });
+
+          // Niche-favorites auto-rerun (Phase 14): when a watchlisted
+          // niche spikes AND the operator has it favorited, queue a
+          // fresh brief so the operator's shortlist reflects the new
+          // metrics. `kickoffBrief` handles the placeholder-scores
+          // gate + the "already-fresh brief" gate internally; we pass
+          // `force: true` because a real spike is exactly the moment
+          // the prior brief's analysis goes stale. Fire-and-forget so
+          // the cron's iteration time stays bounded by deep-dive cost,
+          // not by Perplexity Deep Research latency.
+          try {
+            const fav = await getFavorite(row.workspace_id, row.niche_slug);
+            if (fav && !isPlaceholderScores(fav.scores)) {
+              kickoffBrief({
+                workspaceId: row.workspace_id,
+                nicheSlug: row.niche_slug,
+                force: true,
+              }).catch((kickErr) => {
+                logger.warn('cron rescore-niche-watchlist: brief auto-rerun failed to kick off', {
+                  workspace_id: row.workspace_id,
+                  niche_slug: row.niche_slug,
+                  detail: kickErr instanceof Error ? kickErr.message : String(kickErr),
+                });
+              });
+            }
+          } catch (favErr) {
+            logger.warn('cron rescore-niche-watchlist: favorite lookup for auto-rerun failed', {
+              workspace_id: row.workspace_id,
+              niche_slug: row.niche_slug,
+              detail: favErr instanceof Error ? favErr.message : String(favErr),
+            });
+          }
         }
       }
     } catch (err) {

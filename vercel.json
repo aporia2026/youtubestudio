@@ -53,6 +53,13 @@
     "src/app/api/cron/weekly-insight-digest/route.ts":               { "maxDuration": 300 },
     "src/app/api/cron/rescore-niche-watchlist/route.ts":             { "maxDuration": 300 },
     "src/app/api/cron/niche-taxonomy-sweep/route.ts":                { "maxDuration": 300 },
+    "src/app/api/cron/niche-finder-favorites-enrich/route.ts":       { "maxDuration": 300 },
+    "src/app/api/cron/niche-finder-favorites-validate-videos/route.ts": { "maxDuration": 300 },
+    "src/app/api/cron/purge-expired-favorites/route.ts":             { "maxDuration": 60 },
+    "src/app/api/niche-finder/favorites/[slug]/brief/route.ts":      { "maxDuration": 300 },
+    "src/app/api/niche-finder/favorites/export-sheet/route.ts":      { "maxDuration": 60 },
+    "src/app/api/niche-finder/favorites/[slug]/export-sheet/route.ts": { "maxDuration": 60 },
+    "src/app/api/niche-finder/favorites/export-compare-sheet/route.ts": { "maxDuration": 60 },
     "src/app/api/cron/run-pipeline/route.ts":                        { "maxDuration": 300 }
   },
   "crons": [
@@ -91,6 +98,18 @@
     {
       "path": "/api/cron/niche-taxonomy-sweep",
       "schedule": "30 3 * * *"
+    },
+    {
+      "path": "/api/cron/niche-finder-favorites-enrich",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/niche-finder-favorites-validate-videos",
+      "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/purge-expired-favorites",
+      "schedule": "0 1 * * *"
     },
     {
       "path": "/api/cron/run-pipeline",
