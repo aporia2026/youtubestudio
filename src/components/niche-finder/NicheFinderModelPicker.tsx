@@ -92,6 +92,7 @@ export function NicheFinderModelPicker({
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [saveError, setSaveError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Initial fetch — get the workspace's current defaults blob.
@@ -157,6 +158,7 @@ export function NicheFinderModelPicker({
   const pick = useCallback(
     async (modelId: string) => {
       setSaving(true);
+      setSaveError(null);
       try {
         const res = await fetch('/api/settings/model-defaults', {
           method: 'PUT',
@@ -170,7 +172,19 @@ export function NicheFinderModelPicker({
             features: { ...(prev?.features ?? {}), [feature]: modelId },
           }));
           setOpen(false);
+          return;
         }
+        // Non-OK: pull the error message out of the response body so
+        // the user (and devs) see WHY the save failed instead of a
+        // silent dead click.
+        const body = (await res.json().catch(() => null)) as
+          | { error?: string; detail?: string }
+          | null;
+        const errorPart = body?.error ?? `HTTP ${res.status}`;
+        const detailPart = body?.detail ? ` — ${body.detail}` : '';
+        setSaveError(`${errorPart}${detailPart}`);
+      } catch (err) {
+        setSaveError(err instanceof Error ? err.message : 'Network error');
       } finally {
         setSaving(false);
       }
@@ -180,6 +194,7 @@ export function NicheFinderModelPicker({
 
   const resetToDefault = useCallback(async () => {
     setSaving(true);
+    setSaveError(null);
     try {
       const res = await fetch(
         `/api/settings/model-defaults?scope=${encodeURIComponent(`feature:${feature}`)}`,
@@ -193,7 +208,16 @@ export function NicheFinderModelPicker({
           return { ...prev, features: nextFeatures };
         });
         setOpen(false);
+        return;
       }
+      const body = (await res.json().catch(() => null)) as
+        | { error?: string; detail?: string }
+        | null;
+      const errorPart = body?.error ?? `HTTP ${res.status}`;
+      const detailPart = body?.detail ? ` — ${body.detail}` : '';
+      setSaveError(`${errorPart}${detailPart}`);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Network error');
     } finally {
       setSaving(false);
     }
@@ -206,7 +230,13 @@ export function NicheFinderModelPicker({
     <div ref={containerRef} style={{ position: 'relative', display: 'inline-block' }}>
       <button
         type="button"
-        onClick={() => setOpen((x) => !x)}
+        onClick={() => {
+          setOpen((x) => {
+            const next = !x;
+            if (next) setSaveError(null);
+            return next;
+          });
+        }}
         disabled={saving}
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -374,6 +404,24 @@ export function NicheFinderModelPicker({
             );
           })}
 
+          {saveError && (
+            <div
+              role="alert"
+              style={{
+                padding: '6px 10px',
+                margin: '4px 8px 0',
+                fontSize: 11,
+                color: '#fca5a5',
+                background: 'rgba(248,113,113,0.10)',
+                border: '1px solid rgba(248,113,113,0.30)',
+                borderRadius: 6,
+                lineHeight: 1.4,
+                wordBreak: 'break-word',
+              }}
+            >
+              Save failed — {saveError}
+            </div>
+          )}
           <div
             style={{
               padding: 8,
