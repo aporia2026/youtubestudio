@@ -8,7 +8,16 @@
  * Stateless — fully driven by `value` + `onChange`. The parent
  * owns the filter object so presets can apply a snapshot in one
  * action.
+ *
+ * The "Custom ranges" panel below the chip rows exposes precise
+ * numeric sliders for six numeric dimensions (duration, subs,
+ * views, published-age, outlier score, title length). When a slider
+ * is set, it supersedes the chip-based field for that dimension
+ * (see `applyOutlierFilters` for the precedence rules). Touching a
+ * slider clears the related chip field; clicking a chip clears the
+ * related range field — one source of truth per dimension at a time.
  */
+import { useState } from 'react';
 import type {
   OutlierFilters,
   VideoFormat,
@@ -16,6 +25,31 @@ import type {
   TitleLength,
   SortBy,
 } from '@/lib/niche-finder/outlier-filters';
+import {
+  DURATION_RANGE_MAX_SEC,
+  SUBS_RANGE_MAX,
+  VIEWS_RANGE_MAX,
+  PUBLISHED_AGE_RANGE_MAX_DAYS,
+  OUTLIER_SCORE_RANGE_MAX,
+  TITLE_LENGTH_RANGE_MAX,
+} from '@/lib/niche-finder/outlier-filters';
+import { RangeSlider } from './RangeSlider';
+
+/** Maps each chip-based filter field to its range counterpart and
+ *  vice versa. Used to keep the two in sync — touching one clears
+ *  the other so they never contradict. */
+const CHIP_TO_RANGE: Partial<Record<keyof OutlierFilters, keyof OutlierFilters>> = {
+  formats: 'durationRangeSec',
+  channelSizes: 'subsRange',
+  minViews: 'viewsRange',
+  publishedWithinDays: 'publishedAgeRangeDays',
+  minOutlierScore: 'outlierScoreRange',
+  titleLengths: 'titleLengthRange',
+};
+const RANGE_TO_CHIP: Partial<Record<keyof OutlierFilters, keyof OutlierFilters>> =
+  Object.fromEntries(
+    Object.entries(CHIP_TO_RANGE).map(([k, v]) => [v!, k as keyof OutlierFilters]),
+  );
 
 interface FilterBarProps {
   value: OutlierFilters;
@@ -24,9 +58,9 @@ interface FilterBarProps {
 }
 
 const FORMAT_OPTIONS: { v: VideoFormat; label: string }[] = [
-  { v: 'short', label: 'Shorts' },
-  { v: 'normal', label: 'Normal' },
-  { v: 'long', label: 'Long-form' },
+  { v: 'short', label: 'Shorts (≤60s)' },
+  { v: 'normal', label: 'Normal (1–8m)' },
+  { v: 'long', label: 'Long-form (8m+)' },
 ];
 
 const SIZE_OPTIONS: { v: ChannelSize; label: string }[] = [
@@ -74,7 +108,61 @@ const SORT_OPTIONS: { v: SortBy; label: string }[] = [
   { v: 'titleShortest', label: 'Shortest title' },
 ];
 
+/** Compact number formatter — "5K", "1.2M", "120". Drives the value
+ *  badges on the subscriber + view sliders. */
+function fmtCompact(n: number): string {
+  const v = Math.round(n);
+  if (v >= 1_000_000) {
+    const m = v / 1_000_000;
+    return `${m >= 100 ? m.toFixed(0) : m.toFixed(1)}M`;
+  }
+  if (v >= 1_000) {
+    const k = v / 1_000;
+    return `${k >= 100 ? k.toFixed(0) : k.toFixed(1)}K`;
+  }
+  return String(v);
+}
+
+/** Seconds → m:ss or h:mm:ss. */
+function fmtDuration(sec: number): string {
+  const total = Math.max(0, Math.round(sec));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const ss = String(s).padStart(2, '0');
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${ss}`;
+  return `${m}:${ss}`;
+}
+
+/** Days since publish → "Xd" or "Xm" or "Xy". */
+function fmtDays(days: number): string {
+  const d = Math.max(0, Math.round(days));
+  if (d < 60) return `${d}d`;
+  if (d < 730) return `${Math.round(d / 30)}mo`;
+  return `${(d / 365).toFixed(1)}y`;
+}
+
+/** Outlier score → "3.5×". */
+function fmtScore(n: number): string {
+  if (n >= 100) return `100×+`;
+  return `${n.toFixed(n >= 10 ? 0 : 1)}×`;
+}
+
+/** Title length in chars. */
+function fmtChars(n: number): string {
+  return `${Math.round(n)}`;
+}
+
 export function OutlierFilterBar({ value, onChange, onReset }: FilterBarProps): React.ReactElement {
+  const [rangesOpen, setRangesOpen] = useState(false);
+  const anyRangeSet =
+    !!value.durationRangeSec ||
+    !!value.subsRange ||
+    !!value.viewsRange ||
+    !!value.publishedAgeRangeDays ||
+    !!value.outlierScoreRange ||
+    !!value.titleLengthRange;
+
   /**
    * Toggle membership of `v` in a multi-select filter field.
    *
@@ -102,6 +190,8 @@ export function OutlierFilterBar({ value, onChange, onReset }: FilterBarProps): 
     } else {
       (next as Record<string, unknown>)[field as string] = Array.from(set);
     }
+    const related = CHIP_TO_RANGE[field];
+    if (related) delete (next as Record<string, unknown>)[related as string];
     onChange(next);
   }
 
@@ -112,6 +202,25 @@ export function OutlierFilterBar({ value, onChange, onReset }: FilterBarProps): 
     } else {
       next[key] = val;
     }
+    const related = CHIP_TO_RANGE[key];
+    if (related) delete (next as Record<string, unknown>)[related as string];
+    onChange(next);
+  }
+
+  /** Update a range field. Clears the corresponding chip-based field
+   *  so the two never contradict. Pass `undefined` to clear. */
+  function setRange<K extends keyof OutlierFilters>(
+    key: K,
+    val: OutlierFilters[K] | undefined,
+  ): void {
+    const next: OutlierFilters = { ...value };
+    if (val === undefined) {
+      delete next[key];
+    } else {
+      next[key] = val;
+    }
+    const related = RANGE_TO_CHIP[key];
+    if (related) delete (next as Record<string, unknown>)[related as string];
     onChange(next);
   }
 
@@ -222,6 +331,162 @@ export function OutlierFilterBar({ value, onChange, onReset }: FilterBarProps): 
           />
         ))}
       </Row>
+
+      <div
+        style={{
+          marginTop: 4,
+          borderTop: '1px dashed rgba(255,255,255,0.08)',
+          paddingTop: 12,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setRangesOpen((x) => !x)}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: 0,
+            background: 'transparent',
+            color: anyRangeSet ? '#86efac' : '#94a3b8',
+            border: 'none',
+            fontSize: 12,
+            cursor: 'pointer',
+            textAlign: 'left',
+          }}
+          aria-expanded={rangesOpen}
+        >
+          <span
+            style={{
+              display: 'inline-block',
+              width: 14,
+              textAlign: 'center',
+              transform: rangesOpen ? 'rotate(90deg)' : 'rotate(0deg)',
+              transition: 'transform 0.15s',
+            }}
+          >
+            ▸
+          </span>
+          Custom ranges
+          <span style={{ color: '#475569', fontSize: 11 }}>
+            {anyRangeSet
+              ? '(active — overriding presets above)'
+              : '(precise min/max for every numeric filter)'}
+          </span>
+        </button>
+
+        {rangesOpen && (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 12,
+              padding: 14,
+              background: 'rgba(255,255,255,0.02)',
+              border: '1px solid rgba(255,255,255,0.06)',
+              borderRadius: 10,
+            }}
+          >
+            <RangeSlider
+              label="Duration"
+              min={0}
+              max={DURATION_RANGE_MAX_SEC}
+              value={value.durationRangeSec ?? [0, DURATION_RANGE_MAX_SEC]}
+              onChange={(v) => setRange('durationRangeSec', v)}
+              onClear={() => setRange('durationRangeSec', undefined)}
+              scale="log"
+              step={1}
+              format={fmtDuration}
+            />
+            <RangeSlider
+              label="Channel subs"
+              min={0}
+              max={SUBS_RANGE_MAX}
+              value={value.subsRange ?? [0, SUBS_RANGE_MAX]}
+              onChange={(v) => setRange('subsRange', v)}
+              onClear={() => setRange('subsRange', undefined)}
+              scale="log"
+              step={1}
+              format={fmtCompact}
+            />
+            <RangeSlider
+              label="Views"
+              min={0}
+              max={VIEWS_RANGE_MAX}
+              value={value.viewsRange ?? [0, VIEWS_RANGE_MAX]}
+              onChange={(v) => setRange('viewsRange', v)}
+              onClear={() => setRange('viewsRange', undefined)}
+              scale="log"
+              step={1}
+              format={fmtCompact}
+            />
+            <RangeSlider
+              label="Published age"
+              min={0}
+              max={PUBLISHED_AGE_RANGE_MAX_DAYS}
+              value={value.publishedAgeRangeDays ?? [0, PUBLISHED_AGE_RANGE_MAX_DAYS]}
+              onChange={(v) => setRange('publishedAgeRangeDays', v)}
+              onClear={() => setRange('publishedAgeRangeDays', undefined)}
+              scale="linear"
+              step={1}
+              format={fmtDays}
+            />
+            <RangeSlider
+              label="Outlier score"
+              min={0}
+              max={OUTLIER_SCORE_RANGE_MAX}
+              value={value.outlierScoreRange ?? [0, OUTLIER_SCORE_RANGE_MAX]}
+              onChange={(v) => setRange('outlierScoreRange', v)}
+              onClear={() => setRange('outlierScoreRange', undefined)}
+              scale="log"
+              step={0.1}
+              format={fmtScore}
+            />
+            <RangeSlider
+              label="Title length"
+              min={0}
+              max={TITLE_LENGTH_RANGE_MAX}
+              value={value.titleLengthRange ?? [0, TITLE_LENGTH_RANGE_MAX]}
+              onChange={(v) => setRange('titleLengthRange', v)}
+              onClear={() => setRange('titleLengthRange', undefined)}
+              scale="linear"
+              step={1}
+              format={fmtChars}
+            />
+            {anyRangeSet && (
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next: OutlierFilters = { ...value };
+                    delete next.durationRangeSec;
+                    delete next.subsRange;
+                    delete next.viewsRange;
+                    delete next.publishedAgeRangeDays;
+                    delete next.outlierScoreRange;
+                    delete next.titleLengthRange;
+                    onChange(next);
+                  }}
+                  style={{
+                    padding: '4px 10px',
+                    background: 'transparent',
+                    color: '#94a3b8',
+                    border: '1px solid #334155',
+                    borderRadius: 6,
+                    fontSize: 11,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Clear all ranges
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       <div>
         <button

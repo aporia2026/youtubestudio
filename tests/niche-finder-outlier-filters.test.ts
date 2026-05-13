@@ -18,6 +18,13 @@ import {
   BUILTIN_OUTLIER_PRESETS,
   getBuiltinPreset,
   DEFAULT_FILTERS,
+  activeRange,
+  DURATION_RANGE_MAX_SEC,
+  SUBS_RANGE_MAX,
+  VIEWS_RANGE_MAX,
+  PUBLISHED_AGE_RANGE_MAX_DAYS,
+  OUTLIER_SCORE_RANGE_MAX,
+  TITLE_LENGTH_RANGE_MAX,
   type OutlierFilters,
 } from '@/lib/niche-finder/outlier-filters';
 import {
@@ -307,6 +314,180 @@ describe('filterAndSortOutliers', () => {
     // All three included; formats filter set to all = effectively
     // no constraint.
     expect(out).toHaveLength(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Range fields (precise numeric sliders)
+// ---------------------------------------------------------------------------
+
+describe('activeRange', () => {
+  it('returns null for undefined input', () => {
+    expect(activeRange(undefined, 100)).toBeNull();
+  });
+
+  it('returns null when the range covers [0, ceiling]', () => {
+    expect(activeRange([0, 100], 100)).toBeNull();
+    expect(activeRange([-5, 200], 100)).toBeNull();
+  });
+
+  it('returns clamped tuple when the range narrows the dimension', () => {
+    expect(activeRange([10, 80], 100)).toEqual([10, 80]);
+    expect(activeRange([-5, 80], 100)).toEqual([0, 80]);
+    expect(activeRange([10, 200], 100)).toEqual([10, 100]);
+  });
+
+  it('returns null on non-finite endpoints', () => {
+    expect(activeRange([Number.NaN, 50], 100)).toBeNull();
+    expect(activeRange([0, Number.POSITIVE_INFINITY], 100)).toBeNull();
+  });
+});
+
+describe('filterAndSortOutliers — range fields', () => {
+  it('durationRangeSec narrows on duration and overrides formats', () => {
+    const videos = [
+      v({ videoId: 'short', durationIso: 'PT30S' }),
+      v({ videoId: 'mid', durationIso: 'PT5M' }),
+      v({ videoId: 'long', durationIso: 'PT20M' }),
+    ];
+    // Pick the 5min video by tight range.
+    const out = filterAndSortOutliers(
+      videos,
+      { durationRangeSec: [120, 600] },
+      NOW,
+    );
+    expect(out.map((x) => x.videoId)).toEqual(['mid']);
+  });
+
+  it('durationRangeSec overrides the chip-based formats filter when both set', () => {
+    const videos = [
+      v({ videoId: 'short', durationIso: 'PT30S' }),
+      v({ videoId: 'mid', durationIso: 'PT5M' }),
+    ];
+    // formats says "shorts only" but range says "between 2 and 10 min".
+    // Range wins; only the 5min video survives.
+    const out = filterAndSortOutliers(
+      videos,
+      { formats: ['short'], durationRangeSec: [120, 600] },
+      NOW,
+    );
+    expect(out.map((x) => x.videoId)).toEqual(['mid']);
+  });
+
+  it('full-range durationRangeSec is treated as no filter (falls back to formats)', () => {
+    const videos = [
+      v({ videoId: 'short', durationIso: 'PT30S' }),
+      v({ videoId: 'long', durationIso: 'PT20M' }),
+    ];
+    const out = filterAndSortOutliers(
+      videos,
+      {
+        formats: ['short'],
+        durationRangeSec: [0, DURATION_RANGE_MAX_SEC],
+      },
+      NOW,
+    );
+    expect(out.map((x) => x.videoId)).toEqual(['short']);
+  });
+
+  it('subsRange narrows on subscriber count and overrides channelSizes', () => {
+    const videos = [
+      v({ videoId: 'tiny', subscriberCount: 500 }),
+      v({ videoId: 'small', subscriberCount: 50_000 }),
+      v({ videoId: 'big', subscriberCount: 5_000_000 }),
+    ];
+    const out = filterAndSortOutliers(
+      videos,
+      { channelSizes: ['tiny'], subsRange: [10_000, 1_000_000] },
+      NOW,
+    );
+    expect(out.map((x) => x.videoId)).toEqual(['small']);
+  });
+
+  it('viewsRange enforces both min and max (vs minViews which is min-only)', () => {
+    const videos = [
+      v({ videoId: 'low', viewCount: 5_000 }),
+      v({ videoId: 'mid', viewCount: 250_000 }),
+      v({ videoId: 'mega', viewCount: 100_000_000 }),
+    ];
+    const out = filterAndSortOutliers(
+      videos,
+      { minViews: 100_000_000, viewsRange: [10_000, 1_000_000] },
+      NOW,
+    );
+    expect(out.map((x) => x.videoId)).toEqual(['mid']);
+  });
+
+  it('publishedAgeRangeDays bounds age on both sides', () => {
+    const videos = [
+      v({ videoId: 'brand-new', publishedAt: isoDaysAgo(2) }),
+      v({ videoId: 'recent', publishedAt: isoDaysAgo(45) }),
+      v({ videoId: 'old', publishedAt: isoDaysAgo(400) }),
+    ];
+    const out = filterAndSortOutliers(
+      videos,
+      { publishedAgeRangeDays: [30, 90] },
+      NOW,
+    );
+    expect(out.map((x) => x.videoId)).toEqual(['recent']);
+  });
+
+  it('outlierScoreRange bounds score and overrides minOutlierScore', () => {
+    const videos = [
+      v({ videoId: 'normal', outlierScore: 1.5 }),
+      v({ videoId: 'breakout', outlierScore: 5 }),
+      v({ videoId: 'viral', outlierScore: 40 }),
+    ];
+    const out = filterAndSortOutliers(
+      videos,
+      { minOutlierScore: 10, outlierScoreRange: [3, 10] },
+      NOW,
+    );
+    expect(out.map((x) => x.videoId)).toEqual(['breakout']);
+  });
+
+  it('titleLengthRange overrides titleLengths buckets', () => {
+    const videos = [
+      v({ videoId: 'short-title', title: 'Hi' }),
+      v({ videoId: 'mid-title', title: 'A reasonable mid-length title here' }),
+      v({ videoId: 'long-title', title: 'x'.repeat(120) }),
+    ];
+    const out = filterAndSortOutliers(
+      videos,
+      { titleLengths: ['punchy'], titleLengthRange: [20, 60] },
+      NOW,
+    );
+    expect(out.map((x) => x.videoId)).toEqual(['mid-title']);
+  });
+
+  it('combines multiple range fields simultaneously', () => {
+    const videos = [
+      v({ videoId: 'a', viewCount: 50_000, subscriberCount: 5_000, outlierScore: 8 }),
+      v({ videoId: 'b', viewCount: 500_000, subscriberCount: 200_000, outlierScore: 4 }),
+      v({ videoId: 'c', viewCount: 50_000_000, subscriberCount: 5_000_000, outlierScore: 20 }),
+    ];
+    const out = filterAndSortOutliers(
+      videos,
+      {
+        viewsRange: [100_000, 5_000_000],
+        subsRange: [50_000, 1_000_000],
+        outlierScoreRange: [3, 10],
+      },
+      NOW,
+    );
+    expect(out.map((x) => x.videoId)).toEqual(['b']);
+  });
+
+  it('domain ceilings are positive and ordered sensibly', () => {
+    // Sanity: every ceiling is > 0 and large enough to feel "no cap"
+    // for realistic inputs. Catches regressions if a constant is
+    // accidentally edited to 0.
+    expect(DURATION_RANGE_MAX_SEC).toBeGreaterThan(60);
+    expect(SUBS_RANGE_MAX).toBeGreaterThan(1_000_000);
+    expect(VIEWS_RANGE_MAX).toBeGreaterThan(1_000_000);
+    expect(PUBLISHED_AGE_RANGE_MAX_DAYS).toBeGreaterThan(30);
+    expect(OUTLIER_SCORE_RANGE_MAX).toBeGreaterThan(10);
+    expect(TITLE_LENGTH_RANGE_MAX).toBeGreaterThan(40);
   });
 });
 

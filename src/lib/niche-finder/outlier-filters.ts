@@ -119,6 +119,51 @@ export interface OutlierFilters {
   consistentWinnersOnly?: boolean;
   /** Sort order — default is outlier-score descending. */
   sortBy?: SortBy;
+
+  // -- Precise numeric ranges. When set on a given dimension, the
+  // range supersedes the corresponding chip-based field above. Pairs
+  // are [min, max] inclusive in the dimension's natural unit. The
+  // OutlierFilterBar clears the chip field when a slider is touched
+  // and clears the range when a chip is clicked, so the two never
+  // contradict in normal use.
+
+  /** Video duration range in seconds. Supersedes `formats`. */
+  durationRangeSec?: readonly [number, number];
+  /** Channel subscriber-count range. Supersedes `channelSizes`. */
+  subsRange?: readonly [number, number];
+  /** Total view-count range. Supersedes `minViews`. */
+  viewsRange?: readonly [number, number];
+  /** Published-age range in days (0 = brand new). Supersedes
+   *  `publishedWithinDays`. */
+  publishedAgeRangeDays?: readonly [number, number];
+  /** Outlier-score range (views/subs). Supersedes `minOutlierScore`. */
+  outlierScoreRange?: readonly [number, number];
+  /** Title-length range in characters. Supersedes `titleLengths`. */
+  titleLengthRange?: readonly [number, number];
+}
+
+// -- Slider domain ceilings. The full range [0, ceiling] reads as
+// "no filter" and the UI elides the field. Public so the slider
+// component and tests share one source of truth.
+export const DURATION_RANGE_MAX_SEC = 14_400; // 4 hours
+export const SUBS_RANGE_MAX = 50_000_000; // 50M subs
+export const VIEWS_RANGE_MAX = 500_000_000; // 500M views
+export const PUBLISHED_AGE_RANGE_MAX_DAYS = 1825; // 5 years
+export const OUTLIER_SCORE_RANGE_MAX = 100; // 100×
+export const TITLE_LENGTH_RANGE_MAX = 200; // 200 chars
+
+/** Returns the range if it actually narrows the dimension, else null.
+ *  A range is "narrowing" when it's not the full [0, ceiling] sweep.
+ *  Pure helper, exported for tests. */
+export function activeRange(
+  range: readonly [number, number] | undefined,
+  ceiling: number,
+): readonly [number, number] | null {
+  if (!range) return null;
+  const [lo, hi] = range;
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+  if (lo <= 0 && hi >= ceiling) return null;
+  return [Math.max(0, lo), Math.min(ceiling, hi)];
 }
 
 export const DEFAULT_FILTERS: OutlierFilters = Object.freeze({
@@ -140,16 +185,33 @@ export function filterAndSortOutliers(
 ): OutlierVideo[] {
   if (!Array.isArray(videos) || videos.length === 0) return [];
 
-  const formats = setOrNull(filters.formats);
-  const sizes = setOrNull(filters.channelSizes);
-  const titleBuckets = setOrNull(filters.titleLengths);
-  const minViews = Number.isFinite(filters.minViews) && (filters.minViews ?? 0) > 0 ? filters.minViews! : 0;
+  // Range fields take precedence over their chip-based counterparts.
+  // When a range is set and actually narrows the dimension, the
+  // chip set for that dimension is ignored entirely.
+  const durationRange = activeRange(filters.durationRangeSec, DURATION_RANGE_MAX_SEC);
+  const subsRange = activeRange(filters.subsRange, SUBS_RANGE_MAX);
+  const viewsRange = activeRange(filters.viewsRange, VIEWS_RANGE_MAX);
+  const publishedRange = activeRange(filters.publishedAgeRangeDays, PUBLISHED_AGE_RANGE_MAX_DAYS);
+  const outlierRange = activeRange(filters.outlierScoreRange, OUTLIER_SCORE_RANGE_MAX);
+  const titleRange = activeRange(filters.titleLengthRange, TITLE_LENGTH_RANGE_MAX);
+
+  const formats = durationRange ? null : setOrNull(filters.formats);
+  const sizes = subsRange ? null : setOrNull(filters.channelSizes);
+  const titleBuckets = titleRange ? null : setOrNull(filters.titleLengths);
+  const minViews =
+    viewsRange === null && Number.isFinite(filters.minViews) && (filters.minViews ?? 0) > 0
+      ? filters.minViews!
+      : 0;
   const minOutlier =
-    Number.isFinite(filters.minOutlierScore) && (filters.minOutlierScore ?? 0) > 0
+    outlierRange === null &&
+    Number.isFinite(filters.minOutlierScore) &&
+    (filters.minOutlierScore ?? 0) > 0
       ? filters.minOutlierScore!
       : 0;
   const windowDays =
-    Number.isFinite(filters.publishedWithinDays) && (filters.publishedWithinDays ?? 0) > 0
+    publishedRange === null &&
+    Number.isFinite(filters.publishedWithinDays) &&
+    (filters.publishedWithinDays ?? 0) > 0
       ? filters.publishedWithinDays!
       : 0;
   const consistentWinners = filters.consistentWinnersOnly ? computeConsistentWinners(videos) : null;
@@ -162,6 +224,29 @@ export function filterAndSortOutliers(
     if (minOutlier > 0 && v.outlierScore < minOutlier) return false;
     if (windowDays > 0 && ageDays(v.publishedAt, nowMs) > windowDays) return false;
     if (consistentWinners && !consistentWinners.has(v.channelId)) return false;
+
+    if (durationRange) {
+      const sec = parseDurationToSeconds(v.durationIso);
+      if (sec < durationRange[0] || sec > durationRange[1]) return false;
+    }
+    if (subsRange) {
+      if (v.subscriberCount < subsRange[0] || v.subscriberCount > subsRange[1]) return false;
+    }
+    if (viewsRange) {
+      if (v.viewCount < viewsRange[0] || v.viewCount > viewsRange[1]) return false;
+    }
+    if (publishedRange) {
+      const age = ageDays(v.publishedAt, nowMs);
+      if (age < publishedRange[0] || age > publishedRange[1]) return false;
+    }
+    if (outlierRange) {
+      if (v.outlierScore < outlierRange[0] || v.outlierScore > outlierRange[1]) return false;
+    }
+    if (titleRange) {
+      const n = typeof v.title === 'string' ? v.title.trim().length : 0;
+      if (n < titleRange[0] || n > titleRange[1]) return false;
+    }
+
     return true;
   });
 

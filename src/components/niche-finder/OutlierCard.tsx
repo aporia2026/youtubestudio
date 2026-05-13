@@ -2,10 +2,11 @@
 
 /**
  * One video surfaced by the outlier finder (mode D). Shows the
- * thumbnail, title, view-count, channel name + size, and the
- * outlier score with its classification.
+ * thumbnail (with a duration badge), title, view-count, channel
+ * name + size, and the outlier score with its classification.
  */
 import type { OutlierVideo } from '@/lib/niche-finder/outliers';
+import { parseDurationToSeconds } from '@/lib/niche-finder/scoring/shared';
 
 const TONE_BG: Record<OutlierVideo['classification'], string> = {
   underperformer: 'rgba(100, 116, 139, 0.10)',
@@ -26,7 +27,22 @@ function compactNumber(n: number): string {
   return n.toLocaleString();
 }
 
+/** Format an ISO 8601 video duration as `m:ss` or `h:mm:ss`. Returns
+ *  null for missing / unparsable / zero-length input so the caller
+ *  can suppress the badge. */
+function formatDuration(iso: string): string | null {
+  const total = parseDurationToSeconds(iso);
+  if (total <= 0) return null;
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const ss = String(s).padStart(2, '0');
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${ss}`;
+  return `${m}:${ss}`;
+}
+
 export function OutlierCard({ video }: { video: OutlierVideo }): React.ReactElement {
+  const duration = formatDuration(video.durationIso);
   return (
     <a
       href={`https://www.youtube.com/watch?v=${video.videoId}`}
@@ -44,14 +60,35 @@ export function OutlierCard({ video }: { video: OutlierVideo }): React.ReactElem
     >
       <div style={{ display: 'flex', gap: 12 }}>
         {video.thumbnailUrl && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={video.thumbnailUrl}
-            alt=""
-            width={120}
-            height={68}
-            style={{ width: 120, height: 68, objectFit: 'cover', borderRadius: 6, flexShrink: 0 }}
-          />
+          <div style={{ position: 'relative', flexShrink: 0 }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={video.thumbnailUrl}
+              alt=""
+              width={120}
+              height={68}
+              style={{ width: 120, height: 68, objectFit: 'cover', borderRadius: 6, display: 'block' }}
+            />
+            {duration && (
+              <span
+                style={{
+                  position: 'absolute',
+                  right: 4,
+                  bottom: 4,
+                  background: 'rgba(0,0,0,0.82)',
+                  color: '#fff',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  padding: '1px 5px',
+                  borderRadius: 3,
+                  lineHeight: 1.2,
+                  letterSpacing: 0.2,
+                }}
+              >
+                {duration}
+              </span>
+            )}
+          </div>
         )}
         <div style={{ minWidth: 0, flex: 1 }}>
           <div
