@@ -10,11 +10,28 @@ export const GET = apiRoute.authed(async (session, req) => {
   const offset = parseInt(searchParams.get('offset') || '0');
 
   try {
+    // `channels` is aggregated in a sub-select rather than via another
+    // LEFT JOIN + GROUP BY because adding a join to a many-to-many would
+    // multiply rows and break the script_count / media_count COUNTs.
+    // COALESCE→'[]' so the client never sees null for an unlinked project.
     const result = await sql`
       SELECT
         p.*,
         COUNT(DISTINCT s.id) as script_count,
-        COUNT(DISTINCT m.id) as media_count
+        COUNT(DISTINCT m.id) as media_count,
+        COALESCE(
+          (
+            SELECT json_agg(json_build_object(
+              'id', c.id,
+              'name', c.name,
+              'account_color', c.account_color
+            ) ORDER BY c.name)
+            FROM project_channels pc
+            JOIN channels c ON c.id = pc.channel_id
+            WHERE pc.project_id = p.id
+          ),
+          '[]'::json
+        ) as channels
       FROM projects p
       LEFT JOIN scripts s ON s.project_id = p.id
       LEFT JOIN media_assets m ON m.project_id = p.id

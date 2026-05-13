@@ -1,38 +1,39 @@
 import { NextResponse } from 'next/server';
-import { sql, ensureScheduleSchema } from '@/lib/db';
+import { sql } from '@/lib/db';
 import { apiRoute } from '@/lib/route-helpers';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
 
-// Hard ceilings so a runaway client (or a crafted request) can't pin a DB
-// connection for minutes. Tuned generously for a solo-creator with a huge
-// backlog — raise if that's ever not enough.
+// Hard ceilings so a runaway client can't pin a DB connection for minutes.
+// Tuned for a solo-creator with a huge backlog — mirror the schedule endpoint.
 const MAX_ITEM_IDS = 500;
 const MAX_CHANNEL_IDS = 50;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function allUuids(xs: unknown[]): xs is string[] {
-  return xs.every(x => typeof x === 'string' && UUID_RE.test(x));
+  return xs.every((x) => typeof x === 'string' && UUID_RE.test(x));
 }
 
-/** POST /api/schedule/bulk-assign-channels
+/** POST /api/projects/bulk-assign-channels
  *  Body: {
- *    item_ids: string[],
- *    channel_ids: string[],
+ *    item_ids: string[],       // project ids
+ *    channel_ids: string[],    // channel ids to (add | replace) per project
  *    mode: 'add' | 'replace',
- *    allow_clear?: boolean   // required for mode='replace' with empty channel_ids
+ *    allow_clear?: boolean     // required for mode='replace' with empty channel_ids
  *  }
  *
- *  - add:     attach each channel to each item, leaving existing links intact.
- *  - replace: set each item's channel set to exactly `channel_ids`. Empty
- *             `channel_ids` un-assigns everything — guarded behind
- *             `allow_clear: true` because it's destructive.
+ *  Shape and CTE pattern intentionally mirror
+ *  /api/schedule/bulk-assign-channels. Project artifacts (scripts,
+ *  voiceovers, B-roll, critics, reviews, narrator takes, shorts) inherit
+ *  the assignment transitively via their parent project — see
+ *  `_plans/2026-05-13-channel-assignment-everywhere.md`.
  */
 export const POST = apiRoute.authed(async (session, req) => {
   const { limited } = checkRateLimit(`bulk-assign:${getClientIP(req)}`, 30, 60_000);
-  if (limited) return NextResponse.json({ error: 'Rate limited — try again shortly' }, { status: 429 });
+  if (limited) {
+    return NextResponse.json({ error: 'Rate limited — try again shortly' }, { status: 429 });
+  }
 
-  await ensureScheduleSchema();
   const body = await req.json().catch(() => ({}));
   const itemIds: unknown[] = Array.isArray(body.item_ids) ? body.item_ids : [];
   const channelIds: unknown[] = Array.isArray(body.channel_ids) ? body.channel_ids : [];
@@ -58,23 +59,26 @@ export const POST = apiRoute.authed(async (session, req) => {
     return NextResponse.json({ error: 'channel_ids is required for add mode' }, { status: 400 });
   }
   if (mode === 'replace' && channelIds.length === 0 && !allowClear) {
-    return NextResponse.json({
-      error: 'replace mode with empty channel_ids would un-assign all selected items — pass allow_clear:true to confirm',
-    }, { status: 400 });
+    return NextResponse.json(
+      {
+        error:
+          'replace mode with empty channel_ids would un-assign all selected projects — pass allow_clear:true to confirm',
+      },
+      { status: 400 },
+    );
   }
 
   // Workspace verification — every id MUST belong to the caller's workspace.
   // Reject the whole request if a single id is foreign; no partial writes.
-  // Added in the Phase-1 channel-assignment plan (2026-05-13): the prior
-  // version of this route had no auth wrapper and trusted client-supplied
-  // ids verbatim, which would have allowed cross-tenant mutation of any
-  // schedule_item or channels.
-  const itemCheck = await sql.query<{ n: string }>(
-    `SELECT COUNT(*)::text AS n FROM schedule_items
+  // SELECT counts beat ANY-EXISTS because we want to report which array is
+  // wrong — a foreign channel id and a foreign project id are different
+  // operator mistakes.
+  const projCheck = await sql.query<{ n: string }>(
+    `SELECT COUNT(*)::text AS n FROM projects
        WHERE id = ANY($1::uuid[]) AND workspace_id = $2::uuid`,
     [itemIds, session.ws],
   );
-  if (parseInt(itemCheck.rows[0]!.n, 10) !== itemIds.length) {
+  if (parseInt(projCheck.rows[0]!.n, 10) !== itemIds.length) {
     return NextResponse.json(
       { error: 'one or more item_ids do not belong to your workspace' },
       { status: 403 },
@@ -96,30 +100,31 @@ export const POST = apiRoute.authed(async (session, req) => {
 
   try {
     if (mode === 'replace') {
-      // Single statement: delete every join row for the targeted items whose
-      // channel_id isn't in the new set, then upsert the new set for each item.
-      // O(items × channels) rows processed in one round-trip instead of N.
+      // One round-trip: drop join rows for these projects whose channel
+      // isn't in the new set, then upsert the cross-product. The DELETE
+      // sits inside a CTE so the INSERT sees the same statement-level
+      // snapshot — no race against itself.
       await sql.query(
         `WITH
-           items AS (SELECT unnest($1::uuid[]) AS item_id),
+           items AS (SELECT unnest($1::uuid[]) AS project_id),
            channels AS (SELECT unnest($2::uuid[]) AS channel_id),
            pruned AS (
-             DELETE FROM schedule_item_channels sic
-             WHERE sic.item_id IN (SELECT item_id FROM items)
-               AND sic.channel_id NOT IN (SELECT channel_id FROM channels)
+             DELETE FROM project_channels pc
+             WHERE pc.project_id IN (SELECT project_id FROM items)
+               AND pc.channel_id NOT IN (SELECT channel_id FROM channels)
            )
-         INSERT INTO schedule_item_channels (item_id, channel_id)
-         SELECT i.item_id, c.channel_id
+         INSERT INTO project_channels (project_id, channel_id)
+         SELECT i.project_id, c.channel_id
          FROM items i CROSS JOIN channels c
          ON CONFLICT DO NOTHING`,
         [itemIds, channelIds],
       );
     } else {
-      // add-only — single statement for the whole batch.
+      // add-only — single statement.
       await sql.query(
-        `INSERT INTO schedule_item_channels (item_id, channel_id)
-         SELECT i.item_id, c.channel_id
-         FROM unnest($1::uuid[]) AS i(item_id)
+        `INSERT INTO project_channels (project_id, channel_id)
+         SELECT i.project_id, c.channel_id
+         FROM unnest($1::uuid[]) AS i(project_id)
          CROSS JOIN unnest($2::uuid[]) AS c(channel_id)
          ON CONFLICT DO NOTHING`,
         [itemIds, channelIds],
@@ -128,7 +133,9 @@ export const POST = apiRoute.authed(async (session, req) => {
 
     return NextResponse.json({ updated: itemIds.length });
   } catch (err) {
-    logger.error('POST /api/schedule/bulk-assign-channels', { detail: err instanceof Error ? err.message : String(err) });
+    logger.error('POST /api/projects/bulk-assign-channels', {
+      detail: err instanceof Error ? err.message : String(err),
+    });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 });

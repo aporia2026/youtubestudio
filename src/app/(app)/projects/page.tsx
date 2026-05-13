@@ -1,10 +1,16 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import Link from 'next/link';
 import { toast } from 'sonner';
 import { timeAgo } from '@/lib/utils';
+
+interface ProjectChannel {
+  id: string;
+  name: string;
+  account_color: string | null;
+}
 
 interface Project {
   id: string;
@@ -16,6 +22,7 @@ interface Project {
   updated_at: string;
   script_count?: number;
   media_count?: number;
+  channels?: ProjectChannel[];
 }
 
 const STATUS_STYLES: Record<string, { color: string; bg: string; label: string }> = {
@@ -28,6 +35,7 @@ const STATUS_STYLES: Record<string, { color: string; bg: string; label: string }
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [channels, setChannels] = useState<ProjectChannel[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -37,9 +45,14 @@ export default function ProjectsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   const [savingId, setSavingId] = useState<string | null>(null);
+  // Bulk-assign selection — modeled on schedule's ListView.tsx. Storing the
+  // selected ids as a Set keeps O(1) toggle + lookup for chip rendering.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [assigningChannels, setAssigningChannels] = useState(false);
 
   useEffect(() => {
     fetchProjects();
+    fetchChannels();
   }, []);
 
   async function fetchProjects() {
@@ -52,6 +65,59 @@ export default function ProjectsPage() {
     } finally {
       setLoading(false);
     }
+  }
+  async function fetchChannels() {
+    try {
+      const res = await fetch('/api/channels');
+      const data = await res.json();
+      // /api/channels returns the richer per-account shape — narrow to the
+      // three fields the popover and chips actually use.
+      const trimmed: ProjectChannel[] = (data.channels || []).map((c: { id: string; name: string; account_color: string | null }) => ({
+        id: c.id,
+        name: c.name,
+        account_color: c.account_color,
+      }));
+      setChannels(trimmed);
+    } catch {
+      // Non-fatal — the page still works without the popover when channels
+      // can't be fetched. The "Assign channels" button just won't render.
+    }
+  }
+
+  function toggleSelected(id: string) {
+    setSelected(s => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }
+  async function bulkAssignChannels(channelIds: string[], mode: 'add' | 'replace') {
+    if (channelIds.length === 0) return;
+    const count = selected.size;
+    try {
+      const res = await fetch('/api/projects/bulk-assign-channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ item_ids: Array.from(selected), channel_ids: channelIds, mode }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.error || 'Bulk assign failed');
+        return;
+      }
+    } catch {
+      toast.error('Bulk assign failed');
+      return;
+    }
+    // Pull fresh rows so chips reflect the new join — single round-trip
+    // beats N optimistic patches that each have to merge into project.channels.
+    await fetchProjects();
+    const resolvedCount = channels.filter(c => channelIds.includes(c.id)).length;
+    toast.success(
+      `Assigned ${count} ${count === 1 ? 'project' : 'projects'} to ${resolvedCount} ${resolvedCount === 1 ? 'channel' : 'channels'}`,
+    );
+    setSelected(new Set());
+    setAssigningChannels(false);
   }
 
   function startRename(project: Project) {
@@ -162,6 +228,49 @@ export default function ProjectsPage() {
         </div>
       </div>
 
+      <AnimatePresence>
+        {selected.size > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            className="sticky top-4 z-10 flex items-center gap-2 px-3 py-2 rounded-lg mb-4"
+            style={{ background: 'var(--bg-secondary)', border: '1px solid var(--accent-purple-bright)', boxShadow: '0 4px 20px rgba(124,58,237,0.2)' }}
+          >
+            <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+              {selected.size} selected
+            </span>
+            <button
+              onClick={() => setSelected(new Set(filtered.map(p => p.id)))}
+              className="text-xs px-2 py-1 rounded"
+              style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+            >
+              Select all visible
+            </button>
+            {channels.length > 0 && (
+              <div className="relative">
+                <button onClick={() => setAssigningChannels(v => !v)}
+                  className="text-xs px-3 py-1 rounded-md"
+                  style={{ background: 'rgba(124,58,237,0.15)', color: 'var(--accent-purple-bright)', border: '1px solid rgba(124,58,237,0.35)' }}>
+                  Assign channels ▾
+                </button>
+                {assigningChannels && (
+                  <ChannelAssignPopover
+                    channels={channels}
+                    onApply={bulkAssignChannels}
+                    onClose={() => setAssigningChannels(false)}
+                  />
+                )}
+              </div>
+            )}
+            <button onClick={() => setSelected(new Set())}
+              className="ml-auto text-xs" style={{ color: 'var(--text-muted)' }}>
+              Clear
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {loading && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {[...Array(6)].map((_, i) => (
@@ -198,18 +307,47 @@ export default function ProjectsPage() {
             const statusStyle = STATUS_STYLES[project.status] || STATUS_STYLES.draft;
             const isEditing = editingId === project.id;
             const isBusy = savingId === project.id;
+            const isSelected = selected.has(project.id);
             // When editing or hovering action buttons, the card itself is no
             // longer a click-through — wrapping the whole thing in <Link>
             // would steal click events from the rename input + buttons.
             const cardInner = (
               <div
                 className="glass rounded-xl p-5 transition-all h-full group relative"
-                style={{ border: '1px solid var(--border)', cursor: isEditing ? 'default' : 'pointer' }}
-                onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-bright)'}
-                onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border)'}
+                style={{
+                  border: `1px solid ${isSelected ? 'var(--accent-purple-bright)' : 'var(--border)'}`,
+                  background: isSelected ? 'rgba(124,58,237,0.06)' : undefined,
+                  cursor: isEditing ? 'default' : 'pointer',
+                }}
+                onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-bright)'; }}
+                onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border)'; }}
               >
+                {/* Bulk-select checkbox — always visible so the lazy user
+                    can fan-select without learning a hover affordance. The
+                    click handler stops propagation so the outer <Link>
+                    doesn't navigate when the checkbox is clicked. */}
+                {!isEditing && (
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => toggleSelected(project.id)}
+                    onClick={e => e.stopPropagation()}
+                    aria-label={`Select ${project.title}`}
+                    className="absolute top-3 left-3 cursor-pointer z-10"
+                  />
+                )}
                 <div className="flex items-start justify-between mb-3 gap-2">
-                  <span className="badge text-xs" style={{ background: statusStyle.bg, color: statusStyle.color, border: 'none' }}>
+                  <span
+                    className="badge text-xs"
+                    style={{
+                      background: statusStyle.bg,
+                      color: statusStyle.color,
+                      border: 'none',
+                      // Clear the absolute-positioned bulk-select checkbox.
+                      // No padding mid-edit (no checkbox is rendered then).
+                      marginLeft: isEditing ? 0 : 22,
+                    }}
+                  >
                     {statusStyle.label}
                   </span>
                   <div className="flex items-center gap-1 shrink-0">
@@ -287,6 +425,32 @@ export default function ProjectsPage() {
                   <div className="flex items-center gap-3 text-xs" style={{ color: 'var(--text-muted)' }}>
                     <span>📝 {project.script_count || 0} scripts</span>
                     <span>🎬 {project.media_count || 0} media</span>
+                    {/* Channel chips — show up to three, then "+N" for the rest.
+                        Mirrors the schedule-row chip pattern (initials + colour
+                        dot) so the visual language carries across pages. */}
+                    {(project.channels?.length ?? 0) > 0 && (
+                      <span className="flex -space-x-1 ml-auto">
+                        {project.channels!.slice(0, 3).map(c => (
+                          <span
+                            key={c.id}
+                            title={c.name}
+                            className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold border-2"
+                            style={{ background: c.account_color || '#7c3aed', color: 'white', borderColor: 'var(--bg-card)' }}
+                          >
+                            {c.name.charAt(0).toUpperCase()}
+                          </span>
+                        ))}
+                        {project.channels!.length > 3 && (
+                          <span
+                            className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-medium border-2"
+                            style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderColor: 'var(--bg-card)' }}
+                            title={project.channels!.slice(3).map(c => c.name).join(', ')}
+                          >
+                            +{project.channels!.length - 3}
+                          </span>
+                        )}
+                      </span>
+                    )}
                   </div>
                 )}
               </div>
@@ -303,6 +467,78 @@ export default function ProjectsPage() {
           })}
         </motion.div>
       )}
+    </div>
+  );
+}
+
+// Bulk "Assign channels" popover. Mirrors the schedule's affordance — same
+// pick-and-mode UX so users don't relearn the pattern across pages. Lives
+// in this file (rather than a shared module) until Phase 2/3 give us a
+// second non-schedule caller and the duplication becomes worth abstracting.
+function ChannelAssignPopover({ channels, onApply, onClose }: {
+  channels: ProjectChannel[];
+  onApply: (ids: string[], mode: 'add' | 'replace') => void;
+  onClose: () => void;
+}) {
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [mode, setMode] = useState<'add' | 'replace'>('add');
+  function toggle(id: string) {
+    setPicked(s => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div
+      onClick={e => e.stopPropagation()}
+      // `right-0` keeps the popover inside the sticky toolbar on narrow
+      // viewports (where an absolute-left popover would clip off-screen).
+      className="absolute right-0 top-full mt-1 z-20 w-72 max-w-[calc(100vw-2rem)] p-3 rounded-lg space-y-2"
+      style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }}
+    >
+      <div className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+        Pick channels
+      </div>
+      <div className="flex flex-col gap-1 max-h-60 overflow-y-auto">
+        {channels.map(c => (
+          <label key={c.id} className="flex items-center gap-2 text-sm px-2 py-1 rounded cursor-pointer"
+            style={{ background: picked.has(c.id) ? 'rgba(124,58,237,0.12)' : 'transparent', color: 'var(--text-primary)' }}>
+            <input type="checkbox" checked={picked.has(c.id)} onChange={() => toggle(c.id)} />
+            <span className="w-2 h-2 rounded-full" style={{ background: c.account_color || '#7c3aed' }} />
+            {c.name}
+          </label>
+        ))}
+      </div>
+      <div className="flex items-center gap-3 text-xs pt-1" style={{ borderTop: '1px solid var(--border)' }}>
+        <label className="flex items-center gap-1 cursor-pointer" style={{ color: 'var(--text-primary)' }}>
+          <input type="radio" checked={mode === 'add'} onChange={() => setMode('add')} /> Add
+        </label>
+        <label className="flex items-center gap-1 cursor-pointer" style={{ color: 'var(--text-primary)' }}>
+          <input type="radio" checked={mode === 'replace'} onChange={() => setMode('replace')} /> Replace
+        </label>
+      </div>
+      <div className="flex items-center justify-end gap-2 pt-1">
+        <button onClick={onClose} className="text-xs px-2 py-1" style={{ color: 'var(--text-muted)' }}>
+          Cancel
+        </button>
+        <button
+          onClick={() => onApply(Array.from(picked), mode)}
+          disabled={picked.size === 0}
+          className="text-xs px-3 py-1 rounded-md"
+          style={{
+            background: picked.size ? 'var(--accent-purple-bright)' : 'var(--bg-tertiary)',
+            color: picked.size ? 'white' : 'var(--text-muted)',
+          }}
+        >
+          Apply
+        </button>
+      </div>
     </div>
   );
 }
