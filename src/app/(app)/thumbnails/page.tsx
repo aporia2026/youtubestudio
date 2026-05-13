@@ -314,20 +314,26 @@ function ThumbnailsPage() {
 
   async function uploadReferenceImage(file: File) {
     if (!file.type.startsWith('image/')) { toast.error('Please select an image file'); return; }
-    if (file.size > 10 * 1024 * 1024) { toast.error('Image must be under 10MB'); return; }
+    // /api/upload is a Next route handler and hits Vercel's ~4.5 MB body cap.
+    // Reject larger files here so the user sees a clear message instead of an opaque server failure.
+    if (file.size > 4 * 1024 * 1024) { toast.error('Image must be under 4MB'); return; }
     setUploadingRef(true);
     try {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('type', 'image');
       const res = await fetch('/api/upload', { method: 'POST', body: formData });
-      if (!res.ok) throw new Error('Upload failed');
+      if (!res.ok) {
+        // Surface the server's actual error so failures aren't silent.
+        const data = await res.json().catch(() => ({}));
+        throw new Error((data && data.error) ? data.error : `Upload failed (${res.status})`);
+      }
       const data = await res.json();
       setReferenceImageUrl(data.url);
       setRefPreviewUrl(data.url);
       toast.success('Reference image uploaded');
-    } catch {
-      toast.error('Failed to upload reference image');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to upload reference image');
     } finally {
       setUploadingRef(false);
     }
