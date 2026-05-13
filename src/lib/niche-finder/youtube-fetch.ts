@@ -107,43 +107,65 @@ async function cachedJsonGet<T>(url: string, quotaCost: number): Promise<T | nul
 }
 
 /**
- * Run a single search.list call against YouTube for `query` and
- * return the top video IDs. Costs 100 quota units. Caps at the
- * caller-specified `maxResults` (default 30), which is also the
- * YouTube max per page; we never paginate so 1 call = 100 units.
+ * Run search.list against YouTube for `query` and return video IDs.
+ * Costs 100 quota units per page. `maxResults` is the per-page cap
+ * (YouTube's own ceiling is 50). `pages` (default 1) controls how
+ * many pages of results to walk via `pageToken`; total quota cost is
+ * `pages * 100`. `order` defaults to `viewCount` for backwards
+ * compatibility with the cluster-discovery callers; outlier-mode
+ * passes `relevance` to avoid biasing toward already-big videos.
  *
  * Returns an empty array on any failure or when YOUTUBE_API_KEY
  * is not configured.
  */
 export async function searchVideosForCluster(
   query: string,
-  opts: { maxResults?: number; regionCode?: string; relevanceLanguage?: string } = {},
+  opts: {
+    maxResults?: number;
+    regionCode?: string;
+    relevanceLanguage?: string;
+    order?: 'relevance' | 'viewCount' | 'date';
+    pages?: number;
+  } = {},
 ): Promise<string[]> {
   const key = apiKey();
   if (!key) return [];
   if (typeof query !== 'string' || query.trim().length === 0) return [];
 
-  const params = new URLSearchParams({
-    part: 'snippet',
-    q: query.trim(),
-    type: 'video',
-    maxResults: String(Math.min(50, Math.max(1, opts.maxResults ?? 30))),
-    order: 'viewCount',
-    key,
-  });
-  if (opts.regionCode) params.set('regionCode', opts.regionCode);
-  if (opts.relevanceLanguage) params.set('relevanceLanguage', opts.relevanceLanguage);
-
-  const url = `${API_BASE}/search?${params.toString()}`;
-  const data = await cachedJsonGet<{ items?: SearchListItem[] }>(url, 100);
-  if (!data?.items) return [];
+  const perPage = Math.min(50, Math.max(1, opts.maxResults ?? 30));
+  const maxPages = Math.max(1, Math.min(10, opts.pages ?? 1));
+  const order = opts.order ?? 'viewCount';
 
   const ids: string[] = [];
-  for (const item of data.items) {
-    const id = item?.id?.videoId;
-    if (typeof id === 'string' && id.length > 0 && !ids.includes(id)) {
-      ids.push(id);
+  let pageToken: string | undefined;
+  for (let page = 0; page < maxPages; page++) {
+    const params = new URLSearchParams({
+      part: 'snippet',
+      q: query.trim(),
+      type: 'video',
+      maxResults: String(perPage),
+      order,
+      key,
+    });
+    if (opts.regionCode) params.set('regionCode', opts.regionCode);
+    if (opts.relevanceLanguage) params.set('relevanceLanguage', opts.relevanceLanguage);
+    if (pageToken) params.set('pageToken', pageToken);
+
+    const url = `${API_BASE}/search?${params.toString()}`;
+    const data = await cachedJsonGet<{
+      items?: SearchListItem[];
+      nextPageToken?: string;
+    }>(url, 100);
+    if (!data?.items) break;
+
+    for (const item of data.items) {
+      const id = item?.id?.videoId;
+      if (typeof id === 'string' && id.length > 0 && !ids.includes(id)) {
+        ids.push(id);
+      }
     }
+    if (!data.nextPageToken) break;
+    pageToken = data.nextPageToken;
   }
   return ids;
 }
@@ -254,12 +276,20 @@ export async function fetchChannelsBatch(channelIds: readonly string[]): Promise
  */
 export async function harvestClusterSample(
   query: string,
-  opts: { maxVideos?: number; regionCode?: string; relevanceLanguage?: string } = {},
+  opts: {
+    maxVideos?: number;
+    regionCode?: string;
+    relevanceLanguage?: string;
+    order?: 'relevance' | 'viewCount' | 'date';
+    pages?: number;
+  } = {},
 ): Promise<{ videos: FetchedVideo[]; channels: FetchedChannel[] }> {
   const videoIds = await searchVideosForCluster(query, {
     maxResults: opts.maxVideos ?? 30,
     regionCode: opts.regionCode,
     relevanceLanguage: opts.relevanceLanguage,
+    order: opts.order,
+    pages: opts.pages,
   });
   if (videoIds.length === 0) return { videos: [], channels: [] };
 

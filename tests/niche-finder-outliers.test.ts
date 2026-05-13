@@ -9,6 +9,7 @@ import {
   computeOutlierScore,
   classifyOutlierScore,
   buildOutliers,
+  buildOutlierQueryVariants,
   OUTLIER_SUB_FLOOR,
 } from '@/lib/niche-finder/outliers';
 import type { FetchedChannel, FetchedVideo } from '@/lib/niche-finder/youtube-fetch';
@@ -126,5 +127,47 @@ describe('buildOutliers', () => {
 
   it('returns empty array for empty input', () => {
     expect(buildOutliers([], [])).toEqual([]);
+  });
+});
+
+describe('buildOutlierQueryVariants', () => {
+  const currentYear = String(new Date().getFullYear());
+
+  it('returns bare + "best X" + "X <year>" for a plain niche', () => {
+    const out = buildOutlierQueryVariants('watercolor painting');
+    expect(out).toEqual([
+      'watercolor painting',
+      'best watercolor painting',
+      `watercolor painting ${currentYear}`,
+    ]);
+  });
+
+  it('trims the input before variant generation', () => {
+    expect(buildOutlierQueryVariants('  yoga  ')).toEqual([
+      'yoga',
+      'best yoga',
+      `yoga ${currentYear}`,
+    ]);
+  });
+
+  it('skips the "best" variant when the niche already starts with "best"', () => {
+    const out = buildOutlierQueryVariants('best espresso machines');
+    expect(out).toEqual(['best espresso machines', `best espresso machines ${currentYear}`]);
+  });
+
+  it('is case-insensitive on the "best" guard', () => {
+    const out = buildOutlierQueryVariants('Best Hiking Gear');
+    expect(out).toEqual(['Best Hiking Gear', `Best Hiking Gear ${currentYear}`]);
+  });
+
+  it('skips the year variant when the niche already contains the current year', () => {
+    const niche = `top albums ${currentYear}`;
+    const out = buildOutlierQueryVariants(niche);
+    expect(out).toEqual([niche, `best ${niche}`]);
+  });
+
+  it('returns an empty list for an empty or whitespace-only niche', () => {
+    expect(buildOutlierQueryVariants('')).toEqual([]);
+    expect(buildOutlierQueryVariants('   ')).toEqual([]);
   });
 });

@@ -115,25 +115,69 @@ export interface FindOutliersArgs {
   region?: string;
 }
 
-/** Fetch the top videos for a niche and rank them by outlier
- *  score. Returns a `fetchOk: false` shape rather than throwing
- *  when YouTube returns nothing — the UI surfaces an empty-state. */
+/** Number of search.list pages walked per variant. Total quota per
+ *  outlier search = OUTLIER_QUERY_PAGES * 100 * #variants. Tuned to
+ *  balance coverage vs. YouTube's default 10k daily quota. */
+const OUTLIER_QUERY_PAGES = 2;
+
+/** Per-page result cap. YouTube's own ceiling is 50. */
+const OUTLIER_PER_PAGE = 50;
+
+/**
+ * Build a small set of query variants for one niche. Variants are
+ * content-shape-neutral on purpose: a bare query, a "best X" lens
+ * for top-recommendation content, and a current-year lens for recent
+ * activity. Returned variants are deduped so a niche that already
+ * contains "best" or the current year doesn't double up.
+ *
+ * Exported for tests.
+ */
+export function buildOutlierQueryVariants(niche: string): string[] {
+  const base = niche.trim();
+  if (base.length === 0) return [];
+  const lower = base.toLowerCase();
+  const currentYear = String(new Date().getFullYear());
+  const out: string[] = [base];
+  if (!lower.startsWith('best ')) out.push(`best ${base}`);
+  if (!lower.includes(currentYear)) out.push(`${base} ${currentYear}`);
+  return out;
+}
+
+/** Fetch top videos for a niche across several query variants and
+ *  rank them by outlier score. Variants are merged on videoId so the
+ *  same video surfacing under multiple queries doesn't double-count.
+ *  Returns `fetchOk: false` rather than throwing when no variant
+ *  produced results; the UI surfaces an empty-state. */
 export async function findOutliers(args: FindOutliersArgs): Promise<OutlierFinderResult> {
   const trimmedNiche = args.niche.trim();
   if (trimmedNiche.length === 0) {
     return { niche: '', videos: [], fetchOk: false };
   }
-  const { videos, channels } = await harvestClusterSample(trimmedNiche, {
-    maxVideos: 30,
-    regionCode: args.region,
-    relevanceLanguage: args.language,
-  });
-  if (videos.length === 0) {
+
+  const variants = buildOutlierQueryVariants(trimmedNiche);
+  const videoById = new Map<string, FetchedVideo>();
+  const channelById = new Map<string, FetchedChannel>();
+  for (const variant of variants) {
+    const { videos, channels } = await harvestClusterSample(variant, {
+      maxVideos: OUTLIER_PER_PAGE,
+      pages: OUTLIER_QUERY_PAGES,
+      order: 'relevance',
+      regionCode: args.region,
+      relevanceLanguage: args.language,
+    });
+    for (const v of videos) if (!videoById.has(v.id)) videoById.set(v.id, v);
+    for (const c of channels) if (!channelById.has(c.id)) channelById.set(c.id, c);
+  }
+
+  if (videoById.size === 0) {
     return { niche: trimmedNiche, videos: [], fetchOk: false };
   }
   return {
     niche: trimmedNiche,
-    videos: buildOutliers(videos, channels),
+    videos: buildOutliers(
+      Array.from(videoById.values()),
+      Array.from(channelById.values()),
+    ),
     fetchOk: true,
   };
 }
