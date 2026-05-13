@@ -33,6 +33,55 @@ export const DEFAULT_BRAND_KIT: BrandKit = {
   titleFontFamily: 'Inter, system-ui, sans-serif',
 };
 
+// ─── Section-divider Thumbnail (Phase 1 of the thumbnail-zoom feature) ────────
+//
+// A composite thumbnail (typically a grid of N labelled tiles) the
+// creator uploads once per production-doc. At render time, intro shots
+// can zoom from the full thumbnail into a specific tile while the
+// narrator announces that section. See `_plans/2026-05-13-thumbnail-zoom-section-divider.md`.
+
+export type ThumbnailTransitionKind = 'hard-cut' | 'smooth';
+
+export interface ThumbnailTransitionConfig {
+  kind: ThumbnailTransitionKind;
+  /** Frames the full thumbnail dwells before the zoom starts. */
+  holdAtFullMs?: number;
+  /** Frames the zoom takes to settle on the target tile. */
+  zoomDurationMs?: number;
+  /** Frames camera dwells on tile before content cut. */
+  holdAtTargetMs?: number;
+  /** Easing applied to the zoom curve. */
+  easing?: 'spring-snappy' | 'spring-smooth' | 'spring-gentle';
+}
+
+export interface ThumbnailRegion {
+  /** Stable id; never user-visible. Used by VideoShot.thumbnailZoomTo. */
+  id: string;
+  /** Creator-supplied label (e.g. "Reconnaissance"). */
+  label: string;
+  /** Rectangle in intrinsic-image pixels. */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface VideoThumbnail {
+  /** Vercel Blob URL of the composite image. */
+  imageUrl: string;
+  /** Intrinsic pixel width — needed to map region rectangles to frame. */
+  width: number;
+  /** Intrinsic pixel height. */
+  height: number;
+  /** All regions the creator drew. Empty array = uploaded but not yet marked. */
+  regions: ThumbnailRegion[];
+  /** Doc-level default transition; per-shot can override via VideoShot.thumbnailTransition. */
+  defaultTransition?: ThumbnailTransitionConfig;
+  /** Height of the section-title stripe as a fraction of frame height.
+   *  Range 0.06–0.22 (clamped at render time). Default 0.13 (~140px @ 1080p). */
+  stripeHeightFraction?: number;
+}
+
 // ─── Video Shot ─────────────────────────────────────────────────────────────────
 
 export interface VideoShot {
@@ -60,6 +109,14 @@ export interface VideoShot {
   backgroundColor?: string;
   /** Whether to show floating/bobbing animation on the main image */
   floatImage?: boolean;
+  /** When set, this shot is a thumbnail-zoom scene that lands on the
+   *  region with this id (looked up against VideoConfig.thumbnail.regions). */
+  thumbnailZoomTo?: string;
+  /** Per-shot transition override. Falls back to VideoConfig.thumbnail.defaultTransition. */
+  thumbnailTransition?: ThumbnailTransitionConfig;
+  /** Section title shown as a fixed stripe at the top of frame for the
+   *  shot's full duration. Independent of `sceneType` — usable on any scene. */
+  sectionTitle?: string;
 }
 
 // ─── Video Config ──────────────────────────────────────────────────────────────
@@ -83,6 +140,8 @@ export interface VideoConfig {
   brand: BrandKit;
   /** Whether to show burned-in captions */
   showCaptions?: boolean;
+  /** Optional composite thumbnail referenced by `VideoShot.thumbnailZoomTo`. */
+  thumbnail?: VideoThumbnail;
 }
 
 // ─── Render Job ───────────────────────────────────────────────────────────────

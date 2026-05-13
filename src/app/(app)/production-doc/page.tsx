@@ -28,9 +28,11 @@ import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { StyleManagerDialog, type StyleSummary } from './StyleManagerDialog';
 import { BrollCell } from '@/components/production-doc/BrollCell';
+import { SectionThumbnailCard } from '@/components/production-doc/SectionThumbnailCard';
+import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
 import { brollRowSignatureInput } from '@/lib/broll-types';
 import { productionDocToVideoConfig } from '@/remotion/utils';
-import type { BrandKit } from '@/remotion/types';
+import type { BrandKit, ThumbnailTransitionConfig, VideoThumbnail } from '@/remotion/types';
 
 // Dynamically import VideoPlayer — Remotion uses browser-only APIs (WebGL, Canvas)
 const VideoPlayer = dynamic(
@@ -117,6 +119,14 @@ interface ProductionRow {
   overlay_stock_terms?: string;
   on_screen_text: string;
   notes: string;
+  /** Region id (from ProductionDoc.thumbnail.regions) this row's scene
+   *  zooms into. When set, the row's scene becomes a thumbnail-zoom. */
+  thumbnail_zoom_to?: string;
+  /** Section title shown as a fixed stripe at top of frame for the row's
+   *  full duration. Independent of `on_screen_text`. */
+  section_title?: string;
+  /** Per-row transition override. Falls back to doc-level default. */
+  thumbnail_transition?: ThumbnailTransitionConfig;
 }
 
 interface ProductionDoc {
@@ -126,6 +136,10 @@ interface ProductionDoc {
   total_words: number;
   speaking_pace_wpm: number;
   rows: ProductionRow[];
+  /** Section-divider thumbnail (one composite image + named regions
+   *  + transition defaults). Optional — docs without one render the
+   *  same as before. See _plans/2026-05-13-thumbnail-zoom-section-divider.md. */
+  thumbnail?: VideoThumbnail;
 }
 
 interface RowImageState {
@@ -1257,6 +1271,40 @@ function ProductionDocPage() {
   // Tracks which production doc (by runKey) was last explicitly saved via
   // the banner button. Drives the dirty indicator.
   const [lastSavedProdDocRunKey, setLastSavedProdDocRunKey] = useState<string | null>(null);
+
+  /**
+   * Section-divider thumbnail mutator. Updates the doc's `thumbnail`
+   * field and patches the same change to the history entry on the
+   * server so a reload restores it. Other doc fields don't have
+   * server-side patch wiring yet — only thumbnail and rowImages do.
+   */
+  const setThumbnail = useCallback((next: VideoThumbnail | undefined) => {
+    setDoc(prev => {
+      if (!prev) return prev;
+      const nextDoc = { ...prev, thumbnail: next };
+      if (historyEntryId) {
+        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+      }
+      return nextDoc;
+    });
+  }, [historyEntryId]);
+
+  /**
+   * Patch a single production-doc row. Used by the per-row Section
+   * controls. Patches the same fields to the server history entry so
+   * a reload restores edits.
+   */
+  const updateRow = useCallback((rowIndex: number, patch: Partial<ProductionRow>) => {
+    setDoc(prev => {
+      if (!prev) return prev;
+      const nextRows = prev.rows.map((r, i) => i === rowIndex ? { ...r, ...patch } : r);
+      const nextDoc = { ...prev, rows: nextRows };
+      if (historyEntryId) {
+        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+      }
+      return nextDoc;
+    });
+  }, [historyEntryId]);
 
   // — Image generation (declared before effects that reference it)
   const [rowImages, setRowImages] = useState<RowImageState[]>([]);
@@ -2613,6 +2661,11 @@ function ProductionDocPage() {
             })()}
           </div>
 
+          {/* Section-divider thumbnail — composite image referenced by per-row "Zoom to" picks. */}
+          <div className="mb-4">
+            <SectionThumbnailCard value={doc.thumbnail} onChange={setThumbnail} />
+          </div>
+
           {/* ── Desktop table */}
           <div className="glass rounded-xl overflow-hidden">
             <div className="overflow-x-auto hidden md:block">
@@ -2623,6 +2676,7 @@ function ProductionDocPage() {
                       const headerList = ['#', 'Time', 'Script Text', 'Visual Type', 'Visual Description', 'Stock Terms', 'Image', 'B-roll', 'AI Prompt'];
                       if (showOverlayColumn) headerList.push('Overlay');
                       headerList.push('On-Screen Text', 'Notes');
+                      if (doc.thumbnail) headerList.push('Section');
                       return headerList;
                     })().map(h => (
                       <th key={h} style={{
@@ -2749,6 +2803,22 @@ function ProductionDocPage() {
                         <td style={{ padding: '8px 12px', color: 'var(--text-muted)', maxWidth: 130, fontSize: '0.7rem', lineHeight: 1.5 }}>
                           {row.notes || '—'}
                         </td>
+                        {/* Section (thumbnail-zoom controls) — only rendered when a thumbnail exists */}
+                        {doc.thumbnail && (
+                          <td style={{ padding: '8px 10px', width: 170, verticalAlign: 'top' }}>
+                            <SectionRowControls
+                              rowIndex={i}
+                              thumbnail={doc.thumbnail}
+                              zoomTo={row.thumbnail_zoom_to}
+                              sectionTitle={row.section_title}
+                              transition={row.thumbnail_transition}
+                              defaultTransition={doc.thumbnail.defaultTransition}
+                              onChangeZoomTo={(id) => updateRow(i, { thumbnail_zoom_to: id })}
+                              onChangeSectionTitle={(t) => updateRow(i, { section_title: t })}
+                              onChangeTransition={(t) => updateRow(i, { thumbnail_transition: t })}
+                            />
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
@@ -2844,6 +2914,22 @@ function ProductionDocPage() {
                           <div>
                             <p className="text-xs font-semibold mb-0.5" style={{ color: 'var(--text-muted)' }}>Notes</p>
                             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{row.notes}</p>
+                          </div>
+                        )}
+                        {doc.thumbnail && (
+                          <div>
+                            <p className="text-xs font-semibold mb-1" style={{ color: 'var(--text-muted)' }}>Section</p>
+                            <SectionRowControls
+                              rowIndex={i}
+                              thumbnail={doc.thumbnail}
+                              zoomTo={row.thumbnail_zoom_to}
+                              sectionTitle={row.section_title}
+                              transition={row.thumbnail_transition}
+                              defaultTransition={doc.thumbnail.defaultTransition}
+                              onChangeZoomTo={(id) => updateRow(i, { thumbnail_zoom_to: id })}
+                              onChangeSectionTitle={(t) => updateRow(i, { section_title: t })}
+                              onChangeTransition={(t) => updateRow(i, { thumbnail_transition: t })}
+                            />
                           </div>
                         )}
                       </div>

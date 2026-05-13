@@ -1,4 +1,5 @@
-import { VideoShot, VideoConfig, inferSceneType, DEFAULT_BRAND_KIT, BrandKit } from './types';
+import { VideoShot, VideoConfig, inferSceneType, DEFAULT_BRAND_KIT, BrandKit, VideoThumbnail, ThumbnailTransitionConfig } from './types';
+import { stripProductionMarkers } from '@/lib/script-markers';
 
 // ─── Timecode Parsing ──────────────────────────────────────────────────────────
 
@@ -94,6 +95,12 @@ export interface ProductionRow {
   ai_image_prompt: string;
   on_screen_text: string;
   notes: string;
+  /** Region id this row's scene zooms into. See ProductionDoc.thumbnail.regions. */
+  thumbnail_zoom_to?: string;
+  /** Section title stripe text shown at top of frame for the row's duration. */
+  section_title?: string;
+  /** Per-row transition override; falls back to ProductionDoc.thumbnail.defaultTransition. */
+  thumbnail_transition?: ThumbnailTransitionConfig;
 }
 
 export interface ProductionDoc {
@@ -103,6 +110,8 @@ export interface ProductionDoc {
   total_words: number;
   speaking_pace_wpm: number;
   rows: ProductionRow[];
+  /** Optional section-divider thumbnail; forwarded into VideoConfig.thumbnail. */
+  thumbnail?: VideoThumbnail;
 }
 
 export interface RowImageState {
@@ -139,8 +148,14 @@ export function productionDocToVideoConfig(
       imageUrl,
       title: row.on_screen_text || undefined,
       onScreenText: row.on_screen_text || undefined,
-      scriptText: row.script_text || undefined,
+      scriptText: row.script_text ? stripProductionMarkers(row.script_text) || undefined : undefined,
       floatImage: true,
+      // Per-row thumbnail-zoom data; consumed by the ThumbnailZoomScene
+      // component (Phase 5 — until then the scene router falls through
+      // to the inferred sceneType so these are harmless on the renderer).
+      thumbnailZoomTo: row.thumbnail_zoom_to || undefined,
+      sectionTitle: row.section_title || undefined,
+      thumbnailTransition: row.thumbnail_transition,
     };
   });
 
@@ -154,6 +169,7 @@ export function productionDocToVideoConfig(
     musicVolume: 0.12,
     brand: { ...DEFAULT_BRAND_KIT, ...brand },
     showCaptions: true,
+    thumbnail: doc.thumbnail,
   };
 }
 
