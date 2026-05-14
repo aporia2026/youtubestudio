@@ -693,8 +693,6 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
                   }}
                   canAnnotate={data.permission === 'can-annotate'}
                   commentTimestamps={versionComments.filter(c => !c.parent_id).map(c => c.timestamp_ms)}
-                  versionId={activeVersion.id}
-                  isOwner={isOwner}
                 />
                 <ReviewTimeline
                   currentTimeMs={currentTimeMs}
