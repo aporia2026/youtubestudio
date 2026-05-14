@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { getShareLinkByToken, getVersions, getCommentsForProject } from '@/lib/review-db';
-import { getDownloadPresignedUrl } from '@/lib/r2';
+import { buildReviewDownloadFilename, getDownloadAttachmentUrl, getDownloadPresignedUrl } from '@/lib/r2';
 import { logger } from '@/lib/logger';
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ token: string }> }) {
@@ -18,11 +18,23 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ tok
     const versions = await getVersions(link.project_id);
     const comments = await getCommentsForProject(link.project_id);
 
-    // Generate presigned download URLs for each version
+    // Generate presigned download URLs for each version. `video_url`
+    // backs the <video> element (range playback) and may short-circuit
+    // to the public R2 CDN; `download_url` is always a presigned URL
+    // with `response-content-disposition` baked in so the browser saves
+    // the bytes direct from R2 without routing through /api/download-
+    // proxy — that proxy is killed by Vercel's 300s function timeout on
+    // multi-GB renders.
     const versionsWithUrls = await Promise.all(
       versions.map(async (v) => ({
         ...v,
         video_url: v.r2_key ? await getDownloadPresignedUrl(v.r2_key) : null,
+        download_url: v.r2_key
+          ? await getDownloadAttachmentUrl(
+              v.r2_key,
+              buildReviewDownloadFilename(link.project_title, v.version_number),
+            )
+          : null,
       }))
     );
 

@@ -5,13 +5,17 @@ import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { compressVideo, isCompressionSupported } from '@/lib/compress-video';
-import { downloadHref } from '@/lib/download-file';
 
 interface Version {
   id: string;
   version_number: number;
   r2_key: string;
   video_url: string | null;
+  /** Presigned R2 URL with `response-content-disposition: attachment`
+   *  baked in. Direct anchor click downloads from R2 without going
+   *  through /api/download-proxy — the proxy's 300s function timeout
+   *  truncates multi-GB renders into unplayable MP4s. */
+  download_url: string | null;
   thumbnail_url: string | null;
   duration_ms: number | null;
   uploaded_by: string;
@@ -614,11 +618,11 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
                       <span>{new Date(v.created_at).toLocaleDateString()}</span>
                     </div>
                   </div>
-                  {v.video_url && (
+                  {v.download_url && (
                     <a
-                      href={downloadHref(v.video_url, `v${v.version_number}.mp4`)}
-                      download={`v${v.version_number}.mp4`}
+                      href={v.download_url}
                       onClick={e => e.stopPropagation()}
+                      rel="noopener"
                       className="p-1.5 rounded-lg transition-colors hover:bg-white/10 cursor-pointer opacity-0 group-hover:opacity-100"
                       title="Download this version"
                     >

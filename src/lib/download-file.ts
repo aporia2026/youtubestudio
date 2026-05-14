@@ -28,45 +28,19 @@ export function downloadHref(url: string, name?: string): string {
 }
 
 /**
- * Trigger a "Save As" download that lets the browser stream the bytes
- * natively — no JS-side buffering.
- *
- * Cross-origin URLs route through `/api/download-proxy`, which sets
- * `Content-Disposition: attachment; filename="..."` itself, so the browser
- * saves the response as a file and shows its own progress UI in the
- * downloads tray. Same-origin URLs rely on the `<a download>` attribute
- * (which the browser honors same-origin even without Content-Disposition).
- *
- * Use this for large files — videos, full renders — where buffering the
- * whole body into a Blob would keep the UI stuck on "Preparing…" for
- * minutes while the bytes arrive. The trade-off vs. `downloadCrossOriginFile`:
- * this returns immediately and cannot rewrite the filename extension based
- * on a sniffed MIME type, so callers must pass a `name` that already has
- * the correct extension.
- */
-export function downloadStreaming(url: string, name: string): void {
-  const target = downloadHref(url, name);
-  const a = document.createElement('a');
-  a.href = target;
-  a.download = name;
-  a.rel = 'noopener';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-}
-
-/**
  * Trigger a "Save As" download for any URL — same-origin or cross-origin.
  *
  * Cross-origin URLs are routed through `/api/download-proxy` so we don't
- * depend on the upstream sending CORS headers. Falls back to fetching as a
- * blob so the browser still respects the requested filename even when the
- * upstream's URL has no extension (ElevenLabs / stitched narration).
+ * depend on the upstream sending CORS headers. Buffers the response into
+ * a Blob so the browser still respects the requested filename even when
+ * the upstream's URL has no extension (ElevenLabs / stitched narration).
  *
- * Prefer `downloadStreaming` for large files (videos, renders) — this
- * function buffers the entire response into a Blob in memory before the
- * Save dialog appears, which can look like a multi-minute hang on big
- * payloads.
+ * Only safe for small-to-medium files (audio takes, voiceovers). For
+ * multi-GB review videos, mint a presigned URL with
+ * `response-content-disposition` baked in (see `getDownloadAttachmentUrl`
+ * in `r2.ts`) and click that URL directly — bypassing the proxy entirely
+ * sidesteps the Vercel function `maxDuration` cap that truncates large
+ * streams.
  */
 export async function downloadCrossOriginFile(url: string, name: string): Promise<void> {
   const target = downloadHref(url, name);

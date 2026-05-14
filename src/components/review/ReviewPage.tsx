@@ -10,12 +10,17 @@ import { VersionSelector } from './VersionSelector';
 import { StatusBadge } from './StatusBadge';
 import { ComparisonView } from './ComparisonView';
 import { compressVideo, isCompressionSupported } from '@/lib/compress-video';
-import { downloadStreaming } from '@/lib/download-file';
 
 export interface ReviewVersion {
   id: string;
   version_number: number;
   video_url: string | null;
+  /** Presigned R2 URL with `response-content-disposition` baked in, so a
+   *  plain anchor click downloads the bytes direct from R2 with the
+   *  intended filename. Distinct from `video_url` because the playback
+   *  URL may short-circuit to the public R2 CDN, which cannot override
+   *  Content-Disposition per-request. */
+  download_url: string | null;
   thumbnail_url: string | null;
   duration_ms: number | null;
   file_size: number | null;
@@ -347,30 +352,25 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
     await loadData();
   }
 
-  // Download the currently-active version's video file. Builds a filename
-  // from the project title + version number so multiple downloads from the
-  // same project stay distinguishable in the user's downloads folder.
-  // Uses `downloadStreaming` so the browser pulls the bytes natively (with
-  // its own progress UI) instead of buffering a multi-hundred-MB render
-  // into a Blob — the latter made the button hang on "Preparing…" for as
-  // long as the full file took to arrive.
+  // Download the currently-active version's video file. Clicks an anchor
+  // at the server-minted `download_url` — a presigned R2 URL with
+  // `response-content-disposition: attachment; filename="…"` baked into
+  // the signature, so R2 itself serves the bytes with the right filename
+  // and the browser streams them direct to disk. Bypasses the
+  // /api/download-proxy hop that was killed by Vercel's 300s function
+  // timeout on multi-GB renders (the previous symptom: 4 GB file,
+  // ~400 MB delivered, broken MP4 with a missing moov atom).
   function handleDownloadCurrent() {
     if (!data) return;
     const v = data.versions.find(ver => ver.id === activeVersionId) || data.versions[0];
-    if (!v?.video_url) return;
-    const safeTitle = (data.project.title || 'video')
-      .replace(/[\\/:*?"<>|]+/g, '_')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 80) || 'video';
-    const fileName = `${safeTitle} - v${v.version_number}.mp4`;
+    if (!v?.download_url) return;
     setDownloadingCurrent(true);
-    try {
-      downloadStreaming(v.video_url, fileName);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Download failed';
-      toast.error(msg);
-    }
+    const a = document.createElement('a');
+    a.href = v.download_url;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
     // Click handed off to the browser; flip the flag back after a short
     // delay so the user gets a quick visual ack without it lingering.
     setTimeout(() => setDownloadingCurrent(false), 1200);
@@ -587,10 +587,11 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
                 </div>
               </>
             )}
-            {/* Download the currently-active version. Routes through the
-                cross-origin download proxy so the R2 presigned URL gets
-                served with Content-Disposition: attachment. */}
-            {activeVersion?.video_url && (
+            {/* Download the currently-active version. Anchor click goes
+                direct to R2 via a presigned URL with `response-content-
+                disposition: attachment` baked into the signature — no
+                proxy hop, no 300s function timeout. */}
+            {activeVersion?.download_url && (
               <button
                 onClick={handleDownloadCurrent}
                 disabled={downloadingCurrent}
@@ -692,6 +693,8 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
                   }}
                   canAnnotate={data.permission === 'can-annotate'}
                   commentTimestamps={versionComments.filter(c => !c.parent_id).map(c => c.timestamp_ms)}
+                  versionId={activeVersion.id}
+                  isOwner={isOwner}
                 />
                 <ReviewTimeline
                   currentTimeMs={currentTimeMs}

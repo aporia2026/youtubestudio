@@ -56,6 +56,46 @@ export async function getDownloadUrlForBucket(bucket: string, key: string, publi
   return getSignedUrl(client, command, { expiresIn: 60 * 60 * 24 * 7 });
 }
 
+/**
+ * Presigned GET URL that forces a browser-side "Save As" with a chosen
+ * filename, by baking S3's `response-content-disposition` query parameter
+ * into the signature. R2 serves the bytes directly with
+ * `Content-Disposition: attachment` — no proxy hop, no Vercel function
+ * `maxDuration` cap on multi-GB downloads.
+ *
+ * Always presigned (never short-circuits to a public CDN URL): public R2
+ * URLs cannot override Content-Disposition per-request, so they would land
+ * the browser back in "navigate, don't save" territory.
+ */
+export async function getDownloadAttachmentUrlForBucket(
+  bucket: string,
+  key: string,
+  filename: string,
+): Promise<string> {
+  const client = getR2Client();
+  const command = new GetObjectCommand({
+    Bucket: bucket,
+    Key: key,
+    ResponseContentDisposition: buildAttachmentDisposition(filename),
+  });
+  // 24h. The URL is rendered into the review page on initial load and then
+  // sits unused until the user clicks Download. Long enough to cover any
+  // realistic open-page session; reloading the page re-mints it.
+  return getSignedUrl(client, command, { expiresIn: 60 * 60 * 24 });
+}
+
+/** RFC 5987 `Content-Disposition: attachment` value. `filename*` carries
+ *  the real UTF-8 name; the ASCII fallback strips bytes that would break
+ *  the header for clients that only read `filename`. */
+function buildAttachmentDisposition(filename: string): string {
+  const safeAscii = filename
+    .replace(/[\r\n"\\]/g, '_')
+    .replace(/[^\x20-\x7e]/g, '_')
+    .slice(0, 200) || 'download';
+  const encoded = encodeURIComponent(filename);
+  return `attachment; filename="${safeAscii}"; filename*=UTF-8''${encoded}`;
+}
+
 export async function deleteFromBucket(bucket: string, key: string): Promise<void> {
   const client = getR2Client();
   await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
@@ -100,6 +140,14 @@ export async function getDownloadPresignedUrl(key: string): Promise<string> {
   return getDownloadUrlForBucket(getReviewBucket(), key, process.env.R2_PUBLIC_URL);
 }
 
+/** Presigned GET URL that downloads the object as an attachment with the
+ *  given filename. Used by the review page Download button so the bytes
+ *  stream directly from R2 to the browser — bypassing the /api/download-
+ *  proxy hop that hits Vercel's 300s function timeout on multi-GB renders. */
+export async function getDownloadAttachmentUrl(key: string, filename: string): Promise<string> {
+  return getDownloadAttachmentUrlForBucket(getReviewBucket(), key, filename);
+}
+
 /** Delete an object from the review videos bucket. */
 export async function deleteR2Object(key: string): Promise<void> {
   return deleteFromBucket(getReviewBucket(), key);
@@ -112,6 +160,19 @@ export function buildR2Key(projectId: string, versionNumber: number, fileName: s
   return `reviews/${projectId}/v${versionNumber}/${timestamp}-${sanitized}`;
 }
 
+/** Canonical user-facing filename for a downloaded review version —
+ *  `{project title} - v{N}.mp4`. Strips path-illegal characters
+ *  (Windows is the tightest target) and caps the title at 80 chars so the
+ *  resulting filename stays well inside common filesystem limits. */
+export function buildReviewDownloadFilename(projectTitle: string | null, versionNumber: number): string {
+  const safeTitle = (projectTitle || 'video')
+    .replace(/[\\/:*?"<>|]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80) || 'video';
+  return `${safeTitle} - v${versionNumber}.mp4`;
+}
+
 /** Build an R2 key for a long-form video render output. Lives in the
  *  review/videos bucket under a `renders/` prefix so the bucket listing
  *  separates reviewer uploads from Remotion outputs. */
@@ -119,10 +180,24 @@ export function buildRenderKey(renderId: string): string {
   return `renders/${renderId}.mp4`;
 }
 
+/** Presigned attachment-style download URL for a Vercel-backend long-form
+ *  render. The render API returns this from its poll response so clients
+ *  download direct from R2 — bypassing /api/download-proxy and its 300s
+ *  Vercel function cap. */
+export async function getRenderDownloadAttachmentUrl(renderId: string, filename: string): Promise<string> {
+  return getDownloadAttachmentUrl(buildRenderKey(renderId), filename);
+}
+
 /** Build an R2 key for a Shorts render output. Separate prefix so the
  *  Shorts feed listing doesn't intermix with long-form renders. */
 export function buildShortRenderKey(renderId: string): string {
   return `shorts-renders/${renderId}.mp4`;
+}
+
+/** Presigned attachment-style download URL for a Shorts render. Same
+ *  rationale as `getRenderDownloadAttachmentUrl`. */
+export async function getShortRenderDownloadAttachmentUrl(renderId: string, filename: string): Promise<string> {
+  return getDownloadAttachmentUrl(buildShortRenderKey(renderId), filename);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getProject, getVersions, getCommentsForProject } from '@/lib/review-db';
-import { getDownloadPresignedUrl } from '@/lib/r2';
+import { buildReviewDownloadFilename, getDownloadAttachmentUrl, getDownloadPresignedUrl } from '@/lib/r2';
 import { logger } from '@/lib/logger';
 
 /**
@@ -17,10 +17,20 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     const versions = await getVersions(id);
     const comments = await getCommentsForProject(id);
 
+    // `video_url` backs the <video> element (range playback). `download_url`
+    // is a presigned URL with `response-content-disposition` baked in so
+    // the browser saves the bytes direct from R2 — see the [token] route
+    // comment for why the proxy hop is unsafe on multi-GB renders.
     const versionsWithUrls = await Promise.all(
       versions.map(async (v) => ({
         ...v,
         video_url: v.r2_key ? await getDownloadPresignedUrl(v.r2_key) : null,
+        download_url: v.r2_key
+          ? await getDownloadAttachmentUrl(
+              v.r2_key,
+              buildReviewDownloadFilename(project.title, v.version_number),
+            )
+          : null,
       }))
     );
 
