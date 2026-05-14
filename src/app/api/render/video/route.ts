@@ -90,6 +90,32 @@ async function ensureTable() {
   await sql`ALTER TABLE render_jobs ADD COLUMN IF NOT EXISTS estimated_cost   REAL`;
 }
 
+// ─── Absolutize same-origin URLs before sending to a remote renderer ─────────
+
+/**
+ * Lambda fetches every URL referenced in the VideoConfig from its own
+ * machine. A relative path like `/api/voiceovers/<uuid>/audio` works
+ * fine in the browser (resolves against window.origin) but on Lambda
+ * gets interpreted as a key on Remotion's own S3 bucket — 403
+ * AccessDenied because nothing's there.
+ *
+ * Walk the config's audio + music URL fields and rewrite any leading-slash
+ * path to a full https URL against the request's origin. Image URLs in
+ * shots already come from R2 with absolute https, so they stay untouched.
+ */
+function absolutizeMediaUrls(config: VideoConfig, origin: string): VideoConfig {
+  function toAbsolute(url: string | undefined): string | undefined {
+    if (!url) return url;
+    if (url.startsWith('/')) return new URL(url, origin).toString();
+    return url;
+  }
+  return {
+    ...config,
+    voiceoverUrl: toAbsolute(config.voiceoverUrl),
+    musicUrl: toAbsolute(config.musicUrl),
+  };
+}
+
 // ─── Voiceover alignment resolution ───────────────────────────────────────────
 
 /**
@@ -199,7 +225,7 @@ export async function POST(req: NextRequest) {
   // job is created so an alignment-time DB outage doesn't leave an
   // orphan 'pending' row; once we're past this block, the config is
   // the final input to the renderer.
-  let effectiveConfig = config as VideoConfig;
+  let effectiveConfig = absolutizeMediaUrls(config as VideoConfig, req.nextUrl.origin);
   let alignmentTelemetry: Record<string, unknown> = { aligned: false, reason: 'not-requested' };
   const alignmentReq = validateAlignmentRequest(body.voiceoverAlignment);
   if (alignmentReq) {
