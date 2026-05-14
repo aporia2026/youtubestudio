@@ -18,6 +18,11 @@ export const SETTINGS_VERSION = 1;
 export interface UserSettings {
   v: typeof SETTINGS_VERSION;
   active_channel_id?: string | null;
+  /** Per-user default model for the production-doc B-roll / animation
+   *  picker. `null` or absent means "fall back to the registry's
+   *  DEFAULT_BROLL_MODEL_ID". Validated against the live registry at
+   *  the API layer before being persisted. */
+  default_broll_model_id?: string | null;
 }
 
 const DEFAULTS: UserSettings = { v: SETTINGS_VERSION };
@@ -51,6 +56,11 @@ export function parseUserSettings(encryptedBlob: string | null): UserSettings {
     out.active_channel_id = obj.active_channel_id;
   } else if (obj.active_channel_id === null) {
     out.active_channel_id = null;
+  }
+  if (typeof obj.default_broll_model_id === 'string') {
+    out.default_broll_model_id = obj.default_broll_model_id;
+  } else if (obj.default_broll_model_id === null) {
+    out.default_broll_model_id = null;
   }
   return out;
 }

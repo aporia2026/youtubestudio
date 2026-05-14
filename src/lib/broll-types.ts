@@ -4,6 +4,27 @@
  * server-only modules (next/headers via ai.ts, @vercel/blob, etc.), so the
  * row shape and the user-pickable model list live here for client components
  * to import without dragging the whole pipeline into the browser bundle.
+ *
+ * Two model families:
+ *
+ *   text-to-video (t2v)  — Sora 2 / Veo 3 / Kling t2v. Prompt-only input.
+ *                          Used for cinematic B-Roll rows where the row has
+ *                          no reference still or the still doesn't matter.
+ *
+ *   image-to-video (i2v) — Kling 2.5 turbo Pro / Kling 2.6 / Sora 2 i2v.
+ *                          Takes the row's already-generated still as the
+ *                          first frame and animates it. Preserves the
+ *                          row's chosen visual style (doodle, 2D, etc.)
+ *                          instead of forcing it into photoreal output.
+ *                          REQUIRES a still image URL — the picker UI
+ *                          disables i2v models on rows without one.
+ *
+ * The per-model `buildBody()` function encodes Kie's wire shape — most
+ * models post to `/api/v1/jobs/createTask` with a `{ model, input }` body,
+ * but the field name for the image varies (`image_url` singular vs
+ * `image_urls` array vs `imageUrl` camelCase) and the duration field is
+ * inconsistent (string enum "5" / "10" vs integer seconds). Centralising
+ * the per-model body here keeps the wire layer in `src/lib/broll.ts` model-agnostic.
  */
 
 /** Database row shape — mirrors the columns in migration 0023's `broll_clips`. */
@@ -35,63 +56,268 @@ export interface BrollClipRow {
 
 export type BrollStatus = 'pending' | 'generating' | 'ready' | 'failed';
 
-/** A model the user can pick from the per-row picker. The `kieModel` is the
- *  exact identifier the Kie `createTask` API expects. The `defaultDuration`
- *  is the fallback when the row's prompt doesn't imply a length. Every model
- *  declared here MUST be a video-output model — image models belong in the
- *  existing prodoc-image route. */
+/** Whether the model accepts a reference image as its first frame. */
+export type BrollModelKind = 'text-to-video' | 'image-to-video';
+
+/** Arguments passed into the per-model body builder. The orchestrator
+ *  pre-validates the inputs the model actually needs — `stillImageUrl`
+ *  is guaranteed non-empty for `kind: 'image-to-video'`. */
+export interface BuildBrollBodyArgs {
+  prompt: string;
+  aspectRatio: '16:9' | '9:16' | '1:1';
+  durationSeconds: number;
+  stillImageUrl?: string;
+  callbackUrl?: string;
+}
+
+/** A model the user can pick from the per-row picker. */
 export interface BrollModelDescriptor {
   id: string;
   label: string;
+  kind: BrollModelKind;
   provider: 'kie';
-  kieModel: string;
-  defaultDurationSeconds: number;
+  /** Display-only USD price quoted from the Kie pricing page. NEVER used
+   *  to bill; just shown in the picker so the user sees cost-per-click. */
+  priceUsdLabel: string;
+  /** Approximate price as a number for sorting / budget displays. */
+  priceUsd: number;
+  /** Generation duration in seconds (5 or 10 for most i2v models). */
+  durationSeconds: number;
   supportedAspects: ReadonlyArray<'16:9' | '9:16' | '1:1'>;
-  /** Short blurb shown in the picker — kept under ~80 chars. */
+  /** Kie endpoint path. Most models use `/createTask`; Runway has its own
+   *  endpoint. Stored relative to KIE_BASE so the wire layer concatenates. */
+  endpoint: 'createTask' | 'runway-generate';
+  /** Short blurb shown in the picker. Kept under ~80 chars. */
   blurb: string;
-  /** True when the model emits cinematic/photoreal output suitable for the
-   *  default "B-roll" use case. Picker uses this to surface a recommended
-   *  default when the row doesn't pre-select. */
+  /** True when this model is the suggested default for its kind. The
+   *  registry-level `DEFAULT_BROLL_MODEL_ID` overrides this; this flag
+   *  only matters for picker decorations. */
   recommended?: boolean;
+  /** Build the full request body Kie expects for this model. */
+  buildBody: (args: BuildBrollBodyArgs) => Record<string, unknown>;
 }
 
-/**
- * The picker contents. Order = display order in the UI. Kept as a flat readonly
- * tuple so `BrollModelId` infers a precise union, not just `string`.
- *
- * Sora 2 is the recommended default — ChatGPT-trained video model with the
- * widest motion vocabulary in May 2026. Veo 3 (fast) is the budget alternate
- * with strong photoreal landscapes; Veo 3 (quality) is the slow + expensive
- * option for hero shots.
- */
+// ─── Body builders ──────────────────────────────────────────────────────────
+//
+// Kept as top-level functions so the descriptor objects can stay shallow
+// (and so unit tests can target each shape independently).
+
+function buildKlingV25TurboI2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return {
+    model: 'kling/v2-5-turbo-image-to-video-pro',
+    ...(args.callbackUrl ? { callBackUrl: args.callbackUrl } : {}),
+    input: {
+      prompt: args.prompt,
+      image_url: args.stillImageUrl,
+      duration: String(args.durationSeconds) as '5' | '10',
+    },
+  };
+}
+
+function buildKlingV25TurboT2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return {
+    model: 'kling/v2-5-turbo-text-to-video-pro',
+    ...(args.callbackUrl ? { callBackUrl: args.callbackUrl } : {}),
+    input: {
+      prompt: args.prompt,
+      aspect_ratio: args.aspectRatio,
+      duration: String(args.durationSeconds) as '5' | '10',
+    },
+  };
+}
+
+function buildKling26I2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return {
+    model: 'kling-2.6/image-to-video',
+    ...(args.callbackUrl ? { callBackUrl: args.callbackUrl } : {}),
+    input: {
+      prompt: args.prompt,
+      image_urls: args.stillImageUrl ? [args.stillImageUrl] : [],
+      sound: false,
+      duration: String(args.durationSeconds) as '5' | '10',
+    },
+  };
+}
+
+function buildSora2I2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  // Sora 2 i2v expresses orientation as `landscape` / `portrait`, not 16:9 / 9:16.
+  const orientation = args.aspectRatio === '9:16' ? 'portrait' : 'landscape';
+  // `n_frames` is a duration tier per the Kie docs ("10" or "15"). Pick the
+  // tier closest to the caller's requested durationSeconds.
+  const tier: '10' | '15' = args.durationSeconds >= 13 ? '15' : '10';
+  return {
+    model: 'sora-2-image-to-video',
+    ...(args.callbackUrl ? { callBackUrl: args.callbackUrl } : {}),
+    input: {
+      prompt: args.prompt,
+      image_urls: args.stillImageUrl ? [args.stillImageUrl] : [],
+      aspect_ratio: orientation,
+      n_frames: tier,
+    },
+  };
+}
+
+function buildSora2T2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return {
+    model: 'sora-2/text-to-video',
+    ...(args.callbackUrl ? { callBackUrl: args.callbackUrl } : {}),
+    input: {
+      prompt: args.prompt,
+      aspect_ratio: args.aspectRatio,
+      duration: args.durationSeconds,
+    },
+  };
+}
+
+function buildVeo3FastT2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return {
+    model: 'veo3/fast/text-to-video',
+    ...(args.callbackUrl ? { callBackUrl: args.callbackUrl } : {}),
+    input: {
+      prompt: args.prompt,
+      aspect_ratio: args.aspectRatio,
+      duration: args.durationSeconds,
+    },
+  };
+}
+
+function buildVeo3QualityT2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return {
+    model: 'veo3/quality/text-to-video',
+    ...(args.callbackUrl ? { callBackUrl: args.callbackUrl } : {}),
+    input: {
+      prompt: args.prompt,
+      aspect_ratio: args.aspectRatio,
+      duration: args.durationSeconds,
+    },
+  };
+}
+
+// ─── Registry ───────────────────────────────────────────────────────────────
+//
+// Order = display order in the picker. The picker UI groups by `kind` —
+// image-to-video first (because it preserves the user's chosen visual style),
+// text-to-video below.
 export const BROLL_MODELS: readonly BrollModelDescriptor[] = [
+  // ─── Image-to-video ─────────────────────────────────────────────────────
+  {
+    id: 'kling-v2-5-turbo-i2v-pro-10s',
+    label: 'Kling 2.5 Turbo (10s)',
+    kind: 'image-to-video',
+    provider: 'kie',
+    priceUsdLabel: '$0.42',
+    priceUsd: 0.42,
+    durationSeconds: 10,
+    supportedAspects: ['16:9', '9:16'],
+    endpoint: 'createTask',
+    blurb: 'Best all-rounder for 2D / illustrated / character animation. Default.',
+    recommended: true,
+    buildBody: buildKlingV25TurboI2VBody,
+  },
+  {
+    id: 'kling-v2-5-turbo-i2v-pro-5s',
+    label: 'Kling 2.5 Turbo (5s)',
+    kind: 'image-to-video',
+    provider: 'kie',
+    priceUsdLabel: '$0.21',
+    priceUsd: 0.21,
+    durationSeconds: 5,
+    supportedAspects: ['16:9', '9:16'],
+    endpoint: 'createTask',
+    blurb: 'Half-cost short clip — same model as the 10s default.',
+    buildBody: buildKlingV25TurboI2VBody,
+  },
+  {
+    id: 'kling-2-6-i2v-10s',
+    label: 'Kling 2.6 (10s)',
+    kind: 'image-to-video',
+    provider: 'kie',
+    priceUsdLabel: '$0.55',
+    priceUsd: 0.55,
+    durationSeconds: 10,
+    supportedAspects: ['16:9', '9:16'],
+    endpoint: 'createTask',
+    blurb: 'Newer Kling — sharper motion physics, costs slightly more.',
+    buildBody: buildKling26I2VBody,
+  },
+  {
+    id: 'kling-2-6-i2v-5s',
+    label: 'Kling 2.6 (5s)',
+    kind: 'image-to-video',
+    provider: 'kie',
+    priceUsdLabel: '$0.275',
+    priceUsd: 0.275,
+    durationSeconds: 5,
+    supportedAspects: ['16:9', '9:16'],
+    endpoint: 'createTask',
+    blurb: 'Short Kling 2.6 clip — half the cost of the 10s.',
+    buildBody: buildKling26I2VBody,
+  },
+  {
+    id: 'sora-2-i2v-10s',
+    label: 'Sora 2 i2v (10s)',
+    kind: 'image-to-video',
+    provider: 'kie',
+    priceUsdLabel: '~$1.00',
+    priceUsd: 1.0,
+    durationSeconds: 10,
+    supportedAspects: ['16:9', '9:16'],
+    endpoint: 'createTask',
+    blurb: 'OpenAI Sora 2 i2v. Best for cinematic + photoreal stills.',
+    buildBody: buildSora2I2VBody,
+  },
+  // ─── Text-to-video ──────────────────────────────────────────────────────
+  {
+    id: 'kling-v2-5-turbo-t2v-pro-10s',
+    label: 'Kling 2.5 Turbo t2v (10s)',
+    kind: 'text-to-video',
+    provider: 'kie',
+    priceUsdLabel: '$0.42',
+    priceUsd: 0.42,
+    durationSeconds: 10,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: 'Kling text-to-video for rows without a reference still.',
+    buildBody: buildKlingV25TurboT2VBody,
+  },
   {
     id: 'sora-2',
-    label: 'Sora 2',
+    label: 'Sora 2 t2v',
+    kind: 'text-to-video',
     provider: 'kie',
-    kieModel: 'sora-2/text-to-video',
-    defaultDurationSeconds: 8,
+    priceUsdLabel: '~$0.80',
+    priceUsd: 0.8,
+    durationSeconds: 8,
     supportedAspects: ['16:9', '9:16'],
-    blurb: 'OpenAI Sora 2 — best all-rounder for cinematic B-roll',
-    recommended: true,
+    endpoint: 'createTask',
+    blurb: 'OpenAI Sora 2 text-to-video — cinematic B-roll.',
+    buildBody: buildSora2T2VBody,
   },
   {
     id: 'veo-3-fast',
     label: 'Veo 3 (Fast)',
+    kind: 'text-to-video',
     provider: 'kie',
-    kieModel: 'veo3/fast/text-to-video',
-    defaultDurationSeconds: 8,
+    priceUsdLabel: '$0.40',
+    priceUsd: 0.4,
+    durationSeconds: 8,
     supportedAspects: ['16:9', '9:16'],
-    blurb: 'Google Veo 3 Fast — cheapest, strong on photoreal landscapes',
+    endpoint: 'createTask',
+    blurb: 'Google Veo 3 Fast — cheap photoreal landscapes.',
+    buildBody: buildVeo3FastT2VBody,
   },
   {
     id: 'veo-3-quality',
     label: 'Veo 3 (Quality)',
+    kind: 'text-to-video',
     provider: 'kie',
-    kieModel: 'veo3/quality/text-to-video',
-    defaultDurationSeconds: 8,
+    priceUsdLabel: '$2.00',
+    priceUsd: 2.0,
+    durationSeconds: 8,
     supportedAspects: ['16:9', '9:16'],
-    blurb: 'Google Veo 3 Quality — slow + pricey, for hero shots only',
+    endpoint: 'createTask',
+    blurb: 'Google Veo 3 Quality — slow + pricey hero shots.',
+    buildBody: buildVeo3QualityT2VBody,
   },
 ];
 
@@ -99,12 +325,14 @@ export const BROLL_MODELS: readonly BrollModelDescriptor[] = [
  *  render dynamically — runtime validation lives in `findBrollModel`. */
 export type BrollModelId = string;
 
-/** Default model when the caller didn't specify one. */
-export const DEFAULT_BROLL_MODEL_ID = 'sora-2';
+/** Library-level default — used when a user has no `default_broll_model_id`
+ *  set on their `collaborators` row. The user's per-account default
+ *  overrides this; see `/api/user/preferences/broll-default`. */
+export const DEFAULT_BROLL_MODEL_ID = 'kling-v2-5-turbo-i2v-pro-10s';
 
-/** Hard ceiling on prompt length. Kie rejects > ~1500 chars across image and
- *  video endpoints; we apply a slightly tighter bound so we have headroom for
- *  the duration / aspect prefix the orchestrator prepends. */
+/** Hard cap on prompt length. Kie rejects > ~2500 chars across image and
+ *  video endpoints for Kling models; we apply a tighter bound so we have
+ *  headroom for the duration / aspect prefix the orchestrator prepends. */
 export const BROLL_MAX_PROMPT_CHARS = 1400;
 
 /** Min prompt length — Sora and Veo both produce noise on < ~30 chars. */

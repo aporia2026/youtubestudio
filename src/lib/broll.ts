@@ -34,12 +34,23 @@ import {
   findBrollModel,
   type BrollClipRow,
   type BrollModelDescriptor,
+  type BrollModelKind,
   type BrollStatus,
 } from './broll-types';
 
 export type { BrollClipRow } from './broll-types';
 
 const KIE_BASE = 'https://api.kie.ai/api/v1/jobs';
+/** Runway has its own endpoint outside the unified `/jobs/createTask` pattern. */
+const KIE_RUNWAY_BASE = 'https://api.kie.ai/api/v1/runway';
+
+/** Map a model descriptor's `endpoint` field to the absolute URL used for
+ *  task creation. New endpoints are added here so the wire layer stays the
+ *  one place that knows about Kie's URL space. */
+function resolveCreateTaskUrl(endpoint: BrollModelDescriptor['endpoint']): string {
+  if (endpoint === 'runway-generate') return `${KIE_RUNWAY_BASE}/generate`;
+  return `${KIE_BASE}/createTask`;
+}
 
 // ---------------------------------------------------------------------------
 // Pure helpers (prompt builder + status mapper) — exported for tests
@@ -55,18 +66,31 @@ export interface BuildBrollPromptArgs {
   /** The style suffix from the production doc's chosen style (cinematic,
    *  doodle, etc.). Appended verbatim — empty string is fine. */
   styleHint?: string;
+  /** Generation mode. `'text-to-video'` gets the cinematic photoreal tail
+   *  that lifts stock-photo-zoom output. `'image-to-video'` SKIPS that
+   *  tail — the still defines the look, so we want pure motion guidance
+   *  instead. Critical for 2D / doodle / illustrated rows: forcing
+   *  "photoreal" on top of a hand-drawn still produces incoherent output. */
+  mode: BrollModelKind;
   /** Hard cap (chars). Defaults to BROLL_MAX_PROMPT_CHARS. */
   maxChars?: number;
 }
+
+const CINEMATIC_TAIL_T2V =
+  'Subtle natural camera movement (slow push-in or parallax). Photoreal, no on-screen text, no logos, no captions, no watermarks.';
+
+const MOTION_TAIL_I2V =
+  'Animate the described action with smooth, natural motion. Preserve the existing style and composition. No scene changes, no added text, no logos, no watermarks.';
 
 /**
  * Compose the final prompt sent to the video model. Strategy:
  *   - Prefer `ai_image_prompt` (long + scene-rich) as the spine
  *   - Fall back to `visual_description` if no AI prompt exists
  *   - Append the style suffix
- *   - Add a short cinematic-direction tail (camera movement, no text-on-screen)
- *     because video models default to static + watermarked output otherwise
- *   - Truncate to maxChars, preserving the head + the cinematic tail
+ *   - Append a mode-appropriate tail:
+ *       * t2v gets the cinematic / photoreal directive
+ *       * i2v gets motion-only guidance (the still already defines the look)
+ *   - Truncate to maxChars, preserving the head + the tail
  */
 export function buildBrollPrompt(args: BuildBrollPromptArgs): string {
   const max = Math.max(200, args.maxChars ?? BROLL_MAX_PROMPT_CHARS);
@@ -78,20 +102,16 @@ export function buildBrollPrompt(args: BuildBrollPromptArgs): string {
     throw new Error('buildBrollPrompt: row has no visual_description or ai_image_prompt to base the clip on.');
   }
   const style = (args.styleHint ?? '').trim();
-  // The cinematic tail is appended verbatim. It's the cheap-but-load-bearing
-  // way to lift output quality from "stock-photo zoom" to "shot on camera".
-  // Keep it short — it eats from the maxChars budget.
-  const cinematicTail =
-    'Subtle natural camera movement (slow push-in or parallax). Photoreal, no on-screen text, no logos, no captions, no watermarks.';
+  const tail = args.mode === 'image-to-video' ? MOTION_TAIL_I2V : CINEMATIC_TAIL_T2V;
 
-  const parts = [spine, style, cinematicTail].filter(Boolean);
+  const parts = [spine, style, tail].filter(Boolean);
   let joined = parts.join('. ').replace(/\.+(\s|$)/g, '. ').trim();
 
   if (joined.length > max) {
-    const reservedTailChars = cinematicTail.length + 4;
+    const reservedTailChars = tail.length + 4;
     const headBudget = Math.max(50, max - reservedTailChars);
     const head = (args.aiImagePrompt?.trim() || args.visualDescription?.trim() || '').slice(0, headBudget).trimEnd();
-    joined = `${head}. ${cinematicTail}`;
+    joined = `${head}. ${tail}`;
   }
   return joined;
 }
@@ -147,24 +167,28 @@ async function kieCreateVideoTask(args: {
   prompt: string;
   aspectRatio: '16:9' | '9:16' | '1:1';
   durationSeconds: number;
+  /** Required when `model.kind === 'image-to-video'`. The orchestrator
+   *  validates this upstream; the wire layer trusts it. */
+  stillImageUrl?: string;
 }): Promise<KieCreateResult> {
+  const body = args.model.buildBody({
+    prompt: args.prompt,
+    aspectRatio: args.aspectRatio,
+    durationSeconds: args.durationSeconds,
+    stillImageUrl: args.stillImageUrl,
+  });
+  const url = resolveCreateTaskUrl(args.model.endpoint);
+
   let createRes!: Response;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) await new Promise((r) => setTimeout(r, 2000 * attempt));
-    createRes = await fetch(`${KIE_BASE}/createTask`, {
+    createRes = await fetch(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${args.apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: args.model.kieModel,
-        input: {
-          prompt: args.prompt,
-          aspect_ratio: args.aspectRatio,
-          duration: args.durationSeconds,
-        },
-      }),
+      body: JSON.stringify(body),
     });
     if (createRes.status !== 502 && createRes.status !== 503 && createRes.status !== 504) break;
   }
@@ -245,6 +269,10 @@ export interface StartBrollGenerationArgs {
   modelId?: string;
   aspectRatio?: '16:9' | '9:16' | '1:1';
   durationSeconds?: number;
+  /** Required when the chosen model is `kind: 'image-to-video'` — the URL
+   *  of the still the model should animate. Validated here so the route
+   *  layer can rely on this orchestrator to enforce the contract. */
+  stillImageUrl?: string;
   kieApiKey: string;
 }
 
@@ -252,6 +280,10 @@ export interface StartBrollGenerationArgs {
  * Build the prompt, submit the task to Kie, and persist a `broll_clips` row.
  * Returns the new row id. The row's `status` will be 'generating' on success;
  * the caller should redirect the client to GET /api/broll/[id] for polling.
+ *
+ * Throws when the model is image-to-video and no `stillImageUrl` was passed —
+ * the picker UI gates the button on this, but the server enforces it too so
+ * a stale client can't post an i2v generation against a row without a still.
  */
 export async function startBrollGeneration(
   args: StartBrollGenerationArgs,
@@ -265,12 +297,19 @@ export async function startBrollGeneration(
     throw new Error(`Model ${model.label} does not support aspect ${aspectRatio}.`);
   }
 
-  const durationSeconds = Math.max(2, Math.min(20, args.durationSeconds ?? model.defaultDurationSeconds));
+  if (model.kind === 'image-to-video' && !args.stillImageUrl) {
+    throw new Error(
+      `Model ${model.label} animates an existing still — generate the row's image first, then animate it.`,
+    );
+  }
+
+  const durationSeconds = Math.max(2, Math.min(20, args.durationSeconds ?? model.durationSeconds));
 
   const prompt = buildBrollPrompt({
     visualDescription: args.visualDescription,
     aiImagePrompt: args.aiImagePrompt,
     styleHint: args.styleHint,
+    mode: model.kind,
   });
 
   if (prompt.length < BROLL_MIN_PROMPT_CHARS) {
@@ -285,6 +324,7 @@ export async function startBrollGeneration(
     prompt,
     aspectRatio,
     durationSeconds,
+    stillImageUrl: args.stillImageUrl,
   });
 
   const generationParams = {
@@ -293,6 +333,8 @@ export async function startBrollGeneration(
     style_hint: args.styleHint || null,
     source_ai_image_prompt: args.aiImagePrompt || null,
     source_visual_description: args.visualDescription,
+    still_image_url: args.stillImageUrl ?? null,
+    model_kind: model.kind satisfies BrollModelKind,
   };
 
   const { rows } = await sql<{ id: string }>`

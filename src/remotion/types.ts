@@ -93,6 +93,12 @@ export interface VideoShot {
   sceneType: SceneType;
   /** Image URL for this shot (b-roll, icon-scene, screen-mockup) */
   imageUrl?: string;
+  /** Optional animated B-roll clip URL. When present, the scene renders a
+   *  video instead of Ken-Burns-ing the still. Populated from a ready
+   *  `broll_clips` row keyed by row signature. Clip duration may be
+   *  shorter than `durationMs` — Remotion freezes the last frame for the
+   *  remainder. See `_plans/2026-05-14-image-to-video-animation-rows.md`. */
+  videoUrl?: string;
   /** Bold title text shown at top of frame */
   title?: string;
   /** Subtitle or secondary text */

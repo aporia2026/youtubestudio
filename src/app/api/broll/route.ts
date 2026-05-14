@@ -36,9 +36,12 @@ export const GET = apiRoute.authed(async (session, req: NextRequest) => {
  *   visualDescription: string,         — the row's editor-facing direction
  *   aiImagePrompt?: string,            — the row's full scene prompt
  *   styleHint?: string,                — production-doc style suffix
- *   modelId?: string,                  — defaults to sora-2
+ *   modelId?: string,                  — defaults to DEFAULT_BROLL_MODEL_ID
  *   aspectRatio?: '16:9' | '9:16' | '1:1',
  *   durationSeconds?: number,
+ *   stillImageUrl?: string,            — REQUIRED when modelId is image-to-video.
+ *                                        The orchestrator rejects i2v requests
+ *                                        without it (400 with a helpful hint).
  * }
  *
  * Submits the task to Kie and returns the persisted clip row id. The client
@@ -84,6 +87,27 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     typeof b.durationSeconds === 'number' && Number.isFinite(b.durationSeconds)
       ? Math.max(2, Math.min(20, Math.round(b.durationSeconds)))
       : undefined;
+
+  // Still-image URL for image-to-video models. We only accept https:// (or our
+  // own R2 / Blob hosts) — Kie fetches the URL directly, so allowing other
+  // schemes or arbitrary hosts would let a stale client point Kie at internal
+  // resources. The orchestrator does its own kind-vs-presence check.
+  let stillImageUrl: string | undefined;
+  if (typeof b.stillImageUrl === 'string' && b.stillImageUrl.length > 0) {
+    if (!/^https:\/\//i.test(b.stillImageUrl)) {
+      return NextResponse.json({ error: 'stillImageUrl must be an https URL' }, { status: 400 });
+    }
+    if (b.stillImageUrl.length > 2000) {
+      return NextResponse.json({ error: 'stillImageUrl too long' }, { status: 400 });
+    }
+    stillImageUrl = b.stillImageUrl;
+  }
+  if (model.kind === 'image-to-video' && !stillImageUrl) {
+    return NextResponse.json(
+      { error: 'This model animates an existing still — generate the row’s image first, then animate it.' },
+      { status: 400 },
+    );
+  }
 
   // Defence in depth: even though buildBrollPrompt also caps length, reject
   // obviously oversized payloads before doing any DB / network work.

@@ -125,6 +125,16 @@ export interface RowImageState {
   imageUrl?: string;
 }
 
+/** Per-row B-roll clip state passed into the renderer.
+ *
+ *  Only rows whose corresponding entry has `status === 'ready'` AND a
+ *  non-empty `videoUrl` contribute an animation. Anything else falls
+ *  back to the still + Ken Burns path. */
+export interface RowVideoClipState {
+  status: string;
+  videoUrl?: string;
+}
+
 /**
  * Convert a ProductionDoc + its generated image URLs into a VideoConfig
  * ready to pass to the Remotion composition.
@@ -135,15 +145,50 @@ export interface RowImageState {
  * `_plans/2026-05-13-voiceover-aligned-scene-timing.md`. Without
  * `alignment`, behaviour is identical to the pre-alignment code path —
  * estimated timecodes from the doc are used verbatim.
+ *
+ * When `rowVideoClips` is supplied and `animateScenes` is true (default),
+ * ready clips populate `VideoShot.videoUrl` so `BRollScene` can render
+ * an animated clip instead of Ken Burns on the still. Passing
+ * `animateScenes: false` short-circuits all clips and forces the
+ * still-with-Ken-Burns path — the production doc page surfaces this
+ * as the "Animate scenes" master toggle.
  */
+export interface ProductionDocToVideoConfigOptions {
+  voiceoverUrl?: string;
+  musicUrl?: string;
+  brand?: Partial<BrandKit>;
+  alignment?: ForcedAlignmentResponse;
+  rowVideoClips?: (RowVideoClipState | null)[];
+  /** Defaults to true. When false, `rowVideoClips` is ignored entirely
+   *  and every shot renders as a still + Ken Burns. */
+  animateScenes?: boolean;
+  /** Per-row "use the still, ignore any generated clip" override. When
+   *  `rowLockedAsStill[i] === true`, shot i's `videoUrl` is suppressed
+   *  even when a ready clip exists. The clip stays in `broll_clips` so
+   *  unlocking is reversible without re-generation. */
+  rowLockedAsStill?: boolean[];
+}
+
 export function productionDocToVideoConfig(
   doc: ProductionDoc,
   rowImages: (RowImageState | null)[],
-  voiceoverUrl?: string,
+  voiceoverUrlOrOptions?: string | ProductionDocToVideoConfigOptions,
   musicUrl?: string,
   brand?: Partial<BrandKit>,
   alignment?: ForcedAlignmentResponse,
 ): VideoConfig {
+  // Back-compat: callers may still pass the original 6-arg form. Normalise
+  // to the options shape so the body below has a single path.
+  const opts: ProductionDocToVideoConfigOptions =
+    typeof voiceoverUrlOrOptions === 'object' && voiceoverUrlOrOptions !== null
+      ? voiceoverUrlOrOptions
+      : {
+          voiceoverUrl: voiceoverUrlOrOptions,
+          musicUrl,
+          brand,
+          alignment,
+        };
+  const animateScenes = opts.animateScenes !== false;
   const fps = 30;
   const totalMs = parseDurationToMs(doc.total_duration) || 60_000;
   const timecodes = doc.rows.map(r => r.timecode);
@@ -155,11 +200,19 @@ export function productionDocToVideoConfig(
     const imageState = rowImages[i];
     const imageUrl = imageState?.status === 'done' ? imageState.imageUrl : undefined;
 
+    const lockedAsStill = opts.rowLockedAsStill?.[i] === true;
+    const clipState = animateScenes && !lockedAsStill ? opts.rowVideoClips?.[i] : undefined;
+    const videoUrl =
+      clipState && clipState.status === 'ready' && clipState.videoUrl
+        ? clipState.videoUrl
+        : undefined;
+
     return {
       startMs,
       durationMs,
       sceneType: inferSceneType(row.visual_type),
       imageUrl,
+      videoUrl,
       title: row.on_screen_text || undefined,
       onScreenText: row.on_screen_text || undefined,
       scriptText: row.script_text ? stripProductionMarkers(row.script_text) || undefined : undefined,
@@ -178,15 +231,15 @@ export function productionDocToVideoConfig(
     width: 1920,
     height: 1080,
     shots,
-    voiceoverUrl,
-    musicUrl,
+    voiceoverUrl: opts.voiceoverUrl,
+    musicUrl: opts.musicUrl,
     musicVolume: 0.12,
-    brand: { ...DEFAULT_BRAND_KIT, ...brand },
+    brand: { ...DEFAULT_BRAND_KIT, ...opts.brand },
     showCaptions: true,
     thumbnail: doc.thumbnail,
   };
 
-  return alignment ? realignVideoConfig(config, alignment).config : config;
+  return opts.alignment ? realignVideoConfig(config, opts.alignment).config : config;
 }
 
 // ─── Voiceover-aligned re-timing ──────────────────────────────────────────────

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate } from 'remotion';
+import { AbsoluteFill, OffthreadVideo, useCurrentFrame, useVideoConfig, interpolate } from 'remotion';
 import { KenBurns } from '../components/KenBurns';
 import { LowerThird } from '../components/LowerThird';
 import { FloatingElement } from '../components/FloatingElement';
@@ -18,9 +18,18 @@ const KB_DIRECTIONS: VideoShot['kenBurnsDirection'][] = [
 ];
 
 /**
- * B-Roll scene — image with Ken Burns motion + optional lower third.
- * When an image is available, fills the frame with it animated.
- * When no image, falls back to a stylized color background with text.
+ * B-Roll scene — three render paths in priority order:
+ *
+ *   1. `videoUrl` present and playable → render <OffthreadVideo> (an animated
+ *      clip generated via the B-roll image-to-video pipeline). Clip duration
+ *      may be shorter than the shot's `durationInFrames`; OffthreadVideo's
+ *      default behaviour freezes the last frame for the remainder.
+ *
+ *   2. `imageUrl` present → render the still with a Ken Burns pan/zoom. This
+ *      is the historical default and remains the path for rows the user has
+ *      not animated (or rows with the per-doc Animate toggle off).
+ *
+ *   3. No image → fall through to `FallbackBRoll` (stylized text card).
  */
 export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
   shot,
@@ -31,25 +40,46 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const [imgError, setImgError] = useState(false);
+  const [videoError, setVideoError] = useState(false);
 
   const direction = shot.kenBurnsDirection ?? KB_DIRECTIONS[shotIndex % KB_DIRECTIONS.length];
 
-  // No image, or image failed to load, or blob URL (expired after page reload)
+  // Video URL: only https://; blob: URLs from Vercel Blob writes don't survive
+  // page reload (same caveat as the still-image guard).
+  const useVideo = shot.videoUrl && !videoError && !shot.videoUrl.startsWith('blob:');
   const useImage = shot.imageUrl && !imgError && !shot.imageUrl.startsWith('blob:');
 
-  if (!useImage) {
+  if (!useVideo && !useImage) {
     return <FallbackBRoll shot={shot} durationInFrames={durationInFrames} brand={brand} />;
   }
 
   return (
     <AbsoluteFill style={{ background: brand.backgroundColor }}>
-      {/* Ken Burns image */}
-      <KenBurns
-        imageUrl={shot.imageUrl!}
-        durationInFrames={durationInFrames}
-        direction={direction}
-        onError={() => setImgError(true)}
-      />
+      {useVideo ? (
+        <AbsoluteFill style={{ overflow: 'hidden' }}>
+          <OffthreadVideo
+            src={shot.videoUrl!}
+            // Mute: the production doc's voiceover is the sole audio source;
+            // Kie clips ship with model-generated audio we never want bleeding
+            // through. (Kling i2v writes silent clips anyway, but Kling 2.6
+            // with sound=true / Veo 3 with audio could leak otherwise.)
+            muted
+            onError={() => setVideoError(true)}
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+            }}
+          />
+        </AbsoluteFill>
+      ) : (
+        <KenBurns
+          imageUrl={shot.imageUrl!}
+          durationInFrames={durationInFrames}
+          direction={direction}
+          onError={() => setImgError(true)}
+        />
+      )}
 
       {/* Subtle dark gradient at bottom for text readability */}
       <div

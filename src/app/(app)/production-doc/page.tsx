@@ -27,10 +27,21 @@ import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { StyleManagerDialog, type StyleSummary } from './StyleManagerDialog';
-import { BrollCell } from '@/components/production-doc/BrollCell';
+import {
+  BrollCell,
+  kickoffBrollGeneration,
+  readBrollLockMap,
+  writeBrollLockMap,
+} from '@/components/production-doc/BrollCell';
 import { SectionThumbnailCard } from '@/components/production-doc/SectionThumbnailCard';
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
-import { brollRowSignatureInput } from '@/lib/broll-types';
+import {
+  brollRowSignatureInput,
+  DEFAULT_BROLL_MODEL_ID,
+  findBrollModel,
+  type BrollClipRow,
+  type BrollStatus,
+} from '@/lib/broll-types';
 import { productionDocToVideoConfig } from '@/remotion/utils';
 import { stripProductionMarkers } from '@/lib/script-markers';
 import { buildCanonicalScript, scriptDriftRatio } from '@/lib/voiceover-alignment';
@@ -447,6 +458,9 @@ function AlignmentPill({
 const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
   doc,
   rowImages,
+  rowVideoClips,
+  rowLockedAsStill,
+  animateScenes,
   voiceoverUrl,
   brandKit,
   onRender,
@@ -456,6 +470,9 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
 }: {
   doc: ProductionDoc;
   rowImages: RowImageState[];
+  rowVideoClips: Record<number, { status: string; videoUrl?: string } | null>;
+  rowLockedAsStill: boolean[];
+  animateScenes: boolean;
   voiceoverUrl: string;
   brandKit: Partial<BrandKit>;
   onRender: () => void;
@@ -463,10 +480,19 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
   renderProgress: number;
   outputUrl?: string;
 }) {
-  const config = React.useMemo(
-    () => productionDocToVideoConfig(doc, rowImages, voiceoverUrl || undefined, undefined, brandKit),
-    [doc, rowImages, voiceoverUrl, brandKit],
-  );
+  const config = React.useMemo(() => {
+    // Flatten the sparse `rowVideoClips` map into a positional array
+    // aligned with `doc.rows[i]`. Rows without an entry get null and
+    // fall back to the still-with-Ken-Burns path inside the converter.
+    const rowClipsArr = doc.rows.map((_, i) => rowVideoClips[i] ?? null);
+    return productionDocToVideoConfig(doc, rowImages, {
+      voiceoverUrl: voiceoverUrl || undefined,
+      brand: brandKit,
+      rowVideoClips: rowClipsArr,
+      rowLockedAsStill,
+      animateScenes,
+    });
+  }, [doc, rowImages, rowVideoClips, rowLockedAsStill, animateScenes, voiceoverUrl, brandKit]);
   return (
     <VideoPlayer
       config={config}
@@ -1402,10 +1428,214 @@ function ProductionDocPage() {
   const [rowImages, setRowImages] = useState<RowImageState[]>([]);
   const [imageProgress, setImageProgress] = useState({ done: 0, total: 0 });
 
+  // — B-roll clips per row (rowIndex → { status, videoUrl }). The BrollCell
+  //   owns its own clip lifecycle and reports up via `onClipChange`; we keep
+  //   the parent-level map only for the renderer wiring. Sparse — entries
+  //   exist only for rows the user has generated a clip on.
+  const [rowVideoClips, setRowVideoClips] = useState<Record<number, { status: string; videoUrl?: string } | null>>({});
+  const handleBrollClipChange = useCallback(
+    (rowIndex: number, clip: { status: BrollStatus; video_url: string | null } | null) => {
+      setRowVideoClips((prev) => {
+        if (!clip) {
+          if (!(rowIndex in prev)) return prev;
+          const next = { ...prev };
+          delete next[rowIndex];
+          return next;
+        }
+        const existing = prev[rowIndex];
+        const nextEntry = { status: clip.status, videoUrl: clip.video_url ?? undefined };
+        if (
+          existing &&
+          existing.status === nextEntry.status &&
+          existing.videoUrl === nextEntry.videoUrl
+        ) {
+          return prev;
+        }
+        return { ...prev, [rowIndex]: nextEntry };
+      });
+    },
+    [],
+  );
+
+  // — Per-user "Animate scenes" toggle. When OFF, B-roll cells are hidden
+  //   and the Remotion render ignores any clips already generated for this
+  //   doc — every shot renders as a still with Ken Burns (the pre-animation
+  //   default behaviour). Stored in localStorage so the preference sticks
+  //   across reloads and across docs.
+  const [animateScenes, setAnimateScenes] = useState<boolean>(true);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem('prodoc_animate_scenes_v1');
+    if (stored === '0') setAnimateScenes(false);
+  }, []);
+  const toggleAnimateScenes = useCallback(() => {
+    setAnimateScenes((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem('prodoc_animate_scenes_v1', next ? '1' : '0');
+      } catch {
+        /* best-effort */
+      }
+      return next;
+    });
+  }, []);
+
+  // — Per-row "lock as still" map (rowSignature → true). When true for a
+  //   row, the renderer ignores any generated clip and falls back to the
+  //   still + Ken Burns path. Persisted in localStorage so locks survive
+  //   reload and doc regeneration (as long as the row signature still
+  //   matches — same key space as the clip map). The page also reflects
+  //   this as a rowIndex-keyed boolean array for the renderer call sites.
+  const [rowLockSignatures, setRowLockSignatures] = useState<Record<string, true>>({});
+  useEffect(() => {
+    setRowLockSignatures(readBrollLockMap());
+  }, []);
+  const toggleRowLock = useCallback((rowSignature: string, locked: boolean) => {
+    setRowLockSignatures((prev) => {
+      const next = { ...prev };
+      if (locked) next[rowSignature] = true;
+      else delete next[rowSignature];
+      writeBrollLockMap(next);
+      return next;
+    });
+  }, []);
+
+  // — "Animate all" batch state. While `animatingAll` is non-null the user
+  //   is mid-batch; the button shows progress and we block re-entrance.
+  const [animatingAll, setAnimatingAll] = useState<{ done: number; total: number } | null>(null);
+  // Stubs assigned by the batch — pushed into each BrollCell as its
+  //   `initialClip` so the cell's adoption effect picks up the new task id
+  //   and starts polling. Sparse, keyed by rowIndex.
+  const [rowBatchStubs, setRowBatchStubs] = useState<Record<number, BrollClipRow | null>>({});
+  // — User's resolved default model id (for "Animate all"'s cost preview
+  //   and the model it uses on each row). Fetched once after mount; the
+  //   BrollCell's own picker stays the source of truth for per-row overrides.
+  const [userDefaultModelId, setUserDefaultModelId] = useState<string>(DEFAULT_BROLL_MODEL_ID);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/user/settings/broll-default', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = (await res.json()) as { modelId?: string };
+        if (cancelled || !data.modelId) return;
+        if (findBrollModel(data.modelId)) setUserDefaultModelId(data.modelId);
+      } catch {
+        /* leave at library default */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
   }, []);
+
+  // ── "Animate all" batch ─────────────────────────────────────────────────
+  //
+  // Eligibility (recomputed every render so the button label tracks state):
+  //   - row has a generated still (`rowImages[i].status === 'done'`)
+  //   - row is NOT locked-as-still
+  //   - row does NOT already have a generating / ready clip
+  //
+  // Resolved against the user's chosen default model. We honour the model's
+  // `kind`: t2v rows skip the still requirement, i2v rows require it.
+  type AnimateAllRow = {
+    rowIndex: number;
+    rowSignature: string;
+    visualDescription: string;
+    aiImagePrompt?: string;
+    stillImageUrl?: string;
+  };
+  const animateAllPlan = React.useMemo<AnimateAllRow[]>(() => {
+    if (!doc) return [];
+    const model = findBrollModel(userDefaultModelId);
+    if (!model) return [];
+    const out: AnimateAllRow[] = [];
+    for (let i = 0; i < doc.rows.length; i++) {
+      const row = doc.rows[i]!;
+      const sig = brollRowSignatureInput({ timecode: row.timecode, visual_description: row.visual_description });
+      if (rowLockSignatures[sig]) continue;
+      const existing = rowVideoClips[i];
+      if (existing && (existing.status === 'generating' || existing.status === 'ready')) continue;
+      const still = rowImages[i]?.status === 'done' ? rowImages[i]?.imageUrl : undefined;
+      if (model.kind === 'image-to-video' && !still) continue;
+      const visDesc = (row.visual_description ?? '').trim();
+      const aiPrompt = (row.ai_image_prompt ?? '').trim();
+      if (visDesc.length < 20 && aiPrompt.length < 20) continue;
+      out.push({
+        rowIndex: i,
+        rowSignature: sig,
+        visualDescription: visDesc,
+        aiImagePrompt: aiPrompt || undefined,
+        stillImageUrl: still || undefined,
+      });
+    }
+    return out;
+  }, [doc, userDefaultModelId, rowLockSignatures, rowVideoClips, rowImages]);
+
+  const animateAllCostUsd = React.useMemo(() => {
+    const model = findBrollModel(userDefaultModelId);
+    if (!model) return 0;
+    return animateAllPlan.length * model.priceUsd;
+  }, [animateAllPlan, userDefaultModelId]);
+
+  const runAnimateAll = useCallback(async () => {
+    if (animatingAll) return;
+    if (animateAllPlan.length === 0) return;
+    const model = findBrollModel(userDefaultModelId);
+    if (!model) return;
+    // Cost confirmation — the picker shows price-per-click already, so the
+    // batch needs an explicit "you're about to spend $X" check before
+    // firing N parallel paid generations.
+    const confirmed = window.confirm(
+      `Animate ${animateAllPlan.length} row${animateAllPlan.length === 1 ? '' : 's'} with ${model.label}? ` +
+        `Estimated cost: $${animateAllCostUsd.toFixed(2)}.`,
+    );
+    if (!confirmed) return;
+
+    setAnimatingAll({ done: 0, total: animateAllPlan.length });
+    // Sequential, not parallel: keeps the Kie rate-limiter from kicking us,
+    // and gives the user a smooth progress bar.
+    for (let n = 0; n < animateAllPlan.length; n++) {
+      const item = animateAllPlan[n]!;
+      try {
+        const stub = await kickoffBrollGeneration({
+          projectId: null,
+          scriptId: null,
+          rowIndex: item.rowIndex,
+          rowSignature: item.rowSignature,
+          visualDescription: item.visualDescription,
+          aiImagePrompt: item.aiImagePrompt,
+          styleHint: stylePreset,
+          stillImageUrl: item.stillImageUrl,
+          modelId: userDefaultModelId,
+        });
+        // Hand the stub down to the row's BrollCell so it adopts the new
+        // clip id and starts polling. We also seed `rowVideoClips` with
+        // the 'generating' state so the renderer's per-row gating sees
+        // the in-flight job immediately.
+        setRowBatchStubs((prev) => ({ ...prev, [item.rowIndex]: stub }));
+        handleBrollClipChange(item.rowIndex, { status: 'generating', video_url: null });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        toast.error(`Row ${item.rowIndex + 1}: ${msg}`);
+      }
+      setAnimatingAll({ done: n + 1, total: animateAllPlan.length });
+    }
+    setAnimatingAll(null);
+    toast.success('Animation batch queued — clips will appear as each one finishes.');
+  }, [
+    animatingAll,
+    animateAllPlan,
+    animateAllCostUsd,
+    userDefaultModelId,
+    stylePreset,
+    handleBrollClipChange,
+  ]);
 
   // Revoke any outstanding screenshot blob URLs on unmount. We track the
   // latest visualRefs through a ref so the cleanup closure sees the final
@@ -2344,7 +2574,21 @@ function ProductionDocPage() {
 
   async function startVideoRender() {
     if (!doc) return;
-    const config = productionDocToVideoConfig(doc, rowImages, voiceoverUrl || undefined, undefined, effectiveBrandKit);
+    const rowClipsArr = doc.rows.map((_, i) => rowVideoClips[i] ?? null);
+    const rowLockedArr = doc.rows.map((row) =>
+      Boolean(
+        rowLockSignatures[
+          brollRowSignatureInput({ timecode: row.timecode, visual_description: row.visual_description })
+        ],
+      ),
+    );
+    const config = productionDocToVideoConfig(doc, rowImages, {
+      voiceoverUrl: voiceoverUrl || undefined,
+      brand: effectiveBrandKit,
+      rowVideoClips: rowClipsArr,
+      rowLockedAsStill: rowLockedArr,
+      animateScenes,
+    });
     setRenderStatus('rendering');
     setRenderProgress(0);
     setRenderOutputUrl(null);
@@ -2975,6 +3219,79 @@ function ProductionDocPage() {
             <SectionThumbnailCard value={doc.thumbnail} onChange={setThumbnail} />
           </div>
 
+          {/* Animate-scenes master toggle. When OFF, B-roll buttons are
+              hidden on every row and the renderer falls back to stills with
+              Ken Burns motion (today's pre-animation behaviour). Adjacent
+              "Animate all" button drives a sequential batch over every
+              eligible row (has still, not locked, not already in flight). */}
+          <div className="mb-4 flex flex-wrap items-center gap-3 px-4 py-2.5 rounded-lg" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+            <button
+              type="button"
+              onClick={toggleAnimateScenes}
+              role="switch"
+              aria-checked={animateScenes}
+              className="relative inline-flex items-center rounded-full transition-colors"
+              style={{
+                width: 36,
+                height: 20,
+                background: animateScenes ? 'rgba(168,85,247,0.45)' : 'rgba(120,120,120,0.35)',
+              }}
+              title={animateScenes ? 'Animations enabled — click to use stills only' : 'Stills only — click to enable animations'}
+            >
+              <span
+                className="inline-block rounded-full bg-white transition-transform"
+                style={{
+                  width: 14,
+                  height: 14,
+                  transform: `translateX(${animateScenes ? 18 : 4}px)`,
+                }}
+              />
+            </button>
+            <div className="flex flex-col leading-tight flex-1 min-w-[220px]">
+              <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                Animate scenes
+              </span>
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                {animateScenes
+                  ? 'Per-row B-roll buttons are visible; rendered video uses any generated clips.'
+                  : 'B-roll generation is hidden and the rendered video uses stills with Ken Burns motion (pre-animation behaviour).'}
+              </span>
+            </div>
+            {animateScenes && (
+              animatingAll ? (
+                <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  <div className="spinner" style={{ width: 14, height: 14 }} />
+                  Animating {animatingAll.done}/{animatingAll.total}…
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={runAnimateAll}
+                  disabled={animateAllPlan.length === 0}
+                  className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+                  style={{
+                    background: animateAllPlan.length === 0 ? 'rgba(120,120,120,0.10)' : 'rgba(168,85,247,0.18)',
+                    color: animateAllPlan.length === 0 ? 'var(--text-muted)' : '#c084fc',
+                    border: '1px solid ' + (animateAllPlan.length === 0 ? 'transparent' : 'rgba(168,85,247,0.45)'),
+                    cursor: animateAllPlan.length === 0 ? 'not-allowed' : 'pointer',
+                  }}
+                  title={
+                    animateAllPlan.length === 0
+                      ? 'No eligible rows: every row is locked, already generating, already ready, or has no still image yet.'
+                      : `Animate ${animateAllPlan.length} row${animateAllPlan.length === 1 ? '' : 's'} for ~$${animateAllCostUsd.toFixed(2)}`
+                  }
+                >
+                  ▶ Animate all
+                  {animateAllPlan.length > 0 && (
+                    <span className="ml-1.5 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      {animateAllPlan.length} row{animateAllPlan.length === 1 ? '' : 's'} · ~${animateAllCostUsd.toFixed(2)}
+                    </span>
+                  )}
+                </button>
+              )
+            )}
+          </div>
+
           {/* ── Desktop table */}
           <div className="glass rounded-xl overflow-hidden">
             <div className="overflow-x-auto hidden md:block">
@@ -3053,18 +3370,37 @@ function ProductionDocPage() {
                             }}
                           />
                         </td>
-                        {/* B-roll (Veo 3 / Sora 2) */}
+                        {/* B-roll (animation pipeline — Kling 2.5 turbo i2v by default) */}
                         <td style={{ padding: '8px 10px', width: 140, borderRight: '1px solid var(--border)', verticalAlign: 'middle', position: 'relative' }}>
-                          <BrollCell
-                            rowIndex={i}
-                            rowSignature={brollRowSignatureInput({
+                          {animateScenes ? (() => {
+                            const sig = brollRowSignatureInput({
                               timecode: row.timecode,
                               visual_description: row.visual_description,
-                            })}
-                            visualDescription={row.visual_description}
-                            aiImagePrompt={row.ai_image_prompt}
-                            styleHint={stylePreset}
-                          />
+                            });
+                            return (
+                              <BrollCell
+                                rowIndex={i}
+                                rowSignature={sig}
+                                visualDescription={row.visual_description}
+                                aiImagePrompt={row.ai_image_prompt}
+                                styleHint={stylePreset}
+                                stillImageUrl={imgState.status === 'done' ? imgState.imageUrl : undefined}
+                                initialClip={rowBatchStubs[i] ?? undefined}
+                                lockedAsStill={Boolean(rowLockSignatures[sig])}
+                                onToggleLockedAsStill={(locked) => toggleRowLock(sig, locked)}
+                                onClipChange={(clip) =>
+                                  handleBrollClipChange(
+                                    i,
+                                    clip ? { status: clip.status, video_url: clip.video_url } : null,
+                                  )
+                                }
+                              />
+                            );
+                          })() : (
+                            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                              Animation off
+                            </span>
+                          )}
                         </td>
                         {/* AI prompt */}
                         <td style={{ padding: '8px 12px', maxWidth: 240, borderRight: '1px solid var(--border)' }}>
@@ -3175,16 +3511,35 @@ function ProductionDocPage() {
                         </div>
                         <div>
                           <p className="text-xs font-semibold mb-0.5" style={{ color: 'var(--text-muted)' }}>B-roll</p>
-                          <BrollCell
-                            rowIndex={i}
-                            rowSignature={brollRowSignatureInput({
+                          {animateScenes ? (() => {
+                            const sig = brollRowSignatureInput({
                               timecode: row.timecode,
                               visual_description: row.visual_description,
-                            })}
-                            visualDescription={row.visual_description}
-                            aiImagePrompt={row.ai_image_prompt}
-                            styleHint={stylePreset}
-                          />
+                            });
+                            return (
+                              <BrollCell
+                                rowIndex={i}
+                                rowSignature={sig}
+                                visualDescription={row.visual_description}
+                                aiImagePrompt={row.ai_image_prompt}
+                                styleHint={stylePreset}
+                                stillImageUrl={imgState.status === 'done' ? imgState.imageUrl : undefined}
+                                initialClip={rowBatchStubs[i] ?? undefined}
+                                lockedAsStill={Boolean(rowLockSignatures[sig])}
+                                onToggleLockedAsStill={(locked) => toggleRowLock(sig, locked)}
+                                onClipChange={(clip) =>
+                                  handleBrollClipChange(
+                                    i,
+                                    clip ? { status: clip.status, video_url: clip.video_url } : null,
+                                  )
+                                }
+                              />
+                            );
+                          })() : (
+                            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                              Animation off (stills only)
+                            </span>
+                          )}
                         </div>
                         {row.ai_image_prompt && (
                           <div>
@@ -3340,6 +3695,15 @@ function ProductionDocPage() {
                 <VideoPlayerMemo
                   doc={doc}
                   rowImages={rowImages}
+                  rowVideoClips={rowVideoClips}
+                  rowLockedAsStill={doc.rows.map((row) =>
+                    Boolean(
+                      rowLockSignatures[
+                        brollRowSignatureInput({ timecode: row.timecode, visual_description: row.visual_description })
+                      ],
+                    ),
+                  )}
+                  animateScenes={animateScenes}
                   voiceoverUrl={voiceoverUrl}
                   brandKit={effectiveBrandKit}
                   onRender={startVideoRender}
@@ -3352,7 +3716,21 @@ function ProductionDocPage() {
                 {process.env.NODE_ENV !== 'production' && (
                   <button
                     onClick={() => {
-                      const config = productionDocToVideoConfig(doc, rowImages, voiceoverUrl || undefined, undefined, effectiveBrandKit);
+                      const rowClipsArr = doc.rows.map((_, i) => rowVideoClips[i] ?? null);
+                      const rowLockedArr = doc.rows.map((row) =>
+                        Boolean(
+                          rowLockSignatures[
+                            brollRowSignatureInput({ timecode: row.timecode, visual_description: row.visual_description })
+                          ],
+                        ),
+                      );
+                      const config = productionDocToVideoConfig(doc, rowImages, {
+                        voiceoverUrl: voiceoverUrl || undefined,
+                        brand: effectiveBrandKit,
+                        rowVideoClips: rowClipsArr,
+                        rowLockedAsStill: rowLockedArr,
+                        animateScenes,
+                      });
                       sessionStorage.setItem('video-studio:bridge', JSON.stringify({
                         config,
                         brief: `Production doc: ${doc.title} (niche: ${doc.niche})`,
