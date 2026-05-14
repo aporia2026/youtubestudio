@@ -504,7 +504,14 @@ export default function ChannelPage() {
                             className="btn-secondary text-sm"
                             title="Voice / tone / banned-phrase guidance auto-piped into script generation when this channel is active"
                           >
-                            🎨 Brand kit
+                            📝 Script kit
+                          </a>
+                          <a
+                            href={`/channel/${channel.id}/visual-brand-kit`}
+                            className="btn-secondary text-sm"
+                            title="Fonts, colors, and logo used by the Remotion video renderer for every video on this channel"
+                          >
+                            🎨 Visual kit
                           </a>
                           <button
                             onClick={() => deleteChannel(channel.id)}

@@ -67,6 +67,7 @@ import migration0065 from './0065_extend_watchlist_for_searches';
 import migration0066 from './0066_render_jobs_lambda_columns';
 import migration0067 from './0067_create_voiceover_alignments';
 import migration0068 from './0068_restore_workspace_members_workspace_id';
+import migration0070 from './0070_add_channel_visual_brand_kit';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -142,6 +143,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0066,
   migration0067,
   migration0068,
+  migration0070,
 ]);
 
 /**

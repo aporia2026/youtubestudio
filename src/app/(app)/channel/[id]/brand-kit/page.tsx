@@ -162,11 +162,18 @@ export default function ChannelBrandKitPage({
           ← All channels
         </Link>
         <h1 style={{ fontSize: 24, fontWeight: 700, color: 'var(--text-primary)', marginTop: 6 }}>
-          Brand kit{channelName ? ` — ${channelName}` : ''}
+          Script brand kit{channelName ? ` — ${channelName}` : ''}
         </h1>
         <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginTop: 4 }}>
           Voice, tone, and phrase guidance that auto-pipes into every script generation and QA pass when this channel is active.
         </p>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
+          Looking for fonts, colors, and logo? See the{' '}
+          <Link href={`/channel/${id}/visual-brand-kit`} className="hover:underline" style={{ color: 'var(--text-secondary)' }}>
+            visual brand kit
+          </Link>{' '}
+          (separate setting).
+        </div>
       </div>
 
       {error && (

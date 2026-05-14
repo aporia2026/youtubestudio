@@ -1,5 +1,8 @@
 # 2026-05-13 — Production-doc fonts (per-channel default + per-video override)
 
+> **Shipped 2026-05-14.** As-built notes summarised at the bottom of this file under "As-built deltas". The phase content below is the plan as approved; the deltas section records where execution diverged and why.
+
+
 ## Goal
 
 Make font choices visible, configurable, and consistent across every
@@ -303,3 +306,78 @@ new families because those families are now loaded.
 - Migration drops the column.
 - All `brand` fields fall back to `DEFAULT_BRAND_KIT` if the channel
   or override lookups fail — no functional regression.
+
+---
+
+## As-built deltas (2026-05-14)
+
+Where execution diverged from the plan and why:
+
+- **Migration number is 0070, not 0068.** Slots 0067/0068/0069 were
+  taken by voiceover_alignments / workspace_members reheal /
+  review_player_timing_samples between the plan and the start of
+  implementation. The actual DDL is identical to what the plan
+  specified — `ALTER TABLE channels ADD COLUMN IF NOT EXISTS
+  visual_brand_kit JSONB NOT NULL DEFAULT '{}'::jsonb`.
+- **Channel-settings page route is `/channel/[id]/visual-brand-kit`**
+  (not `/channels/[id]/settings`). The existing
+  `/channel/[id]/brand-kit` page (script kit) was the model; the new
+  visual kit sits as a sibling. Both routes are cross-linked, and the
+  `/channel` list page got a 🎨 "Visual kit" button alongside the
+  renamed 📝 "Script kit".
+- **Fonts module is single-file, not a per-font barrel.** Eight font
+  loads in one `src/remotion/fonts.ts` with a `FONT_REGISTRY` constant
+  + `ALLOWED_FONT_FAMILIES` allowlist + `resolveFontStack` helper. Less
+  churn than 9 files for ~10 lines of declarative code each;
+  registering a new family is still a one-place change.
+- **No dedicated PATCH route for the per-video override.** Production
+  docs live in the `user_history` table (Phase 10), not a dedicated
+  table — the override is a new `visualBrandKitOverride` field on
+  `ProductionDocHistoryEntry` and flows through the existing
+  `/api/history/[id]` PATCH path. One less route, no parity gap.
+- **Logo upload route is `POST /api/channels/[id]/visual-brand-kit/logo`.**
+  Mirrors the existing production-doc thumbnail upload pattern: returns
+  a presigned R2 PUT URL + the public download URL. Channel ownership
+  is verified before presign (404 cross-workspace, not 403, to avoid
+  leaking channel existence). 2 MB / JPEG / PNG / WebP / SVG.
+- **Total bundle weight ~1 MB, not ~600 KB.** Plan estimate was off by
+  ~50% once every weight load was counted — still trivial. No noticed
+  cold-start impact in Studio.
+- **"Render a preview" button on the channel settings page was
+  deferred.** The plan called for a button that fires a static render
+  of a sample title card cached per kit hash. In-form previews (live
+  font samples in the picker grid, color swatches synced to the hex
+  inputs, logo dropzone preview, channel-name placeholder) cover 95%
+  of the "see what it looks like" need without the still-render
+  endpoint, the 5-minute cache, or the additional surface area.
+  Reconsider after dogfood if users still ask.
+- **Video-studio page font list aligned with the curated registry.**
+  Out-of-plan find: the experimental `BrandTab` in `/video-studio`
+  hard-coded Space Grotesk / Oswald / DM Sans, none of which are
+  loaded via `@remotion/google-fonts` — they were silently rendering
+  with the system fallback. Now reads from `FONT_REGISTRY` so the
+  video-studio matches the production-doc renderer.
+- **22 tests** in `tests/channel-visual-brand-kit.test.ts` cover the
+  parser (font allowlist, hex regex, URL allowlist, version mismatch,
+  unknown-key drop) and the resolver merge (channel + override +
+  font-stack expansion).
+
+### Files added / changed
+
+- `src/remotion/fonts.ts` — expanded to 8 families + registry + helper.
+- `src/lib/migrations/0070_add_channel_visual_brand_kit.ts` — new.
+- `src/lib/channel-visual-brand-kit.ts` — new.
+- `src/app/api/channels/[id]/visual-brand-kit/route.ts` — new (GET/PUT).
+- `src/app/api/channels/[id]/visual-brand-kit/logo/route.ts` — new (POST presign).
+- `src/app/(app)/channel/[id]/visual-brand-kit/page.tsx` — new.
+- `src/components/visual-brand-kit/VisualBrandKitFields.tsx` — new (shared FontPicker / ColorField / LogoDropzone).
+- `src/components/production-doc/VisualBrandKitOverridePanel.tsx` — new.
+- `src/lib/history.ts` — extended `ProductionDocHistoryEntry` with
+  `visualBrandKitOverride`.
+- `src/app/(app)/production-doc/page.tsx` — added active-channel fetch,
+  per-doc override panel, merged-kit wiring through `effectiveBrandKit`.
+- `src/app/(app)/channel/page.tsx` — 🎨 Visual kit button + 📝 Script kit rename.
+- `src/app/(app)/channel/[id]/brand-kit/page.tsx` — cross-link to visual kit + heading rename.
+- `src/app/(app)/video-studio/page.tsx` — font list aligned with registry.
+- `src/remotion/Root.tsx` — comment refresh.
+- `tests/channel-visual-brand-kit.test.ts` — new (22 tests).

@@ -35,6 +35,12 @@ import { productionDocToVideoConfig } from '@/remotion/utils';
 import { stripProductionMarkers } from '@/lib/script-markers';
 import { buildCanonicalScript, scriptDriftRatio } from '@/lib/voiceover-alignment';
 import type { BrandKit, ThumbnailTransitionConfig, VideoThumbnail } from '@/remotion/types';
+import {
+  resolveBrandKitForRender,
+  parseVisualBrandKit,
+  type ChannelVisualBrandKit,
+} from '@/lib/channel-visual-brand-kit';
+import { VisualBrandKitOverridePanel } from '@/components/production-doc/VisualBrandKitOverridePanel';
 
 // Dynamically import VideoPlayer — Remotion uses browser-only APIs (WebGL, Canvas)
 const VideoPlayer = dynamic(
@@ -1565,8 +1571,20 @@ function ProductionDocPage() {
   // — Video preview & render
   const [showVideoPreview, setShowVideoPreview] = useState(false);
   const [voiceoverUrl, setVoiceoverUrl] = useState('');
-  // Brand kit loaded client-side only to avoid SSR hydration mismatch
+  // Legacy localStorage-driven quick-tweak bar — kept so existing
+  // workspace-wide brand presets still work. New channel kit + per-doc
+  // override take precedence as base; this state spreads on top for
+  // last-mile tweaks via VideoPreviewBrandBar.
   const [brandKit, setBrandKit] = useState<Partial<BrandKit>>(DEFAULT_BRAND);
+  // — Channel-level visual brand kit (fonts, colors, logo, channel name).
+  //   Fetched once on mount when an active channel is pinned; null
+  //   otherwise (no channel → renderer falls through to DEFAULT_BRAND_KIT).
+  const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
+  const [channelVisualKit, setChannelVisualKit] = useState<ChannelVisualBrandKit | null>(null);
+  // — Per-doc override: persists on the production_doc history entry so
+  //   it follows the doc across devices and restores cleanly. Default is
+  //   the empty kit { v: 1 } — every field falls through to channel.
+  const [visualKitOverride, setVisualKitOverride] = useState<ChannelVisualBrandKit>({ v: 1 });
   const [renderId, setRenderId] = useState<string | null>(null);
   const [renderProgress, setRenderProgress] = useState(0);
   const [renderStatus, setRenderStatus] = useState<'idle' | 'rendering' | 'done' | 'error'>('idle');
@@ -1600,6 +1618,56 @@ function ProductionDocPage() {
       if (stored.primaryColor) setBrandKit(b => ({ ...b, ...stored }));
     } catch { /* ignore */ }
   }, []);
+
+  // ── Fetch the active channel + its visual brand kit on mount ───────────
+  //
+  // Two hops: GET /api/user/settings/active-channel → channel id, then
+  // GET /api/channels/[id]/visual-brand-kit → kit. Both are silently
+  // ignored on failure (default kit applies). The kit is read-only here;
+  // changes happen on the channel settings page.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadChannelKit() {
+      try {
+        const acRes = await fetch('/api/user/settings/active-channel');
+        if (!acRes.ok) return;
+        const ac = (await acRes.json()) as { active_channel_id: string | null };
+        if (cancelled || !ac.active_channel_id) return;
+        setActiveChannelId(ac.active_channel_id);
+        const kitRes = await fetch(`/api/channels/${ac.active_channel_id}/visual-brand-kit`);
+        if (cancelled || !kitRes.ok) return;
+        const { visual_brand_kit } = (await kitRes.json()) as {
+          visual_brand_kit: ChannelVisualBrandKit;
+        };
+        setChannelVisualKit(visual_brand_kit);
+      } catch { /* ignore — falls through to DEFAULT_BRAND_KIT */ }
+    }
+    void loadChannelKit();
+    return () => { cancelled = true; };
+  }, []);
+
+  // ── Persist the per-doc override onto the history entry whenever it
+  //    changes. Mirrors how doc + rowImages are persisted. Fire-and-
+  //    forget — a stale override on disk is a soft failure.
+  useEffect(() => {
+    if (!historyEntryId) return;
+    updateProductionDocEntry(historyEntryId, {
+      visualBrandKitOverride: visualKitOverride,
+    }).catch(() => { /* ignore */ });
+  }, [historyEntryId, visualKitOverride]);
+
+  // ── Compute the merged BrandKit for every render-time consumer.
+  //    Order: DEFAULT_BRAND_KIT ← channel ← override ← legacy bar.
+  //    The legacy bar (VideoPreviewBrandBar's localStorage state) stays
+  //    on top so users who only ever used the quick-tweak still see
+  //    their colors take effect.
+  const effectiveBrandKit = React.useMemo<Partial<BrandKit>>(
+    () => ({
+      ...resolveBrandKitForRender(channelVisualKit, visualKitOverride),
+      ...brandKit,
+    }),
+    [channelVisualKit, visualKitOverride, brandKit],
+  );
 
   // Load prefill from generator / QA pages. Functional setters so a
   // schedule-link prefill that resolved first isn't clobbered by stale
@@ -2276,7 +2344,7 @@ function ProductionDocPage() {
 
   async function startVideoRender() {
     if (!doc) return;
-    const config = productionDocToVideoConfig(doc, rowImages, voiceoverUrl || undefined);
+    const config = productionDocToVideoConfig(doc, rowImages, voiceoverUrl || undefined, undefined, effectiveBrandKit);
     setRenderStatus('rendering');
     setRenderProgress(0);
     setRenderOutputUrl(null);
@@ -3255,7 +3323,15 @@ function ProductionDocPage() {
                   )}
                 </div>
 
-                {/* Brand kit quick-config */}
+                {/* Per-video visual brand kit override (channel kit ← override ← bar below). */}
+                <VisualBrandKitOverridePanel
+                  channelId={activeChannelId}
+                  channelKit={channelVisualKit}
+                  override={visualKitOverride}
+                  onChange={setVisualKitOverride}
+                />
+
+                {/* Brand kit quick-config (legacy local tweak, sits on top of channel + override). */}
                 <VideoPreviewBrandBar
                   onBrandChange={(brand) => setBrandKit(b => ({ ...b, ...brand }))}
                 />
@@ -3265,7 +3341,7 @@ function ProductionDocPage() {
                   doc={doc}
                   rowImages={rowImages}
                   voiceoverUrl={voiceoverUrl}
-                  brandKit={brandKit}
+                  brandKit={effectiveBrandKit}
                   onRender={startVideoRender}
                   isRendering={renderStatus === 'rendering'}
                   renderProgress={renderProgress}
@@ -3276,7 +3352,7 @@ function ProductionDocPage() {
                 {process.env.NODE_ENV !== 'production' && (
                   <button
                     onClick={() => {
-                      const config = productionDocToVideoConfig(doc, rowImages, voiceoverUrl || undefined, undefined, brandKit);
+                      const config = productionDocToVideoConfig(doc, rowImages, voiceoverUrl || undefined, undefined, effectiveBrandKit);
                       sessionStorage.setItem('video-studio:bridge', JSON.stringify({
                         config,
                         brief: `Production doc: ${doc.title} (niche: ${doc.niche})`,
@@ -3354,11 +3430,17 @@ function ProductionDocPage() {
               setRowImages([]);
             }
             setHistoryEntryId(entry.id);
+            // Restore the per-video visual brand kit override if the
+            // entry carried one. parseVisualBrandKit drops anything
+            // unexpected, so a corrupt payload silently falls back to
+            // an empty override.
+            setVisualKitOverride(parseVisualBrandKit(entry.visualBrandKitOverride));
             toast.success(`Restored — ${entry.shotCount} shots, ${entry.totalDuration}`);
           } else {
             setDoc(null);
             setRowImages([]);
             setHistoryEntryId(null);
+            setVisualKitOverride({ v: 1 });
             toast.info('Older entry — only metadata was saved. Re-generate to produce the doc.');
           }
         }}

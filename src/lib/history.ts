@@ -180,6 +180,10 @@ export interface ProductionDocHistoryEntry {
   rowImages?: Record<number, string>;
   videoTitle?: string;
   scheduleItemId?: string;
+  /** Per-video override for the channel's visual brand kit (fonts /
+   *  colors / logo). Shape matches ChannelVisualBrandKit; persisted as
+   *  part of the entry payload so it follows the doc across devices. */
+  visualBrandKitOverride?: unknown;
 }
 
 // ---------------------------------------------------------------------------

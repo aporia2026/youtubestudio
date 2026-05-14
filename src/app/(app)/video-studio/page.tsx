@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { productionDocToVideoConfig, msToFrame, ProductionDoc, RowImageState } from '@/remotion/utils';
 import type { BrandKit, VideoConfig, VideoShot, SceneType } from '@/remotion/types';
 import { DEFAULT_BRAND_KIT } from '@/remotion/types';
+import { ALLOWED_FONT_FAMILIES, FONT_REGISTRY } from '@/remotion/fonts';
 import { getVoiceoverHistory } from '@/lib/history';
 import { downloadHref } from '@/lib/download-file';
 
@@ -984,13 +985,15 @@ function ShotEditorInline({ shot, onUpdate }: { shot: ManualShotDef; onUpdate: (
 // ─── BrandTab ─────────────────────────────────────────────────────────────────
 
 function BrandTab({ brand, onBrand }: { brand: Partial<BrandKit>; onBrand: (p: Partial<BrandKit>) => void }) {
-  const FONT_OPTIONS = [
-    { label: 'Inter (default)',      value: 'Inter, system-ui, sans-serif' },
-    { label: 'Space Grotesk',        value: "'Space Grotesk', system-ui, sans-serif" },
-    { label: 'Oswald (bold)',        value: "'Oswald', Impact, sans-serif" },
-    { label: 'DM Sans',             value: "'DM Sans', system-ui, sans-serif" },
-    { label: 'Georgia (serif)',      value: "Georgia, 'Times New Roman', serif" },
-  ];
+  // The font list mirrors the curated set in `src/remotion/fonts.ts` —
+  // only families actually loaded by `@remotion/google-fonts` render
+  // correctly. The legacy entries (Space Grotesk, Oswald, DM Sans) were
+  // never bundled and rendered with the system fallback. Each value is
+  // the CSS fallback stack from FONT_REGISTRY.
+  const FONT_OPTIONS: Array<{ label: string; value: string }> = ALLOWED_FONT_FAMILIES.map((name) => ({
+    label: name === 'Inter' ? 'Inter (default)' : name,
+    value: FONT_REGISTRY[name].fallback,
+  }));
 
   return (
     <div className="p-4 space-y-5">
