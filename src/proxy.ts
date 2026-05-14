@@ -108,6 +108,15 @@ export function isPathPublic(pathname: string): boolean {
     // Everything else under /api/review/ is the token-portal namespace.
     if (after !== 'projects' && !after.startsWith('projects/')) return true;
   }
+  // Voiceover audio proxy: `/api/voiceovers/<uuid>/audio`. The UUID is
+  // the access token — same posture as `/api/narrator/takes/[id]/audio`.
+  // Public because server-side renderers and the alignment cache (both
+  // run without the user's session cookie) fetch the same URL. The
+  // sibling routes `/api/voiceovers/library` and `/api/voiceovers/align`
+  // stay gated — only the `<uuid>/audio` shape matches.
+  if (/^\/api\/voiceovers\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/audio$/i.test(pathname)) {
+    return true;
+  }
   if (pathname.startsWith('/_next') || pathname.startsWith('/favicon')) return true;
   return false;
 }

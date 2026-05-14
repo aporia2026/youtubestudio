@@ -48,6 +48,19 @@ describe('proxy.isPathPublic', () => {
     expect(isPathPublic('/api/review/projects/p-1/comments')).toBe(false);
   });
 
+  it('lets the voiceover audio proxy through but NOT its sibling routes', () => {
+    // <uuid>/audio shape — UUID is the access token, server-side
+    // renderers + alignment cache fetch this without a session cookie.
+    expect(isPathPublic('/api/voiceovers/8c4f2a1e-9b3d-4f7c-a5e2-1d6b8e4c9f0a/audio')).toBe(true);
+    // Sibling routes stay gated.
+    expect(isPathPublic('/api/voiceovers/library')).toBe(false);
+    expect(isPathPublic('/api/voiceovers/align')).toBe(false);
+    // Look-alikes that aren't actually `<uuid>/audio` don't pass.
+    expect(isPathPublic('/api/voiceovers/not-a-uuid/audio')).toBe(false);
+    expect(isPathPublic('/api/voiceovers/8c4f2a1e-9b3d-4f7c-a5e2-1d6b8e4c9f0a')).toBe(false);
+    expect(isPathPublic('/api/voiceovers/8c4f2a1e-9b3d-4f7c-a5e2-1d6b8e4c9f0a/audio/extra')).toBe(false);
+  });
+
   it('lets static asset paths through', () => {
     expect(isPathPublic('/_next/static/foo.js')).toBe(true);
     expect(isPathPublic('/favicon.ico')).toBe(true);
