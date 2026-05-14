@@ -3292,7 +3292,7 @@ function ProductionDocPage() {
 
                 {renderStatus === 'error' && (
                   <p className="text-xs" style={{ color: '#f87171' }}>
-                    Render failed. Check server logs. Make sure BLOB_READ_WRITE_TOKEN is configured.
+                    Render failed. Check server logs for details — the toast above carries the reason.
                   </p>
                 )}
               </div>

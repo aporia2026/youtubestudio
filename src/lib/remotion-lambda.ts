@@ -81,6 +81,38 @@ export interface LambdaKickoffResult {
 }
 
 /**
+ * How many frames each Lambda invocation renders. Higher values =
+ * fewer concurrent Lambdas spawned for a given video length, which
+ * keeps a fresh AWS account (default 10-concurrency quota) from
+ * tripping `AWS Concurrency limit reached (Rate Exceeded)`.
+ *
+ * Default 4800 = 160 s of 30-fps video per chunk → a 14-minute video
+ * spawns ~5 Lambdas. Once AWS approves a quota increase (Service
+ * Quotas → Lambda → Concurrent executions), drop this to ~500 to get
+ * the full ~75-90 s wall-time the plan targets.
+ */
+const DEFAULT_FRAMES_PER_LAMBDA = 4800;
+
+/**
+ * Retry count for transient Lambda failures, including the brief
+ * `Rate Exceeded` spikes you can still see even with framesPerLambda
+ * tuned. Remotion handles the back-off internally.
+ */
+const DEFAULT_MAX_RETRIES = 3;
+
+function getFramesPerLambda(): number {
+  const raw = process.env.REMOTION_LAMBDA_FRAMES_PER_LAMBDA;
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_FRAMES_PER_LAMBDA;
+}
+
+function getMaxRetries(): number {
+  const raw = process.env.REMOTION_LAMBDA_MAX_RETRIES;
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_MAX_RETRIES;
+}
+
+/**
  * Fire a distributed render. Returns in ~100–300ms with the ids needed
  * to poll progress. Does NOT wait for the render to finish.
  */
@@ -100,6 +132,11 @@ export async function kickOffLambdaRender(
     // for `/api/render/video`. Switch to 'private' + presigned URLs once
     // a private-draft requirement lands.
     privacy: 'public',
+    // Concurrency tuning — see DEFAULT_FRAMES_PER_LAMBDA above for the
+    // rationale. Each value can be overridden via env so the deployer
+    // can re-tune without a code change once AWS raises their quota.
+    framesPerLambda: getFramesPerLambda(),
+    maxRetries: getMaxRetries(),
   });
 
   return { lambdaRenderId: renderId, bucketName };
