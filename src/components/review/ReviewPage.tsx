@@ -10,7 +10,7 @@ import { VersionSelector } from './VersionSelector';
 import { StatusBadge } from './StatusBadge';
 import { ComparisonView } from './ComparisonView';
 import { compressVideo, isCompressionSupported } from '@/lib/compress-video';
-import { downloadCrossOriginFile } from '@/lib/download-file';
+import { downloadStreaming } from '@/lib/download-file';
 
 export interface ReviewVersion {
   id: string;
@@ -125,7 +125,9 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
 
   // "Download current version" inline state. The video URL is cross-origin
   // (R2), so we route through the same `/api/download-proxy` pipe the rest
-  // of the app uses — `<a download>` would be silently ignored.
+  // of the app uses — `<a download>` would be silently ignored. The flag
+  // briefly flips on click as visual feedback; the real download progress
+  // shows in the browser's native downloads tray.
   const [downloadingCurrent, setDownloadingCurrent] = useState(false);
 
   // Fix-notes modal — opens after a successful upload when there's a
@@ -348,7 +350,11 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
   // Download the currently-active version's video file. Builds a filename
   // from the project title + version number so multiple downloads from the
   // same project stay distinguishable in the user's downloads folder.
-  async function handleDownloadCurrent() {
+  // Uses `downloadStreaming` so the browser pulls the bytes natively (with
+  // its own progress UI) instead of buffering a multi-hundred-MB render
+  // into a Blob — the latter made the button hang on "Preparing…" for as
+  // long as the full file took to arrive.
+  function handleDownloadCurrent() {
     if (!data) return;
     const v = data.versions.find(ver => ver.id === activeVersionId) || data.versions[0];
     if (!v?.video_url) return;
@@ -360,13 +366,14 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
     const fileName = `${safeTitle} - v${v.version_number}.mp4`;
     setDownloadingCurrent(true);
     try {
-      await downloadCrossOriginFile(v.video_url, fileName);
+      downloadStreaming(v.video_url, fileName);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Download failed';
       toast.error(msg);
-    } finally {
-      setDownloadingCurrent(false);
     }
+    // Click handed off to the browser; flip the flag back after a short
+    // delay so the user gets a quick visual ack without it lingering.
+    setTimeout(() => setDownloadingCurrent(false), 1200);
   }
 
   // Poll for fresh comments every 30s. We deliberately hit the full
@@ -596,7 +603,7 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
                   <polyline points="7 10 12 15 17 10" />
                   <line x1="12" y1="15" x2="12" y2="3" />
                 </svg>
-                {downloadingCurrent ? 'Preparing…' : `Download v${activeVersion.version_number}`}
+                {downloadingCurrent ? 'Starting…' : `Download v${activeVersion.version_number}`}
               </button>
             )}
 
