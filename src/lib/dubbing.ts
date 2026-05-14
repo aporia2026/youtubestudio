@@ -17,11 +17,16 @@
  * (~25s typical: 1-3s translate + 15-20s TTS + 2s upload).
  */
 import { sql } from '@vercel/postgres';
-import { put } from '@vercel/blob';
 import { generateText } from './ai';
 import { generateVoiceover } from './elevenlabs';
 import { logger } from './logger';
 import { getEffectiveModelId } from './model-defaults';
+import {
+  buildDubbingKey,
+  getDownloadUrlForBucket,
+  getNarrationBucket,
+  uploadToBucket,
+} from './r2';
 import {
   SUPPORTED_LANGUAGES,
   isSupportedLanguage,
@@ -182,7 +187,10 @@ async function markGenerating(dubId: string, translated: string): Promise<void> 
 async function markReady(
   dubId: string,
   audioUrl: string,
-  blobPathname: string,
+  // Legacy column name from the Blob era — value is now an R2 object key
+  // since the 2026-05-14 migration. DB column unchanged to avoid a
+  // migration touching every dubbing row.
+  storageKey: string,
   durationSeconds: number,
 ): Promise<void> {
   // Only valid from 'generating'.
@@ -190,7 +198,7 @@ async function markReady(
     UPDATE dubbed_voiceovers
        SET status = 'ready',
            audio_url = ${audioUrl},
-           blob_pathname = ${blobPathname},
+           blob_pathname = ${storageKey},
            duration_seconds = ${durationSeconds},
            updated_at = NOW(),
            completed_at = NOW()
@@ -295,16 +303,16 @@ export async function dubScript(args: DubScriptArgs): Promise<{ id: string; stat
   }
 
   // -- Upload --------------------------------------------------------------
-  const blobPathname = `dubs/${args.scriptId}/${args.targetLanguage}.mp3`;
+  // R2 narration bucket; same migration pattern as the rest of the
+  // audio paths. The dedupe (re-dub on re-run) is now per-timestamp
+  // key — old objects are orphaned but don't accumulate fast (one per
+  // language per re-run) and a periodic cron can prune them.
+  const bucket = getNarrationBucket();
+  const r2Key = buildDubbingKey(args.projectId, args.targetLanguage);
   let audioUrl: string;
   try {
-    const result = await put(blobPathname, audioBuffer, {
-      access: 'public',
-      contentType: 'audio/mpeg',
-      // The same (script, language) gets re-dubbed on re-run; allow overwrite.
-      allowOverwrite: true,
-    });
-    audioUrl = result.url;
+    await uploadToBucket(bucket, r2Key, Buffer.from(audioBuffer), 'audio/mpeg');
+    audioUrl = await getDownloadUrlForBucket(bucket, r2Key, process.env.R2_NARRATION_PUBLIC_URL);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('dub upload failed', { dubId, language: args.targetLanguage, detail: msg });
@@ -315,7 +323,7 @@ export async function dubScript(args: DubScriptArgs): Promise<{ id: string; stat
   // -- Persist -------------------------------------------------------------
   const durationSeconds = estimateDubDuration(translated.length);
   try {
-    await markReady(dubId, audioUrl, blobPathname, durationSeconds);
+    await markReady(dubId, audioUrl, r2Key, durationSeconds);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('dub persist failed', { dubId, language: args.targetLanguage, detail: msg });

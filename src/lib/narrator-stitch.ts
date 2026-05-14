@@ -16,10 +16,15 @@
  * click (owner-initiated); the auto-stitch hook checks before invoking
  * so repeat approvals don't multiply rows.
  */
-import { put } from '@vercel/blob';
 import { sql } from '@vercel/postgres';
 import { getAssignment, getRealSectionsForAssignment } from './narrator-db';
-import { getNarrationDownloadUrl } from './r2';
+import {
+  buildStitchedNarrationKey,
+  getDownloadUrlForBucket,
+  getNarrationBucket,
+  getNarrationDownloadUrl,
+  uploadToBucket,
+} from './r2';
 
 export type StitchResult =
   | { ok: true; url: string; size: number; sections: number }
@@ -97,16 +102,26 @@ export async function stitchAssignmentVoiceover(assignmentId: string): Promise<S
     offset += buf.byteLength;
   }
 
-  const pathname = `narrator-stitched/${assignment.project_id}/${Date.now()}-stitched.mp3`;
-  const blob = await put(pathname, new Blob([stitched], { type: 'audio/mpeg' }), { access: 'public', contentType: 'audio/mpeg' });
+  // Upload to R2 narration bucket. Same migration pattern as the rest
+  // of the audio paths — consistent storage, no dependency on Blob.
+  const bucket = getNarrationBucket();
+  const r2Key = buildStitchedNarrationKey(assignmentId);
+  await uploadToBucket(bucket, r2Key, Buffer.from(stitched), 'audio/mpeg');
+  const audioUrl = await getDownloadUrlForBucket(bucket, r2Key, process.env.R2_NARRATION_PUBLIC_URL);
 
   // workspace_id is NOT NULL on media_assets since migration 0013 —
   // copy it from the parent project to satisfy the constraint.
+  // `r2_bucket` + `r2_key` are populated so the audio proxy streams
+  // through R2 instead of redirecting to a defunct Blob URL.
   await sql`
-    INSERT INTO media_assets (project_id, type, source, name, url, blob_pathname, size_bytes, metadata, workspace_id)
+    INSERT INTO media_assets (
+      project_id, type, source, name, url,
+      r2_bucket, r2_key, size_bytes, metadata, workspace_id
+    )
     SELECT ${assignment.project_id}::uuid, 'voiceover', 'upload',
            ${`Narration — ${assignment.narrator_name}`},
-           ${blob.url}, ${blob.pathname}, ${totalSize},
+           ${audioUrl},
+           ${bucket}, ${r2Key}, ${totalSize},
            ${JSON.stringify({ narrator_id: assignment.narrator_id, assignment_id: assignmentId, stitched: true, sections: audioUrls.length })}::jsonb,
            p.workspace_id
       FROM projects p WHERE p.id = ${assignment.project_id}::uuid
@@ -114,5 +129,5 @@ export async function stitchAssignmentVoiceover(assignmentId: string): Promise<S
 
   await sql`UPDATE narrator_assignments SET status = 'completed', updated_at = NOW() WHERE id = ${assignmentId}`;
 
-  return { ok: true, url: blob.url, size: totalSize, sections: audioUrls.length };
+  return { ok: true, url: audioUrl, size: totalSize, sections: audioUrls.length };
 }

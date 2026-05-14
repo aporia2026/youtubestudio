@@ -9,6 +9,12 @@ import { buildShortVideoConfig } from '@/lib/shorts-render';
 import type { ShortVideoConfig } from '@/lib/shorts-render-types';
 import { logger } from '@/lib/logger';
 import { remotionWebpackOverride } from '@/lib/remotion-bundler';
+import {
+  buildShortRenderKey,
+  getDownloadUrlForBucket,
+  getReviewBucket,
+  uploadToBucket,
+} from '@/lib/r2';
 
 // Vertical Shorts render — same Remotion bundler/renderer pattern as
 // /api/render/video. Vercel Pro 300s ceiling is enough for typical
@@ -167,7 +173,6 @@ async function startRender(
     // not Turbopack-compatible.
     const { bundle } = await import('@remotion/bundler');
     const { renderMedia, selectComposition } = await import('@remotion/renderer');
-    const { put } = await import('@vercel/blob');
 
     await updateJob(renderId, { progress: 0.05 });
 
@@ -204,19 +209,22 @@ async function startRender(
 
     await updateJob(renderId, { progress: 0.92 });
 
+    // Upload to R2 (review bucket, `shorts-renders/` prefix). Same
+    // reasoning as the long-form render migration: consistent storage
+    // across the app, and private-access Blob stores don't break the
+    // output URL.
     const fileBuffer = await fs.readFile(outPath);
-    const blob = await put(`shorts-renders/${renderId}.mp4`, fileBuffer, {
-      access: 'public',
-      contentType: 'video/mp4',
-      addRandomSuffix: false,
-    });
+    const bucket = getReviewBucket();
+    const r2Key = buildShortRenderKey(renderId);
+    await uploadToBucket(bucket, r2Key, fileBuffer, 'video/mp4');
+    const outputUrl = await getDownloadUrlForBucket(bucket, r2Key, process.env.R2_PUBLIC_URL);
 
     await fs.unlink(outPath).catch(() => {});
 
     // Persist onto the shorts row so the /shorts page sees it on next refresh.
     await sql`
       UPDATE shorts
-         SET rendered_video_url = ${blob.url},
+         SET rendered_video_url = ${outputUrl},
              updated_at = NOW()
        WHERE id = ${shortId}::uuid AND workspace_id = ${workspaceId}::uuid
     `.catch(() => { /* row was deleted while we were rendering — leave the job done anyway */ });
@@ -224,7 +232,7 @@ async function startRender(
     await updateJob(renderId, {
       status: 'done',
       progress: 1,
-      output_url: blob.url,
+      output_url: outputUrl,
       finished_at: Date.now(),
     });
   } catch (err) {

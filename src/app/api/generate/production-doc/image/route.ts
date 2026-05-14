@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
-import { put } from '@vercel/blob';
 import { logger } from '@/lib/logger';
 import { buildKieImageInput, getImageModelSpec, DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from '@/lib/image-models';
+import {
+  getDownloadUrlForBucket,
+  getImagesBucket,
+  uploadToBucket,
+} from '@/lib/r2';
 
 export const maxDuration = 300;
 
@@ -142,22 +146,23 @@ export async function POST(req: NextRequest) {
 
     const kieUrl = await pollForResult(taskId, apiKey);
 
-    // Re-host in Vercel Blob so the URL never expires
+    // Re-host in R2 (images bucket) so the URL doesn't depend on Kie's
+    // CDN retention. On mirror failure fall back to the Kie URL —
+    // image still usable until the upstream expires.
     let imageUrl = kieUrl;
     try {
       const imgRes = await fetch(kieUrl);
       if (imgRes.ok) {
         const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
         const buffer = await imgRes.arrayBuffer();
-        const blob = await put(`prodoc-images/${Date.now()}.jpg`, buffer, {
-          access: 'public',
-          contentType,
-          addRandomSuffix: true,
-        });
-        imageUrl = blob.url;
+        const randomSuffix = Math.random().toString(36).slice(2, 10);
+        const bucket = getImagesBucket();
+        const r2Key = `prodoc-images/${Date.now()}-${randomSuffix}.jpg`;
+        await uploadToBucket(bucket, r2Key, Buffer.from(buffer), contentType);
+        imageUrl = await getDownloadUrlForBucket(bucket, r2Key, process.env.R2_IMAGES_PUBLIC_URL);
       }
     } catch (uploadErr) {
-      console.warn('[image-gen] Vercel Blob upload failed, falling back to Kie.ai URL:', uploadErr);
+      console.warn('[image-gen] R2 upload failed, falling back to Kie.ai URL:', uploadErr);
     }
 
     return NextResponse.json({ imageUrl });

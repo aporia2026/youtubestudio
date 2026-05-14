@@ -86,7 +86,7 @@ export async function uploadToBucket(
 // Review videos bucket (existing behaviour, kept for back-compat)
 // ---------------------------------------------------------------------------
 
-function getReviewBucket(): string {
+export function getReviewBucket(): string {
   return process.env.R2_BUCKET_NAME || 'videos';
 }
 
@@ -112,11 +112,24 @@ export function buildR2Key(projectId: string, versionNumber: number, fileName: s
   return `reviews/${projectId}/v${versionNumber}/${timestamp}-${sanitized}`;
 }
 
+/** Build an R2 key for a long-form video render output. Lives in the
+ *  review/videos bucket under a `renders/` prefix so the bucket listing
+ *  separates reviewer uploads from Remotion outputs. */
+export function buildRenderKey(renderId: string): string {
+  return `renders/${renderId}.mp4`;
+}
+
+/** Build an R2 key for a Shorts render output. Separate prefix so the
+ *  Shorts feed listing doesn't intermix with long-form renders. */
+export function buildShortRenderKey(renderId: string): string {
+  return `shorts-renders/${renderId}.mp4`;
+}
+
 // ---------------------------------------------------------------------------
 // Narration bucket — separate bucket for narrator audio takes
 // ---------------------------------------------------------------------------
 
-function getNarrationBucket(): string {
+export function getNarrationBucket(): string {
   return process.env.R2_NARRATION_BUCKET_NAME || 'narration';
 }
 
@@ -150,6 +163,36 @@ export function buildNarrationKey(assignmentId: string, sectionId: string, takeN
 export function buildElevenLabsVoiceoverKey(voiceId: string): string {
   const sanitized = voiceId.replace(/[^a-zA-Z0-9._-]/g, '_');
   return `elevenlabs/${Date.now()}-${sanitized}.mp3`;
+}
+
+/**
+ * Build an R2 key for a Shorts voiceover. Distinct prefix from long-form
+ * narration so the bucket listing separates the two formats.
+ */
+export function buildShortVoiceoverKey(shortId: string, voiceId: string): string {
+  const safeShort = shortId.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const safeVoice = voiceId.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return `shorts/${safeShort}/voiceover-${Date.now()}-${safeVoice}.mp3`;
+}
+
+/**
+ * Build an R2 key for stitched narrator audio (multi-section take
+ * concatenated into a single MP3 for the production render).
+ */
+export function buildStitchedNarrationKey(assignmentId: string): string {
+  return `stitched/${assignmentId}/${Date.now()}.mp3`;
+}
+
+/**
+ * Build an R2 key for a dubbed-language audio track. The dubbing
+ * pipeline can run with `projectId: null` (one-shot dub of a freeform
+ * script), so the project segment falls back to `unattached` in that
+ * case — keeps the prefix consistent and groups orphan dubs together.
+ */
+export function buildDubbingKey(projectId: string | null, language: string): string {
+  const safeLang = language.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const segment = projectId || 'unattached';
+  return `dubbing/${segment}/${safeLang}-${Date.now()}.mp3`;
 }
 
 /**

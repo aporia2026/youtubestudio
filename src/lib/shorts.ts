@@ -15,9 +15,14 @@
  * verified without burning model calls.
  */
 import { sql } from '@vercel/postgres';
-import { put } from '@vercel/blob';
 import { generateText } from './ai';
 import { generateVoiceover } from './elevenlabs';
+import {
+  buildShortVoiceoverKey,
+  getDownloadUrlForBucket,
+  getNarrationBucket,
+  uploadToBucket,
+} from './r2';
 import { parseLlmJson } from './parse-llm-json';
 import { logger } from './logger';
 import { getEffectiveModelId } from './model-defaults';
@@ -255,28 +260,34 @@ export async function generateShortVoiceover(args: GenerateShortVoiceoverArgs): 
     modelId: ELEVENLABS_MULTILINGUAL_MODEL,
   });
 
-  const blobPathname = `shorts/${args.shortId}.mp3`;
-  const result = await put(blobPathname, audioBuffer, {
-    access: 'public',
-    contentType: 'audio/mpeg',
-    allowOverwrite: true,
-  });
+  // Upload to R2 narration bucket. Matches the ElevenLabs voiceover
+  // migration: every audio path lives in R2, the Blob store doesn't
+  // matter for storage decisions anymore.
+  const bucket = getNarrationBucket();
+  const r2Key = buildShortVoiceoverKey(args.shortId, args.voiceId);
+  await uploadToBucket(bucket, r2Key, Buffer.from(audioBuffer), 'audio/mpeg');
+  const audioUrl = await getDownloadUrlForBucket(bucket, r2Key, process.env.R2_NARRATION_PUBLIC_URL);
 
   const durationSeconds = estimateShortDurationSeconds(
     row.word_count ?? countSpokenWords(speakable),
   );
 
+  // Keep the `voiceover_blob_pathname` column populated with the R2
+  // key — the column name is legacy from the Blob era, but the value
+  // is now an R2 object key. Renaming the column is a bigger change
+  // not in scope here; the data contract still makes sense (a stable
+  // reference to the stored object).
   await sql`
     UPDATE shorts
-       SET voiceover_audio_url = ${result.url},
-           voiceover_blob_pathname = ${blobPathname},
+       SET voiceover_audio_url = ${audioUrl},
+           voiceover_blob_pathname = ${r2Key},
            voiceover_voice_id = ${args.voiceId},
            voiceover_duration_seconds = ${durationSeconds},
            updated_at = NOW()
      WHERE id = ${args.shortId}::uuid AND workspace_id = ${args.workspaceId}::uuid
   `;
 
-  return { audio_url: result.url, blob_pathname: blobPathname, duration_seconds: durationSeconds };
+  return { audio_url: audioUrl, blob_pathname: r2Key, duration_seconds: durationSeconds };
 }
 
 // ---------------------------------------------------------------------------

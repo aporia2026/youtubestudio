@@ -24,9 +24,13 @@
  * on the artefact for now; a follow-up ticket adds image
  * pricing.
  */
-import { put } from '@vercel/blob';
 import { buildKieImageInput, getImageModelSpec } from '../image-models';
 import { logger } from '../logger';
+import {
+  getDownloadUrlForBucket,
+  getImagesBucket,
+  uploadToBucket,
+} from '../r2';
 
 const KIE_BASE = 'https://api.kie.ai/api/v1/jobs';
 
@@ -206,12 +210,14 @@ async function reHostToBlob(kieUrl: string, prefix = 'pipeline-thumbnails'): Pro
     }
     const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
     const buffer = await imgRes.arrayBuffer();
-    const blob = await put(`${prefix}/${Date.now()}.jpg`, buffer, {
-      access: 'public',
-      contentType,
-      addRandomSuffix: true,
-    });
-    return blob.url;
+    // Random suffix mirrors the Blob `addRandomSuffix: true` behaviour
+    // so two near-simultaneous re-hosts of different sources don't
+    // collide on the millisecond timestamp alone.
+    const randomSuffix = Math.random().toString(36).slice(2, 10);
+    const bucket = getImagesBucket();
+    const r2Key = `${prefix}/${Date.now()}-${randomSuffix}.jpg`;
+    await uploadToBucket(bucket, r2Key, Buffer.from(buffer), contentType);
+    return await getDownloadUrlForBucket(bucket, r2Key, process.env.R2_IMAGES_PUBLIC_URL);
   } catch (err) {
     logger.warn('image-gen: re-host failed, falling back to Kie URL', {
       detail: err instanceof Error ? err.message : String(err),

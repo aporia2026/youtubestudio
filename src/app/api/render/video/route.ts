@@ -23,6 +23,12 @@ import {
 } from '@/lib/voiceover-alignment-cache';
 import { stripProductionMarkers } from '@/lib/script-markers';
 import { realignVideoConfig } from '@/remotion/utils';
+import {
+  buildRenderKey,
+  getDownloadUrlForBucket,
+  getReviewBucket,
+  uploadToBucket,
+} from '@/lib/r2';
 
 // ─── Backend selection ────────────────────────────────────────────────────────
 
@@ -441,7 +447,6 @@ async function startRender(renderId: string, config: VideoConfig) {
     // Dynamic imports — Remotion bundler/renderer are Node.js only, not Turbopack-compatible
     const { bundle } = await import('@remotion/bundler');
     const { renderMedia, selectComposition } = await import('@remotion/renderer');
-    const { put } = await import('@vercel/blob');
 
     await updateJob(renderId, { progress: 0.05 });
 
@@ -481,18 +486,21 @@ async function startRender(renderId: string, config: VideoConfig) {
 
     await updateJob(renderId, { progress: 0.92 });
 
+    // Upload to R2 (review bucket, `renders/` prefix) instead of Vercel
+    // Blob. Mirrors the migration of the Lambda render path: every other
+    // media write in the app uses R2, and private-access Blob stores
+    // (Vercel's new default) silently break this fallback.
     const fileBuffer = await fs.readFile(outPath);
-    const blob = await put(
-      `renders/${renderId}.mp4`,
-      fileBuffer,
-      { access: 'public', contentType: 'video/mp4', addRandomSuffix: false },
-    );
+    const bucket = getReviewBucket();
+    const r2Key = buildRenderKey(renderId);
+    await uploadToBucket(bucket, r2Key, fileBuffer, 'video/mp4');
+    const outputUrl = await getDownloadUrlForBucket(bucket, r2Key, process.env.R2_PUBLIC_URL);
 
     await fs.unlink(outPath).catch((e) => console.warn('[render] temp file cleanup failed:', e));
     await updateJob(renderId, {
       status: 'done',
       progress: 1,
-      output_url: blob.url,
+      output_url: outputUrl,
       finished_at: Date.now(),
     });
 

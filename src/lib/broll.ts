@@ -21,8 +21,12 @@
  * the orchestration logic can be verified without burning Kie credits.
  */
 import { sql } from '@vercel/postgres';
-import { put } from '@vercel/blob';
 import { logger } from './logger';
+import {
+  getDownloadUrlForBucket,
+  getReviewBucket,
+  uploadToBucket,
+} from './r2';
 import {
   BROLL_MAX_PROMPT_CHARS,
   BROLL_MIN_PROMPT_CHARS,
@@ -373,6 +377,10 @@ export async function getAndAdvanceBrollClip(
     return getBrollClip(clipId, workspaceId);
   }
 
+  // Mirror the Kie-hosted clip to our R2 review bucket so the URL doesn't
+  // depend on Kie's CDN retention (their links can rotate or expire). On
+  // mirror failure we fall back to the original Kie URL — clip is still
+  // playable, just less durable.
   let videoUrl = kieUrl;
   let blobPathname: string | null = null;
   try {
@@ -380,17 +388,14 @@ export async function getAndAdvanceBrollClip(
     if (fetched.ok) {
       const contentType = fetched.headers.get('content-type') || 'video/mp4';
       const buffer = await fetched.arrayBuffer();
-      const pathname = `broll/${clipId}.mp4`;
-      const blob = await put(pathname, buffer, {
-        access: 'public',
-        contentType,
-        allowOverwrite: true,
-      });
-      videoUrl = blob.url;
-      blobPathname = pathname;
+      const bucket = getReviewBucket();
+      const r2Key = `broll/${clipId}.mp4`;
+      await uploadToBucket(bucket, r2Key, Buffer.from(buffer), contentType);
+      videoUrl = await getDownloadUrlForBucket(bucket, r2Key, process.env.R2_PUBLIC_URL);
+      blobPathname = r2Key;
     }
   } catch (uploadErr) {
-    logger.warn('broll: Vercel Blob upload failed, falling back to Kie URL', {
+    logger.warn('broll: R2 upload failed, falling back to Kie URL', {
       clipId,
       detail: uploadErr instanceof Error ? uploadErr.message : String(uploadErr),
     });
