@@ -1,5 +1,45 @@
 # 2026-05-13 — Voiceover-aligned scene timing for production-doc renders
 
+## ✅ Shipped 2026-05-14
+
+All five phases complete and validated end-to-end against real audio + a
+rendered MP4 in production. Pipeline confirmed working: production-doc
+voiceover picker → green "Synced to voiceover" pill → POST
+/api/voiceovers/align resolves cache → POST /api/render/video forwards
+the alignment hint → server-side cache hit → Lambda render produces an
+MP4 with frame-aligned scene boundaries → download via the same-origin
+proxy.
+
+Key shipped commits on `phase-1-foundation`:
+
+- `f6d03c6` — Phases 1–5 of the voiceover alignment work: pure cursor
+  walk, cache + ElevenLabs orchestrator, productionDocToVideoConfig
+  alignment param, /api/render/video server-side resolution,
+  production-doc UX pill, smoke-test CLI, 27 unit + 7 integration tests.
+- `f5aa1f9` — Blob → R2 migration for the ElevenLabs voiceover route +
+  audio-proxy SDK-fetch fallback for legacy Blob-stored audio.
+- `bca02bf` — Auth-middleware exemption for the unauthenticated audio
+  proxy (the underlying root cause of "Voiceover audio fetch failed
+  (HTTP 401)" — server-to-server fetches carry no session cookie).
+- `e05831d` — Absolutize same-origin media URLs in the render route so
+  Lambda doesn't interpret `/api/voiceovers/<uuid>/audio` as a key on
+  its own S3 bucket.
+- `6fcfa5a` — `framesPerLambda` env-tunable concurrency cap for AWS
+  accounts on the default 10-execution soft limit.
+- `d36f976` + `8d7427b` — download-proxy host allowlist for Remotion
+  Lambda's S3 buckets (both virtual-hosted and path-style forms).
+
+Migrations added: **0067_create_voiceover_alignments** (the alignment
+cache table, applied to both local + prod).
+
+Adjacent cleanup that happened during validation:
+- Migration **0068_restore_workspace_members_workspace_id** —
+  side-quest fix for the live-site CASCADE schema drift that was
+  causing login to fail with a generic 401.
+- Migration of every remaining Vercel Blob `put()` call across the
+  codebase to R2 (commit `bfdac7d`, 9 sites) — the user pushed for
+  consistency once the first two migrations made the pattern obvious.
+
 ## Goal
 
 Drive Remotion scene timing from the actual voiceover audio's word-level
