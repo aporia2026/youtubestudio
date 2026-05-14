@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { get as blobGet } from '@vercel/blob';
 import { sql } from '@/lib/db';
 import { streamFromNarrationBucket } from '@/lib/r2';
 import { logger } from '@/lib/logger';
@@ -15,10 +16,17 @@ export const maxDuration = 300;
  * Proxying the byte stream same-origin sidesteps both.
  *
  * For Vercel Blob-backed rows (stitched narrator output, ElevenLabs takes
- * republished through media_assets) the row has no r2_key; we 302 to the
- * stored URL since Vercel Blob serves with permissive CORS already.
+ * republished through media_assets) the proxy fetches the Blob bytes
+ * server-side via the @vercel/blob SDK so the request is authenticated
+ * — a 302 redirect to `row.url` works when the Blob store is configured
+ * for public access but returns 401 on a private-access store, and
+ * private is now Vercel's default for newly provisioned stores.
  *
- * Range requests are forwarded verbatim so audio seek stays cheap.
+ * Range requests are forwarded verbatim on the R2 path so audio seek
+ * stays cheap. On the Blob path Range isn't yet plumbed through the SDK,
+ * so browser <audio> elements download the whole file once and seek
+ * client-side. Acceptable for typical voiceover sizes (~10 MB for
+ * 14-minute audio); revisit if we start storing longer files in Blob.
  *
  * Auth posture: unauthenticated, matching the narrator-side audio proxies.
  * The media_asset UUID is the access token — random enough that brute force
@@ -48,12 +56,36 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     if (!row) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     if (row.type !== 'voiceover') return NextResponse.json({ error: 'Not a voiceover' }, { status: 400 });
 
-    // No R2 backing — point the browser at the original URL (Vercel Blob,
-    // permissive CORS). 302 keeps the audio element happy across redirects.
+    // No R2 backing — fetch from Blob via the SDK so it works whether
+    // the store is configured for public or private access. The
+    // `access: 'private'` parameter doesn't restrict to private blobs;
+    // it tells the SDK to attach the BLOB_READ_WRITE_TOKEN, which the
+    // CDN accepts for both modes.
     const narrationBucket = process.env.R2_NARRATION_BUCKET_NAME || 'narration';
     if (!row.r2_key || row.r2_bucket !== narrationBucket) {
       if (!row.url) return NextResponse.json({ error: 'No audio url' }, { status: 404 });
-      return NextResponse.redirect(row.url, 302);
+      let blobRes: Awaited<ReturnType<typeof blobGet>>;
+      try {
+        blobRes = await blobGet(row.url, { access: 'private' });
+      } catch (err) {
+        logger.error('voiceovers/[id]/audio: Blob get threw', {
+          id, detail: err instanceof Error ? err.message : String(err),
+        });
+        return NextResponse.json({ error: 'Audio fetch failed' }, { status: 502 });
+      }
+      if (!blobRes || !blobRes.stream) {
+        return NextResponse.json({ error: 'Audio not found in Blob store' }, { status: 404 });
+      }
+      const headers = new Headers();
+      headers.set('Content-Type', blobRes.blob?.contentType || 'audio/mpeg');
+      if (typeof blobRes.blob?.size === 'number') {
+        headers.set('Content-Length', String(blobRes.blob.size));
+      }
+      headers.set('Cache-Control', 'private, max-age=86400, immutable');
+      return new Response(blobRes.stream as unknown as ReadableStream<Uint8Array>, {
+        status: 200,
+        headers,
+      });
     }
 
     // R2-backed — stream the bytes through, echoing the range headers so

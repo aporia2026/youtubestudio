@@ -61,6 +61,27 @@ export async function deleteFromBucket(bucket: string, key: string): Promise<voi
   await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
 }
 
+/**
+ * Upload bytes server-side directly to R2 (no presigned PUT round-trip).
+ * For routes that already have the file content in memory — e.g. an
+ * ElevenLabs voiceover ArrayBuffer or a finished Remotion render — going
+ * through a presigned PUT would mean a pointless extra hop.
+ */
+export async function uploadToBucket(
+  bucket: string,
+  key: string,
+  body: Buffer | Uint8Array,
+  contentType: string,
+): Promise<void> {
+  const client = getR2Client();
+  await client.send(new PutObjectCommand({
+    Bucket: bucket,
+    Key: key,
+    Body: body,
+    ContentType: contentType,
+  }));
+}
+
 // ---------------------------------------------------------------------------
 // Review videos bucket (existing behaviour, kept for back-compat)
 // ---------------------------------------------------------------------------
@@ -118,6 +139,17 @@ export async function deleteNarrationObject(key: string): Promise<void> {
 export function buildNarrationKey(assignmentId: string, sectionId: string, takeNumber: number, fileName: string): string {
   const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
   return `assignments/${assignmentId}/sections/${sectionId}/take-${takeNumber}-${Date.now()}-${sanitized}`;
+}
+
+/**
+ * Build an R2 key for an ElevenLabs-generated voiceover. Lives in the
+ * narration bucket under an `elevenlabs/` prefix so the bucket's
+ * directory listing groups AI-generated voiceovers separately from
+ * human narrator takes (`assignments/...`).
+ */
+export function buildElevenLabsVoiceoverKey(voiceId: string): string {
+  const sanitized = voiceId.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return `elevenlabs/${Date.now()}-${sanitized}.mp3`;
 }
 
 /**
