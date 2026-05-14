@@ -466,7 +466,7 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
   onRender,
   isRendering,
   renderProgress,
-  outputUrl,
+  downloadUrl,
 }: {
   doc: ProductionDoc;
   rowImages: RowImageState[];
@@ -478,7 +478,7 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
   onRender: () => void;
   isRendering: boolean;
   renderProgress: number;
-  outputUrl?: string;
+  downloadUrl?: string | null;
 }) {
   const config = React.useMemo(() => {
     // Flatten the sparse `rowVideoClips` map into a positional array
@@ -499,7 +499,7 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
       onRender={onRender}
       isRendering={isRendering}
       renderProgress={renderProgress}
-      outputUrl={outputUrl}
+      downloadUrl={downloadUrl}
     />
   );
 });
@@ -1818,7 +1818,11 @@ function ProductionDocPage() {
   const [renderId, setRenderId] = useState<string | null>(null);
   const [renderProgress, setRenderProgress] = useState(0);
   const [renderStatus, setRenderStatus] = useState<'idle' | 'rendering' | 'done' | 'error'>('idle');
-  const [renderOutputUrl, setRenderOutputUrl] = useState<string | null>(null);
+  // The "Download MP4" URL — a presigned R2/S3 URL with `response-
+  // content-disposition: attachment` baked in so the browser streams
+  // direct from storage (no /api/download-proxy hop → no 300s Vercel
+  // function cap on multi-GB downloads).
+  const [renderDownloadUrl, setRenderDownloadUrl] = useState<string | null>(null);
   const renderPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // — Voiceover-aligned scene timing (per _plans/2026-05-13-voiceover-aligned-scene-timing.md)
@@ -2591,7 +2595,7 @@ function ProductionDocPage() {
     });
     setRenderStatus('rendering');
     setRenderProgress(0);
-    setRenderOutputUrl(null);
+    setRenderDownloadUrl(null);
 
     // Pass the alignment hint when the cache is warm AND the URL is a
     // proxy path the server-side route accepts. Falsy `voiceoverUrl`,
@@ -2627,7 +2631,7 @@ function ProductionDocPage() {
         try {
           const statusRes = await fetch(`/api/render/video?renderId=${data.renderId}`);
           const statusData = await statusRes.json() as {
-            status: string; progress: number; outputUrl?: string; error?: string;
+            status: string; progress: number; downloadUrl?: string | null; error?: string;
           };
 
           setRenderProgress(statusData.progress ?? 0);
@@ -2635,7 +2639,7 @@ function ProductionDocPage() {
           if (statusData.status === 'done') {
             if (renderPollRef.current) clearInterval(renderPollRef.current);
             setRenderStatus('done');
-            setRenderOutputUrl(statusData.outputUrl || null);
+            setRenderDownloadUrl(statusData.downloadUrl ?? null);
             toast.success('Video rendered! Ready to download.');
           } else if (statusData.status === 'error') {
             if (renderPollRef.current) clearInterval(renderPollRef.current);
@@ -3709,7 +3713,7 @@ function ProductionDocPage() {
                   onRender={startVideoRender}
                   isRendering={renderStatus === 'rendering'}
                   renderProgress={renderProgress}
-                  outputUrl={renderOutputUrl || undefined}
+                  downloadUrl={renderDownloadUrl}
                 />
 
                 {/* Dev-only: send to local Video Studio for advanced editing */}

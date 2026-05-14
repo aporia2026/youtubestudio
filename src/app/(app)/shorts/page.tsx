@@ -491,6 +491,13 @@ function ShortRenderRow({ short }: { short: ShortRow }) {
   );
   const [progress, setProgress] = useState(0);
   const [outputUrl, setOutputUrl] = useState<string | null>(short.rendered_video_url);
+  // Server-minted presigned R2 URL with `response-content-disposition`
+  // baked in. Only set for renders that completed during THIS session
+  // (the poll response carries it). Already-rendered shorts loaded from
+  // `short.rendered_video_url` at mount fall through to the proxy path
+  // below — fine because shorts are small enough that the 300s function
+  // cap doesn't bite.
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Poll while rendering.
@@ -505,12 +512,13 @@ function ShortRenderRow({ short }: { short: ShortRow }) {
           window.setTimeout(tick, 4000);
           return;
         }
-        const data = (await res.json()) as { status: string; progress: number; output_url: string | null; error: string | null };
+        const data = (await res.json()) as { status: string; progress: number; output_url: string | null; download_url: string | null; error: string | null };
         if (cancelled) return;
         setProgress(data.progress);
         if (data.status === 'done') {
           setStatus('done');
           setOutputUrl(data.output_url);
+          setDownloadUrl(data.download_url);
         } else if (data.status === 'error') {
           setStatus('error');
           setError(data.error || 'Render failed');
@@ -562,14 +570,25 @@ function ShortRenderRow({ short }: { short: ShortRow }) {
           <video src={outputUrl} controls style={{ width: 80, height: 142, borderRadius: 6, background: '#000' }} />
           <div style={{ flex: 1, fontSize: 12, color: 'var(--text-secondary)' }}>
             <div>1080×1920 MP4 ready.</div>
-            <a
-              href={downloadHref(outputUrl, `short-${short.id.slice(0, 8)}.mp4`)}
-              download={`short-${short.id.slice(0, 8)}.mp4`}
-              className="hover:underline"
-              style={{ color: 'var(--text-primary)', fontSize: 11 }}
-            >
-              ↓ Download
-            </a>
+            {downloadUrl ? (
+              <a
+                href={downloadUrl}
+                rel="noopener"
+                className="hover:underline"
+                style={{ color: 'var(--text-primary)', fontSize: 11 }}
+              >
+                ↓ Download
+              </a>
+            ) : (
+              <a
+                href={downloadHref(outputUrl, `short-${short.id.slice(0, 8)}.mp4`)}
+                download={`short-${short.id.slice(0, 8)}.mp4`}
+                className="hover:underline"
+                style={{ color: 'var(--text-primary)', fontSize: 11 }}
+              >
+                ↓ Download
+              </a>
+            )}
             <button
               type="button"
               onClick={startRender}

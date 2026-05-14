@@ -13,6 +13,7 @@ import {
   buildShortRenderKey,
   getDownloadUrlForBucket,
   getReviewBucket,
+  getShortRenderDownloadAttachmentUrl,
   uploadToBucket,
 } from '@/lib/r2';
 
@@ -149,11 +150,28 @@ export const GET = apiRoute.authed(async (_session, req: NextRequest) => {
   }>`SELECT * FROM render_jobs WHERE id = ${renderId} LIMIT 1`;
   const job = rows[0];
   if (!job) return NextResponse.json({ error: 'Render not found' }, { status: 404 });
+  // `output_url` backs the in-page <video> preview; `download_url` is a
+  // presigned R2 URL with `response-content-disposition: attachment`
+  // baked in so the browser saves the bytes direct from R2 — skipping
+  // /api/download-proxy and its 300s function timeout. Minted only once
+  // the render is done.
+  let download_url: string | null = null;
+  if (job.status === 'done' && job.output_url) {
+    try {
+      download_url = await getShortRenderDownloadAttachmentUrl(job.id, `short-${job.id}.mp4`);
+    } catch (err) {
+      logger.warn('[short-render] downloadUrl mint failed', {
+        renderId: job.id,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
   return NextResponse.json({
     renderId: job.id,
     status: job.status,
     progress: job.progress,
     output_url: job.output_url,
+    download_url,
     error: job.error,
     started_at: Number(job.started_at),
     finished_at: job.finished_at ? Number(job.finished_at) : null,

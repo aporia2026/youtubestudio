@@ -8,7 +8,6 @@ import type { BrandKit, VideoConfig, VideoShot, SceneType } from '@/remotion/typ
 import { DEFAULT_BRAND_KIT } from '@/remotion/types';
 import { ALLOWED_FONT_FAMILIES, FONT_REGISTRY } from '@/remotion/fonts';
 import { getVoiceoverHistory } from '@/lib/history';
-import { downloadHref } from '@/lib/download-file';
 
 const VideoPlayer = dynamic(
   () => import('@/components/video/VideoPlayer').then(m => m.VideoPlayer),
@@ -169,7 +168,11 @@ export default function VideoStudioPage() {
   // ── Render
   const [renderStatus, setRenderStatus] = useState<RenderStatus>('idle');
   const [renderProgress, setRenderProgress] = useState(0);
-  const [renderOutputUrl, setRenderOutputUrl] = useState<string | null>(null);
+  // The "Download MP4" URL — a presigned R2/S3 URL with `response-content-
+  // disposition: attachment` baked in so the browser streams direct from
+  // storage (no /api/download-proxy hop → no 300s Vercel function cap on
+  // multi-GB downloads).
+  const [renderDownloadUrl, setRenderDownloadUrl] = useState<string | null>(null);
   const renderPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Load from localStorage
@@ -307,7 +310,7 @@ export default function VideoStudioPage() {
     if (renderPollRef.current) clearInterval(renderPollRef.current);
     setRenderStatus('rendering');
     setRenderProgress(0);
-    setRenderOutputUrl(null);
+    setRenderDownloadUrl(null);
     try {
       const res = await fetch('/api/render/video', {
         method: 'POST',
@@ -320,12 +323,12 @@ export default function VideoStudioPage() {
       renderPollRef.current = setInterval(async () => {
         try {
           const s = await fetch(`/api/render/video?renderId=${renderId}`);
-          const sd = await s.json() as { status: string; progress: number; outputUrl?: string; error?: string };
+          const sd = await s.json() as { status: string; progress: number; downloadUrl?: string | null; error?: string };
           setRenderProgress(sd.progress ?? 0);
           if (sd.status === 'done') {
             if (renderPollRef.current) clearInterval(renderPollRef.current);
             setRenderStatus('done');
-            setRenderOutputUrl(sd.outputUrl || null);
+            setRenderDownloadUrl(sd.downloadUrl ?? null);
             toast.success('Video rendered — ready to download!');
           } else if (sd.status === 'error') {
             if (renderPollRef.current) clearInterval(renderPollRef.current);
@@ -430,7 +433,7 @@ export default function VideoStudioPage() {
                   onRender={() => { setRightTab('export'); startRender(); }}
                   isRendering={renderStatus === 'rendering'}
                   renderProgress={renderProgress}
-                  outputUrl={renderOutputUrl || undefined}
+                  downloadUrl={renderDownloadUrl}
                   initialFrame={8}
                   seekTargetFrame={seekTargetFrame}
                   onSeekConsumed={handleSeekConsumed}
@@ -505,7 +508,7 @@ export default function VideoStudioPage() {
               <ExportTab
                 settings={exportSettings} onSettings={setExportSettings}
                 renderStatus={renderStatus} renderProgress={renderProgress}
-                renderOutputUrl={renderOutputUrl}
+                renderDownloadUrl={renderDownloadUrl}
                 canRender={!!videoConfig} onRender={startRender}
                 shotCount={allShots.length} mode={mode}
               />
@@ -1105,10 +1108,10 @@ function AudioTab({ voiceoverUrl, onVoiceover, musicUrl, onMusicUrl, musicVolume
 
 // ─── ExportTab ────────────────────────────────────────────────────────────────
 
-function ExportTab({ settings, onSettings, renderStatus, renderProgress, renderOutputUrl, canRender, onRender, shotCount, mode }: {
+function ExportTab({ settings, onSettings, renderStatus, renderProgress, renderDownloadUrl, canRender, onRender, shotCount, mode }: {
   settings: ExportSettings; onSettings: (s: ExportSettings) => void;
   renderStatus: 'idle' | 'rendering' | 'done' | 'error';
-  renderProgress: number; renderOutputUrl: string | null;
+  renderProgress: number; renderDownloadUrl: string | null;
   canRender: boolean; onRender: () => void;
   shotCount: number; mode: StudioMode;
 }) {
@@ -1199,10 +1202,10 @@ function ExportTab({ settings, onSettings, renderStatus, renderProgress, renderO
           </div>
         )}
 
-        {renderOutputUrl && (
+        {renderDownloadUrl && (
           <a
-            href={downloadHref(renderOutputUrl, 'video-studio-render.mp4')}
-            download="video-studio-render.mp4"
+            href={renderDownloadUrl}
+            rel="noopener"
             className="w-full py-2.5 rounded-xl text-sm font-semibold text-center flex items-center justify-center gap-2 transition-colors"
             style={{ background: 'rgba(16,185,129,0.15)', color: '#34d399', border: '1px solid rgba(16,185,129,0.25)' }}
           >

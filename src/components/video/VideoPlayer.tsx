@@ -5,7 +5,6 @@ import { Player, PlayerRef } from '@remotion/player';
 import { YouTubeVideo } from '@/remotion/compositions/YouTubeVideo';
 import { VideoConfig } from '@/remotion/types';
 import { totalFrames } from '@/remotion/utils';
-import { downloadHref } from '@/lib/download-file';
 
 interface VideoPlayerProps {
   config: VideoConfig;
@@ -13,7 +12,12 @@ interface VideoPlayerProps {
   onRender?: () => void;
   isRendering?: boolean;
   renderProgress?: number; // 0–1
-  outputUrl?: string;
+  /** Presigned R2 / Lambda-S3 URL with `response-content-disposition`
+   *  baked in. When provided, the "Download MP4" button anchors at this
+   *  URL so the browser streams bytes direct from storage — bypassing
+   *  /api/download-proxy and its 300s Vercel function timeout. Without
+   *  this, the Download button is hidden (no fallback to the proxy). */
+  downloadUrl?: string | null;
   /** Start playback at this frame (skip fade-in transitions at frame 0) */
   initialFrame?: number;
   /** When set to a frame number, seeks the player to that frame */
@@ -32,7 +36,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   onRender,
   isRendering = false,
   renderProgress = 0,
-  outputUrl,
+  downloadUrl,
   initialFrame = 8,
   seekTargetFrame,
   onSeekConsumed,
@@ -129,10 +133,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
         {/* Right: render button / output */}
         <div className="flex items-center gap-3">
-          {outputUrl && (
+          {downloadUrl && (
             <a
-              href={downloadHref(outputUrl, 'video-render.mp4')}
-              download="video-render.mp4"
+              href={downloadUrl}
+              rel="noopener"
               className="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-500 text-white text-sm font-semibold transition-colors flex items-center gap-2"
             >
               <DownloadIcon />

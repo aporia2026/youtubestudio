@@ -26,9 +26,11 @@ import { realignVideoConfig } from '@/remotion/utils';
 import {
   buildRenderKey,
   getDownloadUrlForBucket,
+  getRenderDownloadAttachmentUrl,
   getReviewBucket,
   uploadToBucket,
 } from '@/lib/r2';
+import { getLambdaOutputDownloadUrl } from '@/lib/lambda-s3';
 
 // ─── Backend selection ────────────────────────────────────────────────────────
 
@@ -376,11 +378,36 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // `outputUrl` backs the in-page <Player> preview (range playback);
+    // `downloadUrl` is a separate presigned URL with `response-content-
+    // disposition: attachment` baked in so the browser saves the bytes
+    // direct from R2 / Lambda S3 — bypassing /api/download-proxy and its
+    // 300s function timeout that truncated multi-GB renders. Minted only
+    // when the render has finished; null otherwise.
+    let downloadUrl: string | null = null;
+    if (job.status === 'done' && job.output_url) {
+      const filename = `render-${job.id}.mp4`;
+      try {
+        downloadUrl = job.lambda_render_id
+          ? await getLambdaOutputDownloadUrl(job.output_url, filename)
+          : await getRenderDownloadAttachmentUrl(job.id, filename);
+      } catch (err) {
+        // Presigning failure is non-fatal — fall through with null
+        // downloadUrl. The client just doesn't render a Download link
+        // until the next successful poll.
+        logger.warn('[render] downloadUrl mint failed', {
+          renderId: job.id,
+          detail: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     return NextResponse.json({
       renderId: job.id,
       status: job.status,
       progress: job.progress,
       outputUrl: job.output_url,
+      downloadUrl,
       error: job.error,
       startedAt: job.started_at,
       elapsedMs: Date.now() - job.started_at,
