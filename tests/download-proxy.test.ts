@@ -58,6 +58,35 @@ describe('/api/download-proxy', () => {
     expect(res.status).toBe(403);
   });
 
+  it('allows Remotion Lambda S3 bucket hosts (renderer output URL)', async () => {
+    const body = new Uint8Array([1, 2, 3, 4]);
+    global.fetch = vi.fn(async () =>
+      new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'video/mp4', 'content-length': '4' },
+      }),
+    ) as typeof fetch;
+
+    const upstream =
+      'https://remotionlambda-useast1-0iwk2aeoqm.s3.us-east-1.amazonaws.com/renders/abc/out.mp4';
+    const res = await GET(
+      makeReq(
+        `https://app.test/api/download-proxy?u=${encodeURIComponent(upstream)}&name=video.mp4`,
+      ),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('video/mp4');
+  });
+
+  it('rejects S3 buckets NOT prefixed with `remotionlambda-`', async () => {
+    const res = await GET(
+      makeReq(
+        'https://app.test/api/download-proxy?u=https%3A%2F%2Fsomeone-elses-bucket.s3.us-east-1.amazonaws.com%2Fpayload',
+      ),
+    );
+    expect(res.status).toBe(403);
+  });
+
   it('proxies R2 presigned URLs and forces Content-Disposition: attachment', async () => {
     const body = new Uint8Array([1, 2, 3, 4]);
     global.fetch = vi.fn(async () =>

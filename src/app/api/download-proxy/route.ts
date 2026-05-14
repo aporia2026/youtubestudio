@@ -24,9 +24,20 @@ const STATIC_HOST_SUFFIXES = [
 
 const ENV_PUBLIC_HOST_KEYS = ['R2_PUBLIC_URL', 'R2_NARRATION_PUBLIC_URL', 'R2_IMAGES_PUBLIC_URL'];
 
+/**
+ * Remotion Lambda creates a serving S3 bucket per region with a name shape
+ * `remotionlambda-<region-no-dashes>-<random>` and serves outputs at
+ * `<bucket>.s3.<region>.amazonaws.com`. We allowlist only that exact
+ * bucket-name prefix so the proxy stays tight — no random S3 bucket sneaks
+ * through this check, only buckets Remotion provisioned for our renders.
+ */
+const REMOTION_LAMBDA_BUCKET_RE =
+  /^remotionlambda-[a-z0-9]+-[a-z0-9]+\.s3\.[a-z0-9-]+\.amazonaws\.com$/;
+
 function isAllowedHost(host: string): boolean {
   const lower = host.toLowerCase();
   if (STATIC_HOST_SUFFIXES.some(s => lower === s || lower.endsWith('.' + s))) return true;
+  if (REMOTION_LAMBDA_BUCKET_RE.test(lower)) return true;
   for (const key of ENV_PUBLIC_HOST_KEYS) {
     const v = process.env[key];
     if (!v) continue;
