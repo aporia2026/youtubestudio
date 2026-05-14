@@ -20,7 +20,7 @@ import {
   ALLOWED_FONT_FAMILIES,
   type FontFamilyName,
   resolveFontStack,
-} from '@/remotion/fonts';
+} from '@/remotion/fonts-registry';
 import { DEFAULT_BRAND_KIT, type BrandKit } from '@/remotion/types';
 
 export const VISUAL_BRAND_KIT_VERSION = 1;
