@@ -5,12 +5,18 @@
  * thumbnail. Empty state = drop zone. Uploaded state = preview + dims
  * + Replace + (placeholder) Mark regions.
  *
- * The image lives in Vercel Blob (uploaded via
- * /api/production-doc/thumbnail/upload). The URL + intrinsic dims are
- * stored as `ProductionDoc.thumbnail` and persist with the doc via the
- * existing history save/update flow. Region marking + per-row "Zoom to"
- * UI are wired up in a follow-up; this card is Phase 2 of
+ * The image lives in the R2 images bucket (uploaded via a presigned
+ * PUT URL issued by /api/production-doc/thumbnail/upload). The
+ * returned download URL + intrinsic dims are stored as
+ * `ProductionDoc.thumbnail` and persist with the doc via the
+ * existing history save/update flow. Region marking + per-row "Zoom
+ * to" UI are wired up in a follow-up; this card is Phase 2 of
  * `_plans/2026-05-13-thumbnail-zoom-section-divider.md`.
+ *
+ * Migrated from Vercel Blob to R2 in 2026-05-14 so the upload works
+ * on workspaces whose Blob store is private-access (Blob's
+ * `access: 'public'` errors there). R2 has no public/private store
+ * split — every workspace sees the same behaviour.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
@@ -92,25 +98,46 @@ export function SectionThumbnailCard({ value, onChange }: SectionThumbnailCardPr
         throw new Error(`Image too large (${width}×${height}). Max 8192px per side.`);
       }
 
-      const form = new FormData();
-      form.append('file', file);
-      form.append('width', String(width));
-      form.append('height', String(height));
-
-      const res = await fetch('/api/production-doc/thumbnail/upload', {
+      // Two-step presigned upload to R2:
+      //   1. Ask the server for a presigned PUT URL keyed to this file.
+      //   2. PUT the bytes directly to R2 from the browser, bypassing
+      //      Vercel's ~4.5 MB request-body limit.
+      const presignRes = await fetch('/api/production-doc/thumbnail/upload', {
         method: 'POST',
-        body: form,
+        headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
+        body: JSON.stringify({
+          fileName: file.name,
+          contentType: file.type,
+          fileSize: file.size,
+          width,
+          height,
+        }),
       });
-      const json = (await res.json()) as { url?: string; width?: number; height?: number; error?: string };
-      if (!res.ok || !json.url) {
-        throw new Error(json.error ?? `Upload failed (${res.status})`);
+      const presign = (await presignRes.json()) as {
+        uploadUrl?: string;
+        downloadUrl?: string;
+        width?: number;
+        height?: number;
+        error?: string;
+      };
+      if (!presignRes.ok || !presign.uploadUrl || !presign.downloadUrl) {
+        throw new Error(presign.error ?? `Upload presign failed (${presignRes.status})`);
+      }
+
+      const putRes = await fetch(presign.uploadUrl, {
+        method: 'PUT',
+        body: file,
+        headers: { 'Content-Type': file.type },
+      });
+      if (!putRes.ok) {
+        throw new Error(`R2 upload failed (${putRes.status} ${putRes.statusText})`);
       }
 
       onChange({
-        imageUrl: json.url,
-        width: json.width ?? width,
-        height: json.height ?? height,
+        imageUrl: presign.downloadUrl,
+        width: presign.width ?? width,
+        height: presign.height ?? height,
         // Preserve regions from a prior upload — useful when the user
         // replaces a thumbnail with a re-export of the same layout.
         regions: value?.regions ?? [],
