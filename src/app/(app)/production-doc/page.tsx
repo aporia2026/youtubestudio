@@ -2601,7 +2601,10 @@ function ProductionDocPage() {
     // proxy path the server-side route accepts. Falsy `voiceoverUrl`,
     // ElevenLabs-direct Blob URLs, and any non-ready alignment state
     // make the server fall back to estimated timing — same as today.
-    const body: Record<string, unknown> = { config };
+    //
+    // `title` is cosmetic — only used to build the Download filename.
+    // Falls back to the renderId server-side when missing.
+    const body: Record<string, unknown> = { config, title: doc.title || null };
     if (
       alignmentStatus === 'ready' &&
       voiceoverUrl &&

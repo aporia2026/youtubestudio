@@ -173,6 +173,40 @@ export function buildReviewDownloadFilename(projectTitle: string | null, version
   return `${safeTitle} - v${versionNumber}.mp4`;
 }
 
+/** Canonical user-facing filename for a downloaded render —
+ *  `{title} - {YYYY-MM-DD}.mp4` when a title is known, otherwise
+ *  `{fallbackBase}.mp4`. Date comes from the render's `finished_at`
+ *  timestamp (UTC) so the filename is stable per renderId across
+ *  re-downloads; falls back to "now" if `finished_at` is missing or
+ *  unparseable.
+ *
+ *  Accepts `finishedAtMs` as number OR string because BIGINT columns
+ *  from `@vercel/postgres` come back as strings in some routes
+ *  (`render/short`) and numbers in others (`render/video`). Coercing
+ *  here is cheaper than getting the per-route typings right. */
+export function buildRenderDownloadFilename(
+  title: string | null | undefined,
+  finishedAtMs: number | string | null | undefined,
+  fallbackBase: string,
+): string {
+  const safeTitle = (title ?? '')
+    .replace(/[\\/:*?"<>|]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80);
+  if (!safeTitle) return `${fallbackBase}.mp4`;
+  const ms = typeof finishedAtMs === 'number'
+    ? finishedAtMs
+    : typeof finishedAtMs === 'string'
+      ? Number(finishedAtMs)
+      : NaN;
+  const date = Number.isFinite(ms) && ms > 0 ? new Date(ms) : new Date();
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  return `${safeTitle} - ${yyyy}-${mm}-${dd}.mp4`;
+}
+
 /** Build an R2 key for a long-form video render output. Lives in the
  *  review/videos bucket under a `renders/` prefix so the bucket listing
  *  separates reviewer uploads from Remotion outputs. */

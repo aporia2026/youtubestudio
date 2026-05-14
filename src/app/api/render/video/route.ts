@@ -24,6 +24,7 @@ import {
 import { stripProductionMarkers } from '@/lib/script-markers';
 import { realignVideoConfig } from '@/remotion/utils';
 import {
+  buildRenderDownloadFilename,
   buildRenderKey,
   getDownloadUrlForBucket,
   getRenderDownloadAttachmentUrl,
@@ -96,6 +97,11 @@ async function ensureTable() {
   await sql`ALTER TABLE render_jobs ADD COLUMN IF NOT EXISTS lambda_render_id TEXT`;
   await sql`ALTER TABLE render_jobs ADD COLUMN IF NOT EXISTS lambda_bucket    TEXT`;
   await sql`ALTER TABLE render_jobs ADD COLUMN IF NOT EXISTS estimated_cost   REAL`;
+  // `title` is the production-doc title (or video-studio scratch title)
+  // sent with the POST. Used to build a human-readable Download filename
+  // — see `buildRenderDownloadFilename` in `r2.ts`. Nullable: legacy rows
+  // and scratch-mode renders without a title fall back to the renderId.
+  await sql`ALTER TABLE render_jobs ADD COLUMN IF NOT EXISTS title           TEXT`;
 }
 
 // ─── Absolutize same-origin URLs before sending to a remote renderer ─────────
@@ -216,14 +222,18 @@ async function maybeRealignConfig(
 // ─── POST /api/render/video — start a render job ──────────────────────────────
 
 export async function POST(req: NextRequest) {
-  let body: { config?: VideoConfig; voiceoverAlignment?: unknown };
+  let body: { config?: VideoConfig; voiceoverAlignment?: unknown; title?: unknown };
   try {
-    body = await req.json() as { config?: VideoConfig; voiceoverAlignment?: unknown };
+    body = await req.json() as { config?: VideoConfig; voiceoverAlignment?: unknown; title?: unknown };
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
   const { config } = body;
+  // Title is purely cosmetic — only used to build the user-facing
+  // Download filename. Coerce non-strings to null so a malformed client
+  // body doesn't break the INSERT.
+  const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim().slice(0, 200) : null;
   const validationError = validateConfig(config as VideoConfig);
   if (validationError) {
     return NextResponse.json({ error: validationError }, { status: 400 });
@@ -268,8 +278,8 @@ export async function POST(req: NextRequest) {
 
   try {
     await sql`
-      INSERT INTO render_jobs (id, status, progress, started_at)
-      VALUES (${renderId}, 'pending', 0, ${Date.now()})
+      INSERT INTO render_jobs (id, status, progress, started_at, title)
+      VALUES (${renderId}, 'pending', 0, ${Date.now()}, ${title})
     `;
   } catch (err) {
     logger.error('[render] DB insert failed', { detail: err instanceof Error ? err.message : String(err) });
@@ -318,6 +328,7 @@ export async function GET(req: NextRequest) {
     started_at: number; finished_at: number | null;
     lambda_render_id: string | null; lambda_bucket: string | null;
     estimated_cost: number | null;
+    title: string | null;
   };
 
   try {
@@ -386,7 +397,7 @@ export async function GET(req: NextRequest) {
     // when the render has finished; null otherwise.
     let downloadUrl: string | null = null;
     if (job.status === 'done' && job.output_url) {
-      const filename = `render-${job.id}.mp4`;
+      const filename = buildRenderDownloadFilename(job.title, job.finished_at, `render-${job.id}`);
       try {
         downloadUrl = job.lambda_render_id
           ? await getLambdaOutputDownloadUrl(job.output_url, filename)

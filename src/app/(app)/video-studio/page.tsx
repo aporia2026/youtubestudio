@@ -315,7 +315,11 @@ export default function VideoStudioPage() {
       const res = await fetch('/api/render/video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config: videoConfig }),
+        // Title is cosmetic — drives the Download filename only.
+        // Missing in scratch-mode renders that haven't been seeded
+        // from a production doc; the server falls back to the
+        // renderId-based filename.
+        body: JSON.stringify({ config: videoConfig, title: doc?.title ?? null }),
       });
       const data = await res.json() as { renderId?: string; error?: string };
       if (!res.ok || !data.renderId) throw new Error(data.error || 'Failed to start render');

@@ -10,6 +10,7 @@ import type { ShortVideoConfig } from '@/lib/shorts-render-types';
 import { logger } from '@/lib/logger';
 import { remotionWebpackOverride } from '@/lib/remotion-bundler';
 import {
+  buildRenderDownloadFilename,
   buildShortRenderKey,
   getDownloadUrlForBucket,
   getReviewBucket,
@@ -36,6 +37,10 @@ async function ensureTable() {
       finished_at BIGINT
     )
   `;
+  // Idempotent safety net — long-form route's ensureTable() carries the
+  // canonical column list. `title` here is the short's title (when set)
+  // and feeds the user-facing Download filename.
+  await sql`ALTER TABLE render_jobs ADD COLUMN IF NOT EXISTS title TEXT`;
 }
 
 async function updateJob(
@@ -111,10 +116,14 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
 
   await ensureTable();
   const renderId = `short_${Date.now()}_${shortId.replace(/-/g, '').slice(0, 12)}`;
+  // Snapshot the short's title at job-creation time. If the user
+  // renames the short mid-render, the Download filename still reflects
+  // what the user intended when they kicked off the render.
+  const title = short.title?.trim() ? short.title.trim().slice(0, 200) : null;
   try {
     await sql`
-      INSERT INTO render_jobs (id, status, progress, started_at)
-      VALUES (${renderId}, 'pending', 0, ${Date.now()})
+      INSERT INTO render_jobs (id, status, progress, started_at, title)
+      VALUES (${renderId}, 'pending', 0, ${Date.now()}, ${title})
     `;
   } catch (err) {
     logger.error('short-render: DB insert failed', { detail: err instanceof Error ? err.message : String(err) });
@@ -147,6 +156,7 @@ export const GET = apiRoute.authed(async (_session, req: NextRequest) => {
     error: string | null;
     started_at: string;
     finished_at: string | null;
+    title: string | null;
   }>`SELECT * FROM render_jobs WHERE id = ${renderId} LIMIT 1`;
   const job = rows[0];
   if (!job) return NextResponse.json({ error: 'Render not found' }, { status: 404 });
@@ -157,8 +167,13 @@ export const GET = apiRoute.authed(async (_session, req: NextRequest) => {
   // the render is done.
   let download_url: string | null = null;
   if (job.status === 'done' && job.output_url) {
+    const filename = buildRenderDownloadFilename(
+      job.title,
+      job.finished_at ? Number(job.finished_at) : null,
+      `short-${job.id}`,
+    );
     try {
-      download_url = await getShortRenderDownloadAttachmentUrl(job.id, `short-${job.id}.mp4`);
+      download_url = await getShortRenderDownloadAttachmentUrl(job.id, filename);
     } catch (err) {
       logger.warn('[short-render] downloadUrl mint failed', {
         renderId: job.id,
