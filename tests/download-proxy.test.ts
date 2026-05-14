@@ -58,7 +58,7 @@ describe('/api/download-proxy', () => {
     expect(res.status).toBe(403);
   });
 
-  it('allows Remotion Lambda S3 bucket hosts (renderer output URL)', async () => {
+  it('allows Remotion Lambda virtual-hosted S3 URLs', async () => {
     const body = new Uint8Array([1, 2, 3, 4]);
     global.fetch = vi.fn(async () =>
       new Response(body, {
@@ -78,10 +78,41 @@ describe('/api/download-proxy', () => {
     expect(res.headers.get('content-type')).toBe('video/mp4');
   });
 
-  it('rejects S3 buckets NOT prefixed with `remotionlambda-`', async () => {
+  it('allows Remotion Lambda path-style S3 URLs (Lambda outputFile shape)', async () => {
+    const body = new Uint8Array([1, 2, 3, 4]);
+    global.fetch = vi.fn(async () =>
+      new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'video/mp4', 'content-length': '4' },
+      }),
+    ) as typeof fetch;
+
+    // Path-style: hostname is s3.<region>.amazonaws.com, bucket is the
+    // first path segment. This is the form Lambda's getRenderProgress
+    // returns in `outputFile`.
+    const upstream =
+      'https://s3.us-east-1.amazonaws.com/remotionlambda-useast1-0iwk2aeoqm/renders/m32pxolex0/out.mp4';
+    const res = await GET(
+      makeReq(
+        `https://app.test/api/download-proxy?u=${encodeURIComponent(upstream)}&name=video.mp4`,
+      ),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects S3 buckets NOT prefixed with `remotionlambda-` (virtual-hosted)', async () => {
     const res = await GET(
       makeReq(
         'https://app.test/api/download-proxy?u=https%3A%2F%2Fsomeone-elses-bucket.s3.us-east-1.amazonaws.com%2Fpayload',
+      ),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects path-style S3 URLs targeting non-Remotion buckets', async () => {
+    const res = await GET(
+      makeReq(
+        'https://app.test/api/download-proxy?u=https%3A%2F%2Fs3.us-east-1.amazonaws.com%2Fsomeone-elses-bucket%2Fpayload',
       ),
     );
     expect(res.status).toBe(403);

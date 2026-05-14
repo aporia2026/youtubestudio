@@ -25,24 +25,37 @@ const STATIC_HOST_SUFFIXES = [
 const ENV_PUBLIC_HOST_KEYS = ['R2_PUBLIC_URL', 'R2_NARRATION_PUBLIC_URL', 'R2_IMAGES_PUBLIC_URL'];
 
 /**
- * Remotion Lambda creates a serving S3 bucket per region with a name shape
- * `remotionlambda-<region-no-dashes>-<random>` and serves outputs at
- * `<bucket>.s3.<region>.amazonaws.com`. We allowlist only that exact
- * bucket-name prefix so the proxy stays tight — no random S3 bucket sneaks
- * through this check, only buckets Remotion provisioned for our renders.
+ * Remotion Lambda creates a serving S3 bucket per region with name shape
+ * `remotionlambda-<region-no-dashes>-<random>`. AWS S3 serves the same
+ * bucket through two URL styles and Lambda's `outputFile` uses the
+ * path-style form in practice:
+ *
+ *   virtual-hosted:  <bucket>.s3.<region>.amazonaws.com/<key>
+ *   path-style:      s3.<region>.amazonaws.com/<bucket>/<key>
+ *
+ * Both have to be allowlisted, but only when the bucket name carries the
+ * `remotionlambda-` prefix — so no random S3 bucket sneaks through.
  */
-const REMOTION_LAMBDA_BUCKET_RE =
+const REMOTION_LAMBDA_HOST_RE =
   /^remotionlambda-[a-z0-9]+-[a-z0-9]+\.s3\.[a-z0-9-]+\.amazonaws\.com$/;
+const S3_PATH_STYLE_HOST_RE =
+  /^s3(?:\.[a-z0-9-]+)?\.amazonaws\.com$/;
+const REMOTION_LAMBDA_PATH_PREFIX_RE =
+  /^\/remotionlambda-[a-z0-9]+-[a-z0-9]+(?:\/|$)/;
 
-function isAllowedHost(host: string): boolean {
-  const lower = host.toLowerCase();
-  if (STATIC_HOST_SUFFIXES.some(s => lower === s || lower.endsWith('.' + s))) return true;
-  if (REMOTION_LAMBDA_BUCKET_RE.test(lower)) return true;
+function isAllowedUrl(target: URL): boolean {
+  const host = target.host.toLowerCase();
+  if (STATIC_HOST_SUFFIXES.some(s => host === s || host.endsWith('.' + s))) return true;
+  if (REMOTION_LAMBDA_HOST_RE.test(host)) return true;
+  if (
+    S3_PATH_STYLE_HOST_RE.test(host) &&
+    REMOTION_LAMBDA_PATH_PREFIX_RE.test(target.pathname.toLowerCase())
+  ) return true;
   for (const key of ENV_PUBLIC_HOST_KEYS) {
     const v = process.env[key];
     if (!v) continue;
     try {
-      if (new URL(v).host.toLowerCase() === lower) return true;
+      if (new URL(v).host.toLowerCase() === host) return true;
     } catch {
       // Malformed env var — skip.
     }
@@ -76,7 +89,7 @@ export async function GET(req: NextRequest) {
   if (target.protocol !== 'https:') {
     return new Response('Only https URLs are allowed', { status: 400 });
   }
-  if (!isAllowedHost(target.host)) {
+  if (!isAllowedUrl(target)) {
     return new Response('Host not in allowlist', { status: 403 });
   }
 
