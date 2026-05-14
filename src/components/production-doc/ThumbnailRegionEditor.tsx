@@ -645,6 +645,15 @@ export function ThumbnailRegionEditor({ thumbnail, onSave, onClose }: ThumbnailR
               ref={wrapperRef}
               style={{
                 position: 'relative',
+                // `aspect-ratio` alone with only `max-` constraints
+                // collapses to 0×0 in a flex/centered parent because
+                // there's nothing for the browser to anchor on.
+                // Anchor on width and let CSS aspect-ratio compute the
+                // height; max-height: 100% caps the wrapper so a tall
+                // image doesn't overflow the canvas vertically (modern
+                // browsers preserve the ratio when both axes have
+                // constraints).
+                width: '100%',
                 aspectRatio,
                 maxWidth: '100%',
                 maxHeight: '100%',
