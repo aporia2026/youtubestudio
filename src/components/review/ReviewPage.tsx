@@ -10,6 +10,7 @@ import { VersionSelector } from './VersionSelector';
 import { StatusBadge } from './StatusBadge';
 import { ComparisonView } from './ComparisonView';
 import { compressVideo, isCompressionSupported } from '@/lib/compress-video';
+import { downloadCrossOriginFile } from '@/lib/download-file';
 
 export interface ReviewVersion {
   id: string;
@@ -121,6 +122,11 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
   const [compressingCorrected, setCompressingCorrected] = useState(false);
   const [compressProgress, setCompressProgress] = useState(0);
   const [compressionSavedPct, setCompressionSavedPct] = useState<number | null>(null);
+
+  // "Download current version" inline state. The video URL is cross-origin
+  // (R2), so we route through the same `/api/download-proxy` pipe the rest
+  // of the app uses — `<a download>` would be silently ignored.
+  const [downloadingCurrent, setDownloadingCurrent] = useState(false);
 
   // Fix-notes modal — opens after a successful upload when there's a
   // previous version with unresolved comments.
@@ -339,6 +345,30 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
     await loadData();
   }
 
+  // Download the currently-active version's video file. Builds a filename
+  // from the project title + version number so multiple downloads from the
+  // same project stay distinguishable in the user's downloads folder.
+  async function handleDownloadCurrent() {
+    if (!data) return;
+    const v = data.versions.find(ver => ver.id === activeVersionId) || data.versions[0];
+    if (!v?.video_url) return;
+    const safeTitle = (data.project.title || 'video')
+      .replace(/[\\/:*?"<>|]+/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 80) || 'video';
+    const fileName = `${safeTitle} - v${v.version_number}.mp4`;
+    setDownloadingCurrent(true);
+    try {
+      await downloadCrossOriginFile(v.video_url, fileName);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Download failed';
+      toast.error(msg);
+    } finally {
+      setDownloadingCurrent(false);
+    }
+  }
+
   // Poll for fresh comments every 30s. We deliberately hit the full
   // `dataUrl` (which returns all-versions comments) instead of the
   // active-version-only listing, so the prior-version timeline ghosts and
@@ -550,6 +580,26 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
                 </div>
               </>
             )}
+            {/* Download the currently-active version. Routes through the
+                cross-origin download proxy so the R2 presigned URL gets
+                served with Content-Disposition: attachment. */}
+            {activeVersion?.video_url && (
+              <button
+                onClick={handleDownloadCurrent}
+                disabled={downloadingCurrent}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 disabled:opacity-50"
+                style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+                title={`Download v${activeVersion.version_number}`}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                {downloadingCurrent ? 'Preparing…' : `Download v${activeVersion.version_number}`}
+              </button>
+            )}
+
             {/* Editor inline upload — pops a file picker in this same tab.
                 On success we reload, jump to the new version, and open the
                 fix-notes modal with the previous version's open comments. */}
