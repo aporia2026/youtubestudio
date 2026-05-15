@@ -42,8 +42,11 @@ import {
 export const maxDuration = 60;
 
 const BRAVE_IMAGE_SEARCH = 'https://api.search.brave.com/res/v1/images/search';
+// Replicate slug: `bria/remove-background` runs Bria's RMBG-2.0 model.
+// The earlier `briaai/rmbg-2.0` slug doesn't exist on Replicate (it's
+// the HuggingFace slug, not the Replicate one) and returned 404.
 const REPLICATE_RMBG_URL =
-  'https://api.replicate.com/v1/models/briaai/rmbg-2.0/predictions';
+  'https://api.replicate.com/v1/models/bria/remove-background/predictions';
 const MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 5_000;
 const MIN_RESULT_WIDTH = 200;
@@ -216,7 +219,9 @@ async function downloadImage(url: string): Promise<{ bytes: Buffer; contentType:
 
 async function removeBackground(imageUrl: string, replicateToken: string): Promise<Buffer> {
   // `Prefer: wait` blocks the response until the prediction finishes (up to
-  // 60 s) so we don't have to poll. RMBG-2.0 typically completes in 1-2 s.
+  // 60 s) so we don't have to poll. RMBG typically completes in 1-2 s.
+  // The Bria input schema accepts a public URL or a base64 data URL in
+  // the `image` field; we pass the Brave-sourced URL directly.
   const create = await fetch(REPLICATE_RMBG_URL, {
     method: 'POST',
     headers: {
@@ -227,7 +232,15 @@ async function removeBackground(imageUrl: string, replicateToken: string): Promi
     body: JSON.stringify({ input: { image: imageUrl } }),
   });
   if (!create.ok) {
-    throw new Error(`Replicate RMBG failed (${create.status})`);
+    // Capture Replicate's actual error body — same reasoning as the
+    // Brave call above. A 404 used to surface as "Replicate RMBG
+    // failed (404)" with no detail; now the slug-doesn't-exist /
+    // model-private / auth-failed cases each propagate distinguishable
+    // text the caller can act on.
+    const body = await create.text().catch(() => '');
+    const snippet = body.slice(0, 400);
+    logger.warn('Replicate RMBG non-OK', { status: create.status, body: snippet });
+    throw new Error(`Replicate RMBG failed (${create.status}): ${snippet || 'no body'}`);
   }
   const data = (await create.json()) as {
     status?: string;
