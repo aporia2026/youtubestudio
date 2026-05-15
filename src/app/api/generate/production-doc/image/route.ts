@@ -197,16 +197,57 @@ export async function POST(req: NextRequest) {
     // Re-host in R2 (images bucket) so the URL doesn't depend on Kie's
     // CDN retention. On mirror failure fall back to the Kie URL —
     // image still usable until the upstream expires.
+    //
+    // For section-titled rows we ALSO crop the top 13% server-side
+    // before upload — sharp guarantees the geometry regardless of how
+    // well the image model honoured the safe-top prompt directive.
+    // After this crop the image becomes ~16:7.8 (2.05:1) and slots
+    // cleanly under the stripe at render time. The model's safe-top
+    // directive is still in the prompt because if the model DOES
+    // honour it, the crop just removes empty space; if it DOESN'T,
+    // the crop guarantees the visual outcome.
     let imageUrl = kieUrl;
     try {
       const imgRes = await fetch(kieUrl);
       if (imgRes.ok) {
         const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
-        const buffer = await imgRes.arrayBuffer();
+        let buffer = Buffer.from(await imgRes.arrayBuffer());
+        let outContentType = contentType;
+        let outExt = contentType.includes('png') ? 'png' : 'jpg';
+
+        if (hasSectionStripe) {
+          try {
+            const sharp = (await import('sharp')).default;
+            const img = sharp(buffer);
+            const meta = await img.metadata();
+            if (meta.width && meta.height) {
+              const cropTop = Math.round(meta.height * 0.13);
+              const newHeight = meta.height - cropTop;
+              if (newHeight > 0 && cropTop > 0) {
+                const cropped = await img
+                  .extract({ left: 0, top: cropTop, width: meta.width, height: newHeight })
+                  .jpeg({ quality: 92 })
+                  .toBuffer();
+                // Sharp returns Buffer<ArrayBufferLike>; copy into a fresh
+                // ArrayBuffer-backed Buffer so the R2 client's strict
+                // type sees the right shape.
+                buffer = Buffer.from(cropped);
+                outContentType = 'image/jpeg';
+                outExt = 'jpg';
+              }
+            }
+          } catch (cropErr) {
+            // Crop is best-effort: if sharp fails, fall back to the
+            // uncropped image. The safe-top prompt directive is still
+            // in play so the model has tried to leave the top empty.
+            console.warn('[image-gen] safe-top crop failed, using uncropped image:', cropErr);
+          }
+        }
+
         const randomSuffix = Math.random().toString(36).slice(2, 10);
         const bucket = getImagesBucket();
-        const r2Key = `prodoc-images/${Date.now()}-${randomSuffix}.jpg`;
-        await uploadToBucket(bucket, r2Key, Buffer.from(buffer), contentType);
+        const r2Key = `prodoc-images/${Date.now()}-${randomSuffix}.${outExt}`;
+        await uploadToBucket(bucket, r2Key, buffer, outContentType);
         imageUrl = await getDownloadUrlForBucket(bucket, r2Key, process.env.R2_IMAGES_PUBLIC_URL);
       }
     } catch (uploadErr) {
