@@ -94,23 +94,25 @@ export async function POST(req: NextRequest) {
     if (!prompt?.trim()) {
       return NextResponse.json({ error: 'prompt is required' }, { status: 400 });
     }
-    if (prompt.trim().length > 1500) {
-      return NextResponse.json({ error: 'Prompt too long — maximum 1500 characters' }, { status: 400 });
-    }
 
     // Bake the row's on-screen text into the image itself rather than render
-    // it as a post-hoc lower-third. The directive goes at the start of the
-    // prompt because image models weight early tokens more heavily — putting
-    // the text requirement up front maximises the chance the model honours
-    // it. We quote the exact text and tell the model to match the scene's
-    // illustration style, so on a doodle row the text comes out hand-drawn,
-    // and on a photoreal row it comes out as clean serif/sans typography.
-    // The style suffix the LLM appended to the prompt stays untouched at
-    // the end, so the model sees: text-directive → scene description → style.
-    const safeOnScreenText = (onScreenText ?? '').trim();
+    // it as a post-hoc lower-third. Kept SHORT (~120 chars) because some
+    // Kie models truncate aggressively past a few hundred chars and the
+    // scene description matters more than the directive's verbosity.
+    // No manual quote escape — JSON.stringify in the fetch body handles
+    // it. Sanitise stray newlines so the directive can't be smuggled
+    // out of the prompt by a malformed OST string.
+    const safeOnScreenText = (onScreenText ?? '').trim().replace(/[\r\n]+/g, ' ').slice(0, 120);
     const augmentedPrompt = safeOnScreenText
-      ? `INTEGRATED ON-SCREEN TEXT — Render the title text "${safeOnScreenText.replace(/"/g, '\\"')}" as a designed typographic element of the composition: clean, legible, large enough to read at a glance, with letterforms that match the illustration style of the scene below. Place the text in the negative-space area the scene description leaves open. The words must be readable — no scrambled, blurry, or partial letters.\n\n${prompt.trim()}`
+      ? `Title text to render integrated into the scene as designed typography (legible, matches the illustration style, placed in the prompt's negative-space area): "${safeOnScreenText}". ${prompt.trim()}`
       : prompt.trim();
+
+    // Length cap applies to what we ACTUALLY send to Kie — the augmented
+    // prompt — not the original. Raised to 2000 to leave room for the
+    // OST directive overhead (~150 chars) on top of the existing budget.
+    if (augmentedPrompt.length > 2000) {
+      return NextResponse.json({ error: 'Prompt too long — maximum 2000 characters' }, { status: 400 });
+    }
 
     const modelValue = model?.trim() || DEFAULT_IMAGE_MODEL;
     const spec = getImageModelSpec(modelValue);

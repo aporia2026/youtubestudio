@@ -46,6 +46,7 @@ const REPLICATE_RMBG_URL =
   'https://api.replicate.com/v1/models/briaai/rmbg-2.0/predictions';
 const MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 5_000;
+const MIN_RESULT_WIDTH = 200;
 const ALLOWED_CONTENT_TYPES = new Set([
   'image/png',
   'image/jpeg',
@@ -57,17 +58,38 @@ type GracefulResult =
   | { overlayUrl: string; cached: boolean; sourceUrl?: string }
   | { overlayUrl: null; reason: string };
 
+/**
+ * Rewrite the LLM's overlay terms into a search query that Brave actually
+ * finds results for. The LLM tends to emit editorial phrases like
+ * "Kaseya logo official PNG" — concatenating those verbatim with our
+ * "transparent png" modifier produces zero-result queries (literally:
+ * "Kaseya logo official PNG transparent png"). The fix:
+ *
+ *   1. Take only the first comma-separated term (the rest are variants).
+ *   2. Strip editorial noise words the LLM adds for the editor's benefit
+ *      ("official", "original", "company", "product", "hi-res", and any
+ *      bare "png" — we'll re-add that as a modifier where it actually
+ *      helps).
+ *   3. Add a single, well-chosen modifier based on what the term implies:
+ *      logo → "transparent png" (cleanest cutout sources)
+ *      screenshot → leave as-is (already specific enough)
+ *      photo → leave as-is
+ *   4. Collapse internal whitespace so the final query is clean.
+ *
+ * Example: "Kaseya logo official PNG, leak-site reference" →
+ *          "Kaseya logo transparent png"
+ */
 function rewriteQuery(rawTerms: string): string {
-  const lc = rawTerms.toLowerCase();
-  const modifiers: string[] = [];
-  if (/\blogo\b/.test(lc)) modifiers.push('transparent png');
-  else if (/\bscreenshot\b/.test(lc)) modifiers.push('high resolution');
-  else if (/\bphoto(graph)?\b/.test(lc)) modifiers.push('clean background');
-  // Use only the first comma-separated term as the primary search noun —
-  // additional terms in the field are noise / variants ("Apple logo,
-  // company branding") that hurt search precision when concatenated.
-  const primary = rawTerms.split(',')[0]?.trim() || rawTerms.trim();
-  return modifiers.length > 0 ? `${primary} ${modifiers.join(' ')}` : primary;
+  const primary = (rawTerms.split(',')[0] || rawTerms).trim();
+  const stripped = primary
+    .replace(/\b(official|original|company|product)\b/gi, '')
+    .replace(/\bhi[-\s]?res\b/gi, '')
+    .replace(/\bpng\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const lc = stripped.toLowerCase();
+  if (/\blogo\b/.test(lc)) return `${stripped} transparent png`;
+  return stripped;
 }
 
 function cacheKey(workspaceId: string, rawTerms: string): string {
@@ -84,7 +106,10 @@ async function braveImageSearch(query: string, apiKey: string): Promise<{
   height: number;
   title: string;
 } | null> {
-  const url = `${BRAVE_IMAGE_SEARCH}?q=${encodeURIComponent(query)}&safesearch=strict&count=15&country=us`;
+  // `safesearch=moderate` (not strict) — strict filters out brand/news
+  // image inventory that's perfectly editorial, leaving us with zero
+  // results for things like "Kaseya logo".
+  const url = `${BRAVE_IMAGE_SEARCH}?q=${encodeURIComponent(query)}&safesearch=moderate&count=20&country=us`;
   const res = await fetch(url, {
     headers: {
       Accept: 'application/json',
@@ -104,7 +129,10 @@ async function braveImageSearch(query: string, apiKey: string): Promise<{
     }>;
   };
   const results = data.results ?? [];
-  // Pick the first result with width ≥ 400 AND a usable URL. Prefer PNG.
+  // Width gate is intentionally loose (200 px) — Brave's reported width
+  // is the source's intrinsic width, and logos are often distributed at
+  // 240-320 px even on legit brand pages. Falling back to the thumbnail
+  // URL when properties.url is missing salvages additional candidates.
   const candidates = results
     .map((r) => ({
       url: r.properties?.url || r.thumbnail?.src || '',
@@ -112,7 +140,9 @@ async function braveImageSearch(query: string, apiKey: string): Promise<{
       height: r.height ?? 0,
       title: r.title ?? '',
     }))
-    .filter((r) => r.url && r.width >= 400);
+    .filter((r) => r.url && (r.width === 0 || r.width >= MIN_RESULT_WIDTH));
+  // Prefer .png when available (RMBG handles JPG too, but PNG sources are
+  // closer to clean cutouts to begin with).
   const png = candidates.find((c) => /\.png(\?|$)/i.test(c.url));
   return png ?? candidates[0] ?? null;
 }
