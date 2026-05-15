@@ -2104,12 +2104,45 @@ function ProductionDocPage() {
     if (isFreshHandoff) {
       // First visit of this handoff URL — wipe the previous session and
       // mark this handoff as consumed so subsequent refreshes restore.
+      // Also wipe the form-inputs cache: the prefill effects below will
+      // populate the form from the handoff context, so a stale cache
+      // here would create a confusing "old form + new handoff" mix.
       try {
         window.localStorage.removeItem('prodoc_last_result');
+        window.localStorage.removeItem('prodoc_form_inputs_v1');
         window.localStorage.setItem('prodoc_handoff_consumed', handoffKey);
       } catch { /* ignore */ }
       return;
     }
+
+    // Restore the FORM INPUTS first (script/niche/topic/etc.) so the user
+    // sees the same setup they left even when they hadn't yet generated
+    // a doc. The doc + row state restore follows; both come from
+    // separate localStorage entries so a partial save (form filled, doc
+    // not yet generated) still restores cleanly.
+    try {
+      const rawInputs = localStorage.getItem('prodoc_form_inputs_v1');
+      if (rawInputs) {
+        const savedInputs = JSON.parse(rawInputs) as {
+          script?: string;
+          niche?: string;
+          topic?: string;
+          modelId?: string;
+          speakingPace?: number;
+          actualDuration?: string;
+          stylePreset?: string;
+          creativeBrief?: string;
+        };
+        if (typeof savedInputs.script === 'string') setScript(savedInputs.script);
+        if (typeof savedInputs.niche === 'string') setNiche(savedInputs.niche);
+        if (typeof savedInputs.topic === 'string') setTopic(savedInputs.topic);
+        if (typeof savedInputs.modelId === 'string') setModelId(savedInputs.modelId);
+        if (typeof savedInputs.speakingPace === 'number') setSpeakingPace(savedInputs.speakingPace);
+        if (typeof savedInputs.actualDuration === 'string') setActualDuration(savedInputs.actualDuration);
+        if (typeof savedInputs.stylePreset === 'string') setStylePreset(savedInputs.stylePreset);
+        if (typeof savedInputs.creativeBrief === 'string') setCreativeBrief(savedInputs.creativeBrief);
+      }
+    } catch { /* corrupt form cache — ignore */ }
 
     try {
       const saved = localStorage.getItem('prodoc_last_result');
@@ -2130,6 +2163,51 @@ function ProductionDocPage() {
       toast.success(`Previous session restored${ago !== null ? ` (saved ${ago < 1 ? 'just now' : `${ago}m ago`})` : ''}`, { duration: 4000 });
     } catch { /* corrupt storage — ignore */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist the form inputs (script/niche/topic/etc.) on every change.
+  // Survives refresh AND survives a tab close — the user no longer loses
+  // a half-typed script when they navigate away. Stored separately from
+  // the generated doc so a partially-filled form doesn't require a
+  // generated doc to round-trip.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem('prodoc_form_inputs_v1', JSON.stringify({
+        script, niche, topic, modelId, speakingPace, actualDuration, stylePreset, creativeBrief,
+      }));
+    } catch { /* quota / disabled storage — best effort */ }
+  }, [script, niche, topic, modelId, speakingPace, actualDuration, stylePreset, creativeBrief]);
+
+  // "New session" — clear the form inputs, the generated doc, the row
+  // images / overlays / video clips / lock state, and every related
+  // localStorage entry in one go. Asks for confirmation because the
+  // wipe is non-reversible (history entries are NOT touched — the
+  // user can always restore a prior generation from the sidebar).
+  const resetSession = useCallback(() => {
+    const confirmed = window.confirm(
+      'Start a new session? This clears the current form (script, niche, topic, etc.) AND the generated doc.\n\nPrevious generations are still available in the history sidebar.',
+    );
+    if (!confirmed) return;
+    setScript('');
+    setNiche('');
+    setTopic('');
+    setSpeakingPace(135);
+    setActualDuration('');
+    setStylePreset('cinematic');
+    setCreativeBrief('');
+    setDoc(null);
+    setRowImages([]);
+    setRowOverlays({});
+    setRowVideoClips({});
+    setRowBatchStubs({});
+    setHistoryEntryId(null);
+    try {
+      window.localStorage.removeItem('prodoc_last_result');
+      window.localStorage.removeItem('prodoc_form_inputs_v1');
+      window.localStorage.removeItem('prodoc_handoff_consumed');
+    } catch { /* ignore */ }
+    toast.success('New session started.');
   }, []);
 
   // Persist doc + images together whenever either changes
@@ -3145,13 +3223,33 @@ function ProductionDocPage() {
       {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Production Doc" />}
 
       {/* ── Header */}
-      <div className="mb-6">
-        <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>
-          Production Document
-        </h1>
-        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
-          Generate a shot-by-shot breakdown with timecodes, visuals, auto-generated AI images, and Google Images links
-        </p>
+      <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>
+            Production Document
+          </h1>
+          <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
+            Generate a shot-by-shot breakdown with timecodes, visuals, auto-generated AI images, and Google Images links
+          </p>
+        </div>
+        {/* New session — explicit, confirmation-gated. The form inputs
+            (script, niche, topic, etc.) and the generated doc otherwise
+            persist across refreshes; this button is how the user opts
+            into a clean slate instead of getting one by accident. */}
+        <button
+          type="button"
+          onClick={resetSession}
+          className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+          style={{
+            background: 'rgba(255,255,255,0.04)',
+            color: 'var(--text-secondary)',
+            border: '1px solid rgba(255,255,255,0.10)',
+            cursor: 'pointer',
+          }}
+          title="Clear the current form and generated doc to start fresh. Previous generations stay in the history sidebar."
+        >
+          🆕 New session
+        </button>
       </div>
 
       {/* ── Input Panel */}
