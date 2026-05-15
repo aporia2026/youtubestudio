@@ -3743,7 +3743,7 @@ function ProductionDocPage() {
         <div className="glass rounded-xl p-4 mb-6">
           <div className="flex items-center justify-between mb-2">
             <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
-              Generating AI images with Grok…
+              Generating AI images with {getImageModelSpec(imageModel)?.label ?? 'the selected model'}…
             </span>
             <div className="flex items-center gap-3">
               <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
