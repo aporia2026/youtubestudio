@@ -2184,17 +2184,39 @@ function ProductionDocPage() {
         doc?: ProductionDoc;
         rowImages?: RowImageState[];
         rowOverlays?: Record<number, RowOverlayState>;
+        rowVideoClips?: Record<number, { status: string; videoUrl?: string } | null>;
+        historyEntryId?: string | null;
         savedAt?: number;
       };
       if (!parsed.doc?.rows?.length) return;
       setDoc(parsed.doc);
-      if (parsed.rowImages?.length) setRowImages(parsed.rowImages);
+      // Restore EVERY field unconditionally so a refresh after generation
+      // never silently drops state. The previous version used
+      // `if (parsed.rowImages?.length)` which skipped restoration when the
+      // saved array was empty — fine for that specific case but it set a
+      // pattern that almost guaranteed silent skips on edge cases. With
+      // arrays / records we just assign whatever was saved (empty is
+      // fine — the initial useState defaults were also empty).
+      if (Array.isArray(parsed.rowImages)) setRowImages(parsed.rowImages);
       if (parsed.rowOverlays && typeof parsed.rowOverlays === 'object') {
         setRowOverlays(parsed.rowOverlays);
       }
+      if (parsed.rowVideoClips && typeof parsed.rowVideoClips === 'object') {
+        setRowVideoClips(parsed.rowVideoClips);
+      }
+      if (typeof parsed.historyEntryId === 'string') {
+        // Restore so the background patch-the-history-entry pipeline
+        // continues writing to the same row after refresh.
+        setHistoryEntryId(parsed.historyEntryId);
+      }
       const ago = parsed.savedAt ? Math.round((Date.now() - parsed.savedAt) / 60000) : null;
       toast.success(`Previous session restored${ago !== null ? ` (saved ${ago < 1 ? 'just now' : `${ago}m ago`})` : ''}`, { duration: 4000 });
-    } catch { /* corrupt storage — ignore */ }
+    } catch (err) {
+      // Surface corruption so future drops are debuggable. The previous
+      // catch swallowed silently and made "my data vanished" reports
+      // impossible to triage from the console.
+      console.warn('[production-doc] restore failed', err instanceof Error ? err.message : err);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -2246,12 +2268,25 @@ function ProductionDocPage() {
     toast.success('New session started.');
   }, [userDefaultStyle]);
 
-  // Persist doc + images together whenever either changes
+  // Persist EVERYTHING that should survive a refresh into one bundle.
+  // Fires whenever any of the relevant slices changes. The user's hard
+  // rule is "nothing disappears until I click New Session" — so we
+  // include doc, rowImages, rowOverlays, rowVideoClips, AND
+  // historyEntryId in the payload. rowBatchStubs is intentionally
+  // excluded (transient hand-off objects the BrollCell consumes once).
   useEffect(() => {
     if (!doc?.rows?.length) return;
     try {
-      localStorage.setItem('prodoc_last_result', JSON.stringify({ doc, rowImages, rowOverlays, savedAt: Date.now() }));
-    } catch { /* storage full — ignore */ }
+      localStorage.setItem('prodoc_last_result', JSON.stringify({
+        doc, rowImages, rowOverlays, rowVideoClips, historyEntryId,
+        savedAt: Date.now(),
+      }));
+    } catch (err) {
+      // Most likely quota exceeded — large docs with many rows can push
+      // 1-2 MB. Surface to console so the user can see WHY their data
+      // didn't save instead of silently losing it on next refresh.
+      console.warn('[production-doc] persist failed (quota?)', err instanceof Error ? err.message : err);
+    }
     // Also patch the current history entry so row-image URLs survive on restore.
     if (historyEntryId && rowImages.length > 0) {
       const imgMap: Record<number, string> = {};
@@ -2262,7 +2297,7 @@ function ProductionDocPage() {
         updateProductionDocEntry(historyEntryId, { rowImages: imgMap }).catch(() => {});
       }
     }
-  }, [doc, rowImages, rowOverlays, historyEntryId]);
+  }, [doc, rowImages, rowOverlays, rowVideoClips, historyEntryId]);
 
   // Auto-scroll log to bottom when new entries are added
   useEffect(() => {
