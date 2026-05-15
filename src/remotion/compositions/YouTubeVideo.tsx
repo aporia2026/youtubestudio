@@ -12,7 +12,7 @@ import { IconScene } from '../scenes/IconScene';
 import { ScreenMockupScene } from '../scenes/ScreenMockupScene';
 import { OutroScene } from '../scenes/OutroScene';
 import { ThumbnailZoomScene } from '../scenes/ThumbnailZoomScene';
-import { SectionTitleStripe, clampSectionStripeFraction } from '../components/SectionTitleStripe';
+import { SectionTitleStripe } from '../components/SectionTitleStripe';
 import { RealImageOverlay } from '../components/RealImageOverlay';
 import {
   VideoConfig,
@@ -72,9 +72,7 @@ function findRegion(
  *     regardless of which scene component renders below it.
  */
 export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
-  const { fps, height: frameHeight } = useVideoConfig();
-  const stripeFraction = clampSectionStripeFraction(config.thumbnail?.stripeHeightFraction);
-  const stripeHeightPx = frameHeight * stripeFraction;
+  const { fps } = useVideoConfig();
 
   // Group consecutive shots that share the same `sectionTitle` into ONE
   // Sequence around the SectionTitleStripe. This way the stripe stays
@@ -123,25 +121,20 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
         />
       )}
 
-      {/* Render each shot as a Sequence. When a shot has a sectionTitle
-          the scene is offset to render below the stripe instead of being
-          partially covered by it. */}
+      {/* Render each shot as a Sequence. Scenes ALWAYS fill the full
+          1920×1080 frame; the section-title stripe (rendered as a
+          separate, later set of Sequences below) overlays the top
+          stripe-height pixels on top. Per-row image generation gets
+          a safe-top prompt directive when the row has a sectionTitle
+          (see /api/generate/production-doc/image route) so the
+          stripe lands on intentional negative space rather than
+          covering focal content. This keeps the renderer simple —
+          no aspect-ratio juggling, no scene math, just a clean
+          z-stack: scene → overlay → stripe. */}
       {config.shots.map((shot, i) => {
         const fromFrame = msToFrame(shot.startMs, fps);
         const durationInFrames = Math.max(msToFrame(shot.durationMs, fps), 1);
         const prevShot = i > 0 ? config.shots[i - 1] : null;
-        const hasSectionTitle = Boolean(shot.sectionTitle?.trim());
-
-        const sceneRouter = (
-          <SceneRouter
-            shot={shot}
-            previousShot={prevShot}
-            durationInFrames={durationInFrames}
-            config={config}
-            shotIndex={i}
-          />
-        );
-
         return (
           <Sequence
             key={i}
@@ -149,34 +142,16 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
             durationInFrames={durationInFrames}
             name={`Shot ${i + 1}: ${shot.thumbnailZoomTo ? 'thumbnail-zoom' : shot.sceneType}`}
           >
-            {hasSectionTitle ? (
-              // Offset the scene below the stripe so it gets the full
-              // remaining frame without being cropped. The scene's
-              // AbsoluteFill children will fill THIS container (not the
-              // composition's full frame), so any percentage-based
-              // layout adapts automatically. Scenes that hard-code
-              // useVideoConfig().height into pixel positions may sit
-              // slightly off-center vertically — that's an explicit
-              // trade-off for keeping the scene un-cropped.
-              <div
-                style={{
-                  position: 'absolute',
-                  top: stripeHeightPx,
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  overflow: 'hidden',
-                  background: config.brand.backgroundColor,
-                }}
-              >
-                {sceneRouter}
-              </div>
-            ) : (
-              sceneRouter
-            )}
+            <SceneRouter
+              shot={shot}
+              previousShot={prevShot}
+              durationInFrames={durationInFrames}
+              config={config}
+              shotIndex={i}
+            />
             {/* Real-image overlay (logo / brand mark / screenshot) sits
-                ABOVE the scene composition. RealImageOverlay is a no-op
-                when shot.overlay is undefined. */}
+                ABOVE the scene composition but BELOW the section title
+                stripe in z-order. No-op when shot.overlay is undefined. */}
             <RealImageOverlay shot={shot} />
           </Sequence>
         );

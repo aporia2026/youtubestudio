@@ -83,17 +83,28 @@ export async function POST(req: NextRequest) {
     const { limited } = checkRateLimit(`prodoc-img:${getClientIP(req)}`, 30, 60_000);
     if (limited) return NextResponse.json({ error: 'Rate limited' }, { status: 429 });
 
-    let body: { prompt?: string; model?: string; onScreenText?: string };
+    let body: { prompt?: string; model?: string; onScreenText?: string; sectionTitle?: string };
     try {
       body = await req.json();
     } catch {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
     }
 
-    const { prompt, model, onScreenText } = body;
+    const { prompt, model, onScreenText, sectionTitle } = body;
     if (!prompt?.trim()) {
       return NextResponse.json({ error: 'prompt is required' }, { status: 400 });
     }
+
+    // Safe-top directive — when the row will have a section-title stripe
+    // overlay at render time (sectionTitle non-empty), bias the image's
+    // composition so the top 13% is deliberate negative space (sky,
+    // gradient, plain background). The stripe then sits on intentional
+    // empty space instead of covering focal content. The exact 13%
+    // matches the stripe's default heightFraction in SectionTitleStripe.
+    const hasSectionStripe = Boolean(sectionTitle?.trim());
+    const safeTopDirective = hasSectionStripe
+      ? `LAYOUT CONSTRAINT — Leave the top 13% of the frame as deliberate negative space (sky, gradient, plain background, or low-detail texture). A white title stripe will overlay this area at render time. Do NOT place focal subjects, faces, brand marks, characters, or important details in the top 13%; compose all critical content in the lower 87% of the frame.\n\n`
+      : '';
 
     // Bake the row's on-screen text into the image itself rather than render
     // it as a post-hoc lower-third. Kept SHORT (~120 chars) because some
@@ -103,9 +114,11 @@ export async function POST(req: NextRequest) {
     // it. Sanitise stray newlines so the directive can't be smuggled
     // out of the prompt by a malformed OST string.
     const safeOnScreenText = (onScreenText ?? '').trim().replace(/[\r\n]+/g, ' ').slice(0, 120);
-    const augmentedPrompt = safeOnScreenText
-      ? `Title text to render integrated into the scene as designed typography (legible, matches the illustration style, placed in the prompt's negative-space area): "${safeOnScreenText}". ${prompt.trim()}`
-      : prompt.trim();
+    const ostDirective = safeOnScreenText
+      ? `Title text to render integrated into the scene as designed typography (legible, matches the illustration style, placed in the prompt's negative-space area): "${safeOnScreenText}". `
+      : '';
+
+    const augmentedPrompt = `${safeTopDirective}${ostDirective}${prompt.trim()}`;
 
     // Length cap applies to what we ACTUALLY send to Kie — the augmented
     // prompt — not the original. Raised to 2000 to leave room for the

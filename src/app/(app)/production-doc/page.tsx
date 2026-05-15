@@ -2542,17 +2542,21 @@ function ProductionDocPage() {
       next[rowIndex] = { ...next[rowIndex], status: 'loading' };
       return next;
     });
-    // Pull the row's on-screen text from the live doc and pass it down — the
-    // image API uses it to bake the title into the still itself rather than
-    // overlaying it later. Looked up here (not at the call site) so callers
-    // don't have to thread the field through.
+    // Pull the row's on-screen text + section title from the live doc and
+    // pass them down. The image API uses on_screen_text to bake the title
+    // into the still itself, and uses section_title (when set) to add a
+    // safe-top layout constraint so the renderer's section-title stripe
+    // lands on negative space instead of covering focal content.
+    // Looked up here (not at the call site) so callers don't have to
+    // thread the fields through.
     const onScreenText = doc?.rows[rowIndex]?.on_screen_text?.trim() || undefined;
+    const sectionTitle = doc?.rows[rowIndex]?.section_title?.trim() || undefined;
     try {
       const res = await fetch('/api/generate/production-doc/image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal,
-        body: JSON.stringify({ prompt, model: imageModel, onScreenText }),
+        body: JSON.stringify({ prompt, model: imageModel, onScreenText, sectionTitle }),
       });
       const data = await safeJson(res);
       if (!res.ok) throw new Error((data.error as string) || 'Failed');
