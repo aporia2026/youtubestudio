@@ -106,10 +106,12 @@ async function braveImageSearch(query: string, apiKey: string): Promise<{
   height: number;
   title: string;
 } | null> {
-  // `safesearch=moderate` (not strict) — strict filters out brand/news
-  // image inventory that's perfectly editorial, leaving us with zero
-  // results for things like "Kaseya logo".
-  const url = `${BRAVE_IMAGE_SEARCH}?q=${encodeURIComponent(query)}&safesearch=moderate&count=20&country=us`;
+  // Brave Image Search only accepts `safesearch=strict` (default) or
+  // `off` — `moderate` is rejected with 422. `strict` is fine for
+  // editorial brand/logo searches; adult-content filtering doesn't
+  // affect those result sets. The earlier zero-result issue we hit
+  // was caused by noisy query text, not by safesearch.
+  const url = `${BRAVE_IMAGE_SEARCH}?q=${encodeURIComponent(query)}&safesearch=strict&count=20&country=us`;
   const res = await fetch(url, {
     headers: {
       Accept: 'application/json',
