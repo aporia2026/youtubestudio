@@ -198,8 +198,14 @@ export function ThumbnailRegionEditor({ thumbnail, onSave, onClose }: ThumbnailR
   // that pre-dates the regions field (TS would say it can't happen; old
   // JSON in the DB can).
   const [regions, setRegions] = useState<ThumbnailRegion[]>(() => {
+    // Prefer a non-empty draft (preserves unsaved work across an
+    // accidental browser close); fall back to the doc's saved regions.
+    // The previous version returned `draft ?? thumbnail.regions`, which
+    // returned an EMPTY draft over the saved regions — a real bug that
+    // surfaced as "my regions disappeared on refresh".
     const draft = loadDraft(thumbnail.imageUrl);
-    return draft ?? thumbnail.regions ?? [];
+    if (draft && draft.length > 0) return draft;
+    return thumbnail.regions ?? [];
   });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [labelEditingId, setLabelEditingId] = useState<string | null>(null);
@@ -231,6 +237,14 @@ export function ThumbnailRegionEditor({ thumbnail, onSave, onClose }: ThumbnailR
   useEffect(() => {
     saveDraft(thumbnail.imageUrl, regions);
   }, [thumbnail.imageUrl, regions]);
+
+  // Vision-driven auto-detect — sends the thumbnail to the server-side
+  // /api/production-doc/thumbnail/auto-regions route which calls a
+  // vision model to identify each panel + its label. Replaces the
+  // current regions (after a confirm dialog if there's existing work)
+  // and pushes the previous state onto the undo stack so the user can
+  // back out if the result isn't right.
+  const [autoDetecting, setAutoDetecting] = useState(false);
 
   // Lock background scroll while open.
   useEffect(() => {
@@ -488,6 +502,44 @@ export function ThumbnailRegionEditor({ thumbnail, onSave, onClose }: ThumbnailR
   // Declared above the keyboard effect so the effect's dep array can
   // reference `handleCancel` without hitting the TDZ.
 
+  const handleAutoDetect = useCallback(async () => {
+    if (autoDetecting) return;
+    if (regions.length > 0) {
+      const confirmed = window.confirm(
+        `Replace ${regions.length} existing region${regions.length === 1 ? '' : 's'} with auto-detected ones? This can be undone with ⌘Z.`,
+      );
+      if (!confirmed) return;
+    }
+    setAutoDetecting(true);
+    try {
+      const res = await fetch('/api/production-doc/thumbnail/auto-regions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageUrl: thumbnail.imageUrl,
+          width: thumbnail.width,
+          height: thumbnail.height,
+        }),
+      });
+      const data = (await res.json()) as { regions?: ThumbnailRegion[]; error?: string };
+      if (!res.ok) throw new Error(data.error || 'Auto-detect failed');
+      const next = Array.isArray(data.regions) ? data.regions : [];
+      if (next.length === 0) {
+        toast.error('No regions detected. Try drawing them manually.');
+        return;
+      }
+      pushUndo();
+      setRegions(next);
+      setSelectedId(null);
+      setLabelEditingId(null);
+      toast.success(`Detected ${next.length} region${next.length === 1 ? '' : 's'}.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Auto-detect failed');
+    } finally {
+      setAutoDetecting(false);
+    }
+  }, [autoDetecting, regions.length, thumbnail.imageUrl, thumbnail.width, thumbnail.height, pushUndo]);
+
   const handleSave = useCallback(() => {
     // Strip transient state from the payload — only the persistent fields.
     const payload = regions.map<ThumbnailRegion>(r => ({
@@ -619,17 +671,42 @@ export function ThumbnailRegionEditor({ thumbnail, onSave, onClose }: ThumbnailR
               Drag to draw · Click to select · Drag handles or arrow keys to nudge · Delete to remove · ⌘Z undo · ⇧⌘Z redo
             </div>
           </div>
-          <button
-            onClick={handleCancel}
-            aria-label="Close"
-            style={{
-              fontSize: 18, lineHeight: 1, padding: '6px 10px', borderRadius: 6,
-              background: 'transparent', color: 'var(--text-muted)',
-              border: '1px solid rgba(255,255,255,0.10)', cursor: 'pointer',
-            }}
-          >
-            ×
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              onClick={handleAutoDetect}
+              disabled={autoDetecting}
+              title="Use vision AI to identify rectangular panels in this thumbnail and label them automatically."
+              style={{
+                fontSize: 12, fontWeight: 500, padding: '8px 12px', borderRadius: 6,
+                background: autoDetecting ? 'rgba(34,211,238,0.10)' : 'rgba(34,211,238,0.18)',
+                color: '#22d3ee',
+                border: '1px solid rgba(34,211,238,0.40)',
+                cursor: autoDetecting ? 'wait' : 'pointer',
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {autoDetecting ? (
+                <>
+                  <div className="spinner" style={{ width: 12, height: 12 }} />
+                  Detecting…
+                </>
+              ) : (
+                <>✨ Auto-detect regions</>
+              )}
+            </button>
+            <button
+              onClick={handleCancel}
+              aria-label="Close"
+              style={{
+                fontSize: 18, lineHeight: 1, padding: '6px 10px', borderRadius: 6,
+                background: 'transparent', color: 'var(--text-muted)',
+                border: '1px solid rgba(255,255,255,0.10)', cursor: 'pointer',
+              }}
+            >
+              ×
+            </button>
+          </div>
         </div>
 
         {/* Body: image + sidebar */}
