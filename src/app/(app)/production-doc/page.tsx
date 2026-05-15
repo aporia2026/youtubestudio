@@ -44,7 +44,7 @@ import {
   type BrollClipRow,
   type BrollStatus,
 } from '@/lib/broll-types';
-import { productionDocToVideoConfig } from '@/remotion/utils';
+import { productionDocToVideoConfig, parseTimecodeToMs } from '@/remotion/utils';
 import { stripProductionMarkers } from '@/lib/script-markers';
 import { buildCanonicalScript, scriptDriftRatio } from '@/lib/voiceover-alignment';
 import type { BrandKit, ThumbnailTransitionConfig, VideoThumbnail } from '@/remotion/types';
@@ -1481,6 +1481,117 @@ function ProductionDocPage() {
       return nextDoc;
     });
   }, [historyEntryId]);
+
+  /**
+   * Split a row at its `##` markdown heading into TWO rows: a new
+   * Title Card row above (containing just the heading as on-screen
+   * text, locked-as-still so no i2v garbles it), and the original
+   * row with the heading stripped from its script.
+   *
+   * Why this exists: i2v models (Kling, Sora 2, Veo 3, all of them)
+   * mangle text inside source stills. The fix is structural — title
+   * text lives in a separate non-animated row, narration lives in the
+   * animated row. See user discussion 2026-05-15.
+   *
+   * Timing: the new title card occupies ~3 s. All rows from the split
+   * onward shift forward by 3 s; total_duration grows by 3 s. The
+   * user can fine-tune timecodes afterwards if needed.
+   */
+  const splitTitleCardFromRow = useCallback(
+    (rowIndex: number, heading: string) => {
+      if (!doc) return;
+      const sourceRow = doc.rows[rowIndex];
+      if (!sourceRow) return;
+
+      const TITLE_CARD_SECONDS = 3;
+      const titleCardVisualDescription = `Title card displaying "${heading}"`;
+
+      const shiftTimecodeStr = (tc: string): string => {
+        const totalSec = Math.round((parseTimecodeToMs(tc) + TITLE_CARD_SECONDS * 1000) / 1000);
+        return `${Math.floor(totalSec / 60)}:${String(totalSec % 60).padStart(2, '0')}`;
+      };
+
+      const strippedScript = sourceRow.script_text.replace(/^\s*##[^\n]*\n?\s*/, '').trim();
+      const titleCardRow: ProductionRow = {
+        timecode: sourceRow.timecode,
+        script_text: '',
+        visual_type: 'Title Card',
+        visual_description: titleCardVisualDescription,
+        stock_search_terms: '',
+        ai_image_prompt: '',
+        on_screen_text: heading,
+        notes: 'Auto-split title card. Lock-as-still so the title text is preserved (no i2v garbling).',
+      };
+
+      setDoc(prev => {
+        if (!prev) return prev;
+        const shiftedRows: ProductionRow[] = prev.rows.map((r, i) => {
+          if (i < rowIndex) return r;
+          if (i === rowIndex) {
+            return { ...r, script_text: strippedScript, timecode: shiftTimecodeStr(r.timecode) };
+          }
+          return { ...r, timecode: shiftTimecodeStr(r.timecode) };
+        });
+        const nextRows: ProductionRow[] = [
+          ...shiftedRows.slice(0, rowIndex),
+          titleCardRow,
+          ...shiftedRows.slice(rowIndex),
+        ];
+
+        // Grow total_duration by the title card's allocated time so the
+        // computed shot durations downstream stay coherent.
+        const newTotalSec = Math.round((parseTimecodeToMs(prev.total_duration) + TITLE_CARD_SECONDS * 1000) / 1000);
+        const newTotalDuration = `${Math.floor(newTotalSec / 60)}:${String(newTotalSec % 60).padStart(2, '0')}`;
+
+        const nextDoc = { ...prev, rows: nextRows, total_duration: newTotalDuration };
+        if (historyEntryId) {
+          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+        }
+        return nextDoc;
+      });
+
+      // Splice in a fresh image state for the title card row, and shift
+      // every index-keyed map (clips, overlays, batch stubs) forward by
+      // 1 for entries at or after the insertion point. Without this,
+      // the title card would inherit the original row's image and the
+      // original row would inherit nothing.
+      setRowImages(prev => {
+        const next = [...prev];
+        next.splice(rowIndex, 0, { status: 'idle' });
+        return next;
+      });
+      const shiftRecord = <T,>(record: Record<number, T>): Record<number, T> => {
+        const next: Record<number, T> = {};
+        for (const k of Object.keys(record)) {
+          const idx = Number(k);
+          next[idx >= rowIndex ? idx + 1 : idx] = record[idx]!;
+        }
+        return next;
+      };
+      setRowOverlays(shiftRecord);
+      setRowVideoClips(shiftRecord);
+      setRowBatchStubs(shiftRecord);
+
+      // Lock the new title-card row as still — keyed by its row signature
+      // (timecode + visual_description), not by index, so the lock
+      // survives any future re-ordering. This is the whole point of the
+      // split: stop i2v from touching the title scene. Done inline (not
+      // via toggleRowLock) to keep this callback above the toggleRowLock
+      // declaration without hitting the TDZ.
+      const titleCardSignature = brollRowSignatureInput({
+        timecode: sourceRow.timecode,
+        visual_description: titleCardVisualDescription,
+      });
+      setRowLockSignatures((prev) => {
+        const next = { ...prev, [titleCardSignature]: true as const };
+        writeBrollLockMap(next);
+        return next;
+      });
+
+      toast.success(`Split "${heading}" into its own title-card row (locked-as-still).`);
+    },
+    [doc, historyEntryId],
+  );
 
   /**
    * Set `section_title` on every row from `startRow` to `endRow` inclusive
@@ -3773,9 +3884,37 @@ function ProductionDocPage() {
                         <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: 'var(--accent-cyan-bright)', whiteSpace: 'nowrap', fontWeight: 600, borderRight: '1px solid var(--border)' }}>
                           {row.timecode}
                         </td>
-                        {/* Script text */}
+                        {/* Script text — detects a leading `##Heading` and
+                            surfaces a one-click "split into title card row"
+                            chip. The fix for i2v models mangling title text
+                            is structural (separate non-animated row), not a
+                            model swap. See splitTitleCardFromRow. */}
                         <td style={{ padding: '8px 12px', color: 'var(--text-primary)', maxWidth: 200, lineHeight: 1.5, borderRight: '1px solid var(--border)' }}>
-                          {row.script_text}
+                          {(() => {
+                            const headingMatch = row.script_text.match(/^\s*##\s*([^\n]+?)(?:\s{2,}|\n|$)/);
+                            const heading = headingMatch?.[1]?.trim();
+                            return (
+                              <>
+                                <div>{row.script_text}</div>
+                                {heading && (
+                                  <button
+                                    type="button"
+                                    onClick={() => splitTitleCardFromRow(i, heading)}
+                                    className="mt-1.5 text-[10px] px-2 py-0.5 rounded"
+                                    style={{
+                                      background: 'rgba(34,211,238,0.12)',
+                                      color: '#22d3ee',
+                                      border: '1px solid rgba(34,211,238,0.35)',
+                                      cursor: 'pointer',
+                                    }}
+                                    title={`Split "${heading}" into its own title-card row, locked-as-still so i2v animation can't mangle the title text.`}
+                                  >
+                                    ✂ Split &quot;{heading}&quot; as title card
+                                  </button>
+                                )}
+                              </>
+                            );
+                          })()}
                         </td>
                         {/* Visual type */}
                         <td style={{ padding: '8px 10px', whiteSpace: 'nowrap', borderRight: '1px solid var(--border)' }}>
@@ -3937,6 +4076,26 @@ function ProductionDocPage() {
                         <div>
                           <p className="text-xs font-semibold mb-0.5" style={{ color: 'var(--text-muted)' }}>Script</p>
                           <p className="text-xs" style={{ color: 'var(--text-primary)' }}>{row.script_text}</p>
+                          {(() => {
+                            const headingMatch = row.script_text.match(/^\s*##\s*([^\n]+?)(?:\s{2,}|\n|$)/);
+                            const heading = headingMatch?.[1]?.trim();
+                            if (!heading) return null;
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => splitTitleCardFromRow(i, heading)}
+                                className="mt-1.5 text-[10px] px-2 py-0.5 rounded"
+                                style={{
+                                  background: 'rgba(34,211,238,0.12)',
+                                  color: '#22d3ee',
+                                  border: '1px solid rgba(34,211,238,0.35)',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                ✂ Split &quot;{heading}&quot; as title card
+                              </button>
+                            );
+                          })()}
                         </div>
                         <div>
                           <p className="text-xs font-semibold mb-0.5" style={{ color: 'var(--text-muted)' }}>Visual</p>
