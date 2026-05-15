@@ -144,6 +144,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       modelId,
       aspectRatio: aspectRatioRaw,
       durationSeconds,
+      stillImageUrl,
       kieApiKey: apiKey,
     });
     return NextResponse.json({ ...result, model_id: modelId });
