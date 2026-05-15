@@ -1924,19 +1924,42 @@ function ProductionDocPage() {
   }, [projectIdParam, projectPrefilled, scheduleItemId]);
 
   // Restore last result from localStorage after mount (useEffect so SSR is unaffected).
-  // Skip restore on a handoff (schedule-link, generator, QA, project) so the
-  // new script starts a fresh session — and discard the saved draft so it
-  // doesn't resurface.
+  //
+  // A "handoff" is a navigation into the page that carries context from
+  // elsewhere (schedule link, project, generator, QA). On the FIRST visit
+  // of such a URL we want a fresh session — discard the previous saved
+  // doc so the prefilled form doesn't sit next to an unrelated old doc.
+  //
+  // But on a REFRESH (same handoff URL, second mount) the user expects
+  // their in-progress work — including thumbnail regions, row images,
+  // and overlay fetches — to survive. We can't distinguish first-visit
+  // from refresh from the URL alone, so we track which handoff key has
+  // already been consumed in localStorage. If the current URL matches
+  // the consumed key, treat the load as a refresh.
   useEffect(() => {
-    const fromHandoff = !!scheduleItemId
-      || !!projectIdParam
-      || search.get('from') === 'generator'
-      || search.get('from') === 'qa'
-      || !!localStorage.getItem('prodoc_prefill');
-    if (fromHandoff) {
-      try { localStorage.removeItem('prodoc_last_result'); } catch { /* ignore */ }
+    const handoffKey = [
+      scheduleItemId ? `sched:${scheduleItemId}` : '',
+      projectIdParam ? `proj:${projectIdParam}` : '',
+      search.get('from') ? `from:${search.get('from')}` : '',
+      typeof window !== 'undefined' && window.localStorage.getItem('prodoc_prefill') ? 'prefill' : '',
+    ].filter(Boolean).join('|');
+
+    let consumedKey: string | null = null;
+    try {
+      consumedKey = window.localStorage.getItem('prodoc_handoff_consumed');
+    } catch { /* ignore */ }
+
+    const isFreshHandoff = handoffKey !== '' && handoffKey !== consumedKey;
+    if (isFreshHandoff) {
+      // First visit of this handoff URL — wipe the previous session and
+      // mark this handoff as consumed so subsequent refreshes restore.
+      try {
+        window.localStorage.removeItem('prodoc_last_result');
+        window.localStorage.setItem('prodoc_handoff_consumed', handoffKey);
+      } catch { /* ignore */ }
       return;
     }
+
     try {
       const saved = localStorage.getItem('prodoc_last_result');
       if (!saved) return;
