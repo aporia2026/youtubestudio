@@ -100,26 +100,61 @@ function cacheKey(workspaceId: string, rawTerms: string): string {
   return `overlays/${workspaceId}/${hash}.png`;
 }
 
+/**
+ * Cap the query to Brave's hard limits: max 400 chars AND max 50 words.
+ * Exceeding either triggers a 422 with no useful body. We also strip
+ * non-printable characters (the OverlayCell renders a leading `✦` for
+ * decoration — if that ever leaked into the raw terms, Brave's
+ * tokenizer might reject it).
+ */
+function clampQueryForBrave(raw: string): string {
+  const ascii = raw.replace(/[^\x20-\x7E]/g, ' ').replace(/\s+/g, ' ').trim();
+  const words = ascii.split(' ').filter(Boolean).slice(0, 50);
+  const joined = words.join(' ');
+  return joined.length > 400 ? joined.slice(0, 400).trim() : joined;
+}
+
 async function braveImageSearch(query: string, apiKey: string): Promise<{
   url: string;
   width: number;
   height: number;
   title: string;
 } | null> {
-  // Brave Image Search only accepts `safesearch=strict` (default) or
-  // `off` — `moderate` is rejected with 422. `strict` is fine for
-  // editorial brand/logo searches; adult-content filtering doesn't
-  // affect those result sets. The earlier zero-result issue we hit
-  // was caused by noisy query text, not by safesearch.
-  const url = `${BRAVE_IMAGE_SEARCH}?q=${encodeURIComponent(query)}&safesearch=strict&count=20&country=us`;
+  // Parameter notes (from Brave's API reference):
+  //   - `safesearch`: only `strict` (default) or `off` are valid;
+  //     `moderate` triggers 422.
+  //   - `count`: 1-200, default 50. We ask for 20 — enough for a
+  //     PNG-preference re-rank without paying for results we'll discard.
+  //   - `country`: optional, defaults to `US`. The spec uses UPPERCASE
+  //     codes (`US`, `AR`, etc.); lowercase `us` trips the validator
+  //     and returns 422. Easiest fix is to omit the param entirely
+  //     and let the default kick in.
+  //   - `q`: max 400 chars, max 50 words — enforced via clampQueryForBrave.
+  const cleanQuery = clampQueryForBrave(query);
+  if (!cleanQuery) {
+    throw new Error('Brave Search: empty query after sanitization');
+  }
+  const url = `${BRAVE_IMAGE_SEARCH}?q=${encodeURIComponent(cleanQuery)}&safesearch=strict&count=20`;
   const res = await fetch(url, {
     headers: {
       Accept: 'application/json',
+      'Accept-Encoding': 'gzip',
       'X-Subscription-Token': apiKey,
     },
   });
   if (!res.ok) {
-    throw new Error(`Brave Search failed (${res.status})`);
+    // Capture the response body so a 422's actual reason ("query too
+    // long", "invalid safesearch value", "rate limited", etc.) reaches
+    // the caller instead of being thrown away. Log it server-side too
+    // for offline debugging.
+    const body = await res.text().catch(() => '');
+    const snippet = body.slice(0, 400);
+    logger.warn('Brave Search non-OK', {
+      status: res.status,
+      query: cleanQuery,
+      body: snippet,
+    });
+    throw new Error(`Brave Search failed (${res.status}): ${snippet || 'no body'}`);
   }
   const data = (await res.json()) as {
     results?: Array<{
