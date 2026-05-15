@@ -735,32 +735,70 @@ function ImageCell({ state, onRetry }: { state: RowImageState; onRetry: () => vo
   if (state.status === 'done' && state.imageUrl) {
     return (
       <>
-        <button
-          type="button"
-          onClick={() => setPreviewOpen(true)}
-          title="Click to preview full size"
-          style={{
-            padding: 0,
-            background: 'transparent',
-            border: 'none',
-            cursor: 'zoom-in',
-            display: 'block',
-          }}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={state.imageUrl}
-            alt="AI generated"
+        <div style={{ position: 'relative', display: 'inline-block' }}>
+          <button
+            type="button"
+            onClick={() => setPreviewOpen(true)}
+            title="Click to preview full size"
             style={{
-              width: 80,
-              height: 50,
-              objectFit: 'cover',
-              borderRadius: 5,
-              border: '1px solid var(--border)',
+              padding: 0,
+              background: 'transparent',
+              border: 'none',
+              cursor: 'zoom-in',
               display: 'block',
             }}
-          />
-        </button>
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={state.imageUrl}
+              alt="AI generated"
+              style={{
+                width: 80,
+                height: 50,
+                objectFit: 'cover',
+                borderRadius: 5,
+                border: '1px solid var(--border)',
+                display: 'block',
+              }}
+            />
+          </button>
+          {/* Re-generate overlay button — always offered, including for
+              successful stills, so the editor can re-roll without first
+              having to delete or fail the existing image. Clicking calls
+              the same `onRetry` handler the failure state uses; that
+              function (generateImageForRow) wipes the current imageUrl
+              and kicks off a fresh generation under the row's current
+              prompt + image model. */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRetry();
+            }}
+            title="Re-generate this image with the current prompt"
+            aria-label="Re-generate image"
+            style={{
+              position: 'absolute',
+              top: 2,
+              right: 2,
+              width: 18,
+              height: 18,
+              padding: 0,
+              borderRadius: 4,
+              border: '1px solid rgba(255,255,255,0.25)',
+              background: 'rgba(0,0,0,0.55)',
+              color: '#e5e7eb',
+              fontSize: 11,
+              lineHeight: 1,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            ↻
+          </button>
+        </div>
         {previewOpen && (
           <ImageLightbox imageUrl={state.imageUrl} onClose={() => setPreviewOpen(false)} />
         )}
