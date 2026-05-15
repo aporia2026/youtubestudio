@@ -97,28 +97,47 @@ export async function POST(req: NextRequest) {
 
     // Safe-top directive — when the row will have a section-title stripe
     // overlay at render time (sectionTitle non-empty), bias the image's
-    // composition so the top 13% is deliberate negative space (sky,
-    // gradient, plain background). The stripe then sits on intentional
-    // empty space instead of covering focal content. The exact 13%
-    // matches the stripe's default heightFraction in SectionTitleStripe.
+    // composition so the top 13% is deliberate negative space. The
+    // stripe then sits on intentional empty space instead of covering
+    // focal content. The exact 13% matches the stripe's default
+    // heightFraction in SectionTitleStripe.
     const hasSectionStripe = Boolean(sectionTitle?.trim());
     const safeTopDirective = hasSectionStripe
-      ? `LAYOUT CONSTRAINT — Leave the top 13% of the frame as deliberate negative space (sky, gradient, plain background, or low-detail texture). A white title stripe will overlay this area at render time. Do NOT place focal subjects, faces, brand marks, characters, or important details in the top 13%; compose all critical content in the lower 87% of the frame.\n\n`
+      ? `LAYOUT CONSTRAINT — Leave the top 13% of the frame as deliberate negative space (sky, gradient, plain background, or low-detail texture). A white title stripe will overlay this area at render time. Do NOT place focal subjects, faces, brand marks, or important details in the top 13%; compose all critical content in the lower 87% of the frame.\n\n`
       : '';
 
-    // Bake the row's on-screen text into the image itself rather than render
-    // it as a post-hoc lower-third. Kept SHORT (~120 chars) because some
-    // Kie models truncate aggressively past a few hundred chars and the
-    // scene description matters more than the directive's verbosity.
-    // No manual quote escape — JSON.stringify in the fetch body handles
-    // it. Sanitise stray newlines so the directive can't be smuggled
-    // out of the prompt by a malformed OST string.
+    // OST baking. Sanitise stray newlines and cap at 120 chars so a
+    // malformed string can't smuggle other directives into the prompt.
+    // Wording is intentionally IMPERATIVE — "INCLUDE THE WORDS", literal
+    // quotes, position guidance — because the soft "title text to
+    // render" phrasing the previous version used was getting ignored
+    // by image models (they treated it as a description of the scene
+    // rather than a render-this-literal-text instruction). The directive
+    // is also REPEATED at the end of the augmented prompt because most
+    // diffusion + autoregressive image models weight the LAST tokens
+    // heavily for "what must appear in the image".
+    //
+    // When safeTopDirective is also active, the OST directive
+    // EXPLICITLY tells the model to place the text in the lower 87%
+    // — otherwise the two directives contradict each other (one says
+    // "leave top empty", the other says "put text there") and the
+    // model resolves the conflict by skipping the text entirely.
     const safeOnScreenText = (onScreenText ?? '').trim().replace(/[\r\n]+/g, ' ').slice(0, 120);
-    const ostDirective = safeOnScreenText
-      ? `Title text to render integrated into the scene as designed typography (legible, matches the illustration style, placed in the prompt's negative-space area): "${safeOnScreenText}". `
+    const escapedOst = safeOnScreenText.replace(/"/g, '\\"');
+    const ostPosition = hasSectionStripe
+      ? 'in the lower 87% of the frame (NOT in the reserved top 13%)'
+      : 'within the scene';
+    const ostLeadingDirective = safeOnScreenText
+      ? `INCLUDE THE WORDS "${escapedOst}" IN THE IMAGE — render these exact letters as large, bold, hand-drawn lettering ${ostPosition}, in the illustration's own style, as if the artist wrote them by hand. The words must be clearly readable. Do NOT abbreviate, paraphrase, or replace with similar-looking gibberish.\n\n`
+      : '';
+    // Repeat-tail emphasis — same words, terse, after the scene + style
+    // so the model's "what to include" pass at the end of the prompt
+    // sees them too.
+    const ostTrailingDirective = safeOnScreenText
+      ? `\n\nText to render in the image: "${escapedOst}" — exact spelling, large hand-drawn lettering.`
       : '';
 
-    const augmentedPrompt = `${safeTopDirective}${ostDirective}${prompt.trim()}`;
+    const augmentedPrompt = `${safeTopDirective}${ostLeadingDirective}${prompt.trim()}${ostTrailingDirective}`;
 
     // Length cap applies to what we ACTUALLY send to Kie — the augmented
     // prompt — not the original. Raised to 2000 to leave room for the
