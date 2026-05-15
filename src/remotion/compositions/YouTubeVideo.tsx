@@ -13,6 +13,7 @@ import { ScreenMockupScene } from '../scenes/ScreenMockupScene';
 import { OutroScene } from '../scenes/OutroScene';
 import { ThumbnailZoomScene } from '../scenes/ThumbnailZoomScene';
 import { SectionTitleStripe } from '../components/SectionTitleStripe';
+import { RealImageOverlay } from '../components/RealImageOverlay';
 import {
   VideoConfig,
   VideoShot,
@@ -110,6 +111,12 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
               config={config}
               shotIndex={i}
             />
+            {/* Real-image overlay (logo / brand mark / screenshot) sits
+                ABOVE the scene composition but BELOW the section-title
+                stripe so the stripe always wins z-order. RealImageOverlay
+                is a no-op when shot.overlay is undefined, so it's safe
+                to render unconditionally. */}
+            <RealImageOverlay shot={shot} />
             {shot.sectionTitle && (
               <SectionTitleStripe
                 text={shot.sectionTitle}

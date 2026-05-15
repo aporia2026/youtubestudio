@@ -101,6 +101,13 @@ export interface ProductionRow {
   ai_image_prompt: string;
   on_screen_text: string;
   notes: string;
+  /** Planning fields for auto-sourced real-image overlays. See the
+   *  `/api/overlay/fetch` route and the OverlayCell component. */
+  overlay_stock_terms?: string;
+  overlay_zone?:
+    | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+    | 'center-top' | 'center-bottom' | 'left-center' | 'right-center';
+  overlay_size?: 'small' | 'medium' | 'large';
   /** Region id this row's scene zooms into. See ProductionDoc.thumbnail.regions. */
   thumbnail_zoom_to?: string;
   /** Section title stripe text shown at top of frame for the row's duration. */
@@ -135,6 +142,16 @@ export interface RowVideoClipState {
   videoUrl?: string;
 }
 
+/** Per-row auto-fetched overlay state passed into the renderer. Only rows
+ *  whose corresponding entry has `status === 'done'` AND a non-empty `url`
+ *  contribute an overlay composite — anything else renders the scene
+ *  without an overlay (graceful fallback). The zone + size come from the
+ *  doc-generator's planning on the ProductionRow itself. */
+export interface RowOverlayRenderState {
+  status: string;
+  url?: string;
+}
+
 /**
  * Convert a ProductionDoc + its generated image URLs into a VideoConfig
  * ready to pass to the Remotion composition.
@@ -167,6 +184,9 @@ export interface ProductionDocToVideoConfigOptions {
    *  even when a ready clip exists. The clip stays in `broll_clips` so
    *  unlocking is reversible without re-generation. */
   rowLockedAsStill?: boolean[];
+  /** Per-row auto-fetched overlay state. Sparse — only present for rows
+   *  whose `overlay_stock_terms` produced a usable image. */
+  rowOverlays?: Record<number, RowOverlayRenderState>;
 }
 
 export function productionDocToVideoConfig(
@@ -207,6 +227,18 @@ export function productionDocToVideoConfig(
         ? clipState.videoUrl
         : undefined;
 
+    // Real-image overlay — only attached when the doc generator planned
+    // one AND the auto-fetch resolved to a usable URL. The renderer
+    // composites at the planned zone/size with a fade-in + scale-in motion.
+    const overlayState = opts.rowOverlays?.[i];
+    const overlay =
+      overlayState?.status === 'done' &&
+      overlayState.url &&
+      row.overlay_zone &&
+      row.overlay_size
+        ? { url: overlayState.url, zone: row.overlay_zone, size: row.overlay_size }
+        : undefined;
+
     return {
       startMs,
       durationMs,
@@ -223,6 +255,7 @@ export function productionDocToVideoConfig(
       thumbnailZoomTo: row.thumbnail_zoom_to || undefined,
       sectionTitle: row.section_title || undefined,
       thumbnailTransition: row.thumbnail_transition,
+      overlay,
     };
   });
 

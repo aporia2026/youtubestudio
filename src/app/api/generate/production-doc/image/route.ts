@@ -83,20 +83,34 @@ export async function POST(req: NextRequest) {
     const { limited } = checkRateLimit(`prodoc-img:${getClientIP(req)}`, 30, 60_000);
     if (limited) return NextResponse.json({ error: 'Rate limited' }, { status: 429 });
 
-    let body: { prompt?: string; model?: string };
+    let body: { prompt?: string; model?: string; onScreenText?: string };
     try {
       body = await req.json();
     } catch {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
     }
 
-    const { prompt, model } = body;
+    const { prompt, model, onScreenText } = body;
     if (!prompt?.trim()) {
       return NextResponse.json({ error: 'prompt is required' }, { status: 400 });
     }
     if (prompt.trim().length > 1500) {
       return NextResponse.json({ error: 'Prompt too long — maximum 1500 characters' }, { status: 400 });
     }
+
+    // Bake the row's on-screen text into the image itself rather than render
+    // it as a post-hoc lower-third. The directive goes at the start of the
+    // prompt because image models weight early tokens more heavily — putting
+    // the text requirement up front maximises the chance the model honours
+    // it. We quote the exact text and tell the model to match the scene's
+    // illustration style, so on a doodle row the text comes out hand-drawn,
+    // and on a photoreal row it comes out as clean serif/sans typography.
+    // The style suffix the LLM appended to the prompt stays untouched at
+    // the end, so the model sees: text-directive → scene description → style.
+    const safeOnScreenText = (onScreenText ?? '').trim();
+    const augmentedPrompt = safeOnScreenText
+      ? `INTEGRATED ON-SCREEN TEXT — Render the title text "${safeOnScreenText.replace(/"/g, '\\"')}" as a designed typographic element of the composition: clean, legible, large enough to read at a glance, with letterforms that match the illustration style of the scene below. Place the text in the negative-space area the scene description leaves open. The words must be readable — no scrambled, blurry, or partial letters.\n\n${prompt.trim()}`
+      : prompt.trim();
 
     const modelValue = model?.trim() || DEFAULT_IMAGE_MODEL;
     const spec = getImageModelSpec(modelValue);
@@ -124,7 +138,7 @@ export async function POST(req: NextRequest) {
         },
         body: JSON.stringify({
           model: spec.kieModel,
-          input: buildKieImageInput(spec.value, prompt.trim()),
+          input: buildKieImageInput(spec.value, augmentedPrompt),
         }),
       });
       if (createRes.status !== 502 && createRes.status !== 503 && createRes.status !== 504) break;

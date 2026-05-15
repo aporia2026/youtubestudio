@@ -1973,10 +1973,14 @@ Break the provided script into timed production rows. Each row = one visual shot
 
 ${allowOverlay ? `**overlay_stock_terms** — OPTIONAL. 2–4 comma-separated keywords for a real-world asset (logo, screenshot, photo) the editor will composite on top of the AI-generated visual in post. ONLY populate this when the Mixing Rules above explicitly call for it. Leave as "" otherwise. When set:
   - visual_type STAYS as Animation (or whatever the doodle scene calls for) — do NOT switch to "Screen Recording" or "B-Roll"
-  - ai_image_prompt still describes a complete stand-alone doodle scene, leaving visual room for the overlay
-  - notes should describe what the editor overlays and where (e.g. "Composite: drop the real Apple logo onto the blank rectangle in the doodle")` : ''}
+  - ai_image_prompt still describes a complete stand-alone doodle scene, AND the prompt MUST explicitly instruct the image model to leave the overlay's chosen zone as deliberate negative space (e.g. "leave the upper-right quadrant clean, uncluttered, low-contrast, ready to receive a graphic overlay"). The zone you reserve in the prompt MUST match the overlay_zone you set below.
+  - notes should describe what the editor overlays (e.g. "Composite: real Apple logo, sourced from web")
 
-**on_screen_text** — Text to display on screen. Empty string if none.
+**overlay_zone** — REQUIRED whenever overlay_stock_terms is non-empty. One of: "top-left", "top-right", "bottom-left", "bottom-right", "center-top", "center-bottom", "left-center", "right-center". Pick the zone that BEST fits the scene composition you described in ai_image_prompt: the overlay should land in low-saliency space (sky, blank wall, plain background), NOT on top of the focal subject. Set to "" when overlay_stock_terms is empty.
+
+**overlay_size** — REQUIRED whenever overlay_stock_terms is non-empty. One of: "small" (≈12% of frame width, for source badges and footnote logos), "medium" (≈18% of frame width, the default for brand marks and product logos), "large" (≈25% of frame width, for hero-stamp moments where the overlay is the point). Set to "" when overlay_stock_terms is empty.` : ''}
+
+**on_screen_text** — Text to display on screen — the title or label that should appear ON the image itself. The image generator bakes this into the still as designed typography, so keep it short (≤ 6 words) and impactful. Empty string if none.
 
 **notes** — Editor production notes. Empty string if none.
 
@@ -1996,7 +2000,9 @@ ${allowOverlay ? `**overlay_stock_terms** — OPTIONAL. 2–4 comma-separated ke
       "visual_description": "specific shot direction matching the chosen style",
       "stock_search_terms": "keyword1, keyword2",
       "ai_image_prompt": "Full detailed scene prompt... ${styleSuffix ?? ''}",${allowOverlay ? `
-      "overlay_stock_terms": "",` : ''}
+      "overlay_stock_terms": "",
+      "overlay_zone": "",
+      "overlay_size": "",` : ''}
       "on_screen_text": "",
       "notes": ""
     }
@@ -2005,14 +2011,15 @@ ${allowOverlay ? `**overlay_stock_terms** — OPTIONAL. 2–4 comma-separated ke
 \`\`\`
 
 ABSOLUTE RULES:
-- Every row has all ${allowOverlay ? '9' : '8'} fields
+- Every row has all ${allowOverlay ? '11' : '8'} fields
 - script_text is verbatim from the script — never paraphrase
 - ai_image_prompt ≥ 40 words for every non-Talking Head / non-Screen Recording row
 - Every ai_image_prompt MUST end with the style suffix${styleSuffix ? ` "${styleSuffix}"` : ' (if one was specified)'}
 - Talking Head + Screen Recording → ai_image_prompt = ""
 - Opening row: ${isChunk ? 'First B-Roll/Animation scene (no Title Card — continuation chunk)' : 'Title Card or first B-Roll/Animation scene'}
 - Statistics/numbers in the script → "Statistics" type with on_screen_text${allowOverlay ? `
-- overlay_stock_terms is OPTIONAL — populate it ONLY when the Mixing Rules apply. Most rows leave it as "".` : ''}`,
+- overlay_stock_terms is OPTIONAL — populate it ONLY when the Mixing Rules apply. Most rows leave it as "".
+- WHEN overlay_stock_terms IS SET: overlay_zone AND overlay_size MUST BOTH be set, AND the ai_image_prompt MUST instruct the image model to leave that zone as deliberate negative space.` : ''}`,
 
     user: `Generate a complete production document for this script.
 

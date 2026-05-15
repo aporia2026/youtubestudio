@@ -123,6 +123,21 @@ export interface VideoShot {
   /** Section title shown as a fixed stripe at the top of frame for the
    *  shot's full duration. Independent of `sceneType` — usable on any scene. */
   sectionTitle?: string;
+  /** Auto-sourced real-image overlay composited on top of the scene at
+   *  the planned zone. Falsy = no overlay, scene renders unmodified.
+   *
+   *  The overlay PNG is fetched by `/api/overlay/fetch` (Brave Search +
+   *  background removal) when the production-doc row carries an
+   *  `overlay_stock_terms` value. The zone + size are planned by the
+   *  doc generator at the same time as the row's `ai_image_prompt`, so
+   *  the still's negative-space layout matches where the overlay lands. */
+  overlay?: {
+    url: string;
+    zone:
+      | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+      | 'center-top' | 'center-bottom' | 'left-center' | 'right-center';
+    size: 'small' | 'medium' | 'large';
+  };
 }
 
 // ─── Video Config ──────────────────────────────────────────────────────────────

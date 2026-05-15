@@ -34,6 +34,8 @@ import {
   writeBrollLockMap,
 } from '@/components/production-doc/BrollCell';
 import { SectionThumbnailCard } from '@/components/production-doc/SectionThumbnailCard';
+import { OverlayCell } from '@/components/production-doc/OverlayCell';
+import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
 import {
   brollRowSignatureInput,
@@ -143,6 +145,20 @@ interface ProductionRow {
    *  Only populated when the chosen style has `allow_overlay_stock` and
    *  the model decides this row warrants a real-world reference. */
   overlay_stock_terms?: string;
+  /** Frame region the overlay lands in. Planned by the doc generator so
+   *  the `ai_image_prompt` can reserve matching negative space, then used
+   *  at render time to position the fetched overlay PNG. */
+  overlay_zone?:
+    | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+    | 'center-top' | 'center-bottom' | 'left-center' | 'right-center';
+  /** Overlay scale relative to the frame width. Planned alongside
+   *  `overlay_zone`. small ≈ 12%, medium ≈ 18%, large ≈ 25%. */
+  overlay_size?: 'small' | 'medium' | 'large';
+  /** Fetched + background-removed overlay PNG, mirrored to R2. Populated
+   *  asynchronously by `/api/overlay/fetch` after the row's still is
+   *  generated. Falsy means "no overlay rendered" — the still alone is
+   *  used. */
+  overlay_image_url?: string;
   on_screen_text: string;
   notes: string;
   /** Region id (from ProductionDoc.thumbnail.regions) this row's scene
@@ -174,6 +190,7 @@ interface RowImageState {
   searchUrl?: string;
   error?: string;
 }
+
 
 interface VisualRef {
   type: 'youtube' | 'screenshot';
@@ -459,6 +476,7 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
   doc,
   rowImages,
   rowVideoClips,
+  rowOverlays,
   rowLockedAsStill,
   animateScenes,
   voiceoverUrl,
@@ -471,6 +489,7 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
   doc: ProductionDoc;
   rowImages: RowImageState[];
   rowVideoClips: Record<number, { status: string; videoUrl?: string } | null>;
+  rowOverlays: Record<number, RowOverlayState>;
   rowLockedAsStill: boolean[];
   animateScenes: boolean;
   voiceoverUrl: string;
@@ -491,8 +510,9 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
       rowVideoClips: rowClipsArr,
       rowLockedAsStill,
       animateScenes,
+      rowOverlays,
     });
-  }, [doc, rowImages, rowVideoClips, rowLockedAsStill, animateScenes, voiceoverUrl, brandKit]);
+  }, [doc, rowImages, rowVideoClips, rowOverlays, rowLockedAsStill, animateScenes, voiceoverUrl, brandKit]);
   return (
     <VideoPlayer
       config={config}
@@ -1427,6 +1447,10 @@ function ProductionDocPage() {
   // — Image generation (declared before effects that reference it)
   const [rowImages, setRowImages] = useState<RowImageState[]>([]);
   const [imageProgress, setImageProgress] = useState({ done: 0, total: 0 });
+  const [imagesGenerating, setImagesGenerating] = useState(false);
+  // — Overlay fetch state, keyed by rowIndex. Sparse: entries exist only
+  //   for rows where an overlay fetch has been kicked off.
+  const [rowOverlays, setRowOverlays] = useState<Record<number, RowOverlayState>>({});
 
   // — B-roll clips per row (rowIndex → { status, videoUrl }). The BrollCell
   //   owns its own clip lifecycle and reports up via `onClipChange`; we keep
@@ -1503,6 +1527,12 @@ function ProductionDocPage() {
   // — "Animate all" batch state. While `animatingAll` is non-null the user
   //   is mid-batch; the button shows progress and we block re-entrance.
   const [animatingAll, setAnimatingAll] = useState<{ done: number; total: number } | null>(null);
+  // — "Retry failed videos" / "Retry failed images" batch state. Same shape
+  //   as `animatingAll` (done/total progress) but tracked separately so the
+  //   two retry buttons can run independently of each other while still
+  //   blocking re-entrance on their own batch.
+  const [retryingVideos, setRetryingVideos] = useState<{ done: number; total: number } | null>(null);
+  const [retryingImages, setRetryingImages] = useState<{ done: number; total: number } | null>(null);
   // Stubs assigned by the batch — pushed into each BrollCell as its
   //   `initialClip` so the cell's adoption effect picks up the new task id
   //   and starts polling. Sparse, keyed by rowIndex.
@@ -1583,8 +1613,52 @@ function ProductionDocPage() {
     return animateAllPlan.length * model.priceUsd;
   }, [animateAllPlan, userDefaultModelId]);
 
+  // Shared batch driver: walks `plan` sequentially, kicks off a B-roll
+  // generation per row, seeds the cell's adoption stub + the page's status
+  // map, and reports progress through `setProgress`. Both `runAnimateAll`
+  // and `runRetryFailedVideos` call this — keeps the kickoff contract in
+  // one place so the two batches can't drift.
+  // Sequential (not parallel): keeps the Kie rate-limiter from kicking us,
+  // and gives the user a smooth progress bar.
+  const processBrollPlan = useCallback(
+    async (
+      plan: AnimateAllRow[],
+      setProgress: (p: { done: number; total: number } | null) => void,
+    ) => {
+      setProgress({ done: 0, total: plan.length });
+      for (let n = 0; n < plan.length; n++) {
+        const item = plan[n]!;
+        try {
+          const stub = await kickoffBrollGeneration({
+            projectId: null,
+            scriptId: null,
+            rowIndex: item.rowIndex,
+            rowSignature: item.rowSignature,
+            visualDescription: item.visualDescription,
+            aiImagePrompt: item.aiImagePrompt,
+            styleHint: stylePreset,
+            stillImageUrl: item.stillImageUrl,
+            modelId: userDefaultModelId,
+          });
+          // Hand the stub down to the row's BrollCell so it adopts the new
+          // clip id and starts polling. We also seed `rowVideoClips` with
+          // the 'generating' state so the renderer's per-row gating sees
+          // the in-flight job immediately.
+          setRowBatchStubs((prev) => ({ ...prev, [item.rowIndex]: stub }));
+          handleBrollClipChange(item.rowIndex, { status: 'generating', video_url: null });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          toast.error(`Row ${item.rowIndex + 1}: ${msg}`);
+        }
+        setProgress({ done: n + 1, total: plan.length });
+      }
+      setProgress(null);
+    },
+    [stylePreset, userDefaultModelId, handleBrollClipChange],
+  );
+
   const runAnimateAll = useCallback(async () => {
-    if (animatingAll) return;
+    if (animatingAll || retryingVideos) return;
     if (animateAllPlan.length === 0) return;
     const model = findBrollModel(userDefaultModelId);
     if (!model) return;
@@ -1596,45 +1670,117 @@ function ProductionDocPage() {
         `Estimated cost: $${animateAllCostUsd.toFixed(2)}.`,
     );
     if (!confirmed) return;
-
-    setAnimatingAll({ done: 0, total: animateAllPlan.length });
-    // Sequential, not parallel: keeps the Kie rate-limiter from kicking us,
-    // and gives the user a smooth progress bar.
-    for (let n = 0; n < animateAllPlan.length; n++) {
-      const item = animateAllPlan[n]!;
-      try {
-        const stub = await kickoffBrollGeneration({
-          projectId: null,
-          scriptId: null,
-          rowIndex: item.rowIndex,
-          rowSignature: item.rowSignature,
-          visualDescription: item.visualDescription,
-          aiImagePrompt: item.aiImagePrompt,
-          styleHint: stylePreset,
-          stillImageUrl: item.stillImageUrl,
-          modelId: userDefaultModelId,
-        });
-        // Hand the stub down to the row's BrollCell so it adopts the new
-        // clip id and starts polling. We also seed `rowVideoClips` with
-        // the 'generating' state so the renderer's per-row gating sees
-        // the in-flight job immediately.
-        setRowBatchStubs((prev) => ({ ...prev, [item.rowIndex]: stub }));
-        handleBrollClipChange(item.rowIndex, { status: 'generating', video_url: null });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        toast.error(`Row ${item.rowIndex + 1}: ${msg}`);
-      }
-      setAnimatingAll({ done: n + 1, total: animateAllPlan.length });
-    }
-    setAnimatingAll(null);
+    await processBrollPlan(animateAllPlan, setAnimatingAll);
     toast.success('Animation batch queued — clips will appear as each one finishes.');
   }, [
     animatingAll,
+    retryingVideos,
     animateAllPlan,
     animateAllCostUsd,
     userDefaultModelId,
-    stylePreset,
-    handleBrollClipChange,
+    processBrollPlan,
+  ]);
+
+  // ── Retry-failed batches ────────────────────────────────────────────────
+  //
+  // `failedVideoPlan` is a strict subset of `animateAllPlan` — same
+  // eligibility gates (lock-as-still, model-kind/still pairing, min
+  // description length) PLUS the row's current clip status must be
+  // 'failed'. So clicking "Retry failed videos" never silently retries
+  // a row the regular "Animate all" plan would also skip.
+  //
+  // `failedImagePlan` is independent: rows whose still status is 'error'
+  // and which have an AI prompt (search-only rows can't be regenerated).
+  //
+  // The counters (`imageStats`, `videoStats`) are always visible per the
+  // user's spec — so they see "all green" at a glance even with no
+  // failures, not just when something needs attention.
+  const failedVideoPlan = React.useMemo<AnimateAllRow[]>(
+    () => animateAllPlan.filter((item) => rowVideoClips[item.rowIndex]?.status === 'failed'),
+    [animateAllPlan, rowVideoClips],
+  );
+
+  const failedImagePlan = React.useMemo<Array<{ rowIndex: number; prompt: string }>>(() => {
+    if (!doc) return [];
+    const out: Array<{ rowIndex: number; prompt: string }> = [];
+    for (let i = 0; i < doc.rows.length; i++) {
+      if (rowImages[i]?.status !== 'error') continue;
+      const prompt = doc.rows[i]?.ai_image_prompt?.trim();
+      if (!prompt) continue;
+      out.push({ rowIndex: i, prompt });
+    }
+    return out;
+  }, [doc, rowImages]);
+
+  const retryVideosCostUsd = React.useMemo(() => {
+    const model = findBrollModel(userDefaultModelId);
+    if (!model) return 0;
+    return failedVideoPlan.length * model.priceUsd;
+  }, [failedVideoPlan, userDefaultModelId]);
+
+  const imageStats = React.useMemo(() => {
+    let succeeded = 0;
+    let failed = 0;
+    for (const s of rowImages) {
+      if (s?.status === 'done') succeeded++;
+      else if (s?.status === 'error') failed++;
+    }
+    return { succeeded, failed };
+  }, [rowImages]);
+
+  const videoStats = React.useMemo(() => {
+    let succeeded = 0;
+    let failed = 0;
+    for (const k of Object.keys(rowVideoClips)) {
+      const v = rowVideoClips[Number(k)];
+      if (!v) continue;
+      if (v.status === 'ready') succeeded++;
+      else if (v.status === 'failed') failed++;
+    }
+    return { succeeded, failed };
+  }, [rowVideoClips]);
+
+  const runRetryFailedImages = useCallback(async () => {
+    if (retryingImages || imagesGenerating) return;
+    if (failedImagePlan.length === 0) return;
+    setRetryingImages({ done: 0, total: failedImagePlan.length });
+    for (let n = 0; n < failedImagePlan.length; n++) {
+      const item = failedImagePlan[n]!;
+      await generateImageForRow(item.rowIndex, item.prompt);
+      setRetryingImages({ done: n + 1, total: failedImagePlan.length });
+    }
+    setRetryingImages(null);
+    toast.success(
+      `Retried ${failedImagePlan.length} image${failedImagePlan.length === 1 ? '' : 's'}.`,
+    );
+    // `generateImageForRow` is a per-render async function (not memoised) —
+    // intentionally omitted from deps to avoid recreating this callback every
+    // render. The function closes over stable state setters and `imageModel`
+    // at call time, which is fine for a synchronous retry loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [retryingImages, imagesGenerating, failedImagePlan]);
+
+  const runRetryFailedVideos = useCallback(async () => {
+    if (animatingAll || retryingVideos) return;
+    if (failedVideoPlan.length === 0) return;
+    const model = findBrollModel(userDefaultModelId);
+    if (!model) return;
+    const confirmed = window.confirm(
+      `Retry ${failedVideoPlan.length} failed animation${failedVideoPlan.length === 1 ? '' : 's'} with ${model.label}? ` +
+        `Estimated cost: $${retryVideosCostUsd.toFixed(2)}.`,
+    );
+    if (!confirmed) return;
+    await processBrollPlan(failedVideoPlan, setRetryingVideos);
+    toast.success(
+      `Retry batch queued for ${failedVideoPlan.length} row${failedVideoPlan.length === 1 ? '' : 's'}.`,
+    );
+  }, [
+    animatingAll,
+    retryingVideos,
+    failedVideoPlan,
+    retryVideosCostUsd,
+    userDefaultModelId,
+    processBrollPlan,
   ]);
 
   // Revoke any outstanding screenshot blob URLs on unmount. We track the
@@ -1756,10 +1902,18 @@ function ProductionDocPage() {
     try {
       const saved = localStorage.getItem('prodoc_last_result');
       if (!saved) return;
-      const parsed = JSON.parse(saved) as { doc?: ProductionDoc; rowImages?: RowImageState[]; savedAt?: number };
+      const parsed = JSON.parse(saved) as {
+        doc?: ProductionDoc;
+        rowImages?: RowImageState[];
+        rowOverlays?: Record<number, RowOverlayState>;
+        savedAt?: number;
+      };
       if (!parsed.doc?.rows?.length) return;
       setDoc(parsed.doc);
       if (parsed.rowImages?.length) setRowImages(parsed.rowImages);
+      if (parsed.rowOverlays && typeof parsed.rowOverlays === 'object') {
+        setRowOverlays(parsed.rowOverlays);
+      }
       const ago = parsed.savedAt ? Math.round((Date.now() - parsed.savedAt) / 60000) : null;
       toast.success(`Previous session restored${ago !== null ? ` (saved ${ago < 1 ? 'just now' : `${ago}m ago`})` : ''}`, { duration: 4000 });
     } catch { /* corrupt storage — ignore */ }
@@ -1770,7 +1924,7 @@ function ProductionDocPage() {
   useEffect(() => {
     if (!doc?.rows?.length) return;
     try {
-      localStorage.setItem('prodoc_last_result', JSON.stringify({ doc, rowImages, savedAt: Date.now() }));
+      localStorage.setItem('prodoc_last_result', JSON.stringify({ doc, rowImages, rowOverlays, savedAt: Date.now() }));
     } catch { /* storage full — ignore */ }
     // Also patch the current history entry so row-image URLs survive on restore.
     if (historyEntryId && rowImages.length > 0) {
@@ -1782,13 +1936,12 @@ function ProductionDocPage() {
         updateProductionDocEntry(historyEntryId, { rowImages: imgMap }).catch(() => {});
       }
     }
-  }, [doc, rowImages, historyEntryId]);
+  }, [doc, rowImages, rowOverlays, historyEntryId]);
 
   // Auto-scroll log to bottom when new entries are added
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [generationLog.length]);
-  const [imagesGenerating, setImagesGenerating] = useState(false);
 
   // — Autocomplete hints
   const [nicheHints, setNicheHints] = useState<string[]>([]);
@@ -2063,12 +2216,17 @@ function ProductionDocPage() {
       next[rowIndex] = { ...next[rowIndex], status: 'loading' };
       return next;
     });
+    // Pull the row's on-screen text from the live doc and pass it down — the
+    // image API uses it to bake the title into the still itself rather than
+    // overlaying it later. Looked up here (not at the call site) so callers
+    // don't have to thread the field through.
+    const onScreenText = doc?.rows[rowIndex]?.on_screen_text?.trim() || undefined;
     try {
       const res = await fetch('/api/generate/production-doc/image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal,
-        body: JSON.stringify({ prompt, model: imageModel }),
+        body: JSON.stringify({ prompt, model: imageModel, onScreenText }),
       });
       const data = await safeJson(res);
       if (!res.ok) throw new Error((data.error as string) || 'Failed');
@@ -2077,6 +2235,11 @@ function ProductionDocPage() {
         next[rowIndex] = { status: 'done', imageUrl: data.imageUrl as string };
         return next;
       });
+      // Fire-and-forget the overlay fetch in parallel with the next row's
+      // image gen. Only triggers when the LLM planned an overlay for this
+      // row. Idempotent — the route's R2 cache short-circuits repeats.
+      const overlayTerms = doc?.rows[rowIndex]?.overlay_stock_terms?.trim();
+      if (overlayTerms) void fetchOverlayForRow(rowIndex, overlayTerms);
       return true;
     } catch (err) {
       setRowImages(prev => {
@@ -2085,6 +2248,57 @@ function ProductionDocPage() {
         return next;
       });
       return false;
+    }
+  }
+
+  // ── Per-row overlay fetch
+  //
+  // Hits /api/overlay/fetch which sources a real-world asset (logo,
+  // screenshot, photo) for the row's `overlay_stock_terms`, strips its
+  // background via Replicate RMBG, and stores it on R2. We persist the
+  // resulting URL on `rowOverlays[rowIndex]` and the Remotion renderer
+  // composites it onto the still at the LLM-planned `overlay_zone`.
+  //
+  // The route degrades gracefully (no result / search down / RMBG down all
+  // return 200 with `overlayUrl: null` + a `reason`), so a missing key or
+  // a flaky source never breaks the row — the still alone is rendered.
+  async function fetchOverlayForRow(rowIndex: number, overlayStockTerms: string): Promise<void> {
+    setRowOverlays((prev) => ({ ...prev, [rowIndex]: { status: 'loading' } }));
+    try {
+      const res = await fetch('/api/overlay/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ overlayStockTerms }),
+      });
+      const data = (await safeJson(res)) as {
+        overlayUrl?: string | null;
+        sourceUrl?: string;
+        reason?: string;
+        error?: string;
+      };
+      if (!res.ok) {
+        setRowOverlays((prev) => ({
+          ...prev,
+          [rowIndex]: { status: 'error', error: data.error || `Failed (${res.status})` },
+        }));
+        return;
+      }
+      if (data.overlayUrl) {
+        setRowOverlays((prev) => ({
+          ...prev,
+          [rowIndex]: { status: 'done', url: data.overlayUrl!, sourceUrl: data.sourceUrl },
+        }));
+      } else {
+        setRowOverlays((prev) => ({
+          ...prev,
+          [rowIndex]: { status: 'skipped', error: data.reason || 'No usable image found' },
+        }));
+      }
+    } catch (err) {
+      setRowOverlays((prev) => ({
+        ...prev,
+        [rowIndex]: { status: 'error', error: err instanceof Error ? err.message : 'Failed' },
+      }));
     }
   }
 
@@ -2169,6 +2383,7 @@ function ProductionDocPage() {
     setGenerating(true);
     setDoc(null);
     setRowImages([]);
+    setRowOverlays({});
     try { localStorage.removeItem('prodoc_last_result'); } catch {};
     setImageProgress({ done: 0, total: 0 });
     setImagesGenerating(false);
@@ -2592,6 +2807,7 @@ function ProductionDocPage() {
       rowVideoClips: rowClipsArr,
       rowLockedAsStill: rowLockedArr,
       animateScenes,
+      rowOverlays,
     });
     setRenderStatus('rendering');
     setRenderProgress(0);
@@ -3226,6 +3442,132 @@ function ProductionDocPage() {
             <SectionThumbnailCard value={doc.thumbnail} onChange={setThumbnail} />
           </div>
 
+          {/* Media status bar — always-visible succeeded/failed counters for
+              this doc's still images and B-roll animations, plus one-click
+              "Retry failed" buttons that batch the failed rows sequentially.
+              Image retries use the user's selected image model; video retries
+              use the user's current default B-roll model (same as Animate all).
+              Both retry buttons are disabled when nothing has failed. */}
+          <div className="mb-4 flex flex-wrap items-stretch gap-3">
+            {/* Images cell */}
+            <div
+              className="flex-1 min-w-[260px] flex items-center gap-3 px-3 py-2 rounded-lg"
+              style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+            >
+              <span className="text-base" aria-hidden>📷</span>
+              <div className="flex flex-col leading-tight flex-1 min-w-0">
+                <span className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
+                  Images
+                </span>
+                <div className="flex items-center gap-2 text-[11px]">
+                  <span style={{ color: '#4ade80' }} title="Stills generated successfully">
+                    {imageStats.succeeded}✓
+                  </span>
+                  <span style={{ color: 'var(--text-muted)' }}>·</span>
+                  <span
+                    style={{ color: imageStats.failed > 0 ? '#f87171' : 'var(--text-muted)' }}
+                    title="Stills that failed to generate"
+                  >
+                    {imageStats.failed}✗
+                  </span>
+                </div>
+              </div>
+              {retryingImages ? (
+                <div className="flex items-center gap-2 text-xs whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>
+                  <div className="spinner" style={{ width: 14, height: 14 }} />
+                  Retrying {retryingImages.done}/{retryingImages.total}…
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={runRetryFailedImages}
+                  disabled={failedImagePlan.length === 0 || imagesGenerating}
+                  className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+                  style={{
+                    background: failedImagePlan.length === 0 ? 'rgba(120,120,120,0.10)' : 'rgba(6,182,212,0.18)',
+                    color: failedImagePlan.length === 0 ? 'var(--text-muted)' : '#22d3ee',
+                    border: '1px solid ' + (failedImagePlan.length === 0 ? 'transparent' : 'rgba(6,182,212,0.45)'),
+                    cursor: failedImagePlan.length === 0 || imagesGenerating ? 'not-allowed' : 'pointer',
+                  }}
+                  title={
+                    failedImagePlan.length === 0
+                      ? 'No failed images to retry.'
+                      : imagesGenerating
+                        ? 'Initial image batch is still running — wait for it to finish.'
+                        : `Re-run ${failedImagePlan.length} failed image generation${failedImagePlan.length === 1 ? '' : 's'} one by one.`
+                  }
+                >
+                  ↻ Retry failed
+                  {failedImagePlan.length > 0 && (
+                    <span className="ml-1.5 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      {failedImagePlan.length}
+                    </span>
+                  )}
+                </button>
+              )}
+            </div>
+
+            {/* Videos cell */}
+            <div
+              className="flex-1 min-w-[260px] flex items-center gap-3 px-3 py-2 rounded-lg"
+              style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+            >
+              <span className="text-base" aria-hidden>🎬</span>
+              <div className="flex flex-col leading-tight flex-1 min-w-0">
+                <span className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
+                  Animations
+                </span>
+                <div className="flex items-center gap-2 text-[11px]">
+                  <span style={{ color: '#4ade80' }} title="Animations generated successfully">
+                    {videoStats.succeeded}✓
+                  </span>
+                  <span style={{ color: 'var(--text-muted)' }}>·</span>
+                  <span
+                    style={{ color: videoStats.failed > 0 ? '#f87171' : 'var(--text-muted)' }}
+                    title="Animations that failed to generate"
+                  >
+                    {videoStats.failed}✗
+                  </span>
+                </div>
+              </div>
+              {retryingVideos ? (
+                <div className="flex items-center gap-2 text-xs whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>
+                  <div className="spinner" style={{ width: 14, height: 14 }} />
+                  Retrying {retryingVideos.done}/{retryingVideos.total}…
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={runRetryFailedVideos}
+                  disabled={failedVideoPlan.length === 0 || !animateScenes || Boolean(animatingAll)}
+                  className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+                  style={{
+                    background: failedVideoPlan.length === 0 || !animateScenes ? 'rgba(120,120,120,0.10)' : 'rgba(168,85,247,0.18)',
+                    color: failedVideoPlan.length === 0 || !animateScenes ? 'var(--text-muted)' : '#c084fc',
+                    border: '1px solid ' + (failedVideoPlan.length === 0 || !animateScenes ? 'transparent' : 'rgba(168,85,247,0.45)'),
+                    cursor: failedVideoPlan.length === 0 || !animateScenes || animatingAll ? 'not-allowed' : 'pointer',
+                  }}
+                  title={
+                    !animateScenes
+                      ? 'Animations are disabled — turn on "Animate scenes" first.'
+                      : failedVideoPlan.length === 0
+                        ? 'No failed animations to retry.'
+                        : animatingAll
+                          ? 'Animate-all batch is in flight — wait for it to finish.'
+                          : `Re-run ${failedVideoPlan.length} failed animation${failedVideoPlan.length === 1 ? '' : 's'} for ~$${retryVideosCostUsd.toFixed(2)}.`
+                  }
+                >
+                  ↻ Retry failed
+                  {failedVideoPlan.length > 0 && (
+                    <span className="ml-1.5 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      {failedVideoPlan.length} · ~${retryVideosCostUsd.toFixed(2)}
+                    </span>
+                  )}
+                </button>
+              )}
+            </div>
+          </div>
+
           {/* Animate-scenes master toggle. When OFF, B-roll buttons are
               hidden on every row and the renderer falls back to stills with
               Ken Burns motion (today's pre-animation behaviour). Adjacent
@@ -3422,20 +3764,20 @@ function ProductionDocPage() {
                             <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>—</span>
                           )}
                         </td>
-                        {/* Overlay (real-image composite) */}
+                        {/* Overlay (real-image composite) — shows the LLM's
+                            planned terms plus the auto-fetch status pill.
+                            The fetch fires alongside the row's image gen and
+                            its result is composited at render time. */}
                         {showOverlayColumn && (
-                          <td style={{ padding: '8px 12px', maxWidth: 140, borderRight: '1px solid var(--border)' }}>
+                          <td style={{ padding: '8px 12px', maxWidth: 160, borderRight: '1px solid var(--border)' }}>
                             {row.overlay_stock_terms?.trim() ? (
-                              <a
-                                href={`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(row.overlay_stock_terms)}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs"
-                                style={{ background: 'rgba(245,158,11,0.15)', color: '#fbbf24' }}
-                                title="Click to find a real image to composite onto the AI-generated visual"
-                              >
-                                ✦ {row.overlay_stock_terms}
-                              </a>
+                              <OverlayCell
+                                terms={row.overlay_stock_terms}
+                                zone={row.overlay_zone}
+                                size={row.overlay_size}
+                                state={rowOverlays[i]}
+                                onRetry={() => fetchOverlayForRow(i, row.overlay_stock_terms!.trim())}
+                              />
                             ) : (
                               <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>—</span>
                             )}
@@ -3564,15 +3906,13 @@ function ProductionDocPage() {
                         {row.overlay_stock_terms?.trim() && (
                           <div>
                             <p className="text-xs font-semibold mb-0.5" style={{ color: '#fbbf24' }}>✦ Real-image overlay</p>
-                            <a
-                              href={`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(row.overlay_stock_terms)}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-xs underline"
-                              style={{ color: '#fbbf24' }}
-                            >
-                              {row.overlay_stock_terms}
-                            </a>
+                            <OverlayCell
+                              terms={row.overlay_stock_terms}
+                              zone={row.overlay_zone}
+                              size={row.overlay_size}
+                              state={rowOverlays[i]}
+                              onRetry={() => fetchOverlayForRow(i, row.overlay_stock_terms!.trim())}
+                            />
                           </div>
                         )}
                         {row.on_screen_text && (
@@ -3703,6 +4043,7 @@ function ProductionDocPage() {
                   doc={doc}
                   rowImages={rowImages}
                   rowVideoClips={rowVideoClips}
+                  rowOverlays={rowOverlays}
                   rowLockedAsStill={doc.rows.map((row) =>
                     Boolean(
                       rowLockSignatures[
@@ -3737,6 +4078,7 @@ function ProductionDocPage() {
                         rowVideoClips: rowClipsArr,
                         rowLockedAsStill: rowLockedArr,
                         animateScenes,
+                        rowOverlays,
                       });
                       sessionStorage.setItem('video-studio:bridge', JSON.stringify({
                         config,
@@ -3811,8 +4153,13 @@ function ProductionDocPage() {
                 return url ? { status: 'done', imageUrl: url } : { status: 'idle' };
               });
               setRowImages(restoredImages);
+              // Overlays aren't persisted in history entries yet — clear
+              // so the restored doc starts with the OverlayCell in 'idle'
+              // and the user can per-row Retry to refresh.
+              setRowOverlays({});
             } else {
               setRowImages([]);
+              setRowOverlays({});
             }
             setHistoryEntryId(entry.id);
             // Restore the per-video visual brand kit override if the
@@ -3824,6 +4171,7 @@ function ProductionDocPage() {
           } else {
             setDoc(null);
             setRowImages([]);
+            setRowOverlays({});
             setHistoryEntryId(null);
             setVisualKitOverride({ v: 1 });
             toast.info('Older entry — only metadata was saved. Re-generate to produce the doc.');
