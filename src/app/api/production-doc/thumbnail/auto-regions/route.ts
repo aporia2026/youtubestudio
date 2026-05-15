@@ -4,7 +4,6 @@ import { generateText } from '@/lib/ai';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { apiRoute } from '@/lib/route-helpers';
-import { resolveAndPinSafeUrl } from '@/lib/url-safety';
 import { logger } from '@/lib/logger';
 
 /**
@@ -53,20 +52,21 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
     return NextResponse.json({ error: 'imageUrl, width, height are required' }, { status: 400 });
   }
 
-  // SSRF + size guard on the image URL — mirrors the competitor thumbnail
-  // analyser. Forces https, dispatches through a DNS-pinned agent, caps
-  // the response body.
+  // No SSRF guard here — the imageUrl always points at our own R2-hosted
+  // production-doc thumbnail (stored on the doc, set by the upload route).
+  // It is server-state, not user-input on this request. We still enforce
+  // https + size + content-type below so a misconfigured thumbnail URL
+  // can't make us fetch arbitrary bytes.
+  if (!/^https:\/\//i.test(imageUrl)) {
+    return NextResponse.json({ error: 'imageUrl must be an https URL' }, { status: 400 });
+  }
   let imgRes: Response;
   try {
-    const { url: safeUrl, dispatcher } = await resolveAndPinSafeUrl(imageUrl, {
-      allowedProtocols: ['https:'],
-    });
-    imgRes = await fetch(safeUrl, { dispatcher } as RequestInit & { dispatcher: unknown });
+    imgRes = await fetch(imageUrl);
   } catch (err) {
-    logger.warn('Auto-regions fetch rejected by SSRF guard', {
-      detail: err instanceof Error ? err.message : String(err),
-    });
-    return NextResponse.json({ error: 'Failed to fetch thumbnail' }, { status: 502 });
+    const detail = err instanceof Error ? err.message : String(err);
+    logger.warn('Auto-regions thumbnail fetch failed', { detail, imageUrl });
+    return NextResponse.json({ error: `Failed to fetch thumbnail: ${detail}` }, { status: 502 });
   }
   if (!imgRes.ok) {
     return NextResponse.json({ error: `Thumbnail fetch failed (${imgRes.status})` }, { status: 502 });

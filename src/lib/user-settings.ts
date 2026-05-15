@@ -23,6 +23,14 @@ export interface UserSettings {
    *  DEFAULT_BROLL_MODEL_ID". Validated against the live registry at
    *  the API layer before being persisted. */
   default_broll_model_id?: string | null;
+  /** Per-user default visual-style preset for the production-doc form.
+   *  Stored as the style slug (e.g. 'doodle_explainer', 'cinematic') or
+   *  a workspace-saved style UUID. `null` or absent means "fall back to
+   *  the library default". Applied when the user starts a fresh session
+   *  (no form-input cache); the in-session form-input cache takes
+   *  precedence over this for normal refreshes so the user's most recent
+   *  choice always wins for the current doc. */
+  default_style_preset?: string | null;
 }
 
 const DEFAULTS: UserSettings = { v: SETTINGS_VERSION };
@@ -61,6 +69,11 @@ export function parseUserSettings(encryptedBlob: string | null): UserSettings {
     out.default_broll_model_id = obj.default_broll_model_id;
   } else if (obj.default_broll_model_id === null) {
     out.default_broll_model_id = null;
+  }
+  if (typeof obj.default_style_preset === 'string') {
+    out.default_style_preset = obj.default_style_preset;
+  } else if (obj.default_style_preset === null) {
+    out.default_style_preset = null;
   }
   return out;
 }

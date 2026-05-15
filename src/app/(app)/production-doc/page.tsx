@@ -1381,7 +1381,40 @@ function ProductionDocPage() {
   }, [imageModel]);
   const [speakingPace, setSpeakingPace] = useState(135);
   const [actualDuration, setActualDuration] = useState(''); // "mm:ss" of actual voiceover recording
-  const [stylePreset, setStylePreset] = useState('cinematic');
+  const [stylePreset, setStylePreset] = useState('doodle_explainer');
+  // Server-stored "default style for new sessions" — fetched on mount,
+  // applied when the user clicks "New session" (or on first-ever load
+  // when no form-input cache exists), and updated when the user clicks
+  // the ⭐ on a style chip. `null` until fetched; `''` after fetch if
+  // the user hasn't set one (we still surface the library default in
+  // the picker UI as the fallback).
+  const [userDefaultStyle, setUserDefaultStyle] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/user/settings/default-style', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = (await res.json()) as { stylePreset?: string; isExplicit?: boolean };
+        if (cancelled) return;
+        setUserDefaultStyle(data.isExplicit ? (data.stylePreset ?? null) : '');
+      } catch { /* leave at library default */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  const setStyleAsDefault = useCallback(async (slug: string) => {
+    setUserDefaultStyle(slug);
+    try {
+      await fetch('/api/user/settings/default-style', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stylePreset: slug }),
+      });
+      toast.success('Default style updated.');
+    } catch {
+      toast.error('Could not save default — try again.');
+    }
+  }, []);
   const [creativeBrief, setCreativeBrief] = useState('');
   const [availableStyles, setAvailableStyles] = useState<StyleSummary[]>(FALLBACK_BUILT_IN_STYLES);
   const [stylesLoaded, setStylesLoaded] = useState(false);
@@ -2194,7 +2227,10 @@ function ProductionDocPage() {
     setTopic('');
     setSpeakingPace(135);
     setActualDuration('');
-    setStylePreset('cinematic');
+    // Use the user's stored default style if they've set one; otherwise
+    // fall back to the library default. The user's last explicit choice
+    // is what shapes new sessions, not the literal hardcoded default.
+    setStylePreset(userDefaultStyle || 'doodle_explainer');
     setCreativeBrief('');
     setDoc(null);
     setRowImages([]);
@@ -2208,7 +2244,7 @@ function ProductionDocPage() {
       window.localStorage.removeItem('prodoc_handoff_consumed');
     } catch { /* ignore */ }
     toast.success('New session started.');
-  }, []);
+  }, [userDefaultStyle]);
 
   // Persist doc + images together whenever either changes
   useEffect(() => {
@@ -3353,38 +3389,72 @@ function ProductionDocPage() {
                 const active = stylePreset === p.id;
                 const isSaved = p.origin === 'saved';
                 const supportsOverlay = p.allow_overlay_stock;
+                // ⭐ is filled when this style is the user's persistent
+                // default for new sessions. Clicking the star toggles it
+                // — clicking the empty star promotes that style; clicking
+                // the filled star clears the default (back to library).
+                const isUserDefault = userDefaultStyle === p.id;
                 return (
-                  <button
-                    key={p.id}
-                    onClick={() => setStylePreset(p.id)}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5"
-                    style={{
-                      background: active ? 'rgba(124,58,237,0.25)' : 'rgba(255,255,255,0.05)',
-                      color: active ? '#a78bfa' : 'var(--text-secondary)',
-                      border: active ? '1px solid rgba(124,58,237,0.4)' : '1px solid var(--border)',
-                    }}
-                    title={p.description || (isSaved ? 'Saved style' : 'Built-in style')}
-                  >
-                    <span>{p.label}</span>
-                    {isSaved && (
-                      <span
-                        className="text-[9px] px-1 rounded"
-                        style={{ background: 'rgba(34,211,238,0.15)', color: '#22d3ee' }}
-                        title="Workspace-saved style"
-                      >
-                        Saved
-                      </span>
-                    )}
-                    {supportsOverlay && (
-                      <span
-                        className="text-[9px] px-1 rounded"
-                        style={{ background: 'rgba(245,158,11,0.15)', color: '#fbbf24' }}
-                        title="Mixes AI visuals with real-image overlays"
-                      >
-                        Mixed
-                      </span>
-                    )}
-                  </button>
+                  <div key={p.id} className="inline-flex items-stretch">
+                    <button
+                      onClick={() => setStylePreset(p.id)}
+                      className="px-3 py-1.5 rounded-l-lg text-xs font-medium transition-all flex items-center gap-1.5"
+                      style={{
+                        background: active ? 'rgba(124,58,237,0.25)' : 'rgba(255,255,255,0.05)',
+                        color: active ? '#a78bfa' : 'var(--text-secondary)',
+                        border: active ? '1px solid rgba(124,58,237,0.4)' : '1px solid var(--border)',
+                        borderRight: 'none',
+                      }}
+                      title={p.description || (isSaved ? 'Saved style' : 'Built-in style')}
+                    >
+                      <span>{p.label}</span>
+                      {isSaved && (
+                        <span
+                          className="text-[9px] px-1 rounded"
+                          style={{ background: 'rgba(34,211,238,0.15)', color: '#22d3ee' }}
+                          title="Workspace-saved style"
+                        >
+                          Saved
+                        </span>
+                      )}
+                      {supportsOverlay && (
+                        <span
+                          className="text-[9px] px-1 rounded"
+                          style={{ background: 'rgba(245,158,11,0.15)', color: '#fbbf24' }}
+                          title="Mixes AI visuals with real-image overlays"
+                        >
+                          Mixed
+                        </span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (isUserDefault) {
+                          // Clear → library fallback
+                          setStyleAsDefault('');
+                          setUserDefaultStyle('');
+                        } else {
+                          setStyleAsDefault(p.id);
+                        }
+                      }}
+                      className="px-2 py-1.5 rounded-r-lg text-xs flex items-center"
+                      style={{
+                        background: active ? 'rgba(124,58,237,0.25)' : 'rgba(255,255,255,0.05)',
+                        color: isUserDefault ? '#fbbf24' : 'var(--text-muted)',
+                        border: active ? '1px solid rgba(124,58,237,0.4)' : '1px solid var(--border)',
+                      }}
+                      title={
+                        isUserDefault
+                          ? 'This is your default style for new sessions. Click to clear.'
+                          : 'Make this your default style for new sessions.'
+                      }
+                      aria-label={isUserDefault ? 'Clear default style' : 'Set as default style'}
+                    >
+                      {isUserDefault ? '★' : '☆'}
+                    </button>
+                  </div>
                 );
               })}
             </div>
