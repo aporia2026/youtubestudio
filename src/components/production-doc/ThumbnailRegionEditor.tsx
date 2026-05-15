@@ -245,6 +245,23 @@ export function ThumbnailRegionEditor({ thumbnail, onSave, onClose }: ThumbnailR
   // and pushes the previous state onto the undo stack so the user can
   // back out if the result isn't right.
   const [autoDetecting, setAutoDetecting] = useState(false);
+  // Which vision model to use for auto-detect. Persisted in localStorage
+  // across editor opens. Default biases toward Kie-routed Gemini Flash
+  // because that's the path most users have configured (Kie token is
+  // already required for image generation elsewhere in the app).
+  const [autoDetectModel, setAutoDetectModel] = useState<string>(() => {
+    if (typeof window === 'undefined') return 'kie-gemini-3-flash';
+    try {
+      const saved = window.localStorage.getItem('prodoc_vision_model');
+      return saved || 'kie-gemini-3-flash';
+    } catch {
+      return 'kie-gemini-3-flash';
+    }
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try { window.localStorage.setItem('prodoc_vision_model', autoDetectModel); } catch {}
+  }, [autoDetectModel]);
 
   // Lock background scroll while open.
   useEffect(() => {
@@ -519,6 +536,7 @@ export function ThumbnailRegionEditor({ thumbnail, onSave, onClose }: ThumbnailR
           imageUrl: thumbnail.imageUrl,
           width: thumbnail.width,
           height: thumbnail.height,
+          modelId: autoDetectModel,
         }),
       });
       const data = (await res.json()) as { regions?: ThumbnailRegion[]; error?: string };
@@ -538,7 +556,7 @@ export function ThumbnailRegionEditor({ thumbnail, onSave, onClose }: ThumbnailR
     } finally {
       setAutoDetecting(false);
     }
-  }, [autoDetecting, regions.length, thumbnail.imageUrl, thumbnail.width, thumbnail.height, pushUndo]);
+  }, [autoDetecting, regions.length, thumbnail.imageUrl, thumbnail.width, thumbnail.height, pushUndo, autoDetectModel]);
 
   const handleSave = useCallback(() => {
     // Strip transient state from the payload — only the persistent fields.
@@ -672,10 +690,59 @@ export function ThumbnailRegionEditor({ thumbnail, onSave, onClose }: ThumbnailR
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {/* Vision-model picker — persists in localStorage. Only
+                models known to accept an `image` arg via generateText
+                are listed; anything else would fail server-side at the
+                allowlist check. Kie variants come first because that's
+                the provider most users have set up. */}
+            <select
+              value={autoDetectModel}
+              onChange={(e) => setAutoDetectModel(e.target.value)}
+              disabled={autoDetecting}
+              title="Vision model used by auto-detect. Stored locally; change any time."
+              style={{
+                fontSize: 11, padding: '7px 8px', borderRadius: 6,
+                background: 'rgba(255,255,255,0.04)',
+                color: 'var(--text)',
+                border: '1px solid rgba(255,255,255,0.10)',
+                cursor: autoDetecting ? 'not-allowed' : 'pointer',
+                maxWidth: 180,
+              }}
+            >
+              <optgroup label="Kie.ai — Gemini">
+                <option value="kie-gemini-3-flash">Gemini 3 Flash (Kie)</option>
+                <option value="kie-gemini-3-pro">Gemini 3 Pro (Kie)</option>
+                <option value="kie-gemini-3.1-pro">Gemini 3.1 Pro (Kie)</option>
+                <option value="kie-gemini-2.5-flash">Gemini 2.5 Flash (Kie)</option>
+                <option value="kie-gemini-2.5-pro">Gemini 2.5 Pro (Kie)</option>
+              </optgroup>
+              <optgroup label="Kie.ai — Claude">
+                <option value="kie-claude-haiku-4-5">Claude Haiku 4.5 (Kie)</option>
+                <option value="kie-claude-sonnet-4-6">Claude Sonnet 4.6 (Kie)</option>
+                <option value="kie-claude-sonnet-4-5">Claude Sonnet 4.5 (Kie)</option>
+                <option value="kie-claude-opus-4-6">Claude Opus 4.6 (Kie)</option>
+                <option value="kie-claude-opus-4-7">Claude Opus 4.7 (Kie)</option>
+              </optgroup>
+              <optgroup label="OpenAI direct">
+                <option value="gpt-4o-mini">GPT-4o Mini</option>
+                <option value="gpt-4o">GPT-4o</option>
+              </optgroup>
+              <optgroup label="Google direct">
+                <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                <option value="gemini-2.0-flash-thinking-exp">Gemini 2.0 Flash Thinking</option>
+              </optgroup>
+              <optgroup label="Anthropic direct">
+                <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
+                <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+                <option value="claude-opus-4-6">Claude Opus 4.6</option>
+                <option value="claude-opus-4-7">Claude Opus 4.7</option>
+              </optgroup>
+            </select>
             <button
               onClick={handleAutoDetect}
               disabled={autoDetecting}
-              title="Use vision AI to identify rectangular panels in this thumbnail and label them automatically."
+              title="Use the selected vision model to identify rectangular panels in this thumbnail and label them automatically."
               style={{
                 fontSize: 12, fontWeight: 500, padding: '8px 12px', borderRadius: 6,
                 background: autoDetecting ? 'rgba(34,211,238,0.10)' : 'rgba(34,211,238,0.18)',

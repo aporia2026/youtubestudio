@@ -23,7 +23,27 @@ import { logger } from '@/lib/logger';
  */
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-const VISION_MODEL = 'claude-haiku-4-5-20251001';
+
+// Vision-capable model allowlist. Mirrors the competitor-thumbnail-analyser
+// route. Any of these accepts an `image: { base64, mimeType }` arg via the
+// `generateText` helper. Kie variants are preferred for users without
+// direct provider keys.
+const VISION_ALLOWED = new Set<string>([
+  // Anthropic direct
+  'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001',
+  // OpenAI direct
+  'gpt-4o', 'gpt-4o-mini',
+  // Google direct
+  'gemini-2.0-flash', 'gemini-2.0-flash-thinking-exp', 'gemini-2.5-flash',
+  // Kie.ai — Gemini variants
+  'kie-gemini-2.5-flash', 'kie-gemini-2.5-pro',
+  'kie-gemini-3-flash', 'kie-gemini-3-pro', 'kie-gemini-3.1-pro',
+  // Kie.ai — Claude variants
+  'kie-claude-opus-4-7', 'kie-claude-opus-4-6', 'kie-claude-sonnet-4-6',
+  'kie-claude-sonnet-4-5', 'kie-claude-opus-4-5', 'kie-claude-haiku-4-5',
+]);
+
+const DEFAULT_VISION_MODEL = 'kie-gemini-3-flash';
 
 export const maxDuration = 60;
 
@@ -39,7 +59,7 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
   const { limited } = checkRateLimit(`auto-regions:${getClientIP(req)}`, 20, 60_000);
   if (limited) return NextResponse.json({ error: 'Rate limited' }, { status: 429 });
 
-  let body: { imageUrl?: string; width?: number; height?: number };
+  let body: { imageUrl?: string; width?: number; height?: number; modelId?: string };
   try {
     body = await req.json();
   } catch {
@@ -50,6 +70,20 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
   const height = Number(body.height);
   if (!imageUrl || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
     return NextResponse.json({ error: 'imageUrl, width, height are required' }, { status: 400 });
+  }
+
+  // Caller picks the vision model. Fall back to a Kie-routed Gemini Flash
+  // for users who don't have direct provider keys configured.
+  const requestedModel = typeof body.modelId === 'string' && body.modelId.trim()
+    ? body.modelId.trim()
+    : DEFAULT_VISION_MODEL;
+  if (!VISION_ALLOWED.has(requestedModel)) {
+    return NextResponse.json(
+      {
+        error: `Model "${requestedModel}" can't process images. Pick a vision-capable model (Gemini, Claude, GPT-4o, or any Kie variant of those).`,
+      },
+      { status: 400 },
+    );
   }
 
   // No SSRF guard here — the imageUrl always points at our own R2-hosted
@@ -112,7 +146,7 @@ Output the JSON array only. Nothing before, nothing after.`;
   let raw: string;
   try {
     raw = await generateText({
-      modelId: VISION_MODEL,
+      modelId: requestedModel,
       prompt: user,
       systemPrompt: system,
       maxTokens: 1500,
