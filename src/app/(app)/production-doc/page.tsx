@@ -1482,6 +1482,34 @@ function ProductionDocPage() {
     });
   }, [historyEntryId]);
 
+  /**
+   * Set `section_title` on every row from `startRow` to `endRow` inclusive
+   * in a single setDoc call. Drives the "Apply to range" chip in
+   * SectionRowControls — lets the editor mark a whole scene (e.g. rows
+   * 3-7 all "The Escalation") in one action instead of retyping per row.
+   */
+  const applyTitleToRange = useCallback(
+    (startRow: number, endRow: number, title: string) => {
+      setDoc(prev => {
+        if (!prev) return prev;
+        const lo = Math.max(0, Math.min(startRow, endRow));
+        const hi = Math.min(prev.rows.length - 1, Math.max(startRow, endRow));
+        const trimmed = title.trim() || undefined;
+        const nextRows = prev.rows.map((r, i) =>
+          i >= lo && i <= hi ? { ...r, section_title: trimmed } : r,
+        );
+        const nextDoc = { ...prev, rows: nextRows };
+        if (historyEntryId) {
+          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+        }
+        return nextDoc;
+      });
+      const count = endRow - startRow + 1;
+      toast.success(`Applied section title to ${count} row${count === 1 ? '' : 's'}.`);
+    },
+    [historyEntryId],
+  );
+
   // — Image generation (declared before effects that reference it)
   const [rowImages, setRowImages] = useState<RowImageState[]>([]);
   const [imageProgress, setImageProgress] = useState({ done: 0, total: 0 });
@@ -3863,6 +3891,7 @@ function ProductionDocPage() {
                           <td style={{ padding: '8px 10px', width: 170, verticalAlign: 'top' }}>
                             <SectionRowControls
                               rowIndex={i}
+                              totalRows={doc.rows.length}
                               thumbnail={doc.thumbnail}
                               zoomTo={row.thumbnail_zoom_to}
                               sectionTitle={row.section_title}
@@ -3871,6 +3900,7 @@ function ProductionDocPage() {
                               onChangeZoomTo={(id) => updateRow(i, { thumbnail_zoom_to: id })}
                               onChangeSectionTitle={(t) => updateRow(i, { section_title: t })}
                               onChangeTransition={(t) => updateRow(i, { thumbnail_transition: t })}
+                              onApplyTitleToRange={applyTitleToRange}
                             />
                           </td>
                         )}
@@ -3993,6 +4023,7 @@ function ProductionDocPage() {
                             <p className="text-xs font-semibold mb-1" style={{ color: 'var(--text-muted)' }}>Section</p>
                             <SectionRowControls
                               rowIndex={i}
+                              totalRows={doc.rows.length}
                               thumbnail={doc.thumbnail}
                               zoomTo={row.thumbnail_zoom_to}
                               sectionTitle={row.section_title}
@@ -4001,6 +4032,7 @@ function ProductionDocPage() {
                               onChangeZoomTo={(id) => updateRow(i, { thumbnail_zoom_to: id })}
                               onChangeSectionTitle={(t) => updateRow(i, { section_title: t })}
                               onChangeTransition={(t) => updateRow(i, { thumbnail_transition: t })}
+                              onApplyTitleToRange={applyTitleToRange}
                             />
                           </div>
                         )}

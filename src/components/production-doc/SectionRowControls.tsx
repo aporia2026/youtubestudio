@@ -29,6 +29,10 @@ import { TransitionDialog } from './TransitionDialog';
 
 interface SectionRowControlsProps {
   rowIndex: number;
+  /** Total row count in the parent doc — used to validate the upper
+   *  bound of the "apply to range" picker so the user can't type a row
+   *  number past the end of the doc. */
+  totalRows: number;
   thumbnail: VideoThumbnail;
   zoomTo: string | undefined;
   sectionTitle: string | undefined;
@@ -37,15 +41,28 @@ interface SectionRowControlsProps {
   onChangeZoomTo: (regionId: string | undefined) => void;
   onChangeSectionTitle: (title: string | undefined) => void;
   onChangeTransition: (t: ThumbnailTransitionConfig | undefined) => void;
+  /** Apply `title` to every row from `startRow` to `endRow` inclusive
+   *  (0-indexed). The parent walks the doc and sets each row's
+   *  `section_title` to the same value in one update. */
+  onApplyTitleToRange: (startRow: number, endRow: number, title: string) => void;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function SectionRowControls({
-  rowIndex, thumbnail, zoomTo, sectionTitle, transition, defaultTransition,
-  onChangeZoomTo, onChangeSectionTitle, onChangeTransition,
+  rowIndex, totalRows, thumbnail, zoomTo, sectionTitle, transition, defaultTransition,
+  onChangeZoomTo, onChangeSectionTitle, onChangeTransition, onApplyTitleToRange,
 }: SectionRowControlsProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
+  // Inline "apply to range" picker — collapsed by default, expands into
+  // a 2-input row when the chip is clicked. State lives here (not in the
+  // parent) because it's transient editor UI, not part of the doc.
+  const [rangeOpen, setRangeOpen] = useState(false);
+  // 1-indexed end row for display; the picker shows the user the same
+  // numbers they see in the # column. Default: 4 rows ahead, clamped.
+  const [rangeEndDisplay, setRangeEndDisplay] = useState<string>(
+    () => String(Math.min(rowIndex + 5, totalRows)),
+  );
   // Local section-title draft so typing doesn't fire the parent's save
   // on every keystroke. Commits on blur or Enter. Stays in sync with
   // external changes (e.g. undo from elsewhere) by detecting prop drift
@@ -139,6 +156,116 @@ export function SectionRowControls({
           boxSizing: 'border-box',
         }}
       />
+
+      {/* Apply title to a row range — collapsed by default. Lets the editor
+          fill a whole section with one title in one action instead of
+          retyping it on every row. Uses the value currently in the title
+          input (titleDraft), not the persisted sectionTitle, so the user
+          can type-then-apply in one flow without committing first. */}
+      {titleDraft.trim() && !rangeOpen && rowIndex + 1 < totalRows && (
+        <button
+          type="button"
+          onClick={() => setRangeOpen(true)}
+          title="Set this section title on a range of rows in one action"
+          style={{
+            fontSize: 10,
+            padding: '3px 6px',
+            borderRadius: 4,
+            background: 'rgba(34,211,238,0.10)',
+            color: '#22d3ee',
+            border: '1px solid rgba(34,211,238,0.30)',
+            cursor: 'pointer',
+            textAlign: 'left',
+            alignSelf: 'flex-start',
+          }}
+        >
+          ⤓ Apply to range…
+        </button>
+      )}
+
+      {rangeOpen && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            padding: '4px 6px',
+            borderRadius: 4,
+            background: 'rgba(34,211,238,0.08)',
+            border: '1px solid rgba(34,211,238,0.30)',
+            fontSize: 10,
+            color: 'var(--text-muted)',
+          }}
+        >
+          <span>Rows {rowIndex + 1}</span>
+          <span>→</span>
+          <input
+            type="number"
+            min={rowIndex + 2}
+            max={totalRows}
+            value={rangeEndDisplay}
+            onChange={(e) => setRangeEndDisplay(e.target.value)}
+            style={{
+              fontSize: 10,
+              padding: '2px 4px',
+              borderRadius: 3,
+              background: 'rgba(0,0,0,0.20)',
+              color: 'var(--text)',
+              border: '1px solid rgba(255,255,255,0.10)',
+              outline: 'none',
+              width: 42,
+              boxSizing: 'border-box',
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => {
+              const title = titleDraft.trim();
+              if (!title) {
+                setRangeOpen(false);
+                return;
+              }
+              // Parse + clamp the end-row input. 1-indexed for display;
+              // convert to 0-indexed for the callback. Lower bound is the
+              // CURRENT row (so the range always includes the originating
+              // row); upper bound is the last row in the doc.
+              const parsed = parseInt(rangeEndDisplay, 10);
+              const endDisplay = Number.isFinite(parsed)
+                ? Math.min(Math.max(parsed, rowIndex + 1), totalRows)
+                : rowIndex + 1;
+              onApplyTitleToRange(rowIndex, endDisplay - 1, title);
+              setRangeOpen(false);
+            }}
+            style={{
+              fontSize: 10,
+              padding: '3px 6px',
+              borderRadius: 3,
+              background: 'rgba(34,211,238,0.20)',
+              color: '#22d3ee',
+              border: '1px solid rgba(34,211,238,0.45)',
+              cursor: 'pointer',
+              fontWeight: 600,
+            }}
+          >
+            Apply
+          </button>
+          <button
+            type="button"
+            onClick={() => setRangeOpen(false)}
+            style={{
+              fontSize: 10,
+              padding: '3px 6px',
+              borderRadius: 3,
+              background: 'transparent',
+              color: 'var(--text-muted)',
+              border: '1px solid rgba(255,255,255,0.10)',
+              cursor: 'pointer',
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
 
       {/* Transition override button */}
       <button
