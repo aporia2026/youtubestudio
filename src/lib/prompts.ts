@@ -1953,7 +1953,7 @@ Break the provided script into timed production rows. Each row = one visual shot
 **script_text** — The EXACT verbatim words the narrator speaks in this segment. Do not paraphrase.
 
 **visual_type** — Choose based on what best fits the content:
-  - "Title Card" — opening title or section divider text
+  - "Title Card" — RESERVED EXCLUSIVELY for short section-heading rows that display only a title (e.g. "The Escalation", "Chapter One", "Day Three"). Use this ONLY when extracting a markdown \`##Heading\` marker from the script (see "Heading extraction" below). DO NOT use Title Card for cinematic opening scenes, doodle openers, or any scene with substantive imagery — those are "Animation" or "B-Roll".
   - "Talking Head" — on-camera presenter/narrator shot (real person or animated avatar). Use whenever a direct-to-camera moment fits the content. NOTE: ai_image_prompt is always "" for this type — use stock_search_terms to describe the presenter style (e.g. "animated host, 2D cartoon" or "presenter on camera, professional")
   - "B-Roll" — footage over narration (live-action, stock, or animated scenes)
   - "Screen Recording" — software/website demonstration
@@ -1961,6 +1961,26 @@ Break the provided script into timed production rows. Each row = one visual shot
   - "Lower Third" — text overlay identifying something
   - "Statistics" — on-screen data visualization
   - "Cutaway" — reaction shot or insert
+
+## HEADING EXTRACTION — \`##Heading\` MARKERS
+
+The input script uses markdown-style \`##Heading\` to mark section dividers (e.g. \`##The Escalation As we saw with the attack...\`). When you encounter one, you MUST split it into TWO consecutive rows:
+
+  1. **A standalone Title Card row** — duration ~1–2 s, just the heading spoken:
+     - \`script_text\` = the heading text ONLY (e.g. \`"The Escalation"\`)
+     - \`visual_type\` = \`"Title Card"\`
+     - \`visual_description\` = \`Title card displaying "[heading]"\`
+     - \`ai_image_prompt\` = \`""\` (empty — the renderer's TitleCardScene draws the text without an image, which preserves the typography crisply and avoids i2v models mangling the title during animation)
+     - \`on_screen_text\` = the heading
+     - \`stock_search_terms\` = \`""\`
+     - \`notes\` = \`"Title card scene — rendered as crisp typography without an image."\`
+
+  2. **The actual narration row immediately after** — duration determined by the rest of the section's words:
+     - \`script_text\` = the section's narration with the \`##Heading\` prefix REMOVED (verbatim otherwise)
+     - \`visual_type\` = whatever fits the content (Animation / B-Roll / etc.) — NEVER Title Card
+     - All other fields populated normally
+
+This pattern is non-negotiable: every \`##Heading\` in the script produces exactly one Title Card row + one content row. The narrator speaking the heading aloud (~1–2 s) gives the title-card scene its natural duration.
 
 **visual_description** — Specific and actionable for the editor. Include: subject, action, shot type (wide/medium/close), lighting/mood. Match the chosen visual style precisely.
 
@@ -2013,10 +2033,13 @@ ${allowOverlay ? `**overlay_stock_terms** — OPTIONAL. 2–4 comma-separated ke
 ABSOLUTE RULES:
 - Every row has all ${allowOverlay ? '11' : '8'} fields
 - script_text is verbatim from the script — never paraphrase
-- ai_image_prompt ≥ 40 words for every non-Talking Head / non-Screen Recording row
+- ai_image_prompt ≥ 40 words for every non-Talking Head / non-Screen Recording / non-Title-Card row
 - Every ai_image_prompt MUST end with the style suffix${styleSuffix ? ` "${styleSuffix}"` : ' (if one was specified)'}
-- Talking Head + Screen Recording → ai_image_prompt = ""
-- Opening row: ${isChunk ? 'First B-Roll/Animation scene (no Title Card — continuation chunk)' : 'Title Card or first B-Roll/Animation scene'}
+- Talking Head + Screen Recording + Title Card → ai_image_prompt = ""
+- EVERY \`##Heading\` marker in the input script MUST become a standalone Title Card row + a separate narration row (see "Heading extraction" above). Do not collapse them into a single row.
+- Title Card rows are SHORT — \`script_text\` is the heading text only (1–6 words, ~1–2 s), nothing else.
+- Title Card rows have \`ai_image_prompt = ""\` always; the renderer draws crisp typography from \`on_screen_text\`.
+- Opening row: ${isChunk ? 'First B-Roll/Animation scene (no Title Card — continuation chunk)' : 'If the script starts with `##Heading`, a Title Card row; otherwise the first B-Roll/Animation scene.'}
 - Statistics/numbers in the script → "Statistics" type with on_screen_text${allowOverlay ? `
 - overlay_stock_terms is OPTIONAL — populate it ONLY when the Mixing Rules apply. Most rows leave it as "".
 - WHEN overlay_stock_terms IS SET: overlay_zone AND overlay_size MUST BOTH be set, AND the ai_image_prompt MUST instruct the image model to leave that zone as deliberate negative space.` : ''}`,
