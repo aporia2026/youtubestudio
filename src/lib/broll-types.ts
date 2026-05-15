@@ -102,6 +102,16 @@ export interface BrollModelDescriptor {
 // Kept as top-level functions so the descriptor objects can stay shallow
 // (and so unit tests can target each shape independently).
 
+// Kling (and most i2v models) hallucinate gibberish text into animated
+// scenes — random letters appear floating in the frame even when the
+// source still has no text. The fix is an explicit `negative_prompt`
+// telling the model what NOT to generate. Kling 2.5/2.6 both honour
+// this field per Kie's documented schema. We send it on every call;
+// users haven't asked for text-in-animation, and if they ever do we
+// can expose a per-row override.
+const NO_TEXT_NEGATIVE_PROMPT =
+  'text, writing, letters, words, labels, captions, watermarks, signage, characters, typography, fonts, numbers, subtitles';
+
 function buildKlingV25TurboI2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
   return {
     model: 'kling/v2-5-turbo-image-to-video-pro',
@@ -110,6 +120,7 @@ function buildKlingV25TurboI2VBody(args: BuildBrollBodyArgs): Record<string, unk
       prompt: args.prompt,
       image_url: args.stillImageUrl,
       duration: String(args.durationSeconds) as '5' | '10',
+      negative_prompt: NO_TEXT_NEGATIVE_PROMPT,
     },
   };
 }
@@ -122,6 +133,7 @@ function buildKlingV25TurboT2VBody(args: BuildBrollBodyArgs): Record<string, unk
       prompt: args.prompt,
       aspect_ratio: args.aspectRatio,
       duration: String(args.durationSeconds) as '5' | '10',
+      negative_prompt: NO_TEXT_NEGATIVE_PROMPT,
     },
   };
 }
@@ -135,6 +147,7 @@ function buildKling26I2VBody(args: BuildBrollBodyArgs): Record<string, unknown> 
       image_urls: args.stillImageUrl ? [args.stillImageUrl] : [],
       sound: false,
       duration: String(args.durationSeconds) as '5' | '10',
+      negative_prompt: NO_TEXT_NEGATIVE_PROMPT,
     },
   };
 }

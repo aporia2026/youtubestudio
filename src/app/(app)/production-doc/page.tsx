@@ -1482,6 +1482,18 @@ function ProductionDocPage() {
     });
   }, [historyEntryId]);
 
+  // Per-row "split as title card" inline form state. When non-null, the row
+  // at `rowIndex` shows a title-text input + Apply/Cancel instead of the
+  // one-click chip. Lets the user confirm exactly which text to extract,
+  // since a `##Heading` on the same line as the body has no reliable
+  // computable boundary.
+  const [splittingRow, setSplittingRow] = useState<{ rowIndex: number; titleDraft: string } | null>(null);
+
+  // Per-row "edit AI prompt" inline form state. When non-null, the row's
+  // AI Prompt cell renders a textarea instead of the static span — same
+  // pattern as splittingRow above.
+  const [editingPromptRow, setEditingPromptRow] = useState<{ rowIndex: number; draft: string } | null>(null);
+
   /**
    * Split a row at its `##` markdown heading into TWO rows: a new
    * Title Card row above (containing just the heading as on-screen
@@ -3884,22 +3896,99 @@ function ProductionDocPage() {
                         <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: 'var(--accent-cyan-bright)', whiteSpace: 'nowrap', fontWeight: 600, borderRight: '1px solid var(--border)' }}>
                           {row.timecode}
                         </td>
-                        {/* Script text — detects a leading `##Heading` and
-                            surfaces a one-click "split into title card row"
-                            chip. The fix for i2v models mangling title text
-                            is structural (separate non-animated row), not a
-                            model swap. See splitTitleCardFromRow. */}
+                        {/* Script text — when a leading `##` is present
+                            we offer an inline "split as title card" form.
+                            The user confirms the exact title text (since a
+                            heading on the same line as the body has no
+                            reliable computable end) and we extract that
+                            into a new locked-as-still row. */}
                         <td style={{ padding: '8px 12px', color: 'var(--text-primary)', maxWidth: 200, lineHeight: 1.5, borderRight: '1px solid var(--border)' }}>
                           {(() => {
-                            const headingMatch = row.script_text.match(/^\s*##\s*([^\n]+?)(?:\s{2,}|\n|$)/);
-                            const heading = headingMatch?.[1]?.trim();
+                            const hasHeadingMarker = /^\s*##/.test(row.script_text);
+                            // Pre-fill guess: the first 2 words after `##`.
+                            // Two words is a sensible default for the common
+                            // case ("The Escalation", "Phase One", "Day Three")
+                            // and the user can extend in the input.
+                            const guessMatch = row.script_text.match(/^\s*##\s*(\S+(?:\s+\S+){0,1})/);
+                            const guess = guessMatch?.[1]?.trim() || '';
+                            const isEditingThisRow = splittingRow?.rowIndex === i;
                             return (
                               <>
                                 <div>{row.script_text}</div>
-                                {heading && (
+                                {isEditingThisRow ? (
+                                  <div
+                                    className="mt-1.5 flex flex-col gap-1.5 p-2 rounded"
+                                    style={{
+                                      background: 'rgba(34,211,238,0.08)',
+                                      border: '1px solid rgba(34,211,238,0.35)',
+                                    }}
+                                  >
+                                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                                      Pick the title text to extract:
+                                    </span>
+                                    <input
+                                      type="text"
+                                      autoFocus
+                                      value={splittingRow.titleDraft}
+                                      onChange={(e) => setSplittingRow({ rowIndex: i, titleDraft: e.target.value })}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                          const t = splittingRow.titleDraft.trim();
+                                          if (t) { splitTitleCardFromRow(i, t); setSplittingRow(null); }
+                                        }
+                                        if (e.key === 'Escape') setSplittingRow(null);
+                                      }}
+                                      placeholder="Title text"
+                                      style={{
+                                        fontSize: 11,
+                                        padding: '4px 6px',
+                                        borderRadius: 4,
+                                        background: 'rgba(0,0,0,0.25)',
+                                        color: 'var(--text)',
+                                        border: '1px solid rgba(255,255,255,0.10)',
+                                        outline: 'none',
+                                      }}
+                                    />
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const t = splittingRow.titleDraft.trim();
+                                          if (!t) return;
+                                          splitTitleCardFromRow(i, t);
+                                          setSplittingRow(null);
+                                        }}
+                                        disabled={!splittingRow.titleDraft.trim()}
+                                        className="text-[10px] px-2 py-0.5 rounded"
+                                        style={{
+                                          background: 'rgba(34,211,238,0.20)',
+                                          color: '#22d3ee',
+                                          border: '1px solid rgba(34,211,238,0.45)',
+                                          cursor: splittingRow.titleDraft.trim() ? 'pointer' : 'not-allowed',
+                                          fontWeight: 600,
+                                        }}
+                                      >
+                                        Apply
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setSplittingRow(null)}
+                                        className="text-[10px] px-2 py-0.5 rounded"
+                                        style={{
+                                          background: 'transparent',
+                                          color: 'var(--text-muted)',
+                                          border: '1px solid rgba(255,255,255,0.10)',
+                                          cursor: 'pointer',
+                                        }}
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : hasHeadingMarker ? (
                                   <button
                                     type="button"
-                                    onClick={() => splitTitleCardFromRow(i, heading)}
+                                    onClick={() => setSplittingRow({ rowIndex: i, titleDraft: guess })}
                                     className="mt-1.5 text-[10px] px-2 py-0.5 rounded"
                                     style={{
                                       background: 'rgba(34,211,238,0.12)',
@@ -3907,11 +3996,11 @@ function ProductionDocPage() {
                                       border: '1px solid rgba(34,211,238,0.35)',
                                       cursor: 'pointer',
                                     }}
-                                    title={`Split "${heading}" into its own title-card row, locked-as-still so i2v animation can't mangle the title text.`}
+                                    title="Extract a title-card row from this script. You'll confirm the exact title text."
                                   >
-                                    ✂ Split &quot;{heading}&quot; as title card
+                                    ✂ Split as title card…
                                   </button>
-                                )}
+                                ) : null}
                               </>
                             );
                           })()}
@@ -3979,17 +4068,113 @@ function ProductionDocPage() {
                             </span>
                           )}
                         </td>
-                        {/* AI prompt */}
+                        {/* AI prompt — click ✎ to edit inline. The textarea
+                            commits to the row on Save; image regeneration
+                            uses the new prompt next time the user clicks
+                            the row's Image Retry / re-generate button. */}
                         <td style={{ padding: '8px 12px', maxWidth: 240, borderRight: '1px solid var(--border)' }}>
-                          {row.ai_image_prompt ? (
+                          {editingPromptRow?.rowIndex === i ? (
+                            <div className="flex flex-col gap-1">
+                              <textarea
+                                autoFocus
+                                value={editingPromptRow.draft}
+                                onChange={(e) => setEditingPromptRow({ rowIndex: i, draft: e.target.value })}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Escape') setEditingPromptRow(null);
+                                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                                    updateRow(i, { ai_image_prompt: editingPromptRow.draft });
+                                    setEditingPromptRow(null);
+                                  }
+                                }}
+                                rows={6}
+                                style={{
+                                  fontSize: 11,
+                                  padding: '6px 8px',
+                                  borderRadius: 4,
+                                  background: 'rgba(0,0,0,0.25)',
+                                  color: 'var(--text)',
+                                  border: '1px solid rgba(34,211,238,0.35)',
+                                  outline: 'none',
+                                  width: '100%',
+                                  boxSizing: 'border-box',
+                                  resize: 'vertical',
+                                  lineHeight: 1.4,
+                                }}
+                              />
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    updateRow(i, { ai_image_prompt: editingPromptRow.draft });
+                                    setEditingPromptRow(null);
+                                  }}
+                                  className="text-[10px] px-2 py-0.5 rounded"
+                                  style={{
+                                    background: 'rgba(34,211,238,0.20)',
+                                    color: '#22d3ee',
+                                    border: '1px solid rgba(34,211,238,0.45)',
+                                    cursor: 'pointer',
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingPromptRow(null)}
+                                  className="text-[10px] px-2 py-0.5 rounded"
+                                  style={{
+                                    background: 'transparent',
+                                    color: 'var(--text-muted)',
+                                    border: '1px solid rgba(255,255,255,0.10)',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  Cancel
+                                </button>
+                                <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>
+                                  ⌘/Ctrl+Enter to save
+                                </span>
+                              </div>
+                            </div>
+                          ) : row.ai_image_prompt ? (
                             <div className="flex items-start gap-1">
                               <span style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', lineHeight: 1.5, flex: 1 }}>
                                 {row.ai_image_prompt}
                               </span>
-                              <CopyButton text={row.ai_image_prompt} />
+                              <div className="flex flex-col gap-0.5">
+                                <CopyButton text={row.ai_image_prompt} />
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingPromptRow({ rowIndex: i, draft: row.ai_image_prompt })}
+                                  className="text-[10px] px-1.5 py-0.5 rounded"
+                                  style={{
+                                    background: 'rgba(34,211,238,0.10)',
+                                    color: '#22d3ee',
+                                    border: '1px solid rgba(34,211,238,0.30)',
+                                    cursor: 'pointer',
+                                  }}
+                                  title="Edit this prompt"
+                                  aria-label="Edit AI prompt"
+                                >
+                                  ✎
+                                </button>
+                              </div>
                             </div>
                           ) : (
-                            <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>—</span>
+                            <button
+                              type="button"
+                              onClick={() => setEditingPromptRow({ rowIndex: i, draft: '' })}
+                              className="text-[10px] px-2 py-0.5 rounded"
+                              style={{
+                                background: 'rgba(34,211,238,0.10)',
+                                color: '#22d3ee',
+                                border: '1px solid rgba(34,211,238,0.30)',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              + Add prompt
+                            </button>
                           )}
                         </td>
                         {/* Overlay (real-image composite) — shows the LLM's
@@ -4077,13 +4262,78 @@ function ProductionDocPage() {
                           <p className="text-xs font-semibold mb-0.5" style={{ color: 'var(--text-muted)' }}>Script</p>
                           <p className="text-xs" style={{ color: 'var(--text-primary)' }}>{row.script_text}</p>
                           {(() => {
-                            const headingMatch = row.script_text.match(/^\s*##\s*([^\n]+?)(?:\s{2,}|\n|$)/);
-                            const heading = headingMatch?.[1]?.trim();
-                            if (!heading) return null;
+                            const hasHeadingMarker = /^\s*##/.test(row.script_text);
+                            const guessMatch = row.script_text.match(/^\s*##\s*(\S+(?:\s+\S+){0,1})/);
+                            const guess = guessMatch?.[1]?.trim() || '';
+                            const isEditingThisRow = splittingRow?.rowIndex === i;
+                            if (isEditingThisRow) {
+                              return (
+                                <div
+                                  className="mt-1.5 flex flex-col gap-1.5 p-2 rounded"
+                                  style={{ background: 'rgba(34,211,238,0.08)', border: '1px solid rgba(34,211,238,0.35)' }}
+                                >
+                                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                                    Pick the title text to extract:
+                                  </span>
+                                  <input
+                                    type="text"
+                                    autoFocus
+                                    value={splittingRow.titleDraft}
+                                    onChange={(e) => setSplittingRow({ rowIndex: i, titleDraft: e.target.value })}
+                                    placeholder="Title text"
+                                    style={{
+                                      fontSize: 11,
+                                      padding: '4px 6px',
+                                      borderRadius: 4,
+                                      background: 'rgba(0,0,0,0.25)',
+                                      color: 'var(--text)',
+                                      border: '1px solid rgba(255,255,255,0.10)',
+                                      outline: 'none',
+                                    }}
+                                  />
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const t = splittingRow.titleDraft.trim();
+                                        if (!t) return;
+                                        splitTitleCardFromRow(i, t);
+                                        setSplittingRow(null);
+                                      }}
+                                      disabled={!splittingRow.titleDraft.trim()}
+                                      className="text-[10px] px-2 py-0.5 rounded"
+                                      style={{
+                                        background: 'rgba(34,211,238,0.20)',
+                                        color: '#22d3ee',
+                                        border: '1px solid rgba(34,211,238,0.45)',
+                                        cursor: splittingRow.titleDraft.trim() ? 'pointer' : 'not-allowed',
+                                        fontWeight: 600,
+                                      }}
+                                    >
+                                      Apply
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setSplittingRow(null)}
+                                      className="text-[10px] px-2 py-0.5 rounded"
+                                      style={{
+                                        background: 'transparent',
+                                        color: 'var(--text-muted)',
+                                        border: '1px solid rgba(255,255,255,0.10)',
+                                        cursor: 'pointer',
+                                      }}
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            }
+                            if (!hasHeadingMarker) return null;
                             return (
                               <button
                                 type="button"
-                                onClick={() => splitTitleCardFromRow(i, heading)}
+                                onClick={() => setSplittingRow({ rowIndex: i, titleDraft: guess })}
                                 className="mt-1.5 text-[10px] px-2 py-0.5 rounded"
                                 style={{
                                   background: 'rgba(34,211,238,0.12)',
@@ -4092,7 +4342,7 @@ function ProductionDocPage() {
                                   cursor: 'pointer',
                                 }}
                               >
-                                ✂ Split &quot;{heading}&quot; as title card
+                                ✂ Split as title card…
                               </button>
                             );
                           })()}
