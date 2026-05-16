@@ -10,6 +10,9 @@ interface ScreenMockupSceneProps {
   shot: VideoShot;
   durationInFrames: number;
   brand: BrandKit;
+  /** When true, skip the lower-third on-screen-text overlay. See
+   *  BRollScene for the same flag and its rationale. */
+  suppressLowerThird?: boolean;
 }
 
 /**
@@ -20,6 +23,7 @@ export const ScreenMockupScene: React.FC<ScreenMockupSceneProps> = ({
   shot,
   durationInFrames,
   brand,
+  suppressLowerThird = false,
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -138,7 +142,7 @@ export const ScreenMockupScene: React.FC<ScreenMockupSceneProps> = ({
         <div style={{ width: 220, height: 14, background: '#2A2A2A', borderRadius: 4 }} />
       </div>
 
-      {shot.onScreenText && (
+      {shot.onScreenText && !suppressLowerThird && (
         <LowerThird
           text={shot.onScreenText}
           brand={brand}

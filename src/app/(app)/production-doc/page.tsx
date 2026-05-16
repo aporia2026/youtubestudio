@@ -479,6 +479,7 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
   rowOverlays,
   rowLockedAsStill,
   animateScenes,
+  suppressLowerThirds,
   voiceoverUrl,
   brandKit,
   onRender,
@@ -492,6 +493,7 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
   rowOverlays: Record<number, RowOverlayState>;
   rowLockedAsStill: boolean[];
   animateScenes: boolean;
+  suppressLowerThirds: boolean;
   voiceoverUrl: string;
   brandKit: Partial<BrandKit>;
   onRender: () => void;
@@ -511,8 +513,9 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
       rowLockedAsStill,
       animateScenes,
       rowOverlays,
+      suppressLowerThirds,
     });
-  }, [doc, rowImages, rowVideoClips, rowOverlays, rowLockedAsStill, animateScenes, voiceoverUrl, brandKit]);
+  }, [doc, rowImages, rowVideoClips, rowOverlays, rowLockedAsStill, animateScenes, suppressLowerThirds, voiceoverUrl, brandKit]);
   return (
     <VideoPlayer
       config={config}
@@ -1719,6 +1722,31 @@ function ProductionDocPage() {
       const next = !prev;
       try {
         window.localStorage.setItem('prodoc_animate_scenes_v1', next ? '1' : '0');
+      } catch {
+        /* best-effort */
+      }
+      return next;
+    });
+  }, []);
+
+  // — Per-user "Suppress on-screen-text overlay" toggle. When ON, the
+  //   Remotion renderer skips the dark lower-third band that normally
+  //   appears with on_screen_text. Useful when the OST is already baked
+  //   into the AI image (the LLM prompt does this when present) — a
+  //   second Remotion-rendered overlay would just be a duplicate. Stored
+  //   in localStorage so the preference sticks across reloads. Default
+  //   is OFF (overlays shown) for backwards compatibility.
+  const [suppressLowerThirds, setSuppressLowerThirds] = useState<boolean>(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem('prodoc_suppress_lower_thirds_v1');
+    if (stored === '1') setSuppressLowerThirds(true);
+  }, []);
+  const toggleSuppressLowerThirds = useCallback(() => {
+    setSuppressLowerThirds((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem('prodoc_suppress_lower_thirds_v1', next ? '1' : '0');
       } catch {
         /* best-effort */
       }
@@ -3173,6 +3201,7 @@ function ProductionDocPage() {
       rowLockedAsStill: rowLockedArr,
       animateScenes,
       rowOverlays,
+      suppressLowerThirds,
     });
     setRenderStatus('rendering');
     setRenderProgress(0);
@@ -3987,6 +4016,48 @@ function ProductionDocPage() {
             </div>
           </div>
 
+          {/* Lower-third suppression toggle. Off by default (overlay
+              shown); flip ON when the OST is already baked into the AI
+              image and the Remotion overlay would duplicate it. */}
+          <div className="mb-3 flex flex-wrap items-center gap-3 px-4 py-2 rounded-lg" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+            <button
+              type="button"
+              onClick={toggleSuppressLowerThirds}
+              role="switch"
+              aria-checked={suppressLowerThirds}
+              className="relative inline-flex items-center rounded-full transition-colors"
+              style={{
+                width: 36,
+                height: 20,
+                background: suppressLowerThirds ? 'rgba(168,85,247,0.45)' : 'rgba(120,120,120,0.35)',
+              }}
+              title={
+                suppressLowerThirds
+                  ? 'On-screen text overlay is hidden — the image carries its own baked text.'
+                  : 'On-screen text overlay shown — click to hide it (use when OST is already in the image).'
+              }
+            >
+              <span
+                className="inline-block rounded-full bg-white transition-transform"
+                style={{
+                  width: 14,
+                  height: 14,
+                  transform: `translateX(${suppressLowerThirds ? 18 : 4}px)`,
+                }}
+              />
+            </button>
+            <div className="flex flex-col leading-tight flex-1 min-w-[220px]">
+              <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                Hide on-screen text overlay
+              </span>
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                {suppressLowerThirds
+                  ? 'Renderer skips the lower-third band — only the image’s baked text appears.'
+                  : 'Renderer adds a lower-third band with the row’s on_screen_text on top of the image.'}
+              </span>
+            </div>
+          </div>
+
           {/* Animate-scenes master toggle. When OFF, B-roll buttons are
               hidden on every row and the renderer falls back to stills with
               Ken Burns motion (today's pre-animation behaviour). Adjacent
@@ -4761,6 +4832,7 @@ function ProductionDocPage() {
                     ),
                   )}
                   animateScenes={animateScenes}
+                  suppressLowerThirds={suppressLowerThirds}
                   voiceoverUrl={voiceoverUrl}
                   brandKit={effectiveBrandKit}
                   onRender={startVideoRender}
@@ -4788,6 +4860,7 @@ function ProductionDocPage() {
                         rowLockedAsStill: rowLockedArr,
                         animateScenes,
                         rowOverlays,
+                        suppressLowerThirds,
                       });
                       sessionStorage.setItem('video-studio:bridge', JSON.stringify({
                         config,

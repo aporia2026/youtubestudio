@@ -10,6 +10,10 @@ interface BRollSceneProps {
   shot: VideoShot;
   durationInFrames: number;
   brand: BrandKit;
+  /** When true, skip the lower-third on-screen-text overlay entirely.
+   *  Used when the OST is already baked into the AI image so a
+   *  Remotion overlay would just duplicate it. Defaults false. */
+  suppressLowerThird?: boolean;
 }
 
 // Cycle Ken Burns directions based on shot index to avoid repetition
@@ -36,6 +40,7 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
   durationInFrames,
   brand,
   shotIndex = 0,
+  suppressLowerThird = false,
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -94,8 +99,10 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
         }}
       />
 
-      {/* Lower third */}
-      {shot.onScreenText && (
+      {/* Lower third — skipped when suppressLowerThird is on (e.g. the
+          OST is baked into the AI image and the user doesn't want a
+          second Remotion-rendered overlay duplicating it). */}
+      {shot.onScreenText && !suppressLowerThird && (
         <LowerThird
           text={shot.onScreenText}
           brand={brand}

@@ -187,6 +187,10 @@ export interface ProductionDocToVideoConfigOptions {
   /** Per-row auto-fetched overlay state. Sparse — only present for rows
    *  whose `overlay_stock_terms` produced a usable image. */
   rowOverlays?: Record<number, RowOverlayRenderState>;
+  /** Suppress the lower-third on-screen-text overlay across all scenes
+   *  that render one. Forwarded into VideoConfig.suppressLowerThirds —
+   *  see that field for semantics. */
+  suppressLowerThirds?: boolean;
 }
 
 export function productionDocToVideoConfig(
@@ -269,6 +273,7 @@ export function productionDocToVideoConfig(
     musicVolume: 0.12,
     brand: { ...DEFAULT_BRAND_KIT, ...opts.brand },
     showCaptions: true,
+    suppressLowerThirds: opts.suppressLowerThirds === true,
     thumbnail: doc.thumbnail,
   };
 

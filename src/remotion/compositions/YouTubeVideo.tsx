@@ -215,6 +215,7 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
     );
   }
 
+  const suppressLowerThirds = config.suppressLowerThirds === true;
   const props = { shot, durationInFrames, brand };
   switch (shot.sceneType) {
     case 'title-card':
@@ -224,12 +225,12 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
     case 'icon-scene':
       return <IconScene {...props} />;
     case 'screen-mockup':
-      return <ScreenMockupScene {...props} />;
+      return <ScreenMockupScene {...props} suppressLowerThird={suppressLowerThirds} />;
     case 'outro':
       return <OutroScene {...props} />;
     case 'b-roll':
     case 'split-scene':
     default:
-      return <BRollScene {...props} shotIndex={shotIndex} />;
+      return <BRollScene {...props} shotIndex={shotIndex} suppressLowerThird={suppressLowerThirds} />;
   }
 };

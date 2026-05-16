@@ -161,6 +161,13 @@ export interface VideoConfig {
   brand: BrandKit;
   /** Whether to show burned-in captions */
   showCaptions?: boolean;
+  /** Suppress the LowerThird `onScreenText` overlay across all scenes
+   *  that render one (BRollScene, ScreenMockupScene). When true the
+   *  scenes simply skip rendering the dark band — useful when the
+   *  on-screen text is already baked into the AI image at generation
+   *  time, so showing it again as a Remotion overlay is redundant.
+   *  Default false (overlay shown) for backwards compatibility. */
+  suppressLowerThirds?: boolean;
   /** Optional composite thumbnail referenced by `VideoShot.thumbnailZoomTo`. */
   thumbnail?: VideoThumbnail;
 }
