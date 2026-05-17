@@ -246,14 +246,26 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
   const brand = config.brand;
 
   // Thumbnail-zoom routing wins when (a) a region target is set, (b) the
-  // doc carries a thumbnail, and (c) the target id resolves to a region.
-  // Any of those falsey → fall through to the inferred scene type so
-  // misconfigured rows don't kill the render.
+  // doc carries a thumbnail, (c) the target id resolves to a region, AND
+  // (d) the row has no per-row visual of its own. The per-row imageUrl /
+  // videoUrl is the fresher signal — when the user (re)generates an image
+  // or animates a row, the doc table cell switches to that asset, and the
+  // player must match. Without this guard the player kept zooming into a
+  // stale section-divider composite while the doc table showed the new
+  // per-row image — same row, two different visuals.
+  const hasRowVisual = Boolean(shot.imageUrl || shot.videoUrl);
   const targetRegion = findRegion(config, shot.thumbnailZoomTo);
-  if (targetRegion && config.thumbnail) {
-    const previousRegion = previousShot
-      ? findRegion(config, previousShot.thumbnailZoomTo)
-      : null;
+  if (targetRegion && config.thumbnail && !hasRowVisual) {
+    // Smooth-transition tour only applies when the previous shot was
+    // ITSELF rendered as a thumbnail-zoom — i.e. the previous shot had
+    // no per-row visual that pre-empted the same routing rule above. A
+    // previous shot that played as b-roll never visually "left from"
+    // its region, so starting the camera there would create a hard
+    // cut from b-roll directly into a region-anchored zoom.
+    const previousRegion =
+      previousShot && !previousShot.imageUrl && !previousShot.videoUrl
+        ? findRegion(config, previousShot.thumbnailZoomTo)
+        : null;
     const transition = resolveTransition(shot, config.thumbnail.defaultTransition);
     return (
       <ThumbnailZoomScene
