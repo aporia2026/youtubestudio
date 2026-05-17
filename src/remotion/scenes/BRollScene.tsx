@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AbsoluteFill, OffthreadVideo, useCurrentFrame, useVideoConfig, interpolate } from 'remotion';
+import { AbsoluteFill, Img, OffthreadVideo, useCurrentFrame, useVideoConfig, interpolate } from 'remotion';
 import { KenBurns } from '../components/KenBurns';
 import { LowerThird } from '../components/LowerThird';
 import { FloatingElement } from '../components/FloatingElement';
@@ -58,6 +58,18 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
     return <FallbackBRoll shot={shot} durationInFrames={durationInFrames} brand={brand} />;
   }
 
+  // Letterbox mode: when the row has a section title + letterbox layout,
+  // the parent has already shrunk this scene's container to fit below the
+  // stripe (1920 × ~940). Cropping with object-fit:cover / Ken Burns inside
+  // that smaller box wastes the geometry — overflow gets clipped and the
+  // user sees the same "title eating the image" symptom letterbox was
+  // supposed to solve. So in letterbox mode we use object-fit:contain and
+  // skip Ken Burns: every source pixel survives, brand.backgroundColor
+  // (overridden to pillarboxColor by the composition) shows in any unfilled
+  // area. See _plans/2026-05-17-section-title-letterbox-and-overlay-blending.md.
+  const isLetterbox =
+    Boolean(shot.sectionTitle) && (shot.sectionTitleLayout ?? 'letterbox') === 'letterbox';
+
   return (
     <AbsoluteFill style={{ background: brand.backgroundColor }}>
       {useVideo ? (
@@ -73,10 +85,22 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
             style={{
               width: '100%',
               height: '100%',
-              objectFit: 'cover',
+              objectFit: isLetterbox ? 'contain' : 'cover',
             }}
           />
         </AbsoluteFill>
+      ) : isLetterbox ? (
+        // Static image at object-fit:contain — every pixel of the source
+        // fits inside the letterbox container, no Ken Burns crop.
+        <Img
+          src={shot.imageUrl!}
+          onError={() => setImgError(true)}
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain',
+          }}
+        />
       ) : (
         <KenBurns
           imageUrl={shot.imageUrl!}
