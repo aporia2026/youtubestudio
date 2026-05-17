@@ -14,6 +14,17 @@ interface ReviewPlayerProps {
   commentTimestamps?: number[];
   /** Lifts the buffered-percent so the timeline can render a buffered-progress bar. */
   onBufferedChange?: (pct: number) => void;
+  /** When set, cold-start timing samples are anonymously reported to
+   *  `/api/review/timing` once per src (at canplaythrough or unmount).
+   *  Drives the HLS Phase 2 greenlight/skip decision — see
+   *  `_plans/2026-05-14-review-timing-aggregation.md`. Omit to disable
+   *  the server-side report; the in-DevTools `console.info` readout
+   *  (gated on `localStorage.reviewPlayerTiming === '1'`) still works
+   *  either way. */
+  versionId?: string;
+  /** True when the viewer is the project owner. Captured so the
+   *  owner's fast-network sessions don't skew reviewer-side percentiles. */
+  isOwner?: boolean;
 }
 
 // All available playback speeds. The center of gravity is 1×; the extremes
@@ -35,7 +46,7 @@ function formatTime(s: number) {
 }
 
 export const ReviewPlayer = forwardRef<HTMLVideoElement, ReviewPlayerProps>(
-  function ReviewPlayer({ src, onTimeUpdate, isDrawing, onDrawingToggle, onDrawingComplete, canAnnotate, commentTimestamps, onBufferedChange }, ref) {
+  function ReviewPlayer({ src, onTimeUpdate, isDrawing, onDrawingToggle, onDrawingComplete, canAnnotate, commentTimestamps, onBufferedChange, versionId, isOwner }, ref) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const [playing, setPlaying] = useState(false);
@@ -79,6 +90,15 @@ export const ReviewPlayer = forwardRef<HTMLVideoElement, ReviewPlayerProps>(
       currentStallStartedAt: number | null;
       reported: boolean;
     } | null>(null);
+
+    // Mirror the props that drive server-side reporting into a ref so the
+    // long-lived effect closure below always reads the current values
+    // without forcing a full re-attach of every event listener when a
+    // parent re-renders.
+    const reportPropsRef = useRef<{ versionId: string | undefined; isOwner: boolean | undefined }>({ versionId, isOwner });
+    useEffect(() => {
+      reportPropsRef.current = { versionId, isOwner };
+    }, [versionId, isOwner]);
 
     // Floating "+10s" / "1.5×" / "Loop A set" toast — shown briefly when a
     // keyboard shortcut fires, so the user gets visual confirmation that a
@@ -357,18 +377,57 @@ export const ReviewPlayer = forwardRef<HTMLVideoElement, ReviewPlayerProps>(
       }
       function reportTiming(label: string) {
         const t = timingRef.current;
-        if (!t || !t.enabled || t.reported) return;
+        if (!t || t.reported) return;
         t.reported = true;
+        const sample = {
+          time_to_metadata_ms: t.loadedMetadataAt != null ? Math.round(t.loadedMetadataAt - t.srcSetAt) : null,
+          time_to_first_frame_ms: t.loadedDataAt != null ? Math.round(t.loadedDataAt - t.srcSetAt) : null,
+          time_to_canplaythrough_ms: t.canPlayThroughAt != null ? Math.round(t.canPlayThroughAt - t.srcSetAt) : null,
+          stall_count: t.stallCount,
+          total_stall_ms: Math.round(t.totalStallMs),
+        };
+        // Dev-mode readout for hand-tuning during local work. Gated on
+        // the localStorage flag so production sessions don't spam the
+        // console.
+        if (t.enabled) {
+          try {
+            console.info('[ReviewPlayer timing]', { label, ...sample });
+          } catch {}
+        }
+        // Anonymous server-side report. Runs for every reviewer
+        // unconditionally — this is the data that feeds the HLS Phase 2
+        // greenlight decision. Skipped if no versionId is wired through
+        // (no row to associate the sample with).
+        const { versionId, isOwner } = reportPropsRef.current;
+        if (!versionId) return;
+        const body = {
+          versionId,
+          wasOwner: !!isOwner,
+          timeToMetadataMs: sample.time_to_metadata_ms,
+          timeToFirstFrameMs: sample.time_to_first_frame_ms,
+          timeToCanPlayThroughMs: sample.time_to_canplaythrough_ms,
+          stallCount: sample.stall_count,
+          totalStallMs: sample.total_stall_ms,
+        };
+        // sendBeacon survives tab-close / navigation, which is the
+        // common case on the 'unmount' label. Falls back to a
+        // keepalive fetch when unavailable (rare modern browsers).
         try {
-          console.info('[ReviewPlayer timing]', {
-            label,
-            time_to_metadata_ms: t.loadedMetadataAt != null ? Math.round(t.loadedMetadataAt - t.srcSetAt) : null,
-            time_to_first_frame_ms: t.loadedDataAt != null ? Math.round(t.loadedDataAt - t.srcSetAt) : null,
-            time_to_canplaythrough_ms: t.canPlayThroughAt != null ? Math.round(t.canPlayThroughAt - t.srcSetAt) : null,
-            stall_count: t.stallCount,
-            total_stall_ms: Math.round(t.totalStallMs),
-          });
-        } catch {}
+          const json = JSON.stringify(body);
+          if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+            const blob = new Blob([json], { type: 'application/json' });
+            navigator.sendBeacon('/api/review/timing', blob);
+          } else {
+            fetch('/api/review/timing', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: json,
+              keepalive: true,
+            }).catch(() => {});
+          }
+        } catch {
+          // Telemetry is best-effort — never let it crash the player.
+        }
       }
 
       function onLoadedMetadata() {
