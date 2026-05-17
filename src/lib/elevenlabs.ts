@@ -142,6 +142,15 @@ export interface ForceAlignOptions {
   text: string;           // script text — production cues should be stripped before calling
 }
 
+// Hard ceiling on a single forced-alignment round trip. The callers run
+// inside Vercel Functions with maxDuration=800s; a hung upstream that
+// rides the function all the way to reap leaves the take's row stuck at
+// 'running' because no terminal status ever lands. 700s gives ElevenLabs
+// well above its published `duration × 0.3 + overhead` budget (worst-case
+// ~10 min for a 30-min file) while still aborting in time for the catch
+// path to write a 'failed' status before the function ceiling.
+const FORCE_ALIGN_TIMEOUT_MS = 700_000;
+
 export async function forceAlign(
   apiKey: string,
   opts: ForceAlignOptions,
@@ -150,18 +159,38 @@ export async function forceAlign(
   form.append('file', opts.audioBlob, opts.audioFilename || 'audio.mp3');
   form.append('text', opts.text);
 
-  const res = await fetch('https://api.elevenlabs.io/v1/forced-alignment', {
-    method: 'POST',
-    headers: { 'xi-api-key': apiKey },
-    body: form,
-  });
+  // Wrapping fetch + body read in a single try/catch so the timeout
+  // covers the whole round trip. AbortSignal.timeout aborts the body
+  // stream too, so a hang during res.json() also surfaces as a
+  // TimeoutError rather than a cryptic stream error.
+  const signal = AbortSignal.timeout(FORCE_ALIGN_TIMEOUT_MS);
+  try {
+    const res = await fetch('https://api.elevenlabs.io/v1/forced-alignment', {
+      method: 'POST',
+      headers: { 'xi-api-key': apiKey },
+      body: form,
+      signal,
+    });
 
-  if (!res.ok) {
-    // Read the body for a short reason but do not leak it raw — callers
-    // should surface only a sanitised string to end users.
-    const detail = await res.text().catch(() => '');
-    throw new Error(`ElevenLabs forced alignment failed: ${res.status} ${detail.slice(0, 200)}`);
+    if (!res.ok) {
+      // Read the body for a short reason but do not leak it raw —
+      // callers should surface only a sanitised string to end users.
+      const detail = await res.text().catch(() => '');
+      throw new Error(`ElevenLabs forced alignment failed: ${res.status} ${detail.slice(0, 200)}`);
+    }
+
+    return (await res.json()) as ForcedAlignmentResponse;
+  } catch (err) {
+    // AbortSignal.timeout fires a DOMException with name='TimeoutError'.
+    // Rethrow as a human-readable message so the row's alignment_error
+    // tells the reviewer what actually happened — the raw DOMException
+    // text is "The operation was aborted due to timeout" which doesn't
+    // hint at where the timeout came from.
+    if (err instanceof Error && err.name === 'TimeoutError') {
+      throw new Error(
+        `ElevenLabs forced alignment timed out after ${Math.round(FORCE_ALIGN_TIMEOUT_MS / 1000)}s.`,
+      );
+    }
+    throw err;
   }
-
-  return res.json() as Promise<ForcedAlignmentResponse>;
 }

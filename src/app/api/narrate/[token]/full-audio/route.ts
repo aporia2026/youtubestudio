@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { logger } from '@/lib/logger';
 import { sql } from '@vercel/postgres';
 import {
@@ -23,11 +23,11 @@ import { runAlignmentForAssignment } from '@/lib/alignment';
 import { domainErrorResponse } from '@/lib/route-helpers';
 
 export const runtime = 'nodejs';
-// The PATCH handler fires forced alignment fire-and-forget after
-// confirming the upload. Forced alignment on a 14-min file takes ~3-4
-// min of ElevenLabs processing — well past the 60s default. Bumping to
-// the Pro plan's Fluid Compute cap so the background run actually
-// finishes; the synchronous PATCH work still returns in <1s.
+// The PATCH handler schedules forced alignment via `after()` once the
+// upload is confirmed. Forced alignment on a 14-min file takes ~3-4 min
+// of ElevenLabs processing — well past the 60s default. Bumping to the
+// Pro plan's Fluid Compute cap so the deferred run actually finishes;
+// the synchronous PATCH work still returns in <1s.
 export const maxDuration = 800;
 
 // Whole-script uploads can be ~90min stereo WAV (~900MB). Per-section uploads
@@ -190,18 +190,25 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ to
     // gone — it's a no-op when the id doesn't exist.
     await resetTakeAlignment(takeId);
 
-    // Fire-and-forget alignment trigger. We don't await: the PATCH should
-    // return promptly so the narrator UI can move on. The orchestrator
-    // has its own status machine, so a function-instance death partway
-    // through is recoverable via the 5-minute stale-running reclaim in
-    // claimTakeAlignment + the manual retry button on the reviewer side.
-    // Matches the established fire-and-forget email pattern in
-    // approve-full/route.ts.
-    runAlignmentForAssignment(assignment.id).catch((e) => {
-      logger.error('alignment trigger failed', {
-        assignmentId: assignment.id,
-        detail: e instanceof Error ? e.message : String(e),
-      });
+    // Defer alignment via `after()` so the function instance stays alive
+    // past the response until the orchestrator finishes (or its own
+    // timeout / error path writes a terminal status). A bare
+    // fire-and-forget here used to leak orphans: the function returned
+    // in <1s, Vercel reaped the instance, and the orchestrator's
+    // already-claimed 'running' row was left stuck — the reviewer-side
+    // poll never re-kicks while it sees 'running', so the stale-reclaim
+    // in claimTakeAlignment never fired either. `after` is the
+    // Next.js 16 wrapper around Vercel's `waitUntil` and inherits this
+    // route's maxDuration.
+    after(async () => {
+      try {
+        await runAlignmentForAssignment(assignment.id);
+      } catch (e) {
+        logger.error('alignment trigger failed', {
+          assignmentId: assignment.id,
+          detail: e instanceof Error ? e.message : String(e),
+        });
+      }
     });
 
     return NextResponse.json({ ok: true });
