@@ -54,6 +54,9 @@ interface ThumbnailZoomSceneProps {
   previousRegion: ThumbnailRegion | null;
   /** Resolved transition config: row override → doc default → built-in default. */
   transition: ThumbnailTransitionConfig;
+  /** When false, suppress the opening 4-frame fade-in. Mirrors the
+   *  scene-fade toggle other scenes respect. Defaults `true`. */
+  fadeEnabled?: boolean;
 }
 
 interface Framing {
@@ -166,7 +169,7 @@ function easingToSpringConfig(easing: ThumbnailTransitionConfig['easing']) {
 }
 
 export const ThumbnailZoomScene: React.FC<ThumbnailZoomSceneProps> = ({
-  durationInFrames, brand, thumbnail, region, previousRegion, transition,
+  durationInFrames, brand, thumbnail, region, previousRegion, transition, fadeEnabled = true,
 }) => {
   const frame = useCurrentFrame();
   const { fps, width: cW, height: cH } = useVideoConfig();
@@ -204,7 +207,12 @@ export const ThumbnailZoomScene: React.FC<ThumbnailZoomSceneProps> = ({
 
   // Pick the framing for this frame. Branches by transition kind.
   let framing: Framing;
-  if (transition.kind === 'smooth' && from) {
+  if (transition.kind === 'none') {
+    // No animation at all: render the target region from frame 0. Used
+    // when the creator wants an immediate cut into the section instead
+    // of the hard-cut's hold-then-zoom or the smooth path's tour.
+    framing = target;
+  } else if (transition.kind === 'smooth' && from) {
     // Phase 1: previous-region → contain   over [0, zoomFrames)
     // Phase 2: contain → target            over [zoomFrames, 2 * zoomFrames)
     // After:   target                      held
@@ -236,9 +244,14 @@ export const ThumbnailZoomScene: React.FC<ThumbnailZoomSceneProps> = ({
 
   // Brief opening fade so the first frame doesn't pop on a black background
   // when the scene mounts. 4 frames is short enough to feel like a cut.
-  const intro = interpolate(frame, [0, 4], [0, 1], {
-    extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
-  });
+  // When fadeEnabled is false, skip the ramp entirely so the scene shows
+  // its first computed framing immediately (rule: 'no transition at all'
+  // means the very first frame is fully opaque).
+  const intro = fadeEnabled
+    ? interpolate(frame, [0, 4], [0, 1], {
+        extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
+      })
+    : 1;
 
   // Avoid `durationInFrames` lint complaint when smooth path doesn't read it.
   void durationInFrames;

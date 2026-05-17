@@ -9,6 +9,8 @@ interface OutroSceneProps {
   shot: VideoShot;
   durationInFrames: number;
   brand: BrandKit;
+  /** When false, suppress the scene-to-scene cross fade. Defaults `true`. */
+  fadeEnabled?: boolean;
 }
 
 /**
@@ -16,7 +18,7 @@ interface OutroSceneProps {
  * Shows channel name, subscribe CTA, and optional logo.
  * Designed to hold for 5-10 seconds while YouTube shows end screen cards.
  */
-export const OutroScene: React.FC<OutroSceneProps> = ({ shot, durationInFrames, brand }) => {
+export const OutroScene: React.FC<OutroSceneProps> = ({ shot, durationInFrames, brand, fadeEnabled = true }) => {
   const frame = useCurrentFrame();
   const { fps, width } = useVideoConfig();
 
@@ -124,7 +126,7 @@ export const OutroScene: React.FC<OutroSceneProps> = ({ shot, durationInFrames, 
         </div>
       </div>
 
-      <SceneTransition fadeIn fadeOut totalFrames={durationInFrames} durationInFrames={15} color={brand.backgroundColor} />
+      <SceneTransition fadeIn={fadeEnabled} fadeOut={fadeEnabled} totalFrames={durationInFrames} durationInFrames={15} color={brand.backgroundColor} />
     </AbsoluteFill>
   );
 };

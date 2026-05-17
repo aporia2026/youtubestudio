@@ -8,6 +8,8 @@ interface TextRevealSceneProps {
   shot: VideoShot;
   durationInFrames: number;
   brand: BrandKit;
+  /** When false, suppress the scene-to-scene cross fade. Defaults `true`. */
+  fadeEnabled?: boolean;
 }
 
 /**
@@ -19,6 +21,7 @@ export const TextRevealScene: React.FC<TextRevealSceneProps> = ({
   shot,
   durationInFrames,
   brand,
+  fadeEnabled = true,
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -52,7 +55,7 @@ export const TextRevealScene: React.FC<TextRevealSceneProps> = ({
         <LineReveal lines={lines} brand={brand} frame={frame} fps={fps} durationInFrames={durationInFrames} />
       )}
 
-      <SceneTransition fadeIn fadeOut totalFrames={durationInFrames} durationInFrames={10} color={bg} />
+      <SceneTransition fadeIn={fadeEnabled} fadeOut={fadeEnabled} totalFrames={durationInFrames} durationInFrames={10} color={bg} />
     </AbsoluteFill>
   );
 };

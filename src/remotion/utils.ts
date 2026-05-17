@@ -212,6 +212,11 @@ export interface ProductionRow {
   image_saliency?: ImageSaliencyMap;
   /** Per-row transition override; falls back to ProductionDoc.thumbnail.defaultTransition. */
   thumbnail_transition?: ThumbnailTransitionConfig;
+  /** Per-row override of the scene-to-scene cross fade. `true` forces a
+   *  fade even when the doc default is off; `false` forces a hard cut
+   *  even when the doc default is on. `undefined` inherits the doc
+   *  default (`ProductionDoc.scene_fade_enabled`). */
+  scene_fade?: boolean;
 }
 
 export interface ProductionDoc {
@@ -234,6 +239,12 @@ export interface ProductionDoc {
    *  (ms). When omitted, the workspace default (or
    *  `DEFAULT_TAIL_BUFFER_MS`) applies. */
   tail_buffer_ms?: number;
+  /** Doc-level default for the scene-to-scene cross fade. `undefined`
+   *  preserves the historical behaviour (faded). `false` makes every
+   *  shot hard-cut, including the very first fade-in-from-black and
+   *  the closing fade-out of the outro. Per-row `scene_fade` overrides.
+   *  See `_plans/2026-05-17-scene-transition-controls.md`. */
+  scene_fade_enabled?: boolean;
 }
 
 export interface RowImageState {
@@ -453,6 +464,7 @@ export function productionDocToVideoConfig(
         : undefined,
       pillarboxColor: row.pillarbox_color || undefined,
       thumbnailTransition: row.thumbnail_transition,
+      sceneFade: row.scene_fade,
       overlay,
     };
   });
@@ -475,6 +487,7 @@ export function productionDocToVideoConfig(
     // from doc/options that may not be on hand.
     minSceneMs,
     tailBufferMs,
+    sceneFadeEnabled: doc.scene_fade_enabled,
   };
 
   return opts.alignment ? realignVideoConfig(config, opts.alignment).config : config;

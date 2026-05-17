@@ -20,8 +20,21 @@ export const GET = apiRoute.authed(async (session, req: NextRequest) => {
   const { searchParams } = new URL(req.url);
   const projectId = searchParams.get('projectId') || undefined;
   const scriptId = searchParams.get('scriptId') || undefined;
+  // Production-doc page calls this on mount with the current
+  // historyEntryId to hydrate `rowVideoClips` from the DB — see plan
+  // `_plans/2026-05-17-broll-doc-id-hydration.md`. The 64-char cap mirrors
+  // the cap we apply on POST so a malicious / corrupt client can't
+  // exfiltrate large blobs with one-shot queries either.
+  const productionDocIdRaw = searchParams.get('productionDocId') ?? undefined;
+  const productionDocId =
+    productionDocIdRaw && productionDocIdRaw.length <= 64 ? productionDocIdRaw : undefined;
   const limit = Number.parseInt(searchParams.get('limit') ?? '100', 10) || 100;
-  const clips = await listBrollForWorkspace(session.ws, { projectId, scriptId, limit });
+  const clips = await listBrollForWorkspace(session.ws, {
+    projectId,
+    scriptId,
+    productionDocId,
+    limit,
+  });
   return NextResponse.json({ clips });
 });
 
@@ -67,6 +80,14 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
 
   const projectId = typeof b.projectId === 'string' && b.projectId ? b.projectId : null;
   const scriptId = typeof b.scriptId === 'string' && b.scriptId ? b.scriptId : null;
+  // Production-doc history entry id. Length-capped + workspace-scoped at
+  // read time, so even a hostile client can only tag their own clips
+  // with a value of their choice. See plan
+  // `_plans/2026-05-17-broll-doc-id-hydration.md`.
+  const productionDocId =
+    typeof b.productionDocId === 'string' && b.productionDocId.length > 0 && b.productionDocId.length <= 64
+      ? b.productionDocId
+      : null;
   const rowSignature = typeof b.rowSignature === 'string' && b.rowSignature ? b.rowSignature : null;
   const rowIndex =
     typeof b.rowIndex === 'number' && Number.isFinite(b.rowIndex) ? Math.max(0, Math.floor(b.rowIndex)) : null;
@@ -138,6 +159,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       sourceScriptId: scriptId,
       rowSignature,
       rowIndex,
+      productionDocId,
       visualDescription,
       aiImagePrompt: aiImagePrompt || undefined,
       styleHint,

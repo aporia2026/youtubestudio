@@ -32,11 +32,14 @@ import {
   kickoffBrollGeneration,
   readBrollLockMap,
   writeBrollLockMap,
+  readBrollLsMap,
+  writeBrollLsMap,
 } from '@/components/production-doc/BrollCell';
 import { SectionThumbnailCard } from '@/components/production-doc/SectionThumbnailCard';
 import { OverlayCell } from '@/components/production-doc/OverlayCell';
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
+import { MissingClipsModal } from '@/components/production-doc/MissingClipsModal';
 import {
   brollRowSignatureInput,
   DEFAULT_BROLL_MODEL_ID,
@@ -194,6 +197,10 @@ interface ProductionRow {
   image_saliency?: ImageSaliencyMap;
   /** Per-row transition override. Falls back to doc-level default. */
   thumbnail_transition?: ThumbnailTransitionConfig;
+  /** Per-row scene-to-scene cross-fade override. `undefined` inherits the
+   *  doc-level `scene_fade_enabled`; `true` forces a fade; `false` forces
+   *  a hard cut. See `_plans/2026-05-17-scene-transition-controls.md`. */
+  scene_fade?: boolean;
 }
 
 interface ProductionDoc {
@@ -216,6 +223,11 @@ interface ProductionDoc {
   min_scene_ms?: number;
   /** Per-doc override of the workspace's tail buffer after narration (ms). */
   tail_buffer_ms?: number;
+  /** Doc-level default for the scene-to-scene cross fade. `undefined`
+   *  preserves the historical behaviour (faded). `false` makes every
+   *  shot hard-cut, including removing the opening fade-in and closing
+   *  fade-out. Per-row `scene_fade` overrides per-row. */
+  scene_fade_enabled?: boolean;
 }
 
 interface RowImageState {
@@ -515,6 +527,7 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
   animateScenes,
   suppressLowerThirds,
   voiceoverUrl,
+  voiceoverAlignment,
   brandKit,
   onRender,
   isRendering,
@@ -529,6 +542,12 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
   animateScenes: boolean;
   suppressLowerThirds: boolean;
   voiceoverUrl: string;
+  /** Word-level alignment payload. When present, scene timing snaps to
+   *  the narration's actual word boundaries — without it the preview
+   *  uses estimated WPM timecodes that drift against the audio. The
+   *  render route gets this server-side; the preview needs it client-
+   *  side. See `_plans/2026-05-17-render-state-hardening.md`. */
+  voiceoverAlignment?: import('@/lib/elevenlabs').ForcedAlignmentResponse | null;
   brandKit: Partial<BrandKit>;
   onRender: () => void;
   isRendering: boolean;
@@ -548,8 +567,9 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
       animateScenes,
       rowOverlays,
       suppressLowerThirds,
+      alignment: voiceoverAlignment ?? undefined,
     });
-  }, [doc, rowImages, rowVideoClips, rowOverlays, rowLockedAsStill, animateScenes, suppressLowerThirds, voiceoverUrl, brandKit]);
+  }, [doc, rowImages, rowVideoClips, rowOverlays, rowLockedAsStill, animateScenes, suppressLowerThirds, voiceoverUrl, voiceoverAlignment, brandKit]);
   return (
     <VideoPlayer
       config={config}
@@ -1656,6 +1676,27 @@ function ProductionDocPage() {
   }, [historyEntryId]);
 
   /**
+   * Doc-level scene-fade default toggle. `undefined` preserves the
+   * historical behaviour (faded); `false` makes every shot hard-cut.
+   * Per-row `scene_fade` still overrides per-row. See
+   * `_plans/2026-05-17-scene-transition-controls.md`.
+   */
+  const setSceneFadeEnabled = useCallback((next: boolean) => {
+    setDoc(prev => {
+      if (!prev) return prev;
+      console.info('[ui scene-fade] doc default', {
+        from: prev.scene_fade_enabled,
+        to: next,
+      });
+      const nextDoc: ProductionDoc = { ...prev, scene_fade_enabled: next };
+      if (historyEntryId) {
+        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+      }
+      return nextDoc;
+    });
+  }, [historyEntryId]);
+
+  /**
    * Scene-timing override mutator (per-doc). Sets `min_scene_ms` and
    * `tail_buffer_ms` on the doc; both are optional — `undefined` means
    * "fall back to the workspace default (or built-in default)". Values
@@ -2075,6 +2116,11 @@ function ProductionDocPage() {
           const stub = await kickoffBrollGeneration({
             projectId: null,
             scriptId: null,
+            // Tag the clip with the current production-doc instance so a
+            // future page mount (same / other device) can hydrate it
+            // from the DB. NULL when the doc hasn't been saved yet —
+            // see plan `_plans/2026-05-17-broll-doc-id-hydration.md`.
+            productionDocId: historyEntryId,
             rowIndex: item.rowIndex,
             rowSignature: item.rowSignature,
             visualDescription: item.visualDescription,
@@ -2520,25 +2566,98 @@ function ProductionDocPage() {
   // excluded (transient hand-off objects the BrollCell consumes once).
   useEffect(() => {
     if (!doc?.rows?.length) return;
+    let persistFailed = false;
     try {
       localStorage.setItem('prodoc_last_result', JSON.stringify({
         doc, rowImages, rowOverlays, rowVideoClips, historyEntryId,
         savedAt: Date.now(),
       }));
     } catch (err) {
-      // Most likely quota exceeded — large docs with many rows can push
-      // 1-2 MB. Surface to console so the user can see WHY their data
-      // didn't save instead of silently losing it on next refresh.
-      console.warn('[production-doc] persist failed (quota?)', err instanceof Error ? err.message : err);
+      // Quota or similar storage failure. Try once more without overlays
+      // (they're the heaviest field — base64-ish thumbnails / URLs). If
+      // THAT also fails, drop rowVideoClips next, then doc rows last.
+      // Whatever level succeeds, surface a visible toast so the user
+      // knows their session may not survive a refresh. The previous
+      // implementation only console.warn'd — silent data loss.
+      console.warn('[persist quota] full bundle failed, trying smaller', err instanceof Error ? err.message : err);
+      try {
+        localStorage.setItem('prodoc_last_result', JSON.stringify({
+          doc, rowImages, rowVideoClips, historyEntryId, savedAt: Date.now(),
+        }));
+      } catch {
+        try {
+          localStorage.setItem('prodoc_last_result', JSON.stringify({
+            doc, rowImages, historyEntryId, savedAt: Date.now(),
+          }));
+          persistFailed = true; // partial — clips + overlays not in bundle
+        } catch {
+          persistFailed = true; // total failure
+        }
+      }
+      if (!quotaWarnedRef.current) {
+        quotaWarnedRef.current = true;
+        toast.warning(
+          'Browser storage is full — generated clips or overlays may not survive a refresh. ' +
+          'Open the doc from the history sidebar to restore from server, or start a New Session to clear old work.',
+          { duration: 12000 },
+        );
+      }
     }
-    // Also patch the current history entry so row-image URLs survive on restore.
-    if (historyEntryId && rowImages.length > 0) {
+    if (persistFailed) {
+      console.info('[persist quota] partial bundle saved without overlays/clips', {
+        rowImagesCount: rowImages.length,
+        overlayCount: Object.keys(rowOverlays).length,
+        clipCount: Object.keys(rowVideoClips).length,
+      });
+    }
+    // Also patch the current history entry so EVERY generated asset
+    // survives on restore — images, overlays, AND clip ids. Previously
+    // only `rowImages` was persisted here; overlays + clips were lost
+    // the moment the user clicked the entry from the sidebar (the
+    // sidebar restore zeroed both maps). See plan
+    // `_plans/2026-05-17-render-state-hardening.md`.
+    if (historyEntryId && doc?.rows?.length) {
       const imgMap: Record<number, string> = {};
       rowImages.forEach((r, i) => { if (r?.imageUrl) imgMap[i] = r.imageUrl; });
-      if (Object.keys(imgMap).length > 0) {
+
+      // Overlays: persist the whole resolved state ({status, url}) per
+      // row index. Only rows whose status is meaningful get an entry
+      // (skip pure 'idle' rows — they round-trip as missing).
+      const overlayMap: Record<number, { status: string; url?: string }> = {};
+      Object.entries(rowOverlays).forEach(([k, v]) => {
+        const i = Number(k);
+        if (!Number.isFinite(i) || !v) return;
+        overlayMap[i] = { status: v.status, url: v.url };
+      });
+
+      // Clips: persist only the clip id per row. The actual videoUrl is
+      // re-fetched on restore from `/api/broll/{id}` via BrollCell's
+      // mount-hydration. Storing the id (not the url) keeps the entry
+      // small AND auto-refreshes the url if it ever rotates server-side.
+      // We need the id from BrollCell's localStorage map, not from
+      // `rowVideoClips` (which only has status+videoUrl). Rebuild the
+      // (rowIndex → clipId) map from rowSignature lookups.
+      const clipMap: Record<number, string> = {};
+      const sigToClipId = readBrollLsMap();
+      doc.rows.forEach((row, i) => {
+        const sig = brollRowSignatureInput({
+          timecode: row.timecode,
+          visual_description: row.visual_description,
+        });
+        const clipId = sigToClipId[sig];
+        if (clipId && rowVideoClips[i]?.status === 'ready') {
+          clipMap[i] = clipId;
+        }
+      });
+
+      const patch: Partial<import('@/lib/history').ProductionDocHistoryEntry> = {};
+      if (Object.keys(imgMap).length > 0) patch.rowImages = imgMap;
+      if (Object.keys(overlayMap).length > 0) patch.rowOverlays = overlayMap;
+      if (Object.keys(clipMap).length > 0) patch.rowVideoClips = clipMap;
+      if (Object.keys(patch).length > 0) {
         // Fire-and-forget — the lib updates the localStorage cache
         // synchronously, then PATCHes the server in the background.
-        updateProductionDocEntry(historyEntryId, { rowImages: imgMap }).catch(() => {});
+        updateProductionDocEntry(historyEntryId, patch).catch(() => {});
       }
     }
   }, [doc, rowImages, rowOverlays, rowVideoClips, historyEntryId]);
@@ -2582,6 +2701,22 @@ function ProductionDocPage() {
   // function cap on multi-GB downloads).
   const [renderDownloadUrl, setRenderDownloadUrl] = useState<string | null>(null);
   const renderPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // One-shot guard: surface the localStorage-quota toast at most once per
+  // session so a tight render-typing-render loop doesn't spam the user.
+  // The flag resets on hard reload, which is the natural moment to
+  // re-warn if the problem persists. See plan
+  // `_plans/2026-05-17-render-state-hardening.md`.
+  const quotaWarnedRef = useRef(false);
+  // Mirror of the three asset-state slices the renderer reads from.
+  // `executeRender` is a stable function reference (declared once per
+  // render) but may be CALLED later — from the missing-clips modal,
+  // after the user reloads — at which point the closure-captured state
+  // is stale relative to the fresh state from `handleBrollClipChange`.
+  // Reading through these refs guarantees we send the freshest values
+  // to the server. See `_plans/2026-05-17-render-state-hardening.md`.
+  const rowVideoClipsRef = useRef<Record<number, { status: string; videoUrl?: string } | null>>({});
+  const rowImagesRef = useRef<RowImageState[]>([]);
+  const rowOverlaysRef = useRef<Record<number, RowOverlayState>>({});
 
   // — Voiceover-aligned scene timing (per _plans/2026-05-13-voiceover-aligned-scene-timing.md)
   // Mirrors the four-state pill near the Render button: idle → syncing →
@@ -2591,6 +2726,16 @@ function ProductionDocPage() {
   type AlignmentPillStatus = 'idle' | 'syncing' | 'ready' | 'stale' | 'failed' | 'unsupported';
   const [alignmentStatus, setAlignmentStatus] = useState<AlignmentPillStatus>('idle');
   const [alignmentDetail, setAlignmentDetail] = useState<string | null>(null);
+  // The actual word-level alignment payload from ElevenLabs. Stored
+  // here so the in-browser preview (VideoPlayerMemo) can pass it into
+  // `productionDocToVideoConfig` — without this, the preview falls back
+  // to estimated timecodes and the narration drifts against the frames.
+  // The render route gets the alignment via a different code path
+  // (server-side cache lookup, see `body.voiceoverAlignment`), but the
+  // preview is a pure-client build, so it needs the data in state.
+  // See `_plans/2026-05-17-render-state-hardening.md`.
+  const [voiceoverAlignment, setVoiceoverAlignment] =
+    useState<import('@/lib/elevenlabs').ForcedAlignmentResponse | null>(null);
   // `alignedAtScript` is the canonical script frozen at the moment of
   // the last successful alignment. The drift check compares it against
   // the current script to decide whether soft re-align is enough or a
@@ -3386,7 +3531,11 @@ function ProductionDocPage() {
         }),
       });
       if (reqId !== alignmentReqRef.current) return;
-      const data = (await safeJson(res)) as { status?: string; reason?: string };
+      const data = (await safeJson(res)) as {
+        status?: string;
+        reason?: string;
+        alignment?: import('@/lib/elevenlabs').ForcedAlignmentResponse;
+      };
       if (!res.ok) {
         setAlignmentStatus('failed');
         setAlignmentDetail(typeof data.reason === 'string' ? data.reason : 'Alignment request failed.');
@@ -3396,6 +3545,18 @@ function ProductionDocPage() {
         setAlignmentStatus('ready');
         setAlignmentDetail(null);
         setAlignedAtScript(canonicalScript);
+        // Capture the alignment payload so the preview can apply it.
+        // The render route fetches the same alignment server-side (via
+        // the body.voiceoverAlignment hint), so the two paths stay in
+        // sync. Falsy `alignment` = older response shape; we keep
+        // status='ready' but the preview will fall back to estimated
+        // timing for THIS session until a re-align happens.
+        if (data.alignment) {
+          setVoiceoverAlignment(data.alignment);
+          console.info('[alignment captured]', {
+            wordCount: data.alignment.words?.length ?? 0,
+          });
+        }
       } else {
         setAlignmentStatus('failed');
         setAlignmentDetail(typeof data.reason === 'string' ? data.reason : 'Alignment failed.');
@@ -3432,6 +3593,11 @@ function ProductionDocPage() {
         setAlignedAtScript(null);
         setAlignmentStatus('idle');
         setAlignmentDetail(null);
+        // Stale alignment vs new voiceover URL — drop the cached payload
+        // too. Letting the preview keep using the old timestamps against
+        // the new audio would create the exact narration-frame drift
+        // bug 2 is fixing.
+        setVoiceoverAlignment(null);
         return;
       }
     }
@@ -3439,6 +3605,7 @@ function ProductionDocPage() {
     if (!doc || !voiceoverUrl) {
       setAlignmentStatus('idle');
       setAlignmentDetail(null);
+      setVoiceoverAlignment(null);
       return;
     }
     if (!VOICEOVER_PROXY_PATH_RE.test(voiceoverUrl)) {
@@ -3473,9 +3640,305 @@ function ProductionDocPage() {
 
   // ── Video render ─────────────────────────────────────────────────────────────
 
+  /**
+   * Walk every row and find clips that EXIST in the per-cell localStorage
+   * signature map but DIDN'T make it back into `rowVideoClips` state
+   * (typically because `prodoc_last_result` was cleared / quota-exceeded
+   * / history-sidebar restored without bringing them, etc).
+   *
+   * Returns a per-row missing list. Used as a pre-render gate: if any
+   * row has a generated clip the renderer would silently ignore, we
+   * stop and ask the user to reload them before kicking off the render
+   * — otherwise they'd ship a stills-only MP4 and pay again for the
+   * animations they already generated. See plan
+   * `_plans/2026-05-17-render-state-hardening.md`.
+   */
+  type MissingClip = { rowIndex: number; clipId: string; signature: string };
+  const findMissingClipsForRender = useCallback((): MissingClip[] => {
+    if (!doc?.rows) return [];
+    const sigMap = readBrollLsMap();
+    const liveClips = rowVideoClipsRef.current;
+    const missing: MissingClip[] = [];
+    doc.rows.forEach((row, i) => {
+      const sig = brollRowSignatureInput({
+        timecode: row.timecode,
+        visual_description: row.visual_description,
+      });
+      const clipId = sigMap[sig];
+      if (!clipId) return;
+      const current = liveClips[i];
+      if (current?.status === 'ready' && current.videoUrl) return;
+      missing.push({ rowIndex: i, clipId, signature: sig });
+    });
+    return missing;
+  }, [doc]);
+
+  /**
+   * Reload a batch of missing clips by id. Hits the SAME `/api/broll/{id}`
+   * endpoint BrollCell uses on mount, then dispatches each result
+   * through `handleBrollClipChange` so the parent's `rowVideoClips`
+   * actually updates. Errors per-clip are isolated — we still try the
+   * rest. Returns the list of clips that failed to reload (so the
+   * modal can keep them visible).
+   */
+  const reloadMissingClips = useCallback(async (missing: MissingClip[]): Promise<MissingClip[]> => {
+    const stillMissing: MissingClip[] = [];
+    for (const m of missing) {
+      try {
+        const res = await fetch(`/api/broll/${m.clipId}`, { cache: 'no-store' });
+        if (!res.ok) {
+          console.warn('[render preflight] reload failed', { rowIndex: m.rowIndex, clipId: m.clipId, status: res.status });
+          stillMissing.push(m);
+          continue;
+        }
+        const data = (await res.json()) as { clip?: { id: string; status: BrollStatus; video_url: string | null } };
+        if (data.clip && data.clip.status === 'ready' && data.clip.video_url) {
+          handleBrollClipChange(m.rowIndex, { status: data.clip.status, video_url: data.clip.video_url });
+        } else {
+          stillMissing.push(m);
+        }
+      } catch (err) {
+        console.warn('[render preflight] reload threw', { rowIndex: m.rowIndex, clipId: m.clipId, err: err instanceof Error ? err.message : String(err) });
+        stillMissing.push(m);
+      }
+    }
+    return stillMissing;
+  }, [handleBrollClipChange]);
+
+  // Modal state: non-null = modal open with these missing clips.
+  // `reloading` flips while the Reload button is in flight.
+  const [missingClipsModal, setMissingClipsModal] = useState<{
+    missing: MissingClip[];
+    reloading: boolean;
+  } | null>(null);
+
+  // Keep the asset-state refs in sync with the live state on every
+  // commit. Tiny effect; the cost is one assignment per render and
+  // it eliminates the stale-closure class of bug in `executeRender`.
+  useEffect(() => { rowVideoClipsRef.current = rowVideoClips; }, [rowVideoClips]);
+  useEffect(() => { rowImagesRef.current = rowImages; }, [rowImages]);
+  useEffect(() => { rowOverlaysRef.current = rowOverlays; }, [rowOverlays]);
+
+  // Shared dependency for the two mount-time hydration effects below
+  // (Phase 3 + Phase 2). Reading `doc?.rows?.length` directly inside the
+  // dep array would re-fire on every keystroke that mutates a row; using
+  // the row COUNT alone keeps the effects scoped to "doc identity
+  // changed" without churning on row edits.
+  const docRowsLength = doc?.rows?.length ?? 0;
+
+  // ── Entry hydration of images + overlays (Phase 3) ─────────────────────────
+  //
+  // Mount-time recovery for stills + overlays from the canonical history
+  // entry. Phase 1 made the entry the durable record; this effect is
+  // what reads it back on refresh when the localStorage bundle came
+  // home short (quota-trimmed save). Clips are handled by Phase 2's
+  // DB hydration instead — they don't have URLs on the entry, only ids.
+  //
+  // Merge policy: only fill in rows where the current state is missing
+  // or 'idle'. Don't overwrite 'loading' (live generation), 'done' (the
+  // user already has it), or 'error' (their explicit "retry" state). The
+  // effect is idempotent — once everything's hydrated, subsequent runs
+  // are no-ops via the `changed` flag inside the functional setStates.
+  // See plan `_plans/2026-05-17-image-overlay-entry-hydration.md`.
+  useEffect(() => {
+    if (!historyEntryId || !doc?.rows?.length || historyItems.length === 0) return;
+    const entry = historyItems.find((e) => e.id === historyEntryId);
+    if (!entry) return;
+
+    let imagesApplied = 0;
+    let overlaysApplied = 0;
+
+    if (entry.rowImages && Object.keys(entry.rowImages).length > 0) {
+      setRowImages((prev) => {
+        const next = prev.length >= doc.rows.length
+          ? [...prev]
+          : [...prev, ...new Array(doc.rows.length - prev.length).fill({ status: 'idle' })];
+        let changed = false;
+        doc.rows.forEach((_row, i) => {
+          const entryUrl = entry.rowImages?.[i];
+          if (!entryUrl) return;
+          const cur = next[i];
+          // Respect every non-idle state: 'loading' is an in-flight
+          // generation we mustn't clobber; 'done' is what we'd be
+          // restoring TO; 'error' is the user's signal that they want
+          // to retry that specific row. Only 'idle' / missing fills.
+          if (!cur || cur.status === 'idle') {
+            next[i] = { status: 'done', imageUrl: entryUrl };
+            imagesApplied++;
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+    }
+
+    if (entry.rowOverlays && Object.keys(entry.rowOverlays).length > 0) {
+      setRowOverlays((prev) => {
+        const next: Record<number, RowOverlayState> = { ...prev };
+        let changed = false;
+        Object.entries(entry.rowOverlays!).forEach(([k, v]) => {
+          const i = Number(k);
+          if (!Number.isFinite(i) || !v) return;
+          const cur = next[i];
+          // Same merge policy as images: only fill empty / idle slots.
+          if (!cur || cur.status === 'idle') {
+            next[i] = v as RowOverlayState;
+            overlaysApplied++;
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+    }
+
+    console.info('[entry hydrate]', {
+      historyEntryId,
+      imagesFromEntry: entry.rowImages ? Object.keys(entry.rowImages).length : 0,
+      imagesApplied,
+      overlaysFromEntry: entry.rowOverlays ? Object.keys(entry.rowOverlays).length : 0,
+      overlaysApplied,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyEntryId, docRowsLength, historyItems]);
+
+  // ── DB hydration of B-roll clips (Phase 2) ──────────────────────────────────
+  //
+  // When the doc is associated with a saved history entry, sweep
+  // `broll_clips` for every clip tagged with that doc's id and bridge
+  // them into state. Closes the cross-device / cleared-localStorage gap
+  // Phase 1's per-cell mount-hydration couldn't cover. Runs once per
+  // (historyEntryId, doc.rows-length) combination — once per page mount
+  // for typical usage, plus once more if the user clicks a different
+  // history entry.
+  //
+  // Idempotent with Phase 1's per-cell hydration: `handleBrollClipChange`
+  // no-ops when the new entry equals the existing one. See plan
+  // `_plans/2026-05-17-broll-doc-id-hydration.md`.
+  useEffect(() => {
+    if (!historyEntryId || !doc?.rows?.length) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/broll?productionDocId=${encodeURIComponent(historyEntryId)}&limit=200`,
+          { cache: 'no-store' },
+        );
+        if (!res.ok) {
+          console.warn('[broll db-hydrate] list failed', { status: res.status, historyEntryId });
+          return;
+        }
+        const data = (await res.json()) as { clips?: import('@/lib/broll-types').BrollClipRow[] };
+        if (cancelled || !data.clips?.length) {
+          console.info('[broll db-hydrate]', { historyEntryId, fetched: 0, applied: 0, skipped: 0 });
+          return;
+        }
+
+        // Build a signature → rowIndex lookup for the CURRENT doc. Clips
+        // whose stored row_signature doesn't match (e.g. user edited the
+        // visual_description after generation) are skipped; they remain
+        // in the workspace clip library but aren't auto-attached.
+        const sigToIndex = new Map<string, number>();
+        doc.rows.forEach((row, i) => {
+          const sig = brollRowSignatureInput({
+            timecode: row.timecode,
+            visual_description: row.visual_description,
+          });
+          sigToIndex.set(sig, i);
+        });
+
+        // The DB query returns rows ordered by created_at DESC, so the
+        // first clip we see for any signature is the freshest. Skip
+        // duplicates to avoid clobbering with an older replay.
+        const seen = new Set<string>();
+        const lsMap = readBrollLsMap();
+        const stubAdditions: Record<number, import('@/lib/broll-types').BrollClipRow> = {};
+        let applied = 0;
+        let skippedNoSig = 0;
+        let skippedSigMismatch = 0;
+
+        for (const clip of data.clips) {
+          if (!clip.row_signature) { skippedNoSig++; continue; }
+          if (seen.has(clip.row_signature)) continue;
+          seen.add(clip.row_signature);
+          const idx = sigToIndex.get(clip.row_signature);
+          if (idx === undefined) { skippedSigMismatch++; continue; }
+
+          // Bridge to parent state — drives the renderer.
+          handleBrollClipChange(idx, { status: clip.status, video_url: clip.video_url });
+          // Hand to the cell as initialClip so its own UI reflects the
+          // clip immediately (avoids the cell briefly showing 'idle'
+          // after a successful hydration).
+          stubAdditions[idx] = clip;
+          // Seed the per-cell localStorage map so the next page mount
+          // can take the faster per-cell path even without re-querying.
+          lsMap[clip.row_signature] = clip.id;
+          applied++;
+        }
+
+        if (cancelled) return;
+        if (Object.keys(stubAdditions).length > 0) {
+          setRowBatchStubs((prev) => ({ ...prev, ...stubAdditions }));
+        }
+        writeBrollLsMap(lsMap);
+        console.info('[broll db-hydrate]', {
+          historyEntryId,
+          fetched: data.clips.length,
+          applied,
+          skippedNoSig,
+          skippedSigMismatch,
+        });
+      } catch (err) {
+        console.warn('[broll db-hydrate] threw', err instanceof Error ? err.message : err);
+      }
+    })();
+    return () => { cancelled = true; };
+    // We deliberately only re-run when the doc identity (historyEntryId)
+    // or its row count changes — NOT on every row edit. Editing a row's
+    // text shouldn't re-sweep the DB; the per-cell localStorage map and
+    // existing state already track the user's edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyEntryId, docRowsLength]);
+
+  /**
+   * Entry point for the Render button. Runs the missing-clips
+   * preflight: if any row has a generated clip in localStorage but
+   * NOT in state, opens `MissingClipsModal` and aborts. The modal
+   * either reloads the clips (then continues) or asks for explicit
+   * confirmation to render anyway. When nothing's missing, falls
+   * straight through to `executeRender`.
+   */
   async function startVideoRender() {
     if (!doc) return;
-    const rowClipsArr = doc.rows.map((_, i) => rowVideoClips[i] ?? null);
+    const missing = findMissingClipsForRender();
+    console.info('[render preflight]', {
+      missingClipCount: missing.length,
+      rowIndexes: missing.map(m => m.rowIndex),
+    });
+    if (missing.length > 0) {
+      setMissingClipsModal({ missing, reloading: false });
+      return;
+    }
+    await executeRender();
+  }
+
+  /**
+   * The actual render submission. Extracted from `startVideoRender` so
+   * the missing-clips gate can call it after the user reloads or
+   * explicitly bypasses the warning. Reads the LATEST `rowVideoClips` /
+   * `rowImages` / `rowOverlays` from state at call time (closure over
+   * the most recent render), so a reload that just bridged clips into
+   * state lands in the config we send to the server.
+   */
+  async function executeRender() {
+    if (!doc) return;
+    // Read asset state through refs so a post-reload call (after the
+    // missing-clips modal bridged fresh clips into state) sees the
+    // committed values instead of the closure's stale snapshot. See
+    // `_plans/2026-05-17-render-state-hardening.md`.
+    const liveRowVideoClips = rowVideoClipsRef.current;
+    const liveRowImages = rowImagesRef.current;
+    const liveRowOverlays = rowOverlaysRef.current;
+    const rowClipsArr = doc.rows.map((_, i) => liveRowVideoClips[i] ?? null);
     const rowLockedArr = doc.rows.map((row) =>
       Boolean(
         rowLockSignatures[
@@ -3483,14 +3946,30 @@ function ProductionDocPage() {
         ],
       ),
     );
-    const config = productionDocToVideoConfig(doc, rowImages, {
+    const config = productionDocToVideoConfig(doc, liveRowImages, {
       voiceoverUrl: voiceoverUrl || undefined,
       brand: effectiveBrandKit,
       rowVideoClips: rowClipsArr,
       rowLockedAsStill: rowLockedArr,
       animateScenes,
-      rowOverlays,
+      rowOverlays: liveRowOverlays,
       suppressLowerThirds,
+    });
+    // One-shot diagnostic so a post-mortem can see exactly what the
+    // server received. Lists per-row presence of imageUrl + videoUrl so
+    // the "rendered MP4 had no animations" mystery is debuggable.
+    console.info('[render config built]', {
+      shotCount: config.shots.length,
+      suppressLowerThirds: config.suppressLowerThirds,
+      sceneFadeEnabled: config.sceneFadeEnabled,
+      animateScenes,
+      rows: config.shots.map((s, i) => ({
+        i,
+        hasImage: Boolean(s.imageUrl),
+        hasVideo: Boolean(s.videoUrl),
+        sceneType: s.sceneType,
+        hasOst: Boolean(s.onScreenText),
+      })),
     });
     setRenderStatus('rendering');
     setRenderProgress(0);
@@ -4430,6 +4909,55 @@ function ProductionDocPage() {
             )}
           </div>
 
+          {/* Doc-level scene-fade toggle. On = the historical cross-fade
+              between every shot (and the opening fade-in / closing fade-out
+              on the first/last shot). Off = hard cut everywhere. Per-row
+              pills in the Section column can override individual rows.
+              See _plans/2026-05-17-scene-transition-controls.md. */}
+          {(() => {
+            const fadeOn = doc.scene_fade_enabled !== false;
+            return (
+              <div className="mb-4 flex flex-wrap items-center gap-3 px-4 py-2.5 rounded-lg" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                <button
+                  type="button"
+                  onClick={() => setSceneFadeEnabled(!fadeOn)}
+                  role="switch"
+                  aria-checked={fadeOn}
+                  className="relative inline-flex items-center rounded-full transition-colors"
+                  style={{
+                    width: 36,
+                    height: 20,
+                    background: fadeOn ? 'rgba(168,85,247,0.45)' : 'rgba(120,120,120,0.35)',
+                  }}
+                  title={
+                    fadeOn
+                      ? 'Cross-fade is on. Click to make every shot hard-cut instead.'
+                      : 'Hard cuts are on. Click to restore the cross-fade between shots.'
+                  }
+                >
+                  <span
+                    className="inline-block rounded-full bg-white transition-transform"
+                    style={{
+                      width: 14,
+                      height: 14,
+                      transform: `translateX(${fadeOn ? 18 : 4}px)`,
+                    }}
+                  />
+                </button>
+                <div className="flex flex-col leading-tight flex-1 min-w-[220px]">
+                  <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                    Scene fade between shots
+                  </span>
+                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                    {fadeOn
+                      ? 'Smooth fade in/out wraps every shot — and the very first frame fades in from black, the last fades out.'
+                      : 'Hard cut between shots — the video starts and ends on its first/last frame with no fade-to-black.'}
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* ── Desktop table */}
           <div className="glass rounded-xl overflow-hidden">
             <div className="overflow-x-auto hidden md:block">
@@ -4440,7 +4968,9 @@ function ProductionDocPage() {
                       const headerList = ['#', 'Time', 'Script Text', 'Visual Type', 'Visual Description', 'Stock Terms', 'Image', 'B-roll', 'AI Prompt'];
                       if (showOverlayColumn) headerList.push('Overlay');
                       headerList.push('On-Screen Text', 'Notes');
-                      if (doc.thumbnail) headerList.push('Section');
+                      // 'Section' column now always renders — hosts the
+                      // scene-fade pill even when there's no thumbnail.
+                      headerList.push('Section');
                       return headerList;
                     })().map(h => (
                       <th key={h} style={{
@@ -4628,6 +5158,7 @@ function ProductionDocPage() {
                               <BrollCell
                                 rowIndex={i}
                                 rowSignature={sig}
+                                productionDocId={historyEntryId}
                                 visualDescription={row.visual_description}
                                 aiImagePrompt={row.ai_image_prompt}
                                 styleHint={stylePreset}
@@ -4791,29 +5322,33 @@ function ProductionDocPage() {
                         <td style={{ padding: '8px 12px', color: 'var(--text-muted)', maxWidth: 130, fontSize: '0.7rem', lineHeight: 1.5 }}>
                           {row.notes || '—'}
                         </td>
-                        {/* Section (thumbnail-zoom controls) — only rendered when a thumbnail exists */}
-                        {doc.thumbnail && (
-                          <td style={{ padding: '8px 10px', width: 170, verticalAlign: 'top' }}>
-                            <SectionRowControls
-                              rowIndex={i}
-                              totalRows={doc.rows.length}
-                              thumbnail={doc.thumbnail}
-                              zoomTo={row.thumbnail_zoom_to}
-                              sectionTitle={row.section_title}
-                              sectionTitleLayout={row.section_title_layout}
-                              pillarboxColor={row.pillarbox_color}
-                              pillarboxColorDefault={doc.pillarbox_color_default}
-                              transition={row.thumbnail_transition}
-                              defaultTransition={doc.thumbnail.defaultTransition}
-                              onChangeZoomTo={(id) => updateRow(i, { thumbnail_zoom_to: id })}
-                              onChangeSectionTitle={(t) => updateRow(i, { section_title: t })}
-                              onChangeSectionTitleLayout={(l) => updateRow(i, { section_title_layout: l })}
-                              onChangePillarboxColor={(c) => updateRow(i, { pillarbox_color: c })}
-                              onChangeTransition={(t) => updateRow(i, { thumbnail_transition: t })}
-                              onApplyTitleToRange={applyTitleToRange}
-                            />
-                          </td>
-                        )}
+                        {/* Section column — always rendered now. Hosts the
+                            thumbnail-zoom controls (only when a thumbnail
+                            exists) AND the per-row scene-fade pill (always),
+                            so every row stays controllable. */}
+                        <td style={{ padding: '8px 10px', width: 170, verticalAlign: 'top' }}>
+                          <SectionRowControls
+                            rowIndex={i}
+                            totalRows={doc.rows.length}
+                            thumbnail={doc.thumbnail}
+                            zoomTo={row.thumbnail_zoom_to}
+                            sectionTitle={row.section_title}
+                            sectionTitleLayout={row.section_title_layout}
+                            pillarboxColor={row.pillarbox_color}
+                            pillarboxColorDefault={doc.pillarbox_color_default}
+                            transition={row.thumbnail_transition}
+                            defaultTransition={doc.thumbnail?.defaultTransition}
+                            sceneFade={row.scene_fade}
+                            sceneFadeDefault={doc.scene_fade_enabled}
+                            onChangeZoomTo={(id) => updateRow(i, { thumbnail_zoom_to: id })}
+                            onChangeSectionTitle={(t) => updateRow(i, { section_title: t })}
+                            onChangeSectionTitleLayout={(l) => updateRow(i, { section_title_layout: l })}
+                            onChangePillarboxColor={(c) => updateRow(i, { pillarbox_color: c })}
+                            onChangeTransition={(t) => updateRow(i, { thumbnail_transition: t })}
+                            onChangeSceneFade={(next) => updateRow(i, { scene_fade: next })}
+                            onApplyTitleToRange={applyTitleToRange}
+                          />
+                        </td>
                       </tr>
                     );
                   })}
@@ -4959,6 +5494,7 @@ function ProductionDocPage() {
                               <BrollCell
                                 rowIndex={i}
                                 rowSignature={sig}
+                                productionDocId={historyEntryId}
                                 visualDescription={row.visual_description}
                                 aiImagePrompt={row.ai_image_prompt}
                                 styleHint={stylePreset}
@@ -5017,29 +5553,30 @@ function ProductionDocPage() {
                             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{row.notes}</p>
                           </div>
                         )}
-                        {doc.thumbnail && (
-                          <div>
-                            <p className="text-xs font-semibold mb-1" style={{ color: 'var(--text-muted)' }}>Section</p>
-                            <SectionRowControls
-                              rowIndex={i}
-                              totalRows={doc.rows.length}
-                              thumbnail={doc.thumbnail}
-                              zoomTo={row.thumbnail_zoom_to}
-                              sectionTitle={row.section_title}
-                              sectionTitleLayout={row.section_title_layout}
-                              pillarboxColor={row.pillarbox_color}
-                              pillarboxColorDefault={doc.pillarbox_color_default}
-                              transition={row.thumbnail_transition}
-                              defaultTransition={doc.thumbnail.defaultTransition}
-                              onChangeZoomTo={(id) => updateRow(i, { thumbnail_zoom_to: id })}
-                              onChangeSectionTitle={(t) => updateRow(i, { section_title: t })}
-                              onChangeSectionTitleLayout={(l) => updateRow(i, { section_title_layout: l })}
-                              onChangePillarboxColor={(c) => updateRow(i, { pillarbox_color: c })}
-                              onChangeTransition={(t) => updateRow(i, { thumbnail_transition: t })}
-                              onApplyTitleToRange={applyTitleToRange}
-                            />
-                          </div>
-                        )}
+                        <div>
+                          <p className="text-xs font-semibold mb-1" style={{ color: 'var(--text-muted)' }}>Section</p>
+                          <SectionRowControls
+                            rowIndex={i}
+                            totalRows={doc.rows.length}
+                            thumbnail={doc.thumbnail}
+                            zoomTo={row.thumbnail_zoom_to}
+                            sectionTitle={row.section_title}
+                            sectionTitleLayout={row.section_title_layout}
+                            pillarboxColor={row.pillarbox_color}
+                            pillarboxColorDefault={doc.pillarbox_color_default}
+                            transition={row.thumbnail_transition}
+                            defaultTransition={doc.thumbnail?.defaultTransition}
+                            sceneFade={row.scene_fade}
+                            sceneFadeDefault={doc.scene_fade_enabled}
+                            onChangeZoomTo={(id) => updateRow(i, { thumbnail_zoom_to: id })}
+                            onChangeSectionTitle={(t) => updateRow(i, { section_title: t })}
+                            onChangeSectionTitleLayout={(l) => updateRow(i, { section_title_layout: l })}
+                            onChangePillarboxColor={(c) => updateRow(i, { pillarbox_color: c })}
+                            onChangeTransition={(t) => updateRow(i, { thumbnail_transition: t })}
+                            onChangeSceneFade={(next) => updateRow(i, { scene_fade: next })}
+                            onApplyTitleToRange={applyTitleToRange}
+                          />
+                        </div>
                       </div>
                     )}
                   </div>
@@ -5151,6 +5688,7 @@ function ProductionDocPage() {
                   animateScenes={animateScenes}
                   suppressLowerThirds={suppressLowerThirds}
                   voiceoverUrl={voiceoverUrl}
+                  voiceoverAlignment={voiceoverAlignment}
                   brandKit={effectiveBrandKit}
                   onRender={startVideoRender}
                   isRendering={renderStatus === 'rendering'}
@@ -5252,14 +5790,40 @@ function ProductionDocPage() {
                 return url ? { status: 'done', imageUrl: url } : { status: 'idle' };
               });
               setRowImages(restoredImages);
-              // Overlays aren't persisted in history entries yet — clear
-              // so the restored doc starts with the OverlayCell in 'idle'
-              // and the user can per-row Retry to refresh.
-              setRowOverlays({});
             } else {
               setRowImages([]);
-              setRowOverlays({});
             }
+            // Restore overlays + B-roll clip state if the entry carries
+            // them. Older entries pre-date these fields — they fall back
+            // to `{}` and the per-cell mount-hydration in BrollCell /
+            // OverlayCell can rebuild from each cell's own localStorage
+            // map. The earlier code unconditionally wiped both maps,
+            // which dropped every generated asset the moment the user
+            // clicked an entry in the sidebar. See plan
+            // _plans/2026-05-17-render-state-hardening.md.
+            const restoredOverlays = entry.rowOverlays && typeof entry.rowOverlays === 'object'
+              ? entry.rowOverlays as Record<number, RowOverlayState>
+              : {};
+            setRowOverlays(restoredOverlays);
+            // rowVideoClips is stored as { rowIndex → clipId }. We can't
+            // restore the videoUrl directly (the entry doesn't carry it),
+            // but seeding the cell with the clip id is enough — BrollCell's
+            // mount-hydration will fetch `/api/broll/{id}`, see status:'ready',
+            // and bridge to the parent via the now-fixed updateClip path.
+            // For 'ready'-status rows the renderer also needs the videoUrl
+            // up front, so we leave the per-row entries empty here and
+            // rely on the hydrate-on-mount round trip. The pre-render
+            // verification (see plan) will block render if any clip id
+            // from the entry didn't land in state by the time the user
+            // clicks Render.
+            setRowVideoClips({});
+            console.info('[history restore]', {
+              entryId: entry.id,
+              hadImages: Boolean(entry.rowImages),
+              hadOverlays: Boolean(entry.rowOverlays),
+              hadClips: Boolean(entry.rowVideoClips),
+              clipCount: entry.rowVideoClips ? Object.keys(entry.rowVideoClips).length : 0,
+            });
             setHistoryEntryId(entry.id);
             // Restore the per-video visual brand kit override if the
             // entry carried one. parseVisualBrandKit drops anything
@@ -5291,6 +5855,38 @@ function ProductionDocPage() {
           styles={availableStyles}
           onChanged={() => { void loadStyles(); }}
           onClose={() => setStyleManagerOpen(false)}
+        />
+      )}
+
+      {/* Pre-render verification gate. Mounted only when a render
+          attempt found B-roll clips in localStorage that weren't in
+          state. The modal handles its own reload pipeline; on full
+          success it triggers `executeRender` directly, otherwise the
+          user can explicitly accept a stills-only render or cancel.
+          See `_plans/2026-05-17-render-state-hardening.md`. */}
+      {missingClipsModal && (
+        <MissingClipsModal
+          missing={missingClipsModal.missing}
+          reloading={missingClipsModal.reloading}
+          onReload={reloadMissingClips}
+          onContinue={async () => {
+            setMissingClipsModal(null);
+            await executeRender();
+          }}
+          onRenderAnyway={async () => {
+            console.info('[render skipped-reload]', {
+              missingRowIndexes: missingClipsModal.missing.map(m => m.rowIndex),
+            });
+            setMissingClipsModal(null);
+            await executeRender();
+          }}
+          onClose={() => setMissingClipsModal(null)}
+          onMissingChange={(next) =>
+            setMissingClipsModal((prev) => (prev ? { ...prev, missing: next } : prev))
+          }
+          onReloadingChange={(next) =>
+            setMissingClipsModal((prev) => (prev ? { ...prev, reloading: next } : prev))
+          }
         />
       )}
     </div>

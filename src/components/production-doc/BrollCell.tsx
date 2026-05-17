@@ -57,7 +57,12 @@ const BROLL_LS_KEY = 'prodoc_broll_v1';
 
 type BrollLsMap = Record<string, string>; // signature → clipId
 
-function readBrollLsMap(): BrollLsMap {
+/**
+ * Read the (rowSignature → clipId) map. Exported so the page can
+ * persist the same mapping into history entries and walk it during
+ * pre-render verification ("does state match what's been generated?").
+ */
+export function readBrollLsMap(): BrollLsMap {
   if (typeof window === 'undefined') return {};
   try {
     const raw = window.localStorage.getItem(BROLL_LS_KEY);
@@ -69,7 +74,10 @@ function readBrollLsMap(): BrollLsMap {
   }
 }
 
-function writeBrollLsMap(map: BrollLsMap) {
+/** Write the (rowSignature → clipId) map. Exported so the page's
+ *  DB-hydration effect can seed the same per-cell shortcut the
+ *  individual cells use on their own mount. */
+export function writeBrollLsMap(map: BrollLsMap) {
   if (typeof window === 'undefined') return;
   try {
     window.localStorage.setItem(BROLL_LS_KEY, JSON.stringify(map));
@@ -93,6 +101,10 @@ function writeBrollLsMap(map: BrollLsMap) {
 export interface KickoffBrollGenerationArgs {
   projectId?: string | null;
   scriptId?: string | null;
+  /** Production-doc history entry id, when the doc is saved. NULL for
+   *  unsaved docs — clip persists but isn't cross-device hydratable. See
+   *  plan `_plans/2026-05-17-broll-doc-id-hydration.md`. */
+  productionDocId?: string | null;
   rowIndex: number;
   rowSignature: string;
   visualDescription: string;
@@ -112,6 +124,7 @@ export async function kickoffBrollGeneration(args: KickoffBrollGenerationArgs): 
     body: JSON.stringify({
       projectId: args.projectId ?? null,
       scriptId: args.scriptId ?? null,
+      productionDocId: args.productionDocId ?? null,
       rowSignature: args.rowSignature,
       rowIndex: args.rowIndex,
       visualDescription: args.visualDescription,
@@ -135,6 +148,7 @@ export async function kickoffBrollGeneration(args: KickoffBrollGenerationArgs): 
     source_script_id: args.scriptId ?? null,
     row_signature: args.rowSignature,
     row_index: args.rowIndex,
+    production_doc_id: args.productionDocId ?? null,
     prompt: '',
     model_id: args.modelId,
     provider: 'kie',
@@ -255,6 +269,12 @@ export interface BrollCellProps {
   projectId?: string | null;
   /** Source script id, if known (production doc may not have one). */
   scriptId?: string | null;
+  /** Production-doc history entry id, when the doc is saved. Tagged on
+   *  the clip server-side so the page can DB-hydrate clips on mount
+   *  across devices. NULL when the doc isn't saved yet — falls back to
+   *  the per-cell localStorage map for recovery. See plan
+   *  `_plans/2026-05-17-broll-doc-id-hydration.md`. */
+  productionDocId?: string | null;
   /** Stable row index (drives display order). */
   rowIndex: number;
   /** Stable signature of the row's identifying fields, for rehydration. */
@@ -301,6 +321,7 @@ function phaseFromClip(clip: BrollClipRow | null | undefined): Phase {
 export function BrollCell({
   projectId,
   scriptId,
+  productionDocId,
   rowIndex,
   rowSignature,
   visualDescription,
@@ -392,6 +413,14 @@ export function BrollCell({
 
   // On mount: if we don't have a clip already (no initialClip prop) but the
   // localStorage map remembers one for this signature, fetch + hydrate.
+  //
+  // CRITICAL: route hydration through `updateClip`, NOT raw `setClip`. The
+  // raw setters update only the cell's internal state; `updateClip` also
+  // fires `onClipChange` which propagates to the parent's `rowVideoClips`
+  // map — and that map is what the Remotion renderer reads from. The
+  // earlier raw-setClip path silently left the parent's state empty, so
+  // a refresh that hydrated the cell visually was still producing
+  // stills-only renders. See `_plans/2026-05-17-render-state-hardening.md`.
   useEffect(() => {
     if (initialClip || clip) return;
     const map = readBrollLsMap();
@@ -412,8 +441,13 @@ export function BrollCell({
         }
         const data = (await res.json()) as { clip?: BrollClipRow };
         if (cancelled || !data.clip) return;
-        setClip(data.clip);
-        setPhase(phaseFromClip(data.clip));
+        console.info('[broll hydrate]', {
+          rowIndex,
+          rowSignature,
+          clipId: data.clip.id,
+          status: data.clip.status,
+        });
+        updateClip(data.clip);
       } catch {
         /* network hiccup — leave cell idle, user can regenerate */
       }
@@ -494,6 +528,7 @@ export function BrollCell({
         body: JSON.stringify({
           projectId: projectId ?? null,
           scriptId: scriptId ?? null,
+          productionDocId: productionDocId ?? null,
           rowSignature,
           rowIndex,
           visualDescription,
@@ -518,6 +553,7 @@ export function BrollCell({
         source_script_id: scriptId ?? null,
         row_signature: rowSignature,
         row_index: rowIndex,
+        production_doc_id: productionDocId ?? null,
         prompt: '',
         model_id: modelId,
         provider: 'kie',

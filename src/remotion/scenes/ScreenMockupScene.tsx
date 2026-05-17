@@ -13,6 +13,8 @@ interface ScreenMockupSceneProps {
   /** When true, skip the lower-third on-screen-text overlay. See
    *  BRollScene for the same flag and its rationale. */
   suppressLowerThird?: boolean;
+  /** When false, suppress the scene-to-scene cross fade. Defaults `true`. */
+  fadeEnabled?: boolean;
 }
 
 /**
@@ -24,6 +26,7 @@ export const ScreenMockupScene: React.FC<ScreenMockupSceneProps> = ({
   durationInFrames,
   brand,
   suppressLowerThird = false,
+  fadeEnabled = true,
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -152,7 +155,7 @@ export const ScreenMockupScene: React.FC<ScreenMockupSceneProps> = ({
         />
       )}
 
-      <SceneTransition fadeIn fadeOut totalFrames={durationInFrames} durationInFrames={10} color={bg} />
+      <SceneTransition fadeIn={fadeEnabled} fadeOut={fadeEnabled} totalFrames={durationInFrames} durationInFrames={10} color={bg} />
     </AbsoluteFill>
   );
 };

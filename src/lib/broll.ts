@@ -263,6 +263,11 @@ export interface StartBrollGenerationArgs {
   sourceScriptId: string | null;
   rowSignature?: string | null;
   rowIndex?: number | null;
+  /** Production-doc history entry id this clip is generated for. NULL
+   *  when the doc hasn't been saved yet — those clips remain reachable
+   *  via the per-cell localStorage map only. See plan
+   *  `_plans/2026-05-17-broll-doc-id-hydration.md`. */
+  productionDocId?: string | null;
   visualDescription: string;
   aiImagePrompt?: string;
   styleHint?: string;
@@ -340,7 +345,7 @@ export async function startBrollGeneration(
   const { rows } = await sql<{ id: string }>`
     INSERT INTO broll_clips (
       workspace_id, project_id, source_script_id,
-      row_signature, row_index,
+      row_signature, row_index, production_doc_id,
       prompt, model_id, provider, aspect_ratio, duration_seconds,
       status, task_id, generation_params
     ) VALUES (
@@ -349,6 +354,7 @@ export async function startBrollGeneration(
       ${args.sourceScriptId}::uuid,
       ${args.rowSignature ?? null},
       ${args.rowIndex ?? null},
+      ${args.productionDocId ?? null},
       ${prompt},
       ${model.id},
       ${model.provider},
@@ -471,7 +477,7 @@ export async function getBrollClip(id: string, workspaceId: string): Promise<Bro
   const { rows } = await sql<BrollClipRow>`
     SELECT
       id, workspace_id, project_id, source_script_id,
-      row_signature, row_index,
+      row_signature, row_index, production_doc_id,
       prompt, model_id, provider, aspect_ratio, duration_seconds,
       status, task_id, error_message,
       video_url, blob_pathname, thumbnail_url, width, height,
@@ -488,9 +494,40 @@ export async function getBrollClip(id: string, workspaceId: string): Promise<Bro
 
 export async function listBrollForWorkspace(
   workspaceId: string,
-  opts: { projectId?: string; scriptId?: string; limit?: number } = {},
+  opts: {
+    projectId?: string;
+    scriptId?: string;
+    /** Filter to clips tagged with this production-doc history entry id.
+     *  Added by migration 0072 to enable cross-device hydration of paid
+     *  clips. See plan `_plans/2026-05-17-broll-doc-id-hydration.md`. */
+    productionDocId?: string;
+    limit?: number;
+  } = {},
 ): Promise<BrollClipRow[]> {
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+  // productionDocId takes precedence: it's the production-doc page's
+  // mount-hydration query, and we want it filtered down to one doc even
+  // when the same workspace has other scripts/projects.
+  if (opts.productionDocId) {
+    const { rows } = await sql<BrollClipRow>`
+      SELECT
+        id, workspace_id, project_id, source_script_id,
+        row_signature, row_index, production_doc_id,
+        prompt, model_id, provider, aspect_ratio, duration_seconds,
+        status, task_id, error_message,
+        video_url, blob_pathname, thumbnail_url, width, height,
+        notes,
+        created_at::text AS created_at,
+        updated_at::text AS updated_at,
+        completed_at::text AS completed_at
+      FROM broll_clips
+      WHERE workspace_id = ${workspaceId}::uuid
+        AND production_doc_id = ${opts.productionDocId}
+      ORDER BY created_at DESC
+      LIMIT ${limit}
+    `;
+    return rows;
+  }
   if (opts.scriptId) {
     const { rows } = await sql<BrollClipRow>`
       SELECT
@@ -534,7 +571,7 @@ export async function listBrollForWorkspace(
   const { rows } = await sql<BrollClipRow>`
     SELECT
       id, workspace_id, project_id, source_script_id,
-      row_signature, row_index,
+      row_signature, row_index, production_doc_id,
       prompt, model_id, provider, aspect_ratio, duration_seconds,
       status, task_id, error_message,
       video_url, blob_pathname, thumbnail_url, width, height,

@@ -40,7 +40,7 @@ export const DEFAULT_BRAND_KIT: BrandKit = {
 // can zoom from the full thumbnail into a specific tile while the
 // narrator announces that section. See `_plans/2026-05-13-thumbnail-zoom-section-divider.md`.
 
-export type ThumbnailTransitionKind = 'hard-cut' | 'smooth';
+export type ThumbnailTransitionKind = 'hard-cut' | 'smooth' | 'none';
 
 export interface ThumbnailTransitionConfig {
   kind: ThumbnailTransitionKind;
@@ -120,6 +120,12 @@ export interface VideoShot {
   thumbnailZoomTo?: string;
   /** Per-shot transition override. Falls back to VideoConfig.thumbnail.defaultTransition. */
   thumbnailTransition?: ThumbnailTransitionConfig;
+  /** Per-shot override of the scene-to-scene cross fade. `true` forces a
+   *  fade even when the doc default is off; `false` forces a hard cut
+   *  even when the doc default is on. `undefined` falls through to
+   *  VideoConfig.sceneFadeEnabled (which itself defaults to `true`). See
+   *  `_plans/2026-05-17-scene-transition-controls.md`. */
+  sceneFade?: boolean;
   /** Section title shown as a fixed stripe at the top of frame for the
    *  shot's full duration. Independent of `sceneType` — usable on any scene. */
   sectionTitle?: string;
@@ -197,6 +203,13 @@ export interface VideoConfig {
   /** Tail buffer (ms) after narration, carried through for the server-
    *  side realign call. Capped at the gap to the next row at apply time. */
   tailBufferMs?: number;
+  /** Doc-level default for the scene-to-scene cross fade (the
+   *  `<SceneTransition>` overlay each scene renders at its start/end).
+   *  `true` (or unset) keeps the historical fade; `false` makes every
+   *  shot hard-cut, including removing the opening fade-in on the first
+   *  shot and the closing fade-out on the last. Per-shot `sceneFade`
+   *  overrides this. See `_plans/2026-05-17-scene-transition-controls.md`. */
+  sceneFadeEnabled?: boolean;
 }
 
 // ─── Render Job ───────────────────────────────────────────────────────────────

@@ -134,7 +134,7 @@ export function TransitionDialog({
               Style
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              {(['hard-cut', 'smooth'] as ThumbnailTransitionKind[]).map(k => (
+              {(['hard-cut', 'smooth', 'none'] as ThumbnailTransitionKind[]).map(k => (
                 <button
                   key={k}
                   onClick={() => setKind(k)}
@@ -151,69 +151,80 @@ export function TransitionDialog({
                     textAlign: 'left',
                   }}
                 >
-                  <div>{k === 'hard-cut' ? 'Hard cut' : 'Smooth zoom'}</div>
+                  <div>
+                    {k === 'hard-cut' && 'Hard cut'}
+                    {k === 'smooth' && 'Smooth zoom'}
+                    {k === 'none' && 'None'}
+                  </div>
                   <div style={{ fontSize: 10.5, fontWeight: 400, color: 'var(--text-muted)', marginTop: 2 }}>
-                    {k === 'hard-cut'
-                      ? 'Cut between sections, fresh zoom-in each time.'
-                      : 'Smoothly zoom out then in across sections.'}
+                    {k === 'hard-cut' && 'Cut between sections, fresh zoom-in each time.'}
+                    {k === 'smooth' && 'Smoothly zoom out then in across sections.'}
+                    {k === 'none' && 'No animation — land on the region instantly.'}
                   </div>
                 </button>
               ))}
             </div>
           </div>
 
-          {/* Speed slider */}
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                Speed
+          {/* Speed + Easing only apply when there's actual motion. Hidden
+              for kind === 'none' so the dialog stays honest — the
+              creator can't tweak a knob that has no effect. */}
+          {kind !== 'none' && (
+            <>
+              {/* Speed slider */}
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                    Speed
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>
+                    {speed.toFixed(2)}×
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min={0.5}
+                  max={2.0}
+                  step={0.05}
+                  value={speed}
+                  onChange={(e) => setSpeed(parseFloat(e.target.value))}
+                  style={{ width: '100%' }}
+                />
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
+                  hold {computed.holdAtFullMs}ms · zoom {computed.zoomDurationMs}ms · settle {computed.holdAtTargetMs}ms
+                </div>
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>
-                {speed.toFixed(2)}×
-              </div>
-            </div>
-            <input
-              type="range"
-              min={0.5}
-              max={2.0}
-              step={0.05}
-              value={speed}
-              onChange={(e) => setSpeed(parseFloat(e.target.value))}
-              style={{ width: '100%' }}
-            />
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
-              hold {computed.holdAtFullMs}ms · zoom {computed.zoomDurationMs}ms · settle {computed.holdAtTargetMs}ms
-            </div>
-          </div>
 
-          {/* Easing */}
-          <div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-              Easing
-            </div>
-            <select
-              value={easing}
-              onChange={(e) => setEasing(e.target.value as typeof BASE.easing)}
-              style={{
-                width: '100%',
-                fontSize: 12,
-                padding: '8px 10px',
-                borderRadius: 6,
-                background: 'rgba(255,255,255,0.04)',
-                color: 'var(--text)',
-                border: '1px solid rgba(255,255,255,0.10)',
-                cursor: 'pointer',
-              }}
-            >
-              {EASINGS.map(e => (
-                <option key={e} value={e}>
-                  {e === 'spring-snappy' && 'Snappy — tight, punchy'}
-                  {e === 'spring-smooth' && 'Smooth — balanced (default)'}
-                  {e === 'spring-gentle' && 'Gentle — slow, cinematic'}
-                </option>
-              ))}
-            </select>
-          </div>
+              {/* Easing */}
+              <div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                  Easing
+                </div>
+                <select
+                  value={easing}
+                  onChange={(e) => setEasing(e.target.value as typeof BASE.easing)}
+                  style={{
+                    width: '100%',
+                    fontSize: 12,
+                    padding: '8px 10px',
+                    borderRadius: 6,
+                    background: 'rgba(255,255,255,0.04)',
+                    color: 'var(--text)',
+                    border: '1px solid rgba(255,255,255,0.10)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {EASINGS.map(e => (
+                    <option key={e} value={e}>
+                      {e === 'spring-snappy' && 'Snappy — tight, punchy'}
+                      {e === 'spring-smooth' && 'Smooth — balanced (default)'}
+                      {e === 'spring-gentle' && 'Gentle — slow, cinematic'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </>
+          )}
         </div>
 
         <div style={{

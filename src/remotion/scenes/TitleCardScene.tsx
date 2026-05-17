@@ -9,6 +9,11 @@ interface TitleCardSceneProps {
   shot: VideoShot;
   durationInFrames: number;
   brand: BrandKit;
+  /** When false, suppress the scene-to-scene cross fade (no opening
+   *  fade-in from black, no closing fade-out). Defaults to `true` to
+   *  match historical behaviour. Resolved by `YouTubeVideo` from
+   *  `shot.sceneFade ?? config.sceneFadeEnabled ?? true`. */
+  fadeEnabled?: boolean;
 }
 
 /**
@@ -20,6 +25,7 @@ export const TitleCardScene: React.FC<TitleCardSceneProps> = ({
   shot,
   durationInFrames,
   brand,
+  fadeEnabled = true,
 }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
@@ -117,7 +123,7 @@ export const TitleCardScene: React.FC<TitleCardSceneProps> = ({
         />
       </div>
 
-      <SceneTransition fadeIn fadeOut totalFrames={durationInFrames} durationInFrames={10} />
+      <SceneTransition fadeIn={fadeEnabled} fadeOut={fadeEnabled} totalFrames={durationInFrames} durationInFrames={10} />
     </AbsoluteFill>
   );
 };

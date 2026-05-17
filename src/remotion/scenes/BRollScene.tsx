@@ -14,6 +14,9 @@ interface BRollSceneProps {
    *  Used when the OST is already baked into the AI image so a
    *  Remotion overlay would just duplicate it. Defaults false. */
   suppressLowerThird?: boolean;
+  /** When false, suppress the scene-to-scene cross fade (no opening
+   *  fade-in from black, no closing fade-out). Defaults to `true`. */
+  fadeEnabled?: boolean;
 }
 
 // Cycle Ken Burns directions based on shot index to avoid repetition
@@ -41,6 +44,7 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
   brand,
   shotIndex = 0,
   suppressLowerThird = false,
+  fadeEnabled = true,
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -55,7 +59,7 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
   const useImage = shot.imageUrl && !imgError && !shot.imageUrl.startsWith('blob:');
 
   if (!useVideo && !useImage) {
-    return <FallbackBRoll shot={shot} durationInFrames={durationInFrames} brand={brand} />;
+    return <FallbackBRoll shot={shot} durationInFrames={durationInFrames} brand={brand} fadeEnabled={fadeEnabled} />;
   }
 
   // Letterbox mode: when the row has a section title + letterbox layout,
@@ -136,17 +140,18 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
         />
       )}
 
-      <SceneTransition fadeIn fadeOut totalFrames={durationInFrames} durationInFrames={8} />
+      <SceneTransition fadeIn={fadeEnabled} fadeOut={fadeEnabled} totalFrames={durationInFrames} durationInFrames={8} />
     </AbsoluteFill>
   );
 };
 
 // ─── Fallback when no image ────────────────────────────────────────────────────
 
-const FallbackBRoll: React.FC<{ shot: VideoShot; durationInFrames: number; brand: BrandKit }> = ({
+const FallbackBRoll: React.FC<{ shot: VideoShot; durationInFrames: number; brand: BrandKit; fadeEnabled?: boolean }> = ({
   shot,
   durationInFrames,
   brand,
+  fadeEnabled = true,
 }) => {
   const frame = useCurrentFrame();
   const opacity = interpolate(frame, [0, 10], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
@@ -204,7 +209,7 @@ const FallbackBRoll: React.FC<{ shot: VideoShot; durationInFrames: number; brand
         )}
       </div>
 
-      <SceneTransition fadeIn fadeOut totalFrames={durationInFrames} durationInFrames={8} />
+      <SceneTransition fadeIn={fadeEnabled} fadeOut={fadeEnabled} totalFrames={durationInFrames} durationInFrames={8} />
     </AbsoluteFill>
   );
 };

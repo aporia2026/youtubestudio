@@ -267,6 +267,7 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
         ? findRegion(config, previousShot.thumbnailZoomTo)
         : null;
     const transition = resolveTransition(shot, config.thumbnail.defaultTransition);
+    const zoomFadeEnabled = shot.sceneFade ?? config.sceneFadeEnabled ?? true;
     return (
       <ThumbnailZoomScene
         durationInFrames={durationInFrames}
@@ -275,12 +276,28 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
         region={targetRegion}
         previousRegion={previousRegion}
         transition={transition}
+        fadeEnabled={zoomFadeEnabled}
       />
     );
   }
 
   const suppressLowerThirds = config.suppressLowerThirds === true;
-  const props = { shot, durationInFrames, brand };
+  // Resolve the scene-to-scene cross-fade for this shot. Order:
+  // per-row `sceneFade` → doc-level `sceneFadeEnabled` → historical
+  // default (`true`). `false` here disables the SceneTransition
+  // overlay AND the opening fade-in on the first shot AND the
+  // closing fade-out on the last shot. See plan
+  // _plans/2026-05-17-scene-transition-controls.md.
+  const fadeEnabled = shot.sceneFade ?? config.sceneFadeEnabled ?? true;
+  if (shotIndex === 0 || shot.sceneFade !== undefined) {
+    console.info('[scene-fade resolved]', {
+      shotIndex,
+      perRow: shot.sceneFade,
+      docDefault: config.sceneFadeEnabled,
+      resolved: fadeEnabled,
+    });
+  }
+  const props = { shot, durationInFrames, brand, fadeEnabled };
   switch (shot.sceneType) {
     case 'title-card':
       return <TitleCardScene {...props} />;

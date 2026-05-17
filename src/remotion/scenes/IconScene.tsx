@@ -10,6 +10,8 @@ interface IconSceneProps {
   shot: VideoShot;
   durationInFrames: number;
   brand: BrandKit;
+  /** When false, suppress the scene-to-scene cross fade. Defaults `true`. */
+  fadeEnabled?: boolean;
 }
 
 /**
@@ -17,7 +19,7 @@ interface IconSceneProps {
  * White background, bold title at top, illustration centered with floating animation.
  * Entrance: image bounces in from below, title slides down from above.
  */
-export const IconScene: React.FC<IconSceneProps> = ({ shot, durationInFrames, brand }) => {
+export const IconScene: React.FC<IconSceneProps> = ({ shot, durationInFrames, brand, fadeEnabled = true }) => {
   const frame = useCurrentFrame();
   const { fps, height } = useVideoConfig();
 
@@ -111,8 +113,8 @@ export const IconScene: React.FC<IconSceneProps> = ({ shot, durationInFrames, br
       />
 
       <SceneTransition
-        fadeIn
-        fadeOut
+        fadeIn={fadeEnabled}
+        fadeOut={fadeEnabled}
         totalFrames={durationInFrames}
         durationInFrames={10}
         color={bg}

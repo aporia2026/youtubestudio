@@ -35,6 +35,10 @@ export interface BrollClipRow {
   source_script_id: string | null;
   row_signature: string | null;
   row_index: number | null;
+  /** Production-doc history entry id the clip was generated for. Added by
+   *  migration 0072 — NULL on legacy rows and on clips generated for an
+   *  unsaved doc. See plan `_plans/2026-05-17-broll-doc-id-hydration.md`. */
+  production_doc_id: string | null;
   prompt: string;
   model_id: string;
   provider: string;

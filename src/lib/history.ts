@@ -178,6 +178,16 @@ export interface ProductionDocHistoryEntry {
   doc?: unknown;
   script?: string;
   rowImages?: Record<number, string>;
+  /** Per-row B-roll clip ID. The Remotion renderer reads `videoUrl` from
+   *  the broll_clips DB row keyed by this id, so we only persist the id —
+   *  the URL is re-fetched on restore via `/api/broll/{id}`. Stops
+   *  history-sidebar restore from silently dropping every clip the user
+   *  generated for this doc. See `_plans/2026-05-17-render-state-hardening.md`. */
+  rowVideoClips?: Record<number, string>;
+  /** Per-row auto-fetched overlay state. Saved as the resolved
+   *  status + url so a refresh + history restore can rebuild the
+   *  parent's `rowOverlays` map without re-fetching from Brave. */
+  rowOverlays?: Record<number, { status: string; url?: string }>;
   videoTitle?: string;
   scheduleItemId?: string;
   /** Per-video override for the channel's visual brand kit (fonts /

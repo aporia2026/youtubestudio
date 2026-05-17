@@ -33,7 +33,9 @@ interface SectionRowControlsProps {
    *  bound of the "apply to range" picker so the user can't type a row
    *  number past the end of the doc. */
   totalRows: number;
-  thumbnail: VideoThumbnail;
+  /** Composite thumbnail. When undefined the row has no thumbnail-zoom
+   *  controls to show — only the scene-fade pill renders. */
+  thumbnail: VideoThumbnail | undefined;
   zoomTo: string | undefined;
   sectionTitle: string | undefined;
   /** When this row has a section title, controls whether the stripe overlays
@@ -50,11 +52,19 @@ interface SectionRowControlsProps {
   pillarboxColorDefault: string | undefined;
   transition: ThumbnailTransitionConfig | undefined;
   defaultTransition: ThumbnailTransitionConfig | undefined;
+  /** Per-row scene-fade override. `undefined` inherits the doc default.
+   *  `true` forces the cross-fade, `false` forces a hard cut. See
+   *  `_plans/2026-05-17-scene-transition-controls.md`. */
+  sceneFade: boolean | undefined;
+  /** Doc-level scene-fade default — surfaced here so the "Default" pill
+   *  label can show the *effective* behaviour (e.g. "Default (Cut)"). */
+  sceneFadeDefault: boolean | undefined;
   onChangeZoomTo: (regionId: string | undefined) => void;
   onChangeSectionTitle: (title: string | undefined) => void;
   onChangeSectionTitleLayout: (layout: 'overlay' | 'letterbox' | undefined) => void;
   onChangePillarboxColor: (color: string | undefined) => void;
   onChangeTransition: (t: ThumbnailTransitionConfig | undefined) => void;
+  onChangeSceneFade: (next: boolean | undefined) => void;
   /** Apply `title` to every row from `startRow` to `endRow` inclusive
    *  (0-indexed). The parent walks the doc and sets each row's
    *  `section_title` to the same value in one update. */
@@ -67,8 +77,10 @@ export function SectionRowControls({
   rowIndex, totalRows, thumbnail, zoomTo, sectionTitle,
   sectionTitleLayout, pillarboxColor, pillarboxColorDefault,
   transition, defaultTransition,
+  sceneFade, sceneFadeDefault,
   onChangeZoomTo, onChangeSectionTitle, onChangeSectionTitleLayout,
-  onChangePillarboxColor, onChangeTransition, onApplyTitleToRange,
+  onChangePillarboxColor, onChangeTransition, onChangeSceneFade,
+  onApplyTitleToRange,
 }: SectionRowControlsProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
   // Inline "apply to range" picker — collapsed by default, expands into
@@ -91,7 +103,11 @@ export function SectionRowControls({
     setTitleDraft(sectionTitle ?? '');
   }
 
-  const regions = thumbnail.regions;
+  // Defensive: thumbnail is optional now (a doc may not have one and the
+  // parent still wants the scene-fade pill to render). Falling back to an
+  // empty regions array keeps every downstream derivation safe to evaluate
+  // before the conditional render below.
+  const regions = thumbnail?.regions ?? [];
   const regionIndexMap = useMemo(() => {
     const m = new Map<string, number>();
     regions.forEach((r, i) => m.set(r.id, i));
@@ -101,8 +117,38 @@ export function SectionRowControls({
   const zoomRegion = zoomTo ? regions.find(r => r.id === zoomTo) : undefined;
   const zoomColor = zoomRegion ? regionColorFor(regionIndexMap.get(zoomRegion.id) ?? 0) : null;
 
+  // Three-state scene-fade pill semantics:
+  //  - undefined  → "Default" (inherits the doc-level toggle)
+  //  - true       → "Fade"    (force fade even if doc default is off)
+  //  - false      → "Cut"     (force hard cut even if doc default is on)
+  // The label on "Default" reflects what the doc default will actually
+  // resolve to so the row reads honestly when the user inspects it.
+  const effectiveDocDefault = sceneFadeDefault ?? true;
+  const sceneFadeLabel =
+    sceneFade === undefined
+      ? `Default (${effectiveDocDefault ? 'Fade' : 'Cut'})`
+      : sceneFade
+        ? 'Fade'
+        : 'Cut';
+  const cycleSceneFade = () => {
+    // Tri-state cycle: Default → Fade → Cut → Default.
+    const next: boolean | undefined =
+      sceneFade === undefined ? true : sceneFade === true ? false : undefined;
+    console.info('[ui scene-fade] row override', {
+      rowIndex,
+      from: sceneFade,
+      to: next,
+    });
+    onChangeSceneFade(next);
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 150 }}>
+      {/* Thumbnail-zoom controls only make sense when the doc carries a
+          composite thumbnail. Without one, we still render the scene-fade
+          pill at the bottom so every row stays controllable. */}
+      {thumbnail && (
+        <>
       {/* Mini-preview of the assigned region (when one is set). */}
       {zoomRegion && (
         <RegionMiniCrop region={zoomRegion} thumbnail={thumbnail} color={zoomColor ?? '#8b5cf6'} />
@@ -433,6 +479,47 @@ export function SectionRowControls({
           onClose={() => setDialogOpen(false)}
         />
       )}
+        </>
+      )}
+
+      {/* Scene-fade override pill — always rendered, regardless of whether
+          the doc has a thumbnail. Tri-state cycle: Default → Fade → Cut.
+          Override state is highlighted; Default is shown muted so the row
+          reads as "inherits". */}
+      <button
+        type="button"
+        onClick={cycleSceneFade}
+        title="Click to cycle: Default (inherits doc) → Fade → Cut → Default"
+        style={{
+          fontSize: 11,
+          padding: '6px 8px',
+          minHeight: 28,
+          borderRadius: 4,
+          background:
+            sceneFade === undefined
+              ? 'transparent'
+              : sceneFade
+                ? 'rgba(34,211,238,0.10)'
+                : 'rgba(239,68,68,0.10)',
+          color:
+            sceneFade === undefined
+              ? 'var(--text-muted)'
+              : sceneFade
+                ? '#22d3ee'
+                : '#f87171',
+          border: `1px solid ${
+            sceneFade === undefined
+              ? 'rgba(255,255,255,0.10)'
+              : sceneFade
+                ? 'rgba(34,211,238,0.30)'
+                : 'rgba(239,68,68,0.30)'
+          }`,
+          cursor: 'pointer',
+          textAlign: 'left',
+        }}
+      >
+        ⇋ Scene fade: {sceneFadeLabel}
+      </button>
     </div>
   );
 }
