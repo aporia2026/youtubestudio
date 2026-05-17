@@ -89,13 +89,51 @@ function containFraming(tW: number, tH: number, cW: number, cH: number): Framing
   };
 }
 
-function regionFraming(r: ThumbnailRegion, cW: number, cH: number): Framing {
+/**
+ * Compute the framing that shows the whole marked region without over-zoom.
+ *
+ * The previous implementation used COVER scaling (`Math.max(cW/rw, cH/rh)`),
+ * which fills the canvas with the region but CROPS the axis that doesn't
+ * match canvas aspect. For a tall+narrow region (tile of a grid thumbnail)
+ * inside a wide+short canvas, this meant zooming in until horizontal
+ * filled and silently chopping ~50% off top and bottom of the marked tile.
+ * Users reported "way too much zoom" — what they marked was the WHOLE
+ * tile, what they saw was the middle band only.
+ *
+ * Switch to CONTAIN (`min`): pick the SMALLEST scale that keeps the whole
+ * region inside the canvas. Then clamp focusX/focusY so the camera stays
+ * inside the image bounds — that way the canvas stays filled with image
+ * pixels (we see neighbouring content where the region doesn't reach the
+ * canvas edge) instead of exposing the background colour as letterbox.
+ *
+ * Tiny images that are smaller than the canvas at contain-scale fall
+ * through with background letterbox visible; we don't try to up-rez here
+ * because that would silently re-introduce the over-zoom this fixed.
+ */
+function regionFraming(
+  r: ThumbnailRegion,
+  cW: number,
+  cH: number,
+  imgW: number,
+  imgH: number,
+): Framing {
   const rw = Math.max(r.w, MIN_DIM);
   const rh = Math.max(r.h, MIN_DIM);
+  const scale = Math.min(cW / rw, cH / rh);
+  // Half-canvas in image-pixel units after scaling. Focus clamped to this
+  // inset on each side keeps the visible canvas filled with image pixels.
+  const halfW = cW / (2 * scale);
+  const halfH = cH / (2 * scale);
+  const minFocusX = halfW;
+  const maxFocusX = Math.max(minFocusX, imgW - halfW);
+  const minFocusY = halfH;
+  const maxFocusY = Math.max(minFocusY, imgH - halfH);
+  const wantFocusX = r.x + rw / 2;
+  const wantFocusY = r.y + rh / 2;
   return {
-    scale: Math.max(cW / rw, cH / rh),
-    focusX: r.x + rw / 2,
-    focusY: r.y + rh / 2,
+    scale,
+    focusX: Math.max(minFocusX, Math.min(maxFocusX, wantFocusX)),
+    focusY: Math.max(minFocusY, Math.min(maxFocusY, wantFocusY)),
   };
 }
 
@@ -142,8 +180,10 @@ export const ThumbnailZoomScene: React.FC<ThumbnailZoomSceneProps> = ({
   const zoomFrames = Math.max(1, msToFrame(zoomDurationMs, fps));
 
   const contain = containFraming(thumbnail.width, thumbnail.height, cW, cH);
-  const target = regionFraming(region, cW, cH);
-  const from = previousRegion ? regionFraming(previousRegion, cW, cH) : null;
+  const target = regionFraming(region, cW, cH, thumbnail.width, thumbnail.height);
+  const from = previousRegion
+    ? regionFraming(previousRegion, cW, cH, thumbnail.width, thumbnail.height)
+    : null;
 
   // One-shot diagnostic dump per scene mount. We only emit on frame 0 so
   // a 7s scene doesn't spew 210 log lines. The values here are exactly
