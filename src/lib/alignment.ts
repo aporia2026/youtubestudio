@@ -124,19 +124,44 @@ export async function runAlignmentForAssignment(assignmentId: string): Promise<A
       return { status: 'failed', reason: 'no audio url' };
     }
 
-    const audioRes = await fetch(audioUrl);
-    if (!audioRes.ok) {
-      // 404 means the object isn't reachable at the stored key — could be
-      // a stale presigned URL, a bucket misconfig, or genuinely missing.
-      // Phrase neutrally so the reviewer isn't pushed to chase down a
-      // re-upload before they've decided to.
-      const reason = audioRes.status === 404
-        ? `Audio file not reachable at the stored key (HTTP 404). Sync will become available once the audio is restored.`
-        : `Audio fetch failed (HTTP ${audioRes.status}).`;
-      await setTakeAlignmentFailed(take.take_id, reason);
-      return { status: 'failed', reason: 'audio fetch' };
+    // Bound the R2 download so an unreachable bucket / hung connection
+    // can't ride the function to its maxDuration and leave the row stuck
+    // at 'running'. 180s is well over the worst-case 60MB-at-modest-
+    // bandwidth budget for a 30-min audio file but still inside the
+    // function's overall ceiling, so the catch path has room to write a
+    // terminal status.
+    const AUDIO_FETCH_TIMEOUT_MS = 180_000;
+    let audioBlob: Blob;
+    try {
+      const audioRes = await fetch(audioUrl, {
+        signal: AbortSignal.timeout(AUDIO_FETCH_TIMEOUT_MS),
+      });
+      if (!audioRes.ok) {
+        // 404 means the object isn't reachable at the stored key — could be
+        // a stale presigned URL, a bucket misconfig, or genuinely missing.
+        // Phrase neutrally so the reviewer isn't pushed to chase down a
+        // re-upload before they've decided to.
+        const reason = audioRes.status === 404
+          ? `Audio file not reachable at the stored key (HTTP 404). Sync will become available once the audio is restored.`
+          : `Audio fetch failed (HTTP ${audioRes.status}).`;
+        await setTakeAlignmentFailed(take.take_id, reason);
+        return { status: 'failed', reason: 'audio fetch' };
+      }
+      audioBlob = await audioRes.blob();
+    } catch (err) {
+      // AbortSignal.timeout fires a DOMException with name='TimeoutError'.
+      // Record an explicit timeout reason so the reviewer sees a useful
+      // message; let other errors fall through to the outer catch for
+      // the generic "Alignment failed: …" path.
+      if (err instanceof Error && err.name === 'TimeoutError') {
+        await setTakeAlignmentFailed(
+          take.take_id,
+          `Audio download timed out after ${Math.round(AUDIO_FETCH_TIMEOUT_MS / 1000)}s.`,
+        );
+        return { status: 'failed', reason: 'audio fetch timeout' };
+      }
+      throw err;
     }
-    const audioBlob = await audioRes.blob();
     logger.info('alignment: audio fetched', {
       assignmentId,
       takeId: take.take_id,
