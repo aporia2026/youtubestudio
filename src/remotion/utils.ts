@@ -243,10 +243,22 @@ export function productionDocToVideoConfig(
         ? { url: overlayState.url, zone: row.overlay_zone, size: row.overlay_size }
         : undefined;
 
+    // Scene-type resolution: if the row has actual visual content (a
+    // generated still OR a Kling-animated clip), force b-roll so the
+    // image/video is what plays. The `inferSceneType` heuristic runs a
+    // substring match on `visual_type` and will pick `text-reveal`
+    // for any row whose visual_type contains "stat" / "fact" / "quote"
+    // / "text" — even when the row has a full still + animation ready.
+    // That used to silently swap a finished b-roll for a plain-text
+    // card on every "statistic" shot. Heuristic now only applies when
+    // there's no visual to play.
+    const hasVisual = Boolean(imageUrl || videoUrl);
+    const sceneType = hasVisual ? 'b-roll' : inferSceneType(row.visual_type);
+
     return {
       startMs,
       durationMs,
-      sceneType: inferSceneType(row.visual_type),
+      sceneType,
       imageUrl,
       videoUrl,
       title: row.on_screen_text || undefined,
