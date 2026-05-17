@@ -44,7 +44,17 @@ import {
   type BrollClipRow,
   type BrollStatus,
 } from '@/lib/broll-types';
-import { productionDocToVideoConfig, parseTimecodeToMs } from '@/remotion/utils';
+import {
+  productionDocToVideoConfig,
+  parseTimecodeToMs,
+  DEFAULT_MIN_SCENE_MS,
+  DEFAULT_TAIL_BUFFER_MS,
+  MIN_SCENE_MS_BOUNDS,
+  TAIL_BUFFER_MS_BOUNDS,
+  clampSceneTiming,
+  type ImageSaliencyMap,
+} from '@/remotion/utils';
+import { resolveOverlayPlacement } from '@/lib/overlay-placement';
 import { stripProductionMarkers } from '@/lib/script-markers';
 import { buildCanonicalScript, scriptDriftRatio } from '@/lib/voiceover-alignment';
 import type { BrandKit, ThumbnailTransitionConfig, VideoThumbnail } from '@/remotion/types';
@@ -159,6 +169,12 @@ interface ProductionRow {
    *  generated. Falsy means "no overlay rendered" — the still alone is
    *  used. */
   overlay_image_url?: string;
+  /** Final overlay placement after saliency-aware resolution. Set by the
+   *  image-gen route once `image_saliency` is computed; preferred over
+   *  `overlay_zone` / `overlay_size` everywhere downstream. See plan
+   *  _plans/2026-05-17-section-title-letterbox-and-overlay-blending.md. */
+  overlay_zone_resolved?: ProductionRow['overlay_zone'];
+  overlay_size_resolved?: ProductionRow['overlay_size'];
   on_screen_text: string;
   notes: string;
   /** Region id (from ProductionDoc.thumbnail.regions) this row's scene
@@ -167,6 +183,15 @@ interface ProductionRow {
   /** Section title shown as a fixed stripe at top of frame for the row's
    *  full duration. Independent of `on_screen_text`. */
   section_title?: string;
+  /** Per-row stripe ↔ scene layout (only when `section_title` is set).
+   *  Undefined treated as 'letterbox' downstream. */
+  section_title_layout?: 'overlay' | 'letterbox';
+  /** Per-row pillarbox fill color when layout = letterbox. Hex `#RRGGBB`.
+   *  Falls back to doc-level default, then white. */
+  pillarbox_color?: string;
+  /** Cached pixel-saliency map for this row's generated image. Populated
+   *  by `/api/generate/production-doc/image` after the image lands in R2. */
+  image_saliency?: ImageSaliencyMap;
   /** Per-row transition override. Falls back to doc-level default. */
   thumbnail_transition?: ThumbnailTransitionConfig;
 }
@@ -182,6 +207,15 @@ interface ProductionDoc {
    *  + transition defaults). Optional — docs without one render the
    *  same as before. See _plans/2026-05-13-thumbnail-zoom-section-divider.md. */
   thumbnail?: VideoThumbnail;
+  /** Doc-level fallback for `ProductionRow.pillarbox_color` when a row
+   *  doesn't override. Hex `#RRGGBB`; defaults to white. */
+  pillarbox_color_default?: string;
+  /** Per-doc override of the workspace's minimum scene duration (ms).
+   *  Forwarded into `productionDocToVideoConfig`. Editable inline in the
+   *  doc header. See `_plans/2026-05-17-scene-min-duration-and-tail-buffer.md`. */
+  min_scene_ms?: number;
+  /** Per-doc override of the workspace's tail buffer after narration (ms). */
+  tail_buffer_ms?: number;
 }
 
 interface RowImageState {
@@ -528,6 +562,126 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
 });
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
+
+/**
+ * Per-doc scene-timing override control. Two numeric inputs (min scene
+ * duration, tail buffer after narration) with a Reset link when the
+ * user has overridden either. Empty input means "use the default".
+ * Values are clamped to bounds before commit by the caller's
+ * `setSceneTiming` mutator. See the scene-min-duration plan.
+ */
+function SceneTimingControl({
+  minSceneMs,
+  tailBufferMs,
+  onChange,
+}: {
+  minSceneMs: number | undefined;
+  tailBufferMs: number | undefined;
+  onChange: (patch: { min_scene_ms?: number | null; tail_buffer_ms?: number | null }) => void;
+}) {
+  // Local draft strings so the user can type freely (including clearing
+  // the field) without the parent immediately clamping a partial value.
+  // We commit on blur or Enter.
+  const [minDraft, setMinDraft] = useState<string>(minSceneMs != null ? String(minSceneMs) : '');
+  const [tailDraft, setTailDraft] = useState<string>(tailBufferMs != null ? String(tailBufferMs) : '');
+  // Sync drafts when the doc-level values change from outside (e.g.
+  // history load, server patch). Avoids stale local input after navigation.
+  useEffect(() => { setMinDraft(minSceneMs != null ? String(minSceneMs) : ''); }, [minSceneMs]);
+  useEffect(() => { setTailDraft(tailBufferMs != null ? String(tailBufferMs) : ''); }, [tailBufferMs]);
+
+  const hasOverride = minSceneMs != null || tailBufferMs != null;
+
+  const commitMin = (raw: string) => {
+    const trimmed = raw.trim();
+    if (trimmed === '') {
+      onChange({ min_scene_ms: null });
+      return;
+    }
+    const n = Number(trimmed);
+    if (!Number.isFinite(n)) return;
+    onChange({ min_scene_ms: n });
+  };
+  const commitTail = (raw: string) => {
+    const trimmed = raw.trim();
+    if (trimmed === '') {
+      onChange({ tail_buffer_ms: null });
+      return;
+    }
+    const n = Number(trimmed);
+    if (!Number.isFinite(n)) return;
+    onChange({ tail_buffer_ms: n });
+  };
+
+  const inputStyle: React.CSSProperties = {
+    background: 'rgba(0,0,0,0.4)',
+    border: '1px solid rgba(255,255,255,0.10)',
+    color: 'var(--text-primary)',
+    textAlign: 'right',
+    width: 72,
+    padding: '2px 6px',
+    borderRadius: 4,
+    fontVariantNumeric: 'tabular-nums',
+  };
+
+  return (
+    <div
+      className="flex flex-wrap items-center gap-3 mb-4 px-3 py-2 rounded text-xs"
+      style={{
+        background: 'rgba(255,255,255,0.03)',
+        border: '1px solid rgba(255,255,255,0.06)',
+        color: 'var(--text-muted)',
+      }}
+    >
+      <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>⏱ Scene timing</span>
+      <label className="flex items-center gap-1.5" title="Minimum on-screen time for every scene. Stops too-short title cards.">
+        <span>Min scene</span>
+        <input
+          type="number"
+          min={MIN_SCENE_MS_BOUNDS.min}
+          max={MIN_SCENE_MS_BOUNDS.max}
+          step={100}
+          placeholder={String(DEFAULT_MIN_SCENE_MS)}
+          value={minDraft}
+          onChange={(e) => setMinDraft(e.target.value)}
+          onBlur={(e) => commitMin(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+          style={inputStyle}
+        />
+        <span>ms</span>
+      </label>
+      <span style={{ opacity: 0.4 }}>·</span>
+      <label className="flex items-center gap-1.5" title="Extra hold time after the narrator finishes a row. Capped at the gap to the next narration so audio stays in sync.">
+        <span>Tail buffer</span>
+        <input
+          type="number"
+          min={TAIL_BUFFER_MS_BOUNDS.min}
+          max={TAIL_BUFFER_MS_BOUNDS.max}
+          step={50}
+          placeholder={String(DEFAULT_TAIL_BUFFER_MS)}
+          value={tailDraft}
+          onChange={(e) => setTailDraft(e.target.value)}
+          onBlur={(e) => commitTail(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+          style={inputStyle}
+        />
+        <span>ms</span>
+      </label>
+      {hasOverride && (
+        <button
+          onClick={() => onChange({ min_scene_ms: null, tail_buffer_ms: null })}
+          className="text-xs underline"
+          style={{ color: 'var(--text-muted)' }}
+          title="Clear the per-doc override and fall back to the workspace default"
+        >
+          Reset
+        </button>
+      )}
+      <span className="ml-auto" style={{ opacity: 0.7, maxWidth: 420 }}>
+        Defaults: {DEFAULT_MIN_SCENE_MS} ms min, {DEFAULT_TAIL_BUFFER_MS} ms tail. Affects this doc only.
+      </span>
+    </div>
+  );
+}
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -1498,6 +1652,45 @@ function ProductionDocPage() {
         updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
       }
       return nextDoc;
+    });
+  }, [historyEntryId]);
+
+  /**
+   * Scene-timing override mutator (per-doc). Sets `min_scene_ms` and
+   * `tail_buffer_ms` on the doc; both are optional — `undefined` means
+   * "fall back to the workspace default (or built-in default)". Values
+   * are clamped to their bounds before write so a paste of "9999999"
+   * can't bypass the protection. See the scene-min-duration plan.
+   */
+  const setSceneTiming = useCallback((patch: { min_scene_ms?: number | null; tail_buffer_ms?: number | null }) => {
+    setDoc(prev => {
+      if (!prev) return prev;
+      const next: ProductionDoc = { ...prev };
+      if ('min_scene_ms' in patch) {
+        if (patch.min_scene_ms == null) {
+          delete next.min_scene_ms;
+        } else {
+          next.min_scene_ms = clampSceneTiming(patch.min_scene_ms, MIN_SCENE_MS_BOUNDS);
+        }
+      }
+      if ('tail_buffer_ms' in patch) {
+        if (patch.tail_buffer_ms == null) {
+          delete next.tail_buffer_ms;
+        } else {
+          next.tail_buffer_ms = clampSceneTiming(patch.tail_buffer_ms, TAIL_BUFFER_MS_BOUNDS);
+        }
+      }
+      if (typeof console !== 'undefined' && console.info) {
+        console.info('[render-timing] override updated', {
+          min_scene_ms: next.min_scene_ms,
+          tail_buffer_ms: next.tail_buffer_ms,
+          patch,
+        });
+      }
+      if (historyEntryId) {
+        updateProductionDocEntry(historyEntryId, { doc: next }).catch(() => {});
+      }
+      return next;
     });
   }, [historyEntryId]);
 
@@ -2665,6 +2858,52 @@ function ProductionDocPage() {
         next[rowIndex] = { status: 'done', imageUrl: data.imageUrl as string };
         return next;
       });
+      // Cache the saliency map on the row and resolve final overlay
+      // placement now that we know what's actually in the image. The
+      // renderer then prefers `*_resolved` fields over the LLM's blind
+      // picks. Saliency is best-effort — if the server didn't return
+      // one, we leave the row's existing fields untouched and the
+      // renderer falls back to the LLM zone.
+      const saliency = data.saliency as ImageSaliencyMap | null | undefined;
+      if (saliency) {
+        setDoc(prev => {
+          if (!prev) return prev;
+          const nextRows = [...prev.rows];
+          const row = nextRows[rowIndex];
+          if (!row) return prev;
+          let zoneResolved = row.overlay_zone_resolved;
+          let sizeResolved = row.overlay_size_resolved;
+          if (row.overlay_zone && row.overlay_size) {
+            const stripeOverlapsScene =
+              Boolean(row.section_title?.trim()) &&
+              (row.section_title_layout ?? 'letterbox') === 'overlay';
+            const placement = resolveOverlayPlacement({
+              llmZone: row.overlay_zone,
+              llmSize: row.overlay_size,
+              saliency,
+              hasSectionTitle: Boolean(row.section_title?.trim()),
+              stripeOverlapsScene,
+            });
+            console.info('[overlay placement] resolved', {
+              rowIndex,
+              llmZone: row.overlay_zone,
+              finalZone: placement.zone,
+              llmSize: row.overlay_size,
+              finalSize: placement.size,
+              reason: placement.reason,
+            });
+            zoneResolved = placement.zone;
+            sizeResolved = placement.size;
+          }
+          nextRows[rowIndex] = {
+            ...row,
+            image_saliency: saliency,
+            overlay_zone_resolved: zoneResolved,
+            overlay_size_resolved: sizeResolved,
+          };
+          return { ...prev, rows: nextRows };
+        });
+      }
       // Fire-and-forget the overlay fetch in parallel with the next row's
       // image gen. Only triggers when the LLM planned an overlay for this
       // row. Idempotent — the route's R2 cache short-circuits repeats.
@@ -3913,6 +4152,16 @@ function ProductionDocPage() {
             </div>
           </div>
 
+          {/* Scene timing — per-doc override for minimum scene duration
+              and tail buffer after narration. Defaults are the workspace's
+              if set, otherwise the system defaults. See
+              `_plans/2026-05-17-scene-min-duration-and-tail-buffer.md`. */}
+          <SceneTimingControl
+            minSceneMs={doc.min_scene_ms}
+            tailBufferMs={doc.tail_buffer_ms}
+            onChange={setSceneTiming}
+          />
+
           {/* Legend */}
           <div className="flex flex-wrap gap-2 mb-4 items-center">
             {Object.entries(VISUAL_TYPE_COLORS).map(([type, { bg, color }]) => (
@@ -4551,10 +4800,15 @@ function ProductionDocPage() {
                               thumbnail={doc.thumbnail}
                               zoomTo={row.thumbnail_zoom_to}
                               sectionTitle={row.section_title}
+                              sectionTitleLayout={row.section_title_layout}
+                              pillarboxColor={row.pillarbox_color}
+                              pillarboxColorDefault={doc.pillarbox_color_default}
                               transition={row.thumbnail_transition}
                               defaultTransition={doc.thumbnail.defaultTransition}
                               onChangeZoomTo={(id) => updateRow(i, { thumbnail_zoom_to: id })}
                               onChangeSectionTitle={(t) => updateRow(i, { section_title: t })}
+                              onChangeSectionTitleLayout={(l) => updateRow(i, { section_title_layout: l })}
+                              onChangePillarboxColor={(c) => updateRow(i, { pillarbox_color: c })}
                               onChangeTransition={(t) => updateRow(i, { thumbnail_transition: t })}
                               onApplyTitleToRange={applyTitleToRange}
                             />
@@ -4772,10 +5026,15 @@ function ProductionDocPage() {
                               thumbnail={doc.thumbnail}
                               zoomTo={row.thumbnail_zoom_to}
                               sectionTitle={row.section_title}
+                              sectionTitleLayout={row.section_title_layout}
+                              pillarboxColor={row.pillarbox_color}
+                              pillarboxColorDefault={doc.pillarbox_color_default}
                               transition={row.thumbnail_transition}
                               defaultTransition={doc.thumbnail.defaultTransition}
                               onChangeZoomTo={(id) => updateRow(i, { thumbnail_zoom_to: id })}
                               onChangeSectionTitle={(t) => updateRow(i, { section_title: t })}
+                              onChangeSectionTitleLayout={(l) => updateRow(i, { section_title_layout: l })}
+                              onChangePillarboxColor={(c) => updateRow(i, { pillarbox_color: c })}
                               onChangeTransition={(t) => updateRow(i, { thumbnail_transition: t })}
                               onApplyTitleToRange={applyTitleToRange}
                             />

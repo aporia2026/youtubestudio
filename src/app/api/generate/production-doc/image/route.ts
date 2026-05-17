@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
 import { buildKieImageInput, getImageModelSpec, DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from '@/lib/image-models';
+import { computeImageSaliency } from '@/lib/image-saliency';
 import {
   getDownloadUrlForBucket,
   getImagesBucket,
@@ -190,7 +191,25 @@ export async function POST(req: NextRequest) {
     }
 
     const taskId = (createData.data as Record<string, unknown>)?.taskId as string | undefined;
-    if (!taskId) throw new Error('No taskId returned from Kie.ai');
+    if (!taskId) {
+      // Surface what Kie actually returned. Common cases hidden behind a
+      // bare "no taskId" message: `{code: 401, message: "Insufficient
+      // balance"}`, `{code: 422, message: "prompt rejected by policy"}`,
+      // or model-deprecation responses. Without this, every failure
+      // looks like the same generic bug.
+      const code = (createData as Record<string, unknown>).code;
+      const message = (createData as Record<string, unknown>).message;
+      const detail =
+        typeof code !== 'undefined' || typeof message !== 'undefined'
+          ? `Kie.ai responded code=${String(code ?? '?')} message=${String(message ?? '(none)')}`
+          : `Kie.ai returned an unexpected body: ${JSON.stringify(createData).slice(0, 400)}`;
+      console.error('[image-gen] createTask returned no taskId', {
+        model: spec.kieModel,
+        promptLength: augmentedPrompt.length,
+        body: createData,
+      });
+      throw new Error(`No taskId returned from Kie.ai — ${detail}`);
+    }
 
     const kieUrl = await pollForResult(taskId, apiKey);
 
@@ -198,51 +217,30 @@ export async function POST(req: NextRequest) {
     // CDN retention. On mirror failure fall back to the Kie URL —
     // image still usable until the upstream expires.
     //
-    // For section-titled rows we ALSO crop the top 13% server-side
-    // before upload — sharp guarantees the geometry regardless of how
-    // well the image model honoured the safe-top prompt directive.
-    // After this crop the image becomes ~16:7.8 (2.05:1) and slots
-    // cleanly under the stripe at render time. The model's safe-top
-    // directive is still in the prompt because if the model DOES
-    // honour it, the crop just removes empty space; if it DOESN'T,
-    // the crop guarantees the visual outcome.
+    // The earlier "safe-top crop" step that removed the top 13% of every
+    // section-titled image is gone: it destroyed real content (legends,
+    // sketched titles, top elements of uploads) for the sake of clearing
+    // the stripe zone. The letterbox layout at render time now handles
+    // the stripe geometry without ever mutating the image. The safe-top
+    // *prompt* directive stays — it's free and biases AI composition
+    // toward the lower 87% which still helps in overlay mode and is a
+    // bonus in letterbox mode.
+    //
+    // After upload we also compute a pixel-saliency map of the image
+    // so the overlay placement resolver can land overlays on empty
+    // cells instead of focal content. Saliency is best-effort: a
+    // failure just returns null on the response and the renderer falls
+    // back to the LLM's planned zone.
     let imageUrl = kieUrl;
+    let imageBuffer: Buffer | null = null;
     try {
       const imgRes = await fetch(kieUrl);
       if (imgRes.ok) {
         const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
-        let buffer = Buffer.from(await imgRes.arrayBuffer());
-        let outContentType = contentType;
-        let outExt = contentType.includes('png') ? 'png' : 'jpg';
-
-        if (hasSectionStripe) {
-          try {
-            const sharp = (await import('sharp')).default;
-            const img = sharp(buffer);
-            const meta = await img.metadata();
-            if (meta.width && meta.height) {
-              const cropTop = Math.round(meta.height * 0.13);
-              const newHeight = meta.height - cropTop;
-              if (newHeight > 0 && cropTop > 0) {
-                const cropped = await img
-                  .extract({ left: 0, top: cropTop, width: meta.width, height: newHeight })
-                  .jpeg({ quality: 92 })
-                  .toBuffer();
-                // Sharp returns Buffer<ArrayBufferLike>; copy into a fresh
-                // ArrayBuffer-backed Buffer so the R2 client's strict
-                // type sees the right shape.
-                buffer = Buffer.from(cropped);
-                outContentType = 'image/jpeg';
-                outExt = 'jpg';
-              }
-            }
-          } catch (cropErr) {
-            // Crop is best-effort: if sharp fails, fall back to the
-            // uncropped image. The safe-top prompt directive is still
-            // in play so the model has tried to leave the top empty.
-            console.warn('[image-gen] safe-top crop failed, using uncropped image:', cropErr);
-          }
-        }
+        const buffer = Buffer.from(await imgRes.arrayBuffer());
+        imageBuffer = buffer;
+        const outContentType = contentType;
+        const outExt = contentType.includes('png') ? 'png' : 'jpg';
 
         const randomSuffix = Math.random().toString(36).slice(2, 10);
         const bucket = getImagesBucket();
@@ -254,7 +252,17 @@ export async function POST(req: NextRequest) {
       console.warn('[image-gen] R2 upload failed, falling back to Kie.ai URL:', uploadErr);
     }
 
-    return NextResponse.json({ imageUrl });
+    const saliencyStart = Date.now();
+    const saliency = imageBuffer ? await computeImageSaliency(imageBuffer) : null;
+    console.info('[saliency compute] done', {
+      hasImage: Boolean(imageBuffer),
+      hasResult: Boolean(saliency),
+      busyness: saliency?.busyness,
+      dominantColors: saliency?.dominantColors,
+      ms: Date.now() - saliencyStart,
+    });
+
+    return NextResponse.json({ imageUrl, saliency });
   } catch (err: unknown) {
     logger.error('Production doc image generation error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json(

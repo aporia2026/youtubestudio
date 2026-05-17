@@ -12,7 +12,7 @@ import { IconScene } from '../scenes/IconScene';
 import { ScreenMockupScene } from '../scenes/ScreenMockupScene';
 import { OutroScene } from '../scenes/OutroScene';
 import { ThumbnailZoomScene } from '../scenes/ThumbnailZoomScene';
-import { SectionTitleStripe } from '../components/SectionTitleStripe';
+import { SectionTitleStripe, clampSectionStripeFraction } from '../components/SectionTitleStripe';
 import { RealImageOverlay } from '../components/RealImageOverlay';
 import {
   VideoConfig,
@@ -135,24 +135,76 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
         const fromFrame = msToFrame(shot.startMs, fps);
         const durationInFrames = Math.max(msToFrame(shot.durationMs, fps), 1);
         const prevShot = i > 0 ? config.shots[i - 1] : null;
+
+        // Letterbox layout: when a shot has a section title and the layout
+        // is 'letterbox' (the default since 2026-05-17), reserve the top
+        // `stripeHeightPx` of the frame for the stripe and render the
+        // scene + overlay inside a smaller container below. The scene's
+        // background is overridden with the row's `pillarboxColor` so
+        // any space the image's `object-fit: contain` leaves shows that
+        // colour (pillarbox bars on left/right for narrower images,
+        // top/bottom bars for ultra-wide images). See plan
+        // _plans/2026-05-17-section-title-letterbox-and-overlay-blending.md.
+        const useLetterbox =
+          Boolean(shot.sectionTitle) &&
+          (shot.sectionTitleLayout ?? 'letterbox') === 'letterbox';
+        const pillarboxColor =
+          shot.pillarboxColor || config.pillarboxColorDefault || '#FFFFFF';
+        const sceneConfig = useLetterbox
+          ? { ...config, brand: { ...config.brand, backgroundColor: pillarboxColor } }
+          : config;
+        const stripeHeightPx = useLetterbox
+          ? config.height * clampSectionStripeFraction(config.thumbnail?.stripeHeightFraction)
+          : 0;
+        const containerWidth = config.width;
+        const containerHeight = config.height - stripeHeightPx;
+
+        const sceneAndOverlay = (
+          <>
+            <SceneRouter
+              shot={shot}
+              previousShot={prevShot}
+              durationInFrames={durationInFrames}
+              config={sceneConfig}
+              shotIndex={i}
+            />
+            {/* Real-image overlay (logo / brand mark / screenshot) sits
+                ABOVE the scene composition but BELOW the section title
+                stripe in z-order. No-op when shot.overlay is undefined.
+                In letterbox mode it positions against the smaller
+                container so it never crosses into the stripe area. */}
+            <RealImageOverlay
+              shot={shot}
+              frameWidth={containerWidth}
+              frameHeight={containerHeight}
+            />
+          </>
+        );
+
         return (
           <Sequence
             key={i}
             from={fromFrame}
             durationInFrames={durationInFrames}
-            name={`Shot ${i + 1}: ${shot.thumbnailZoomTo ? 'thumbnail-zoom' : shot.sceneType}`}
+            name={`Shot ${i + 1}: ${shot.thumbnailZoomTo ? 'thumbnail-zoom' : shot.sceneType}${useLetterbox ? ' (letterbox)' : ''}`}
           >
-            <SceneRouter
-              shot={shot}
-              previousShot={prevShot}
-              durationInFrames={durationInFrames}
-              config={config}
-              shotIndex={i}
-            />
-            {/* Real-image overlay (logo / brand mark / screenshot) sits
-                ABOVE the scene composition but BELOW the section title
-                stripe in z-order. No-op when shot.overlay is undefined. */}
-            <RealImageOverlay shot={shot} />
+            {useLetterbox ? (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: stripeHeightPx,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  overflow: 'hidden',
+                  background: pillarboxColor,
+                }}
+              >
+                {sceneAndOverlay}
+              </div>
+            ) : (
+              sceneAndOverlay
+            )}
           </Sequence>
         );
       })}

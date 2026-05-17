@@ -123,6 +123,16 @@ export interface VideoShot {
   /** Section title shown as a fixed stripe at the top of frame for the
    *  shot's full duration. Independent of `sceneType` — usable on any scene. */
   sectionTitle?: string;
+  /** When `sectionTitle` is set, controls how the stripe relates to the scene:
+   *  - 'overlay': stripe sits on top of full-frame scene (legacy behavior).
+   *  - 'letterbox': scene shrinks to fit below the stripe; pillarbox color fills
+   *    any empty area when the image doesn't fill the box. Default when unset
+   *    is 'letterbox' — see _plans/2026-05-17-section-title-letterbox-and-overlay-blending.md. */
+  sectionTitleLayout?: 'overlay' | 'letterbox';
+  /** Fill color (hex `#RRGGBB`) for the area below the stripe that the image
+   *  doesn't cover. Only meaningful when `sectionTitleLayout === 'letterbox'`.
+   *  Falls back to `VideoConfig.pillarboxColorDefault`, then to white. */
+  pillarboxColor?: string;
   /** Auto-sourced real-image overlay composited on top of the scene at
    *  the planned zone. Falsy = no overlay, scene renders unmodified.
    *
@@ -130,13 +140,19 @@ export interface VideoShot {
    *  background removal) when the production-doc row carries an
    *  `overlay_stock_terms` value. The zone + size are planned by the
    *  doc generator at the same time as the row's `ai_image_prompt`, so
-   *  the still's negative-space layout matches where the overlay lands. */
+   *  the still's negative-space layout matches where the overlay lands.
+   *
+   *  `haloColor` is the dominant RGB of the saliency cell the overlay
+   *  lands in (sampled at image-generation time) — used as the colour
+   *  of a soft glow behind the overlay so it reads as part of the
+   *  local image environment, not a sticker on top. */
   overlay?: {
     url: string;
     zone:
       | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
       | 'center-top' | 'center-bottom' | 'left-center' | 'right-center';
     size: 'small' | 'medium' | 'large';
+    haloColor?: string;
   };
 }
 
@@ -170,6 +186,17 @@ export interface VideoConfig {
   suppressLowerThirds?: boolean;
   /** Optional composite thumbnail referenced by `VideoShot.thumbnailZoomTo`. */
   thumbnail?: VideoThumbnail;
+  /** Doc-level fallback fill color for letterbox pillarbox areas when a
+   *  shot doesn't set its own `pillarboxColor`. Hex `#RRGGBB`. When unset,
+   *  individual shots fall through to white. See section-title-letterbox plan. */
+  pillarboxColorDefault?: string;
+  /** Minimum scene duration (ms) carried through from the doc so the
+   *  server-side `realignVideoConfig` call has the resolved value. See
+   *  `_plans/2026-05-17-scene-min-duration-and-tail-buffer.md`. */
+  minSceneMs?: number;
+  /** Tail buffer (ms) after narration, carried through for the server-
+   *  side realign call. Capped at the gap to the next row at apply time. */
+  tailBufferMs?: number;
 }
 
 // ─── Render Job ───────────────────────────────────────────────────────────────

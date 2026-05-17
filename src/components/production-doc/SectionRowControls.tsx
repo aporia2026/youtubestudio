@@ -36,10 +36,24 @@ interface SectionRowControlsProps {
   thumbnail: VideoThumbnail;
   zoomTo: string | undefined;
   sectionTitle: string | undefined;
+  /** When this row has a section title, controls whether the stripe overlays
+   *  the full-frame scene ('overlay', legacy) or sits above a letterboxed
+   *  scene container ('letterbox', new default since 2026-05-17). Undefined
+   *  is treated as 'letterbox' downstream. */
+  sectionTitleLayout: 'overlay' | 'letterbox' | undefined;
+  /** Per-row fill color for the letterbox pillarbox area. Hex `#RRGGBB`.
+   *  When undefined, falls back to the doc-level default, then to white. */
+  pillarboxColor: string | undefined;
+  /** Doc-level fallback for pillarbox color. Surfaced here so the swatch
+   *  on the row picker shows the *effective* color the renderer will use
+   *  when the row hasn't been customized. */
+  pillarboxColorDefault: string | undefined;
   transition: ThumbnailTransitionConfig | undefined;
   defaultTransition: ThumbnailTransitionConfig | undefined;
   onChangeZoomTo: (regionId: string | undefined) => void;
   onChangeSectionTitle: (title: string | undefined) => void;
+  onChangeSectionTitleLayout: (layout: 'overlay' | 'letterbox' | undefined) => void;
+  onChangePillarboxColor: (color: string | undefined) => void;
   onChangeTransition: (t: ThumbnailTransitionConfig | undefined) => void;
   /** Apply `title` to every row from `startRow` to `endRow` inclusive
    *  (0-indexed). The parent walks the doc and sets each row's
@@ -50,8 +64,11 @@ interface SectionRowControlsProps {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function SectionRowControls({
-  rowIndex, totalRows, thumbnail, zoomTo, sectionTitle, transition, defaultTransition,
-  onChangeZoomTo, onChangeSectionTitle, onChangeTransition, onApplyTitleToRange,
+  rowIndex, totalRows, thumbnail, zoomTo, sectionTitle,
+  sectionTitleLayout, pillarboxColor, pillarboxColorDefault,
+  transition, defaultTransition,
+  onChangeZoomTo, onChangeSectionTitle, onChangeSectionTitleLayout,
+  onChangePillarboxColor, onChangeTransition, onApplyTitleToRange,
 }: SectionRowControlsProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
   // Inline "apply to range" picker — collapsed by default, expands into
@@ -264,6 +281,123 @@ export function SectionRowControls({
           >
             Cancel
           </button>
+        </div>
+      )}
+
+      {/* Stripe ↔ scene layout + pillarbox color — only shown when this
+          row has a section title set. The layout choice is per-row; the
+          color picker is only relevant in letterbox mode. */}
+      {(sectionTitle?.trim() || titleDraft.trim()) && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
+            Stripe layout
+          </span>
+          <div
+            role="group"
+            aria-label="Stripe layout"
+            style={{
+              display: 'flex',
+              borderRadius: 4,
+              border: '1px solid rgba(255,255,255,0.10)',
+              overflow: 'hidden',
+            }}
+          >
+            {(['letterbox', 'overlay'] as const).map((opt) => {
+              const effective = sectionTitleLayout ?? 'letterbox';
+              const active = effective === opt;
+              return (
+                <button
+                  key={opt}
+                  type="button"
+                  onClick={() => {
+                    console.info('[ui row-layout] toggled', {
+                      rowIndex,
+                      from: effective,
+                      to: opt,
+                    });
+                    onChangeSectionTitleLayout(opt);
+                  }}
+                  title={opt === 'letterbox'
+                    ? 'Scene shrinks to fit below the stripe — image always fully visible'
+                    : 'Stripe overlays full-frame scene (legacy) — top of image may be covered'}
+                  style={{
+                    flex: 1,
+                    fontSize: 10,
+                    padding: '3px 6px',
+                    background: active ? 'rgba(34,211,238,0.18)' : 'rgba(255,255,255,0.02)',
+                    color: active ? '#22d3ee' : 'var(--text-muted)',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontWeight: active ? 600 : 400,
+                    textTransform: 'capitalize',
+                  }}
+                >
+                  {opt}
+                </button>
+              );
+            })}
+          </div>
+
+          {(sectionTitleLayout ?? 'letterbox') === 'letterbox' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <label
+                htmlFor={`pillarbox-color-${rowIndex}`}
+                style={{ fontSize: 10, color: 'var(--text-muted)' }}
+                title="Color used for the bars on the sides of the image when it doesn't fill the area below the stripe"
+              >
+                Pillarbox
+              </label>
+              <input
+                id={`pillarbox-color-${rowIndex}`}
+                type="color"
+                value={pillarboxColor || pillarboxColorDefault || '#ffffff'}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  console.info('[ui pillarbox-color] changed', {
+                    rowIndex,
+                    from: pillarboxColor ?? pillarboxColorDefault ?? '#ffffff',
+                    to: next,
+                  });
+                  onChangePillarboxColor(next);
+                }}
+                style={{
+                  width: 24,
+                  height: 20,
+                  padding: 0,
+                  border: '1px solid rgba(255,255,255,0.15)',
+                  borderRadius: 3,
+                  cursor: 'pointer',
+                  background: 'transparent',
+                }}
+                aria-label="Pillarbox color"
+              />
+              {pillarboxColor && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    console.info('[ui pillarbox-color] changed', {
+                      rowIndex,
+                      from: pillarboxColor,
+                      to: pillarboxColorDefault ?? '#ffffff',
+                    });
+                    onChangePillarboxColor(undefined);
+                  }}
+                  title="Reset to doc default"
+                  style={{
+                    fontSize: 10,
+                    padding: '2px 5px',
+                    borderRadius: 3,
+                    background: 'transparent',
+                    color: 'var(--text-muted)',
+                    border: '1px solid rgba(255,255,255,0.10)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
 
