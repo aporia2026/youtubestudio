@@ -44,6 +44,7 @@ import {
   brollRowSignatureInput,
   DEFAULT_BROLL_MODEL_ID,
   findBrollModel,
+  pickModelForScene,
   type BrollClipRow,
   type BrollStatus,
 } from '@/lib/broll-types';
@@ -1915,9 +1916,9 @@ function ProductionDocPage() {
   //   owns its own clip lifecycle and reports up via `onClipChange`; we keep
   //   the parent-level map only for the renderer wiring. Sparse — entries
   //   exist only for rows the user has generated a clip on.
-  const [rowVideoClips, setRowVideoClips] = useState<Record<number, { status: string; videoUrl?: string } | null>>({});
+  const [rowVideoClips, setRowVideoClips] = useState<Record<number, { status: string; videoUrl?: string; durationSeconds?: number } | null>>({});
   const handleBrollClipChange = useCallback(
-    (rowIndex: number, clip: { status: BrollStatus; video_url: string | null } | null) => {
+    (rowIndex: number, clip: { status: BrollStatus; video_url: string | null; duration_seconds?: number | null } | null) => {
       setRowVideoClips((prev) => {
         if (!clip) {
           if (!(rowIndex in prev)) return prev;
@@ -1926,11 +1927,21 @@ function ProductionDocPage() {
           return next;
         }
         const existing = prev[rowIndex];
-        const nextEntry = { status: clip.status, videoUrl: clip.video_url ?? undefined };
+        // Plumb the clip's intrinsic duration through so BRollScene can
+        // fit the playback rate to the scene length. Undefined when the
+        // clip's a transient stub (no model yet) or a legacy row that
+        // pre-dates `broll_clips.duration_seconds`. See plan
+        // `_plans/2026-05-17-clip-duration-fit.md`.
+        const nextEntry = {
+          status: clip.status,
+          videoUrl: clip.video_url ?? undefined,
+          durationSeconds: clip.duration_seconds ?? undefined,
+        };
         if (
           existing &&
           existing.status === nextEntry.status &&
-          existing.videoUrl === nextEntry.videoUrl
+          existing.videoUrl === nextEntry.videoUrl &&
+          existing.durationSeconds === nextEntry.durationSeconds
         ) {
           return prev;
         }
@@ -2097,6 +2108,23 @@ function ProductionDocPage() {
     return animateAllPlan.length * model.priceUsd;
   }, [animateAllPlan, userDefaultModelId]);
 
+  // Rough scene-duration estimator used to pick a B-roll tier. Uses
+  // raw timecodes (no alignment, no min-scene floor) — close enough for
+  // a 5s / 10s tier decision. Final timing precision is handled at
+  // render time by BRollScene's playbackRate fit. See plan
+  // `_plans/2026-05-17-clip-duration-fit.md`.
+  const computeRowSceneDurationMs = useCallback(
+    (rowIndex: number): number => {
+      if (!doc?.rows?.[rowIndex]) return 0;
+      const startMs = parseTimecodeToMs(doc.rows[rowIndex].timecode);
+      const next = doc.rows[rowIndex + 1];
+      if (next) return Math.max(parseTimecodeToMs(next.timecode) - startMs, 0);
+      const totalMs = parseTimecodeToMs(doc.total_duration);
+      return Math.max(totalMs - startMs, 1000);
+    },
+    [doc],
+  );
+
   // Shared batch driver: walks `plan` sequentially, kicks off a B-roll
   // generation per row, seeds the cell's adoption stub + the page's status
   // map, and reports progress through `setProgress`. Both `runAnimateAll`
@@ -2112,6 +2140,20 @@ function ProductionDocPage() {
       setProgress({ done: 0, total: plan.length });
       for (let n = 0; n < plan.length; n++) {
         const item = plan[n]!;
+        // Auto-pick the cheap 5s tier when the row's scene fits in 5s.
+        // Per-row decision so a doc with mixed scene lengths gets the
+        // right tier on each row. See plan
+        // `_plans/2026-05-17-clip-duration-fit.md`.
+        const sceneSeconds = computeRowSceneDurationMs(item.rowIndex) / 1000;
+        const tier = pickModelForScene(userDefaultModelId, sceneSeconds);
+        console.info('[broll tier pick]', {
+          source: 'batch',
+          rowIndex: item.rowIndex,
+          sceneSeconds: Number(sceneSeconds.toFixed(2)),
+          userModelId: userDefaultModelId,
+          pickedModelId: tier.modelId,
+          downgraded: tier.downgraded,
+        });
         try {
           const stub = await kickoffBrollGeneration({
             projectId: null,
@@ -2127,7 +2169,7 @@ function ProductionDocPage() {
             aiImagePrompt: item.aiImagePrompt,
             styleHint: stylePreset,
             stillImageUrl: item.stillImageUrl,
-            modelId: userDefaultModelId,
+            modelId: tier.modelId,
           });
           // Hand the stub down to the row's BrollCell so it adopts the new
           // clip id and starts polling. We also seed `rowVideoClips` with
@@ -2143,7 +2185,7 @@ function ProductionDocPage() {
       }
       setProgress(null);
     },
-    [stylePreset, userDefaultModelId, handleBrollClipChange],
+    [stylePreset, userDefaultModelId, handleBrollClipChange, historyEntryId, computeRowSceneDurationMs],
   );
 
   const runAnimateAll = useCallback(async () => {
@@ -3691,9 +3733,15 @@ function ProductionDocPage() {
           stillMissing.push(m);
           continue;
         }
-        const data = (await res.json()) as { clip?: { id: string; status: BrollStatus; video_url: string | null } };
+        const data = (await res.json()) as {
+          clip?: { id: string; status: BrollStatus; video_url: string | null; duration_seconds?: number | null };
+        };
         if (data.clip && data.clip.status === 'ready' && data.clip.video_url) {
-          handleBrollClipChange(m.rowIndex, { status: data.clip.status, video_url: data.clip.video_url });
+          handleBrollClipChange(m.rowIndex, {
+            status: data.clip.status,
+            video_url: data.clip.video_url,
+            duration_seconds: data.clip.duration_seconds,
+          });
         } else {
           stillMissing.push(m);
         }
@@ -3864,7 +3912,11 @@ function ProductionDocPage() {
           if (idx === undefined) { skippedSigMismatch++; continue; }
 
           // Bridge to parent state — drives the renderer.
-          handleBrollClipChange(idx, { status: clip.status, video_url: clip.video_url });
+          handleBrollClipChange(idx, {
+            status: clip.status,
+            video_url: clip.video_url,
+            duration_seconds: clip.duration_seconds,
+          });
           // Hand to the cell as initialClip so its own UI reflects the
           // clip immediately (avoids the cell briefly showing 'idle'
           // after a successful hydration).
@@ -5159,6 +5211,7 @@ function ProductionDocPage() {
                                 rowIndex={i}
                                 rowSignature={sig}
                                 productionDocId={historyEntryId}
+                                sceneDurationMs={computeRowSceneDurationMs(i)}
                                 visualDescription={row.visual_description}
                                 aiImagePrompt={row.ai_image_prompt}
                                 styleHint={stylePreset}
@@ -5169,7 +5222,7 @@ function ProductionDocPage() {
                                 onClipChange={(clip) =>
                                   handleBrollClipChange(
                                     i,
-                                    clip ? { status: clip.status, video_url: clip.video_url } : null,
+                                    clip ? { status: clip.status, video_url: clip.video_url, duration_seconds: clip.duration_seconds } : null,
                                   )
                                 }
                               />
@@ -5495,6 +5548,7 @@ function ProductionDocPage() {
                                 rowIndex={i}
                                 rowSignature={sig}
                                 productionDocId={historyEntryId}
+                                sceneDurationMs={computeRowSceneDurationMs(i)}
                                 visualDescription={row.visual_description}
                                 aiImagePrompt={row.ai_image_prompt}
                                 styleHint={stylePreset}
@@ -5505,7 +5559,7 @@ function ProductionDocPage() {
                                 onClipChange={(clip) =>
                                   handleBrollClipChange(
                                     i,
-                                    clip ? { status: clip.status, video_url: clip.video_url } : null,
+                                    clip ? { status: clip.status, video_url: clip.video_url, duration_seconds: clip.duration_seconds } : null,
                                   )
                                 }
                               />

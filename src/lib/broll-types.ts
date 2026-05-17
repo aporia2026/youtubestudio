@@ -347,6 +347,47 @@ export type BrollModelId = string;
  *  overrides this; see `/api/user/preferences/broll-default`. */
 export const DEFAULT_BROLL_MODEL_ID = 'kling-v2-5-turbo-i2v-pro-10s';
 
+/**
+ * Map from 10s-tier model id → its same-architecture 5s sibling. Used by
+ * `pickModelForScene` to auto-downgrade a long-tier choice when the
+ * row's scene is short enough that the 5s clip covers the whole scene
+ * without losing content. Sora 2 i2v / Veo 3 / Sora 2 t2v have no 5s
+ * sibling — passed through unchanged. See plan
+ * `_plans/2026-05-17-clip-duration-fit.md`.
+ */
+const FIVE_SECOND_VARIANT_OF: Readonly<Record<string, string>> = Object.freeze({
+  'kling-v2-5-turbo-i2v-pro-10s': 'kling-v2-5-turbo-i2v-pro-5s',
+  'kling-2-6-i2v-10s': 'kling-2-6-i2v-5s',
+});
+
+/** Threshold (seconds) at or below which we use the 5s tier. Above this,
+ *  the 10s tier is used and any extra clip duration freezes on the last
+ *  frame — preferred over cutting narration content short. */
+const FIVE_SECOND_TIER_THRESHOLD_SECONDS = 5.0;
+
+/**
+ * Auto-pick the cheaper 5s tier when the scene fits in 5s. Falls back
+ * to the user-picked model when:
+ *   - the scene is longer than the threshold (10s tier wins), OR
+ *   - the model has no 5s variant (Sora 2 / Veo).
+ *
+ * Pure function — returns the chosen model id. Doesn't validate that
+ * the id exists; the route layer enforces that via `findBrollModel`.
+ */
+export function pickModelForScene(
+  userPickedModelId: string,
+  sceneDurationSeconds: number,
+): { modelId: string; downgraded: boolean } {
+  if (
+    Number.isFinite(sceneDurationSeconds) &&
+    sceneDurationSeconds <= FIVE_SECOND_TIER_THRESHOLD_SECONDS &&
+    FIVE_SECOND_VARIANT_OF[userPickedModelId]
+  ) {
+    return { modelId: FIVE_SECOND_VARIANT_OF[userPickedModelId], downgraded: true };
+  }
+  return { modelId: userPickedModelId, downgraded: false };
+}
+
 /** Hard cap on prompt length. Kie rejects > ~2500 chars across image and
  *  video endpoints for Kling models; we apply a tighter bound so we have
  *  headroom for the duration / aspect prefix the orchestrator prepends. */

@@ -99,6 +99,13 @@ export interface VideoShot {
    *  shorter than `durationMs` — Remotion freezes the last frame for the
    *  remainder. See `_plans/2026-05-14-image-to-video-animation-rows.md`. */
   videoUrl?: string;
+  /** Intrinsic duration (seconds) of the clip referenced by `videoUrl`.
+   *  Used by BRollScene to fit the playback rate to the scene duration
+   *  so a 10s clip in a 7s scene doesn't freeze and a 10s clip in a 15s
+   *  scene doesn't stop mid-narration. Falls back to a sensible default
+   *  inside the scene when missing (legacy clips with no duration field).
+   *  See `_plans/2026-05-17-clip-duration-fit.md`. */
+  videoDurationSeconds?: number;
   /** Bold title text shown at top of frame */
   title?: string;
   /** Subtitle or secondary text */

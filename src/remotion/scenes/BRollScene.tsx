@@ -74,6 +74,40 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
   const isLetterbox =
     Boolean(shot.sectionTitle) && (shot.sectionTitleLayout ?? 'letterbox') === 'letterbox';
 
+  // Fit the clip's intrinsic duration to the scene's. Without this, a
+  // 10s clip in a 7s scene would cut at 7s (paid 3s of clip discarded)
+  // and a 10s clip in a 15s scene would freeze the last frame at 10s
+  // (image stops moving while narration continues). Both are visible
+  // failures of polish. Solution: compute playbackRate = clipSec/sceneSec
+  // and let Remotion stretch / compress the clip to fit. Clamp the
+  // result so extreme mismatches degrade gracefully instead of producing
+  // visibly jittery (>2×) or smeared (<0.5×) output. See plan
+  // `_plans/2026-05-17-clip-duration-fit.md`.
+  const sceneSeconds = durationInFrames / fps;
+  // Fallback to 10s when the clip's duration didn't make it through
+  // (legacy rows pre-duration plumbing, or DB hydration returning null).
+  // 10s matches the default tier so the fallback math approximates the
+  // dominant case.
+  const clipSeconds = shot.videoDurationSeconds && shot.videoDurationSeconds > 0
+    ? shot.videoDurationSeconds
+    : 10;
+  const PLAYBACK_RATE_MIN = 0.5;
+  const PLAYBACK_RATE_MAX = 2.0;
+  const rawPlaybackRate = sceneSeconds > 0 ? clipSeconds / sceneSeconds : 1;
+  const playbackRate = Math.max(PLAYBACK_RATE_MIN, Math.min(PLAYBACK_RATE_MAX, rawPlaybackRate));
+  // One-shot diagnostic so a viewer seeing "the clip looks weird" can
+  // reason from the console instead of guessing. Frame 0 only — a 7s
+  // scene at 30fps shouldn't spam 210 log lines.
+  if (useVideo && frame === 0) {
+    console.info('[broll playback fit]', {
+      sceneSeconds: Number(sceneSeconds.toFixed(2)),
+      clipSeconds,
+      rawPlaybackRate: Number(rawPlaybackRate.toFixed(3)),
+      playbackRate: Number(playbackRate.toFixed(3)),
+      clamped: rawPlaybackRate !== playbackRate,
+    });
+  }
+
   return (
     <AbsoluteFill style={{ background: brand.backgroundColor }}>
       {useVideo ? (
@@ -85,6 +119,7 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
             // through. (Kling i2v writes silent clips anyway, but Kling 2.6
             // with sound=true / Veo 3 with audio could leak otherwise.)
             muted
+            playbackRate={playbackRate}
             onError={() => setVideoError(true)}
             style={{
               width: '100%',

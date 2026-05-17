@@ -260,6 +260,11 @@ export interface RowImageState {
 export interface RowVideoClipState {
   status: string;
   videoUrl?: string;
+  /** Intrinsic clip duration in seconds. Sourced from `broll_clips.duration_seconds`.
+   *  Used by `BRollScene` to fit playback rate to the scene's `durationMs` so a
+   *  10s clip in a 7s scene doesn't freeze and a 10s clip in a 15s scene doesn't
+   *  stop mid-narration. See `_plans/2026-05-17-clip-duration-fit.md`. */
+  durationSeconds?: number;
 }
 
 /** Per-row auto-fetched overlay state passed into the renderer. Only rows
@@ -385,6 +390,14 @@ export function productionDocToVideoConfig(
       clipState && clipState.status === 'ready' && clipState.videoUrl
         ? clipState.videoUrl
         : undefined;
+    // Pass clip duration through so BRollScene can compute the
+    // playback rate that fits the clip to the scene. Only meaningful
+    // when videoUrl is set; otherwise undefined and the still path
+    // is taken regardless.
+    const videoDurationSeconds =
+      videoUrl && clipState?.durationSeconds && clipState.durationSeconds > 0
+        ? clipState.durationSeconds
+        : undefined;
 
     // Real-image overlay — only attached when the doc generator planned
     // one AND the auto-fetch resolved to a usable URL. The renderer
@@ -465,6 +478,7 @@ export function productionDocToVideoConfig(
       pillarboxColor: row.pillarbox_color || undefined,
       thumbnailTransition: row.thumbnail_transition,
       sceneFade: row.scene_fade,
+      videoDurationSeconds,
       overlay,
     };
   });

@@ -37,6 +37,7 @@ import {
   BROLL_MODELS,
   DEFAULT_BROLL_MODEL_ID,
   findBrollModel,
+  pickModelForScene,
   type BrollClipRow,
   type BrollModelDescriptor,
   type BrollModelId,
@@ -275,6 +276,11 @@ export interface BrollCellProps {
    *  the per-cell localStorage map for recovery. See plan
    *  `_plans/2026-05-17-broll-doc-id-hydration.md`. */
   productionDocId?: string | null;
+  /** Row's scene duration in milliseconds, computed by the parent from
+   *  the doc's timecodes. Used to auto-pick a shorter clip tier when
+   *  the scene fits in 5s (saves ~$0.21 per short row). Falsy ⇒ no
+   *  downgrade. See `_plans/2026-05-17-clip-duration-fit.md`. */
+  sceneDurationMs?: number;
   /** Stable row index (drives display order). */
   rowIndex: number;
   /** Stable signature of the row's identifying fields, for rehydration. */
@@ -322,6 +328,7 @@ export function BrollCell({
   projectId,
   scriptId,
   productionDocId,
+  sceneDurationMs,
   rowIndex,
   rowSignature,
   visualDescription,
@@ -521,6 +528,20 @@ export function BrollCell({
     }
     setPhase('starting');
     setErrorMsg(null);
+    // Auto-pick the cheaper 5s tier when the scene is short enough to
+    // fit. Saves ~$0.21 per row vs the 10s default. No-op for models
+    // without a 5s sibling (Sora 2, Veo 3). See plan
+    // `_plans/2026-05-17-clip-duration-fit.md`.
+    const sceneSeconds = sceneDurationMs ? sceneDurationMs / 1000 : Number.POSITIVE_INFINITY;
+    const tier = pickModelForScene(modelId, sceneSeconds);
+    console.info('[broll tier pick]', {
+      source: 'cell',
+      rowIndex,
+      sceneSeconds: Number.isFinite(sceneSeconds) ? Number(sceneSeconds.toFixed(2)) : null,
+      userModelId: modelId,
+      pickedModelId: tier.modelId,
+      downgraded: tier.downgraded,
+    });
     try {
       const res = await fetch('/api/broll', {
         method: 'POST',
@@ -534,7 +555,7 @@ export function BrollCell({
           visualDescription,
           aiImagePrompt: aiImagePrompt || undefined,
           styleHint: styleHint || undefined,
-          modelId,
+          modelId: tier.modelId,
           aspectRatio: '16:9',
           stillImageUrl: isI2v ? stillImageUrl : undefined,
         }),
@@ -546,6 +567,13 @@ export function BrollCell({
       const data = (await res.json()) as { id: string };
       // We have an id but no full row yet — synthesise a transient stub so the
       // poll effect can kick in. The first GET will replace it.
+      // Reflect the picked tier (possibly downgraded) so the cell's
+      // model picker shows what was actually generated, not what the
+      // user originally selected. Same for `duration_seconds` — seed
+      // it from the picked model's known tier so playback-rate fit can
+      // begin computing on the next render without waiting for the
+      // first GET to return the canonical row.
+      const pickedDescriptor = findBrollModel(tier.modelId);
       const stub: BrollClipRow = {
         id: data.id,
         workspace_id: '',
@@ -555,10 +583,10 @@ export function BrollCell({
         row_index: rowIndex,
         production_doc_id: productionDocId ?? null,
         prompt: '',
-        model_id: modelId,
+        model_id: tier.modelId,
         provider: 'kie',
         aspect_ratio: '16:9',
-        duration_seconds: null,
+        duration_seconds: pickedDescriptor?.durationSeconds ?? null,
         status: 'generating',
         task_id: null,
         error_message: null,
@@ -591,6 +619,8 @@ export function BrollCell({
     styleHint,
     modelId,
     updateClip,
+    productionDocId,
+    sceneDurationMs,
   ]);
 
   const deleteClip = useCallback(async () => {
