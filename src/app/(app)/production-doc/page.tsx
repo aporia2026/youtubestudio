@@ -2529,12 +2529,47 @@ function ProductionDocPage() {
       // pattern that almost guaranteed silent skips on edge cases. With
       // arrays / records we just assign whatever was saved (empty is
       // fine — the initial useState defaults were also empty).
-      if (Array.isArray(parsed.rowImages)) setRowImages(parsed.rowImages);
+      // Sanitize transient statuses before restoring. `'loading' / 'pending' /
+      // 'search'` all imply an in-flight fetch that died with the page
+      // reload — restoring them verbatim leaves the row showing a spinner
+      // forever because no actual request is in flight. Reset to `'idle'`
+      // so Phase 3 entry hydration can fill from server, or the user can
+      // retry the generation. Same logic for overlays.
+      if (Array.isArray(parsed.rowImages)) {
+        const sanitized = (parsed.rowImages as Array<RowImageState | undefined | null>).map((r) => {
+          if (!r) return { status: 'idle' as const };
+          if (r.status === 'loading' || r.status === 'pending' || r.status === 'search') {
+            return { status: 'idle' as const };
+          }
+          return r;
+        });
+        setRowImages(sanitized);
+      }
       if (parsed.rowOverlays && typeof parsed.rowOverlays === 'object') {
-        setRowOverlays(parsed.rowOverlays);
+        const cleaned: Record<number, RowOverlayState> = {};
+        for (const [k, v] of Object.entries(parsed.rowOverlays as Record<string, RowOverlayState | undefined>)) {
+          if (!v) continue;
+          // Skip transient overlay states — the row falls back to 'idle'
+          // (no entry in the map) and re-fetches on demand.
+          if (v.status === 'loading') continue;
+          cleaned[Number(k)] = v;
+        }
+        setRowOverlays(cleaned);
       }
       if (parsed.rowVideoClips && typeof parsed.rowVideoClips === 'object') {
-        setRowVideoClips(parsed.rowVideoClips);
+        // Clip clean-up: 'pending' and 'generating' clips can still be
+        // alive server-side (Kie keeps tasks for ~24h), so keep them —
+        // the per-cell adoption effect picks the poll back up when the
+        // cell mounts. Only 'failed' without a video_url is purely
+        // stale; drop those so the cell starts idle. 'ready' obviously
+        // stays as-is.
+        const cleanedClips: Record<number, { status: string; videoUrl?: string; durationSeconds?: number } | null> = {};
+        for (const [k, v] of Object.entries(parsed.rowVideoClips as Record<string, { status: string; videoUrl?: string; durationSeconds?: number } | null>)) {
+          if (!v) continue;
+          if (v.status === 'failed' && !v.videoUrl) continue;
+          cleanedClips[Number(k)] = v;
+        }
+        setRowVideoClips(cleanedClips);
       }
       if (typeof parsed.historyEntryId === 'string') {
         // Restore so the background patch-the-history-entry pipeline
@@ -2609,11 +2644,26 @@ function ProductionDocPage() {
   useEffect(() => {
     if (!doc?.rows?.length) return;
     let persistFailed = false;
+    // Strip `image_saliency` from doc.rows before persisting. Saliency
+    // maps (60-cell busyness + dominantColors per row) are the heaviest
+    // field on a generated row and account for the bulk of bundle growth
+    // on long docs. They're recoverable: the FULL doc with saliency lives
+    // on the server-side history entry, so a sidebar restore brings them
+    // back; and any new image generation re-emits them. Until then,
+    // overlay placement falls back to the LLM-picked zone (still on the
+    // row) — minor visual degradation, no broken functionality. Without
+    // this slim, a 30-row doc with rich prompts can push the 5MB quota.
+    const slimDoc = {
+      ...doc,
+      rows: doc.rows.map((r) => {
+        if (!r.image_saliency) return r;
+        const { image_saliency: _saliency, ...slim } = r;
+        return slim;
+      }),
+    };
+    const bundle = { doc: slimDoc, rowImages, rowOverlays, rowVideoClips, historyEntryId, savedAt: Date.now() };
     try {
-      localStorage.setItem('prodoc_last_result', JSON.stringify({
-        doc, rowImages, rowOverlays, rowVideoClips, historyEntryId,
-        savedAt: Date.now(),
-      }));
+      localStorage.setItem('prodoc_last_result', JSON.stringify(bundle));
     } catch (err) {
       // Quota or similar storage failure. Try once more without overlays
       // (they're the heaviest field — base64-ish thumbnails / URLs). If
@@ -2621,15 +2671,23 @@ function ProductionDocPage() {
       // Whatever level succeeds, surface a visible toast so the user
       // knows their session may not survive a refresh. The previous
       // implementation only console.warn'd — silent data loss.
-      console.warn('[persist quota] full bundle failed, trying smaller', err instanceof Error ? err.message : err);
+      const bundleSizeKb = Math.round(JSON.stringify(bundle).length / 1024);
+      console.warn('[persist quota] full bundle failed', {
+        bundleSizeKb,
+        rowCount: doc.rows.length,
+        imageCount: rowImages.filter((r) => r?.imageUrl).length,
+        clipCount: Object.keys(rowVideoClips).length,
+        overlayCount: Object.keys(rowOverlays).length,
+        err: err instanceof Error ? err.message : err,
+      });
       try {
         localStorage.setItem('prodoc_last_result', JSON.stringify({
-          doc, rowImages, rowVideoClips, historyEntryId, savedAt: Date.now(),
+          doc: slimDoc, rowImages, rowVideoClips, historyEntryId, savedAt: Date.now(),
         }));
       } catch {
         try {
           localStorage.setItem('prodoc_last_result', JSON.stringify({
-            doc, rowImages, historyEntryId, savedAt: Date.now(),
+            doc: slimDoc, rowImages, historyEntryId, savedAt: Date.now(),
           }));
           persistFailed = true; // partial — clips + overlays not in bundle
         } catch {
@@ -2639,9 +2697,10 @@ function ProductionDocPage() {
       if (!quotaWarnedRef.current) {
         quotaWarnedRef.current = true;
         toast.warning(
-          'Browser storage is full — generated clips or overlays may not survive a refresh. ' +
-          'Open the doc from the history sidebar to restore from server, or start a New Session to clear old work.',
-          { duration: 12000 },
+          `Browser storage is full (${Math.round(JSON.stringify(bundle).length / 1024)} KB doc). ` +
+          'Click your doc in the history sidebar to reload it from the server. ' +
+          'Or start a New Session to free space from older docs.',
+          { duration: 14000 },
         );
       }
     }
