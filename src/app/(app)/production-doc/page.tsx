@@ -1950,14 +1950,33 @@ function ProductionDocPage() {
     [animateAllPlan, rowVideoClips],
   );
 
-  const failedImagePlan = React.useMemo<Array<{ rowIndex: number; prompt: string }>>(() => {
+  const failedImagePlan = React.useMemo<Array<{
+    rowIndex: number;
+    prompt: string;
+    onScreenText?: string;
+    sectionTitle?: string;
+    overlayStockTerms?: string;
+  }>>(() => {
     if (!doc) return [];
-    const out: Array<{ rowIndex: number; prompt: string }> = [];
+    const out: Array<{
+      rowIndex: number;
+      prompt: string;
+      onScreenText?: string;
+      sectionTitle?: string;
+      overlayStockTerms?: string;
+    }> = [];
     for (let i = 0; i < doc.rows.length; i++) {
       if (rowImages[i]?.status !== 'error') continue;
-      const prompt = doc.rows[i]?.ai_image_prompt?.trim();
+      const row = doc.rows[i];
+      const prompt = row?.ai_image_prompt?.trim();
       if (!prompt) continue;
-      out.push({ rowIndex: i, prompt });
+      out.push({
+        rowIndex: i,
+        prompt,
+        onScreenText: row?.on_screen_text,
+        sectionTitle: row?.section_title,
+        overlayStockTerms: row?.overlay_stock_terms,
+      });
     }
     return out;
   }, [doc, rowImages]);
@@ -1996,7 +2015,11 @@ function ProductionDocPage() {
     setRetryingImages({ done: 0, total: failedImagePlan.length });
     for (let n = 0; n < failedImagePlan.length; n++) {
       const item = failedImagePlan[n]!;
-      await generateImageForRow(item.rowIndex, item.prompt);
+      await generateImageForRow(item.rowIndex, item.prompt, {
+        onScreenText: item.onScreenText,
+        sectionTitle: item.sectionTitle,
+        overlayStockTerms: item.overlayStockTerms,
+      });
       setRetryingImages({ done: n + 1, total: failedImagePlan.length });
     }
     setRetryingImages(null);
@@ -2599,21 +2622,35 @@ function ProductionDocPage() {
 
   // ── Per-row image generation
 
-  async function generateImageForRow(rowIndex: number, prompt: string, signal?: AbortSignal): Promise<boolean> {
+  // Callers MUST pass `meta` from a source they already own (the `rows`
+  // array driving the batch, or the row in JSX scope). We deliberately
+  // do NOT fall back to reading `doc?.rows[rowIndex]` here: the auto
+  // pipeline calls `setDoc(result)` and then `generateImages(result.rows)`
+  // in the same synchronous tick, so React hasn't re-rendered and the
+  // `doc` captured in this closure is still the previous value (often
+  // null after the reset on `generate()`). Reading from `doc` here was
+  // the source of "OST not baked / overlay not fetched" on every fresh
+  // batch — see the bug fix commit for the full diagnosis.
+  async function generateImageForRow(
+    rowIndex: number,
+    prompt: string,
+    meta: { onScreenText?: string; sectionTitle?: string; overlayStockTerms?: string } = {},
+    signal?: AbortSignal,
+  ): Promise<boolean> {
     setRowImages(prev => {
       const next = [...prev];
       next[rowIndex] = { ...next[rowIndex], status: 'loading' };
       return next;
     });
-    // Pull the row's on-screen text + section title from the live doc and
-    // pass them down. The image API uses on_screen_text to bake the title
-    // into the still itself, and uses section_title (when set) to add a
-    // safe-top layout constraint so the renderer's section-title stripe
-    // lands on negative space instead of covering focal content.
-    // Looked up here (not at the call site) so callers don't have to
-    // thread the fields through.
-    const onScreenText = doc?.rows[rowIndex]?.on_screen_text?.trim() || undefined;
-    const sectionTitle = doc?.rows[rowIndex]?.section_title?.trim() || undefined;
+    const onScreenText = meta.onScreenText?.trim() || undefined;
+    const sectionTitle = meta.sectionTitle?.trim() || undefined;
+    const overlayTerms = meta.overlayStockTerms?.trim() || undefined;
+    console.info('[prodoc image-gen] start', {
+      rowIndex,
+      hasOst: Boolean(onScreenText),
+      hasSectionTitle: Boolean(sectionTitle),
+      hasOverlayTerms: Boolean(overlayTerms),
+    });
     try {
       const res = await fetch('/api/generate/production-doc/image', {
         method: 'POST',
@@ -2631,8 +2668,10 @@ function ProductionDocPage() {
       // Fire-and-forget the overlay fetch in parallel with the next row's
       // image gen. Only triggers when the LLM planned an overlay for this
       // row. Idempotent — the route's R2 cache short-circuits repeats.
-      const overlayTerms = doc?.rows[rowIndex]?.overlay_stock_terms?.trim();
-      if (overlayTerms) void fetchOverlayForRow(rowIndex, overlayTerms);
+      if (overlayTerms) {
+        console.info('[prodoc image-gen] overlay queued', { rowIndex, overlayTerms });
+        void fetchOverlayForRow(rowIndex, overlayTerms);
+      }
       return true;
     } catch (err) {
       setRowImages(prev => {
@@ -2726,7 +2765,18 @@ function ProductionDocPage() {
       await Promise.all(
         batch.map(async ({ row, idx }) => {
           if (signal?.aborted) return;
-          await generateImageForRow(idx, row.ai_image_prompt, signal);
+          // Read meta from the `rows` argument, not React `doc` state — see
+          // generateImageForRow header for why.
+          await generateImageForRow(
+            idx,
+            row.ai_image_prompt,
+            {
+              onScreenText: row.on_screen_text,
+              sectionTitle: row.section_title,
+              overlayStockTerms: row.overlay_stock_terms,
+            },
+            signal,
+          );
           doneCount++;
           setImageProgress({ done: doneCount, total: aiRows.length });
           appendLog(`Image ${doneCount}/${aiRows.length} — shot ${idx + 1} (${row.visual_type})`);
@@ -4309,7 +4359,11 @@ function ProductionDocPage() {
                             state={imgState}
                             onRetry={() => {
                               if (row.ai_image_prompt?.trim()) {
-                                generateImageForRow(i, row.ai_image_prompt);
+                                generateImageForRow(i, row.ai_image_prompt, {
+                                  onScreenText: row.on_screen_text,
+                                  sectionTitle: row.section_title,
+                                  overlayStockTerms: row.overlay_stock_terms,
+                                });
                               }
                             }}
                           />
@@ -4633,7 +4687,11 @@ function ProductionDocPage() {
                           <p className="text-xs font-semibold mb-0.5" style={{ color: 'var(--text-muted)' }}>Image</p>
                           <ImageCell
                             state={imgState}
-                            onRetry={() => row.ai_image_prompt?.trim() && generateImageForRow(i, row.ai_image_prompt)}
+                            onRetry={() => row.ai_image_prompt?.trim() && generateImageForRow(i, row.ai_image_prompt, {
+                              onScreenText: row.on_screen_text,
+                              sectionTitle: row.section_title,
+                              overlayStockTerms: row.overlay_stock_terms,
+                            })}
                           />
                         </div>
                         <div>
