@@ -1993,7 +1993,7 @@ This pattern is non-negotiable: every \`##Heading\` in the script produces exact
 
 ${allowOverlay ? `**overlay_stock_terms** — OPTIONAL. 2–4 comma-separated keywords for a real-world asset (logo, screenshot, photo) the editor will composite on top of the AI-generated visual in post. ONLY populate this when the Mixing Rules above explicitly call for it. Leave as "" otherwise. When set:
   - visual_type STAYS as Animation (or whatever the doodle scene calls for) — do NOT switch to "Screen Recording" or "B-Roll"
-  - ai_image_prompt still describes a complete stand-alone doodle scene, AND the prompt MUST explicitly instruct the image model to leave the overlay's chosen zone as deliberate negative space (e.g. "leave the upper-right quadrant clean, uncluttered, low-contrast, ready to receive a graphic overlay"). The zone you reserve in the prompt MUST match the overlay_zone you set below.
+  - ai_image_prompt still describes a complete stand-alone doodle scene, AND the scene composition you describe MUST have the overlay's chosen zone read as empty, plain, low-contrast space — described as scene content, not as an instruction to the image model. Good: "the upper-right corner of the frame is an empty patch of pale sky" or "a plain low-detail wall fills the left side of the frame". Bad (these get rendered as visible text in the output image): "leave the top-right clean", "do not place subjects in the upper-right", "reserve the corner for an overlay". The zone you describe as empty MUST match the overlay_zone you set below.
   - notes should describe what the editor overlays (e.g. "Composite: real Apple logo, sourced from web")
 
 **overlay_zone** — REQUIRED whenever overlay_stock_terms is non-empty. One of: "top-left", "top-right", "bottom-left", "bottom-right", "center-top", "center-bottom", "left-center", "right-center". Pick the zone that BEST fits the scene composition you described in ai_image_prompt: the overlay should land in low-saliency space (sky, blank wall, plain background), NOT on top of the focal subject. Set to "" when overlay_stock_terms is empty.
@@ -2042,7 +2042,7 @@ ABSOLUTE RULES:
 - Opening row: ${isChunk ? 'First B-Roll/Animation scene (no Title Card — continuation chunk)' : 'If the script starts with `##Heading`, a Title Card row; otherwise the first B-Roll/Animation scene.'}
 - Statistics/numbers in the script → "Statistics" type with on_screen_text${allowOverlay ? `
 - overlay_stock_terms is OPTIONAL — populate it ONLY when the Mixing Rules apply. Most rows leave it as "".
-- WHEN overlay_stock_terms IS SET: overlay_zone AND overlay_size MUST BOTH be set, AND the ai_image_prompt MUST instruct the image model to leave that zone as deliberate negative space.` : ''}`,
+- WHEN overlay_stock_terms IS SET: overlay_zone AND overlay_size MUST BOTH be set, AND the ai_image_prompt MUST describe that zone of the scene as empty/plain content (not as an instruction — describe the empty space as part of the picture).` : ''}`,
 
     user: `Generate a complete production document for this script.
 

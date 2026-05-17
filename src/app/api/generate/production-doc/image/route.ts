@@ -30,8 +30,14 @@ async function kieErrorMsg(res: Response): Promise<string> {
   return `Kie.ai error ${res.status}: ${text.slice(0, 200)}`;
 }
 
+// 95 × 3s = 285s — sits just under the route's `maxDuration = 300`, leaving
+// ~15s headroom for R2 upload + saliency compute after the poll returns.
+// Earlier ceiling was 30 × 3s = 90s; Flux 2 Pro and GPT Image 2 routinely
+// run longer than 90s, so the function returned a timeout error while
+// Kie kept running the job to completion — burning credits we never
+// collected a result for.
 async function pollForResult(taskId: string, apiKey: string): Promise<string> {
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 95; i++) {
     await new Promise(resolve => setTimeout(resolve, 3000));
 
     const res = await fetch(`${KIE_BASE}/recordInfo?taskId=${encodeURIComponent(taskId)}`, {
@@ -75,7 +81,7 @@ async function pollForResult(taskId: string, apiKey: string): Promise<string> {
     // waiting / queuing / generating — keep polling
   }
 
-  throw new Error('Image generation timed out after 90 s — try again');
+  throw new Error('Image generation timed out after 285 s — try again');
 }
 
 export async function POST(req: NextRequest) {
@@ -96,46 +102,37 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'prompt is required' }, { status: 400 });
     }
 
-    // Safe-top directive — when the row will have a section-title stripe
-    // overlay at render time (sectionTitle non-empty), bias the image's
-    // composition so the top 13% is deliberate negative space. The
-    // stripe then sits on intentional empty space instead of covering
-    // focal content. The exact 13% matches the stripe's default
-    // heightFraction in SectionTitleStripe.
+    // Safe-top scene bias — when the row will have a section-title stripe
+    // overlay at render time, describe the composition so the top of the
+    // frame reads as empty space the stripe can sit on. Phrased as plain
+    // scene description, not imperative meta-instruction: directives like
+    // "LAYOUT CONSTRAINT — Leave the top 13% as negative space, do NOT
+    // place faces…" get rendered verbatim into the image by diffusion
+    // models, which can't distinguish rules-to-follow from text-to-draw.
     const hasSectionStripe = Boolean(sectionTitle?.trim());
     const safeTopDirective = hasSectionStripe
-      ? `LAYOUT CONSTRAINT — Leave the top 13% of the frame as deliberate negative space (sky, gradient, plain background, or low-detail texture). A white title stripe will overlay this area at render time. Do NOT place focal subjects, faces, brand marks, or important details in the top 13%; compose all critical content in the lower 87% of the frame.\n\n`
+      ? `Wide composition with an empty open sky or plain low-detail background across the upper portion of the frame. All characters, faces, objects, and key details sit in the lower portion.\n\n`
       : '';
 
     // OST baking. Sanitise stray newlines and cap at 120 chars so a
     // malformed string can't smuggle other directives into the prompt.
-    // Wording is intentionally IMPERATIVE — "INCLUDE THE WORDS", literal
-    // quotes, position guidance — because the soft "title text to
-    // render" phrasing the previous version used was getting ignored
-    // by image models (they treated it as a description of the scene
-    // rather than a render-this-literal-text instruction). The directive
-    // is also REPEATED at the end of the augmented prompt because most
-    // diffusion + autoregressive image models weight the LAST tokens
-    // heavily for "what must appear in the image".
-    //
-    // When safeTopDirective is also active, the OST directive
-    // EXPLICITLY tells the model to place the text in the lower 87%
-    // — otherwise the two directives contradict each other (one says
-    // "leave top empty", the other says "put text there") and the
-    // model resolves the conflict by skipping the text entirely.
+    // Phrased as a short scene element ("Hand-lettered text 'X' drawn
+    // in bold marker style") rather than an imperative ("INCLUDE THE
+    // WORDS — do NOT abbreviate…"). The imperative version was being
+    // rendered verbatim into the output image alongside the actual
+    // words. The phrase is repeated, terse, at the end of the prompt
+    // because image models weight late tokens heavily for "what must
+    // appear in the image".
     const safeOnScreenText = (onScreenText ?? '').trim().replace(/[\r\n]+/g, ' ').slice(0, 120);
     const escapedOst = safeOnScreenText.replace(/"/g, '\\"');
     const ostPosition = hasSectionStripe
-      ? 'in the lower 87% of the frame (NOT in the reserved top 13%)'
+      ? 'in the lower portion of the frame'
       : 'within the scene';
     const ostLeadingDirective = safeOnScreenText
-      ? `INCLUDE THE WORDS "${escapedOst}" IN THE IMAGE — render these exact letters as large, bold, hand-drawn lettering ${ostPosition}, in the illustration's own style, as if the artist wrote them by hand. The words must be clearly readable. Do NOT abbreviate, paraphrase, or replace with similar-looking gibberish.\n\n`
+      ? `Hand-lettered text "${escapedOst}" drawn large in bold marker style ${ostPosition}, in the illustration's own style.\n\n`
       : '';
-    // Repeat-tail emphasis — same words, terse, after the scene + style
-    // so the model's "what to include" pass at the end of the prompt
-    // sees them too.
     const ostTrailingDirective = safeOnScreenText
-      ? `\n\nText to render in the image: "${escapedOst}" — exact spelling, large hand-drawn lettering.`
+      ? `\n\nText shown: "${escapedOst}".`
       : '';
 
     const augmentedPrompt = `${safeTopDirective}${ostLeadingDirective}${prompt.trim()}${ostTrailingDirective}`;
