@@ -161,8 +161,16 @@ async function callKie(kieModel: string, modelValue: string, prompt: string, api
   const taskId = (createData.data as Record<string, unknown> | undefined)?.taskId as string | undefined;
   if (!taskId) throw new Error('No taskId returned from Kie.ai');
 
-  // Poll for the result — 30 × 3s = 90s ceiling.
-  for (let i = 0; i < 30; i++) {
+  // Poll for the result — 60 × 3s = 180s ceiling per attempt.
+  //
+  // Lower than the production-doc / thumbnails route (which use 285s)
+  // because this caller is a fallback chain inside a 300s cron: a
+  // single attempt that ate the full route budget would leave no room
+  // for the next model in the chain. 180s per attempt is enough
+  // headroom for Flux 2 Pro / GPT Image 2 in the common case while
+  // still allowing one fallback to complete within the cron's
+  // `maxDuration = 300`.
+  for (let i = 0; i < 60; i++) {
     await sleep(3000);
     const pollRes = await fetch(`${KIE_BASE}/recordInfo?taskId=${encodeURIComponent(taskId)}`, {
       headers: { Authorization: `Bearer ${apiKey}` },
@@ -198,7 +206,7 @@ async function callKie(kieModel: string, modelValue: string, prompt: string, api
     }
     // waiting / queuing / generating — keep polling
   }
-  throw new Error('Image generation timed out after 90s');
+  throw new Error('Image generation timed out after 180s');
 }
 
 async function reHostToBlob(kieUrl: string, prefix = 'pipeline-thumbnails'): Promise<string> {

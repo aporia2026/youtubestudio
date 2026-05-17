@@ -33,8 +33,15 @@ function requireKieKey(): string {
 
 /**
  * Poll Kie.ai for task completion. Returns the image URL.
+ *
+ * Default ceiling: 95 × 3s = 285s — sits just under the route's
+ * `maxDuration = 300`, leaving ~15s headroom for the work that runs
+ * after the poll returns. Earlier default was 30 × 3s = 90s; Flux 2
+ * Pro and GPT Image 2 routinely run longer than 90s, so the function
+ * returned a timeout error while Kie kept running the job to
+ * completion — burning credits we never collected a result for.
  */
-async function pollForResult(taskId: string, apiKey: string, maxAttempts = 30): Promise<string> {
+async function pollForResult(taskId: string, apiKey: string, maxAttempts = 95): Promise<string> {
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise(resolve => setTimeout(resolve, 3000)); // 3 second intervals
 
