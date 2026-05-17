@@ -145,6 +145,23 @@ export const ThumbnailZoomScene: React.FC<ThumbnailZoomSceneProps> = ({
   const target = regionFraming(region, cW, cH);
   const from = previousRegion ? regionFraming(previousRegion, cW, cH) : null;
 
+  // One-shot diagnostic dump per scene mount. We only emit on frame 0 so
+  // a 7s scene doesn't spew 210 log lines. The values here are exactly
+  // what the camera math will use — if the output frame looks wrong,
+  // these numbers explain why.
+  if (frame === 0) {
+    console.info('[thumbnail-zoom] mounted', {
+      thumbnail: { w: thumbnail.width, h: thumbnail.height, url: thumbnail.imageUrl?.slice(0, 80) },
+      canvas: { w: cW, h: cH },
+      region: { id: region.id, label: region.label, x: region.x, y: region.y, w: region.w, h: region.h },
+      previousRegionId: previousRegion?.id ?? null,
+      transition: { kind: transition.kind, holdAtFullMs, zoomDurationMs, easing },
+      containFraming: contain,
+      targetFraming: target,
+      targetTransform: framingToPixelTransform(target, cW, cH),
+    });
+  }
+
   // Pick the framing for this frame. Branches by transition kind.
   let framing: Framing;
   if (transition.kind === 'smooth' && from) {
