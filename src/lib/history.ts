@@ -147,9 +147,9 @@ export interface ThumbnailHistoryEntry {
   /** Set when this entry came from a thumbnail format (Topic Card Grid, etc.)
    *  rather than the free-form 5-concept generator. Old entries leave this
    *  field undefined and render via the free-form code path. */
-  format?: 'topic-card-grid';
+  format?: 'topic-card-grid' | 'n-levels';
   /** Format-specific payload, discriminated by `format`. */
-  formatPayload?: TopicCardGridHistoryPayload;
+  formatPayload?: TopicCardGridHistoryPayload | NLevelsHistoryPayload;
 }
 
 /** Stored alongside a `format: 'topic-card-grid'` thumbnail history entry.
@@ -175,6 +175,36 @@ export interface TopicCardGridHistoryPayload {
   };
   imageUrl: string;
   /** Computed region rectangles for the rendered grid (intrinsic-image pixels). */
+  regions: Array<{ id: string; label: string; x: number; y: number; w: number; h: number }>;
+  /** The reference image URL that anchored the run, if the user provided one. */
+  referenceImageUrl?: string;
+  /** The image model used in Step 2 (defaults to gpt-image-2-i2i). */
+  formatImageModel: string;
+  /** Output dimensions used for region math. */
+  outputWidth: number;
+  outputHeight: number;
+}
+
+/** Stored alongside a `format: 'n-levels'` thumbnail history entry. Mirrors
+ *  TopicCardGridHistoryPayload's shape but for the N Levels Explained
+ *  format: a variable count of vertical slices with a bottom title bar. */
+export interface NLevelsHistoryPayload {
+  count: number;
+  /** Which flow mode the user generated under. */
+  mode: 'review' | 'pre-fill' | 'one-shot';
+  /** The levels as actually fed to Step 2 (post-user-edit). */
+  levels: Array<{
+    level: number;
+    label: string;
+    illustration_concept: string;
+    accent_color?: string;
+  }>;
+  /** The refined topic that went into the bottom title bar. */
+  titleTopic: string;
+  /** Defaults to "EXPLAINED" or whatever the user chose; empty string = no tag. */
+  titleTagline: string;
+  imageUrl: string;
+  /** Computed region rectangles per slice (intrinsic-image pixels). */
   regions: Array<{ id: string; label: string; x: number; y: number; w: number; h: number }>;
   /** The reference image URL that anchored the run, if the user provided one. */
   referenceImageUrl?: string;

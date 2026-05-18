@@ -16,6 +16,7 @@ import { getThumbnailHistory, getThumbnailHistoryCached, saveThumbnailEntry, upd
 import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
 import { downloadHref } from '@/lib/download-file';
 import { TopicCardGridPanel, type FormatGenerationResult } from '@/components/thumbnails/TopicCardGridPanel';
+import { NLevelsPanel, type NLevelsGenerationResult } from '@/components/thumbnails/NLevelsPanel';
 
 interface TextOverlaySettings {
   enabled: boolean;
@@ -198,11 +199,13 @@ function ThumbnailsPage() {
   // 'topic-card-grid' = the new format that produces a single composite
   // thumbnail via Step 1 (LLM card list) + Step 2 (GPT Image 2). See
   // _plans/2026-05-19-thumbnail-format-topic-card-grid.md.
-  const [format, setFormat] = useState<'free-form' | 'topic-card-grid'>('free-form');
+  const [format, setFormat] = useState<'free-form' | 'topic-card-grid' | 'n-levels'>('free-form');
   const [formatResult, setFormatResult] = useState<FormatGenerationResult | null>(null);
+  const [nLevelsResult, setNLevelsResult] = useState<NLevelsGenerationResult | null>(null);
   // Tracks which format result has already been persisted to history so a
   // re-render or schedule-saver tick doesn't duplicate-save the same image.
   const [savedFormatImageUrl, setSavedFormatImageUrl] = useState<string | null>(null);
+  const [savedNLevelsImageUrl, setSavedNLevelsImageUrl] = useState<string | null>(null);
 
   // Image generation
   const [imageGenEnabled, setImageGenEnabled] = useState(false);
@@ -554,6 +557,54 @@ function ThumbnailsPage() {
       });
   }, [formatResult, savedFormatImageUrl, title, niche, modelId, script, description, scheduleItem, scheduleItemId]);
 
+  // Same persistence pattern for N Levels Explained results.
+  useEffect(() => {
+    if (!nLevelsResult) return;
+    if (savedNLevelsImageUrl === nLevelsResult.imageUrl) return;
+    const safeTitle = title.trim() || 'N Levels Explained';
+    const safeNiche = niche || 'Unspecified';
+    void saveThumbnailEntry({
+      title: safeTitle,
+      niche: safeNiche,
+      modelId,
+      conceptsCount: nLevelsResult.levels.length,
+      bestConceptName: `${nLevelsResult.count} Levels: ${nLevelsResult.titleTopic}`,
+      bestScore: 0,
+      script: script.trim() || undefined,
+      description: description.trim() || undefined,
+      imageModel: nLevelsResult.formatImageModel,
+      videoTitle: scheduleItem?.title?.trim() || safeTitle,
+      scheduleItemId: scheduleItemId || undefined,
+      format: 'n-levels',
+      formatPayload: {
+        count: nLevelsResult.count,
+        mode: nLevelsResult.mode,
+        levels: nLevelsResult.levels.map((l) => ({
+          level: l.level,
+          label: l.label,
+          illustration_concept: l.illustration_concept,
+          accent_color: l.accent_color,
+        })),
+        titleTopic: nLevelsResult.titleTopic,
+        titleTagline: nLevelsResult.titleTagline,
+        imageUrl: nLevelsResult.imageUrl,
+        regions: nLevelsResult.regions,
+        referenceImageUrl: nLevelsResult.referenceImageUrl,
+        formatImageModel: nLevelsResult.formatImageModel,
+        outputWidth: nLevelsResult.outputWidth,
+        outputHeight: nLevelsResult.outputHeight,
+      },
+    })
+      .then((saved) => {
+        setSavedNLevelsImageUrl(nLevelsResult.imageUrl);
+        setHistoryEntryId(saved.id);
+        setHistoryItems((prev) => [saved, ...prev.filter((p) => p.id !== saved.id)]);
+      })
+      .catch(() => {
+        /* non-fatal */
+      });
+  }, [nLevelsResult, savedNLevelsImageUrl, title, niche, modelId, script, description, scheduleItem, scheduleItemId]);
+
   function resumeDraft(draft: WorkflowDraft) {
     if (draft.topic) setTitle(draft.topic);
     if (draft.niche) setNiche(draft.niche);
@@ -577,9 +628,26 @@ function ThumbnailsPage() {
   // thumbnail_a_url and forward the regions so production-doc can use them
   // without an "Auto-detect regions" vision pass.
   const generatedImageEntries = Object.entries(generatedImages).sort(([a], [b]) => Number(a) - Number(b));
-  const formatActive = format === 'topic-card-grid';
-  const thumbAUrl = formatActive
+  const gridActive = format === 'topic-card-grid';
+  const nLevelsActive = format === 'n-levels';
+  const formatActive = gridActive || nLevelsActive;
+  const activeFormatImageUrl = gridActive
     ? formatResult?.imageUrl ?? null
+    : nLevelsActive
+      ? nLevelsResult?.imageUrl ?? null
+      : null;
+  const activeFormatRegions = gridActive
+    ? formatResult?.regions ?? null
+    : nLevelsActive
+      ? nLevelsResult?.regions ?? null
+      : null;
+  const activeFormatImageModel = gridActive
+    ? formatResult?.formatImageModel
+    : nLevelsActive
+      ? nLevelsResult?.formatImageModel
+      : undefined;
+  const thumbAUrl = formatActive
+    ? activeFormatImageUrl
     : generatedImageEntries[0]?.[1] ?? null;
   const thumbBUrl = formatActive
     ? null
@@ -603,11 +671,12 @@ function ThumbnailsPage() {
             const patch: Record<string, unknown> = {};
             if (thumbAUrl) patch.thumbnail_a_url = thumbAUrl;
             if (thumbBUrl) patch.thumbnail_b_url = thumbBUrl;
-            // Topic Card Grid carries deterministic region rectangles for
-            // the composite — pass them through so production-doc picks them
-            // up without an "Auto-detect regions" vision call.
-            if (formatActive && formatResult) {
-              patch.thumbnail_regions = formatResult.regions;
+            // Both Topic Card Grid and N Levels carry deterministic region
+            // rectangles for the composite — pass them through so
+            // production-doc picks them up without an "Auto-detect regions"
+            // vision call.
+            if (formatActive && activeFormatRegions) {
+              patch.thumbnail_regions = activeFormatRegions;
             }
             return {
               patch,
@@ -616,9 +685,9 @@ function ThumbnailsPage() {
                   history_entry_id: historyEntryId,
                   count: formatActive ? 1 : generatedImageEntries.length,
                   saved_at: new Date().toISOString(),
-                  model_id: formatActive ? formatResult?.formatImageModel : imageModel,
-                  format: formatActive ? 'topic-card-grid' : 'free-form',
-                  regions_count: formatActive ? formatResult?.regions.length ?? 0 : 0,
+                  model_id: formatActive ? activeFormatImageModel : imageModel,
+                  format: gridActive ? 'topic-card-grid' : nLevelsActive ? 'n-levels' : 'free-form',
+                  regions_count: formatActive ? activeFormatRegions?.length ?? 0 : 0,
                 },
               },
             };
@@ -633,9 +702,10 @@ function ThumbnailsPage() {
           key: 'latest_thumbnails',
           value: () => thumbsReady ? {
             history_entry_id: historyEntryId,
-            count: generatedImageEntries.length,
+            count: formatActive ? 1 : generatedImageEntries.length,
             generated_at: new Date().toISOString(),
-            model_id: imageModel,
+            model_id: formatActive ? activeFormatImageModel : imageModel,
+            format: gridActive ? 'topic-card-grid' : nLevelsActive ? 'n-levels' : 'free-form',
           } : null,
           runKey: thumbRunKey,
         }}
@@ -669,12 +739,12 @@ function ThumbnailsPage() {
                 className="input-field w-full"
                 value={format}
                 onChange={(e) => {
-                  const next = e.target.value as 'free-form' | 'topic-card-grid';
+                  const next = e.target.value as 'free-form' | 'topic-card-grid' | 'n-levels';
                   setFormat(next);
-                  // Topic Card Grid requires a reference image; auto-enable
-                  // the image-generation section so the reference upload UI
-                  // is visible to the user without an extra click.
-                  if (next === 'topic-card-grid') {
+                  // Both formats require a reference image; auto-enable the
+                  // image-generation section so the upload UI is visible
+                  // without an extra click.
+                  if (next === 'topic-card-grid' || next === 'n-levels') {
                     setImageGenEnabled(true);
                     setShowImageSection(true);
                   }
@@ -682,10 +752,16 @@ function ThumbnailsPage() {
               >
                 <option value="free-form">Free-form (5 concepts)</option>
                 <option value="topic-card-grid">Topic Card Grid</option>
+                <option value="n-levels">N Levels Explained</option>
               </select>
               {format === 'topic-card-grid' && (
                 <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
                   Produces a single composite thumbnail as an N×M grid of titled cards. Requires a reference image — upload one in the Image Generation section below.
+                </p>
+              )}
+              {format === 'n-levels' && (
+                <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                  Produces an &quot;N LEVELS OF [TOPIC]&quot; thumbnail with vertical slices and a grunge title bar. Requires a reference image.
                 </p>
               )}
             </div>
@@ -926,7 +1002,7 @@ function ThumbnailsPage() {
                 ) : 'Generate Concepts'}
               </button>
             )}
-            {format === 'topic-card-grid' && (
+            {(format === 'topic-card-grid' || format === 'n-levels') && (
               <p className="text-[10px] text-center" style={{ color: 'var(--text-muted)' }}>
                 Format-specific controls and the <strong>Generate thumbnail</strong> button are in the right panel.
               </p>
@@ -946,6 +1022,18 @@ function ThumbnailsPage() {
               referenceImageUrl={referenceImageUrl}
               onResultChange={setFormatResult}
               restoredResult={formatResult}
+            />
+          )}
+          {format === 'n-levels' && (
+            <NLevelsPanel
+              title={title}
+              niche={niche}
+              script={script}
+              description={description}
+              modelId={modelId}
+              referenceImageUrl={referenceImageUrl}
+              onResultChange={setNLevelsResult}
+              restoredResult={nLevelsResult}
             />
           )}
           {format === 'free-form' && (
@@ -1214,7 +1302,7 @@ function ThumbnailsPage() {
           if (entry.imageModel) setImageModel(entry.imageModel);
           // Format entries hydrate the new panel; free-form entries hydrate
           // the original 5-concept layout. The two paths don't share state.
-          if (entry.format === 'topic-card-grid' && entry.formatPayload) {
+          if (entry.format === 'topic-card-grid' && entry.formatPayload && 'gridRows' in entry.formatPayload) {
             const fp = entry.formatPayload;
             setFormat('topic-card-grid');
             setImageGenEnabled(true);
@@ -1235,18 +1323,50 @@ function ThumbnailsPage() {
               outputWidth: fp.outputWidth,
               outputHeight: fp.outputHeight,
             });
+            setNLevelsResult(null);
             setSavedFormatImageUrl(fp.imageUrl);
+            setSavedNLevelsImageUrl(null);
             setHistoryEntryId(entry.id);
-            // Clear the free-form result so the right panel switches cleanly.
             setResult(null);
             setGeneratedImages({});
             toast.success(`Restored Topic Card Grid — ${fp.gridRows}×${fp.gridCols} (${fp.cards.length} cards).`);
             return;
           }
+          if (entry.format === 'n-levels' && entry.formatPayload && 'count' in entry.formatPayload) {
+            const fp = entry.formatPayload;
+            setFormat('n-levels');
+            setImageGenEnabled(true);
+            setShowImageSection(true);
+            setReferenceImageUrl(fp.referenceImageUrl || '');
+            setRefPreviewUrl(fp.referenceImageUrl || '');
+            setNLevelsResult({
+              imageUrl: fp.imageUrl,
+              regions: fp.regions,
+              levels: fp.levels,
+              count: fp.count,
+              titleTopic: fp.titleTopic,
+              titleTagline: fp.titleTagline,
+              mode: fp.mode,
+              formatImageModel: fp.formatImageModel,
+              referenceImageUrl: fp.referenceImageUrl,
+              outputWidth: fp.outputWidth,
+              outputHeight: fp.outputHeight,
+            });
+            setFormatResult(null);
+            setSavedNLevelsImageUrl(fp.imageUrl);
+            setSavedFormatImageUrl(null);
+            setHistoryEntryId(entry.id);
+            setResult(null);
+            setGeneratedImages({});
+            toast.success(`Restored N Levels — ${fp.count} levels of ${fp.titleTopic}.`);
+            return;
+          }
           // Free-form path (existing behaviour).
           setFormat('free-form');
           setFormatResult(null);
+          setNLevelsResult(null);
           setSavedFormatImageUrl(null);
+          setSavedNLevelsImageUrl(null);
           setGeneratedImages(entry.generatedImages || {});
           if (entry.result) {
             setResult(entry.result as GenerateResult);

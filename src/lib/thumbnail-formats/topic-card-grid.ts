@@ -275,7 +275,20 @@ Each card stands on its own:
 - Background, colors, and visual treatment should fit the subject naturally. A logo on white. A virus screen on dark. A product photo on its natural backdrop. DO NOT force a uniform colour palette across all cards. Visual variety across the grid is a feature, not a bug — different cards naturally have different palettes.
 - One focal subject per card. No collages of three unrelated things on a single card.
 - Mobile-readable: the subject must be recognisable when the card is small. If you can't tell what it is at thumbnail size, simplify the framing (closer crop on the logo, the most iconic frame of the screen, etc.) but DON'T strip out the recognisability.
-- Embedded text inside the illustration is fine IF it's authentic to the subject (the actual WannaCry header, the actual file extension shown in the ILOVEYOU email). Do NOT invent captions, labels, or pull-quotes that aren't part of the subject's real identity.
+
+VISUAL DOMINANCE — TEXT MUST BE MINIMAL:
+- The illustration is primarily VISUAL. Text inside it is the EXCEPTION, not the norm.
+- Hard rule: at most ONE short text element per card illustration, and only when it is intrinsic to the subject's recognisable identity. Examples of allowed in-card text:
+  • The subject's BRAND WORDMARK as part of its logo (e.g. "YAHOO!", "Sony Pictures", the Microsoft logotype). These are not "captions" — they ARE the logo.
+  • A single iconic header from a recognised screen (e.g. WannaCry's "Ooops, your files have been encrypted!" — and nothing else from that screen).
+  • An iconic date/timestamp when the date itself is the recognisable moment AND it is the only thing on the card (no map, no stats, no extra lines underneath).
+- DO NOT add stat captions ("75,000+ servers infected", "3,000,000,000 accounts compromised", "thousands of organisations affected"). Even if the stat is true.
+- DO NOT add explanatory subtitles, descriptive sub-lines, or factoid bullet points beneath the main visual.
+- DO NOT add badges that say things like "ZERO-DAY EXPLOITED", "OPERATIONS HALTED", "DATA STOLEN", "SYSTEM WIPED". The subject's authentic visual identity carries the meaning — the label band below the card carries the rest.
+- DO NOT compose multi-element diagrams with labels for each box (e.g. "SERVER" → "COMPROMISED UPDATE" → "CUSTOMERS"). Pick ONE iconic visual instead.
+- DO NOT pad the illustration with ASCII art, code lines, or screen text just to fill space.
+
+When in doubt: pick a TIGHTER FRAMING with NO supplementary text. The label below the card is where words go.
 
 The label below each card is short (1–4 words). It identifies the card; it isn't repeated inside the illustration.
 
@@ -369,7 +382,19 @@ PER-CARD ILLUSTRATION RULES:
 - One focal subject per card. No collages of multiple unrelated things on a single card.
 - Background and colors PER CARD should fit the subject naturally. A logo on white. A virus screen on dark. A product on its natural backdrop. Do NOT force a uniform colour scheme across all cards — visual variety across the grid is expected and good.
 - Recognisable at 168×94 px (YouTube mobile thumbnail size). Crop and frame each card so the subject is obvious at small size; if a subject is detail-dense, frame the most iconic moment of it.
-- Embedded text inside an illustration is FINE when it is authentic to the subject (the real text on the WannaCry ransom note, the real filename on the ILOVEYOU email, the real brand wordmark of a logo). Do NOT invent fake captions, made-up labels, pretend pull-quotes, or any text that isn't part of the subject's actual visual identity.
+
+VISUAL DOMINANCE — TEXT INSIDE ILLUSTRATIONS MUST BE MINIMAL:
+- The illustration is primarily VISUAL. Text inside it is the EXCEPTION, not the norm.
+- Hard cap: at most ONE short text element per card illustration, and only when it's intrinsic to the subject's recognisable identity. Permitted in-card text:
+  • A brand wordmark that IS the subject's logo (e.g. "YAHOO!", the Microsoft logotype, "Sony Pictures").
+  • A single iconic header from a recognised screen (e.g. WannaCry's "Ooops, your files have been encrypted!" — alone, not with the rest of the dialog).
+  • An iconic date/timestamp ONLY when the date itself is the recognisable moment AND nothing else is on the card.
+- DO NOT add stat captions like "75,000+ servers infected", "3,000,000,000 accounts compromised", "thousands of organisations affected".
+- DO NOT add explanatory subtitles, descriptive sub-lines, factoid bullet points, or news-headline-style summaries beneath the main visual.
+- DO NOT add badges that say "ZERO-DAY EXPLOITED", "OPERATIONS HALTED", "DATA STOLEN", "SYSTEM WIPED", or similar.
+- DO NOT compose multi-element diagrams with labels for each box.
+- DO NOT pad the illustration with ASCII art, fake code, or screen text just to fill space.
+When in doubt: TIGHTER FRAMING with NO supplementary text. The label band BELOW the card carries the words.
 
 LABEL STRIP RULES (strict):
 - Pure white background.
