@@ -124,10 +124,21 @@ export interface AnalyzedVideo {
 // ─── Structural guard ─────────────────────────────────────────────────
 
 /**
- * Returns true when `x` has the top-level shape `AnalyzedVideo`. This is
- * a SHAPE check, not a deep validator — individual string fields may be
- * empty and individual numbers may be off. The downstream UI must
- * defensively render with sensible fallbacks for empty fields.
+ * Result shape returned by `validateAnalyzedVideo`. On failure, `reason`
+ * names the FIRST field that did not match — the route surfaces this
+ * back to the operator so a Gemini schema mismatch is debuggable instead
+ * of being a black box.
+ */
+export type AnalyzedVideoValidation =
+  | { ok: true; value: AnalyzedVideo }
+  | { ok: false; reason: string };
+
+/**
+ * Validates `x` against the top-level shape of `AnalyzedVideo` and, on
+ * failure, returns the exact field path that broke. This is a SHAPE
+ * check, not a deep validator — individual string fields may be empty
+ * and individual numbers may be off. The downstream UI must defensively
+ * render with sensible fallbacks for empty fields.
  *
  * What is enforced:
  *   - All five top-level keys present.
@@ -149,58 +160,106 @@ export interface AnalyzedVideo {
  *   - Numeric ranges (durations >= 0, confidences in [0, 1]).
  *   - `voice_style.pace` / `energy` being in their literal unions.
  */
-export function isAnalyzedVideo(x: unknown): x is AnalyzedVideo {
-  if (!isRecord(x)) return false;
-  if (!isRecord(x.meta)) return false;
+export function validateAnalyzedVideo(x: unknown): AnalyzedVideoValidation {
+  if (!isRecord(x)) return fail('root: expected object');
+  if (!isRecord(x.meta)) return fail('meta: expected object');
   const m = x.meta;
-  if (typeof m.video_id !== 'string' || typeof m.title !== 'string' || typeof m.channel !== 'string') return false;
-  if (typeof m.duration_seconds !== 'number') return false;
-  if (typeof m.analyzer_version !== 'string' || typeof m.prompt_version !== 'string') return false;
-  if (typeof m.analyzed_at !== 'string') return false;
+  if (typeof m.video_id !== 'string') return fail('meta.video_id: expected string');
+  if (typeof m.title !== 'string') return fail('meta.title: expected string');
+  if (typeof m.channel !== 'string') return fail('meta.channel: expected string');
+  if (typeof m.duration_seconds !== 'number') return fail('meta.duration_seconds: expected number');
+  if (typeof m.analyzer_version !== 'string') return fail('meta.analyzer_version: expected string');
+  if (typeof m.prompt_version !== 'string') return fail('meta.prompt_version: expected string');
+  if (typeof m.analyzed_at !== 'string') return fail('meta.analyzed_at: expected ISO-8601 string');
 
-  if (!isRecord(x.transcript)) return false;
-  if (typeof x.transcript.text !== 'string') return false;
-  if (!Array.isArray(x.transcript.chapters)) return false;
+  if (!isRecord(x.transcript)) return fail('transcript: expected object');
+  if (typeof x.transcript.text !== 'string') return fail('transcript.text: expected string');
+  if (!Array.isArray(x.transcript.chapters)) return fail('transcript.chapters: expected array');
 
-  if (!Array.isArray(x.scenes)) return false;
-  for (const s of x.scenes) {
-    if (!isRecord(s)) return false;
-    if (typeof s.start !== 'number' || typeof s.end !== 'number') return false;
-    if (typeof s.style_pack_id !== 'string') return false;
-    if (typeof s.summary !== 'string' || typeof s.visual_description !== 'string' || typeof s.audio_description !== 'string') return false;
-    if (typeof s.confidence !== 'number') return false;
+  if (!Array.isArray(x.scenes)) return fail('scenes: expected array');
+  for (let i = 0; i < x.scenes.length; i++) {
+    const s = x.scenes[i];
+    if (!isRecord(s)) return fail(`scenes[${i}]: expected object`);
+    if (typeof s.start !== 'number') return fail(`scenes[${i}].start: expected number`);
+    if (typeof s.end !== 'number') return fail(`scenes[${i}].end: expected number`);
+    if (typeof s.style_pack_id !== 'string') return fail(`scenes[${i}].style_pack_id: expected string`);
+    if (typeof s.summary !== 'string') return fail(`scenes[${i}].summary: expected string`);
+    if (typeof s.visual_description !== 'string') return fail(`scenes[${i}].visual_description: expected string`);
+    if (typeof s.audio_description !== 'string') return fail(`scenes[${i}].audio_description: expected string`);
+    if (typeof s.confidence !== 'number') return fail(`scenes[${i}].confidence: expected number`);
   }
 
-  if (!Array.isArray(x.style_packs) || x.style_packs.length === 0) return false;
-  for (const p of x.style_packs) {
-    if (!isRecord(p)) return false;
-    if (typeof p.id !== 'string' || typeof p.label !== 'string') return false;
-    if (typeof p.occupies_seconds !== 'number' || typeof p.scene_count !== 'number') return false;
-    if (typeof p.overall_look !== 'string' || typeof p.lighting !== 'string') return false;
-    if (typeof p.camera_grammar !== 'string' || typeof p.typography_and_overlays !== 'string') return false;
-    if (!Array.isArray(p.color_palette) || !p.color_palette.every((c: unknown) => typeof c === 'string')) return false;
-    if (!isRecord(p.pacing)) return false;
-    if (typeof p.pacing.avg_scene_seconds !== 'number' || typeof p.pacing.cut_style !== 'string') return false;
-    if (p.voice_style !== null) {
-      if (!isRecord(p.voice_style)) return false;
-      if (typeof p.voice_style.pace !== 'string' || typeof p.voice_style.energy !== 'string' || typeof p.voice_style.register !== 'string') return false;
-      if (!Array.isArray(p.voice_style.sample_lines) || !p.voice_style.sample_lines.every((s: unknown) => typeof s === 'string')) return false;
+  if (!Array.isArray(x.style_packs)) return fail('style_packs: expected array');
+  if (x.style_packs.length === 0) return fail('style_packs: must be non-empty (at least one mode required)');
+  for (let i = 0; i < x.style_packs.length; i++) {
+    const p = x.style_packs[i];
+    if (!isRecord(p)) return fail(`style_packs[${i}]: expected object`);
+    if (typeof p.id !== 'string') return fail(`style_packs[${i}].id: expected string`);
+    if (typeof p.label !== 'string') return fail(`style_packs[${i}].label: expected string`);
+    if (typeof p.occupies_seconds !== 'number') return fail(`style_packs[${i}].occupies_seconds: expected number`);
+    if (typeof p.scene_count !== 'number') return fail(`style_packs[${i}].scene_count: expected number`);
+    if (typeof p.overall_look !== 'string') return fail(`style_packs[${i}].overall_look: expected string`);
+    if (typeof p.lighting !== 'string') return fail(`style_packs[${i}].lighting: expected string`);
+    if (typeof p.camera_grammar !== 'string') return fail(`style_packs[${i}].camera_grammar: expected string`);
+    if (typeof p.typography_and_overlays !== 'string') return fail(`style_packs[${i}].typography_and_overlays: expected string`);
+    if (!Array.isArray(p.color_palette)) return fail(`style_packs[${i}].color_palette: expected array`);
+    for (let j = 0; j < p.color_palette.length; j++) {
+      if (typeof p.color_palette[j] !== 'string') return fail(`style_packs[${i}].color_palette[${j}]: expected string`);
     }
-    if (typeof p.music_and_sfx !== 'string') return false;
-    if (typeof p.suggested_ai_image_suffix !== 'string' || typeof p.suggested_mixing_rules !== 'string') return false;
-    if (!isRecord(p.confidence_per_field)) return false;
+    if (!isRecord(p.pacing)) return fail(`style_packs[${i}].pacing: expected object`);
+    if (typeof p.pacing.avg_scene_seconds !== 'number') return fail(`style_packs[${i}].pacing.avg_scene_seconds: expected number`);
+    if (typeof p.pacing.cut_style !== 'string') return fail(`style_packs[${i}].pacing.cut_style: expected string`);
+    if (p.voice_style !== null) {
+      if (!isRecord(p.voice_style)) return fail(`style_packs[${i}].voice_style: expected null or object`);
+      if (typeof p.voice_style.pace !== 'string') return fail(`style_packs[${i}].voice_style.pace: expected string`);
+      if (typeof p.voice_style.energy !== 'string') return fail(`style_packs[${i}].voice_style.energy: expected string`);
+      if (typeof p.voice_style.register !== 'string') return fail(`style_packs[${i}].voice_style.register: expected string`);
+      if (!Array.isArray(p.voice_style.sample_lines)) return fail(`style_packs[${i}].voice_style.sample_lines: expected array`);
+      for (let j = 0; j < p.voice_style.sample_lines.length; j++) {
+        if (typeof p.voice_style.sample_lines[j] !== 'string') return fail(`style_packs[${i}].voice_style.sample_lines[${j}]: expected string`);
+      }
+    }
+    if (typeof p.music_and_sfx !== 'string') return fail(`style_packs[${i}].music_and_sfx: expected string`);
+    if (typeof p.suggested_ai_image_suffix !== 'string') return fail(`style_packs[${i}].suggested_ai_image_suffix: expected string`);
+    if (typeof p.suggested_mixing_rules !== 'string') return fail(`style_packs[${i}].suggested_mixing_rules: expected string`);
+    if (!isRecord(p.confidence_per_field)) return fail(`style_packs[${i}].confidence_per_field: expected object`);
   }
 
-  if (!isRecord(x.strategic_report)) return false;
+  if (!isRecord(x.strategic_report)) return fail('strategic_report: expected object');
   const r = x.strategic_report;
-  if (!isRecord(r.hook)) return false;
-  if (typeof r.hook.duration_seconds !== 'number' || typeof r.hook.what_works !== 'string' || typeof r.hook.how_to_replicate !== 'string') return false;
-  if (typeof r.structure !== 'string' || typeof r.pacing_analysis !== 'string') return false;
-  if (!Array.isArray(r.standout_techniques) || !r.standout_techniques.every((s: unknown) => typeof s === 'string')) return false;
-  if (!Array.isArray(r.weaknesses) || !r.weaknesses.every((s: unknown) => typeof s === 'string')) return false;
-  if (!Array.isArray(r.replication_ideas) || !r.replication_ideas.every((s: unknown) => typeof s === 'string')) return false;
+  if (!isRecord(r.hook)) return fail('strategic_report.hook: expected object');
+  if (typeof r.hook.duration_seconds !== 'number') return fail('strategic_report.hook.duration_seconds: expected number');
+  if (typeof r.hook.what_works !== 'string') return fail('strategic_report.hook.what_works: expected string');
+  if (typeof r.hook.how_to_replicate !== 'string') return fail('strategic_report.hook.how_to_replicate: expected string');
+  if (typeof r.structure !== 'string') return fail('strategic_report.structure: expected string');
+  if (typeof r.pacing_analysis !== 'string') return fail('strategic_report.pacing_analysis: expected string');
+  if (!Array.isArray(r.standout_techniques)) return fail('strategic_report.standout_techniques: expected array');
+  for (let i = 0; i < r.standout_techniques.length; i++) {
+    if (typeof r.standout_techniques[i] !== 'string') return fail(`strategic_report.standout_techniques[${i}]: expected string`);
+  }
+  if (!Array.isArray(r.weaknesses)) return fail('strategic_report.weaknesses: expected array');
+  for (let i = 0; i < r.weaknesses.length; i++) {
+    if (typeof r.weaknesses[i] !== 'string') return fail(`strategic_report.weaknesses[${i}]: expected string`);
+  }
+  if (!Array.isArray(r.replication_ideas)) return fail('strategic_report.replication_ideas: expected array');
+  for (let i = 0; i < r.replication_ideas.length; i++) {
+    if (typeof r.replication_ideas[i] !== 'string') return fail(`strategic_report.replication_ideas[${i}]: expected string`);
+  }
 
-  return true;
+  return { ok: true, value: x as unknown as AnalyzedVideo };
+}
+
+/**
+ * Boolean wrapper around `validateAnalyzedVideo`. Kept so existing
+ * callers that only need a type-guard don't have to unpack the result.
+ * Prefer `validateAnalyzedVideo` whenever the failure reason matters.
+ */
+export function isAnalyzedVideo(x: unknown): x is AnalyzedVideo {
+  return validateAnalyzedVideo(x).ok;
+}
+
+function fail(reason: string): { ok: false; reason: string } {
+  return { ok: false, reason };
 }
 
 function isRecord(x: unknown): x is Record<string, unknown> {

@@ -51,12 +51,18 @@ const STAGE_COLOR: Record<RecentAnalysisItem['stage'], { bg: string; border: str
   failed: { bg: 'rgba(239, 68, 68, 0.10)', border: 'rgba(239, 68, 68, 0.35)', fg: '#fca5a5', label: 'Failed' },
 };
 
+interface AnalyzerError {
+  message: string;
+  schemaReason?: string;
+  rawHead?: string;
+}
+
 export function AnalyzeEntryClient({ initialRecent }: Props): React.ReactElement {
   const router = useRouter();
   const params = useSearchParams();
   const [url, setUrl] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<AnalyzerError | null>(null);
   const [recent, setRecent] = useState<RecentAnalysisItem[]>(initialRecent);
   const autostartedRef = useRef(false);
 
@@ -105,11 +111,11 @@ export function AnalyzeEntryClient({ initialRecent }: Props): React.ReactElement
       const youtubeUrl = (overrideUrl ?? url).trim();
       setError(null);
       if (!youtubeUrl) {
-        setError('Paste a YouTube URL first.');
+        setError({ message: 'Paste a YouTube URL first.' });
         return;
       }
       if (!extractYoutubeVideoId(youtubeUrl)) {
-        setError("That URL doesn't look like a YouTube video link.");
+        setError({ message: "That URL doesn't look like a YouTube video link." });
         return;
       }
       setSubmitting(true);
@@ -124,20 +130,26 @@ export function AnalyzeEntryClient({ initialRecent }: Props): React.ReactElement
           error?: string;
           cached?: boolean;
           status?: string;
+          schemaReason?: string;
+          rawHead?: string;
         };
         if (!res.ok) {
-          setError(data.error || `Request failed (${res.status})`);
+          setError({
+            message: data.error || `Request failed (${res.status})`,
+            schemaReason: data.schemaReason,
+            rawHead: data.rawHead,
+          });
           return;
         }
         if (!data.analysisId) {
-          setError('Server did not return an analysis id.');
+          setError({ message: 'Server did not return an analysis id.' });
           return;
         }
         // Route into the result page regardless of cached vs fresh —
         // the result page renders both the same way.
         router.push(`/analyze/${data.analysisId}`);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Unexpected error');
+        setError({ message: err instanceof Error ? err.message : 'Unexpected error' });
       } finally {
         setSubmitting(false);
       }
@@ -221,15 +233,56 @@ export function AnalyzeEntryClient({ initialRecent }: Props): React.ReactElement
             role="alert"
             style={{
               marginTop: 12,
-              padding: '8px 12px',
+              padding: '10px 14px',
               borderRadius: 6,
               background: 'rgba(239, 68, 68, 0.10)',
               border: '1px solid rgba(239, 68, 68, 0.30)',
               color: '#fca5a5',
               fontSize: 13,
+              lineHeight: 1.5,
             }}
           >
-            {error}
+            <div>{error.message}</div>
+            {error.schemaReason && (
+              <div style={{ marginTop: 8, fontSize: 12 }}>
+                <span style={{ color: 'var(--text-secondary)' }}>Schema check failed at: </span>
+                <code
+                  style={{
+                    background: 'rgba(0,0,0,0.30)',
+                    padding: '1px 6px',
+                    borderRadius: 4,
+                    color: '#fecaca',
+                  }}
+                >
+                  {error.schemaReason}
+                </code>
+              </div>
+            )}
+            {error.rawHead && (
+              <details style={{ marginTop: 8, fontSize: 12 }}>
+                <summary style={{ cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                  Show what Gemini returned (first 2 KB)
+                </summary>
+                <pre
+                  style={{
+                    marginTop: 8,
+                    padding: 10,
+                    background: 'rgba(0,0,0,0.30)',
+                    border: '1px solid var(--border-bright)',
+                    borderRadius: 6,
+                    color: 'var(--text-primary)',
+                    fontSize: 11,
+                    lineHeight: 1.4,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    maxHeight: 320,
+                    overflow: 'auto',
+                  }}
+                >
+                  {error.rawHead}
+                </pre>
+              </details>
+            )}
           </div>
         )}
         <p style={{ marginTop: 12, fontSize: 12, color: 'var(--text-tertiary)' }}>

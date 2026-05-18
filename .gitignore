@@ -43,3 +43,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .env*.local
+
+# eval-driver output (per-run analyzer dumps; reproducible via npm run eval:deep-analyzer)
+/_plans/eval-runs/

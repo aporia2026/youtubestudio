@@ -5,7 +5,7 @@ import { analyzeYouTubeVideo, modelSupportsVideo, getModelById } from '@/lib/ai'
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { logger } from '@/lib/logger';
 import { buildAnalyzerPrompt } from '@/lib/analyzer/prompt';
-import { isAnalyzedVideo, type AnalyzedVideo } from '@/lib/analyzer/types';
+import { validateAnalyzedVideo, type AnalyzedVideo } from '@/lib/analyzer/types';
 import { extractYoutubeVideoId, canonicalYoutubeUrl } from '@/lib/analyzer/url';
 import {
   findCachedAnalysis,
@@ -233,14 +233,28 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     return NextResponse.json({ error: reason, analysisId, rawHead: raw.slice(0, 500) }, { status: 502 });
   }
 
-  if (!isAnalyzedVideo(parsed)) {
-    const reason = 'Gemini output did not match the expected schema. Try Re-analyze.';
+  const validation = validateAnalyzedVideo(parsed);
+  if (!validation.ok) {
+    const reason = `Gemini output did not match the expected schema (${validation.reason}). Try Re-analyze.`;
     await failAnalysis({ workspaceId: session.ws, analysisId, reason, costUsd: 0 });
-    logger.warn('youtube-deep-analyze: schema mismatch', { analysisId, video_id: videoId });
-    return NextResponse.json({ error: reason, analysisId }, { status: 502 });
+    logger.warn('youtube-deep-analyze: schema mismatch', {
+      analysisId,
+      video_id: videoId,
+      schema_reason: validation.reason,
+      raw_head: raw.slice(0, 600),
+    });
+    return NextResponse.json(
+      {
+        error: reason,
+        analysisId,
+        schemaReason: validation.reason,
+        rawHead: raw.slice(0, 2000),
+      },
+      { status: 502 },
+    );
   }
 
-  const result: AnalyzedVideo = parsed;
+  const result: AnalyzedVideo = validation.value;
 
   // Cost accounting deferred — `analyzeYouTubeVideo` returns a plain
   // string, so we don't have token-usage at hand. The daily cap is
