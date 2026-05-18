@@ -382,9 +382,14 @@ function buildSeedance2FastT2VBody(args: BuildBrollBodyArgs): Record<string, unk
 // Older Seedance generation. Different input shape than Seedance 2 — uses
 // `input_urls` (array, max 2) for the still and a STRING duration that must
 // be one of '4', '8', '12'. The aspect_ratio field is required on this one.
+// Resolution is split into 480p / 720p registry entries; per the kie.ai
+// pricing matrix, 480p costs half as much as 720p ($0.035 vs $0.07 at 4s
+// no-audio). `generate_audio: false` is locked on — the audio-enabled tier
+// is exactly 2× the no-audio price and we never use generated audio.
 function buildSeedance15ProBody(
   args: BuildBrollBodyArgs,
   hasImage: boolean,
+  resolution: '480p' | '720p',
 ): Record<string, unknown> {
   // Snap to nearest supported tier — Seedance 1.5 Pro only accepts 4 / 8 / 12.
   const supported: ReadonlyArray<4 | 8 | 12> = [4, 8, 12];
@@ -399,7 +404,7 @@ function buildSeedance15ProBody(
       prompt: args.prompt,
       ...(hasImage && args.stillImageUrl ? { input_urls: [args.stillImageUrl] } : {}),
       aspect_ratio: args.aspectRatio,
-      resolution: '720p',
+      resolution,
       duration: String(tier) as '4' | '8' | '12',
       fixed_lens: false,
       generate_audio: false,
@@ -408,12 +413,20 @@ function buildSeedance15ProBody(
   };
 }
 
-function buildSeedance15ProI2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
-  return buildSeedance15ProBody(args, true);
+function buildSeedance15Pro720pI2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildSeedance15ProBody(args, true, '720p');
 }
 
-function buildSeedance15ProT2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
-  return buildSeedance15ProBody(args, false);
+function buildSeedance15Pro720pT2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildSeedance15ProBody(args, false, '720p');
+}
+
+function buildSeedance15Pro480pI2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildSeedance15ProBody(args, true, '480p');
+}
+
+function buildSeedance15Pro480pT2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildSeedance15ProBody(args, false, '480p');
 }
 
 // ─── Registry ───────────────────────────────────────────────────────────────
@@ -597,17 +610,34 @@ export const BROLL_MODELS: readonly BrollModelDescriptor[] = [
   },
   {
     id: 'seedance-1-5-pro-i2v',
-    label: 'Seedance 1.5 Pro i2v (8s, 720p)',
+    label: 'Seedance 1.5 Pro i2v (4s, 720p)',
     kind: 'image-to-video',
     family: 'seedance',
     provider: 'kie',
-    priceUsdLabel: '$0.14',
-    priceUsd: 0.14,
-    durationSeconds: 8,
+    // 720p / 4s / no audio per kie.ai pricing matrix (2026-05-18). With the
+    // 4–6s scene cap the snap-to-tier in buildSeedance15ProBody lands on 4s.
+    priceUsdLabel: '$0.07',
+    priceUsd: 0.07,
+    durationSeconds: 4,
     supportedAspects: ['16:9', '9:16', '1:1'],
     endpoint: 'createTask',
-    blurb: 'Older but cheap — flat $0.14 per 8s 720p clip, no audio.',
-    buildBody: buildSeedance15ProI2VBody,
+    blurb: 'Older but cheap — $0.07 per 4s 720p clip, no audio.',
+    buildBody: buildSeedance15Pro720pI2VBody,
+  },
+  {
+    id: 'seedance-1-5-pro-480p-i2v',
+    label: 'Seedance 1.5 Pro i2v (4s, 480p)',
+    kind: 'image-to-video',
+    family: 'seedance',
+    provider: 'kie',
+    // Cheapest i2v in the entire registry — 480p halves the 720p price.
+    priceUsdLabel: '$0.035',
+    priceUsd: 0.035,
+    durationSeconds: 4,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: 'Cheapest i2v — $0.035 per 4s 480p clip, no audio.',
+    buildBody: buildSeedance15Pro480pI2VBody,
   },
   // ─── Text-to-video ──────────────────────────────────────────────────────
   {
@@ -767,17 +797,34 @@ export const BROLL_MODELS: readonly BrollModelDescriptor[] = [
   },
   {
     id: 'seedance-1-5-pro-t2v',
-    label: 'Seedance 1.5 Pro t2v (8s, 720p)',
+    label: 'Seedance 1.5 Pro t2v (4s, 720p)',
     kind: 'text-to-video',
     family: 'seedance',
     provider: 'kie',
-    priceUsdLabel: '$0.14',
-    priceUsd: 0.14,
-    durationSeconds: 8,
+    // 720p / 4s / no audio per kie.ai pricing matrix (2026-05-18). With the
+    // 4–6s scene cap the snap-to-tier in buildSeedance15ProBody lands on 4s.
+    priceUsdLabel: '$0.07',
+    priceUsd: 0.07,
+    durationSeconds: 4,
     supportedAspects: ['16:9', '9:16', '1:1'],
     endpoint: 'createTask',
-    blurb: 'Older Seedance — flat $0.14 per 8s 720p clip.',
-    buildBody: buildSeedance15ProT2VBody,
+    blurb: 'Older Seedance — $0.07 per 4s 720p clip, no audio.',
+    buildBody: buildSeedance15Pro720pT2VBody,
+  },
+  {
+    id: 'seedance-1-5-pro-480p-t2v',
+    label: 'Seedance 1.5 Pro t2v (4s, 480p)',
+    kind: 'text-to-video',
+    family: 'seedance',
+    provider: 'kie',
+    // Cheapest t2v in the entire registry — 480p halves the 720p price.
+    priceUsdLabel: '$0.035',
+    priceUsd: 0.035,
+    durationSeconds: 4,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: 'Cheapest t2v — $0.035 per 4s 480p clip, no audio.',
+    buildBody: buildSeedance15Pro480pT2VBody,
   },
 ];
 

@@ -299,6 +299,22 @@ describe('BROLL_MODELS registry', () => {
     });
     expect((at10.input as Record<string, unknown>).duration).toBe('8');
   });
+
+  it('Seedance 1.5 Pro 720p / 480p variants send the right resolution', () => {
+    const args = {
+      prompt: 'p',
+      aspectRatio: '16:9' as const,
+      durationSeconds: 4,
+      stillImageUrl: 'https://example.com/x.jpg',
+    };
+    const at720 = findBrollModel('seedance-1-5-pro-i2v')!.buildBody(args);
+    const at480 = findBrollModel('seedance-1-5-pro-480p-i2v')!.buildBody(args);
+    expect((at720.input as Record<string, unknown>).resolution).toBe('720p');
+    expect((at480.input as Record<string, unknown>).resolution).toBe('480p');
+    // generate_audio stays false on both — the cheap tier per kie.ai pricing.
+    expect((at720.input as Record<string, unknown>).generate_audio).toBe(false);
+    expect((at480.input as Record<string, unknown>).generate_audio).toBe(false);
+  });
 });
 
 describe('prompt length constants', () => {
