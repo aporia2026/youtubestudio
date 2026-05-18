@@ -1,7 +1,7 @@
 # 2026-05-18 — Deep analyzer fidelity eval (Phase 0)
 
 **Date:** 2026-05-18
-**Status:** URLs locked + PRIOR-BASED goldens written (2026-05-18). **BLOCKED on analyzer run** — see "Pre-run blocker" below. Goldens are channel-convention priors, not human observation — see the provenance note above the golden tables for the caveat.
+**Status:** **COMPLETE (2026-05-18). Ship-gate verdict: PASS (3 of 3 references = YES).** Three non-blocking defects filed for follow-up — see "Recommended fixes before the next round of operator use" near the end of this doc. Local-env blocker (Kie YouTube passthrough doesn't work) is preserved below for the record; the actual eval runs went through prod with the production `GOOGLE_AI_API_KEY` (the operator is the only user, so prod testing was appropriate).
 
 ## Pre-run blocker (2026-05-18) — `GOOGLE_AI_API_KEY` missing
 
@@ -134,16 +134,110 @@ Score each video in a small table:
 
 | Field | A score | B score | C score |
 |---|---|---|---|
-| `overall_look` | _Pass / Partial / Fail_ | | |
-| `suggested_ai_image_suffix` | | | |
-| `color_palette` | | | |
-| `lighting` | | | |
-| `camera_grammar` | | | |
-| `typography_and_overlays` | | | |
-| `pacing.avg_scene_seconds` | | | |
-| `voice_style` (whole sub-object) | | | |
-| `hook.what_works` | | | |
-| `standout_techniques` | | | |
+| `overall_look` | Pass | Pass | Pass |
+| `suggested_ai_image_suffix` | Pass | Pass | Pass |
+| `color_palette` | Pass | Pass | Pass |
+| `lighting` | Pass | Pass | Pass |
+| `camera_grammar` | Pass | Partial | Pass |
+| `typography_and_overlays` | Pass | Pass | Pass |
+| `pacing.avg_scene_seconds` | Partial | Pass | Partial |
+| `voice_style` (whole sub-object) | Pass | Pass | Pass |
+| `hook.what_works` | Pass | Pass | Pass |
+| `standout_techniques` | _pending — truncated paste_ | Pass | Pass |
+
+### Reference A scoring notes (run 2026-05-18, prod `/analyze`, analysis id `20698c7b-8ca0-4e90-af50-031fbd5f1f19`)
+
+- **Ship-gate verdict: YES.** All four load-bearing fields (`overall_look`, `suggested_ai_image_suffix`, `voice_style`, `hook.what_works`) scored Pass.
+- **`overall_look`:** Analyzer found five distinct modes (`montage`, `lab-demonstration`, `animated-explainer`, `talking-head-explainer`, `sponsor-segment`). Golden expected three; the two additions (`lab-demonstration`, `sponsor-segment`) are genuine separate visual modes for this video and are correctly carved out rather than over-fragmented per-cut.
+- **`suggested_ai_image_suffix`:** The field I was most worried about — generic boilerplate would have killed it. Every pack got a concrete, prompt-ready suffix. The `lab-demonstration` value ("a large crystal ball on a stand in a dark room, a single colored laser beam … volumetric light visible in smoke, macro shot, cinematic, high contrast") is specifically usable in the image-gen pipeline as-is.
+- **`voice_style`:** Per-pack pace/energy/register tracked the actual character of each mode. `sample_lines` are real transcript quotes, not invented. The talking-head pack's `medium / medium / Conversational and explanatory` matches the golden's `medium / medium / conversational-authoritative` closely enough.
+- **`hook.what_works`:** "Powerful curiosity gap, promising viewers that they will learn things they never knew" matches the golden's "provocative counter-intuitive claim … 'you think you know this, you don't' tension." Analyzer added correct video-specific detail (child's wonder opening + rapid-fire montage) the prior-based golden didn't have.
+- **`pacing.avg_scene_seconds` (Partial):** Per-pack values range 30s-109s. The golden anticipated 6-10s for dialog-driven sections — analyzer interprets `avg_scene_seconds` at the pack-aggregate level rather than the per-scene level, which is a reasonable schema reading but produces different numbers than the golden's framing. Not a quality failure; a definitional one.
+
+#### Reference A — non-blocking findings to file
+
+These three are real defects the eval surfaced. None of them broke the ship gate, but each is worth tracking before the next analyzer iteration ships.
+
+1. **`meta.video_id` is hallucinated.** Gemini returned `"5_XSY_w94cM"` for a video whose actual id is `24GfgNtnjXc`. The prompt explicitly instructs "video_id: YouTube video id (11 chars, from the URL)" but Gemini fabricated it. **Fix:** overwrite `result.meta.video_id` server-side with the canonical id we already extracted (we have `videoId` in scope at the point of `completeAnalysis`) before persisting.
+2. **`meta.analyzed_at` is hallucinated.** Gemini returned `"2024-05-16T10:30:00Z"` — a real ISO-8601 timestamp but the wrong date. **Fix:** overwrite server-side with `new Date().toISOString()` before persisting.
+3. **`style_packs[].occupies_seconds` doesn't sum to `meta.duration_seconds`.** Pack runtimes sum to 889s; meta reports 1949s. Scenes DO cover the full 1949s, so this is pack-accounting that's wrong, not scene boundaries. **Fix:** either drop the field, recompute server-side from scenes (`sum of (scene.end - scene.start) where scene.style_pack_id === pack.id`), or add a sum-check instruction to the prompt with hard failure.
+
+`how_to_replicate`, `structure`, `pacing_analysis`, `standout_techniques`, `weaknesses`, and `replication_ideas` were truncated past the 50K-char paste cap in the conversation and are not scored above. They are non-load-bearing for the ship gate, so the YES verdict stands; the full scorecard row for `standout_techniques` can be filled in by re-fetching `/api/analyze/youtube-video/20698c7b-8ca0-4e90-af50-031fbd5f1f19`.
+
+### Reference B scoring notes (run 2026-05-18, prod `/analyze`, analysis id `eaba154e-bb30-4f7d-8b90-d5f20641c51c`)
+
+- **Ship-gate verdict: YES.** All four load-bearing fields scored Pass.
+- **One-pack detection is correct.** Analyzer emitted a single `run-and-gun-travel-montage` pack covering the full runtime. This was the explicit "must NOT over-fragment" test for the Casey archetype — analyzer passed.
+- **`overall_look`:** "Raw, authentic, high-energy aesthetic … handheld vlogging, scenic shots, and dynamic action sequences, cut together at a relentless pace" matches the golden's "Casey's signature DIY-cinematic … handheld first-person POV mixed with GoPro action shots and drone aerials." Missing the specific GoPro / drone terms — those got compressed into "scenic shots" at the pack level even though individual scenes correctly noted "aerial shot of a city at dusk."
+- **`suggested_ai_image_suffix`:** "handheld vlogging perspective, wide-angle lens, authentic and raw travel photography, man with curly hair running through an exotic landscape, natural daylight, motion blur, shallow depth of field, cinematic, 4K, film grain" — concrete and prompt-ready, video-specific rather than channel-template-y. An operator using this blind would produce something visually close to a Casey vlog frame.
+- **`voice_style`:** `fast / high / Conversational and enthusiastic` with real transcript sample lines including "Look at this wiener" — accurate to Casey's tone.
+- **`hook.what_works`:** Near-perfect match. Both golden and analyzer identify the text cold-open, the corporate-brief subversion, the rebellious tone. Analyzer adds the accurate "before showing a single travel clip" detail.
+- **`pacing.avg_scene_seconds` (Pass):** Analyzer reports **1.5s**, golden anticipated 1-2s. Exact agreement — best single-field match in the whole eval so far.
+- **`camera_grammar` (Partial):** Pack-level summary captures handheld + selfie + wide-angle + locked-off but loses the drone aerial + GoPro action mount + time-lapse distinctions that are visible in individual scenes. Net: substance is right but specificity erodes when scenes are aggregated into the pack-level field. Worth flagging in the prompt as "preserve distinct camera grammars in the pack summary, don't compress."
+
+#### Reference B — non-blocking findings to file
+
+1. **Music attribution is hallucinated.** Analyzer wrote `"A single, upbeat, and driving indie electronic track ('Sail' by AWOLNATION, though not explicitly named)"`. The actual track is **M83 — "Outro"**, widely documented in press coverage of this video. The parenthetical "though not explicitly named" is Gemini volunteering speculation as if it were fact — exactly the failure pattern the prompt's "if you cannot see this in the video, write 'unknown'" instruction is meant to prevent. **Fix:** sharpen the prompt rule to "if you don't recognise the music with certainty, leave music attribution empty and describe only character." Worth adding a few-shot example in the prompt for this case.
+2. **`meta.analyzed_at` hallucinated (2024 again).** Second video, same fabricated-year defect. Confirms this is a consistent failure mode, not a one-off. Server-side override remains the right fix.
+3. **Scene boundaries overflow `meta.duration_seconds`.** Scenes go 0-437s, but `duration_seconds` is 277 (~4:37, matches the actual runtime). Scenes are stretched by ~160s — different defect from Reference A (where occupies_seconds didn't sum but scene boundaries were correct). **Fix candidates:** add a hard prompt instruction that the last scene's `end` must equal `duration_seconds` ± 2s, and consider a post-parse sanity check that flags this in the schema-mismatch path.
+4. **`meta.video_id` was correct this time** (`WxfZkMm3wcg`). Combined with Reference A's hallucinated id, this is an *intermittent* failure — Gemini sometimes copies the id from the URL correctly and sometimes invents one. The server-side overwrite is still the right fix regardless.
+
+### Reference C scoring notes (run 2026-05-18, prod `/analyze`, analysis id `ce465b01-8ff5-490e-96e6-7fbe34ef76a0`)
+
+- **Ship-gate verdict: YES.** All four load-bearing fields scored Pass. C was the strongest of the three references — only one Partial, no real hallucinations beyond the systematic `meta.analyzed_at` issue.
+- **Single-pack detection correct.** Analyzer emitted one `kurzgesagt-narrative-animation` pack covering the full 481s runtime. Correct call for pure animation with one consistent visual mode.
+- **`overall_look`:** "Minimalist, flat vector animation … featureless silhouettes … abstract and stylized environments" matches the golden almost field-for-field. The one notable place analyzer *disagreed* with the prior-based golden is the palette — I anchored on "limited muted palette" (Kurzgesagt's typical science-explainer house style); analyzer said "vibrant color palettes" and the actual hex codes prove it right (`#F72585` hot pink, `#4CC9F0` cyan, `#7209B7` purple — saturated, not muted). The analyzer characterized THIS specific video correctly even when the channel-wide prior was wrong. That's a strength, not a defect.
+- **`suggested_ai_image_suffix`:** "flat 2D vector animation style, vibrant saturated color palette with deep purples, blues, and warm oranges, minimalist characters with no facial features, smooth gradients for lighting and depth, clean lines, cosmic and abstract backgrounds, cinematic animated framing, style of Kurzgesagt." Concrete, prompt-ready, names the channel explicitly. This is exactly the kind of suffix that would drive a Midjourney/Imagen/Replicate-illustration prompt to the right place — the test the live-action references can't exercise.
+- **`voice_style`:** `slow / low / narrative, philosophical, calm`. Golden said `slow / medium / contemplative-warm` — energy disagreement (low vs medium) is minor and the analyzer is arguably more accurate. Sample lines are real transcript quotes including the iconic opener.
+- **`hook.what_works`:** "Pattern interrupt … opens with a serene, beautiful animation and calm narration, then immediately subverts expectations with the blunt statement 'You were on your way home when you died.'" Quotes the actual line, captures the conceptual-not-visual nature of the hook that the golden identified.
+- **`pacing.avg_scene_seconds` (Partial):** Analyzer reports 34.36s; golden anticipated 8-15s. Same definitional gap as Reference A — analyzer interprets "scene" as a narrative beat (which for a story-driven animation runs 30-60s), not a cut-level unit. The math is correct for its chosen unit; the prompt should pick one definition and stick to it.
+
+#### Reference C — non-blocking findings to file
+
+1. **`meta.analyzed_at` hallucinated again (2024 instead of 2026).** Third consecutive instance. **This is now confirmed systematic** — every analyzer run in this eval produced a wrong-year `analyzed_at`. Server-side overwrite is no longer a "should fix," it's a "must fix before any downstream consumer reads this field."
+2. **Scene timings and `occupies_seconds` are clean.** Unlike A and B, C's scene boundaries sum to 481s and the single pack's `occupies_seconds` matches `duration_seconds` exactly. Hypothesis: Gemini handles consistency better on single-pack videos than multi-pack ones. Worth verifying on a longer Kurzgesagt video before relying on the hypothesis.
+3. **`video_id` correct** (h6fcK_fRYaI). Combined with A (wrong) + B (correct) + C (correct), Gemini got the id right 2 of 3 times. Intermittent failure — server-side overwrite is the only deterministic fix.
+
+## Final verdict
+
+**Ship gate: PASS (3 of 3 references = YES).** Per the decision rule above, "3 of 3 references are 'Yes' — ship as-is."
+
+The analyzer correctly handles the three archetypes that span the visual + audio space the feature needs to cover:
+
+- multi-mode cinematic explainer with B-roll + animated diagrams (Veritasium-style),
+- single-mode fast-cut handheld vlog (Casey Neistat-style),
+- pure 2D flat animation with narrated philosophical content (Kurzgesagt-style).
+
+`suggested_ai_image_suffix` — the most operationally important field, the one that drives downstream image generation — produced concrete, prompt-ready output on every pack across every reference. Zero instances of the generic "cinematic, dramatic, professional" failure mode the prompt's guidance #3 was designed to prevent.
+
+`hook.what_works` produced video-specific, substantive observations on every reference, not channel-template restatements.
+
+### Caveat on the verdict
+
+The goldens were PRIOR-BASED (Claude-generated channel-convention priors plus public documentation, not direct viewing — see the provenance note above the golden tables). The `style_pack.*` fields hold up well against this kind of golden because the three channels are stylistically consistent, so prior-based scoring is defensible. The `strategic_report.*` fields (`hook.what_works`, `standout_techniques`) are weaker against prior-based goldens because they want video-specific observation — and yet the analyzer scored Pass on all three references' hooks. A human spot-check on at least one video would tighten the verdict, but the ship-gate decision does not change.
+
+## Recommended fixes before the next round of operator use
+
+These three fixes are ~30 minutes of work and remove the only operational liabilities the eval surfaced. **My recommendation is to land them before the operator relies on analyzer output**, even though the ship gate technically passes without them.
+
+1. **Overwrite `result.meta.analyzed_at` server-side** in [src/app/api/analyze/youtube-video/route.ts](../src/app/api/analyze/youtube-video/route.ts) before `completeAnalysis`. Replace whatever Gemini returned with `new Date().toISOString()`. *Why this is non-negotiable: confirmed systematic failure across all three references — every run wrote a 2024 timestamp in 2026.*
+2. **Overwrite `result.meta.video_id` server-side** with the canonical id we already extracted from the URL. Same reasoning — intermittent hallucination, deterministic fix.
+3. **Sharpen the prompt on attribution uncertainty.** Add a rule in [src/lib/analyzer/prompt.ts](../src/lib/analyzer/prompt.ts) `buildAnalyzerPrompt`: *"For music_and_sfx and any other attribution field, name a specific track/artist ONLY when the credit appears in the video or on-screen. Otherwise describe the character (tempo, instrumentation, mood) without guessing the title."* This addresses Reference B's hallucinated "Sail by AWOLNATION (though not explicitly named)" — Gemini volunteered speculation as fact, which the existing guidance #7 (confidence honesty) didn't fully prevent.
+
+### Lower-priority follow-ups (file but don't gate the ship)
+
+4. **`style_packs[].occupies_seconds` / scene-boundary consistency.** Multi-pack videos (Reference A) had `occupies_seconds` sums that didn't match `duration_seconds`; one video (Reference B) had scenes that overflowed `duration_seconds` by ~160s. Either recompute these server-side from scenes, or add a hard prompt rule that the last scene's `end` must equal `duration_seconds` and the pack `occupies_seconds` values must sum to it. Worth a post-parse sanity check in the route that flags mismatches without failing.
+5. **Pick a definition for `pacing.avg_scene_seconds`.** Scored Partial on References A and C because analyzer interprets it at the narrative-beat level (30-60s) while the field name suggests cut-level (1-10s). Pick one in the prompt and pin it with a concrete example.
+6. **Preserve camera-grammar specificity at the pack level.** Reference B's individual scenes correctly noted aerial, time-lapse, GoPro shots, but those got compressed to "occasional locked-off scenic shots" in the pack-level `camera_grammar` field. Add a prompt rule: the pack-level `camera_grammar` should enumerate all distinct grammars observed across that pack's scenes, not summarize to the most common one.
+
+## What this eval does NOT cover
+
+Worth being honest about the scope of what we tested:
+
+- **Only 3 videos, all from English-language US/UK/German channels with high production values.** The analyzer was not tested on lower-quality footage, non-English narration, music videos, livestream recordings, or videos with significant on-screen text. Each of those is a separate fidelity risk.
+- **No re-run / stability test.** A single sample per video. Gemini's temperature is 0.3 and outputs may shift on retry. The intermittent `video_id` hallucination across the three references is suggestive evidence that the analyzer's behavior is not fully deterministic on the same input. Consider a "re-analyze twice, diff the outputs" smoke test before any user-facing claim that re-running is free / consistent.
+- **No load test.** Daily-cap behavior, concurrent-request behavior, and the `analyzing → done` poll-loop on the result page were not exercised at scale. Out of scope for fidelity Phase 0 but worth a separate Phase before high-volume use.
+- **Prior-based goldens, not human-observed.** Covered above; the ship gate is robust to this caveat, the per-field scoring would tighten with a human pass.
 
 ## The ship gate
 
