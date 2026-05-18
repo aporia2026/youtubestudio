@@ -129,6 +129,17 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
         <AbsoluteFill style={{ overflow: 'hidden' }}>
           <OffthreadVideo
             src={shot.videoUrl!}
+            // Editor's head-trim: when set, skip this many seconds at
+            // the start of the source clip. Defaults to 0 (no trim).
+            // Tail trim (`trimEndMs`) is data-only in v1 — wiring it
+            // requires a Sequence-level duration cap that the BRollScene
+            // doesn't currently own; the next renderer-integration pass
+            // will plumb it.
+            startFrom={
+              typeof shot.trimStartMs === 'number' && shot.trimStartMs > 0
+                ? Math.round((shot.trimStartMs / 1000) * fps)
+                : 0
+            }
             // Mute: the production doc's voiceover is the sole audio source;
             // Kie clips ship with model-generated audio we never want bleeding
             // through. (Kling i2v writes silent clips anyway, but Kling 2.6

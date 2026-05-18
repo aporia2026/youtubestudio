@@ -56,6 +56,17 @@ interface TimelineProps {
   onResize?: (shotIndex: number, newDurationMs: number) => void;
   /** Fired on drag-end with the source and target indices. */
   onReorder?: (fromIndex: number, toIndex: number) => void;
+  /** Fired live during a trim drag (head OR tail) — and again on
+   *  pointer-up with the final value. `null` for either field means
+   *  "clear it"; `undefined` means "leave it alone". */
+  onTrim?: (
+    shotIndex: number,
+    values: { trimStartMs?: number | null; trimEndMs?: number | null },
+  ) => void;
+  /** Read the row's current trim_start_ms / trim_end_ms so the
+   *  handles draw at the right offset from the card edges. Keyed by
+   *  shot index, both in ms. */
+  rowTrims?: Record<number, { trimStartMs?: number; trimEndMs?: number }>;
   /** Optional: pixels per second. Default 80 — readable at standard
    *  shot lengths (4-15s). Phase 2 zoom controls bind this. */
   pixelsPerSecond?: number;
@@ -68,6 +79,10 @@ const MIN_CARD_WIDTH = 60;
 const RESIZE_HANDLE_WIDTH = 8;
 /** Pixel height of the grab-handle bar at the top of each card. */
 const GRAB_HANDLE_HEIGHT = 14;
+/** Pixel width of the head / tail trim handle hot-zones. Sit
+ *  INSIDE the card (vs the resize handle which sits on the boundary)
+ *  so they don't fight each other for pointer events. */
+const TRIM_HANDLE_WIDTH = 6;
 
 function formatMs(ms: number): string {
   const totalSeconds = ms / 1000;
@@ -92,6 +107,18 @@ interface ResizeDragState {
   previewMs: number;
 }
 
+type TrimSide = 'head' | 'tail';
+
+interface TrimDragState {
+  shotIndex: number;
+  side: TrimSide;
+  startClientX: number;
+  /** The trim value (in ms) at the moment the drag began. */
+  startTrimMs: number;
+  /** Live preview value the card uses to render its overlay. */
+  previewMs: number;
+}
+
 export function Timeline({
   config,
   rowImages,
@@ -100,6 +127,8 @@ export function Timeline({
   onSelect,
   onResize,
   onReorder,
+  onTrim,
+  rowTrims,
   pixelsPerSecond = DEFAULT_PX_PER_SECOND,
 }: TimelineProps): React.ReactElement {
   const totalMs = useMemo(
@@ -118,6 +147,10 @@ export function Timeline({
   const [resize, setResize] = useState<ResizeDragState | null>(null);
   const resizeRef = useRef<ResizeDragState | null>(null);
   resizeRef.current = resize;
+
+  const [trim, setTrim] = useState<TrimDragState | null>(null);
+  const trimRef = useRef<TrimDragState | null>(null);
+  trimRef.current = trim;
 
   /** Convert a pixel delta to a ms delta at the current zoom level. */
   const pxToMs = useCallback(
@@ -190,6 +223,84 @@ export function Timeline({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [resize, onResize]);
+
+  // ─── Trim-handle pointer events ────────────────────────────────
+
+  const handleTrimPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>, shotIndex: number, side: TrimSide) => {
+      if (!onTrim) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const currentTrim = rowTrims?.[shotIndex] ?? {};
+      const startTrimMs =
+        side === 'head'
+          ? (currentTrim.trimStartMs ?? 0)
+          : (currentTrim.trimEndMs ?? 0);
+      e.currentTarget.setPointerCapture(e.pointerId);
+      setTrim({
+        shotIndex,
+        side,
+        startClientX: e.clientX,
+        startTrimMs,
+        previewMs: startTrimMs,
+      });
+    },
+    [onTrim, rowTrims],
+  );
+
+  const handleTrimPointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const current = trimRef.current;
+      if (!current || !onTrim) return;
+      const deltaPx = e.clientX - current.startClientX;
+      // Head trim: dragging right (positive delta) INCREASES the
+      // trim (we skip more from the start). Tail trim: dragging
+      // LEFT (negative delta) increases the trim (we drop more from
+      // the end). Both directions floor at 0.
+      const direction: 1 | -1 = current.side === 'head' ? 1 : -1;
+      const naive = current.startTrimMs + direction * pxToMs(deltaPx);
+      const clamped = Math.max(0, Math.min(EDITOR_MAX_SHOT_MS, Math.round(naive)));
+      setTrim({ ...current, previewMs: clamped });
+      if (clamped !== current.startTrimMs) {
+        if (current.side === 'head') {
+          onTrim(current.shotIndex, { trimStartMs: clamped === 0 ? null : clamped });
+        } else {
+          onTrim(current.shotIndex, { trimEndMs: clamped === 0 ? null : clamped });
+        }
+      }
+    },
+    [onTrim, pxToMs],
+  );
+
+  const handleTrimPointerUp = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const current = trimRef.current;
+      if (!current) return;
+      e.currentTarget.releasePointerCapture(e.pointerId);
+      console.info('[editor timeline] trim complete', {
+        shotIndex: current.shotIndex,
+        side: current.side,
+        from: current.startTrimMs,
+        to: current.previewMs,
+      });
+      setTrim(null);
+    },
+    [],
+  );
+
+  // ESC cancels an in-progress trim — restores the original value.
+  useEffect(() => {
+    if (!trim || !onTrim) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        const restore = trim.startTrimMs === 0 ? null : trim.startTrimMs;
+        onTrim(trim.shotIndex, trim.side === 'head' ? { trimStartMs: restore } : { trimEndMs: restore });
+        setTrim(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [trim, onTrim]);
 
   // ─── dnd-kit reorder wiring ─────────────────────────────────────
 
@@ -268,12 +379,29 @@ export function Timeline({
                   isResizing={resize?.shotIndex === idx}
                   resizePreviewMs={resize?.shotIndex === idx ? resize.previewMs : null}
                   isLast={idx === config.shots.length - 1}
+                  pixelsPerSecond={pixelsPerSecond}
+                  trimStartMs={
+                    trim?.shotIndex === idx && trim.side === 'head'
+                      ? trim.previewMs
+                      : rowTrims?.[idx]?.trimStartMs
+                  }
+                  trimEndMs={
+                    trim?.shotIndex === idx && trim.side === 'tail'
+                      ? trim.previewMs
+                      : rowTrims?.[idx]?.trimEndMs
+                  }
+                  trimSideActive={trim?.shotIndex === idx ? trim.side : null}
                   onSelect={() => onSelect(idx)}
                   onResizePointerDown={
                     onResize ? (e) => handleResizePointerDown(e, idx) : undefined
                   }
                   onResizePointerMove={onResize ? handleResizePointerMove : undefined}
                   onResizePointerUp={onResize ? handleResizePointerUp : undefined}
+                  onTrimPointerDown={
+                    onTrim ? (e, side) => handleTrimPointerDown(e, idx, side) : undefined
+                  }
+                  onTrimPointerMove={onTrim ? handleTrimPointerMove : undefined}
+                  onTrimPointerUp={onTrim ? handleTrimPointerUp : undefined}
                   reorderEnabled={Boolean(onReorder)}
                 />
               );
@@ -315,10 +443,22 @@ interface SortableShotCardProps {
   isResizing: boolean;
   resizePreviewMs: number | null;
   isLast: boolean;
+  pixelsPerSecond: number;
+  /** Current head-trim in ms (during a drag, the live preview value). */
+  trimStartMs?: number;
+  /** Current tail-trim in ms (during a drag, the live preview value). */
+  trimEndMs?: number;
+  /** Which trim side is being dragged on THIS card; null when no trim
+   *  drag is active or it's on another card. Drives the tooltip
+   *  position. */
+  trimSideActive: TrimSide | null;
   onSelect: () => void;
   onResizePointerDown?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onResizePointerMove?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onResizePointerUp?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onTrimPointerDown?: (e: React.PointerEvent<HTMLDivElement>, side: TrimSide) => void;
+  onTrimPointerMove?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onTrimPointerUp?: (e: React.PointerEvent<HTMLDivElement>) => void;
   reorderEnabled: boolean;
 }
 
@@ -332,10 +472,17 @@ function SortableShotCard({
   isResizing,
   resizePreviewMs,
   isLast,
+  pixelsPerSecond,
+  trimStartMs,
+  trimEndMs,
+  trimSideActive,
   onSelect,
   onResizePointerDown,
   onResizePointerMove,
   onResizePointerUp,
+  onTrimPointerDown,
+  onTrimPointerMove,
+  onTrimPointerUp,
   reorderEnabled,
 }: SortableShotCardProps): React.ReactElement {
   const {
@@ -472,6 +619,96 @@ function SortableShotCard({
           >
             ⋮⋮
           </div>
+        </div>
+      )}
+
+      {/* Head-trim overlay: a translucent strip over the
+          first `trimStartMs` of the card, signalling that those
+          frames are skipped at render time. */}
+      {typeof trimStartMs === 'number' && trimStartMs > 0 && (
+        <div
+          className="absolute top-0 bottom-0 pointer-events-none"
+          style={{
+            left: 0,
+            width: Math.min(widthPx, (trimStartMs / 1000) * pixelsPerSecond),
+            background:
+              'repeating-linear-gradient(135deg, rgba(0,0,0,0.55) 0 6px, rgba(0,0,0,0.35) 6px 12px)',
+          }}
+          aria-hidden
+        />
+      )}
+      {/* Tail-trim overlay: same idea, anchored on the right. */}
+      {typeof trimEndMs === 'number' && trimEndMs > 0 && (
+        <div
+          className="absolute top-0 bottom-0 pointer-events-none"
+          style={{
+            right: 0,
+            width: Math.min(widthPx, (trimEndMs / 1000) * pixelsPerSecond),
+            background:
+              'repeating-linear-gradient(45deg, rgba(0,0,0,0.55) 0 6px, rgba(0,0,0,0.35) 6px 12px)',
+          }}
+          aria-hidden
+        />
+      )}
+
+      {/* Head trim handle. Sits just inside the card's left edge so
+          it doesn't fight the previous card's resize-handle (which
+          overhangs by RESIZE_HANDLE_WIDTH/2 from the right). Only
+          rendered when the parent wires `onTrim`. */}
+      {onTrimPointerDown && (
+        <div
+          className="absolute top-0 bottom-0 z-10 cursor-w-resize transition-colors opacity-0 group-hover:opacity-100"
+          style={{
+            left: RESIZE_HANDLE_WIDTH / 2,
+            width: TRIM_HANDLE_WIDTH,
+            background:
+              trimSideActive === 'head'
+                ? 'rgba(251, 191, 36, 0.85)'
+                : 'rgba(251, 191, 36, 0.35)',
+          }}
+          onPointerDown={(e) => onTrimPointerDown(e, 'head')}
+          onPointerMove={onTrimPointerMove}
+          onPointerUp={onTrimPointerUp}
+          onPointerCancel={onTrimPointerUp}
+          aria-label={`Drag to trim the head of shot ${index + 1}`}
+        />
+      )}
+
+      {/* Tail trim handle. Inside the right edge, set in by the resize
+          handle's width so the two don't overlap. */}
+      {onTrimPointerDown && (
+        <div
+          className="absolute top-0 bottom-0 z-10 cursor-e-resize transition-colors opacity-0 group-hover:opacity-100"
+          style={{
+            right: RESIZE_HANDLE_WIDTH,
+            width: TRIM_HANDLE_WIDTH,
+            background:
+              trimSideActive === 'tail'
+                ? 'rgba(251, 191, 36, 0.85)'
+                : 'rgba(251, 191, 36, 0.35)',
+          }}
+          onPointerDown={(e) => onTrimPointerDown(e, 'tail')}
+          onPointerMove={onTrimPointerMove}
+          onPointerUp={onTrimPointerUp}
+          onPointerCancel={onTrimPointerUp}
+          aria-label={`Drag to trim the tail of shot ${index + 1}`}
+        />
+      )}
+
+      {/* Trim tooltip — surfaces the live ms value above the card
+          while a trim drag is active on this card. */}
+      {trimSideActive !== null && (
+        <div
+          className="absolute -top-6 text-[10px] px-1.5 py-0.5 rounded tabular-nums z-20"
+          style={{
+            background: 'rgba(0,0,0,0.85)',
+            color: 'rgb(252, 211, 77)',
+            left: trimSideActive === 'head' ? 0 : 'auto',
+            right: trimSideActive === 'tail' ? 0 : 'auto',
+          }}
+        >
+          {trimSideActive === 'head' ? '⏵' : '⏴'}{' '}
+          {formatMs((trimSideActive === 'head' ? (trimStartMs ?? 0) : (trimEndMs ?? 0)))}
         </div>
       )}
 

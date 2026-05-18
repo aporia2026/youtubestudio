@@ -106,6 +106,15 @@ export type EditorCommand =
   // typical drag-end semantics in dnd-kit). Self-inverse with the
   // indices swapped.
   | { type: 'REORDER_SHOTS'; fromIndex: number; toIndex: number }
+  // Set head and/or tail trim on a shot. Either value may be omitted
+  // to leave the current setting; pass `null` to clear an existing
+  // trim. The reducer captures the prior values for the inverse.
+  | {
+      type: 'TRIM_SHOT';
+      shotIndex: number;
+      trimStartMs?: number | null;
+      trimEndMs?: number | null;
+    }
   // RESTORE_ROW exists only as the inverse of DELETE_SHOT. Carries
   // the full pre-delete row (for content) + the prior rowImages[i]
   // URL (so blanking out the image-state slot can be undone). Mode
@@ -132,6 +141,7 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'RESTORE_ROW':
     case 'SET_MUTE':
     case 'REORDER_SHOTS':
+    case 'TRIM_SHOT':
       return true;
     default:
       return false;
@@ -359,6 +369,63 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           doc: { ...state.doc, rows: nextRows },
           isDirty: true,
           selection: shotIndex,
+        },
+        inverse,
+      };
+    }
+
+    case 'TRIM_SHOT': {
+      const { shotIndex } = cmd;
+      if (shotIndex < 0 || shotIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const row = state.doc.rows[shotIndex];
+      const prevStart = typeof row.trim_start_ms === 'number' ? row.trim_start_ms : null;
+      const prevEnd = typeof row.trim_end_ms === 'number' ? row.trim_end_ms : null;
+
+      // Resolve "leave unchanged" (undefined arg) vs. "clear" (null
+      // arg) vs. "set to a number" (number arg).
+      const targetStart =
+        cmd.trimStartMs === undefined ? prevStart : cmd.trimStartMs;
+      const targetEnd =
+        cmd.trimEndMs === undefined ? prevEnd : cmd.trimEndMs;
+
+      // Floor at 0 (no negative trim). Cap at EDITOR_MAX_SHOT_MS as a
+      // sanity ceiling — a runaway pointer drag can't push trim into
+      // the next century. Sub-frame integer rounding happens at the
+      // renderer's startFrom conversion.
+      const clamp = (n: number | null): number | null =>
+        n === null ? null : Math.max(0, Math.min(EDITOR_MAX_SHOT_MS, Math.round(n)));
+      const newStart = clamp(targetStart);
+      const newEnd = clamp(targetEnd);
+
+      if (newStart === prevStart && newEnd === prevEnd) {
+        return { next: state, inverse: null };
+      }
+
+      const nextRow = {
+        ...row,
+        trim_start_ms: newStart ?? undefined,
+        trim_end_ms: newEnd ?? undefined,
+        edited_at: new Date().toISOString(),
+      };
+      const nextRows = state.doc.rows.slice();
+      nextRows[shotIndex] = nextRow;
+
+      // Inverse restores the prior values. `null` here means "clear
+      // the field" — distinguishable from `undefined` ("don't touch")
+      // by the !==-vs-=== branches above.
+      const inverse: EditorCommand = {
+        type: 'TRIM_SHOT',
+        shotIndex,
+        trimStartMs: prevStart,
+        trimEndMs: prevEnd,
+      };
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          isDirty: true,
         },
         inverse,
       };

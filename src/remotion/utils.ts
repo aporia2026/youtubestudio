@@ -575,6 +575,15 @@ export function productionDocToVideoConfig(
       sceneFade: row.scene_fade,
       videoDurationSeconds,
       overlay,
+      // Shot-graph editor fields. The renderer reads these when
+      // present; pre-editor rows leave them undefined and behave
+      // exactly as before. See `_plans/2026-05-18-shot-graph-editor.md`.
+      trimStartMs: row.trim_start_ms,
+      trimEndMs: row.trim_end_ms,
+      muted: row.muted,
+      playbackRate: row.playback_rate,
+      transitionInId: row.transition_in,
+      editedAt: row.edited_at,
     };
   });
 

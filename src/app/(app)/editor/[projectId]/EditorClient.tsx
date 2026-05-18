@@ -129,6 +129,21 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     return Math.max(1, Math.round((totalMs / 1000) * videoConfig.fps));
   }, [videoConfig]);
 
+  // Per-shot trim values pulled off the doc rows — handed to the
+  // Timeline so the head / tail handles draw at the right offsets.
+  const rowTrims = useMemo(() => {
+    const out: Record<number, { trimStartMs?: number; trimEndMs?: number }> = {};
+    state.doc.rows.forEach((row, i) => {
+      if (typeof row.trim_start_ms === 'number' || typeof row.trim_end_ms === 'number') {
+        out[i] = {
+          trimStartMs: row.trim_start_ms,
+          trimEndMs: row.trim_end_ms,
+        };
+      }
+    });
+    return out;
+  }, [state.doc.rows]);
+
   // Resolve the playhead against the doc's cumulative shot timing
   // so the "split at playhead" path knows which shot to act on and
   // whether the split would produce two legal halves. Recomputed
@@ -390,12 +405,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         rowImages={state.rowImages}
         selection={state.selection}
         playheadMs={state.playheadMs}
+        rowTrims={rowTrims}
         onSelect={(shotIndex) => apply({ type: 'SET_SELECTION', shotIndex })}
         onResize={(shotIndex, durationMs) =>
           apply({ type: 'RESIZE_SHOT', shotIndex, durationMs })
         }
         onReorder={(fromIndex, toIndex) =>
           apply({ type: 'REORDER_SHOTS', fromIndex, toIndex })
+        }
+        onTrim={(shotIndex, values) =>
+          apply({ type: 'TRIM_SHOT', shotIndex, ...values })
         }
       />
 
