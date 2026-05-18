@@ -110,6 +110,15 @@ export type EditorCommand =
   // BRoll scene). Pass `null` to clear. Lives outside the doc row
   // shape because that's where it already lives in `rowImages`.
   | { type: 'SET_ROW_IMAGE'; shotIndex: number; url: string | null }
+  // Replace a shot's source video clip (the override read by
+  // productionDocToVideoConfig over the auto-pipeline's
+  // `rowVideoClips`). Pass `null` for both fields to clear.
+  | {
+      type: 'SET_ROW_VIDEO';
+      shotIndex: number;
+      url: string | null;
+      durationSeconds: number | null;
+    }
   // Set head and/or tail trim on a shot. Either value may be omitted
   // to leave the current setting; pass `null` to clear an existing
   // trim. The reducer captures the prior values for the inverse.
@@ -147,6 +156,7 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'REORDER_SHOTS':
     case 'TRIM_SHOT':
     case 'SET_ROW_IMAGE':
+    case 'SET_ROW_VIDEO':
       return true;
     default:
       return false;
@@ -408,6 +418,41 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           ...state,
           doc: { ...state.doc, rows: nextRows },
           rowImages: nextImages,
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'SET_ROW_VIDEO': {
+      const { shotIndex, url, durationSeconds } = cmd;
+      if (shotIndex < 0 || shotIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const row = state.doc.rows[shotIndex];
+      const prevUrl = row.video_url_override ?? null;
+      const prevDuration = row.video_duration_seconds_override ?? null;
+      if (prevUrl === url && prevDuration === durationSeconds) {
+        return { next: state, inverse: null };
+      }
+      const nextRow = {
+        ...row,
+        video_url_override: url ?? undefined,
+        video_duration_seconds_override: durationSeconds ?? undefined,
+        edited_at: new Date().toISOString(),
+      };
+      const nextRows = state.doc.rows.slice();
+      nextRows[shotIndex] = nextRow;
+      const inverse: EditorCommand = {
+        type: 'SET_ROW_VIDEO',
+        shotIndex,
+        url: prevUrl,
+        durationSeconds: prevDuration,
+      };
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
           isDirty: true,
         },
         inverse,

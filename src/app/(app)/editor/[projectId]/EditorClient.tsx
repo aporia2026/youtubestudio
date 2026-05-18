@@ -465,9 +465,18 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             row={state.doc.rows[state.selection]}
             thumbnailUrl={state.rowImages[state.selection] ?? null}
             totalShots={state.doc.rows.length}
+            projectId={projectId}
             onClose={() => apply({ type: 'SET_SELECTION', shotIndex: null })}
             onUploadImage={(url) =>
               apply({ type: 'SET_ROW_IMAGE', shotIndex: state.selection as number, url })
+            }
+            onPickProjectClip={(url, durationSeconds) =>
+              apply({
+                type: 'SET_ROW_VIDEO',
+                shotIndex: state.selection as number,
+                url,
+                durationSeconds,
+              })
             }
           />
         )}

@@ -261,6 +261,14 @@ export interface ProductionRow {
    *  Phase 3's conflict-resolution rule (manual edit wins over AI
    *  regen). */
   edited_at?: string;
+  /** Editor's pick-from-project override of the source video clip
+   *  for this row. When set, the renderer uses this URL instead of
+   *  the auto-pipeline's rowVideoClips entry. Cleared (undefined)
+   *  means "fall back to the doc-level clip resolution." */
+  video_url_override?: string;
+  /** Intrinsic duration of the override clip in seconds — used by
+   *  BRollScene's playback-rate fit math. */
+  video_duration_seconds_override?: number;
 }
 
 export interface ProductionDoc {
@@ -465,18 +473,36 @@ export function productionDocToVideoConfig(
 
     const lockedAsStill = opts.rowLockedAsStill?.[i] === true;
     const clipState = animateScenes && !lockedAsStill ? opts.rowVideoClips?.[i] : undefined;
-    const videoUrl =
-      clipState && clipState.status === 'ready' && clipState.videoUrl
-        ? clipState.videoUrl
+    // Editor's pick-from-project override takes precedence over the
+    // auto-pipeline's rowVideoClips entry. When the override is set
+    // we ignore `animateScenes=false` and `lockedAsStill=true` for
+    // THIS row — the user explicitly picked a clip in the inspector,
+    // so respecting that intent matters more than the doc-level
+    // toggle. Undefined override leaves the existing logic intact.
+    const overrideVideoUrl =
+      typeof row.video_url_override === 'string' && row.video_url_override
+        ? row.video_url_override
         : undefined;
+    const videoUrl =
+      overrideVideoUrl ??
+      (clipState && clipState.status === 'ready' && clipState.videoUrl
+        ? clipState.videoUrl
+        : undefined);
     // Pass clip duration through so BRollScene can compute the
     // playback rate that fits the clip to the scene. Only meaningful
     // when videoUrl is set; otherwise undefined and the still path
     // is taken regardless.
-    const videoDurationSeconds =
-      videoUrl && clipState?.durationSeconds && clipState.durationSeconds > 0
-        ? clipState.durationSeconds
+    const overrideDuration =
+      overrideVideoUrl &&
+      typeof row.video_duration_seconds_override === 'number' &&
+      row.video_duration_seconds_override > 0
+        ? row.video_duration_seconds_override
         : undefined;
+    const videoDurationSeconds =
+      overrideDuration ??
+      (videoUrl && clipState?.durationSeconds && clipState.durationSeconds > 0
+        ? clipState.durationSeconds
+        : undefined);
 
     // Real-image overlay — only attached when the doc generator planned
     // one AND the auto-fetch resolved to a usable URL. The renderer

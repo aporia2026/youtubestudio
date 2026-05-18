@@ -16,9 +16,21 @@
  *     · Rewrite script-with-AI    (final Phase 3 commit)
  */
 import Link from 'next/link';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ProductionDoc } from '@/remotion/utils';
 import type { VideoShot } from '@/remotion/types';
+
+/** A clip from /api/broll. Trimmed to the fields the picker needs. */
+interface ProjectClip {
+  id: string;
+  video_url: string | null;
+  duration_seconds: number | null;
+  prompt: string;
+  model_id: string;
+  aspect_ratio: string;
+  status: string;
+  row_index: number | null;
+}
 
 interface ShotInspectorProps {
   shotIndex: number;
@@ -27,10 +39,17 @@ interface ShotInspectorProps {
   /** rowImages[shotIndex] — first-frame thumbnail URL when present. */
   thumbnailUrl: string | null;
   totalShots: number;
+  /** The user_history.id this project is keyed by. Used to scope
+   *  the broll_clips list to clips from this doc. */
+  projectId: string;
   onClose: () => void;
   /** Called with the new R2 URL after a successful upload. The
    *  caller dispatches SET_ROW_IMAGE. */
   onUploadImage?: (url: string) => void;
+  /** Called when the user picks a clip from the project's broll
+   *  library. The caller dispatches SET_ROW_VIDEO. Pass `null` for
+   *  videoUrl to clear an existing pick. */
+  onPickProjectClip?: (videoUrl: string | null, durationSeconds: number | null) => void;
 }
 
 function fmt(ms: number | undefined): string {
@@ -46,8 +65,10 @@ export function ShotInspector({
   row,
   thumbnailUrl,
   totalShots,
+  projectId,
   onClose,
   onUploadImage,
+  onPickProjectClip,
 }: ShotInspectorProps): React.ReactElement {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadState, setUploadState] = useState<
@@ -55,6 +76,61 @@ export function ShotInspector({
     | { kind: 'uploading'; fileName: string }
     | { kind: 'error'; message: string }
   >({ kind: 'idle' });
+
+  const [projectClips, setProjectClips] = useState<
+    | { kind: 'idle' }
+    | { kind: 'loading' }
+    | { kind: 'loaded'; clips: ProjectClip[] }
+    | { kind: 'error'; message: string }
+  >({ kind: 'idle' });
+
+  // Lazy-load the project's broll clips when the user expands the
+  // picker. Avoids the per-shot mount cost when most users never
+  // open it. Re-fetches on inspector mount if the projectId changes.
+  const [showPicker, setShowPicker] = useState(false);
+  useEffect(() => {
+    if (!showPicker || projectClips.kind !== 'idle') return;
+    let cancelled = false;
+    setProjectClips({ kind: 'loading' });
+    (async () => {
+      try {
+        const res = await fetch(`/api/broll?productionDocId=${encodeURIComponent(projectId)}&limit=200`);
+        if (!res.ok) throw new Error(`Fetch failed: HTTP ${res.status}`);
+        const data = (await res.json()) as { clips?: unknown };
+        const raw = Array.isArray(data.clips) ? data.clips : [];
+        const clips: ProjectClip[] = raw
+          .filter((c): c is Record<string, unknown> => typeof c === 'object' && c !== null)
+          .map((c) => ({
+            id: typeof c.id === 'string' ? c.id : '',
+            video_url: typeof c.video_url === 'string' ? c.video_url : null,
+            duration_seconds:
+              typeof c.duration_seconds === 'number' ? c.duration_seconds : null,
+            prompt: typeof c.prompt === 'string' ? c.prompt : '',
+            model_id: typeof c.model_id === 'string' ? c.model_id : '',
+            aspect_ratio: typeof c.aspect_ratio === 'string' ? c.aspect_ratio : '',
+            status: typeof c.status === 'string' ? c.status : '',
+            row_index: typeof c.row_index === 'number' ? c.row_index : null,
+          }))
+          // Only show clips that have a usable URL — pending / failed
+          // rows are noise here. Keep the row-index ordering from the
+          // server response.
+          .filter((c) => c.id && c.status === 'ready' && c.video_url);
+        if (!cancelled) {
+          setProjectClips({ kind: 'loaded', clips });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setProjectClips({
+            kind: 'error',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showPicker, projectClips.kind, projectId]);
 
   const handleUploadClick = useCallback(() => {
     fileInputRef.current?.click();
@@ -205,6 +281,126 @@ export function ShotInspector({
               JPG, PNG, WebP, or GIF · max 10 MB. The new still replaces this shot
               immediately; Cmd/Ctrl+Z undoes.
             </div>
+          </div>
+        )}
+
+        {/* Pick from project — lists clips that were already
+            generated for this production-doc, so the user can swap
+            a row's source clip without spending another LLM call. */}
+        {onPickProjectClip && (
+          <div
+            className="p-3 border-b space-y-2"
+            style={{ borderColor: 'var(--card-border)' }}
+          >
+            <div className="flex items-center justify-between">
+              <div className="text-[11px] font-semibold" style={{ color: 'var(--fg)' }}>
+                Pick a clip from this project
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPicker((v) => !v)}
+                className="text-[10px] underline"
+                style={{ color: 'var(--fg-muted)' }}
+              >
+                {showPicker ? 'Hide' : 'Show'}
+              </button>
+            </div>
+
+            {showPicker && (
+              <>
+                {projectClips.kind === 'loading' && (
+                  <div className="text-[10px]" style={{ color: 'var(--fg-muted)' }}>
+                    Loading clips…
+                  </div>
+                )}
+                {projectClips.kind === 'error' && (
+                  <div className="text-[10px]" style={{ color: '#f87171' }}>
+                    {projectClips.message}
+                  </div>
+                )}
+                {projectClips.kind === 'loaded' && projectClips.clips.length === 0 && (
+                  <div className="text-[10px]" style={{ color: 'var(--fg-muted)' }}>
+                    No animated clips for this project yet. Generate one on the
+                    Production Doc page first.
+                  </div>
+                )}
+                {projectClips.kind === 'loaded' && projectClips.clips.length > 0 && (
+                  <div className="grid grid-cols-2 gap-2">
+                    {projectClips.clips.map((clip) => {
+                      const isSelected = row.video_url_override === clip.video_url;
+                      return (
+                        <button
+                          key={clip.id}
+                          type="button"
+                          onClick={() =>
+                            onPickProjectClip(
+                              clip.video_url as string,
+                              clip.duration_seconds,
+                            )
+                          }
+                          className="relative rounded border overflow-hidden hover:opacity-90 transition-opacity"
+                          style={{
+                            borderColor: isSelected
+                              ? 'var(--accent-purple-bright, #a78bfa)'
+                              : 'var(--card-border)',
+                            background: '#000',
+                            aspectRatio: '16 / 9',
+                          }}
+                          title={clip.prompt.slice(0, 200)}
+                        >
+                          <video
+                            src={clip.video_url ?? undefined}
+                            className="absolute inset-0 w-full h-full object-cover"
+                            muted
+                            preload="metadata"
+                            playsInline
+                          />
+                          <div
+                            className="absolute bottom-0 left-0 right-0 p-1"
+                            style={{
+                              background:
+                                'linear-gradient(to top, rgba(0,0,0,0.85) 0%, transparent 100%)',
+                            }}
+                          >
+                            <div
+                              className="text-[9px] tabular-nums"
+                              style={{ color: 'rgba(255,255,255,0.85)' }}
+                            >
+                              {clip.duration_seconds ? `${clip.duration_seconds}s · ` : ''}
+                              {clip.model_id}
+                              {clip.row_index !== null ? ` · row ${clip.row_index + 1}` : ''}
+                            </div>
+                          </div>
+                          {isSelected && (
+                            <div
+                              className="absolute top-1 right-1 rounded px-1 py-0.5 text-[9px]"
+                              style={{
+                                background: 'var(--accent-purple-bright, #a78bfa)',
+                                color: '#000',
+                              }}
+                            >
+                              picked
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                {/* Clear button surfaces when this row has a picked clip,
+                    so undoing-via-undo isn't the only path back. */}
+                {row.video_url_override && (
+                  <button
+                    type="button"
+                    onClick={() => onPickProjectClip(null, null)}
+                    className="w-full text-[10px] px-2 py-1 rounded border hover:bg-white/5 transition-colors"
+                    style={{ borderColor: 'var(--card-border)' }}
+                  >
+                    Clear picked clip
+                  </button>
+                )}
+              </>
+            )}
           </div>
         )}
 
