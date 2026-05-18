@@ -151,9 +151,25 @@ export default async function NicheDeepDivePage({ params }: PageProps) {
                     </div>
                     <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: 13, color: '#cbd5e1' }}>
                       {cluster.topChannels.slice(0, 5).map((ch) => (
-                        <li key={ch.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}>
-                          <span>{ch.title || ch.id}</span>
-                          <span style={{ color: '#64748b' }}>{ch.subscriberCount.toLocaleString()} subs</span>
+                        <li key={ch.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', gap: 12 }}>
+                          <a
+                            href={`https://www.youtube.com/channel/${ch.id}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                              color: '#cbd5e1',
+                              textDecoration: 'none',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              flex: 1,
+                              minWidth: 0,
+                            }}
+                            title={`Open ${ch.title || ch.id} on YouTube`}
+                          >
+                            {ch.title || ch.id}
+                          </a>
+                          <span style={{ color: '#64748b', flexShrink: 0 }}>{ch.subscriberCount.toLocaleString()} subs</span>
                         </li>
                       ))}
                     </ul>

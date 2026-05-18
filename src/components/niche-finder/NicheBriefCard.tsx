@@ -22,7 +22,10 @@
  * ⋯ menu, per the plan's clean-UI rule.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ConfidenceLabel } from '@/lib/niche-finder/brief';
+import type {
+  BriefCompetitionChannel,
+  ConfidenceLabel,
+} from '@/lib/niche-finder/brief';
 import type { BriefRow } from '@/lib/niche-finder/brief-db';
 import type { BriefCitation } from '@/lib/ai/perplexity-deep-research';
 import { getModelById } from '@/lib/ai-models';
@@ -520,7 +523,11 @@ function BriefSectionsBlock({ brief }: { brief: BriefRow }): React.ReactElement 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <Section title="Market demand" body={sections.market_demand} confidence={conf.market_demand} />
-      <Section title="Competition" body={sections.competition} confidence={conf.competition} />
+      <Section title="Competition" body={sections.competition} confidence={conf.competition}>
+        {sections.competition_channels && sections.competition_channels.length > 0 && (
+          <CompetitionChannelsList channels={sections.competition_channels} />
+        )}
+      </Section>
       <Section title="Monetization" body={sections.monetization} confidence={conf.monetization} />
       <Section title="Operator fit" body={sections.operator_fit} confidence={conf.operator_fit} />
       <Section title="Risks" body={sections.risks} confidence={conf.risks} />
@@ -539,20 +546,97 @@ function BriefSectionsBlock({ brief }: { brief: BriefRow }): React.ReactElement 
   );
 }
 
+/** Channel URL from a model-supplied handle/channel_id. Both have been
+ *  regex-validated upstream by `clampCompetitionChannels`, so by the
+ *  time they reach this component they are safe to interpolate. */
+function channelHref(ch: BriefCompetitionChannel): string | null {
+  if (ch.handle) return `https://www.youtube.com/${ch.handle}`;
+  if (ch.channel_id) return `https://www.youtube.com/channel/${ch.channel_id}`;
+  return null;
+}
+
+function CompetitionChannelsList({
+  channels,
+}: {
+  channels: readonly BriefCompetitionChannel[];
+}): React.ReactElement {
+  return (
+    <ul
+      style={{
+        listStyle: 'none',
+        margin: '6px 0 0',
+        padding: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 3,
+      }}
+    >
+      {channels.map((ch, i) => {
+        const href = channelHref(ch);
+        return (
+          <li
+            key={i}
+            style={{
+              fontSize: 11,
+              color: '#94a3b8',
+              display: 'flex',
+              alignItems: 'baseline',
+              gap: 6,
+              flexWrap: 'wrap',
+            }}
+          >
+            {href ? (
+              <a
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  color: '#cbd5e1',
+                  textDecoration: 'underline',
+                  textDecorationColor: 'rgba(203,213,225,0.3)',
+                  fontWeight: 500,
+                }}
+                title={`Open ${ch.name} on YouTube`}
+              >
+                {ch.name}
+              </a>
+            ) : (
+              <span style={{ color: '#cbd5e1', fontWeight: 500 }}>{ch.name}</span>
+            )}
+            {ch.subs != null && (
+              <span style={{ color: '#475569' }}>· {compactSubs(ch.subs)} subs</span>
+            )}
+            {ch.note && <span style={{ color: '#64748b' }}>— {ch.note}</span>}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function compactSubs(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString();
+}
+
 function Section({
   title,
   body,
   confidence,
+  children,
 }: {
   title: string;
   body: string;
   confidence: ConfidenceLabel;
+  children?: React.ReactNode;
 }): React.ReactElement | null {
   if (!body || body.length === 0) return null;
   return (
     <div>
       <SectionHeader title={title} confidence={confidence} />
       <div style={{ fontSize: 12, color: '#cbd5e1', lineHeight: 1.55 }}>{body}</div>
+      {children}
     </div>
   );
 }
@@ -851,6 +935,22 @@ function briefToMarkdown(brief: BriefRow): string {
   const cite = (brief.citations ?? []).length === 0
     ? ''
     : '\n\n## Sources\n' + (brief.citations ?? []).map((cit) => `- [${cit.title ?? cit.domain}](${cit.url}) — ${cit.domain_quality} quality`).join('\n');
+  const competitionChannels = (s.competition_channels ?? []).length === 0
+    ? ''
+    : '\n\n**Channels:**\n' +
+      (s.competition_channels ?? [])
+        .map((ch) => {
+          const href = channelHref(ch);
+          const label = href ? `[${ch.name}](${href})` : ch.name;
+          const meta = [
+            ch.subs != null ? `${compactSubs(ch.subs)} subs` : null,
+            ch.note,
+          ]
+            .filter((x) => x)
+            .join(' — ');
+          return `- ${label}${meta ? ` — ${meta}` : ''}`;
+        })
+        .join('\n');
   return [
     `# Niche Brief — ${s.headline}`,
     ``,
@@ -860,7 +960,7 @@ function briefToMarkdown(brief: BriefRow): string {
     s.market_demand,
     ``,
     `## Competition ${conf(c.competition)}`,
-    s.competition,
+    s.competition + competitionChannels,
     ``,
     `## Monetization ${conf(c.monetization)}`,
     s.monetization,

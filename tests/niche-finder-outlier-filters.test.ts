@@ -174,6 +174,16 @@ describe('filterAndSortOutliers', () => {
     expect(out.map((x) => x.videoId)).toEqual(['2', '1', '3']);
   });
 
+  it('DEFAULT_FILTERS excludes Shorts (≤60s) by default', () => {
+    const videos = [
+      v({ videoId: 'short', durationIso: 'PT30S' }),
+      v({ videoId: 'normal', durationIso: 'PT5M' }),
+      v({ videoId: 'long', durationIso: 'PT15M' }),
+    ];
+    const out = filterAndSortOutliers(videos, DEFAULT_FILTERS, NOW);
+    expect(out.map((x) => x.videoId).sort()).toEqual(['long', 'normal']);
+  });
+
   it('filters by format', () => {
     const videos = [
       v({ videoId: 'short', durationIso: 'PT30S' }),

@@ -19,7 +19,13 @@
  */
 import { cacheKey, readApiCache, writeApiCache } from './db';
 import { logger } from '@/lib/logger';
+import { parseDurationToSeconds } from './scoring/shared';
 import type { SampledChannel, SampledVideo } from './types';
+
+/** Anything ≤ 60s reads as a YouTube Short for our purposes — the Data
+ *  API doesn't expose the Shorts flag, so duration is the only signal.
+ *  Kept in sync with the same constant in `outlier-filters.ts`. */
+const SHORTS_MAX_SECONDS = 60;
 
 const API_BASE = 'https://www.googleapis.com/youtube/v3';
 
@@ -273,6 +279,18 @@ export async function fetchChannelsBatch(channelIds: readonly string[]): Promise
  * Convenience: given a query, fetch its top-N videos plus the
  * unique channels that authored them, in one call. This is what the
  * cluster-harvest helper consumes.
+ *
+ * `excludeShorts` defaults to `true`. When set, videos with a parsed
+ * duration ≤ 60s are dropped after fetch, and channels that contributed
+ * only Shorts to the sample are also dropped. The operator's stated
+ * focus is long-form video, so this is the correct default; pass
+ * `excludeShorts: false` from callers that genuinely want everything
+ * (e.g. a future "include shorts" toggle).
+ *
+ * YouTube's `videoDuration` enum (`short` < 4 min, `medium` 4-20 min,
+ * `long` > 20 min) doesn't map cleanly to "anything but Shorts" — the
+ * `short` bucket includes 60s-4min content the operator wants to keep —
+ * so we filter post-fetch on the exact ≤60s threshold instead.
  */
 export async function harvestClusterSample(
   query: string,
@@ -282,6 +300,7 @@ export async function harvestClusterSample(
     relevanceLanguage?: string;
     order?: 'relevance' | 'viewCount' | 'date';
     pages?: number;
+    excludeShorts?: boolean;
   } = {},
 ): Promise<{ videos: FetchedVideo[]; channels: FetchedChannel[] }> {
   const videoIds = await searchVideosForCluster(query, {
@@ -293,10 +312,21 @@ export async function harvestClusterSample(
   });
   if (videoIds.length === 0) return { videos: [], channels: [] };
 
-  const videos = await fetchVideosBatch(videoIds);
+  const fetchedVideos = await fetchVideosBatch(videoIds);
+  const videos = opts.excludeShorts === false
+    ? fetchedVideos
+    : fetchedVideos.filter((v) => !isShort(v.durationIso));
   const uniqueChannelIds = Array.from(
     new Set(videos.map((v) => v.channelId).filter((id) => id.length > 0)),
   );
   const channels = await fetchChannelsBatch(uniqueChannelIds);
   return { videos, channels };
+}
+
+/** True when the parsed duration is ≤ SHORTS_MAX_SECONDS. 0/missing
+ *  durations are *not* treated as Shorts — we'd rather keep a video we
+ *  can't classify than silently drop it. */
+export function isShort(durationIso: string): boolean {
+  const seconds = parseDurationToSeconds(durationIso);
+  return seconds > 0 && seconds <= SHORTS_MAX_SECONDS;
 }

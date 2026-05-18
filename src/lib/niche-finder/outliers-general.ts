@@ -32,6 +32,7 @@ import {
 import {
   fetchChannelsBatch,
   fetchVideosBatch,
+  isShort,
   type FetchedVideo,
 } from './youtube-fetch';
 
@@ -96,10 +97,14 @@ export async function findMyChannelBreakouts(
   }
 
   const videoIds = rows.map((r) => r.youtube_video_id);
-  const videos = await fetchVideosBatch(videoIds);
-  if (videos.length === 0) {
+  const fetched = await fetchVideosBatch(videoIds);
+  if (fetched.length === 0) {
     return { niche: 'My channel breakouts', videos: [], fetchOk: false };
   }
+  // Operator's focus is long-form; Shorts they post still surface in
+  // their own breakout-fires table but shouldn't dominate the niche-
+  // finder discovery surface. Match harvestClusterSample's default.
+  const videos = fetched.filter((v) => !isShort(v.durationIso));
   const channelIds = Array.from(new Set(videos.map((v) => v.channelId).filter((id) => id.length > 0)));
   const channels = await fetchChannelsBatch(channelIds);
 
@@ -176,9 +181,13 @@ export async function findYouTubeTrending(
   }
 
   // Convert to FetchedVideo shape so buildOutliers can chew on it.
+  // Drop Shorts in the same pass — YouTube's trending chart is heavily
+  // shorts-biased in most regions and the operator's focus is long-form.
   const fetchedVideos: FetchedVideo[] = [];
   for (const item of trendingItems) {
     if (!item.id) continue;
+    const durationIso = item.contentDetails?.duration ?? 'PT0S';
+    if (isShort(durationIso)) continue;
     fetchedVideos.push({
       id: item.id,
       channelId: item.snippet?.channelId ?? '',
@@ -186,7 +195,7 @@ export async function findYouTubeTrending(
       description: item.snippet?.description ?? '',
       viewCount: parseInt(item.statistics?.viewCount ?? '0', 10) || 0,
       publishedAt: item.snippet?.publishedAt ?? '',
-      durationIso: item.contentDetails?.duration ?? 'PT0S',
+      durationIso,
       tags: item.snippet?.tags ?? [],
       thumbnailUrl:
         item.snippet?.thumbnails?.maxres?.url ?? item.snippet?.thumbnails?.high?.url ?? null,

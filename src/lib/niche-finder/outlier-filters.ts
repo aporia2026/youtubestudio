@@ -201,7 +201,15 @@ export function isLikelyMonetized(video: {
   return seconds >= MID_ROLL_FLOOR_SECONDS;
 }
 
+/** Default to long-form-first: exclude Shorts (≤ 60s) and keep
+ *  `normal` + `long`. The fetch layer (`harvestClusterSample`,
+ *  `findYouTubeTrending`, `findMyChannelBreakouts`) already drops
+ *  Shorts before they reach this filter, so this default is mostly
+ *  belt-and-suspenders — it also stops Shorts from leaking through
+ *  any code path that bypasses the fetch helpers. Operator can re-
+ *  enable Shorts by clicking the "Shorts" chip in OutlierFilterBar. */
 export const DEFAULT_FILTERS: OutlierFilters = Object.freeze({
+  formats: ['normal', 'long'] as ReadonlyArray<VideoFormat>,
   sortBy: 'outlier',
 });
 

@@ -133,11 +133,32 @@ export function OutlierCard({
     }
   }
 
+  const videoUrl = `https://www.youtube.com/watch?v=${video.videoId}`;
+  const channelUrl = video.channelId
+    ? `https://www.youtube.com/channel/${video.channelId}`
+    : null;
+
+  // The card surface is clickable (→ video) and contains a nested
+  // channel link (→ channel). Nested <a> is invalid HTML, so the
+  // outer element is a div with role="link" + keyboard handling;
+  // the inner channel link stays an <a> for affordance + a11y.
+  function openVideo(): void {
+    window.open(videoUrl, '_blank', 'noopener,noreferrer');
+  }
+  function onCardKeyDown(e: React.KeyboardEvent<HTMLDivElement>): void {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      openVideo();
+    }
+  }
+
   return (
-    <a
-      href={`https://www.youtube.com/watch?v=${video.videoId}`}
-      target="_blank"
-      rel="noopener noreferrer"
+    <div
+      role="link"
+      tabIndex={0}
+      aria-label={`Open ${video.title} on YouTube`}
+      onClick={openVideo}
+      onKeyDown={onCardKeyDown}
       style={{
         display: 'block',
         textDecoration: 'none',
@@ -146,6 +167,7 @@ export function OutlierCard({
         borderRadius: 10,
         padding: 12,
         color: '#e2e8f0',
+        cursor: 'pointer',
       }}
     >
       <div style={{ display: 'flex', gap: 12 }}>
@@ -221,7 +243,25 @@ export function OutlierCard({
             {video.title}
           </div>
           <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
-            {video.channelTitle} · {compactNumber(video.subscriberCount)} subs
+            {channelUrl ? (
+              <a
+                href={channelUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                title={`Open ${video.channelTitle} on YouTube`}
+                style={{
+                  color: '#cbd5e1',
+                  textDecoration: 'none',
+                  borderBottom: '1px dotted rgba(203,213,225,0.35)',
+                }}
+              >
+                {video.channelTitle}
+              </a>
+            ) : (
+              video.channelTitle
+            )}{' '}
+            · {compactNumber(video.subscriberCount)} subs
           </div>
           <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
             {compactNumber(video.viewCount)} views ·{' '}
@@ -303,7 +343,7 @@ export function OutlierCard({
           </div>
         </div>
       </div>
-    </a>
+    </div>
   );
 }
 

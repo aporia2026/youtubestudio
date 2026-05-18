@@ -34,6 +34,24 @@ import {
 export type ConfidenceLabel = 'low' | 'medium' | 'high';
 export type PromiseLabel = 'Strong' | 'Solid' | 'Marginal' | 'Weak';
 
+/** One channel the brief cites in the competition section. Rendered
+ *  as a clickable link in the UI when `channel_id` or `handle`
+ *  validates. Both identifiers are model-supplied, hence validated at
+ *  render time against strict regexes — bad values fall back to plain
+ *  text rather than producing broken URLs. */
+export interface BriefCompetitionChannel {
+  /** Channel display name. Always present. */
+  name: string;
+  /** YouTube channel ID — `UC` prefix + 22 chars. Optional. */
+  channel_id?: string;
+  /** YouTube handle starting with `@`. Optional. */
+  handle?: string;
+  /** Subscriber count if the model knows it. Display-only. */
+  subs?: number;
+  /** One-line note on what the channel is known for. Optional. */
+  note?: string;
+}
+
 /** The 8 sections that make up a brief, in display order. */
 export interface BriefSections {
   /** One-sentence verdict. ~25 words. */
@@ -42,6 +60,9 @@ export interface BriefSections {
   market_demand: string;
   /** Top channels in the niche, gaps. ~80 words. */
   competition: string;
+  /** Structured channel list the UI renders as clickable links below
+   *  the competition prose. Optional — older briefs lack the field. */
+  competition_channels?: BriefCompetitionChannel[];
   /** RPM range, ad-friendliness, sponsorship + affiliate angles. ~80 words. */
   monetization: string;
   /** "Can THIS operator win this niche?" Grounded in operator context. ~60 words. */
@@ -202,6 +223,15 @@ export function buildBriefUserPrompt(inputs: BriefPromptInputs): string {
   "headline": "one-sentence verdict, max 25 words",
   "market_demand": "~80 words on why the audience is real, how big, trend direction. Cite a source if you have one. Confidence: low | medium | high.",
   "competition": "~80 words. Name 2-3 top channels by handle, note their size, identify gaps. Reference the proof videos when relevant. Confidence: low | medium | high.",
+  "competition_channels": [
+    {
+      "name": "Display name of a channel cited in the competition prose",
+      "handle": "@channel-handle if you know it (must start with @, alphanumerics/dots/dashes/underscores after)",
+      "channel_id": "UCxxxxxxxxxxxxxxxxxxxx if you know it (22 chars after UC)",
+      "subs": 123456,
+      "note": "one short clause on what this channel does"
+    }
+  ],
   "monetization": "~80 words on RPM range, ad-friendliness, sponsorship and affiliate angles. Confidence: low | medium | high.",
   "operator_fit": "~60 words. Reference the channel description and produced niches by name. Concrete fit reasoning, not generic. Confidence: low | medium | high.",
   "risks": "~80 words. Specific to THIS operator + THIS niche. COPPA, demonetization, copyright, format risks, audience age, platform dependence. Confidence: low | medium | high.",
@@ -228,6 +258,8 @@ export function buildBriefUserPrompt(inputs: BriefPromptInputs): string {
     `- 60–79: solid, most dimensions favorable, fit plausible`,
     `- 40–59: marginal, mixed signals, fit unclear`,
     `- 0–39: weak, the operator should probably pass`,
+    ``,
+    `**competition_channels** must include EVERY channel you name in the competition prose, in the same order. For each, set \`handle\` (preferred, e.g. "@MrBeast") or \`channel_id\` (e.g. "UCX6OQ3DkcsbYNE6H8uQQuVA") so the operator can click straight to that channel on YouTube. Omit identifiers you are not sure about — the UI falls back to plain text rather than show a broken link. Return an empty array if you cite no channels.`,
     ``,
     `If you have no real research backing a section, set its confidence to "low" and say so in the section text. Do NOT invent data to look authoritative.`,
   ].join('\n');
@@ -278,6 +310,46 @@ function clampPromiseScore(v: unknown): number {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
+/** YouTube channel ID — fixed `UC` prefix + 22 chars of base64url
+ *  alphabet. Strict because we feed the value directly into a URL. */
+const CHANNEL_ID_RE = /^UC[A-Za-z0-9_-]{22}$/;
+/** YouTube handle: leading `@`, then 3-30 chars of alphanumerics
+ *  + `._-`. YouTube's own rules are slightly looser (allows some
+ *  CJK) but this conservative cut blocks the prompt-injection
+ *  shape (no slashes, no URL fragments). */
+const CHANNEL_HANDLE_RE = /^@[A-Za-z0-9._-]{3,30}$/;
+
+/** Decode the model's `competition_channels` array. Bad rows are
+ *  dropped; bad identifiers within a good row are stripped (the row
+ *  still renders as plain text). Caps at 5 entries to keep the brief
+ *  body tight. */
+function clampCompetitionChannels(v: unknown): BriefCompetitionChannel[] {
+  if (!Array.isArray(v)) return [];
+  const out: BriefCompetitionChannel[] = [];
+  for (const raw of v) {
+    if (out.length >= 5) break;
+    if (!raw || typeof raw !== 'object') continue;
+    const r = raw as Record<string, unknown>;
+    const name = typeof r.name === 'string' ? r.name.trim() : '';
+    if (name.length === 0 || name.length > 120) continue;
+    const channel_id =
+      typeof r.channel_id === 'string' && CHANNEL_ID_RE.test(r.channel_id)
+        ? r.channel_id
+        : undefined;
+    const handle =
+      typeof r.handle === 'string' && CHANNEL_HANDLE_RE.test(r.handle)
+        ? r.handle
+        : undefined;
+    const subsRaw = typeof r.subs === 'number' ? r.subs : Number(r.subs);
+    const subs = Number.isFinite(subsRaw) && subsRaw >= 0 ? Math.round(subsRaw) : undefined;
+    const note = typeof r.note === 'string' && r.note.length > 0
+      ? (r.note.length > 200 ? r.note.slice(0, 200) : r.note)
+      : undefined;
+    out.push({ name, channel_id, handle, subs, note });
+  }
+  return out;
+}
+
 function promiseLabelFor(score: number): PromiseLabel {
   if (score >= 80) return 'Strong';
   if (score >= 60) return 'Solid';
@@ -307,6 +379,7 @@ export function parseBriefResponse(args: {
     headline: clampString(parsed.headline, 500),
     market_demand: clampString(parsed.market_demand, 1500),
     competition: clampString(parsed.competition, 1500),
+    competition_channels: clampCompetitionChannels(parsed.competition_channels),
     monetization: clampString(parsed.monetization, 1500),
     operator_fit: clampString(parsed.operator_fit, 1500),
     risks: clampString(parsed.risks, 1500),
