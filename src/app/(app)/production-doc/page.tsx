@@ -6854,7 +6854,7 @@ function ProductionDocPage() {
                                 rethinkExhausted={(rethinkAttempts[i] ?? 0) >= RETHINK_MAX_ATTEMPTS}
                                 onEditImage={() => setOverlayEditRow(i)}
                                 onUndoEdit={() => undoOverlayEdit(i)}
-                                canUndoEdit={(row.overlay_edit_history?.length ?? 0) > 0}
+                                editHistoryDepth={row.overlay_edit_history?.length ?? 0}
                                 onShowContextMenu={(x, y) =>
                                   setOverlayContextMenu({ rowIndex: i, x, y })
                                 }
@@ -7119,7 +7119,7 @@ function ProductionDocPage() {
                               rethinkExhausted={(rethinkAttempts[i] ?? 0) >= RETHINK_MAX_ATTEMPTS}
                               onEditImage={() => setOverlayEditRow(i)}
                               onUndoEdit={() => undoOverlayEdit(i)}
-                              canUndoEdit={(row.overlay_edit_history?.length ?? 0) > 0}
+                              editHistoryDepth={row.overlay_edit_history?.length ?? 0}
                               onShowContextMenu={(x, y) =>
                                 setOverlayContextMenu({ rowIndex: i, x, y })
                               }
@@ -7720,6 +7720,60 @@ function ProductionDocPage() {
                   title: canUndo
                     ? 'Restore the overlay state from before the most recent AI edit'
                     : 'No edits to undo yet',
+                },
+                {
+                  label: '↺ Reset to AI placement',
+                  onClick: () => {
+                    console.info('[ui overlay-position] reset (via context menu)', { rowIndex: i });
+                    recordEditorTelemetry('overlay_reset', {
+                      payload: {
+                        row_index: i,
+                        placement_model: row.overlay_placement_model ?? 'doc-gen-blind',
+                      },
+                    });
+                    updateRow(i, {
+                      overlay_position: undefined,
+                      overlay_size_pct: undefined,
+                      overlay_stretched_height_pct: undefined,
+                    });
+                  },
+                  disabled:
+                    !row.overlay_position &&
+                    row.overlay_size_pct === undefined &&
+                    row.overlay_stretched_height_pct === undefined,
+                  separatorAbove: true,
+                  title: 'Clear manual position / size / stretch and fall back to the AI-planned zone',
+                },
+                {
+                  label: '✕ Remove overlay',
+                  onClick: () => {
+                    const ok = window.confirm(
+                      'Remove the overlay entirely?\n\nThis clears the stock terms, the fetched image, AI placement, edits, and undo history for this row. The row\'s scene image stays. You can re-add by typing new stock terms.',
+                    );
+                    if (!ok) return;
+                    console.info('[ui overlay] removed (via context menu)', { rowIndex: i });
+                    setRowOverlays((prev) => {
+                      const next = { ...prev };
+                      delete next[i];
+                      return next;
+                    });
+                    updateRow(i, {
+                      overlay_stock_terms: undefined,
+                      overlay_zone: undefined,
+                      overlay_size: undefined,
+                      overlay_zone_resolved: undefined,
+                      overlay_size_resolved: undefined,
+                      overlay_position: undefined,
+                      overlay_size_pct: undefined,
+                      overlay_stretched_height_pct: undefined,
+                      overlay_placement_reason: undefined,
+                      overlay_placement_model: undefined,
+                      overlay_rmbg_kept: undefined,
+                      overlay_edit_history: undefined,
+                    });
+                  },
+                  destructive: true,
+                  title: 'Clear all overlay state on this row (stock terms, image, placement, history)',
                 },
               ]}
             />

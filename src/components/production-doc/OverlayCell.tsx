@@ -54,11 +54,13 @@ interface Props {
   /** Phase 5 — invoked when the user clicks the ↶ Undo button. The
    *  parent pops the row's `overlay_edit_history` stack and restores
    *  the previous URL into the live overlay slot. Surfaced only when
-   *  `canUndoEdit` is true. */
+   *  `editHistoryDepth > 0`. */
   onUndoEdit?: () => void;
-  /** True when the row's `overlay_edit_history` is non-empty — i.e.
-   *  there's at least one prior overlay URL we can revert to. */
-  canUndoEdit?: boolean;
+  /** Number of prior overlay URLs on the row's `overlay_edit_history`
+   *  stack. 0 hides the Undo button; ≥1 shows "↶ Undo"; ≥2 shows
+   *  "↶ Undo (N)" so the user knows how many edits back they can go.
+   *  Capped at the stack's hard limit (3) by the parent. */
+  editHistoryDepth?: number;
   /** Phase 5 — invoked on right-click of the overlay cell. Parent
    *  opens an OverlayContextMenu at the cursor coords. Absent ⇒
    *  right-click falls through to the browser's default menu. */
@@ -89,9 +91,10 @@ export function OverlayCell({
   rethinkExhausted,
   onEditImage,
   onUndoEdit,
-  canUndoEdit,
+  editHistoryDepth,
   onShowContextMenu,
 }: Props) {
+  const undoDepth = editHistoryDepth ?? 0;
   const status = state?.status ?? 'idle';
   return (
     <div
@@ -225,10 +228,11 @@ export function OverlayCell({
                 ✎ Edit
               </button>
             )}
-            {/* Phase 5 — Undo last AI edit. Visible only when the row's
-                edit-history stack is non-empty. Single click pops the
-                most recent prior overlay URL back into the live slot. */}
-            {onUndoEdit && canUndoEdit && (
+            {/* Phase 5 — Undo last AI edit. Visible when the row's
+                edit-history stack has ≥1 entry. The count badge shows
+                up at depth ≥2 so the user knows how many edits back
+                they can step. Each click pops one. */}
+            {onUndoEdit && undoDepth > 0 && (
               <button
                 type="button"
                 onClick={onUndoEdit}
@@ -239,9 +243,13 @@ export function OverlayCell({
                   border: '1px solid rgba(255,255,255,0.10)',
                   cursor: 'pointer',
                 }}
-                title="Undo the most recent AI edit on this overlay"
+                title={
+                  undoDepth === 1
+                    ? 'Undo the most recent AI edit on this overlay'
+                    : `Undo the most recent AI edit (${undoDepth} edits stored — click again to go further back)`
+                }
               >
-                ↶ Undo
+                {undoDepth > 1 ? `↶ Undo (${undoDepth})` : '↶ Undo'}
               </button>
             )}
           </div>

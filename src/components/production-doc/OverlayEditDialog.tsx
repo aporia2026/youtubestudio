@@ -64,6 +64,13 @@ export function OverlayEditDialog({
   const [pendingResultUrl, setPendingResultUrl] = useState<string | null>(null);
   const [pendingMode, setPendingMode] = useState<EditMode | null>(null);
   const [brushOpen, setBrushOpen] = useState(false);
+  /** When true, the route re-runs Bria RMBG on the edit output so any
+   *  background the model accidentally introduced is removed before
+   *  the result reaches preview. Default on — overlays are transparent
+   *  PNGs by contract and Nano Banana / GPT-image sometimes inject a
+   *  background even when prompted otherwise. Adds ~$0.018-0.058 per
+   *  edit on top of the model cost. */
+  const [autoRmbg, setAutoRmbg] = useState(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Lock page scroll while the dialog is open — same pattern as the
@@ -117,6 +124,7 @@ export function OverlayEditDialog({
           mode: 'smart',
           overlayUrl,
           prompt: promptTrimmed,
+          rerunRmbg: autoRmbg,
         }),
       });
       const data = (await res.json().catch(() => ({}))) as {
@@ -135,7 +143,7 @@ export function OverlayEditDialog({
     } finally {
       setIsWorking(false);
     }
-  }, [overlayUrl, smartPrompt]);
+  }, [overlayUrl, smartPrompt, autoRmbg]);
 
   const applyBrushEdit = useCallback(
     async (args: { maskUrl: string; prompt: string; quality: 'low' | 'medium' | 'high' }) => {
@@ -157,6 +165,7 @@ export function OverlayEditDialog({
             overlayUrl,
             prompt: args.prompt,
             mask: { url: args.maskUrl, quality: args.quality },
+            rerunRmbg: autoRmbg,
           }),
         });
         const data = (await res.json().catch(() => ({}))) as {
@@ -176,7 +185,7 @@ export function OverlayEditDialog({
         setIsWorking(false);
       }
     },
-    [overlayUrl],
+    [overlayUrl, autoRmbg],
   );
 
   const acceptPending = useCallback(() => {
@@ -387,6 +396,38 @@ export function OverlayEditDialog({
                   )}
                 </div>
               </div>
+
+              {/* Auto-RMBG toggle. Default on — overlays are transparent
+                  PNGs by contract, but the edit models sometimes inject
+                  a background. The route re-runs Bria RMBG when this is
+                  on, applying the Phase 4 gate so an over-aggressive
+                  RMBG doesn't ship a blank PNG. Off = use the model's
+                  raw output verbatim. */}
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  fontSize: 11,
+                  color: 'var(--text-muted)',
+                  cursor: isWorking ? 'not-allowed' : 'pointer',
+                  userSelect: 'none',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={autoRmbg}
+                  onChange={(e) => setAutoRmbg(e.target.checked)}
+                  disabled={isWorking}
+                  style={{ cursor: 'inherit' }}
+                />
+                <span>
+                  Auto-remove background after edit
+                  <span style={{ marginLeft: 4, opacity: 0.7 }}>
+                    (+~$0.02; recommended — strips any backdrop the model adds)
+                  </span>
+                </span>
+              </label>
 
               {error && (
                 <div

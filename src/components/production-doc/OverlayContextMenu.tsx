@@ -31,6 +31,10 @@ export interface OverlayContextMenuItem {
   /** Optional separator above this item — used to group destructive
    *  actions away from the safe ones. */
   separatorAbove?: boolean;
+  /** When true, the item renders in red to flag a destructive action
+   *  (e.g. "Remove overlay"). The parent is responsible for any
+   *  confirm prompt before mutating state. */
+  destructive?: boolean;
 }
 
 interface OverlayContextMenuProps {
@@ -130,13 +134,20 @@ export function OverlayContextMenu({ x, y, items, onClose }: OverlayContextMenuP
               padding: '6px 10px',
               borderRadius: 4,
               background: 'transparent',
-              color: item.disabled ? 'rgba(255,255,255,0.30)' : 'var(--text)',
+              color: item.disabled
+                ? 'rgba(255,255,255,0.30)'
+                : item.destructive
+                  ? '#f87171'
+                  : 'var(--text)',
               border: 'none',
               cursor: item.disabled ? 'not-allowed' : 'pointer',
               transition: 'background 80ms',
             }}
             onMouseEnter={(e) => {
-              if (!item.disabled) e.currentTarget.style.background = 'rgba(255,255,255,0.06)';
+              if (item.disabled) return;
+              e.currentTarget.style.background = item.destructive
+                ? 'rgba(239,68,68,0.12)'
+                : 'rgba(255,255,255,0.06)';
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.background = 'transparent';
