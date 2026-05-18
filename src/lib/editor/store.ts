@@ -110,6 +110,10 @@ export type EditorCommand =
   // BRoll scene). Pass `null` to clear. Lives outside the doc row
   // shape because that's where it already lives in `rowImages`.
   | { type: 'SET_ROW_IMAGE'; shotIndex: number; url: string | null }
+  // Edit a shot's voiceover script text (also drives caption display
+  // in Phase 4 since captions are derived from script_text). Persists
+  // on `row.script_text`. Inverse stores the prior text.
+  | { type: 'SET_ROW_SCRIPT'; shotIndex: number; text: string }
   // Replace a shot's source video clip (the override read by
   // productionDocToVideoConfig over the auto-pipeline's
   // `rowVideoClips`). Pass `null` for both fields to clear.
@@ -157,6 +161,7 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'TRIM_SHOT':
     case 'SET_ROW_IMAGE':
     case 'SET_ROW_VIDEO':
+    case 'SET_ROW_SCRIPT':
       return true;
     default:
       return false;
@@ -418,6 +423,39 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           ...state,
           doc: { ...state.doc, rows: nextRows },
           rowImages: nextImages,
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'SET_ROW_SCRIPT': {
+      const { shotIndex, text } = cmd;
+      if (shotIndex < 0 || shotIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const row = state.doc.rows[shotIndex];
+      const prevText = row.script_text ?? '';
+      const normalised = text;
+      if (prevText === normalised) {
+        return { next: state, inverse: null };
+      }
+      const nextRow = {
+        ...row,
+        script_text: normalised,
+        edited_at: new Date().toISOString(),
+      };
+      const nextRows = state.doc.rows.slice();
+      nextRows[shotIndex] = nextRow;
+      const inverse: EditorCommand = {
+        type: 'SET_ROW_SCRIPT',
+        shotIndex,
+        text: prevText,
+      };
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
           isDirty: true,
         },
         inverse,

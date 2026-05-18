@@ -500,6 +500,13 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                 durationSeconds,
               })
             }
+            onUpdateScript={(text) =>
+              apply({
+                type: 'SET_ROW_SCRIPT',
+                shotIndex: state.selection as number,
+                text,
+              })
+            }
           />
         )}
       </div>

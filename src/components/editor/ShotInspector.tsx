@@ -50,6 +50,10 @@ interface ShotInspectorProps {
    *  library. The caller dispatches SET_ROW_VIDEO. Pass `null` for
    *  videoUrl to clear an existing pick. */
   onPickProjectClip?: (videoUrl: string | null, durationSeconds: number | null) => void;
+  /** Called when the user edits the row's voiceover script (inline
+   *  textarea OR via the AI rephrase button). Dispatches
+   *  SET_ROW_SCRIPT. */
+  onUpdateScript?: (text: string) => void;
 }
 
 function fmt(ms: number | undefined): string {
@@ -69,6 +73,7 @@ export function ShotInspector({
   onClose,
   onUploadImage,
   onPickProjectClip,
+  onUpdateScript,
 }: ShotInspectorProps): React.ReactElement {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadState, setUploadState] = useState<
@@ -124,6 +129,74 @@ export function ShotInspector({
       setRegenState({ kind: 'error', message });
     }
   }, [onUploadImage, row.ai_image_prompt, row.visual_description, row.on_screen_text, row.section_title, shotIndex]);
+
+  // Inline-edit + Rephrase state for the voiceover script field.
+  // The textarea is a controlled mirror of `row.script_text`; we
+  // commit on blur so the doc isn't rewritten on every keystroke.
+  const [scriptDraft, setScriptDraft] = useState<string>(row.script_text ?? '');
+  // Sync the draft when the row changes (e.g. user selects a
+  // different shot). Compared by index to avoid clobbering an
+  // in-progress edit when something else dirties the doc.
+  const scriptSyncedFor = useRef<number>(shotIndex);
+  if (scriptSyncedFor.current !== shotIndex) {
+    scriptSyncedFor.current = shotIndex;
+    // Mid-render setState would loop — schedule via microtask so
+    // the next render uses the fresh draft.
+    queueMicrotask(() => setScriptDraft(row.script_text ?? ''));
+  }
+
+  const commitScriptDraft = useCallback(() => {
+    if (!onUpdateScript) return;
+    const next = scriptDraft;
+    const prev = row.script_text ?? '';
+    if (next === prev) return;
+    onUpdateScript(next);
+  }, [onUpdateScript, row.script_text, scriptDraft]);
+
+  const [rephraseState, setRephraseState] = useState<
+    | { kind: 'idle' }
+    | { kind: 'rephrasing'; style: 'same' | 'shorter' | 'longer' | 'simpler' }
+    | { kind: 'error'; message: string }
+  >({ kind: 'idle' });
+
+  const handleRephrase = useCallback(
+    async (style: 'same' | 'shorter' | 'longer' | 'simpler') => {
+      if (!onUpdateScript) return;
+      // Use the live draft if the user typed since the last commit;
+      // otherwise the row's text. Either way we send the latest
+      // value to the model.
+      const text = (scriptDraft || row.script_text || '').trim();
+      if (!text) {
+        setRephraseState({ kind: 'error', message: 'No script text to rephrase.' });
+        return;
+      }
+      setRephraseState({ kind: 'rephrasing', style });
+      try {
+        const res = await fetch('/api/editor/rephrase', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, style }),
+        });
+        if (!res.ok) {
+          const data = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(data.error || `Rephrase failed: HTTP ${res.status}`);
+        }
+        const data = (await res.json()) as { text?: string };
+        const rephrased = typeof data.text === 'string' ? data.text.trim() : '';
+        if (!rephrased) {
+          throw new Error('Empty rephrase output');
+        }
+        setScriptDraft(rephrased);
+        onUpdateScript(rephrased);
+        setRephraseState({ kind: 'idle' });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn('[editor inspector] rephrase failed', { detail: message });
+        setRephraseState({ kind: 'error', message });
+      }
+    },
+    [onUpdateScript, row.script_text, scriptDraft],
+  );
 
   const [projectClips, setProjectClips] = useState<
     | { kind: 'idle' }
@@ -480,11 +553,63 @@ export function ShotInspector({
               commit; the rewrite-with-AI commit makes it editable. */}
           <Field label="Visual description" value={row.visual_description || '—'} />
           <Field label="AI image prompt" value={row.ai_image_prompt || '—'} mono />
-          <Field
-            label="Voiceover script"
-            value={row.script_text || '—'}
-            highlight={typeof row.muted === 'boolean' && row.muted ? 'muted' : null}
-          />
+          {/* Voiceover script — editable inline. Commits on blur
+              (or on AI rephrase). Cmd/Ctrl+Z still walks the undo
+              stack through SET_ROW_SCRIPT commands. */}
+          <div className="space-y-1">
+            <div className="font-medium" style={{ color: 'var(--fg)' }}>
+              Voiceover script
+              {row.muted && (
+                <span className="ml-1" style={{ color: '#f87171' }}>
+                  (muted)
+                </span>
+              )}
+            </div>
+            {onUpdateScript ? (
+              <>
+                <textarea
+                  value={scriptDraft}
+                  onChange={(e) => setScriptDraft(e.target.value)}
+                  onBlur={commitScriptDraft}
+                  className="w-full text-xs rounded border p-2 resize-y min-h-[80px]"
+                  style={{
+                    borderColor: 'var(--card-border)',
+                    background: 'var(--bg)',
+                    color: 'var(--fg)',
+                  }}
+                  placeholder="—"
+                  spellCheck
+                />
+                <div className="flex flex-wrap gap-1">
+                  {(['same', 'shorter', 'longer', 'simpler'] as const).map((style) => (
+                    <button
+                      key={style}
+                      type="button"
+                      onClick={() => { void handleRephrase(style); }}
+                      disabled={rephraseState.kind === 'rephrasing'}
+                      className="text-[10px] px-2 py-0.5 rounded border transition-colors disabled:opacity-50 hover:bg-white/5"
+                      style={{ borderColor: 'var(--card-border)' }}
+                      title={`Rephrase with AI (${style})`}
+                    >
+                      {rephraseState.kind === 'rephrasing' && rephraseState.style === style
+                        ? 'Rephrasing…'
+                        : `Rephrase: ${style}`}
+                    </button>
+                  ))}
+                </div>
+                {rephraseState.kind === 'error' && (
+                  <div className="text-[10px]" style={{ color: '#f87171' }}>
+                    {rephraseState.message}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="whitespace-pre-wrap break-words" style={{ color: 'var(--fg-muted)' }}>
+                {row.script_text || '—'}
+              </div>
+            )}
+          </div>
+
           {row.on_screen_text && (
             <Field label="On-screen text" value={row.on_screen_text} />
           )}
@@ -521,12 +646,11 @@ export function ShotInspector({
         className="p-3 border-t text-[11px]"
         style={{ borderColor: 'var(--card-border)', color: 'var(--fg-muted)' }}
       >
-        Pick-from-project, regenerate, and rewrite-with-AI land in the next
-        Phase 3 commits. For doc-wide edits, head back to{' '}
+        For doc-wide edits, head back to{' '}
         <Link href="/production-doc" className="underline">
           Production Doc
         </Link>
-        .
+        . All edits here round-trip through the same save endpoint.
       </footer>
     </aside>
   );
