@@ -4,6 +4,7 @@ import React, { Suspense, useState, useEffect, useRef, useCallback } from 'react
 import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
+import { EDITOR_V1_PUBLIC } from '@/lib/feature-flags';
 import type { ScheduleItem } from '@/lib/schedule';
 import { getScheduleLinkId, fetchScheduleItem, loadFullContextForItem, buildContextNotesFromItem } from '@/lib/schedule-link';
 import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
@@ -216,6 +217,15 @@ interface ProductionRow {
    *  on a resize handle (free aspect). Absent means height follows the
    *  image's natural aspect. Phase 1 of the overlay-system overhaul. */
   overlay_stretched_height_pct?: number;
+  /** One-sentence AI rationale for this overlay's auto-picked placement.
+   *  Surfaced as a tooltip in the position editor. Written by
+   *  `/api/overlay/fetch` when smart placement ran at fetch time.
+   *  Phase 2 of the overlay-system overhaul. */
+  overlay_placement_reason?: string;
+  /** Model id that produced the placement decision (e.g.
+   *  `kie-gemini-3.1-pro`); `'doc-gen-blind'` for rows whose
+   *  zone/size came from the text-only doc-gen LLM. */
+  overlay_placement_model?: string;
   /** Cached pixel-saliency map for this row's generated image. Populated
    *  by `/api/generate/production-doc/image` after the image lands in R2. */
   image_saliency?: ImageSaliencyMap;
@@ -4205,16 +4215,44 @@ function ProductionDocPage() {
   async function fetchOverlayForRow(rowIndex: number, overlayStockTerms: string): Promise<void> {
     setRowOverlays((prev) => ({ ...prev, [rowIndex]: { status: 'loading' } }));
     try {
+      // Phase 2 smart placement: when both the row's scene image AND its
+      // saliency map are ready, send them through so the route can ask
+      // a vision LLM where this overlay belongs. The route is tolerant
+      // of either being absent — a row whose still hasn't generated yet
+      // still gets the overlay, just without smart placement.
+      const row = doc?.rows[rowIndex];
+      const sceneImageUrl = rowImages[rowIndex]?.imageUrl;
+      const saliencyMap = row?.image_saliency;
+      const saliencyCells = saliencyMap
+        ? Array.from({ length: saliencyMap.cols * saliencyMap.rows }, (_, idx) => ({
+            row: Math.floor(idx / saliencyMap.cols),
+            col: idx % saliencyMap.cols,
+            score: saliencyMap.busyness[idx] ?? 0,
+          }))
+        : undefined;
       const res = await fetch('/api/overlay/fetch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ overlayStockTerms }),
+        body: JSON.stringify({
+          overlayStockTerms,
+          sceneImageUrl,
+          saliencyCells,
+        }),
       });
       const data = (await safeJson(res)) as {
         overlayUrl?: string | null;
         sourceUrl?: string;
         reason?: string;
         error?: string;
+        placement?: {
+          model: string;
+          sizePct: number;
+          mode: 'zone' | 'custom';
+          zone?: ProductionRow['overlay_zone'];
+          customXPct?: number;
+          customYPct?: number;
+          reason: string;
+        };
       };
       if (!res.ok) {
         setRowOverlays((prev) => ({
@@ -4228,6 +4266,36 @@ function ProductionDocPage() {
           ...prev,
           [rowIndex]: { status: 'done', url: data.overlayUrl!, sourceUrl: data.sourceUrl },
         }));
+        // Phase 2: when the route returned a smart placement, write the
+        // decision onto the row. Only write fields the AI actually
+        // produced — `mode: 'zone'` leaves customX/Y null; `mode:
+        // 'custom'` leaves zone null. The renderer's resolution order
+        // (custom > zone > LLM-default) makes either combination work.
+        const p = data.placement;
+        if (p) {
+          console.info('[ui overlay-placement] applied', {
+            rowIndex,
+            model: p.model,
+            sizePct: p.sizePct,
+            mode: p.mode,
+            zone: p.zone,
+            reason: p.reason,
+          });
+          updateRow(rowIndex, {
+            overlay_size_pct: p.sizePct,
+            overlay_position:
+              p.mode === 'custom' &&
+              typeof p.customXPct === 'number' &&
+              typeof p.customYPct === 'number'
+                ? { x_pct: p.customXPct, y_pct: p.customYPct }
+                : undefined,
+            // When the AI picked a zone, also clear any prior manual
+            // position so the zone wins at render time.
+            ...(p.mode === 'zone' && p.zone ? { overlay_zone: p.zone } : {}),
+            overlay_placement_reason: p.reason || undefined,
+            overlay_placement_model: p.model,
+          });
+        }
       } else {
         setRowOverlays((prev) => ({
           ...prev,
@@ -6956,6 +7024,35 @@ function ProductionDocPage() {
                   renderProgress={renderProgress}
                   downloadUrl={renderDownloadUrl}
                 />
+
+                {/* Open in the shot-graph editor (/edit/[projectId]).
+                    The route gates on EDITOR_V1_ENABLED server-side
+                    and 404s when off — we mirror with the client-side
+                    NEXT_PUBLIC_EDITOR_V1_ENABLED so the button is
+                    hidden too. Disabled until the doc has been saved
+                    once (we need a historyEntryId to route against). */}
+                {EDITOR_V1_PUBLIC && (
+                  historyEntryId ? (
+                    <a
+                      href={`/edit/${encodeURIComponent(historyEntryId)}`}
+                      className="w-full text-xs px-3 py-2 rounded border hover:bg-white/5 transition-colors flex items-center justify-center gap-1.5"
+                      style={{ borderColor: 'var(--accent-purple-bright, #a78bfa)', color: 'var(--accent-purple-bright, #a78bfa)' }}
+                      title="Open the shot-graph editor for this production doc"
+                    >
+                      Open in editor →
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled
+                      className="w-full text-xs px-3 py-2 rounded border opacity-40 cursor-not-allowed"
+                      style={{ borderColor: 'var(--card-border)' }}
+                      title="Save the production doc first to open it in the editor"
+                    >
+                      Open in editor →
+                    </button>
+                  )
+                )}
 
                 {/* Dev-only: send to local Video Studio for advanced editing */}
                 {process.env.NODE_ENV !== 'production' && (

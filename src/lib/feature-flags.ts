@@ -23,3 +23,17 @@
  * about the editor's existence.
  */
 export const EDITOR_V1_ENABLED = process.env.EDITOR_V1_ENABLED === 'true';
+
+/**
+ * Client-readable mirror for surfaces that need to conditionally
+ * render "Open in editor" buttons / nav entries. Next.js inlines
+ * `NEXT_PUBLIC_*` env vars at build time, so changing this requires
+ * a rebuild — keep it in sync with `EDITOR_V1_ENABLED` in deploy
+ * configs.
+ *
+ * Why two flags: the SERVER flag gates the route (404s when off).
+ * The CLIENT flag gates the UI entry points (hide the link). They
+ * need to be set together; only the server flag is load-bearing
+ * for security, the client flag is purely UX.
+ */
+export const EDITOR_V1_PUBLIC = process.env.NEXT_PUBLIC_EDITOR_V1_ENABLED === 'true';
