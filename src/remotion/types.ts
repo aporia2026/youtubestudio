@@ -188,6 +188,13 @@ export interface VideoShot {
      *  image's natural aspect. Absent ⇒ height follows natural aspect.
      *  See Phase 1 of `_plans/2026-05-18-overlay-system-overhaul.md`. */
     stretchedHeightPct?: number;
+    /** One-sentence rationale for the AI-chosen placement — surfaced as
+     *  a tooltip in the position editor so the user can see *why* the
+     *  overlay landed here. Written by `/api/overlay/fetch` when smart
+     *  placement was applied at fetch time. Absent for pre-Phase-2 rows
+     *  and for rows that opted out. Phase 2 of the overlay-system
+     *  overhaul. */
+    placementReason?: string;
   };
   // ─── Shot-graph editor fields ──────────────────────────────────────
   //

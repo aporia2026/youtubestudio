@@ -248,6 +248,15 @@ export interface ProductionRow {
    *  image's natural aspect. Phase 1 of
    *  `_plans/2026-05-18-overlay-system-overhaul.md`. */
   overlay_stretched_height_pct?: number;
+  /** One-sentence AI rationale for this overlay's auto-picked size and
+   *  position — written by `/api/overlay/fetch` when smart placement
+   *  ran at fetch time. Phase 2 of the overlay-system overhaul. */
+  overlay_placement_reason?: string;
+  /** Model id that produced the placement decision (e.g.
+   *  `kie-gemini-3.1-pro`). 'doc-gen-blind' for pre-Phase-2 rows whose
+   *  zone/size came from the text-only doc-gen LLM. Drives the per-
+   *  model drag-rate telemetry signal. */
+  overlay_placement_model?: string;
   /** Cached saliency map of `imageUrl` for this row — populated by the
    *  image-generation route. Sparse: missing for rows whose image hasn't
    *  been generated, or which pre-date the feature. */
@@ -607,6 +616,10 @@ export function productionDocToVideoConfig(
             stretchedHeightPct:
               typeof row.overlay_stretched_height_pct === 'number'
                 ? row.overlay_stretched_height_pct
+                : undefined,
+            placementReason:
+              typeof row.overlay_placement_reason === 'string' && row.overlay_placement_reason.length > 0
+                ? row.overlay_placement_reason
                 : undefined,
           }
         : undefined;

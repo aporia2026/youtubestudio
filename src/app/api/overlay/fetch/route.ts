@@ -8,6 +8,11 @@ import {
   getImagesBucket,
   uploadToBucket,
 } from '@/lib/r2';
+import {
+  decideOverlayPlacement,
+  type SaliencyCell,
+  type OverlayPlacementDecision,
+} from '@/lib/overlay-placement-ai';
 
 /**
  * POST /api/overlay/fetch
@@ -58,7 +63,17 @@ const ALLOWED_CONTENT_TYPES = new Set([
 ]);
 
 type GracefulResult =
-  | { overlayUrl: string; cached: boolean; sourceUrl?: string }
+  | {
+      overlayUrl: string;
+      cached: boolean;
+      sourceUrl?: string;
+      /** Phase 2 smart-placement decision when sceneImageUrl was
+       *  provided and the vision LLM produced a usable answer. Absent
+       *  when the caller didn't request smart placement OR the vision
+       *  call failed — in either case the caller keeps the doc-gen-
+       *  blind zone/size already on the row. */
+      placement?: OverlayPlacementDecision;
+    }
   | { overlayUrl: null; reason: string };
 
 /**
@@ -264,7 +279,19 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     return NextResponse.json({ error: 'Rate limited' }, { status: 429 });
   }
 
-  let body: { overlayStockTerms?: string };
+  let body: {
+    overlayStockTerms?: string;
+    /** When provided, Phase 2 smart placement runs after the overlay is
+     *  ready and the decision is returned in `result.placement`. Absent
+     *  ⇒ placement skipped (the caller keeps the doc-gen blind pick).
+     *  Must be a public URL the vision LLM can fetch — the scene's R2
+     *  URL from `row.imageUrl` is the typical value. */
+    sceneImageUrl?: string;
+    /** Optional saliency cells from `row.image_saliency` — embedded in
+     *  the placement prompt so the model can avoid high-attention areas
+     *  without re-deriving them. */
+    saliencyCells?: SaliencyCell[];
+  };
   try {
     body = await req.json();
   } catch {
@@ -278,6 +305,43 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     return NextResponse.json({ error: 'overlayStockTerms too long' }, { status: 400 });
   }
 
+  // Validate scene URL — must be HTTPS (no file://, no private hosts —
+  // SSRF protection. The vision LLM fetches this URL server-side, so a
+  // malicious caller could probe internal infra without this guard.
+  const sceneImageUrlRaw = typeof body.sceneImageUrl === 'string' ? body.sceneImageUrl.trim() : '';
+  let sceneImageUrl: string | undefined;
+  if (sceneImageUrlRaw) {
+    try {
+      const parsed = new URL(sceneImageUrlRaw);
+      if (parsed.protocol !== 'https:') {
+        return NextResponse.json(
+          { error: 'sceneImageUrl must be HTTPS' },
+          { status: 400 },
+        );
+      }
+      sceneImageUrl = parsed.toString();
+    } catch {
+      return NextResponse.json(
+        { error: 'sceneImageUrl is not a valid URL' },
+        { status: 400 },
+      );
+    }
+  }
+  // Saliency cells — accept the same shape the row carries; cap the
+  // count to keep the prompt bounded.
+  const saliencyCells: SaliencyCell[] | undefined = Array.isArray(body.saliencyCells)
+    ? body.saliencyCells
+        .filter(
+          (c): c is SaliencyCell =>
+            !!c &&
+            typeof c === 'object' &&
+            typeof (c as SaliencyCell).row === 'number' &&
+            typeof (c as SaliencyCell).col === 'number' &&
+            typeof (c as SaliencyCell).score === 'number',
+        )
+        .slice(0, 32)
+    : undefined;
+
   const braveKey = process.env.BRAVE_SEARCH_API_KEY;
   const replicateToken = process.env.REPLICATE_API_TOKEN;
   if (!braveKey || !replicateToken) {
@@ -290,6 +354,20 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   const bucket = getImagesBucket();
   const key = cacheKey(session.ws, terms);
 
+  /** Run smart placement after the overlay is known-good. Always tolerant:
+   *  any failure → `undefined` so the caller falls back to doc-gen-blind.
+   *  Runs on both cache-hit and cache-miss paths so a scene change picks
+   *  up a fresh decision even when the overlay URL is unchanged. */
+  async function maybeDecidePlacement(overlayUrl: string): Promise<OverlayPlacementDecision | undefined> {
+    if (!sceneImageUrl) return undefined;
+    const decision = await decideOverlayPlacement({
+      sceneImageUrl,
+      overlayImageUrl: overlayUrl,
+      saliencyCells,
+    });
+    return decision ?? undefined;
+  }
+
   // Cache hit — the public URL is content-addressed, so we can just return
   // it without re-fetching. Brave + Replicate cost zero on cache hits.
   try {
@@ -300,7 +378,8 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     if (process.env.R2_IMAGES_PUBLIC_URL) {
       const head = await fetch(cachedUrl, { method: 'HEAD' }).catch(() => null);
       if (head && head.ok) {
-        const result: GracefulResult = { overlayUrl: cachedUrl, cached: true };
+        const placement = await maybeDecidePlacement(cachedUrl);
+        const result: GracefulResult = { overlayUrl: cachedUrl, cached: true, placement };
         return NextResponse.json(result);
       }
     }
@@ -329,7 +408,8 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     await uploadToBucket(bucket, key, cutoutBytes, 'image/png');
     const overlayUrl = await getDownloadUrlForBucket(bucket, key, process.env.R2_IMAGES_PUBLIC_URL);
 
-    const result: GracefulResult = { overlayUrl, cached: false, sourceUrl: hit.url };
+    const placement = await maybeDecidePlacement(overlayUrl);
+    const result: GracefulResult = { overlayUrl, cached: false, sourceUrl: hit.url, placement };
     return NextResponse.json(result);
   } catch (err) {
     logger.warn('Overlay fetch failed', {

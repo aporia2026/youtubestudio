@@ -59,6 +59,15 @@ interface OverlayPositionEditorProps {
   /** Stock terms label — surfaced in the header so the user can tell
    *  which overlay they're positioning when several rows are open. */
   termsLabel: string;
+  /** One-sentence AI rationale for the current placement, when smart
+   *  placement ran for this row. Surfaced as a small tooltip-style line
+   *  under the header so the user can see *why* the overlay landed
+   *  here. Absent for rows without smart placement. Phase 2 of the
+   *  overlay-system overhaul. */
+  placementReason?: string;
+  /** Model id that produced the placement (e.g. `kie-gemini-3.1-pro`).
+   *  Used only for the tooltip's "by <model>" attribution. */
+  placementModel?: string;
   /** Called when the user clicks Save. `stretchedHeightPct` is non-null
    *  only when free-aspect drag produced a manual height; pass it through
    *  to the row so the renderer honours the squish. Null clears any
@@ -124,6 +133,8 @@ export function OverlayPositionEditor({
   sizePct,
   stretchedHeightPct,
   termsLabel,
+  placementReason,
+  placementModel,
   onSave,
   onReset,
   onClose,
@@ -503,6 +514,19 @@ export function OverlayPositionEditor({
             Drag the overlay onto the spot you want. Saving overrides the AI's planned zone for this row.
             <span style={{ color: '#fbbf24', marginLeft: 6 }}>✦ {termsLabel}</span>
           </div>
+          {/* Smart-placement rationale — only when present. Quiet line
+              that mirrors the colour family of the existing subtitle so
+              it doesn't compete with the action affordances. Shows the
+              model attribution as a tooltip on hover. */}
+          {placementReason && placementReason.trim() && (
+            <div
+              title={placementModel ? `Placement by ${placementModel}` : undefined}
+              style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.45, fontStyle: 'italic' }}
+            >
+              <span style={{ color: '#a78bfa' }}>AI placed here: </span>
+              {placementReason}
+            </div>
+          )}
         </div>
 
         <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>

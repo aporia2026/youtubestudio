@@ -7276,6 +7276,8 @@ function ProductionDocPage() {
           sizePct={doc.rows[overlayPositionRow]!.overlay_size_pct}
           stretchedHeightPct={doc.rows[overlayPositionRow]!.overlay_stretched_height_pct}
           termsLabel={doc.rows[overlayPositionRow]!.overlay_stock_terms || ''}
+          placementReason={doc.rows[overlayPositionRow]!.overlay_placement_reason}
+          placementModel={doc.rows[overlayPositionRow]!.overlay_placement_model}
           onSave={(pos, size, stretchedH) => {
             console.info('[ui overlay-position] saved', {
               rowIndex: overlayPositionRow,
