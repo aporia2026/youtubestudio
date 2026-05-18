@@ -97,6 +97,10 @@ export type EditorCommand =
   // building an undo entry.
   | { type: 'MERGE_ADJACENT_SHOTS'; shotIndex: number; restoredDurationOverrideMs: number | null }
   | { type: 'DELETE_SHOT'; shotIndex: number; mode: 'ripple' | 'blank' }
+  // Toggle a shot's `muted` flag. Self-inverse — applying twice
+  // returns to the original state, so the inverse is the same
+  // command type with the prior value as the new value.
+  | { type: 'SET_MUTE'; shotIndex: number; muted: boolean }
   // RESTORE_ROW exists only as the inverse of DELETE_SHOT. Carries
   // the full pre-delete row (for content) + the prior rowImages[i]
   // URL (so blanking out the image-state slot can be undone). Mode
@@ -121,6 +125,7 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'MERGE_ADJACENT_SHOTS':
     case 'DELETE_SHOT':
     case 'RESTORE_ROW':
+    case 'SET_MUTE':
       return true;
     default:
       return false;
@@ -317,6 +322,38 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           doc: { ...state.doc, rows: nextRows },
           isDirty: true,
           selection: shotIndex,
+        },
+        inverse,
+      };
+    }
+
+    case 'SET_MUTE': {
+      const { shotIndex, muted } = cmd;
+      if (shotIndex < 0 || shotIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const row = state.doc.rows[shotIndex];
+      const prevMuted = row.muted === true;
+      if (prevMuted === muted) {
+        return { next: state, inverse: null };
+      }
+      const nextRow = {
+        ...row,
+        muted,
+        edited_at: new Date().toISOString(),
+      };
+      const nextRows = state.doc.rows.slice();
+      nextRows[shotIndex] = nextRow;
+      const inverse: EditorCommand = {
+        type: 'SET_MUTE',
+        shotIndex,
+        muted: prevMuted,
+      };
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          isDirty: true,
         },
         inverse,
       };

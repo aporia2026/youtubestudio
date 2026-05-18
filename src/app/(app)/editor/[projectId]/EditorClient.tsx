@@ -172,6 +172,13 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     [apply, state.doc.rows.length, state.selection],
   );
 
+  const handleToggleMute = useCallback(() => {
+    if (state.selection === null) return;
+    const row = state.doc.rows[state.selection];
+    if (!row) return;
+    apply({ type: 'SET_MUTE', shotIndex: state.selection, muted: row.muted !== true });
+  }, [apply, state.doc.rows, state.selection]);
+
   // Keyboard shortcuts:
   //   B          → split at playhead (CapCut / FCP blade)
   //   Delete     → ripple-delete selected shot
@@ -195,11 +202,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       if (key === 'delete' || key === 'backspace') {
         e.preventDefault();
         handleDelete(e.shiftKey ? 'blank' : 'ripple');
+        return;
+      }
+      if (key === 'm') {
+        e.preventDefault();
+        handleToggleMute();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [handleDelete, handleSplit]);
+  }, [handleDelete, handleSplit, handleToggleMute]);
 
   // Subscribe to frame updates so the playhead reflects the live
   // play position. Throttled at the ms-rounded level so React only
@@ -285,6 +297,31 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
           <button
             type="button"
+            onClick={handleToggleMute}
+            disabled={state.selection === null}
+            className="text-xs px-2.5 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/5"
+            style={{
+              borderColor: 'var(--card-border)',
+              color:
+                state.selection !== null && state.doc.rows[state.selection]?.muted
+                  ? '#f87171'
+                  : undefined,
+            }}
+            title={
+              state.selection === null
+                ? 'Select a shot to mute / unmute it (M)'
+                : state.doc.rows[state.selection]?.muted
+                  ? `Unmute shot ${state.selection + 1} (M)`
+                  : `Mute shot ${state.selection + 1} (M)`
+            }
+          >
+            {state.selection !== null && state.doc.rows[state.selection]?.muted
+              ? 'Unmute'
+              : 'Mute'}
+          </button>
+
+          <button
+            type="button"
             onClick={() => apply({ type: 'UNDO' })}
             disabled={!canUndo}
             className="text-xs px-2.5 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/5"
@@ -366,8 +403,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         <strong style={{ color: 'var(--fg)' }}>Resize</strong> drag the trailing edge.{' '}
         <strong style={{ color: 'var(--fg)' }}>Split</strong> press B at the playhead.{' '}
         <strong style={{ color: 'var(--fg)' }}>Delete</strong> select a shot + Delete (ripple)
-        or Shift+Delete (blank — keeps the slot, plays black, voiceover stays aligned).{' '}
-        Cmd / Ctrl+Z undoes. Reorder + mute ship in follow-up commits.
+        or Shift+Delete (blank — keeps the slot).{' '}
+        <strong style={{ color: 'var(--fg)' }}>Mute</strong> select + M.{' '}
+        Cmd / Ctrl+Z undoes. Reorder ships next.
       </div>
     </div>
   );
