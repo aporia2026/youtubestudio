@@ -394,6 +394,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         onResize={(shotIndex, durationMs) =>
           apply({ type: 'RESIZE_SHOT', shotIndex, durationMs })
         }
+        onReorder={(fromIndex, toIndex) =>
+          apply({ type: 'REORDER_SHOTS', fromIndex, toIndex })
+        }
       />
 
       <div
@@ -401,11 +404,12 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         style={{ borderColor: 'var(--card-border)', color: 'var(--fg-muted)' }}
       >
         <strong style={{ color: 'var(--fg)' }}>Resize</strong> drag the trailing edge.{' '}
+        <strong style={{ color: 'var(--fg)' }}>Reorder</strong> drag the top grab handle.{' '}
         <strong style={{ color: 'var(--fg)' }}>Split</strong> press B at the playhead.{' '}
-        <strong style={{ color: 'var(--fg)' }}>Delete</strong> select a shot + Delete (ripple)
-        or Shift+Delete (blank — keeps the slot).{' '}
+        <strong style={{ color: 'var(--fg)' }}>Delete</strong> select + Delete (ripple) or
+        Shift+Delete (blank — keeps the slot).{' '}
         <strong style={{ color: 'var(--fg)' }}>Mute</strong> select + M.{' '}
-        Cmd / Ctrl+Z undoes. Reorder ships next.
+        Cmd / Ctrl+Z undoes anything.
       </div>
     </div>
   );

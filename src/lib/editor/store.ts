@@ -101,6 +101,11 @@ export type EditorCommand =
   // returns to the original state, so the inverse is the same
   // command type with the prior value as the new value.
   | { type: 'SET_MUTE'; shotIndex: number; muted: boolean }
+  // Move a row from one position to another. fromIndex and toIndex
+  // are both interpreted against the array BEFORE the move (the
+  // typical drag-end semantics in dnd-kit). Self-inverse with the
+  // indices swapped.
+  | { type: 'REORDER_SHOTS'; fromIndex: number; toIndex: number }
   // RESTORE_ROW exists only as the inverse of DELETE_SHOT. Carries
   // the full pre-delete row (for content) + the prior rowImages[i]
   // URL (so blanking out the image-state slot can be undone). Mode
@@ -126,6 +131,7 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'DELETE_SHOT':
     case 'RESTORE_ROW':
     case 'SET_MUTE':
+    case 'REORDER_SHOTS':
       return true;
     default:
       return false;
@@ -141,6 +147,37 @@ function isEditingCommand(cmd: EditorCommand): boolean {
  * Used by DELETE_SHOT (ripple mode) + RESTORE_ROW (insert mode) so
  * `rowImages` stays aligned with `doc.rows` indices.
  */
+/**
+ * Reindex `rowImages` after a row at `fromIndex` is moved to
+ * `toIndex` (using `Array.splice`-style move semantics). Builds a
+ * new map by walking the original keys and computing each key's
+ * post-move index.
+ */
+function reorderRowImages(
+  rowImages: Record<number, string>,
+  fromIndex: number,
+  toIndex: number,
+): Record<number, string> {
+  if (fromIndex === toIndex) return rowImages;
+  const out: Record<number, string> = {};
+  for (const [keyStr, url] of Object.entries(rowImages)) {
+    const key = Number(keyStr);
+    if (!Number.isFinite(key)) continue;
+    let nextKey: number;
+    if (key === fromIndex) {
+      nextKey = toIndex;
+    } else if (fromIndex < toIndex) {
+      // Moving down: keys in (fromIndex, toIndex] shift up by one.
+      nextKey = key > fromIndex && key <= toIndex ? key - 1 : key;
+    } else {
+      // Moving up: keys in [toIndex, fromIndex) shift down by one.
+      nextKey = key >= toIndex && key < fromIndex ? key + 1 : key;
+    }
+    out[nextKey] = url;
+  }
+  return out;
+}
+
 function reindexRowImages(
   rowImages: Record<number, string>,
   atIndex: number,
@@ -322,6 +359,53 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           doc: { ...state.doc, rows: nextRows },
           isDirty: true,
           selection: shotIndex,
+        },
+        inverse,
+      };
+    }
+
+    case 'REORDER_SHOTS': {
+      const { fromIndex, toIndex } = cmd;
+      const len = state.doc.rows.length;
+      if (
+        fromIndex < 0 || fromIndex >= len ||
+        toIndex < 0 || toIndex >= len ||
+        fromIndex === toIndex
+      ) {
+        return { next: state, inverse: null };
+      }
+      const nextRows = state.doc.rows.slice();
+      const [moved] = nextRows.splice(fromIndex, 1);
+      nextRows.splice(toIndex, 0, moved);
+      const nextImages = reorderRowImages(state.rowImages, fromIndex, toIndex);
+      // Selection follows the moved row if it was selected; reindexes
+      // for the other affected positions otherwise.
+      let nextSelection = state.selection;
+      if (nextSelection !== null) {
+        if (nextSelection === fromIndex) {
+          nextSelection = toIndex;
+        } else if (fromIndex < toIndex) {
+          if (nextSelection > fromIndex && nextSelection <= toIndex) {
+            nextSelection -= 1;
+          }
+        } else {
+          if (nextSelection >= toIndex && nextSelection < fromIndex) {
+            nextSelection += 1;
+          }
+        }
+      }
+      const inverse: EditorCommand = {
+        type: 'REORDER_SHOTS',
+        fromIndex: toIndex,
+        toIndex: fromIndex,
+      };
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          rowImages: nextImages,
+          selection: nextSelection,
+          isDirty: true,
         },
         inverse,
       };

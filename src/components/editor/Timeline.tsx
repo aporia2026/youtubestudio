@@ -7,22 +7,35 @@
  * project's shots as cards laid out in playback order, widths
  * proportional to `durationMs`, with thumbnails + duration labels.
  *
- * Editing affordances implemented here:
+ * Editing affordances:
  *   – click a card → select (dispatches SET_SELECTION)
- *   – drag trailing edge → resize (dispatches RESIZE_SHOT live during drag)
+ *   – drag trailing edge → resize (dispatches RESIZE_SHOT live)
+ *   – drag the grab handle (top of card) → reorder shots
+ *     (dispatches REORDER_SHOTS on drop)
  *
- * Snap-to-frame happens at the data layer (the renderer's frame math
- * naturally quantises); the drag dispatches integer ms values, the
- * reducer clamps, the renderer rounds when converting to frames.
- *
- * Phase 2 follow-up commits layer their UI on top:
- *   – trim head / trim tail handles (additional small handles on hover)
- *   – split at playhead (button anchored to the playhead bar)
- *   – delete (context menu on the card)
- *   – reorder (`<SortableContext>` wraps the strip)
- *   – mute toggle (top-right of the card)
+ * The three drag/click zones don't overlap: the grab handle owns
+ * the top 14 px of each card, the resize handle owns the rightmost
+ * 8 px, and click-to-select fires on the interior. ESC during a
+ * resize drag cancels; @dnd-kit's KeyboardSensor handles ESC during
+ * a reorder drag automatically.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  sortableKeyboardCoordinates,
+  useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import type { VideoConfig, VideoShot } from '@/remotion/types';
 import { EDITOR_MAX_SHOT_MS, EDITOR_MIN_SHOT_MS } from '@/lib/editor/store';
 
@@ -41,6 +54,8 @@ interface TimelineProps {
    *  pointer-up with the final value. The store handles clamping +
    *  no-op detection, so calling this every pointermove is safe. */
   onResize?: (shotIndex: number, newDurationMs: number) => void;
+  /** Fired on drag-end with the source and target indices. */
+  onReorder?: (fromIndex: number, toIndex: number) => void;
   /** Optional: pixels per second. Default 80 — readable at standard
    *  shot lengths (4-15s). Phase 2 zoom controls bind this. */
   pixelsPerSecond?: number;
@@ -49,10 +64,10 @@ interface TimelineProps {
 const DEFAULT_PX_PER_SECOND = 80;
 const STRIP_HEIGHT = 96;
 const MIN_CARD_WIDTH = 60;
-/** Pixel width of the trailing-edge drag handle hot-zone. Large
- *  enough that mouse aim is forgiving, narrow enough not to cover
- *  the card's interior. */
+/** Pixel width of the trailing-edge drag handle hot-zone. */
 const RESIZE_HANDLE_WIDTH = 8;
+/** Pixel height of the grab-handle bar at the top of each card. */
+const GRAB_HANDLE_HEIGHT = 14;
 
 function formatMs(ms: number): string {
   const totalSeconds = ms / 1000;
@@ -70,15 +85,10 @@ function shotLabel(shot: VideoShot, index: number): string {
   return `Shot ${index + 1}`;
 }
 
-interface DragState {
+interface ResizeDragState {
   shotIndex: number;
-  /** Mouse X at pointerdown. */
   startClientX: number;
-  /** Shot's durationMs at pointerdown. */
   startDurationMs: number;
-  /** Live preview value used to render the tooltip and the resized
-   *  card. Stored on the drag itself so re-renders driven by
-   *  external state don't reset it. */
   previewMs: number;
 }
 
@@ -89,6 +99,7 @@ export function Timeline({
   playheadMs,
   onSelect,
   onResize,
+  onReorder,
   pixelsPerSecond = DEFAULT_PX_PER_SECOND,
 }: TimelineProps): React.ReactElement {
   const totalMs = useMemo(
@@ -104,9 +115,9 @@ export function Timeline({
     [playheadMs, pixelsPerSecond, totalWidth],
   );
 
-  const [drag, setDrag] = useState<DragState | null>(null);
-  const dragRef = useRef<DragState | null>(null);
-  dragRef.current = drag;
+  const [resize, setResize] = useState<ResizeDragState | null>(null);
+  const resizeRef = useRef<ResizeDragState | null>(null);
+  resizeRef.current = resize;
 
   /** Convert a pixel delta to a ms delta at the current zoom level. */
   const pxToMs = useCallback(
@@ -114,19 +125,17 @@ export function Timeline({
     [pixelsPerSecond],
   );
 
+  // ─── Resize-handle pointer events ──────────────────────────────
+
   const handleResizePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>, shotIndex: number) => {
       if (!onResize) return;
-      // Don't let the parent card's click handler fire — the user is
-      // grabbing the handle, not selecting the shot.
       e.preventDefault();
       e.stopPropagation();
       const shot = config.shots[shotIndex];
       if (!shot) return;
-      // Capture so subsequent move + up events route to this element
-      // even if the cursor leaves the strip mid-drag.
       e.currentTarget.setPointerCapture(e.pointerId);
-      setDrag({
+      setResize({
         shotIndex,
         startClientX: e.clientX,
         startDurationMs: shot.durationMs,
@@ -138,19 +147,15 @@ export function Timeline({
 
   const handleResizePointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
-      const current = dragRef.current;
+      const current = resizeRef.current;
       if (!current || !onResize) return;
       const deltaPx = e.clientX - current.startClientX;
       const naive = current.startDurationMs + pxToMs(deltaPx);
       const clamped = Math.min(EDITOR_MAX_SHOT_MS, Math.max(EDITOR_MIN_SHOT_MS, Math.round(naive)));
-      // Snap to nearest frame at the displayed level (1000/fps ms).
       const fps = config.fps || 30;
       const frameStepMs = 1000 / fps;
       const snapped = Math.round(clamped / frameStepMs) * frameStepMs;
-      setDrag({ ...current, previewMs: snapped });
-      // Dispatch the new duration live so the renderer + cascade
-      // update in real time. The store no-ops when the value is
-      // unchanged, so this is safe to fire on every pointermove.
+      setResize({ ...current, previewMs: snapped });
       if (snapped !== current.startDurationMs) {
         onResize(current.shotIndex, snapped);
       }
@@ -160,7 +165,7 @@ export function Timeline({
 
   const handleResizePointerUp = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
-      const current = dragRef.current;
+      const current = resizeRef.current;
       if (!current) return;
       e.currentTarget.releasePointerCapture(e.pointerId);
       console.info('[editor timeline] resize complete', {
@@ -168,24 +173,60 @@ export function Timeline({
         from: current.startDurationMs,
         to: current.previewMs,
       });
-      setDrag(null);
+      setResize(null);
     },
     [],
   );
 
-  // ESC cancels an in-progress drag — restores the original duration
-  // and ends the drag without committing.
+  // ESC cancels an in-progress resize.
   useEffect(() => {
-    if (!drag || !onResize) return;
+    if (!resize || !onResize) return;
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
-        onResize(drag.shotIndex, drag.startDurationMs);
-        setDrag(null);
+        onResize(resize.shotIndex, resize.startDurationMs);
+        setResize(null);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [drag, onResize]);
+  }, [resize, onResize]);
+
+  // ─── dnd-kit reorder wiring ─────────────────────────────────────
+
+  // PointerSensor with a small activation distance so a quick click
+  // on the grab handle (intending to start a click→select) doesn't
+  // accidentally begin a drag. 4 px threshold matches dnd-kit's
+  // recommended default for compact UI.
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 4 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
+
+  // Stable sortable ids. Using `shot-N` ties the id to the current
+  // position; on reorder dnd-kit looks them up against the
+  // `items` array we pass to SortableContext.
+  const sortableIds = useMemo(
+    () => config.shots.map((_, i) => `shot-${i}`),
+    [config.shots],
+  );
+
+  const handleDragEnd = useCallback(
+    (e: DragEndEvent) => {
+      if (!onReorder) return;
+      const { active, over } = e;
+      if (!over || active.id === over.id) return;
+      const fromIndex = sortableIds.indexOf(String(active.id));
+      const toIndex = sortableIds.indexOf(String(over.id));
+      if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return;
+      console.info('[editor timeline] reorder', { fromIndex, toIndex });
+      onReorder(fromIndex, toIndex);
+    },
+    [onReorder, sortableIds],
+  );
 
   return (
     <div
@@ -195,173 +236,280 @@ export function Timeline({
         background: 'var(--card-bg)',
       }}
     >
-      <div
-        className="relative flex items-stretch select-none"
-        style={{
-          width: totalWidth,
-          height: STRIP_HEIGHT,
-          minWidth: '100%',
-        }}
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={handleDragEnd}
       >
-        {config.shots.map((shot, idx) => {
-          const widthPx = Math.max(
-            MIN_CARD_WIDTH,
-            (shot.durationMs / 1000) * pixelsPerSecond,
-          );
-          const thumbnail = rowImages[idx] ?? shot.imageUrl ?? null;
-          const isSelected = selection === idx;
-          const isDragging = drag?.shotIndex === idx;
-          const isLast = idx === config.shots.length - 1;
-          return (
-            <div
-              key={idx}
-              role="button"
-              tabIndex={0}
-              onClick={() => onSelect(idx)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  onSelect(idx);
-                }
-              }}
-              className="relative shrink-0 group focus:outline-none cursor-pointer"
-              style={{
-                width: widthPx,
-                borderRight: isLast ? 'none' : '1px solid var(--card-border)',
-              }}
-              aria-pressed={isSelected}
-              aria-label={`Shot ${idx + 1}: ${shotLabel(shot, idx)}`}
-            >
-              {thumbnail ? (
-                <img
-                  src={thumbnail}
-                  alt=""
-                  className="absolute inset-0 w-full h-full object-cover"
-                  draggable={false}
-                />
-              ) : (
-                <div
-                  className="absolute inset-0"
-                  style={{
-                    background: shot.backgroundColor ?? '#111827',
-                  }}
-                />
-              )}
-              {/* Tinted overlay — keeps the label legible over any
-                  thumbnail. Heavier when selected so the card pops. */}
-              <div
-                className="absolute inset-0 transition-colors pointer-events-none"
-                style={{
-                  background: isSelected
-                    ? 'linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.35) 50%, rgba(99,102,241,0.25) 100%)'
-                    : 'linear-gradient(to top, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0.15) 60%, transparent 100%)',
-                }}
-              />
-              <div className="absolute inset-0 flex flex-col justify-between p-1.5 text-left pointer-events-none">
-                <div className="flex items-center gap-1">
-                  <span
-                    className="text-[10px] font-semibold rounded px-1 py-0.5"
-                    style={{
-                      background: 'rgba(0,0,0,0.6)',
-                      color: '#fff',
-                    }}
-                  >
-                    {idx + 1}
-                  </span>
-                  {shot.muted && (
-                    <span
-                      className="text-[9px] rounded px-1 py-0.5"
-                      style={{ background: 'rgba(220,38,38,0.7)', color: '#fff' }}
-                      title="Audio muted on this shot"
-                    >
-                      mute
-                    </span>
-                  )}
-                </div>
-                <div>
-                  <div
-                    className="text-[10px] font-medium truncate"
-                    style={{ color: '#fff', textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}
-                    title={shotLabel(shot, idx)}
-                  >
-                    {shotLabel(shot, idx)}
-                  </div>
-                  <div
-                    className="text-[10px] tabular-nums"
-                    style={{ color: 'rgba(255,255,255,0.85)' }}
-                  >
-                    {isDragging && drag ? formatMs(drag.previewMs) : formatMs(shot.durationMs)}
-                  </div>
-                </div>
-              </div>
-              {isSelected && (
-                <div
-                  className="absolute inset-0 pointer-events-none"
-                  style={{
-                    boxShadow: 'inset 0 0 0 2px var(--accent-purple-bright, #a78bfa)',
-                  }}
-                />
-              )}
-
-              {/* Trailing-edge resize handle. Reaches a few pixels
-                  beyond the card boundary so the user can grab the
-                  adjacent card's leading edge too — except on the
-                  last card, where it sits flush. */}
-              {onResize && (
-                <div
-                  className="absolute top-0 bottom-0 z-10 cursor-ew-resize transition-colors"
-                  style={{
-                    right: -RESIZE_HANDLE_WIDTH / 2,
-                    width: RESIZE_HANDLE_WIDTH,
-                    background: isDragging
-                      ? 'rgba(167, 139, 250, 0.8)'
-                      : 'transparent',
-                  }}
-                  onPointerDown={(e) => handleResizePointerDown(e, idx)}
-                  onPointerMove={handleResizePointerMove}
-                  onPointerUp={handleResizePointerUp}
-                  onPointerCancel={handleResizePointerUp}
-                  aria-hidden
-                />
-              )}
-
-              {/* Drag tooltip — surfaces the live preview duration
-                  above the card while dragging. Only renders during
-                  this card's drag. */}
-              {isDragging && drag && (
-                <div
-                  className="absolute -top-6 right-0 text-[10px] px-1.5 py-0.5 rounded tabular-nums"
-                  style={{
-                    background: 'rgba(0,0,0,0.85)',
-                    color: '#fff',
-                    transform: 'translateX(50%)',
-                  }}
-                >
-                  {formatMs(drag.previewMs)}
-                </div>
-              )}
-            </div>
-          );
-        })}
-
-        {/* Playhead. Renders even when ms === 0 so the user has a
-            visual anchor at the start of the strip. */}
-        <div
-          aria-hidden
-          className="absolute top-0 bottom-0 pointer-events-none"
-          style={{
-            left: playheadX,
-            width: 2,
-            background: 'rgb(239, 68, 68)',
-            transform: 'translateX(-1px)',
-          }}
-        >
+        <SortableContext items={sortableIds} strategy={horizontalListSortingStrategy}>
           <div
-            className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 rounded-full"
-            style={{ background: 'rgb(239, 68, 68)' }}
-          />
-        </div>
-      </div>
+            className="relative flex items-stretch select-none"
+            style={{
+              width: totalWidth,
+              height: STRIP_HEIGHT,
+              minWidth: '100%',
+            }}
+          >
+            {config.shots.map((shot, idx) => {
+              const widthPx = Math.max(
+                MIN_CARD_WIDTH,
+                (shot.durationMs / 1000) * pixelsPerSecond,
+              );
+              const thumbnail = rowImages[idx] ?? shot.imageUrl ?? null;
+              return (
+                <SortableShotCard
+                  key={sortableIds[idx]}
+                  sortableId={sortableIds[idx]}
+                  shot={shot}
+                  index={idx}
+                  widthPx={widthPx}
+                  thumbnail={thumbnail}
+                  isSelected={selection === idx}
+                  isResizing={resize?.shotIndex === idx}
+                  resizePreviewMs={resize?.shotIndex === idx ? resize.previewMs : null}
+                  isLast={idx === config.shots.length - 1}
+                  onSelect={() => onSelect(idx)}
+                  onResizePointerDown={
+                    onResize ? (e) => handleResizePointerDown(e, idx) : undefined
+                  }
+                  onResizePointerMove={onResize ? handleResizePointerMove : undefined}
+                  onResizePointerUp={onResize ? handleResizePointerUp : undefined}
+                  reorderEnabled={Boolean(onReorder)}
+                />
+              );
+            })}
+
+            {/* Playhead. Renders even when ms === 0 so the user has a
+                visual anchor at the start of the strip. */}
+            <div
+              aria-hidden
+              className="absolute top-0 bottom-0 pointer-events-none"
+              style={{
+                left: playheadX,
+                width: 2,
+                background: 'rgb(239, 68, 68)',
+                transform: 'translateX(-1px)',
+              }}
+            >
+              <div
+                className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 rounded-full"
+                style={{ background: 'rgb(239, 68, 68)' }}
+              />
+            </div>
+          </div>
+        </SortableContext>
+      </DndContext>
     </div>
   );
 }
+
+// ─── Per-card sortable wrapper ──────────────────────────────────────
+
+interface SortableShotCardProps {
+  sortableId: string;
+  shot: VideoShot;
+  index: number;
+  widthPx: number;
+  thumbnail: string | null;
+  isSelected: boolean;
+  isResizing: boolean;
+  resizePreviewMs: number | null;
+  isLast: boolean;
+  onSelect: () => void;
+  onResizePointerDown?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onResizePointerMove?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onResizePointerUp?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  reorderEnabled: boolean;
+}
+
+function SortableShotCard({
+  sortableId,
+  shot,
+  index,
+  widthPx,
+  thumbnail,
+  isSelected,
+  isResizing,
+  resizePreviewMs,
+  isLast,
+  onSelect,
+  onResizePointerDown,
+  onResizePointerMove,
+  onResizePointerUp,
+  reorderEnabled,
+}: SortableShotCardProps): React.ReactElement {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: sortableId, disabled: !reorderEnabled });
+
+  // dnd-kit hands us a transform for the drag animation. Applied as
+  // CSS transform so the card visibly follows the pointer without
+  // dropping out of the strip's flex flow.
+  const style: React.CSSProperties = {
+    transform: CSS.Translate.toString(transform),
+    transition,
+    width: widthPx,
+    borderRight: isLast ? 'none' : '1px solid var(--card-border)',
+    opacity: isDragging ? 0.4 : 1,
+    zIndex: isDragging ? 30 : undefined,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className="relative shrink-0 group focus:outline-none cursor-pointer"
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      aria-pressed={isSelected}
+      aria-label={`Shot ${index + 1}: ${shotLabel(shot, index)}`}
+    >
+      {thumbnail ? (
+        <img
+          src={thumbnail}
+          alt=""
+          className="absolute inset-0 w-full h-full object-cover"
+          draggable={false}
+        />
+      ) : (
+        <div
+          className="absolute inset-0"
+          style={{
+            background: shot.backgroundColor ?? '#111827',
+          }}
+        />
+      )}
+      {/* Tinted overlay — keeps the label legible over any thumbnail.
+          Heavier when selected so the card pops. */}
+      <div
+        className="absolute inset-0 transition-colors pointer-events-none"
+        style={{
+          background: isSelected
+            ? 'linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.35) 50%, rgba(99,102,241,0.25) 100%)'
+            : 'linear-gradient(to top, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0.15) 60%, transparent 100%)',
+        }}
+      />
+      <div className="absolute inset-0 flex flex-col justify-between p-1.5 pt-3 text-left pointer-events-none">
+        <div className="flex items-center gap-1">
+          <span
+            className="text-[10px] font-semibold rounded px-1 py-0.5"
+            style={{
+              background: 'rgba(0,0,0,0.6)',
+              color: '#fff',
+            }}
+          >
+            {index + 1}
+          </span>
+          {shot.muted && (
+            <span
+              className="text-[9px] rounded px-1 py-0.5"
+              style={{ background: 'rgba(220,38,38,0.7)', color: '#fff' }}
+              title="Audio muted on this shot"
+            >
+              mute
+            </span>
+          )}
+        </div>
+        <div>
+          <div
+            className="text-[10px] font-medium truncate"
+            style={{ color: '#fff', textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}
+            title={shotLabel(shot, index)}
+          >
+            {shotLabel(shot, index)}
+          </div>
+          <div
+            className="text-[10px] tabular-nums"
+            style={{ color: 'rgba(255,255,255,0.85)' }}
+          >
+            {isResizing && resizePreviewMs !== null
+              ? formatMs(resizePreviewMs)
+              : formatMs(shot.durationMs)}
+          </div>
+        </div>
+      </div>
+      {isSelected && (
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            boxShadow: 'inset 0 0 0 2px var(--accent-purple-bright, #a78bfa)',
+          }}
+        />
+      )}
+
+      {/* Grab handle for reorder. Top strip of the card. Owns the
+          dnd-kit listeners so a drag on the interior does NOT start
+          a reorder — that interior is reserved for click-to-select. */}
+      {reorderEnabled && (
+        <div
+          {...attributes}
+          {...listeners}
+          className="absolute top-0 left-0 right-0 z-10 cursor-grab active:cursor-grabbing transition-colors"
+          style={{
+            height: GRAB_HANDLE_HEIGHT,
+            background: isDragging
+              ? 'rgba(167, 139, 250, 0.4)'
+              : 'rgba(255, 255, 255, 0.08)',
+          }}
+          aria-label={`Drag to reorder shot ${index + 1}`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div
+            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-[10px] tracking-widest"
+            style={{ color: 'rgba(255,255,255,0.7)' }}
+          >
+            ⋮⋮
+          </div>
+        </div>
+      )}
+
+      {/* Trailing-edge resize handle. Reaches a few pixels beyond
+          the card boundary so the adjacent card's leading edge is
+          grabbable too — except on the last card, flush there. */}
+      {onResizePointerDown && (
+        <div
+          className="absolute top-0 bottom-0 z-10 cursor-ew-resize transition-colors"
+          style={{
+            right: -RESIZE_HANDLE_WIDTH / 2,
+            width: RESIZE_HANDLE_WIDTH,
+            background: isResizing
+              ? 'rgba(167, 139, 250, 0.8)'
+              : 'transparent',
+          }}
+          onPointerDown={onResizePointerDown}
+          onPointerMove={onResizePointerMove}
+          onPointerUp={onResizePointerUp}
+          onPointerCancel={onResizePointerUp}
+          aria-hidden
+        />
+      )}
+
+      {/* Drag tooltip — live preview ms above the card while resizing. */}
+      {isResizing && resizePreviewMs !== null && (
+        <div
+          className="absolute -top-6 right-0 text-[10px] px-1.5 py-0.5 rounded tabular-nums z-20"
+          style={{
+            background: 'rgba(0,0,0,0.85)',
+            color: '#fff',
+            transform: 'translateX(50%)',
+          }}
+        >
+          {formatMs(resizePreviewMs)}
+        </div>
+      )}
+    </div>
+  );
+}
+
