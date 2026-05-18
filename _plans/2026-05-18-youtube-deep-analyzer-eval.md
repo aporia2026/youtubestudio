@@ -64,6 +64,50 @@ The analyzer is production-grade for the operator's hand-picked workflow. Six co
 3. Pack-count non-determinism across runs — defensible at each individual run, but a stability check before any UI claim of "consistent re-analysis" is still warranted.
 4. Phase 4 step 2 — admin UI for the per-workspace cap override (deferred until there's a second user).
 
+## v1.3.0 follow-ups shipped (2026-05-19, commit `574e899`) — verification pending
+
+Three of the four filed follow-ups landed in one commit. Follow-up 4 (admin UI) remains explicitly deferred.
+
+### Follow-up 1 — scene-boundary prompt + temperature drop
+
+- **Prompt rule #12 rewrite.** The previous wording told Gemini "scenes[last].end MUST equal duration_seconds within ±2s" and Gemini still produced 437s scenes on a 277s video. New version:
+  - Frames the constraint as *arithmetic*, not stylistic ("HARD CONSTRAINTS (these are arithmetic, not stylistic)").
+  - Adds a worked example with concrete numbers (3 scenes summing to 60s for a 60s video).
+  - Adds an explicit counter-example showing the failure pattern this rule exists to prevent.
+  - Repeats the "never let scenes overflow" instruction in the closing sentence.
+- **Temperature 0.3 → 0.2** in [src/app/api/analyze/youtube-video/route.ts](../src/app/api/analyze/youtube-video/route.ts) for the analyzer's Gemini call. Aimed at narrowing pack-count drift (1 → 2 → 3 → 3 across four Casey runs at 0.3) without making strategic-report phrasing flat.
+- `PROMPT_VERSION` bumped `v1.2.0` → `v1.3.0` so the cache invalidates cleanly.
+
+### Follow-up 2 — persist normalizer `warnings` in the result
+
+- New optional `warnings?: string[]` field on `AnalyzedVideo` ([src/lib/analyzer/types.ts](../src/lib/analyzer/types.ts)).
+- Validator picks it up: missing is fine, present must be `string[]`. 5 new tests pin the shape.
+- The route now inlines warnings into `result.warnings` before `completeAnalysis` so they ride along through the GET endpoint and into the result page. Removed the redundant top-level `warnings` field from the POST response.
+- New yellow-toned warnings banner on [src/app/(app)/analyze/[id]/AnalyzeResultClient.tsx](../src/app/(app)/analyze/[id]/AnalyzeResultClient.tsx) that renders warnings with a "Show details" collapsible. The operator now sees scene-boundary inconsistencies inline without grepping logs.
+
+### Follow-up 3 — Re-analyze UI copy
+
+- The footer text under the URL input previously claimed *"Same video re-analyzed is a cache hit (free, instant)."* That conflated re-opening (which IS a cache hit) with the explicit Re-analyze button (which is NOT). Split the two cases clearly and added a note that Gemini output may vary slightly between runs.
+- Re-analyze toast description picked up the same caveat.
+
+### Follow-up 4 — admin UI for cap override
+
+Explicitly deferred. Docstring on [src/app/api/admin/workspaces/[id]/analyzer-cap/route.ts](../src/app/api/admin/workspaces/[id]/analyzer-cap/route.ts) records the deferral with a curl example. Build when a second user enters the system.
+
+### Verification of v1.3.0 — pending
+
+The v1.3.0 prompt + temperature changes are shipped but not yet verified in prod. To verify: trigger a fresh Casey analysis after the deploy lands, then check:
+
+- `prompt_version` reads `v1.3.0` (proves the new prompt is in flight).
+- `scenes[last].end` is within ±2s of `meta.duration_seconds` (the bigger test — does rule #12's rewrite + temperature drop actually bite?).
+- If scenes still overflow, the warnings banner on the result page should now render the normalizer's diagnostic — visible without log access. That's a successful test of follow-up 2 even if rule #12 still doesn't bite.
+- Pack count across multiple re-runs should be more stable at the lower temperature. Worth running 2-3 times to compare.
+
+If rule #12 STILL doesn't bite on the next verification, the next iteration's options narrow to:
+- Server-side proportional scene scaling (clamp scenes to fit `duration_seconds`) — lossy but deterministic
+- Switching from a single Gemini call to a two-pass call where pass 1 produces scenes and pass 2 verifies the arithmetic
+- Accepting Gemini's inability to track absolute time as a fundamental limitation and adapting the operator workflow accordingly
+
 ## Pre-run blocker (2026-05-18) — `GOOGLE_AI_API_KEY` missing
 
 Discovered while wiring up the eval driver: the analyzer cannot run end-to-end in this local env because [src/lib/ai.ts](../src/lib/ai.ts) `analyzeYouTubeVideo` requires native YouTube URL ingestion, which is **only** supported via the direct Google Gemini SDK (`@google/generative-ai`, `fileData: { fileUri, mimeType: 'video/*' }`). That path requires `GOOGLE_AI_API_KEY`. Local `.env.local` currently has it set to `""`.
