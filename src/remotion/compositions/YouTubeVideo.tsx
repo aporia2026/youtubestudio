@@ -14,6 +14,7 @@ import { OutroScene } from '../scenes/OutroScene';
 import { ThumbnailZoomScene } from '../scenes/ThumbnailZoomScene';
 import { SectionTitleStripe, clampSectionStripeFraction } from '../components/SectionTitleStripe';
 import { RealImageOverlay } from '../components/RealImageOverlay';
+import { CaptionsOverlay } from '../components/CaptionsOverlay';
 import {
   VideoConfig,
   VideoShot,
@@ -237,6 +238,15 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
           />
         </Sequence>
       ))}
+
+      {/* Burned-in captions — Phase 4 of the shot-graph editor plan.
+          Rendered LAST so the caption box sits above scenes + stripes
+          in z-order. When `config.captions` is absent or empty the
+          component renders nothing — pre-Phase-4 renders are byte-
+          identical to today. */}
+      {config.captions && config.captions.length > 0 && (
+        <CaptionsOverlay segments={config.captions} />
+      )}
     </AbsoluteFill>
   );
 };

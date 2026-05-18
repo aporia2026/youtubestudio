@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   AbsoluteFill,
+  continueRender,
+  delayRender,
   Img,
   interpolate,
   spring,
@@ -14,17 +16,29 @@ import type { VideoShot } from '../types';
  * resolved placement zone. Renders nothing when `shot.overlay` is undefined —
  * every shot can render this safely without conditional callers.
  *
- * Layered visual treatment (plan 2026-05-17):
- *   1. A soft circular mask + radial alpha fade replaces the hard rectangle
- *      so edges feather into the scene instead of cutting against it.
- *   2. A halo: a blurred ellipse behind the overlay, coloured by the
- *      dominant RGB of the saliency cell the overlay lands in. The
- *      overlay reads as part of the local environment, not a sticker.
- *   3. The placement zone itself comes from the saliency resolver in
+ * Layered visual treatment (plan 2026-05-18-overlay-system-overhaul):
+ *   1. Container size matches the image's natural aspect ratio (read at
+ *      load time). Wordmarks render as flat rectangles; portraits as tall
+ *      rectangles. No more forced-square box clipping content.
+ *   2. A soft ELLIPTICAL mask (radial-gradient with closest-side sizing,
+ *      80%→100% stops) feathers the corners of the rectangle into the
+ *      scene without ever eating logo content. The original circular mask
+ *      ate edges of wide wordmarks (YAHOO, IBM); see plan for the math.
+ *   3. A halo: a blurred ellipse behind the overlay, coloured by the
+ *      dominant RGB of the saliency cell the overlay lands in. The halo
+ *      now matches the container's aspect ratio too, so the glow tracks
+ *      the actual logo silhouette.
+ *   4. The placement zone itself comes from the saliency resolver in
  *      `src/lib/overlay-placement.ts` — the LLM's blind pick has already
  *      been corrected against what's actually in the image before the
- *      shot arrives here. Top zones are also pre-filtered out when the
- *      stripe overlaps the scene area (overlay layout).
+ *      shot arrives here.
+ *
+ * Aspect resolution: we use Remotion's standard `delayRender / onLoad /
+ * continueRender` pattern (per Context7 Remotion docs 2026-05-18). The
+ * frame is held back until the image has loaded and `naturalWidth /
+ * naturalHeight` are read into state, so every captured frame uses the
+ * correct aspect. `onError` releases the delay too, so a broken image
+ * URL degrades the scene to "no overlay" instead of hanging the render.
  *
  * Motion design:
  *   - 6-frame (200 ms @ 30 fps) delay after scene start so the eye lands on
@@ -115,7 +129,51 @@ export const RealImageOverlay: React.FC<Props> = ({ shot, frameWidth: frameWidth
   const frameWidth = frameWidthOverride ?? compositionWidth;
   const frameHeight = frameHeightOverride ?? compositionHeight;
 
-  if (!overlay?.url) return null;
+  // Natural aspect ratio read from the loaded image. Null until onLoad fires;
+  // delayRender holds the frame until it's known, so captured frames always
+  // use the right aspect. See file header for the why.
+  const [aspect, setAspect] = useState<number | null>(null);
+  const [errored, setErrored] = useState(false);
+  const overlayUrl = overlay?.url;
+  // delayRender handle is only created when there's actually a URL to load —
+  // a null handle for "no overlay" rows means the renderer never waits on an
+  // image that will never arrive.
+  const [loadHandle] = useState<number | null>(() =>
+    overlayUrl ? delayRender('overlay-image-load') : null,
+  );
+
+  const onImgLoad = useCallback(
+    (e: React.SyntheticEvent<HTMLImageElement>) => {
+      const img = e.currentTarget;
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        const ratio = img.naturalWidth / img.naturalHeight;
+        setAspect(ratio);
+        console.info('[overlay render] aspect resolved', {
+          url: overlayUrl,
+          naturalWidth: img.naturalWidth,
+          naturalHeight: img.naturalHeight,
+          aspect: Number(ratio.toFixed(3)),
+        });
+      }
+      if (loadHandle !== null) continueRender(loadHandle);
+    },
+    [loadHandle, overlayUrl],
+  );
+
+  const onImgError = useCallback(() => {
+    console.warn('[overlay render] image failed to load — overlay skipped', {
+      url: overlayUrl,
+    });
+    setErrored(true);
+    if (loadHandle !== null) continueRender(loadHandle);
+  }, [loadHandle, overlayUrl]);
+
+  // Render nothing if there's no overlay or the image failed. After errored
+  // is set, the delay handle has already been released in onImgError, so the
+  // render proceeds without us. Checking `overlay` and `overlayUrl` both is
+  // redundant at runtime (overlayUrl truthy ⇒ overlay defined) but lets
+  // TypeScript narrow `overlay` to non-undefined for the rest of the function.
+  if (!overlay || !overlayUrl || errored) return null;
 
   // Lag the overlay 6 frames behind the scene start so the eye registers
   // the main composition first. Without this the overlay competes for
@@ -135,19 +193,31 @@ export const RealImageOverlay: React.FC<Props> = ({ shot, frameWidth: frameWidth
     to: 1.0,
   });
 
-  // Use a fixed aspect assumption (square box) for layout planning. The
-  // <Img> itself uses object-fit: contain so non-square logos sit centred
-  // inside the box without distortion. This keeps positions predictable
-  // regardless of the actual aspect ratio of the fetched overlay.
-  //
   // Width resolution: a manually-set `customSizePct` (from the drag editor)
   // wins; otherwise we fall back to the zone-tier width ratio.
   const sizeRatio =
     typeof overlay.customSizePct === 'number' && Number.isFinite(overlay.customSizePct)
       ? Math.max(0.02, Math.min(0.6, overlay.customSizePct / 100))
       : SIZE_WIDTH_RATIO[overlay.size];
-  const overlayWidthPx = frameWidth * sizeRatio;
-  const overlayHeightPx = overlayWidthPx;
+
+  // Height comes from the image's natural aspect ratio (read at load time).
+  // Before onLoad fires the aspect is null and we fall back to 1:1 so the
+  // first render doesn't divide by null; delayRender holds the frame until
+  // the real aspect is in state, so this fallback never reaches a captured
+  // frame in practice.
+  //
+  // Cap the height at 70% of the frame so a 1:3 portrait logo can't push
+  // past the safe area; when the cap bites we shrink the width to match so
+  // the container's aspect still tracks the image (the mask/halo geometry
+  // depends on container aspect ≈ image aspect).
+  const effectiveAspect = aspect ?? 1;
+  let overlayWidthPx = frameWidth * sizeRatio;
+  let overlayHeightPx = overlayWidthPx / effectiveAspect;
+  const maxHeightPx = frameHeight * 0.7;
+  if (overlayHeightPx > maxHeightPx) {
+    overlayHeightPx = maxHeightPx;
+    overlayWidthPx = maxHeightPx * effectiveAspect;
+  }
 
   // Position resolution: a manually-set `(customX, customY)` pair wins.
   // Either alone is treated as "unset" (so partially-bad data falls back
@@ -178,19 +248,26 @@ export const RealImageOverlay: React.FC<Props> = ({ shot, frameWidth: frameWidth
 
   const haloColor = overlay.haloColor;
   const haloBlurPx = (HALO_BLUR_PX_AT_1080 * compositionHeight) / 1080;
-  const haloSizePx = overlayWidthPx * HALO_SCALE;
-  // Centre the halo on the overlay's centre, so it reads as a glow that
-  // belongs TO the overlay rather than a separate blob.
-  const haloLeft = left + (overlayWidthPx - haloSizePx) / 2;
-  const haloTop = top + (overlayHeightPx - haloSizePx) / 2;
+  // Elliptical halo: separate width and height so the glow's shape matches
+  // the overlay's actual silhouette. For a wide wordmark the halo is a wide
+  // ellipse, not a giant circle that bleeds far above and below the logo.
+  const haloWidthPx = overlayWidthPx * HALO_SCALE;
+  const haloHeightPx = overlayHeightPx * HALO_SCALE;
+  const haloLeft = left + (overlayWidthPx - haloWidthPx) / 2;
+  const haloTop = top + (overlayHeightPx - haloHeightPx) / 2;
 
-  // Soft circular mask: outer 18% of the radius fades to transparent so
-  // the overlay's edge never produces a hard rectangle silhouette.
+  // Soft elliptical mask: `ellipse closest-side` sizes the mask so it touches
+  // each side of the container, regardless of aspect ratio. The opaque core
+  // extends to 80% of each axis, then fades to transparent at the edge — only
+  // the outermost 20% feathers, which catches any RMBG halo residue without
+  // ever eating logo content. Wide wordmarks no longer have their leftmost /
+  // rightmost letters clipped by the old circular mask.
+  //
   // Browsers / Chromium-in-Remotion respect both `maskImage` and the
   // non-prefixed `mask` property; we set both for safety.
-  const MASK_FADE_START = 0.50; // fully opaque out to this radius
-  const MASK_FADE_END = 0.68;   // transparent past this radius
-  const radialMask = `radial-gradient(circle at center, rgba(0,0,0,1) 0%, rgba(0,0,0,1) ${MASK_FADE_START * 100}%, rgba(0,0,0,0) ${MASK_FADE_END * 100}%)`;
+  const MASK_FADE_START = 0.80; // fully opaque out to this fraction of half-axis
+  const MASK_FADE_END = 1.00;   // transparent right at the box edge
+  const radialMask = `radial-gradient(ellipse closest-side at center, rgba(0,0,0,1) 0%, rgba(0,0,0,1) ${MASK_FADE_START * 100}%, rgba(0,0,0,0) ${MASK_FADE_END * 100}%)`;
 
   return (
     <AbsoluteFill style={{ pointerEvents: 'none' }}>
@@ -203,8 +280,8 @@ export const RealImageOverlay: React.FC<Props> = ({ shot, frameWidth: frameWidth
             position: 'absolute',
             left: haloLeft,
             top: haloTop,
-            width: haloSizePx,
-            height: haloSizePx,
+            width: haloWidthPx,
+            height: haloHeightPx,
             borderRadius: '50%',
             background: haloColor,
             filter: `blur(${haloBlurPx}px)`,
@@ -224,11 +301,11 @@ export const RealImageOverlay: React.FC<Props> = ({ shot, frameWidth: frameWidth
           opacity,
           transform: `scale(${scale})`,
           transformOrigin: 'center center',
-          // Drop shadow plus the circular mask. Drop shadow stays — it
+          // Drop shadow plus the elliptical mask. Drop shadow stays — it
           // reads as a subtle ground line even after the rectangle is
           // feathered away. Stack: the mask shapes the visible silhouette,
           // the drop shadow renders against that silhouette so the
-          // shadow itself is circular too (browsers apply filter AFTER
+          // shadow tracks the mask's shape too (browsers apply filter AFTER
           // mask in compositing).
           filter: 'drop-shadow(0 6px 18px rgba(0,0,0,0.30))',
           WebkitMaskImage: radialMask,
@@ -237,10 +314,16 @@ export const RealImageOverlay: React.FC<Props> = ({ shot, frameWidth: frameWidth
       >
         <Img
           src={overlay.url}
+          onLoad={onImgLoad}
+          onError={onImgError}
           style={{
             width: '100%',
             height: '100%',
-            objectFit: 'contain',
+            // The container now matches the image's natural aspect, so cover
+            // and contain produce identical output. `cover` is the cheaper of
+            // the two for the compositor and avoids any sub-pixel letterboxing
+            // when aspect is rounded.
+            objectFit: 'cover',
           }}
         />
       </div>

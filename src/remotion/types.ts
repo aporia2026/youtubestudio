@@ -270,6 +270,13 @@ export interface VideoConfig {
    *  shot and the closing fade-out on the last. Per-shot `sceneFade`
    *  overrides this. See `_plans/2026-05-17-scene-transition-controls.md`. */
   sceneFadeEnabled?: boolean;
+  /** Burned-in captions — Phase 4 of
+   *  `_plans/2026-05-18-shot-graph-editor.md`. When present and
+   *  non-empty, the composition renders each segment's text over the
+   *  bottom-third of the frame while its time window is active.
+   *  Editor uses this for Lambda renders so the rendered MP4 carries
+   *  the captions the user already saw in the editor's HTML overlay. */
+  captions?: Array<{ start: number; end: number; text: string }>;
 }
 
 // ─── Render Job ───────────────────────────────────────────────────────────────

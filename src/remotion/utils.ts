@@ -415,6 +415,11 @@ export interface ProductionDocToVideoConfigOptions {
    *  visual cut from the next narration onset. Falls back to
    *  `doc.tail_buffer_ms`, then `DEFAULT_TAIL_BUFFER_MS`. */
   tailBufferMs?: number;
+  /** Burned-in captions to render via CaptionsOverlay. Editor passes
+   *  through `state.captions.segments` so renders include the same
+   *  captions the user saw in the editor's preview. Phase 4 of the
+   *  shot-graph editor plan. */
+  captions?: Array<{ start: number; end: number; text: string }>;
 }
 
 export function productionDocToVideoConfig(
@@ -675,6 +680,7 @@ export function productionDocToVideoConfig(
     minSceneMs,
     tailBufferMs,
     sceneFadeEnabled: doc.scene_fade_enabled,
+    captions: opts.captions,
   };
 
   return opts.alignment ? realignVideoConfig(config, opts.alignment).config : config;

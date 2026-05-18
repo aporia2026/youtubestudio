@@ -40,7 +40,6 @@ import {
   rowStartTimesMs,
 } from '@/lib/editor/store';
 import { useEditorStore } from '@/lib/editor/use-editor-store';
-import { activeCaption } from '@/lib/editor/captions';
 import { Timeline } from '@/components/editor/Timeline';
 import { ShotInspector } from '@/components/editor/ShotInspector';
 import { VoiceoverDriftReport } from '@/components/editor/VoiceoverDriftReport';
@@ -197,8 +196,6 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     }
   }, [flushSave, projectId, reloadFromServer, state.voiceoverUrl]);
 
-  // Current playhead in seconds for the caption overlay lookup.
-  const playheadSeconds = state.playheadMs / 1000;
 
   // Derive the VideoConfig the player will render. Memoized so the
   // Remotion player's inputProps reference is stable across renders
@@ -211,8 +208,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     });
     return productionDocToVideoConfig(state.doc, rowImageArr, {
       voiceoverUrl: state.voiceoverUrl,
+      captions: state.captions?.segments,
     });
-  }, [doc, state.doc, state.rowImages, state.voiceoverUrl]);
+  }, [doc, state.doc, state.rowImages, state.voiceoverUrl, state.captions]);
 
   const inputProps = useMemo(() => (videoConfig ? { config: videoConfig } : null), [videoConfig]);
 
@@ -578,39 +576,10 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             acknowledgeRemotionLicense
           />
 
-          {/* Caption overlay. Rendered as an HTML layer on top of
-              the Remotion player (not inside the composition), so
-              edits + regenerations show instantly without re-
-              rendering the underlying video. Lambda renders won't
-              include this layer in v1 — captions for actual MP4
-              export land with a follow-up Lambda integration. */}
-          {state.captions && state.captions.segments.length > 0 && (() => {
-            const active = activeCaption(state.captions.segments, playheadSeconds);
-            if (!active) return null;
-            return (
-              <div
-                className="absolute left-0 right-0 pointer-events-none flex items-end justify-center"
-                style={{
-                  bottom: 'calc(15% + 48px)', // sit above the player's controls bar
-                  paddingLeft: '8%',
-                  paddingRight: '8%',
-                }}
-              >
-                <span
-                  className="px-3 py-1 rounded text-center"
-                  style={{
-                    background: 'rgba(0, 0, 0, 0.75)',
-                    color: '#fff',
-                    fontSize: 'clamp(12px, 2.2vw, 20px)',
-                    lineHeight: 1.3,
-                    textShadow: '0 1px 2px rgba(0,0,0,0.8)',
-                  }}
-                >
-                  {active.text}
-                </span>
-              </div>
-            );
-          })()}
+          {/* Captions are rendered INSIDE the Remotion composition
+              via <CaptionsOverlay> (Phase 4 wiring), so they appear
+              in both the editor preview AND in Lambda renders. No
+              separate HTML overlay needed. */}
         </div>
 
         {state.selection !== null && state.doc.rows[state.selection] && (
