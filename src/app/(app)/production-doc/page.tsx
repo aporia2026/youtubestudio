@@ -40,6 +40,7 @@ import { OverlayCell } from '@/components/production-doc/OverlayCell';
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
 import { MissingClipsModal } from '@/components/production-doc/MissingClipsModal';
+import { MaskBrushEditor } from '@/components/production-doc/MaskBrushEditor';
 import {
   brollRowSignatureInput,
   DEFAULT_BROLL_MODEL_ID,
@@ -232,10 +233,15 @@ interface ProductionDoc {
 }
 
 interface RowImageState {
-  status: 'idle' | 'pending' | 'loading' | 'done' | 'error' | 'search';
+  status: 'idle' | 'pending' | 'loading' | 'uploading' | 'editing' | 'done' | 'error' | 'search';
   imageUrl?: string;
   searchUrl?: string;
   error?: string;
+  /** Where the image came from. Drives small UI cues (📷 badge for
+   *  uploads, ✎ badge for edits) and gates the "↻ regenerate with the
+   *  original prompt" button — uploads have no prompt to regenerate
+   *  with, so ↻ is hidden for those rows and the edit pencil ✎ stays. */
+  source?: 'generated' | 'upload' | 'url' | 'edit';
 }
 
 
@@ -878,43 +884,483 @@ function ImageLightbox({ imageUrl, onClose }: { imageUrl: string; onClose: () =>
   );
 }
 
+/**
+ * Smart-edit panel for the production-doc image cell.
+ *
+ * Two phases:
+ *   1. Compose — original image preview + prompt textarea + Apply.
+ *      "Paint a region instead…" link opens the brush mask editor
+ *      (passed in as `onOpenBrush`); when not provided, the link
+ *      stays hidden.
+ *   2. Review — before/after side-by-side + Use this / Try another /
+ *      Discard. The new image is never persisted to the row until the
+ *      user clicks "Use this".
+ *
+ * The panel survives one apply cycle. Users can iterate prompts in
+ * Compose mode and the original stays on the row until they accept a
+ * candidate.
+ */
+function EditPanel({
+  sourceImageUrl,
+  initialResult,
+  onApply,
+  onUseThis,
+  onOpenBrush,
+  onClose,
+}: {
+  sourceImageUrl: string;
+  /** When provided, the panel opens directly in review mode showing
+   *  before/after. Used by the brush flow: the brush modal produces
+   *  the result, then hands the panel off to render the review UI
+   *  with a consistent "Use this / Discard" experience. */
+  initialResult?: { imageUrl: string; saliency: ImageSaliencyMap | null } | null;
+  onApply: (prompt: string) => Promise<EditResult>;
+  onUseThis: (imageUrl: string, saliency: ImageSaliencyMap | null) => void;
+  /** Open the mask brush modal. Optional; when absent the in-panel
+   *  brush link stays hidden. */
+  onOpenBrush?: () => void;
+  onClose: () => void;
+}) {
+  const [prompt, setPrompt] = useState('');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [result, setResult] = useState<{ imageUrl: string; saliency: ImageSaliencyMap | null } | null>(
+    initialResult ?? null,
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  async function apply() {
+    if (!prompt.trim()) return;
+    setIsGenerating(true);
+    setError(null);
+    const r = await onApply(prompt.trim());
+    setIsGenerating(false);
+    if (r.ok) {
+      setResult({ imageUrl: r.imageUrl, saliency: r.saliency });
+    } else {
+      setError(r.error);
+    }
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.85)',
+        zIndex: 70,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 24,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'var(--bg-elevated, #181818)',
+          border: '1px solid var(--border)',
+          borderRadius: 10,
+          padding: 20,
+          width: 'min(960px, 96vw)',
+          maxHeight: '92vh',
+          overflowY: 'auto',
+          color: 'var(--text-primary)',
+        }}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-sm font-semibold">Edit image</div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            style={{
+              background: 'transparent',
+              color: 'var(--text-muted)',
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: 16,
+              lineHeight: 1,
+              padding: 4,
+            }}
+          >
+            ✕
+          </button>
+        </div>
+
+        {!result ? (
+          <>
+            <div
+              style={{
+                display: 'flex',
+                gap: 16,
+                alignItems: 'flex-start',
+                flexWrap: 'wrap',
+              }}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={sourceImageUrl}
+                alt="Original"
+                style={{
+                  width: 320,
+                  maxWidth: '100%',
+                  borderRadius: 6,
+                  border: '1px solid var(--border)',
+                  display: 'block',
+                  background: '#000',
+                }}
+              />
+              <div style={{ flex: '1 1 280px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <label className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  What should change?
+                </label>
+                <textarea
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder="e.g. change the t-shirt to red, make the sky stormy, add a sunset glow"
+                  rows={5}
+                  disabled={isGenerating}
+                  style={{
+                    background: 'var(--bg-card, #111)',
+                    color: 'var(--text-primary)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 6,
+                    padding: 8,
+                    fontSize: 13,
+                    resize: 'vertical',
+                    fontFamily: 'inherit',
+                  }}
+                  maxLength={2000}
+                />
+                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  Smart edit uses Nano Banana 2 — the model locates the region from your
+                  prompt. No mask needed. Roughly $0.02 per attempt.
+                </div>
+                {onOpenBrush && (
+                  <button
+                    type="button"
+                    onClick={onOpenBrush}
+                    disabled={isGenerating}
+                    className="text-xs"
+                    style={{
+                      background: 'transparent',
+                      color: 'var(--text-secondary)',
+                      border: 'none',
+                      cursor: isGenerating ? 'not-allowed' : 'pointer',
+                      textDecoration: 'underline',
+                      padding: 0,
+                      textAlign: 'left',
+                    }}
+                  >
+                    Paint a region instead…
+                  </button>
+                )}
+                {error && (
+                  <div className="text-xs" style={{ color: '#f87171' }} role="alert">
+                    {error}
+                  </div>
+                )}
+                <div className="flex items-center gap-2 mt-1">
+                  <button
+                    type="button"
+                    onClick={apply}
+                    disabled={!prompt.trim() || isGenerating}
+                    className="text-xs px-3 py-1.5 rounded"
+                    style={{
+                      background: !prompt.trim() || isGenerating
+                        ? 'rgba(120,120,120,0.18)'
+                        : 'rgba(168,85,247,0.20)',
+                      color: !prompt.trim() || isGenerating ? 'var(--text-muted)' : '#c084fc',
+                      border: '1px solid rgba(168,85,247,0.35)',
+                      cursor: !prompt.trim() || isGenerating ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    {isGenerating ? 'Generating…' : 'Apply (smart edit · ~$0.02)'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    disabled={isGenerating}
+                    className="text-xs px-3 py-1.5 rounded"
+                    style={{
+                      background: 'transparent',
+                      color: 'var(--text-muted)',
+                      border: '1px solid var(--border)',
+                      cursor: isGenerating ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: 12,
+                marginBottom: 12,
+              }}
+            >
+              <div>
+                <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>
+                  Before
+                </div>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={sourceImageUrl}
+                  alt="Before"
+                  style={{
+                    width: '100%',
+                    borderRadius: 6,
+                    border: '1px solid var(--border)',
+                    display: 'block',
+                    background: '#000',
+                  }}
+                />
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: '#c084fc' }}>
+                  After
+                </div>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={result.imageUrl}
+                  alt="After"
+                  style={{
+                    width: '100%',
+                    borderRadius: 6,
+                    border: '1px solid rgba(168,85,247,0.45)',
+                    display: 'block',
+                    background: '#000',
+                  }}
+                />
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => {
+                  onUseThis(result.imageUrl, result.saliency);
+                  onClose();
+                }}
+                className="text-xs px-3 py-1.5 rounded"
+                style={{
+                  background: 'rgba(34,197,94,0.18)',
+                  color: '#86efac',
+                  border: '1px solid rgba(34,197,94,0.40)',
+                  cursor: 'pointer',
+                }}
+              >
+                ✓ Use this
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setResult(null);
+                  setError(null);
+                }}
+                className="text-xs px-3 py-1.5 rounded"
+                style={{
+                  background: 'transparent',
+                  color: 'var(--text-secondary)',
+                  border: '1px solid var(--border)',
+                  cursor: 'pointer',
+                }}
+              >
+                Try another prompt
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="text-xs px-3 py-1.5 rounded"
+                style={{
+                  background: 'transparent',
+                  color: 'var(--text-muted)',
+                  border: '1px solid var(--border)',
+                  cursor: 'pointer',
+                }}
+              >
+                Discard
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Result shape returned by edit operations. Defined at module scope so
+ *  EditPanel + future MaskBrushEditor share a single type. */
+type EditResult =
+  | { ok: true; imageUrl: string; saliency: ImageSaliencyMap | null }
+  | { ok: false; error: string };
+
 function ImageCell({
   state,
   onRetry,
+  onUpload,
+  onUrlImport,
+  onEdit,
   canGenerate = true,
 }: {
   state: RowImageState;
   onRetry: () => void;
+  /** Attach a locally-selected file to the row. Wired to the ⬆ button in
+   *  the idle column-of-three layout. */
+  onUpload?: (file: File) => void;
+  /** Mirror an external HTTPS image URL into our R2 bucket and attach. */
+  onUrlImport?: (url: string) => void;
+  /** Open the smart edit panel (Tier 1 prompt edit + Tier 2 brush mask).
+   *  Available on rows with a ready image. */
+  onEdit?: () => void;
   /** False when the row has no AI prompt to generate from — disables the
    *  idle-state Generate button. Defaults to true so unmodified callers
    *  keep their old behaviour (an enabled button). */
   canGenerate?: boolean;
 }) {
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [urlInputOpen, setUrlInputOpen] = useState(false);
+  const [urlInputValue, setUrlInputValue] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Idle state used to render nothing — leaving the cell visually empty
   // with no way to trigger generation. After sanitizing stale 'loading'
   // statuses on restore (fix from b4366fa), every row that was mid-gen
   // when the page refreshed comes back as 'idle', so this state went
-  // from "uncommon" to "common after refresh". Render a Generate button
-  // here so the user has an obvious action.
+  // from "uncommon" to "common after refresh". Render three actions
+  // (Generate / Upload / URL) so the user has obvious next steps even
+  // when the row has no AI prompt.
   if (state.status === 'idle') {
     return (
-      <button
-        type="button"
-        onClick={onRetry}
-        disabled={!canGenerate}
-        title={canGenerate ? 'Generate this image with the current prompt' : 'Add an AI prompt to this row first'}
-        className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded whitespace-nowrap"
-        style={{
-          background: canGenerate ? 'rgba(168,85,247,0.12)' : 'transparent',
-          color: canGenerate ? '#c084fc' : 'var(--text-muted)',
-          border: `1px solid ${canGenerate ? 'rgba(168,85,247,0.35)' : 'rgba(255,255,255,0.10)'}`,
-          cursor: canGenerate ? 'pointer' : 'not-allowed',
-        }}
-      >
-        ＋ Generate
-      </button>
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center gap-1 flex-wrap">
+          <button
+            type="button"
+            onClick={onRetry}
+            disabled={!canGenerate}
+            title={canGenerate ? 'Generate this image with the current prompt' : 'Add an AI prompt to this row first'}
+            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded whitespace-nowrap"
+            style={{
+              background: canGenerate ? 'rgba(168,85,247,0.12)' : 'transparent',
+              color: canGenerate ? '#c084fc' : 'var(--text-muted)',
+              border: `1px solid ${canGenerate ? 'rgba(168,85,247,0.35)' : 'rgba(255,255,255,0.10)'}`,
+              cursor: canGenerate ? 'pointer' : 'not-allowed',
+            }}
+          >
+            ＋ Generate
+          </button>
+          {onUpload && (
+            <>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                title="Upload an image from your computer"
+                className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded whitespace-nowrap"
+                style={{
+                  background: 'rgba(59,130,246,0.10)',
+                  color: '#60a5fa',
+                  border: '1px solid rgba(59,130,246,0.30)',
+                  cursor: 'pointer',
+                }}
+              >
+                ⬆ Upload
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) onUpload(f);
+                  e.target.value = '';
+                }}
+              />
+            </>
+          )}
+          {onUrlImport && (
+            <button
+              type="button"
+              onClick={() => setUrlInputOpen((v) => !v)}
+              title="Import an image from an external HTTPS URL"
+              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded whitespace-nowrap"
+              style={{
+                background: 'rgba(120,120,120,0.10)',
+                color: 'var(--text-secondary)',
+                border: '1px solid rgba(255,255,255,0.10)',
+                cursor: 'pointer',
+              }}
+            >
+              🔗 URL
+            </button>
+          )}
+        </div>
+        {urlInputOpen && onUrlImport && (
+          <div className="flex items-center gap-1">
+            <input
+              type="url"
+              value={urlInputValue}
+              placeholder="https://…"
+              onChange={(e) => setUrlInputValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && urlInputValue.trim()) {
+                  onUrlImport(urlInputValue.trim());
+                  setUrlInputValue('');
+                  setUrlInputOpen(false);
+                } else if (e.key === 'Escape') {
+                  setUrlInputValue('');
+                  setUrlInputOpen(false);
+                }
+              }}
+              className="text-xs px-1.5 py-0.5 rounded flex-1"
+              style={{
+                background: 'var(--bg-elevated, #1a1a1a)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border)',
+                minWidth: 140,
+              }}
+              autoFocus
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (urlInputValue.trim()) {
+                  onUrlImport(urlInputValue.trim());
+                  setUrlInputValue('');
+                  setUrlInputOpen(false);
+                }
+              }}
+              className="text-[10px] px-1.5 py-0.5 rounded"
+              style={{ background: 'rgba(59,130,246,0.18)', color: '#60a5fa' }}
+            >
+              Go
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (state.status === 'uploading') {
+    return (
+      <div className="flex items-center gap-1.5">
+        <div className="spinner" style={{ width: 14, height: 14 }} />
+        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>uploading</span>
+      </div>
     );
   }
 
@@ -975,42 +1421,96 @@ function ImageCell({
               }}
             />
           </button>
-          {/* Re-generate overlay button — always offered, including for
-              successful stills, so the editor can re-roll without first
-              having to delete or fail the existing image. Clicking calls
-              the same `onRetry` handler the failure state uses; that
-              function (generateImageForRow) wipes the current imageUrl
-              and kicks off a fresh generation under the row's current
-              prompt + image model. */}
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onRetry();
-            }}
-            title="Re-generate this image with the current prompt"
-            aria-label="Re-generate image"
-            style={{
-              position: 'absolute',
-              top: 2,
-              right: 2,
-              width: 18,
-              height: 18,
-              padding: 0,
-              borderRadius: 4,
-              border: '1px solid rgba(255,255,255,0.25)',
-              background: 'rgba(0,0,0,0.55)',
-              color: '#e5e7eb',
-              fontSize: 11,
-              lineHeight: 1,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            ↻
-          </button>
+          {/* Re-generate + Edit overlay buttons. ↻ re-rolls the row's
+              prompt-based generation; only shown for rows whose image
+              came from generation or a prior edit (an upload / URL
+              import has no prompt to re-roll, so the button would 404
+              into nothing useful). ✎ opens the smart edit panel and is
+              always available — uploads are edits' primary use case. */}
+          {canGenerate && state.source !== 'upload' && state.source !== 'url' && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRetry();
+              }}
+              title="Re-generate this image with the current prompt"
+              aria-label="Re-generate image"
+              style={{
+                position: 'absolute',
+                top: 2,
+                right: onEdit ? 22 : 2,
+                width: 18,
+                height: 18,
+                padding: 0,
+                borderRadius: 4,
+                border: '1px solid rgba(255,255,255,0.25)',
+                background: 'rgba(0,0,0,0.55)',
+                color: '#e5e7eb',
+                fontSize: 11,
+                lineHeight: 1,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              ↻
+            </button>
+          )}
+          {onEdit && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onEdit();
+              }}
+              title="Edit with a prompt or paint a region to change"
+              aria-label="Edit image"
+              style={{
+                position: 'absolute',
+                top: 2,
+                right: 2,
+                width: 18,
+                height: 18,
+                padding: 0,
+                borderRadius: 4,
+                border: '1px solid rgba(168,85,247,0.45)',
+                background: 'rgba(0,0,0,0.65)',
+                color: '#c084fc',
+                fontSize: 11,
+                lineHeight: 1,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              ✎
+            </button>
+          )}
+          {state.source && state.source !== 'generated' && (
+            <span
+              title={
+                state.source === 'upload' ? 'Uploaded image'
+                : state.source === 'url' ? 'Imported from URL'
+                : 'Edited image'
+              }
+              style={{
+                position: 'absolute',
+                bottom: 2,
+                left: 2,
+                fontSize: 9,
+                lineHeight: 1,
+                padding: '1px 3px',
+                borderRadius: 3,
+                background: 'rgba(0,0,0,0.65)',
+                color: '#e5e7eb',
+              }}
+            >
+              {state.source === 'upload' ? '📷' : state.source === 'url' ? '🔗' : '✎'}
+            </span>
+          )}
         </div>
         {previewOpen && (
           <ImageLightbox imageUrl={state.imageUrl} onClose={() => setPreviewOpen(false)} />
@@ -1943,6 +2443,23 @@ function ProductionDocPage() {
   const [rowImages, setRowImages] = useState<RowImageState[]>([]);
   const [imageProgress, setImageProgress] = useState({ done: 0, total: 0 });
   const [imagesGenerating, setImagesGenerating] = useState(false);
+  // — Edit panel: which row index has its ✎ panel open (null = closed).
+  //   Held at page level so opening/closing doesn't unmount the row's cell
+  //   (which would tear down in-flight previews bound to that cell).
+  //   `editBrushOpen` swaps the smart-edit panel for the brush mask
+  //   editor while a row is being edited. `editResult` holds the
+  //   candidate produced by a brush-mode apply so EditPanel can show
+  //   before/after with the same Use this / Discard buttons the smart
+  //   flow uses.
+  const [editPanelRow, setEditPanelRow] = useState<number | null>(null);
+  const [editBrushOpen, setEditBrushOpen] = useState(false);
+  const [editResult, setEditResult] = useState<{ imageUrl: string; saliency: ImageSaliencyMap | null } | null>(null);
+
+  function closeEditPanel() {
+    setEditPanelRow(null);
+    setEditBrushOpen(false);
+    setEditResult(null);
+  }
   // — Overlay fetch state, keyed by rowIndex. Sparse: entries exist only
   //   for rows where an overlay fetch has been kicked off.
   const [rowOverlays, setRowOverlays] = useState<Record<number, RowOverlayState>>({});
@@ -3167,6 +3684,245 @@ function ProductionDocPage() {
 
   // ── Per-row image generation
 
+  /**
+   * Cache a saliency map on a row and re-resolve overlay placement against
+   * it. The renderer prefers `*_resolved` over the LLM's blind picks, so
+   * applying saliency after image generation / upload / edit lets overlays
+   * land on empty pixels instead of focal content.
+   *
+   * Best-effort — if there's no saliency, `*_resolved` stays untouched
+   * and the renderer falls back to the LLM zone. Single place to update
+   * the doc state so generate / upload / edit all converge on one path.
+   */
+  function applySaliencyToRow(rowIndex: number, saliency: ImageSaliencyMap) {
+    setDoc(prev => {
+      if (!prev) return prev;
+      const nextRows = [...prev.rows];
+      const row = nextRows[rowIndex];
+      if (!row) return prev;
+      let zoneResolved = row.overlay_zone_resolved;
+      let sizeResolved = row.overlay_size_resolved;
+      if (row.overlay_zone && row.overlay_size) {
+        const stripeOverlapsScene =
+          Boolean(row.section_title?.trim()) &&
+          (row.section_title_layout ?? 'letterbox') === 'overlay';
+        const placement = resolveOverlayPlacement({
+          llmZone: row.overlay_zone,
+          llmSize: row.overlay_size,
+          saliency,
+          hasSectionTitle: Boolean(row.section_title?.trim()),
+          stripeOverlapsScene,
+        });
+        console.info('[overlay placement] resolved', {
+          rowIndex,
+          llmZone: row.overlay_zone,
+          finalZone: placement.zone,
+          llmSize: row.overlay_size,
+          finalSize: placement.size,
+          reason: placement.reason,
+        });
+        zoneResolved = placement.zone;
+        sizeResolved = placement.size;
+      }
+      nextRows[rowIndex] = {
+        ...row,
+        image_saliency: saliency,
+        overlay_zone_resolved: zoneResolved,
+        overlay_size_resolved: sizeResolved,
+      };
+      return { ...prev, rows: nextRows };
+    });
+  }
+
+  /**
+   * Compute saliency for an image URL by calling the saliency endpoint.
+   * Silent on failure — overlay placement falls back to the LLM zone.
+   * Used by upload + URL import paths where the generator route didn't
+   * already return a saliency map alongside the image.
+   */
+  async function runSaliencyForRow(rowIndex: number, imageUrl: string) {
+    try {
+      const res = await fetch('/api/images/saliency', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageUrl }),
+      });
+      if (!res.ok) return;
+      const data = await res.json() as { saliency?: ImageSaliencyMap | null };
+      if (data.saliency) applySaliencyToRow(rowIndex, data.saliency);
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  /**
+   * Attach a locally-selected image to a row. Goes browser → R2 via a
+   * presigned PUT to bypass Vercel's 4.5 MB API body cap. On success the
+   * row's image state flips to `done` with `source: 'upload'`, and
+   * saliency is fetched in the background so overlay placement stays
+   * sane.
+   */
+  async function uploadImageForRow(rowIndex: number, file: File): Promise<boolean> {
+    if (!file.type.startsWith('image/')) {
+      toast.error('Only image files are supported');
+      return false;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error('Image must be under 10 MB');
+      return false;
+    }
+    setRowImages(prev => {
+      const next = [...prev];
+      next[rowIndex] = { ...next[rowIndex], status: 'uploading' };
+      return next;
+    });
+    try {
+      const presignRes = await fetch('/api/uploads/image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileName: file.name, contentType: file.type, fileSize: file.size }),
+      });
+      if (!presignRes.ok) {
+        const errBody = await presignRes.json().catch(() => ({}));
+        throw new Error((errBody as { error?: string }).error || `Presign failed (${presignRes.status})`);
+      }
+      const { uploadUrl, downloadUrl } = await presignRes.json();
+      const putRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type },
+        body: file,
+      });
+      if (!putRes.ok) throw new Error(`R2 upload failed (${putRes.status})`);
+      setRowImages(prev => {
+        const next = [...prev];
+        next[rowIndex] = { status: 'done', imageUrl: downloadUrl, source: 'upload' };
+        return next;
+      });
+      void runSaliencyForRow(rowIndex, downloadUrl);
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Upload failed';
+      toast.error(msg);
+      // Drop back to idle on upload failure rather than 'error' — the
+      // toast already carries the message, and idle restores the
+      // three-button row so the user can pick a different recovery
+      // path (try again, generate, paste a URL). The 'error' state's
+      // Retry button calls onRetry which goes to GENERATE — not what
+      // the user meant by retrying an upload.
+      setRowImages(prev => {
+        const next = [...prev];
+        next[rowIndex] = { status: 'idle' };
+        return next;
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Mirror an externally-hosted image into R2 (so the row's URL is stable
+   * and CDN-served). The server-side fetch is DNS-rebinding-pinned via
+   * `resolveAndPinSafeUrl` — see `/api/uploads/image-from-url`.
+   */
+  async function importImageUrlForRow(rowIndex: number, externalUrl: string): Promise<boolean> {
+    const trimmed = externalUrl.trim();
+    if (!trimmed) return false;
+    setRowImages(prev => {
+      const next = [...prev];
+      next[rowIndex] = { ...next[rowIndex], status: 'uploading' };
+      return next;
+    });
+    try {
+      const res = await fetch('/api/uploads/image-from-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageUrl: trimmed }),
+      });
+      const data = await safeJson(res);
+      if (!res.ok) throw new Error((data.error as string) || `Failed (${res.status})`);
+      const downloadUrl = data.imageUrl as string;
+      setRowImages(prev => {
+        const next = [...prev];
+        next[rowIndex] = { status: 'done', imageUrl: downloadUrl, source: 'url' };
+        return next;
+      });
+      void runSaliencyForRow(rowIndex, downloadUrl);
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'URL import failed';
+      toast.error(msg);
+      // Same reasoning as uploadImageForRow's catch — fall back to
+      // idle so the user can pick a recovery path. The toast surfaces
+      // the failure detail; the 'error' state's Retry would launch
+      // generation, not retry the import.
+      setRowImages(prev => {
+        const next = [...prev];
+        next[rowIndex] = { status: 'idle' };
+        return next;
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Generate an edited image for a row without mutating its current image.
+   * Returns the candidate URL + saliency on success so the caller (the
+   * edit panel) can show before/after before the user commits.
+   *
+   * Two modes:
+   *   - smart: prompt-only edit via Nano Banana 2 (~$0.02). Default.
+   *   - mask:  brush-painted region edit via GPT-4o Image. Caller passes
+   *           the pre-uploaded mask URL + quality tier.
+   *
+   * The row's `RowImageState` is untouched here. Only `acceptEditForRow`
+   * (called by the panel's "Use this" button) writes the result onto the
+   * row.
+   */
+  async function editImageForRow(
+    rowIndex: number,
+    originalImageUrl: string,
+    prompt: string,
+    opts: { mask?: { url: string; quality: 'low' | 'medium' | 'high' } } = {},
+  ): Promise<{ ok: true; imageUrl: string; saliency: ImageSaliencyMap | null } | { ok: false; error: string }> {
+    try {
+      const res = await fetch('/api/generate/production-doc/image/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          originalImageUrl,
+          prompt,
+          model: opts.mask ? 'gpt-4o-image-edit' : 'nano-banana-edit',
+          mask: opts.mask ? { url: opts.mask.url, quality: opts.mask.quality } : undefined,
+        }),
+      });
+      const data = await safeJson(res);
+      if (!res.ok) {
+        return { ok: false, error: (data.error as string) || `Failed (${res.status})` };
+      }
+      console.info('[prodoc image-edit] success', { rowIndex, mode: opts.mask ? 'mask' : 'smart' });
+      return {
+        ok: true,
+        imageUrl: data.imageUrl as string,
+        saliency: (data.saliency ?? null) as ImageSaliencyMap | null,
+      };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : 'Edit failed' };
+    }
+  }
+
+  /**
+   * Commit an edited image to a row. Called by the edit panel's "Use this"
+   * button. Sets the row state + applies saliency the same way generate /
+   * upload do, so the renderer picks up the new image immediately.
+   */
+  function acceptEditForRow(rowIndex: number, imageUrl: string, saliency: ImageSaliencyMap | null) {
+    setRowImages(prev => {
+      const next = [...prev];
+      next[rowIndex] = { status: 'done', imageUrl, source: 'edit' };
+      return next;
+    });
+    if (saliency) applySaliencyToRow(rowIndex, saliency);
+  }
+
   // Callers MUST pass `meta` from a source they already own (the `rows`
   // array driving the batch, or the row in JSX scope). We deliberately
   // do NOT fall back to reading `doc?.rows[rowIndex]` here: the auto
@@ -3207,55 +3963,11 @@ function ProductionDocPage() {
       if (!res.ok) throw new Error((data.error as string) || 'Failed');
       setRowImages(prev => {
         const next = [...prev];
-        next[rowIndex] = { status: 'done', imageUrl: data.imageUrl as string };
+        next[rowIndex] = { status: 'done', imageUrl: data.imageUrl as string, source: 'generated' };
         return next;
       });
-      // Cache the saliency map on the row and resolve final overlay
-      // placement now that we know what's actually in the image. The
-      // renderer then prefers `*_resolved` fields over the LLM's blind
-      // picks. Saliency is best-effort — if the server didn't return
-      // one, we leave the row's existing fields untouched and the
-      // renderer falls back to the LLM zone.
       const saliency = data.saliency as ImageSaliencyMap | null | undefined;
-      if (saliency) {
-        setDoc(prev => {
-          if (!prev) return prev;
-          const nextRows = [...prev.rows];
-          const row = nextRows[rowIndex];
-          if (!row) return prev;
-          let zoneResolved = row.overlay_zone_resolved;
-          let sizeResolved = row.overlay_size_resolved;
-          if (row.overlay_zone && row.overlay_size) {
-            const stripeOverlapsScene =
-              Boolean(row.section_title?.trim()) &&
-              (row.section_title_layout ?? 'letterbox') === 'overlay';
-            const placement = resolveOverlayPlacement({
-              llmZone: row.overlay_zone,
-              llmSize: row.overlay_size,
-              saliency,
-              hasSectionTitle: Boolean(row.section_title?.trim()),
-              stripeOverlapsScene,
-            });
-            console.info('[overlay placement] resolved', {
-              rowIndex,
-              llmZone: row.overlay_zone,
-              finalZone: placement.zone,
-              llmSize: row.overlay_size,
-              finalSize: placement.size,
-              reason: placement.reason,
-            });
-            zoneResolved = placement.zone;
-            sizeResolved = placement.size;
-          }
-          nextRows[rowIndex] = {
-            ...row,
-            image_saliency: saliency,
-            overlay_zone_resolved: zoneResolved,
-            overlay_size_resolved: sizeResolved,
-          };
-          return { ...prev, rows: nextRows };
-        });
-      }
+      if (saliency) applySaliencyToRow(rowIndex, saliency);
       // Fire-and-forget the overlay fetch in parallel with the next row's
       // image gen. Only triggers when the LLM planned an overlay for this
       // row. Idempotent — the route's R2 cache short-circuits repeats.
@@ -5394,6 +6106,9 @@ function ProductionDocPage() {
                                 });
                               }
                             }}
+                            onUpload={(file) => { void uploadImageForRow(i, file); }}
+                            onUrlImport={(url) => { void importImageUrlForRow(i, url); }}
+                            onEdit={() => setEditPanelRow(i)}
                           />
                         </td>
                         {/* B-roll (animation pipeline — Kling 2.5 turbo i2v by default) */}
@@ -5732,6 +6447,9 @@ function ProductionDocPage() {
                               sectionTitle: row.section_title,
                               overlayStockTerms: row.overlay_stock_terms,
                             })}
+                            onUpload={(file) => { void uploadImageForRow(i, file); }}
+                            onUrlImport={(url) => { void importImageUrlForRow(i, url); }}
+                            onEdit={() => setEditPanelRow(i)}
                           />
                         </div>
                         <div>
@@ -6141,6 +6859,44 @@ function ProductionDocPage() {
           }
         />
       )}
+      {(() => {
+        if (editPanelRow === null) return null;
+        const idx = editPanelRow;
+        const src = rowImages[idx]?.imageUrl;
+        if (!src) return null;
+        // While the brush modal is open AND no candidate result exists
+        // yet, show the paint UI. Otherwise the EditPanel covers both
+        // compose mode (initialResult === null) and review mode
+        // (initialResult set after a smart apply or brush apply).
+        if (editBrushOpen && !editResult) {
+          return (
+            <MaskBrushEditor
+              sourceImageUrl={src}
+              defaultQuality="medium"
+              onCancel={() => setEditBrushOpen(false)}
+              onApply={async ({ maskUrl, prompt, quality }) => {
+                const r = await editImageForRow(idx, src, prompt, { mask: { url: maskUrl, quality } });
+                if (r.ok) {
+                  setEditResult({ imageUrl: r.imageUrl, saliency: r.saliency });
+                  setEditBrushOpen(false);
+                } else {
+                  toast.error(r.error);
+                }
+              }}
+            />
+          );
+        }
+        return (
+          <EditPanel
+            sourceImageUrl={src}
+            initialResult={editResult}
+            onApply={(prompt) => editImageForRow(idx, src, prompt)}
+            onUseThis={(imageUrl, saliency) => acceptEditForRow(idx, imageUrl, saliency)}
+            onOpenBrush={() => setEditBrushOpen(true)}
+            onClose={closeEditPanel}
+          />
+        );
+      })()}
     </div>
     </ScheduleLinkProvider>
   );

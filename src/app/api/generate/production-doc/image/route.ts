@@ -3,6 +3,7 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
 import { buildKieImageInput, getImageModelSpec, DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from '@/lib/image-models';
 import { computeImageSaliency } from '@/lib/image-saliency';
+import { createKieTask, pollKieResult } from '@/lib/kie-poll';
 import {
   getDownloadUrlForBucket,
   getImagesBucket,
@@ -10,79 +11,6 @@ import {
 } from '@/lib/r2';
 
 export const maxDuration = 300;
-
-const KIE_BASE = 'https://api.kie.ai/api/v1/jobs';
-
-/** Strip HTML (Cloudflare gateway pages) from kie.ai error responses. */
-async function kieErrorMsg(res: Response): Promise<string> {
-  const text = await res.text().catch(() => '');
-  if (text.trimStart().startsWith('<') || text.includes('</html>')) {
-    if (res.status === 502 || res.status === 503 || res.status === 504) {
-      return `Kie.ai is temporarily unavailable (${res.status}) — please try again in a moment`;
-    }
-    return `Kie.ai returned an unexpected gateway response (HTTP ${res.status})`;
-  }
-  try {
-    const json = JSON.parse(text);
-    const msg = json?.error?.message || json?.message || json?.error;
-    if (typeof msg === 'string') return `Kie.ai: ${msg}`;
-  } catch { /* not JSON */ }
-  return `Kie.ai error ${res.status}: ${text.slice(0, 200)}`;
-}
-
-// 95 × 3s = 285s — sits just under the route's `maxDuration = 300`, leaving
-// ~15s headroom for R2 upload + saliency compute after the poll returns.
-// Earlier ceiling was 30 × 3s = 90s; Flux 2 Pro and GPT Image 2 routinely
-// run longer than 90s, so the function returned a timeout error while
-// Kie kept running the job to completion — burning credits we never
-// collected a result for.
-async function pollForResult(taskId: string, apiKey: string): Promise<string> {
-  for (let i = 0; i < 95; i++) {
-    await new Promise(resolve => setTimeout(resolve, 3000));
-
-    const res = await fetch(`${KIE_BASE}/recordInfo?taskId=${encodeURIComponent(taskId)}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-
-    if (!res.ok) {
-      if (res.status === 429) continue; // rate limited — retry
-      throw new Error(`Poll failed: ${res.status}`);
-    }
-
-    let data: Record<string, unknown>;
-    try {
-      data = await res.json();
-    } catch {
-      // Transient bad response — keep polling
-      continue;
-    }
-
-    const state = (data.data as Record<string, unknown>)?.state;
-
-    if (state === 'success') {
-      const dataObj = data.data as Record<string, unknown>;
-      let parsed: Record<string, unknown>;
-      try {
-        parsed = typeof dataObj.resultJson === 'string'
-          ? JSON.parse(dataObj.resultJson)
-          : (dataObj.resultJson as Record<string, unknown>);
-      } catch {
-        throw new Error('Invalid result JSON from Kie.ai');
-      }
-      const urls = parsed?.resultUrls as string[] | undefined;
-      if (!urls?.length) throw new Error('No image URLs in result');
-      return urls[0];
-    }
-
-    if (state === 'fail') {
-      const dataObj = data.data as Record<string, unknown>;
-      throw new Error((dataObj?.failMsg as string) || 'Image generation failed on Kie.ai');
-    }
-    // waiting / queuing / generating — keep polling
-  }
-
-  throw new Error('Image generation timed out after 285 s — try again');
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -158,57 +86,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'KIE_API_KEY is not configured' }, { status: 500 });
     }
 
-    // Retry task creation up to 3× on transient 502/503/504 gateway errors
-    let createRes!: Response;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt));
-      createRes = await fetch(`${KIE_BASE}/createTask`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: spec.kieModel,
-          input: buildKieImageInput(spec.value, augmentedPrompt),
-        }),
-      });
-      if (createRes.status !== 502 && createRes.status !== 503 && createRes.status !== 504) break;
-    }
-
-    if (!createRes.ok) {
-      throw new Error(await kieErrorMsg(createRes));
-    }
-
-    let createData: Record<string, unknown>;
-    try {
-      createData = await createRes.json();
-    } catch {
-      throw new Error('Kie.ai returned non-JSON response during task creation');
-    }
-
-    const taskId = (createData.data as Record<string, unknown>)?.taskId as string | undefined;
-    if (!taskId) {
-      // Surface what Kie actually returned. Common cases hidden behind a
-      // bare "no taskId" message: `{code: 401, message: "Insufficient
-      // balance"}`, `{code: 422, message: "prompt rejected by policy"}`,
-      // or model-deprecation responses. Without this, every failure
-      // looks like the same generic bug.
-      const code = (createData as Record<string, unknown>).code;
-      const message = (createData as Record<string, unknown>).message;
-      const detail =
-        typeof code !== 'undefined' || typeof message !== 'undefined'
-          ? `Kie.ai responded code=${String(code ?? '?')} message=${String(message ?? '(none)')}`
-          : `Kie.ai returned an unexpected body: ${JSON.stringify(createData).slice(0, 400)}`;
-      console.error('[image-gen] createTask returned no taskId', {
-        model: spec.kieModel,
-        promptLength: augmentedPrompt.length,
-        body: createData,
-      });
-      throw new Error(`No taskId returned from Kie.ai — ${detail}`);
-    }
-
-    const kieUrl = await pollForResult(taskId, apiKey);
+    const taskId = await createKieTask(apiKey, spec.kieModel, buildKieImageInput(spec.value, augmentedPrompt));
+    const kieUrl = await pollKieResult(taskId, apiKey);
 
     // Re-host in R2 (images bucket) so the URL doesn't depend on Kie's
     // CDN retention. On mirror failure fall back to the Kie URL —

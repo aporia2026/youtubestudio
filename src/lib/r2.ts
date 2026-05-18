@@ -398,3 +398,21 @@ export function buildProductionDocKey(projectId: string, fileName: string): stri
   const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
   return `prod-docs/${projectId}/${Date.now()}-${sanitized}`;
 }
+
+/** Build an R2 key for a user-uploaded image attached to a production-doc
+ *  row. Not project-scoped — uploads happen inside the doc editor before
+ *  a project necessarily exists. Lives under user-uploads/ in the images
+ *  bucket. */
+export function buildUserUploadKey(fileName: string): string {
+  const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return `user-uploads/${Date.now()}-${sanitized}`;
+}
+
+/** Build an R2 key for a transient mask image used as input to the
+ *  GPT-4o image edit endpoint. Masks have no lasting value — they're
+ *  consumed by a single Kie.ai task — so they go under mask-uploads/
+ *  with a short bucket-lifecycle rule (configured at infra level). */
+export function buildMaskKey(fileName: string): string {
+  const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return `mask-uploads/${Date.now()}-${sanitized}`;
+}
