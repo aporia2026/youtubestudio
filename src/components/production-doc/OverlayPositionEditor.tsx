@@ -68,6 +68,16 @@ interface OverlayPositionEditorProps {
   /** Model id that produced the placement (e.g. `kie-gemini-3.1-pro`).
    *  Used only for the tooltip's "by <model>" attribution. */
   placementModel?: string;
+  /** Phase 3 — invoked when the user clicks "Rethink placement" inside
+   *  the editor. Re-runs the vision placement on the current overlay.
+   *  Absent ⇒ the button is hidden. */
+  onRethink?: () => void;
+  /** True when a rethink for this row is in flight. Disables the
+   *  button and switches its label to a busy state. */
+  isRethinking?: boolean;
+  /** True when this row has burned through its session rethink budget.
+   *  Disables the button with an explanatory tooltip. */
+  rethinkExhausted?: boolean;
   /** Called when the user clicks Save. `stretchedHeightPct` is non-null
    *  only when free-aspect drag produced a manual height; pass it through
    *  to the row so the renderer honours the squish. Null clears any
@@ -135,6 +145,9 @@ export function OverlayPositionEditor({
   termsLabel,
   placementReason,
   placementModel,
+  onRethink,
+  isRethinking,
+  rethinkExhausted,
   onSave,
   onReset,
   onClose,
@@ -745,25 +758,58 @@ export function OverlayPositionEditor({
             justifyContent: 'space-between',
           }}
         >
-          <button
-            type="button"
-            onClick={() => {
-              onReset();
-              onClose();
-            }}
-            title="Clear the manual position and fall back to the AI-planned zone"
-            style={{
-              fontSize: 12,
-              padding: '8px 12px',
-              borderRadius: 6,
-              background: 'transparent',
-              color: 'var(--text-muted)',
-              border: '1px solid rgba(255,255,255,0.10)',
-              cursor: 'pointer',
-            }}
-          >
-            Reset to AI placement
-          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => {
+                onReset();
+                onClose();
+              }}
+              title="Clear the manual position and fall back to the AI-planned zone"
+              style={{
+                fontSize: 12,
+                padding: '8px 12px',
+                borderRadius: 6,
+                background: 'transparent',
+                color: 'var(--text-muted)',
+                border: '1px solid rgba(255,255,255,0.10)',
+                cursor: 'pointer',
+              }}
+            >
+              Reset to AI placement
+            </button>
+            {/* Phase 3 — Rethink button. Re-asks the vision LLM for a
+                placement on this overlay without re-fetching the image.
+                Disabled while a request is in flight and after the
+                session cap. Same colour family as the cell-level
+                button so the user recognises the affordance. */}
+            {onRethink && (
+              <button
+                type="button"
+                onClick={onRethink}
+                disabled={isRethinking || rethinkExhausted}
+                title={
+                  rethinkExhausted
+                    ? 'Rethink limit reached this session — reload the page to reset'
+                    : isRethinking
+                      ? 'Asking the AI for a new placement…'
+                      : 'Ask the AI to rethink size + position for this overlay'
+                }
+                style={{
+                  fontSize: 12,
+                  padding: '8px 12px',
+                  borderRadius: 6,
+                  background: rethinkExhausted ? 'transparent' : 'rgba(99,102,241,0.14)',
+                  color: rethinkExhausted ? 'rgba(255,255,255,0.30)' : '#a5b4fc',
+                  border: `1px solid ${rethinkExhausted ? 'rgba(255,255,255,0.06)' : 'rgba(99,102,241,0.32)'}`,
+                  cursor: isRethinking || rethinkExhausted ? 'not-allowed' : 'pointer',
+                  opacity: isRethinking ? 0.7 : 1,
+                }}
+              >
+                {isRethinking ? '↻ Rethinking…' : '↻ Rethink placement'}
+              </button>
+            )}
+          </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button
               type="button"

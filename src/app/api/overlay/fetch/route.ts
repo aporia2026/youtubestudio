@@ -291,42 +291,60 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
      *  the placement prompt so the model can avoid high-attention areas
      *  without re-deriving them. */
     saliencyCells?: SaliencyCell[];
+    /** Phase 3 — when 'placement-only', the route skips Brave + RMBG
+     *  and only re-runs the vision call against `existingOverlayUrl`.
+     *  Used by the Rethink button to ask for a fresh placement on an
+     *  overlay we already have in R2. */
+    mode?: 'placement-only';
+    /** Required when mode is 'placement-only' — the R2 URL of the
+     *  overlay we want a new placement for. Validated HTTPS-only. */
+    existingOverlayUrl?: string;
+    /** Phase 3 anti-repeat hint — when present, the prompt asks for a
+     *  meaningfully different placement than this. Supplied by the
+     *  client from the row's current placement state. */
+    previousDecision?: {
+      sizePct: number;
+      mode: 'zone' | 'custom';
+      zone?: string;
+      customXPct?: number;
+      customYPct?: number;
+      reason?: string;
+    };
   };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
-  const terms = body.overlayStockTerms?.trim();
-  if (!terms) {
-    return NextResponse.json({ error: 'overlayStockTerms is required' }, { status: 400 });
-  }
-  if (terms.length > 300) {
-    return NextResponse.json({ error: 'overlayStockTerms too long' }, { status: 400 });
+
+  // Helpers shared by both modes (placement-only and normal). Centralising
+  // the HTTPS-only validation here means a malicious caller can't bypass
+  // SSRF protection by switching modes.
+  function validateHttpsUrl(raw: unknown, fieldName: string): string | NextResponse | undefined {
+    if (raw === undefined || raw === null || raw === '') return undefined;
+    if (typeof raw !== 'string') {
+      return NextResponse.json({ error: `${fieldName} must be a string` }, { status: 400 });
+    }
+    const trimmed = raw.trim();
+    if (!trimmed) return undefined;
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== 'https:') {
+        return NextResponse.json({ error: `${fieldName} must be HTTPS` }, { status: 400 });
+      }
+      return parsed.toString();
+    } catch {
+      return NextResponse.json({ error: `${fieldName} is not a valid URL` }, { status: 400 });
+    }
   }
 
   // Validate scene URL — must be HTTPS (no file://, no private hosts —
   // SSRF protection. The vision LLM fetches this URL server-side, so a
   // malicious caller could probe internal infra without this guard.
-  const sceneImageUrlRaw = typeof body.sceneImageUrl === 'string' ? body.sceneImageUrl.trim() : '';
-  let sceneImageUrl: string | undefined;
-  if (sceneImageUrlRaw) {
-    try {
-      const parsed = new URL(sceneImageUrlRaw);
-      if (parsed.protocol !== 'https:') {
-        return NextResponse.json(
-          { error: 'sceneImageUrl must be HTTPS' },
-          { status: 400 },
-        );
-      }
-      sceneImageUrl = parsed.toString();
-    } catch {
-      return NextResponse.json(
-        { error: 'sceneImageUrl is not a valid URL' },
-        { status: 400 },
-      );
-    }
-  }
+  const sceneCheck = validateHttpsUrl(body.sceneImageUrl, 'sceneImageUrl');
+  if (sceneCheck instanceof NextResponse) return sceneCheck;
+  const sceneImageUrl: string | undefined = sceneCheck;
+
   // Saliency cells — accept the same shape the row carries; cap the
   // count to keep the prompt bounded.
   const saliencyCells: SaliencyCell[] | undefined = Array.isArray(body.saliencyCells)
@@ -341,6 +359,77 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         )
         .slice(0, 32)
     : undefined;
+
+  // ── Phase 3: placement-only short-circuit ───────────────────────────
+  //
+  // No Brave search, no RMBG, no R2 upload — just re-run the vision
+  // placement against an overlay we already have. Used by the Rethink
+  // button. The route returns the SAME overlay URL the caller passed in
+  // (so the client doesn't need to track two URL state machines) plus
+  // the fresh placement decision. previousDecision is forwarded into
+  // the prompt as an anti-repeat hint.
+  if (body.mode === 'placement-only') {
+    if (!sceneImageUrl) {
+      return NextResponse.json(
+        { error: 'sceneImageUrl is required for placement-only mode' },
+        { status: 400 },
+      );
+    }
+    const existingCheck = validateHttpsUrl(body.existingOverlayUrl, 'existingOverlayUrl');
+    if (existingCheck instanceof NextResponse) return existingCheck;
+    if (!existingCheck) {
+      return NextResponse.json(
+        { error: 'existingOverlayUrl is required for placement-only mode' },
+        { status: 400 },
+      );
+    }
+    const existingOverlayUrl = existingCheck;
+
+    // Pass the previous decision through verbatim — the placement
+    // module is responsible for validating its own shape.
+    const prev = body.previousDecision;
+    const previousDecision =
+      prev && typeof prev.sizePct === 'number' && (prev.mode === 'zone' || prev.mode === 'custom')
+        ? {
+            sizePct: prev.sizePct,
+            mode: prev.mode,
+            zone: prev.zone as OverlayPlacementDecision['zone'],
+            customXPct: typeof prev.customXPct === 'number' ? prev.customXPct : undefined,
+            customYPct: typeof prev.customYPct === 'number' ? prev.customYPct : undefined,
+            reason: typeof prev.reason === 'string' ? prev.reason : '',
+          }
+        : undefined;
+
+    logger.info('[overlay rethink] requested', {
+      workspace: session.ws,
+      hasPrevious: Boolean(previousDecision),
+      previousZone: previousDecision?.zone,
+      previousMode: previousDecision?.mode,
+    });
+
+    const placement = await decideOverlayPlacement({
+      sceneImageUrl,
+      overlayImageUrl: existingOverlayUrl,
+      saliencyCells,
+      previousDecision,
+    });
+    const result: GracefulResult = {
+      overlayUrl: existingOverlayUrl,
+      cached: true,
+      placement: placement ?? undefined,
+    };
+    return NextResponse.json(result);
+  }
+
+  // ── Normal mode: source + RMBG + (optional) smart placement ─────────
+
+  const terms = body.overlayStockTerms?.trim();
+  if (!terms) {
+    return NextResponse.json({ error: 'overlayStockTerms is required' }, { status: 400 });
+  }
+  if (terms.length > 300) {
+    return NextResponse.json({ error: 'overlayStockTerms too long' }, { status: 400 });
+  }
 
   const braveKey = process.env.BRAVE_SEARCH_API_KEY;
   const replicateToken = process.env.REPLICATE_API_TOKEN;

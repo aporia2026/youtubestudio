@@ -79,6 +79,15 @@ export interface OverlayPlacementInput {
   /** Override the default model. Falls back to env var, then to
    *  DEFAULT_MODEL. */
   model?: string;
+  /** Optional "previous decision" hint — when the user clicks Rethink,
+   *  we pass the previous AI pick so the prompt can explicitly ask for
+   *  a meaningfully different placement. Without this, Gemini tends to
+   *  return the same answer (or near-identical) on repeat calls. Phase 3
+   *  of `_plans/2026-05-18-overlay-system-overhaul.md`. */
+  previousDecision?: Pick<
+    OverlayPlacementDecision,
+    'sizePct' | 'mode' | 'zone' | 'customXPct' | 'customYPct' | 'reason'
+  >;
 }
 
 export interface OverlayPlacementDecision {
@@ -119,7 +128,7 @@ export async function decideOverlayPlacement(
   const chainStart = FALLBACK_CHAIN.indexOf(requested);
   const chain = chainStart >= 0 ? FALLBACK_CHAIN.slice(chainStart) : [requested, ...FALLBACK_CHAIN];
 
-  const prompt = buildPlacementPrompt(input.saliencyCells);
+  const prompt = buildPlacementPrompt(input.saliencyCells, input.previousDecision);
 
   for (const model of chain) {
     const kieRoute = MODEL_TO_KIE_ROUTE[model];
@@ -233,13 +242,39 @@ async function callKieGeminiPlacement(
   return parsePlacement(content);
 }
 
-function buildPlacementPrompt(saliencyCells?: SaliencyCell[]): string {
+function buildPlacementPrompt(
+  saliencyCells?: SaliencyCell[],
+  previousDecision?: OverlayPlacementInput['previousDecision'],
+): string {
   const saliencyBlock =
     saliencyCells && saliencyCells.length > 0
       ? `\nSALIENCY MAP (8-cell grid of the scene; higher score = more visual attention. AVOID landing on high-score cells unless no clean zone exists):\n${saliencyCells
           .map((c) => `  row ${c.row}, col ${c.col}: ${c.score.toFixed(2)}`)
           .join('\n')}\n`
       : '';
+
+  // Anti-repeat hint for the Rethink path — without this Gemini tends
+  // to return the same (or nearly the same) answer on a second call.
+  // We tell it what was picked before and ask for something meaningfully
+  // different. The model still has freedom to land on a similar spot if
+  // it genuinely is the best — but the instruction biases it away.
+  const previousBlock = previousDecision
+    ? `\nPREVIOUS PICK (the user clicked "Rethink" — choose something meaningfully different from this):
+  size_pct: ${previousDecision.sizePct}
+  mode: ${previousDecision.mode}${
+    previousDecision.mode === 'zone' ? `\n  zone: ${previousDecision.zone ?? 'unknown'}` : ''
+  }${
+    previousDecision.mode === 'custom'
+      ? `\n  custom_x_pct: ${previousDecision.customXPct ?? 'unknown'}\n  custom_y_pct: ${previousDecision.customYPct ?? 'unknown'}`
+      : ''
+  }
+  prior reason: ${previousDecision.reason || 'n/a'}
+
+When rethinking, prefer a DIFFERENT zone (if previously a zone), or a
+visibly different region of the frame (if previously custom). Don't
+return the exact same placement unless every alternative is clearly
+worse — explain that in the reason if you do.\n`
+    : '';
 
   return `You are placing a graphic overlay (logo, brand mark, screenshot) on a YouTube video scene.
 
@@ -256,7 +291,7 @@ Avoid:
 Available zones (use one when a corner/edge slot fits naturally):
   top-left, top-right, bottom-left, bottom-right,
   center-top, center-bottom, left-center, right-center
-${saliencyBlock}
+${saliencyBlock}${previousBlock}
 Return a JSON object with NO markdown, NO commentary, NO code fences:
 {
   "size_pct": 18,

@@ -2673,6 +2673,16 @@ function ProductionDocPage() {
   //   for rows where an overlay fetch has been kicked off.
   const [rowOverlays, setRowOverlays] = useState<Record<number, RowOverlayState>>({});
 
+  // Phase 3 rethink state — rowIndex → number of rethink calls made this
+  // page session. Cap is RETHINK_MAX_ATTEMPTS to prevent accidental
+  // dollar-loss (each rethink costs ~$0.0075). Resets on page reload —
+  // good enough for a soft cap, since the user must consciously reload
+  // to refill the budget. `rethinkingRows` is the in-flight set; the
+  // OverlayCell shows a spinner for any row in this set.
+  const RETHINK_MAX_ATTEMPTS = 5;
+  const [rethinkAttempts, setRethinkAttempts] = useState<Record<number, number>>({});
+  const [rethinkingRows, setRethinkingRows] = useState<Set<number>>(() => new Set());
+
   // — B-roll clips per row (rowIndex → { status, videoUrl }). The BrollCell
   //   owns its own clip lifecycle and reports up via `onClipChange`; we keep
   //   the parent-level map only for the renderer wiring. Sparse — entries
@@ -4310,6 +4320,179 @@ function ProductionDocPage() {
     }
   }
 
+  /**
+   * Phase 3 — Rethink button. Re-runs the vision placement on a row's
+   * existing overlay without touching Brave or RMBG. The route's
+   * `mode: 'placement-only'` branch handles the cheap path. We also
+   * forward the row's current placement as `previousDecision` so the
+   * prompt explicitly asks for a different answer; without that hint
+   * Gemini tends to return the same pick twice.
+   *
+   * Bounded by RETHINK_MAX_ATTEMPTS per row per page session. Hitting
+   * the cap surfaces an alert; reload refills the budget.
+   *
+   * Telemetry: emits `overlay_rethink` with the before/after placement
+   * and the attempt count so the Phase 0 drag-rate dashboard can also
+   * track "how often did the user need to rethink before accepting?"
+   */
+  async function rethinkOverlayPlacement(rowIndex: number): Promise<void> {
+    const overlayState = rowOverlays[rowIndex];
+    if (overlayState?.status !== 'done' || !overlayState.url) {
+      console.warn('[ui overlay-rethink] no overlay to rethink', { rowIndex, status: overlayState?.status });
+      return;
+    }
+    const attempts = rethinkAttempts[rowIndex] ?? 0;
+    if (attempts >= RETHINK_MAX_ATTEMPTS) {
+      alert(`AI rethink limit reached for this overlay (${RETHINK_MAX_ATTEMPTS}/session). Reload the page to reset.`);
+      return;
+    }
+    const row = doc?.rows[rowIndex];
+    if (!row) return;
+
+    const sceneImageUrl = rowImages[rowIndex]?.imageUrl;
+    if (!sceneImageUrl) {
+      alert('Generate the row image first — the AI needs to see the scene before it can rethink the overlay placement.');
+      return;
+    }
+    const saliencyMap = row.image_saliency;
+    const saliencyCells = saliencyMap
+      ? Array.from({ length: saliencyMap.cols * saliencyMap.rows }, (_, idx) => ({
+          row: Math.floor(idx / saliencyMap.cols),
+          col: idx % saliencyMap.cols,
+          score: saliencyMap.busyness[idx] ?? 0,
+        }))
+      : undefined;
+
+    // Snapshot the row's current placement so we can forward it as the
+    // anti-repeat hint AND log the before/after delta in telemetry.
+    const prevMode: 'zone' | 'custom' =
+      row.overlay_position &&
+      typeof row.overlay_position.x_pct === 'number' &&
+      typeof row.overlay_position.y_pct === 'number'
+        ? 'custom'
+        : 'zone';
+    const previousDecision = {
+      sizePct:
+        typeof row.overlay_size_pct === 'number'
+          ? row.overlay_size_pct
+          : row.overlay_size === 'small'
+            ? 12
+            : row.overlay_size === 'large'
+              ? 25
+              : 18,
+      mode: prevMode,
+      zone: row.overlay_zone_resolved ?? row.overlay_zone,
+      customXPct: row.overlay_position?.x_pct,
+      customYPct: row.overlay_position?.y_pct,
+      reason: row.overlay_placement_reason ?? '',
+    };
+
+    console.info('[ui overlay-rethink] request', {
+      rowIndex,
+      attempt: attempts + 1,
+      previousMode: prevMode,
+      previousZone: previousDecision.zone,
+      previousSize: previousDecision.sizePct,
+    });
+
+    setRethinkingRows((prev) => {
+      const next = new Set(prev);
+      next.add(rowIndex);
+      return next;
+    });
+
+    try {
+      const res = await fetch('/api/overlay/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'placement-only',
+          existingOverlayUrl: overlayState.url,
+          sceneImageUrl,
+          saliencyCells,
+          previousDecision,
+        }),
+      });
+      const data = (await safeJson(res)) as {
+        placement?: {
+          model: string;
+          sizePct: number;
+          mode: 'zone' | 'custom';
+          zone?: ProductionRow['overlay_zone'];
+          customXPct?: number;
+          customYPct?: number;
+          reason: string;
+        };
+        error?: string;
+        reason?: string;
+      };
+      if (!res.ok) {
+        alert(`Rethink failed: ${data.error || `HTTP ${res.status}`}`);
+        console.warn('[ui overlay-rethink] non-OK', { rowIndex, status: res.status, body: data });
+        return;
+      }
+      if (!data.placement) {
+        alert('AI couldn\'t produce a new placement — the previous pick stays. Try again or drag manually.');
+        console.warn('[ui overlay-rethink] no placement returned', { rowIndex, reason: data.reason });
+        return;
+      }
+      const p = data.placement;
+      console.info('[ui overlay-rethink] applied', {
+        rowIndex,
+        attempt: attempts + 1,
+        model: p.model,
+        sizePct: p.sizePct,
+        mode: p.mode,
+        zone: p.zone,
+        reason: p.reason,
+      });
+
+      // Persist new placement — same shape as Phase 2's fetch path.
+      updateRow(rowIndex, {
+        overlay_size_pct: p.sizePct,
+        overlay_position:
+          p.mode === 'custom' &&
+          typeof p.customXPct === 'number' &&
+          typeof p.customYPct === 'number'
+            ? { x_pct: p.customXPct, y_pct: p.customYPct }
+            : undefined,
+        ...(p.mode === 'zone' && p.zone ? { overlay_zone: p.zone } : {}),
+        overlay_placement_reason: p.reason || undefined,
+        overlay_placement_model: p.model,
+      });
+
+      // Increment the per-row counter so the cap eventually bites.
+      setRethinkAttempts((prev) => ({ ...prev, [rowIndex]: attempts + 1 }));
+
+      // Telemetry — before/after delta.
+      recordEditorTelemetry('overlay_rethink', {
+        payload: {
+          row_index: rowIndex,
+          placement_model: p.model,
+          attempt: attempts + 1,
+          prev_zone: previousDecision.zone ?? null,
+          new_zone: p.zone ?? null,
+          prev_size_pct: previousDecision.sizePct,
+          new_size_pct: Number(p.sizePct.toFixed(2)),
+          prev_mode: previousDecision.mode,
+          new_mode: p.mode,
+        },
+      });
+    } catch (err) {
+      console.warn('[ui overlay-rethink] threw', {
+        rowIndex,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      alert('Rethink failed — see console for details.');
+    } finally {
+      setRethinkingRows((prev) => {
+        const next = new Set(prev);
+        next.delete(rowIndex);
+        return next;
+      });
+    }
+  }
+
   async function generateImages(rows: ProductionRow[], signal?: AbortSignal) {
     const aiRows = rows
       .map((r, i) => ({ row: r, idx: i }))
@@ -5122,7 +5305,8 @@ function ProductionDocPage() {
       | 'overlay_drag'
       | 'overlay_resize'
       | 'overlay_accept'
-      | 'overlay_reset',
+      | 'overlay_reset'
+      | 'overlay_rethink',
     extra: { payload?: Record<string, unknown> } = {},
   ): Promise<void> {
     try {
@@ -6598,6 +6782,9 @@ function ProductionDocPage() {
                                 onRetry={() => fetchOverlayForRow(i, row.overlay_stock_terms!.trim())}
                                 onOpenPositionEditor={() => setOverlayPositionRow(i)}
                                 hasManualPosition={Boolean(row.overlay_position)}
+                                onRethink={() => { void rethinkOverlayPlacement(i); }}
+                                isRethinking={rethinkingRows.has(i)}
+                                rethinkExhausted={(rethinkAttempts[i] ?? 0) >= RETHINK_MAX_ATTEMPTS}
                               />
                             ) : (
                               <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>—</span>
@@ -6854,6 +7041,9 @@ function ProductionDocPage() {
                               onRetry={() => fetchOverlayForRow(i, row.overlay_stock_terms!.trim())}
                               onOpenPositionEditor={() => setOverlayPositionRow(i)}
                               hasManualPosition={Boolean(row.overlay_position)}
+                              onRethink={() => { void rethinkOverlayPlacement(i); }}
+                              isRethinking={rethinkingRows.has(i)}
+                              rethinkExhausted={(rethinkAttempts[i] ?? 0) >= RETHINK_MAX_ATTEMPTS}
                             />
                           </div>
                         )}
@@ -7278,6 +7468,9 @@ function ProductionDocPage() {
           termsLabel={doc.rows[overlayPositionRow]!.overlay_stock_terms || ''}
           placementReason={doc.rows[overlayPositionRow]!.overlay_placement_reason}
           placementModel={doc.rows[overlayPositionRow]!.overlay_placement_model}
+          onRethink={() => { void rethinkOverlayPlacement(overlayPositionRow); }}
+          isRethinking={rethinkingRows.has(overlayPositionRow)}
+          rethinkExhausted={(rethinkAttempts[overlayPositionRow] ?? 0) >= RETHINK_MAX_ATTEMPTS}
           onSave={(pos, size, stretchedH) => {
             console.info('[ui overlay-position] saved', {
               rowIndex: overlayPositionRow,

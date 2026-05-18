@@ -34,6 +34,14 @@ import { logger } from '@/lib/logger';
  *   - `overlay_reset`          — user cleared their manual placement,
  *                                falling back to the AI's pick.
  *                                Payload: { row_index, placement_model }.
+ *   - `overlay_rethink`        — user clicked "Rethink placement" on
+ *                                a single overlay. The vision LLM is
+ *                                re-called with an anti-repeat hint.
+ *                                Payload: { row_index, placement_model,
+ *                                  attempt: number,
+ *                                  prev_zone, new_zone,
+ *                                  prev_size_pct, new_size_pct,
+ *                                  prev_mode, new_mode }.
  *
  * Together these three events let us compute the per-`placement_model`
  * "drag rate" after ~100 docs in prod — the data Phase 2 needs to decide
@@ -61,6 +69,7 @@ const ALLOWED_EVENTS = new Set([
   'overlay_resize',
   'overlay_accept',
   'overlay_reset',
+  'overlay_rethink',
 ]);
 
 // Hard upper bound on payload size after JSON.stringify. 4 KB is
