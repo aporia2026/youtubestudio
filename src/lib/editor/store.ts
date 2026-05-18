@@ -8,19 +8,23 @@
  *
  * Command philosophy
  * ──────────────────
- * Every editing command is a pure `(state, args) => { next; inverse }`
- * function. `apply()` runs the forward function, pushes the inverse
- * onto the undo stack, and clears the redo stack. Undo pops the
- * undo stack, applies the inverse, and pushes the original onto
- * redo. This is the standard NLE pattern; the inverse-pair design
- * means we never need to deep-copy state to remember the past.
+ * Two layers:
  *
- * Phase 2 ships the catalog with `SET_PLAYHEAD` + `SET_SELECTION`
- * (no inverses; these don't go on the undo stack). The editing
- * commands (RESIZE_SHOT, TRIM_SHOT, SPLIT_SHOT, DELETE_SHOT,
- * REORDER_SHOTS, SET_MUTE) land in their own commits — each one
- * adds its variant to the discriminated union below and its
- * implementation to `applyEditingCommand`.
+ *   `applyMutation(state, cmd)` — pure data transform. Returns the
+ *     post-mutation state PLUS the inverse command (the one that
+ *     would undo this change, computed from the pre-state). No
+ *     history bookkeeping. Returns `null` when the command is a
+ *     no-op for this state.
+ *
+ *   `applyCommand(state, cmd)` — public reducer. Handles history
+ *     bookkeeping: for editing commands, pushes the inverse onto
+ *     undoStack and clears redoStack; for UNDO, pops the top of
+ *     undoStack, applies it via applyMutation, pushes the
+ *     auto-computed forward onto redoStack; symmetric for REDO.
+ *
+ * The split keeps the history logic in ONE place (the UNDO/REDO
+ * branches), so editing commands can't accidentally smuggle the
+ * wrong entry onto a stack.
  *
  * Save flow
  * ─────────
@@ -29,8 +33,7 @@
  * `/api/editor/:projectId`. On success it dispatches `MARK_SAVED`
  * with the server's new version. On 409 (stale version) it
  * dispatches `RESET_FROM_SERVER` with the server's current payload
- * and version, dropping the user's unsaved edits (Phase 2 keeps it
- * simple — merge UI is a v2 problem).
+ * and version, dropping the user's unsaved edits.
  */
 import type { ProductionDoc } from '@/remotion/utils';
 
@@ -59,8 +62,10 @@ export interface EditorState {
   /** Wall-clock ms of the last successful save. UI renders "Saved 4s
    *  ago" relative to `Date.now()`. Null until first save. */
   lastSavedAt: number | null;
-  /** Undo/redo stacks hold INVERSE commands (undoStack) and
-   *  REPLAY commands (redoStack). Capped at UNDO_STACK_DEPTH. */
+  /** History stacks. undoStack stores INVERSE commands so popping
+   *  one and applying it walks backwards. redoStack stores FORWARD
+   *  commands so popping one and applying it walks forward again.
+   *  Both capped at UNDO_STACK_DEPTH. */
   undoStack: EditorCommand[];
   redoStack: EditorCommand[];
 }
@@ -75,7 +80,8 @@ export interface EditorState {
  *   – history navigation:
  *       UNDO, REDO
  *   – editing (dirty + push inverse to undo):
- *       (filled per-command commit; see `applyEditingCommand`)
+ *       RESIZE_SHOT, SPLIT_SHOT, MERGE_ADJACENT_SHOTS
+ *       (more land per-command)
  */
 export type EditorCommand =
   | { type: 'SET_PLAYHEAD'; ms: number }
@@ -84,145 +90,280 @@ export type EditorCommand =
   | { type: 'RESET_FROM_SERVER'; doc: ProductionDoc; rowImages: Record<number, string>; version: number }
   | { type: 'UNDO' }
   | { type: 'REDO' }
-  // Editing commands. Each one carries the args needed to apply +
-  // the prior value for its inverse. The reducer reads `prevDurationMs`
-  // to reconstruct the inverse when pushing onto the undo stack.
-  | { type: 'RESIZE_SHOT'; shotIndex: number; durationMs: number };
+  | { type: 'RESIZE_SHOT'; shotIndex: number; durationMs: number }
+  | { type: 'SPLIT_SHOT'; shotIndex: number; splitAtMs: number }
+  // MERGE_ADJACENT_SHOTS exists only as the inverse of SPLIT_SHOT.
+  // Users never dispatch it directly; the reducer emits it when
+  // building an undo entry.
+  | { type: 'MERGE_ADJACENT_SHOTS'; shotIndex: number; restoredDurationOverrideMs: number | null };
 
-/**
- * Editing-command scaffolding lands per-command. The first editing
- * commit (TRIM_SHOT) adds its variant to the `EditorCommand` union
- * above, a case in the `applyCommand` switch, and pushes the
- * inverse onto `undoStack` via the helper below.
- */
+/** Discriminator: editing commands push to the undo stack; non-
+ *  editing commands (selection, playhead, save lifecycle, undo/redo
+ *  themselves) do not. */
+function isEditingCommand(cmd: EditorCommand): boolean {
+  switch (cmd.type) {
+    case 'RESIZE_SHOT':
+    case 'SPLIT_SHOT':
+    case 'MERGE_ADJACENT_SHOTS':
+      return true;
+    default:
+      return false;
+  }
+}
+
 function pushUndo(stack: EditorCommand[], cmd: EditorCommand): EditorCommand[] {
   const next = stack.length >= UNDO_STACK_DEPTH ? stack.slice(1) : stack;
   return [...next, cmd];
 }
 
-export function applyCommand(state: EditorState, cmd: EditorCommand): EditorState {
+// ─── Pure-data mutation layer ───────────────────────────────────────
+//
+// Each editing command implements `applyMutation`, returning the new
+// state AND the inverse command. Non-editing commands return `null`
+// for `inverse` so the caller skips history bookkeeping.
+
+interface MutationResult {
+  /** The post-mutation state. Always populated. Identical reference
+   *  to `state` if the mutation is a no-op for this input. */
+  next: EditorState;
+  /** The inverse — what to apply to undo this change. Only populated
+   *  for editing commands. `null` for non-editing commands AND for
+   *  editing commands that no-op'd. */
+  inverse: EditorCommand | null;
+}
+
+function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
   switch (cmd.type) {
     case 'SET_PLAYHEAD':
-      return state.playheadMs === cmd.ms ? state : { ...state, playheadMs: cmd.ms };
+      return {
+        next: state.playheadMs === cmd.ms ? state : { ...state, playheadMs: cmd.ms },
+        inverse: null,
+      };
 
     case 'SET_SELECTION':
-      return state.selection === cmd.shotIndex ? state : { ...state, selection: cmd.shotIndex };
+      return {
+        next:
+          state.selection === cmd.shotIndex
+            ? state
+            : { ...state, selection: cmd.shotIndex },
+        inverse: null,
+      };
 
     case 'MARK_SAVED':
-      // Server acknowledged the most recent save. Clear isDirty and
-      // bump the local version to what the server returned. If new
-      // edits landed while the save was in flight, isDirty was
-      // flipped back to true by those commands — we MUST NOT clear
-      // it here in that case. The React adapter passes a `savedAt`
-      // monotonically increasing per attempt; the store compares
-      // against the attempt's start mark via the dirty flag set
-      // since.
       return {
-        ...state,
-        version: cmd.version,
-        lastSavedAt: cmd.savedAt,
-        // Stays dirty if new commands landed during the save round-trip;
-        // otherwise clears. The React adapter handles this distinction
-        // by only dispatching MARK_SAVED when no commands ran between
-        // request and response — so unconditional clear here is safe.
-        isDirty: false,
+        next: {
+          ...state,
+          version: cmd.version,
+          lastSavedAt: cmd.savedAt,
+          isDirty: false,
+        },
+        inverse: null,
       };
 
     case 'RESET_FROM_SERVER':
-      // 409 path: drop local edits, take the server's truth.
       return {
-        ...state,
-        doc: cmd.doc,
-        rowImages: cmd.rowImages,
-        version: cmd.version,
-        isDirty: false,
-        undoStack: [],
-        redoStack: [],
-        selection: null,
+        next: {
+          ...state,
+          doc: cmd.doc,
+          rowImages: cmd.rowImages,
+          version: cmd.version,
+          isDirty: false,
+          undoStack: [],
+          redoStack: [],
+          selection: null,
+        },
+        inverse: null,
       };
 
-    case 'UNDO': {
-      if (state.undoStack.length === 0) return state;
-      const inverse = state.undoStack[state.undoStack.length - 1];
-      const restOfUndo = state.undoStack.slice(0, -1);
-      // Apply the inverse — but DON'T push another inverse onto the
-      // undo stack (we're walking back through history, not forward).
-      // The forward command that originally produced this inverse
-      // goes on the redo stack so REDO can replay it.
-      const restored = applyCommand(state, inverse);
-      return {
-        ...restored,
-        undoStack: restOfUndo,
-        redoStack: [...state.redoStack, inverse],
-        isDirty: true,
-      };
-    }
-
-    case 'REDO': {
-      if (state.redoStack.length === 0) return state;
-      const forward = state.redoStack[state.redoStack.length - 1];
-      const restOfRedo = state.redoStack.slice(0, -1);
-      const next = applyCommand(state, forward);
-      // The forward command would normally push its inverse onto
-      // the undo stack; for redo we instead push the SAME command
-      // that was popped, since the symmetry of the inverse pair
-      // means re-running it re-establishes the prior state.
-      return {
-        ...next,
-        undoStack: pushUndo(state.undoStack, forward),
-        redoStack: restOfRedo,
-        isDirty: true,
-      };
-    }
+    case 'UNDO':
+    case 'REDO':
+      // Handled in `applyCommand` — this branch can't actually fire
+      // because `applyCommand` short-circuits before calling
+      // `applyMutation` for UNDO / REDO. Keep the case so the
+      // switch is exhaustive.
+      return { next: state, inverse: null };
 
     case 'RESIZE_SHOT': {
       const { shotIndex, durationMs } = cmd;
-      if (shotIndex < 0 || shotIndex >= state.doc.rows.length) return state;
-      // Clamp into safe bounds. The editor's drag-pointer code can
-      // call us with any value; the floor + ceiling are enforced
-      // exactly once here so all entry points behave the same.
+      if (shotIndex < 0 || shotIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
       const clampedMs = Math.min(
         EDITOR_MAX_SHOT_MS,
         Math.max(EDITOR_MIN_SHOT_MS, Math.round(durationMs)),
       );
       const row = state.doc.rows[shotIndex];
       const prevDurationMs = row.duration_override_ms;
-      // No-op when nothing changes — saves an undo-stack entry and
-      // keeps the auto-save quiet when the user nudges back to the
-      // original value mid-drag.
-      if (prevDurationMs === clampedMs) return state;
-      const nextRow = { ...row, duration_override_ms: clampedMs, edited_at: new Date().toISOString() };
+      if (prevDurationMs === clampedMs) {
+        return { next: state, inverse: null };
+      }
+      // The forward command is what got us here; the inverse takes
+      // us back. If the pre-edit row had no override, we synthesise
+      // an inverse that restores the natural (timecode-derived)
+      // duration — visually identical to "field absent."
+      const inverse: EditorCommand = {
+        type: 'RESIZE_SHOT',
+        shotIndex,
+        durationMs:
+          typeof prevDurationMs === 'number'
+            ? prevDurationMs
+            : naturalRowDurationMs(state.doc, shotIndex),
+      };
+      const nextRow = {
+        ...row,
+        duration_override_ms: clampedMs,
+        edited_at: new Date().toISOString(),
+      };
       const nextRows = state.doc.rows.slice();
       nextRows[shotIndex] = nextRow;
-      const inverse: EditorCommand =
-        typeof prevDurationMs === 'number'
-          ? { type: 'RESIZE_SHOT', shotIndex, durationMs: prevDurationMs }
-          // Pre-edit state had no override; restoring "no override"
-          // means deleting the field. We can't express that with a
-          // RESIZE_SHOT command (it sets a number), but in practice
-          // setting it back to the row's natural duration produces
-          // the same visible result. Naive approach: read the
-          // natural duration from the timecode pair at apply time.
-          // For now we encode the prior value as the natural
-          // duration computed from neighbouring timecodes; the
-          // PRE-EDITOR-WAS-UNSET case is rare (only the first
-          // resize on a row) and the visible result matches.
-          : { type: 'RESIZE_SHOT', shotIndex, durationMs: naturalRowDurationMs(state.doc, shotIndex) };
       return {
-        ...state,
-        doc: { ...state.doc, rows: nextRows },
-        isDirty: true,
-        undoStack: pushUndo(state.undoStack, inverse),
-        redoStack: [],
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'SPLIT_SHOT': {
+      const { shotIndex, splitAtMs } = cmd;
+      if (shotIndex < 0 || shotIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const row = state.doc.rows[shotIndex];
+      const effectiveDurationMs =
+        typeof row.duration_override_ms === 'number'
+          ? row.duration_override_ms
+          : naturalRowDurationMs(state.doc, shotIndex);
+      const firstHalfMs = Math.round(splitAtMs);
+      const secondHalfMs = effectiveDurationMs - firstHalfMs;
+      if (firstHalfMs < EDITOR_MIN_SHOT_MS || secondHalfMs < EDITOR_MIN_SHOT_MS) {
+        console.warn('[editor store] split rejected — would produce shot below min duration', {
+          shotIndex,
+          firstHalfMs,
+          secondHalfMs,
+          min: EDITOR_MIN_SHOT_MS,
+        });
+        return { next: state, inverse: null };
+      }
+      const stamp = new Date().toISOString();
+      const firstHalf = { ...row, duration_override_ms: firstHalfMs, edited_at: stamp };
+      // Structural clone with shifted-out duration. Same visual
+      // content; the user diverges fields after the split if they
+      // want.
+      const secondHalf = { ...row, duration_override_ms: secondHalfMs, edited_at: stamp };
+      const nextRows = [
+        ...state.doc.rows.slice(0, shotIndex),
+        firstHalf,
+        secondHalf,
+        ...state.doc.rows.slice(shotIndex + 1),
+      ];
+      const inverse: EditorCommand = {
+        type: 'MERGE_ADJACENT_SHOTS',
+        shotIndex,
+        restoredDurationOverrideMs: row.duration_override_ms ?? null,
+      };
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          isDirty: true,
+          selection: shotIndex,
+        },
+        inverse,
+      };
+    }
+
+    case 'MERGE_ADJACENT_SHOTS': {
+      const { shotIndex, restoredDurationOverrideMs } = cmd;
+      if (shotIndex < 0 || shotIndex + 1 >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      // Capture the about-to-be-merged first half's effective
+      // duration BEFORE mutating — that's the splitAtMs the
+      // inverse SPLIT will need to reproduce this state.
+      const target = state.doc.rows[shotIndex];
+      const splitAtMs =
+        typeof target.duration_override_ms === 'number'
+          ? target.duration_override_ms
+          : naturalRowDurationMs(state.doc, shotIndex);
+      const restored = {
+        ...target,
+        duration_override_ms: restoredDurationOverrideMs ?? undefined,
+      };
+      const nextRows = [
+        ...state.doc.rows.slice(0, shotIndex),
+        restored,
+        ...state.doc.rows.slice(shotIndex + 2),
+      ];
+      const inverse: EditorCommand = { type: 'SPLIT_SHOT', shotIndex, splitAtMs };
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          isDirty: true,
+          selection: shotIndex,
+        },
+        inverse,
       };
     }
   }
 }
 
+// ─── Public reducer with history bookkeeping ────────────────────────
+
+export function applyCommand(state: EditorState, cmd: EditorCommand): EditorState {
+  // UNDO: pop top of undoStack, apply it, take the resulting
+  // mutation's auto-computed `inverse` (= the forward we just
+  // walked back through) and push that onto redoStack.
+  if (cmd.type === 'UNDO') {
+    if (state.undoStack.length === 0) return state;
+    const top = state.undoStack[state.undoStack.length - 1];
+    const restOfUndo = state.undoStack.slice(0, -1);
+    const { next, inverse } = applyMutation(state, top);
+    return {
+      ...next,
+      undoStack: restOfUndo,
+      // `inverse` here is the inverse-of-the-inverse-we-just-applied,
+      // i.e. the original forward command. That's exactly what REDO
+      // wants on its stack.
+      redoStack: inverse ? [...state.redoStack, inverse] : state.redoStack,
+    };
+  }
+
+  // REDO: pop top of redoStack, apply it, push its auto-computed
+  // inverse onto undoStack (so a subsequent UNDO walks back).
+  if (cmd.type === 'REDO') {
+    if (state.redoStack.length === 0) return state;
+    const top = state.redoStack[state.redoStack.length - 1];
+    const restOfRedo = state.redoStack.slice(0, -1);
+    const { next, inverse } = applyMutation(state, top);
+    return {
+      ...next,
+      redoStack: restOfRedo,
+      undoStack: inverse ? pushUndo(state.undoStack, inverse) : state.undoStack,
+    };
+  }
+
+  // Everything else: apply the mutation. For editing commands push
+  // the inverse onto undoStack and clear redoStack (a new edit
+  // invalidates any pending redo path).
+  const { next, inverse } = applyMutation(state, cmd);
+  if (!isEditingCommand(cmd) || !inverse) {
+    return next;
+  }
+  return {
+    ...next,
+    undoStack: pushUndo(state.undoStack, inverse),
+    redoStack: [],
+  };
+}
+
 /**
  * Compute the natural (pre-editor) duration in ms for a row from its
  * timecode + the next row's timecode. Used to synthesise an inverse
- * for the first resize on a row that previously had no override.
+ * for the first edit on a row that previously had no override.
  *
  * Falls back to `EDITOR_MIN_SHOT_MS` for the final row when there's
  * no next-row timecode to subtract against — preserves a sensible
@@ -251,10 +392,29 @@ function parseTimecodeMs(tc: string | undefined): number | null {
 }
 
 /**
- * Build the initial editor state from the values persisted on the
- * user_history row. The shape of `payload` is intentionally `unknown`
- * at the type boundary — callers parse defensively.
+ * Compute the absolute startMs of each row by walking the doc's
+ * rows and summing effective durations. Used by callers that need
+ * to map an absolute playhead position to a (shotIndex, offset)
+ * pair — most notably the "split at playhead" path.
  */
+export function rowStartTimesMs(doc: ProductionDoc): number[] {
+  const out: number[] = [];
+  let cursor = 0;
+  for (let i = 0; i < doc.rows.length; i++) {
+    out.push(cursor);
+    const row = doc.rows[i];
+    const duration =
+      typeof row.duration_override_ms === 'number'
+        ? row.duration_override_ms
+        : naturalRowDurationMs(doc, i);
+    cursor += duration;
+  }
+  return out;
+}
+
+/** Build the initial editor state from the values persisted on the
+ *  user_history row. The shape of `payload` is intentionally `unknown`
+ *  at the type boundary — callers parse defensively. */
 export function initialEditorState(args: {
   doc: ProductionDoc;
   rowImages: Record<number, string>;
@@ -273,12 +433,8 @@ export function initialEditorState(args: {
   };
 }
 
-/**
- * Serialise the editor's persistable state back to the
- * `user_history.payload` shape. Excludes the transient slots
- * (selection, playheadMs, undoStack, redoStack, isDirty, version,
- * lastSavedAt) — those live only in memory.
- */
+/** Serialise the editor's persistable state back to the
+ *  `user_history.payload` shape. Excludes the transient slots. */
 export function persistableFromState(state: EditorState): { doc: ProductionDoc; rowImages: Record<number, string> } {
   return {
     doc: state.doc,

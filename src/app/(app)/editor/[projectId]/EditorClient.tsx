@@ -26,7 +26,7 @@
  * player composition re-renders cheaply.
  */
 import Link from 'next/link';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Player, type PlayerRef } from '@remotion/player';
 import { YouTubeVideo } from '@/remotion/compositions/YouTubeVideo';
 import {
@@ -34,7 +34,11 @@ import {
   type ProductionDoc,
   type RowImageState,
 } from '@/remotion/utils';
-import { initialEditorState } from '@/lib/editor/store';
+import {
+  EDITOR_MIN_SHOT_MS,
+  initialEditorState,
+  rowStartTimesMs,
+} from '@/lib/editor/store';
 import { useEditorStore } from '@/lib/editor/use-editor-store';
 import { Timeline } from '@/components/editor/Timeline';
 
@@ -125,6 +129,54 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     return Math.max(1, Math.round((totalMs / 1000) * videoConfig.fps));
   }, [videoConfig]);
 
+  // Resolve the playhead against the doc's cumulative shot timing
+  // so the "split at playhead" path knows which shot to act on and
+  // whether the split would produce two legal halves. Recomputed
+  // whenever the doc OR the playhead position changes — both are
+  // primitive snapshots so the memo deps are stable.
+  const splitTarget = useMemo(() => {
+    if (!doc) return null;
+    const starts = rowStartTimesMs(state.doc);
+    for (let i = 0; i < state.doc.rows.length; i++) {
+      const row = state.doc.rows[i];
+      const startMs = starts[i];
+      const duration =
+        typeof row.duration_override_ms === 'number'
+          ? row.duration_override_ms
+          : (i + 1 < starts.length ? starts[i + 1] - startMs : 0);
+      const endMs = startMs + duration;
+      if (state.playheadMs > startMs && state.playheadMs < endMs) {
+        const offsetMs = state.playheadMs - startMs;
+        const validSplit =
+          offsetMs >= EDITOR_MIN_SHOT_MS && (duration - offsetMs) >= EDITOR_MIN_SHOT_MS;
+        return { shotIndex: i, splitAtMs: offsetMs, validSplit };
+      }
+    }
+    return null;
+  }, [doc, state.doc, state.playheadMs]);
+
+  const handleSplit = useCallback(() => {
+    if (!splitTarget || !splitTarget.validSplit) return;
+    apply({ type: 'SPLIT_SHOT', shotIndex: splitTarget.shotIndex, splitAtMs: splitTarget.splitAtMs });
+  }, [apply, splitTarget]);
+
+  // 'B' keyboard shortcut for split — CapCut / FCP convention.
+  // Ignored when focus is in a text input so typing "b" in a field
+  // doesn't blade the timeline.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key.toLowerCase() !== 'b') return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return;
+      e.preventDefault();
+      handleSplit();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [handleSplit]);
+
   // Subscribe to frame updates so the playhead reflects the live
   // play position. Throttled at the ms-rounded level so React only
   // re-renders the toolbar when the integer ms value changes.
@@ -176,6 +228,21 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
         <div className="flex items-center gap-2">
           <SaveStatusBadge status={saveStatus} isDirty={state.isDirty} />
+
+          <button
+            type="button"
+            onClick={handleSplit}
+            disabled={!splitTarget?.validSplit}
+            className="text-xs px-2.5 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/5"
+            style={{ borderColor: 'var(--card-border)' }}
+            title={
+              splitTarget?.validSplit
+                ? `Split shot ${splitTarget.shotIndex + 1} at playhead (B)`
+                : 'Move the playhead inside a shot to split it (B)'
+            }
+          >
+            ✂ Split at playhead
+          </button>
 
           <button
             type="button"
@@ -257,10 +324,11 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         className="p-3 rounded-lg border text-xs"
         style={{ borderColor: 'var(--card-border)', color: 'var(--fg-muted)' }}
       >
-        <strong style={{ color: 'var(--fg)' }}>Drag a shot&apos;s trailing edge to resize it.</strong>{' '}
-        Cmd / Ctrl+Z undoes. The cascade shifts every later shot&apos;s start time by the
-        delta. Hold ESC mid-drag to cancel. Split, delete, reorder, and mute commands ship
-        in follow-up commits.
+        <strong style={{ color: 'var(--fg)' }}>Drag a shot&apos;s trailing edge to resize, or
+        press B to split it at the playhead.</strong>{' '}
+        Cmd / Ctrl+Z undoes. Both halves of a split clone the original&apos;s visual content,
+        so the renderer plays them from the same source clip. Delete, reorder, and mute
+        ship in follow-up commits.
       </div>
     </div>
   );
