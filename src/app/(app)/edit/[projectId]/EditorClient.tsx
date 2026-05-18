@@ -44,6 +44,7 @@ import { Timeline } from '@/components/editor/Timeline';
 import { ShotInspector } from '@/components/editor/ShotInspector';
 import { VoiceoverDriftReport } from '@/components/editor/VoiceoverDriftReport';
 import { TextOverlayManager } from '@/components/editor/TextOverlayManager';
+import { VoiceoverRegenModal } from '@/components/editor/VoiceoverRegenModal';
 
 interface EditorClientProps {
   projectId: string;
@@ -134,6 +135,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // creating / editing master overlays (independent of any single
   // shot's `on_screen_text`).
   const [showOverlayManager, setShowOverlayManager] = useState(false);
+  // Whole-VO regeneration modal. Triggered from the toolbar; on
+  // success the editor reloads from server to pick up the new URL.
+  const [showVoRegen, setShowVoRegen] = useState(false);
 
   // Timeline zoom. Lives in the client because zoom is a viewing
   // preference, not part of the doc; we deliberately don't persist
@@ -443,6 +447,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
           <button
             type="button"
+            onClick={() => setShowVoRegen(true)}
+            className="text-xs px-2.5 py-1.5 rounded border transition-colors hover:bg-white/5"
+            style={{ borderColor: 'var(--card-border)' }}
+            title="Regenerate the voiceover from the current scripts via ElevenLabs"
+          >
+            Regen VO
+          </button>
+
+          <button
+            type="button"
             onClick={handleSplit}
             disabled={!splitTarget?.validSplit}
             className="text-xs px-2.5 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/5"
@@ -587,6 +601,21 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           onAdd={(overlay) => apply({ type: 'ADD_TEXT_OVERLAY', overlay })}
           onUpdate={(id, patch) => apply({ type: 'UPDATE_TEXT_OVERLAY', id, patch })}
           onDelete={(id) => apply({ type: 'DELETE_TEXT_OVERLAY', id })}
+        />
+      )}
+
+      {showVoRegen && (
+        <VoiceoverRegenModal
+          projectId={projectId}
+          estimatedChars={state.doc.rows.reduce(
+            (acc, r) => acc + (r.script_text ?? '').length,
+            0,
+          )}
+          onClose={() => setShowVoRegen(false)}
+          onSuccess={async () => {
+            setShowVoRegen(false);
+            await reloadFromServer();
+          }}
         />
       )}
 
