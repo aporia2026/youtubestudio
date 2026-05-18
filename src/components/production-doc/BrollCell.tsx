@@ -33,6 +33,7 @@
  * on every page load. See `/api/user/settings/broll-default`.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   BROLL_FAMILY_LABEL,
   BROLL_FAMILY_ORDER,
@@ -392,6 +393,11 @@ export function BrollCell({
   const [modelId, setModelId] = useState<BrollModelId>(DEFAULT_BROLL_MODEL_ID);
   const [modelIdLocked, setModelIdLocked] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Lightbox overlay for the ready-state thumbnail. The inline <video> in the
+  // cell is too small (~120×70) for useful playback and the native controls'
+  // 3-dot overflow is fiddly at that size — clicking the thumbnail opens a
+  // full-size player instead.
+  const [lightboxOpen, setLightboxOpen] = useState(false);
 
   const model = useMemo(() => findBrollModel(modelId), [modelId]);
   const isI2v = model?.kind === 'image-to-video';
@@ -809,18 +815,68 @@ export function BrollCell({
   if (phase === 'ready' && clip?.video_url) {
     return (
       <div className="flex flex-col gap-1">
-        <video
-          src={clip.video_url}
-          controls
-          preload="metadata"
+        <button
+          type="button"
+          onClick={() => setLightboxOpen(true)}
+          aria-label="Play clip"
+          title="Click to play"
           style={{
+            position: 'relative',
             width: 120,
-            maxHeight: 70,
-            borderRadius: 5,
+            height: 70,
+            padding: 0,
             border: '1px solid var(--border)',
+            borderRadius: 5,
             background: '#000',
+            cursor: 'pointer',
+            overflow: 'hidden',
+            display: 'block',
           }}
-        />
+        >
+          {/* `muted` + `playsInline` + no `controls` keeps the element as a
+              static first-frame preview; the click opens the lightbox where
+              real playback happens. tabIndex=-1 so keyboard focus lands on
+              the parent button instead. */}
+          <video
+            src={clip.video_url}
+            preload="metadata"
+            muted
+            playsInline
+            tabIndex={-1}
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              display: 'block',
+              pointerEvents: 'none',
+            }}
+          />
+          <span
+            aria-hidden
+            style={{
+              position: 'absolute',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: 28,
+              height: 28,
+              borderRadius: '50%',
+              background: 'rgba(0,0,0,0.55)',
+              color: '#fff',
+              fontSize: 12,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              paddingLeft: 2,
+              pointerEvents: 'none',
+            }}
+          >
+            ▶
+          </span>
+        </button>
+        {lightboxOpen && (
+          <VideoLightbox src={clip.video_url} onClose={() => setLightboxOpen(false)} />
+        )}
         <div className="flex items-center gap-1">
           <button
             type="button"
@@ -944,6 +1000,82 @@ function modelLabel(id: BrollModelId): string {
 function truncate(s: string, n: number): string {
   if (s.length <= n) return s;
   return s.slice(0, Math.max(0, n - 1)).trimEnd() + '…';
+}
+
+/** Full-viewport overlay that plays a clip at usable size. Used by the ready
+ *  state's thumbnail click — the inline 120×70 player is too small for
+ *  meaningful playback and the native controls' overflow menu is fiddly at
+ *  that size. Portal-rendered so the overlay isn't clipped by the table
+ *  cell's overflow / stacking context. */
+function VideoLightbox({ src, onClose }: { src: string; onClose: () => void }) {
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  if (typeof document === 'undefined') return null;
+
+  return createPortal(
+    <div
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1300,
+        background: 'rgba(0,0,0,0.85)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 24,
+      }}
+    >
+      <video
+        src={src}
+        controls
+        autoPlay
+        style={{
+          maxWidth: '92vw',
+          maxHeight: '88vh',
+          borderRadius: 8,
+          boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
+          background: '#000',
+        }}
+      />
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label="Close preview"
+        style={{
+          position: 'absolute',
+          top: 16,
+          right: 16,
+          fontSize: 13,
+          padding: '6px 12px',
+          borderRadius: 6,
+          background: 'rgba(0,0,0,0.6)',
+          color: '#fff',
+          border: '1px solid rgba(255,255,255,0.20)',
+          cursor: 'pointer',
+        }}
+      >
+        ✕ Close
+      </button>
+    </div>,
+    document.body,
+  );
 }
 
 /** Picker is grouped two-deep: image-to-video first (recommended path for
