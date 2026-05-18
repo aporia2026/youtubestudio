@@ -106,6 +106,10 @@ export type EditorCommand =
   // typical drag-end semantics in dnd-kit). Self-inverse with the
   // indices swapped.
   | { type: 'REORDER_SHOTS'; fromIndex: number; toIndex: number }
+  // Replace a shot's image-state URL (the still rendered by the
+  // BRoll scene). Pass `null` to clear. Lives outside the doc row
+  // shape because that's where it already lives in `rowImages`.
+  | { type: 'SET_ROW_IMAGE'; shotIndex: number; url: string | null }
   // Set head and/or tail trim on a shot. Either value may be omitted
   // to leave the current setting; pass `null` to clear an existing
   // trim. The reducer captures the prior values for the inverse.
@@ -142,6 +146,7 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'SET_MUTE':
     case 'REORDER_SHOTS':
     case 'TRIM_SHOT':
+    case 'SET_ROW_IMAGE':
       return true;
     default:
       return false;
@@ -369,6 +374,41 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           doc: { ...state.doc, rows: nextRows },
           isDirty: true,
           selection: shotIndex,
+        },
+        inverse,
+      };
+    }
+
+    case 'SET_ROW_IMAGE': {
+      const { shotIndex, url } = cmd;
+      if (shotIndex < 0 || shotIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const prev = state.rowImages[shotIndex] ?? null;
+      if (prev === url) return { next: state, inverse: null };
+      const nextImages = { ...state.rowImages };
+      if (url === null) {
+        delete nextImages[shotIndex];
+      } else {
+        nextImages[shotIndex] = url;
+      }
+      const nextRow = {
+        ...state.doc.rows[shotIndex],
+        edited_at: new Date().toISOString(),
+      };
+      const nextRows = state.doc.rows.slice();
+      nextRows[shotIndex] = nextRow;
+      const inverse: EditorCommand = {
+        type: 'SET_ROW_IMAGE',
+        shotIndex,
+        url: prev,
+      };
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          rowImages: nextImages,
+          isDirty: true,
         },
         inverse,
       };

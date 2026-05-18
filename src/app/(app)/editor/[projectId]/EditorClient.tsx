@@ -466,6 +466,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             thumbnailUrl={state.rowImages[state.selection] ?? null}
             totalShots={state.doc.rows.length}
             onClose={() => apply({ type: 'SET_SELECTION', shotIndex: null })}
+            onUploadImage={(url) =>
+              apply({ type: 'SET_ROW_IMAGE', shotIndex: state.selection as number, url })
+            }
           />
         )}
       </div>
