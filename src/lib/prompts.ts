@@ -1044,11 +1044,18 @@ export function thumbnailConceptPrompt({
   niche,
   script,
   description,
+  hasReferenceImage,
 }: {
   title: string;
   niche: string;
   script?: string;
   description?: string;
+  /** When true, a reference image is attached to the user message as a
+   *  multimodal block. The prompt switches on a STYLE-LOCK clause that
+   *  forces every concept's `image_generation_prompt` to describe a
+   *  thumbnail in that exact visual language — see _plans/2026-05-18-
+   *  thumbnail-reference-multimodal.md for the rationale. */
+  hasReferenceImage?: boolean;
 }): { system: string; user: string } {
   const nicheStyles: Record<string, string> = {
     'Gaming': 'Bright neon colors, character close-ups, minimal text, action shots. High saturation.',
@@ -1100,7 +1107,30 @@ export function thumbnailConceptPrompt({
 **NICHE-SPECIFIC for "${niche}":**
 ${nicheHint}`,
 
-    user: `Design 5 distinct thumbnail concepts for this YouTube video. Each must be a different creative direction that a designer could execute immediately.
+    user: `${hasReferenceImage ? `## STYLE-LOCK — READ THIS FIRST
+
+A reference image is attached to this message. It defines the **exact visual style** the user wants for every thumbnail in this set.
+
+Study the reference carefully and lock onto its visual language:
+- Overall layout (single hero scene? grid of tile-cards? split panel? card with caption band?)
+- Subject treatment (real photographs? illustrated icons? 3D renders? mixed?)
+- Use of human faces (present? absent? close-up? wide?)
+- Level of visual detail (busy and packed? clean and minimal? mid-density?)
+- Text-to-image ratio (text-heavy? text minimal? text in a band below the image?)
+- Color treatment (saturated? muted? high-contrast? specific palette?)
+- Typography (style, weight, placement)
+- Background treatment (solid, gradient, photo, environmental)
+- Framing and edges (full-bleed, bordered tile, drop-shadow card)
+
+**Every concept's \`image_generation_prompt\` MUST describe a thumbnail in this exact style.** The 5 concepts vary in *content* (subject, focal moment, emotional trigger, color accents within the established palette) but the *visual language stays constant*. This is non-negotiable — do not drift toward the generic "shocked-face composite scene" YouTube formula unless the reference itself is in that style.
+
+If the reference shows isolated tile-cards with a single visual per card and a label band, do not invent composite scenes with multiple subjects. If the reference uses no human faces, do not introduce them. If the reference is minimal, do not make it busy. Mirror what you see.
+
+The score/composition/text-overlay/color-palette fields below should also reflect the reference's choices, not default YouTube best-practice averages.
+
+---
+
+` : ''}Design 5 distinct thumbnail concepts for this YouTube video. Each must be a different creative direction that a designer could execute immediately.
 
 **Video Title:** ${title}
 **Niche:** ${niche}
@@ -1152,7 +1182,7 @@ ${script ? `**Script Excerpt (for context):** ${script.slice(0, 2000)}` : ''}
           "niche_fit": { "score": <0-100>, "reason": "<why>" }
         }
       },
-      "image_generation_prompt": "<detailed prompt for Midjourney/DALL-E to generate this thumbnail — include style, composition, lighting, camera angle, color grading>",
+      "image_generation_prompt": "<detailed prompt for Midjourney/DALL-E to generate this thumbnail — include style, composition, lighting, camera angle, color grading${hasReferenceImage ? '. CRITICAL: open the prompt by describing the visual style of the attached reference image in concrete terms (layout, subject treatment, face/no-face, density, palette, typography placement) so the image model reproduces that style. Only after the style is locked in writing should the concept-specific content follow' : ''}>",
       "why_it_works": "<1-2 sentences — the core psychological reason this thumbnail will get clicks>",
       "mobile_test": "<will this be legible and impactful at 168x94 pixels? what might get lost?>"
     }

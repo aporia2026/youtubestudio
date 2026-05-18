@@ -53,6 +53,26 @@ const IMAGE_MODELS = [
   { value: 'gpt-image-2-i2i', label: 'GPT Image 2 (Image-to-Image)' },
 ];
 
+/**
+ * Concept-generator vision-capable models. MUST stay in sync with the
+ * `VISION_ALLOWED` set in src/app/api/thumbnails/generate/route.ts —
+ * a mismatch here is harmless (server is source of truth) but causes
+ * unhelpful "this model doesn't support images" round-trips. When you
+ * add a model to the server allowlist, mirror it here so the client
+ * can pre-warn the user.
+ */
+const CONCEPT_VISION_MODELS = new Set<string>([
+  'claude-opus-4-6',
+  'claude-sonnet-4-6',
+  'claude-haiku-4-5-20251001',
+  'gpt-4o',
+  'gpt-4o-mini',
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-thinking-exp',
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+]);
+
 interface CtrBreakdownEntry {
   score: number;
   reason: string;
@@ -267,6 +287,17 @@ function ThumbnailsPage() {
 
   async function generateConcepts() {
     if (!title.trim()) { toast.error('Please enter a video title'); return; }
+    // Pre-check: if the user has uploaded a reference but their selected AI
+    // model can't read images, block the call with a clear message. The
+    // server enforces the same allowlist; this just saves a round-trip and
+    // gives the user a single, actionable instruction instead of a 400 toast.
+    const trimmedRefUrl = referenceImageUrl.trim();
+    const hasReference = trimmedRefUrl.length > 0;
+    if (hasReference && !CONCEPT_VISION_MODELS.has(modelId)) {
+      toast.error('This AI Model can\'t read the reference image. Switch to Claude 4.x, GPT-4o, or Gemini 2.x to use it — or remove the reference.');
+      return;
+    }
+    console.info('[thumbnails generate] sending', { hasReference, modelId });
     setGenerating(true);
     setResult(null);
     setGeneratedImages({});
@@ -274,9 +305,23 @@ function ThumbnailsPage() {
       const res = await fetch('/api/thumbnails/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ modelId, title: title.trim(), niche, script: script.trim() || undefined, description: description.trim() || undefined }),
+        body: JSON.stringify({
+          modelId,
+          title: title.trim(),
+          niche,
+          script: script.trim() || undefined,
+          description: description.trim() || undefined,
+          referenceImageUrl: hasReference ? trimmedRefUrl : undefined,
+        }),
       });
-      if (!res.ok) throw new Error('Generation failed');
+      if (!res.ok) {
+        // Surface the server's actionable message (e.g. "Switch your AI Model
+        // to a Claude 4.x, GPT-4o, or Gemini 2.x model") instead of the
+        // generic fallback — otherwise users get a useless toast on the
+        // exact case the model-switch check is meant to communicate.
+        const data: { error?: string } = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Generation failed (${res.status})`);
+      }
       const data = await res.json();
       setResult(data.result);
       const concepts = (data.result as { concepts?: Array<{ concept_name?: string; ctr_prediction?: { score?: number }; ctr_score?: number }> }).concepts || [];
@@ -305,8 +350,8 @@ function ThumbnailsPage() {
       });
       setDraftId(draft.id);
       toast.success('Thumbnail concepts generated!');
-    } catch {
-      toast.error('Failed to generate concepts. Please try again.');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to generate concepts. Please try again.');
     } finally {
       setGenerating(false);
     }
@@ -730,6 +775,21 @@ function ThumbnailsPage() {
                 </div>
               )}
             </div>
+
+            {referenceImageUrl.trim() && !CONCEPT_VISION_MODELS.has(modelId) && (
+              <div className="text-xs px-3 py-2 rounded-lg" style={{
+                background: 'rgba(234,179,8,0.08)',
+                border: '1px solid rgba(234,179,8,0.3)',
+                color: 'var(--accent-yellow)',
+              }}>
+                Your AI Model can&apos;t see the reference image. Switch to a Claude 4.x, GPT-4o, or Gemini 2.x model so the concepts match your reference&apos;s style.
+              </div>
+            )}
+            {referenceImageUrl.trim() && CONCEPT_VISION_MODELS.has(modelId) && (
+              <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                Reference image will guide the visual style of all 5 concepts.
+              </p>
+            )}
 
             <button className="btn-primary w-full flex items-center justify-center gap-2" onClick={generateConcepts} disabled={generating || !title.trim()}>
               {generating ? (
