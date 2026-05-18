@@ -440,6 +440,15 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           >
             Save
           </button>
+          <a
+            href={`/api/edit/${encodeURIComponent(projectId)}/export?format=otio`}
+            className="text-xs px-2.5 py-1.5 rounded border hover:bg-white/5 transition-colors"
+            style={{ borderColor: 'var(--card-border)' }}
+            title="Download the timeline as OpenTimelineIO JSON. Importable into DaVinci Resolve, Premiere, and Final Cut via otioconvert."
+          >
+            Export .otio
+          </a>
+
           <Link
             href="/production-doc"
             className="text-sm px-3 py-1.5 rounded border hover:bg-white/5 transition-colors"
