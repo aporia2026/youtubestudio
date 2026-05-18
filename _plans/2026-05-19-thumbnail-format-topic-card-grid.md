@@ -1,11 +1,19 @@
 # Thumbnail Format: Topic Card Grid
 
 **Date:** 2026-05-19
-**Status:** Pending approval (revised after feedback round 1)
+**Status:** Approved (r3 — all open questions closed, sequencing locked)
 **Owner:** Yoav
 **Prereq:** `_plans/2026-05-18-thumbnail-reference-multimodal.md` (multimodal reference image — shipped 2026-05-18)
 
 ## Revision log
+
+**2026-05-19 r3 — all open questions closed:**
+- Curated default PNG: DM'd to user before PR; not committed without approval.
+- Region overlay starts ON, toggle persisted.
+- CTA always says `Generate thumbnail`; the editable table has its own `Render image` button.
+- Custom grid: no UI cap, server sanity guard at 50×50.
+- Sequencing locked: Phase 1a (backend module) → 1b (API endpoints) → 1c (UI). Curated default + Phase 2 follow-ups deferred.
+- Phase 1 ships with the reference upload REQUIRED until the curated default lands in Phase 2.
 
 **2026-05-19 r2 — feedback incorporated:**
 - Grid size: presets PLUS a custom mode (manual rows × cols).
@@ -557,8 +565,39 @@ Closed in r2:
 - ~~**Grid sizes.**~~ → Presets `2×2, 2×3, 3×3, 3×4, 4×3, 4×4, 3×6, 4×6` + Custom mode (1–8 rows × 1–8 cols).
 - ~~**Curated default reference image.**~~ → I'll generate it via GPT Image 2 with the simplicity-locked prompt; you approve before merge.
 
-Still open:
-1. **Approval gate for the curated default PNG.** Concretely: do you want me to commit a draft PNG as part of the build PR so you can see it in the diff, or generate and DM it to you before I start the PR? Both work — let me know your preferred review surface.
-2. **Region overlay default state.** When State B renders, should `Region overlay` start ON or OFF? Default ON forces you to see whether regions align; default OFF gives a cleaner first-look. Lean ON.
-3. **Two-step vs implicit auto-Step-1.** When the user picks `Topic Card Grid` and immediately clicks the CTA without changing the mode chip from default Review, the CTA reads `Generate card list`. Is that fine, or do you want it to always say `Generate thumbnail` and silently auto-advance the user through the review state? Lean keeping `Generate card list` — it sets expectations that the next click is the costly one.
-4. **Custom grid max.** I capped Custom at 8×8 = 64 cards. Above that GPT Image 2 starts to drift. Are you OK with that cap, or do you want it tighter (4×4 max) / looser (10×10)?
+Closed in r3 (this revision):
+- ~~**Curated default PNG approval.**~~ → DM'd to user (in the chat) for approval BEFORE the PR is opened; PNG is only committed after explicit OK. Implication for Phase 1 sequencing: see "Sequencing" below — Phase 1 ships with the reference upload REQUIRED (not optional) so we don't block the build on the curated PNG.
+- ~~**Region overlay default state.**~~ → Default ON. Toggle to turn it off, persisted in `localStorage` per user preference.
+- ~~**CTA label.**~~ → Always `Generate thumbnail`, regardless of mode. The editable card table (Review-mode state A) has its own `Render image` button to disambiguate the second click.
+- ~~**Custom grid max.**~~ → No UI cap. Server keeps a sanity guard at 50×50 = 2500 cards to prevent runaway, but the UI does not surface a max. Above 8×8 GPT Image 2 starts to drift; we show an inline note ("Grids above 8×8 may render inconsistently") but do not block.
+
+All open questions closed.
+
+---
+
+## Sequencing
+
+The plan ships in three slices. Each slice is independently deployable and the user can stop the build after any slice if priorities change.
+
+**Phase 1a — backend foundation** (~30 min):
+- New pure module `src/lib/thumbnail-formats/topic-card-grid.ts` with the prompt builders, validation schema + banlist, region math. Unit-testable, no API surface.
+- Wire the new `'thumbnail-format-grid'` `AppFeature`.
+
+**Phase 1b — API endpoints** (~45 min):
+- `POST /api/thumbnails/format/topic-card-grid/cards` (Step 1).
+- `POST /api/thumbnails/format/topic-card-grid/image` (Step 2 + region computation).
+- Server-side validation + namespaced logs. End-to-end runnable via curl.
+
+**Phase 1c — UI + integration** (~2-3 h):
+- Format dropdown + grid presets + Custom mode.
+- Reference upload (REQUIRED in v1 until curated default PNG lands).
+- Editable card table (the heart of this feature).
+- Result panel with region overlay toggle (default ON).
+- Mode chips (Review / Pre-fill / One-shot).
+- History entry shape change.
+- Schedule-link saver wiring for regions.
+
+**Phase 2** (after user feedback on Phase 1):
+- Curated default PNG generated, DM'd, approved, committed.
+- Reference upload becomes optional (curated default fills in).
+- `N Levels Explained` format added on the same machinery.
