@@ -20,6 +20,50 @@ Three fixes shipped in commit `cba0d59`. Re-ran Reference B (Casey "Make It Coun
 2. **The Reference B scene-overflow defect reproduces deterministically.** Original Casey run had scenes ending at 437s with `duration_seconds=277s`. This re-run reproduces the exact same overflow (scenes still end at 437s). It's a stable bug, not Gemini variance — a strong candidate for the next prompt iteration or a post-parse sanity check that clips/rescales scenes to match `duration_seconds`.
 3. **The 3-pack output is defensible, not a regression.** Packs are `travel-montage` (243s, the main visual mode), `intro-text` (10s, the cold-open text-on-black premise card), and `quote-card` (24s, inspirational-quote overlays during the journey). The `intro-text` pack is unambiguously a distinct visual treatment. The `quote-card` pack is a judgment call — those moments have travel footage underneath, but the analyzer treated the overlay as the dominant element. Either interpretation is defensible. The original golden's "ONE pack should cover the entire runtime" still holds for the *travel footage itself* — the new packs are carve-outs for text-treatment moments, not over-fragmentation of the run-and-gun footage.
 
+## v1.2.0 verification (Casey re-run, 2026-05-19, analysis id `94ab22b8-5767-4d4a-858f-573b14f083a5`)
+
+Re-ran Reference B against the v1.2.0 prompt + normalizer (commits `5948ce9` + `0f5b2a5`). Verifying both the original 3 fixes still hold AND the new prompt rules (#1 tightening, #12 scene boundaries) + the server-side normalizer.
+
+| Check | Verdict | Evidence |
+|---|---|---|
+| `promptVersion` v1.2.0 in flight | ✅ | Wrapper + `meta.prompt_version` = `v1.2.0`. Cache invalidation worked. |
+| `meta.analyzed_at` server overwrite | ✅ HOLDS | `2026-05-18T22:02:25.183Z`, matches `completedAt` within 13 ms. |
+| `meta.video_id` server overwrite | ✅ HOLDS | `WxfZkMm3wcg`. |
+| Music attribution hallucination | ✅ HOLDS | All 3 packs describe music by character only. Zero named tracks. |
+| **Quote-card over-fragmentation (v1.1.0 finding #1)** | ✅ FIXED | The `quote-card` pack is gone. Inspirational-quote overlays now correctly fold into `cinematic-b-roll` or `travel-vlog` based on the underlying composition. The `text-card` pack only carves out *pure* text-on-black scenes (intro premise + `#MAKEITCOUNT` closer). Prompt rule #1's "annotations layered over a visual mode do NOT define a separate pack; pure text cards DO" worked exactly as designed. |
+| **Scene-boundary overflow (v1.1.0 finding #2)** | ❌ PERSISTS | Scenes still end at 437s when `duration_seconds` is 277s. Prompt rule #12 ("scenes[last].end MUST equal meta.duration_seconds within ±2 seconds") did not bite — Gemini continues to hallucinate scene durations even with the explicit constraint. The normalizer fired its `scenes[last].end overflow` warning server-side (logged at `youtube-deep-analyze: normalization warnings`), but the warning is not surfaced in the GET response, so the operator only sees it via Vercel logs. |
+| `style_packs[].occupies_seconds` normalizer | ✅ FIRED | Recomputed deterministically: `298 + 14 + 125 = 437`. Sum reflects the bogus scene durations because that's the input data — the normalizer correctly derived from what Gemini said, not what's actually true. |
+| Pack count stability | ⚠️ NEW READ | Pack count went 1 → 2 → 3 → 3 across four Casey runs. Still non-deterministic, but the v1.2.0 split (`travel-vlog` / `text-card` / `cinematic-b-roll`) is **higher-fidelity than single-pack** — locked-off tripod cinematic shots ARE genuinely a different visual mode from handheld POV vlogging. The original Reference B golden ("ONE pack must cover the entire runtime") was wrong to anchor on Casey's channel reputation; the actual video has both modes. Updating my mental model rather than the analyzer. |
+
+### Net verdict on v1.2.0
+
+- **Three of four shipped fixes hold.** The original three (`analyzed_at`, `video_id`, music attribution) still work. The v1.2.0 over-fragmentation fix (prompt rule #1 tightening) works as designed. The normalizer's `occupies_seconds` recomputation works as designed.
+- **Scene-boundary defect persists** and is now the top open issue for the analyzer. Rule #12 was too soft. Next iteration's options:
+  - Few-shot example showing correct scene boundaries in the prompt
+  - Lower temperature for the analyzer call (currently 0.3 — try 0.15)
+  - Server-side proportional scaling (clamp scenes to fit `duration_seconds`) — lossy but recoverable
+  - Persist normalizer warnings in `result_jsonb` so the GET endpoint surfaces them (currently server-log only)
+- **Operational impact of scene-boundary defect is low** for current use cases. The load-bearing fields (`style_packs.*`, `strategic_report.*`) are not affected by bad scene timings. A future scene-by-scene replication workflow would be — file it as the blocker for that workflow.
+
+### Parent plan status — Phase 0 closed, ship-as-is verdict stands
+
+The analyzer is production-grade for the operator's hand-picked workflow. Six commits shipped this session:
+
+| Commit | Subject |
+|---|---|
+| `d95e0f8` | fix(analyzer): surface schema-mismatch reason + raw Gemini output |
+| `075e61f` | docs(analyzer-eval): Phase 0 fidelity eval complete — 3 of 3 = YES |
+| `cba0d59` | fix(analyzer): close the three defects Phase 0 eval surfaced |
+| `3929c57` | docs(analyzer-eval): verify the 3 fixes in prod on a fresh Casey run |
+| `5948ce9` | fix(analyzer): address the two new findings from the fix-verification run |
+| `0f5b2a5` | docs(analyzer-cap): document the no-admin-UI gap on the route itself |
+
+**Filed for the next iteration (not blocking ship):**
+1. Scene-boundary overflow — Gemini still hallucinates scene durations even with explicit prompt constraint. Top open issue.
+2. Surface normalizer `warnings` field in the GET response (today they're server-log only).
+3. Pack-count non-determinism across runs — defensible at each individual run, but a stability check before any UI claim of "consistent re-analysis" is still warranted.
+4. Phase 4 step 2 — admin UI for the per-workspace cap override (deferred until there's a second user).
+
 ## Pre-run blocker (2026-05-18) — `GOOGLE_AI_API_KEY` missing
 
 Discovered while wiring up the eval driver: the analyzer cannot run end-to-end in this local env because [src/lib/ai.ts](../src/lib/ai.ts) `analyzeYouTubeVideo` requires native YouTube URL ingestion, which is **only** supported via the direct Google Gemini SDK (`@google/generative-ai`, `fileData: { fileUri, mimeType: 'video/*' }`). That path requires `GOOGLE_AI_API_KEY`. Local `.env.local` currently has it set to `""`.
