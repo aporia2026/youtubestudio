@@ -185,6 +185,15 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     return out;
   }, [state.doc.rows]);
 
+  // Per-shot transition_in values for the cross-fade chip.
+  const rowTransitions = useMemo(() => {
+    const out: Record<number, 'cross-fade' | null | undefined> = {};
+    state.doc.rows.forEach((row, i) => {
+      out[i] = row.transition_in;
+    });
+    return out;
+  }, [state.doc.rows]);
+
   // Resolve the playhead against the doc's cumulative shot timing
   // so the "split at playhead" path knows which shot to act on and
   // whether the split would produce two legal halves. Recomputed
@@ -537,6 +546,10 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         }
         onTrim={(shotIndex, values) =>
           apply({ type: 'TRIM_SHOT', shotIndex, ...values })
+        }
+        rowTransitions={rowTransitions}
+        onToggleTransition={(shotIndex, transition) =>
+          apply({ type: 'SET_TRANSITION_IN', shotIndex, transition })
         }
       />
 

@@ -629,7 +629,19 @@ export function productionDocToVideoConfig(
           ? doc.scene_zoom_default
           : undefined,
       thumbnailTransition: row.thumbnail_transition,
-      sceneFade: row.scene_fade,
+      // Editor's `transition_in: 'cross-fade'` and the doc's existing
+      // `scene_fade: true` mean the same thing at render time — fade
+      // INTO this shot. The editor uses `transition_in` because it's
+      // a discriminated union with room to grow (slide, wipe, etc.
+      // later) while `scene_fade` is a boolean toggle. We resolve to
+      // `sceneFade` here so the renderer's existing fade logic
+      // doesn't need to change.
+      sceneFade:
+        row.transition_in === 'cross-fade'
+          ? true
+          : row.transition_in === null
+            ? false
+            : row.scene_fade,
       videoDurationSeconds,
       overlay,
       // Shot-graph editor fields. The renderer reads these when

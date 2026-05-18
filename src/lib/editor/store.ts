@@ -127,6 +127,10 @@ export type EditorCommand =
   // in Phase 4 since captions are derived from script_text). Persists
   // on `row.script_text`. Inverse stores the prior text.
   | { type: 'SET_ROW_SCRIPT'; shotIndex: number; text: string }
+  // Set the cross-fade transition INTO this shot (the gap between
+  // shot-1 and shot is what the user sees fade). `null` clears any
+  // explicit override and falls back to the doc-level default.
+  | { type: 'SET_TRANSITION_IN'; shotIndex: number; transition: 'cross-fade' | null }
   // Replace a shot's source video clip (the override read by
   // productionDocToVideoConfig over the auto-pipeline's
   // `rowVideoClips`). Pass `null` for both fields to clear.
@@ -175,6 +179,7 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'SET_ROW_IMAGE':
     case 'SET_ROW_VIDEO':
     case 'SET_ROW_SCRIPT':
+    case 'SET_TRANSITION_IN':
       return true;
     default:
       return false;
@@ -465,6 +470,46 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         type: 'SET_ROW_SCRIPT',
         shotIndex,
         text: prevText,
+      };
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'SET_TRANSITION_IN': {
+      const { shotIndex, transition } = cmd;
+      if (shotIndex < 0 || shotIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const row = state.doc.rows[shotIndex];
+      const prev = row.transition_in ?? undefined;
+      const normalised = transition; // already 'cross-fade' | null
+      const prevNormalised = prev === 'cross-fade' ? 'cross-fade' : prev === null ? null : undefined;
+      // No-op when nothing changes. `undefined` (never set) is
+      // distinct from `null` (explicitly cleared); we only no-op
+      // when the proposed value equals the stored one.
+      if (prevNormalised === normalised) {
+        return { next: state, inverse: null };
+      }
+      const nextRow = {
+        ...row,
+        transition_in: normalised ?? undefined,
+        edited_at: stampEditedAt(row.edited_at, 'structure'),
+      };
+      const nextRows = state.doc.rows.slice();
+      nextRows[shotIndex] = nextRow;
+      const inverse: EditorCommand = {
+        type: 'SET_TRANSITION_IN',
+        shotIndex,
+        // Restore the prior value — `undefined` becomes `null` in
+        // the inverse because the command type can't represent
+        // "undefined" distinctly from "null"; both clear the field.
+        transition: prevNormalised === 'cross-fade' ? 'cross-fade' : null,
       };
       return {
         next: {

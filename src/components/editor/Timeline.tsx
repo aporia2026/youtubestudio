@@ -67,6 +67,12 @@ interface TimelineProps {
    *  handles draw at the right offset from the card edges. Keyed by
    *  shot index, both in ms. */
   rowTrims?: Record<number, { trimStartMs?: number; trimEndMs?: number }>;
+  /** Fired when the user toggles the cross-fade transition into a
+   *  shot. Pass `null` to clear back to the doc default. */
+  onToggleTransition?: (shotIndex: number, transition: 'cross-fade' | null) => void;
+  /** Per-shot transition_in values (`'cross-fade' | null | undefined`)
+   *  read from the doc rows. Keyed by shot index. */
+  rowTransitions?: Record<number, 'cross-fade' | null | undefined>;
   /** Optional: pixels per second. Default 80 — readable at standard
    *  shot lengths (4-15s). Phase 2 zoom controls bind this. */
   pixelsPerSecond?: number;
@@ -129,6 +135,8 @@ export function Timeline({
   onReorder,
   onTrim,
   rowTrims,
+  onToggleTransition,
+  rowTransitions,
   pixelsPerSecond = DEFAULT_PX_PER_SECOND,
 }: TimelineProps): React.ReactElement {
   const totalMs = useMemo(
@@ -367,6 +375,7 @@ export function Timeline({
                 (shot.durationMs / 1000) * pixelsPerSecond,
               );
               const thumbnail = rowImages[idx] ?? shot.imageUrl ?? null;
+              const transitionIn = rowTransitions?.[idx];
               return (
                 <SortableShotCard
                   key={sortableIds[idx]}
@@ -403,6 +412,16 @@ export function Timeline({
                   onTrimPointerMove={onTrim ? handleTrimPointerMove : undefined}
                   onTrimPointerUp={onTrim ? handleTrimPointerUp : undefined}
                   reorderEnabled={Boolean(onReorder)}
+                  transitionIn={transitionIn}
+                  onToggleTransition={
+                    onToggleTransition && idx > 0
+                      ? () =>
+                          onToggleTransition(
+                            idx,
+                            transitionIn === 'cross-fade' ? null : 'cross-fade',
+                          )
+                      : undefined
+                  }
                 />
               );
             })}
@@ -460,6 +479,12 @@ interface SortableShotCardProps {
   onTrimPointerMove?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onTrimPointerUp?: (e: React.PointerEvent<HTMLDivElement>) => void;
   reorderEnabled: boolean;
+  /** Per-shot transition_in. Drives the cross-fade chip rendered at
+   *  the card's leading edge (skipped for the first card — no gap). */
+  transitionIn: 'cross-fade' | null | undefined;
+  /** Toggle handler. Undefined on the first card (nothing to fade
+   *  in from) or when the editor doesn't wire onToggleTransition. */
+  onToggleTransition?: () => void;
 }
 
 function SortableShotCard({
@@ -484,6 +509,8 @@ function SortableShotCard({
   onTrimPointerMove,
   onTrimPointerUp,
   reorderEnabled,
+  transitionIn,
+  onToggleTransition,
 }: SortableShotCardProps): React.ReactElement {
   const {
     attributes,
@@ -620,6 +647,44 @@ function SortableShotCard({
             ⋮⋮
           </div>
         </div>
+      )}
+
+      {/* Cross-fade transition chip on the card's leading edge.
+          Sits half-inside / half-outside the card so it visually
+          anchors to the gap between this shot and the previous
+          shot. Hidden on the first card (no previous shot to fade
+          from). When `transitionIn` is 'cross-fade' the chip is
+          solid + filled; otherwise faded + outline-only and only
+          visible on hover. Click toggles. */}
+      {onToggleTransition && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleTransition();
+          }}
+          className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 z-20 rounded-full w-5 h-5 text-[10px] flex items-center justify-center transition-opacity ${
+            transitionIn === 'cross-fade' ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+          }`}
+          style={{
+            left: 0,
+            background:
+              transitionIn === 'cross-fade' ? 'rgba(167, 139, 250, 0.95)' : 'rgba(0, 0, 0, 0.7)',
+            color: transitionIn === 'cross-fade' ? '#000' : 'var(--accent-purple-bright, #a78bfa)',
+            border:
+              transitionIn === 'cross-fade'
+                ? '1px solid rgba(167, 139, 250, 1)'
+                : '1px solid var(--accent-purple-bright, #a78bfa)',
+          }}
+          title={
+            transitionIn === 'cross-fade'
+              ? 'Cross-fade in. Click to remove.'
+              : 'Add a cross-fade in.'
+          }
+          aria-pressed={transitionIn === 'cross-fade'}
+        >
+          {transitionIn === 'cross-fade' ? '✕' : '+'}
+        </button>
       )}
 
       {/* Head-trim overlay: a translucent strip over the
