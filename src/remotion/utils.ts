@@ -206,6 +206,18 @@ export interface ProductionRow {
   /** Per-row fill color for letterbox pillarbox area. Hex `#RRGGBB`. Falls back
    *  to ProductionDoc.pillarbox_color_default, then to white. */
   pillarbox_color?: string;
+  /** Static zoom on the rendered image / video, as a percentage where
+   *  100 = unchanged. Multiplies on top of any animated transform (Ken
+   *  Burns, B-roll motion) so the animation is preserved exactly — only
+   *  the static scale changes. Falls back to
+   *  `ProductionDoc.scene_zoom_default`, then 100. */
+  scene_zoom?: number;
+  /** Manual overlay placement (top-left corner of overlay box, % of
+   *  frame). Overrides `overlay_zone`/`overlay_zone_resolved` when set. */
+  overlay_position?: { x_pct: number; y_pct: number };
+  /** Manual overlay width as % of frame width. Overrides `overlay_size`
+   *  / `overlay_size_resolved` when set. */
+  overlay_size_pct?: number;
   /** Cached saliency map of `imageUrl` for this row — populated by the
    *  image-generation route. Sparse: missing for rows whose image hasn't
    *  been generated, or which pre-date the feature. */
@@ -231,6 +243,13 @@ export interface ProductionDoc {
   /** Doc-level fallback fill for letterbox pillarbox areas. Hex `#RRGGBB`.
    *  Per-row `pillarbox_color` overrides this. Defaults to white when unset. */
   pillarbox_color_default?: string;
+  /** Doc-level fallback for the stripe/scene layout. Per-row
+   *  `section_title_layout` overrides this. Defaults to 'letterbox' when
+   *  both this AND the row are unset. */
+  section_title_layout_default?: 'overlay' | 'letterbox';
+  /** Doc-level fallback for the static scene zoom percentage. Per-row
+   *  `scene_zoom` overrides this. Undefined ⇒ 100 (no zoom). */
+  scene_zoom_default?: number;
   /** Per-doc override of the workspace's minimum scene duration (ms).
    *  When omitted, the workspace default (or `DEFAULT_MIN_SCENE_MS`)
    *  applies. See `_plans/2026-05-17-scene-min-duration-and-tail-buffer.md`. */
@@ -418,7 +437,7 @@ export function productionDocToVideoConfig(
     const finalSize = row.overlay_size_resolved ?? row.overlay_size;
     const stripeOverlapsScene =
       Boolean(row.section_title?.trim()) &&
-      (row.section_title_layout ?? 'letterbox') === 'overlay';
+      (row.section_title_layout ?? doc.section_title_layout_default ?? 'letterbox') === 'overlay';
     if (stripeOverlapsScene && finalZone) {
       const mapTopToBottom: Partial<Record<OverlayZone, OverlayZone>> = {
         'top-left': 'bottom-left',
@@ -442,6 +461,16 @@ export function productionDocToVideoConfig(
             zone: finalZone,
             size: finalSize,
             haloColor: overlayHaloColor,
+            customX:
+              typeof row.overlay_position?.x_pct === 'number'
+                ? row.overlay_position.x_pct
+                : undefined,
+            customY:
+              typeof row.overlay_position?.y_pct === 'number'
+                ? row.overlay_position.y_pct
+                : undefined,
+            customSizePct:
+              typeof row.overlay_size_pct === 'number' ? row.overlay_size_pct : undefined,
           }
         : undefined;
 
@@ -473,9 +502,15 @@ export function productionDocToVideoConfig(
       thumbnailZoomTo: row.thumbnail_zoom_to || undefined,
       sectionTitle: row.section_title || undefined,
       sectionTitleLayout: row.section_title
-        ? (row.section_title_layout ?? 'letterbox')
+        ? (row.section_title_layout ?? doc.section_title_layout_default ?? 'letterbox')
         : undefined,
       pillarboxColor: row.pillarbox_color || undefined,
+      sceneZoom:
+        typeof row.scene_zoom === 'number' && Number.isFinite(row.scene_zoom)
+          ? row.scene_zoom
+          : typeof doc.scene_zoom_default === 'number' && Number.isFinite(doc.scene_zoom_default)
+          ? doc.scene_zoom_default
+          : undefined,
       thumbnailTransition: row.thumbnail_transition,
       sceneFade: row.scene_fade,
       videoDurationSeconds,

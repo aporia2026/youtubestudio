@@ -25,6 +25,19 @@ import type {
 import { regionColorFor } from './ThumbnailRegionEditor';
 import { TransitionDialog } from './TransitionDialog';
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Normalize a user-typed hex into the canonical `#rrggbb` form, or `null`
+ *  if it isn't a valid 6-digit hex. Accepts the leading `#` optionally,
+ *  and is case-insensitive — `ff00aa`, `#FF00AA`, and `#ff00aa` all map
+ *  to `#ff00aa`. Short-form (3-digit) hex is rejected on purpose; the
+ *  renderer + swatch downstream expect exactly 6 digits. */
+function normalizeHex(input: string): string | null {
+  const trimmed = input.trim().toLowerCase();
+  const m = /^#?([0-9a-f]{6})$/.exec(trimmed);
+  return m ? `#${m[1]}` : null;
+}
+
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface SectionRowControlsProps {
@@ -41,8 +54,12 @@ interface SectionRowControlsProps {
   /** When this row has a section title, controls whether the stripe overlays
    *  the full-frame scene ('overlay', legacy) or sits above a letterboxed
    *  scene container ('letterbox', new default since 2026-05-17). Undefined
-   *  is treated as 'letterbox' downstream. */
+   *  is treated as the doc-level default (or 'letterbox') downstream. */
   sectionTitleLayout: 'overlay' | 'letterbox' | undefined;
+  /** Doc-level fallback for the stripe layout. Mirrors the pillarbox-default
+   *  pattern: rows that haven't been customized render with this value;
+   *  rows with their own `sectionTitleLayout` keep theirs. */
+  sectionTitleLayoutDefault: 'overlay' | 'letterbox' | undefined;
   /** Per-row fill color for the letterbox pillarbox area. Hex `#RRGGBB`.
    *  When undefined, falls back to the doc-level default, then to white. */
   pillarboxColor: string | undefined;
@@ -50,6 +67,12 @@ interface SectionRowControlsProps {
    *  on the row picker shows the *effective* color the renderer will use
    *  when the row hasn't been customized. */
   pillarboxColorDefault: string | undefined;
+  /** Per-row static-zoom percentage on the rendered visual. 100 = no zoom.
+   *  Undefined falls back to the doc-level default, then to 100. */
+  sceneZoom: number | undefined;
+  /** Doc-level fallback for `sceneZoom`. Surfaces in the row UI so the
+   *  displayed value reflects what the renderer will actually use. */
+  sceneZoomDefault: number | undefined;
   transition: ThumbnailTransitionConfig | undefined;
   defaultTransition: ThumbnailTransitionConfig | undefined;
   /** Per-row scene-fade override. `undefined` inherits the doc default.
@@ -65,22 +88,46 @@ interface SectionRowControlsProps {
   onChangePillarboxColor: (color: string | undefined) => void;
   onChangeTransition: (t: ThumbnailTransitionConfig | undefined) => void;
   onChangeSceneFade: (next: boolean | undefined) => void;
+  /** Update this row's static zoom. `undefined` clears the per-row value
+   *  so the doc-level default takes over. */
+  onChangeSceneZoom: (next: number | undefined) => void;
+  /** Promote this row's effective zoom to the doc-level default. */
+  onApplySceneZoomToAll: (zoom: number) => void;
+  /** Clear every row's `scene_zoom` so they all inherit the doc default. */
+  onClearSceneZoomOverrides: () => void;
   /** Apply `title` to every row from `startRow` to `endRow` inclusive
    *  (0-indexed). The parent walks the doc and sets each row's
    *  `section_title` to the same value in one update. */
   onApplyTitleToRange: (startRow: number, endRow: number, title: string) => void;
+  /** Set the doc-level pillarbox color default. Per-row overrides are
+   *  left intact (see `onClearPillarboxOverrides` for the matching wipe). */
+  onApplyPillarboxColorToAll: (color: string) => void;
+  /** Clear every row's per-row `pillarbox_color` override so they all
+   *  inherit the doc-level default. */
+  onClearPillarboxOverrides: () => void;
+  /** Set the doc-level stripe-layout default. Per-row overrides are left
+   *  intact (see `onClearStripeLayoutOverrides`). */
+  onApplyStripeLayoutToAll: (layout: 'overlay' | 'letterbox') => void;
+  /** Clear every row's per-row `section_title_layout` override so they
+   *  all inherit the doc-level default. */
+  onClearStripeLayoutOverrides: () => void;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function SectionRowControls({
   rowIndex, totalRows, thumbnail, zoomTo, sectionTitle,
-  sectionTitleLayout, pillarboxColor, pillarboxColorDefault,
+  sectionTitleLayout, sectionTitleLayoutDefault,
+  pillarboxColor, pillarboxColorDefault,
+  sceneZoom, sceneZoomDefault,
   transition, defaultTransition,
   sceneFade, sceneFadeDefault,
   onChangeZoomTo, onChangeSectionTitle, onChangeSectionTitleLayout,
   onChangePillarboxColor, onChangeTransition, onChangeSceneFade,
   onApplyTitleToRange,
+  onApplyPillarboxColorToAll, onClearPillarboxOverrides,
+  onApplyStripeLayoutToAll, onClearStripeLayoutOverrides,
+  onChangeSceneZoom, onApplySceneZoomToAll, onClearSceneZoomOverrides,
 }: SectionRowControlsProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
   // Inline "apply to range" picker — collapsed by default, expands into
@@ -101,6 +148,18 @@ export function SectionRowControls({
   if ((sectionTitle ?? '') !== lastSyncedTitle) {
     setLastSyncedTitle(sectionTitle ?? '');
     setTitleDraft(sectionTitle ?? '');
+  }
+
+  // Pillarbox color draft (hex input). Same prop-drift pattern as titleDraft.
+  // The committed source of truth is whichever of `pillarboxColor` or
+  // `pillarboxColorDefault` is effective; we surface that as the draft so
+  // the user sees the live value even when this row hasn't been customized.
+  const effectivePillarbox = (pillarboxColor || pillarboxColorDefault || '#ffffff').toLowerCase();
+  const [pillarboxDraft, setPillarboxDraft] = useState(effectivePillarbox);
+  const [lastSyncedPillarbox, setLastSyncedPillarbox] = useState(effectivePillarbox);
+  if (effectivePillarbox !== lastSyncedPillarbox) {
+    setLastSyncedPillarbox(effectivePillarbox);
+    setPillarboxDraft(effectivePillarbox);
   }
 
   // Defensive: thumbnail is optional now (a doc may not have one and the
@@ -331,8 +390,11 @@ export function SectionRowControls({
       )}
 
       {/* Stripe ↔ scene layout + pillarbox color — only shown when this
-          row has a section title set. The layout choice is per-row; the
-          color picker is only relevant in letterbox mode. */}
+          row has a section title set. The layout choice is per-row by
+          default, with two extra controls below (Apply to all rows,
+          Reset all rows) so the editor can promote a row's choice to a
+          doc-wide default in one click. The pillarbox color is shown
+          only in letterbox mode (overlay mode doesn't show bars). */}
       {(sectionTitle?.trim() || titleDraft.trim()) && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
@@ -349,7 +411,7 @@ export function SectionRowControls({
             }}
           >
             {(['letterbox', 'overlay'] as const).map((opt) => {
-              const effective = sectionTitleLayout ?? 'letterbox';
+              const effective = sectionTitleLayout ?? sectionTitleLayoutDefault ?? 'letterbox';
               const active = effective === opt;
               return (
                 <button
@@ -384,49 +446,292 @@ export function SectionRowControls({
             })}
           </div>
 
-          {(sectionTitleLayout ?? 'letterbox') === 'letterbox' && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <label
-                htmlFor={`pillarbox-color-${rowIndex}`}
-                style={{ fontSize: 10, color: 'var(--text-muted)' }}
-                title="Color used for the bars on the sides of the image when it doesn't fill the area below the stripe"
-              >
-                Pillarbox
-              </label>
-              <input
-                id={`pillarbox-color-${rowIndex}`}
-                type="color"
-                value={pillarboxColor || pillarboxColorDefault || '#ffffff'}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  console.info('[ui pillarbox-color] changed', {
-                    rowIndex,
-                    from: pillarboxColor ?? pillarboxColorDefault ?? '#ffffff',
-                    to: next,
-                  });
-                  onChangePillarboxColor(next);
-                }}
-                style={{
-                  width: 24,
-                  height: 20,
-                  padding: 0,
-                  border: '1px solid rgba(255,255,255,0.15)',
-                  borderRadius: 3,
-                  cursor: 'pointer',
-                  background: 'transparent',
-                }}
-                aria-label="Pillarbox color"
-              />
-              {pillarboxColor && (
+          {/* Doc-level layout actions. "Apply to all" promotes the current
+              row's layout to the doc default (overrides on other rows
+              stay intact). "Reset overrides" wipes every row's per-row
+              layout so they all inherit the doc default. */}
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button
+              type="button"
+              onClick={() => {
+                const effective = sectionTitleLayout ?? sectionTitleLayoutDefault ?? 'letterbox';
+                console.info('[ui layout-apply-all] clicked', { rowIndex, layout: effective });
+                onApplyStripeLayoutToAll(effective);
+              }}
+              title="Make this layout the doc-wide default for new and uncustomized rows"
+              style={{
+                flex: 1,
+                fontSize: 10,
+                padding: '3px 6px',
+                borderRadius: 3,
+                background: 'rgba(34,211,238,0.08)',
+                color: '#22d3ee',
+                border: '1px solid rgba(34,211,238,0.25)',
+                cursor: 'pointer',
+              }}
+            >
+              Apply to all
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                console.info('[ui layout-clear-overrides] clicked', { rowIndex });
+                onClearStripeLayoutOverrides();
+              }}
+              title="Clear every row's per-row layout override so they all use the doc default"
+              style={{
+                flex: 1,
+                fontSize: 10,
+                padding: '3px 6px',
+                borderRadius: 3,
+                background: 'transparent',
+                color: 'var(--text-muted)',
+                border: '1px solid rgba(255,255,255,0.10)',
+                cursor: 'pointer',
+              }}
+            >
+              Reset overrides
+            </button>
+          </div>
+
+          {(sectionTitleLayout ?? sectionTitleLayoutDefault ?? 'letterbox') === 'letterbox' && (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <label
+                  htmlFor={`pillarbox-color-${rowIndex}`}
+                  style={{ fontSize: 10, color: 'var(--text-muted)' }}
+                  title="Color used for the bars on the sides of the image when it doesn't fill the area below the stripe"
+                >
+                  Pillarbox
+                </label>
+                <span
+                  aria-hidden="true"
+                  style={{
+                    display: 'inline-block',
+                    width: 16,
+                    height: 16,
+                    borderRadius: 3,
+                    background: effectivePillarbox,
+                    border: '1px solid rgba(255,255,255,0.15)',
+                  }}
+                />
+                <input
+                  id={`pillarbox-color-${rowIndex}`}
+                  type="text"
+                  inputMode="text"
+                  spellCheck={false}
+                  autoComplete="off"
+                  value={pillarboxDraft}
+                  placeholder="#ffffff"
+                  onChange={(e) => setPillarboxDraft(e.target.value)}
+                  onBlur={() => {
+                    const normalized = normalizeHex(pillarboxDraft);
+                    if (!normalized) {
+                      // Revert the draft to the last good value so the user
+                      // doesn't end up staring at an invalid string.
+                      setPillarboxDraft(effectivePillarbox);
+                      return;
+                    }
+                    if (normalized === effectivePillarbox) {
+                      setPillarboxDraft(normalized);
+                      return;
+                    }
+                    console.info('[ui pillarbox-color] changed', {
+                      rowIndex,
+                      from: pillarboxColor ?? pillarboxColorDefault ?? '#ffffff',
+                      to: normalized,
+                    });
+                    setPillarboxDraft(normalized);
+                    onChangePillarboxColor(normalized);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      (e.currentTarget as HTMLInputElement).blur();
+                    } else if (e.key === 'Escape') {
+                      setPillarboxDraft(effectivePillarbox);
+                      (e.currentTarget as HTMLInputElement).blur();
+                    }
+                  }}
+                  style={{
+                    width: 78,
+                    fontSize: 11,
+                    padding: '2px 4px',
+                    borderRadius: 3,
+                    background: 'rgba(0,0,0,0.20)',
+                    color: 'var(--text)',
+                    border: `1px solid ${normalizeHex(pillarboxDraft) ? 'rgba(255,255,255,0.15)' : 'rgba(248,113,113,0.55)'}`,
+                    outline: 'none',
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                    letterSpacing: 0.2,
+                  }}
+                  aria-label="Pillarbox color (hex)"
+                  aria-invalid={normalizeHex(pillarboxDraft) ? undefined : true}
+                />
+                {pillarboxColor && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      console.info('[ui pillarbox-color] changed', {
+                        rowIndex,
+                        from: pillarboxColor,
+                        to: pillarboxColorDefault ?? '#ffffff',
+                      });
+                      onChangePillarboxColor(undefined);
+                    }}
+                    title="Reset to doc default"
+                    style={{
+                      fontSize: 10,
+                      padding: '2px 5px',
+                      borderRadius: 3,
+                      background: 'transparent',
+                      color: 'var(--text-muted)',
+                      border: '1px solid rgba(255,255,255,0.10)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 4 }}>
                 <button
                   type="button"
                   onClick={() => {
-                    console.info('[ui pillarbox-color] changed', {
-                      rowIndex,
-                      from: pillarboxColor,
-                      to: pillarboxColorDefault ?? '#ffffff',
-                    });
-                    onChangePillarboxColor(undefined);
+                    const normalized = normalizeHex(pillarboxDraft) ?? effectivePillarbox;
+                    console.info('[ui pillarbox-apply-all] clicked', { rowIndex, color: normalized });
+                    onApplyPillarboxColorToAll(normalized);
+                  }}
+                  title="Make this color the doc-wide default for new and uncustomized rows"
+                  style={{
+                    flex: 1,
+                    fontSize: 10,
+                    padding: '3px 6px',
+                    borderRadius: 3,
+                    background: 'rgba(168,85,247,0.10)',
+                    color: '#c084fc',
+                    border: '1px solid rgba(168,85,247,0.30)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Apply to all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    console.info('[ui pillarbox-clear-overrides] clicked', { rowIndex });
+                    onClearPillarboxOverrides();
+                  }}
+                  title="Clear every row's per-row pillarbox color so they all use the doc default"
+                  style={{
+                    flex: 1,
+                    fontSize: 10,
+                    padding: '3px 6px',
+                    borderRadius: 3,
+                    background: 'transparent',
+                    color: 'var(--text-muted)',
+                    border: '1px solid rgba(255,255,255,0.10)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Reset overrides
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Static zoom on the rendered image / video. Independent of the
+          section-title block — every row gets this control, since every
+          row may have an image or B-roll clip to zoom. Animation (Ken
+          Burns / clip motion) is preserved; only the static scale
+          changes. Apply-to-all + Reset-overrides mirror the pillarbox /
+          stripe-layout patterns above. */}
+      {(() => {
+        const effectiveZoom =
+          typeof sceneZoom === 'number'
+            ? sceneZoom
+            : typeof sceneZoomDefault === 'number'
+            ? sceneZoomDefault
+            : 100;
+        const clamped = Math.max(50, Math.min(200, Math.round(effectiveZoom)));
+        const commit = (next: number) => {
+          const c = Math.max(50, Math.min(200, Math.round(next)));
+          onChangeSceneZoom(c === 100 && typeof sceneZoomDefault !== 'number' ? undefined : c);
+        };
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
+              Zoom
+            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <button
+                type="button"
+                onClick={() => commit(clamped - 5)}
+                disabled={clamped <= 50}
+                title="Zoom out by 5%"
+                style={{
+                  fontSize: 11,
+                  width: 22,
+                  height: 22,
+                  borderRadius: 3,
+                  background: 'rgba(255,255,255,0.04)',
+                  color: 'var(--text-muted)',
+                  border: '1px solid rgba(255,255,255,0.10)',
+                  cursor: clamped <= 50 ? 'not-allowed' : 'pointer',
+                }}
+              >
+                −
+              </button>
+              <input
+                type="number"
+                min={50}
+                max={200}
+                step={5}
+                value={clamped}
+                onChange={(e) => {
+                  const parsed = parseInt(e.target.value, 10);
+                  if (Number.isFinite(parsed)) commit(parsed);
+                }}
+                style={{
+                  width: 52,
+                  fontSize: 11,
+                  padding: '2px 4px',
+                  borderRadius: 3,
+                  background: 'rgba(0,0,0,0.20)',
+                  color: 'var(--text)',
+                  border: '1px solid rgba(255,255,255,0.15)',
+                  outline: 'none',
+                  textAlign: 'center',
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                }}
+                aria-label="Scene zoom percentage"
+              />
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>%</span>
+              <button
+                type="button"
+                onClick={() => commit(clamped + 5)}
+                disabled={clamped >= 200}
+                title="Zoom in by 5%"
+                style={{
+                  fontSize: 11,
+                  width: 22,
+                  height: 22,
+                  borderRadius: 3,
+                  background: 'rgba(255,255,255,0.04)',
+                  color: 'var(--text-muted)',
+                  border: '1px solid rgba(255,255,255,0.10)',
+                  cursor: clamped >= 200 ? 'not-allowed' : 'pointer',
+                }}
+              >
+                +
+              </button>
+              {typeof sceneZoom === 'number' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    console.info('[ui scene-zoom] cleared', { rowIndex });
+                    onChangeSceneZoom(undefined);
                   }}
                   title="Reset to doc default"
                   style={{
@@ -443,9 +748,51 @@ export function SectionRowControls({
                 </button>
               )}
             </div>
-          )}
-        </div>
-      )}
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button
+                type="button"
+                onClick={() => {
+                  console.info('[ui scene-zoom-apply-all] clicked', { rowIndex, zoom: clamped });
+                  onApplySceneZoomToAll(clamped);
+                }}
+                title="Make this zoom the doc-wide default for new and uncustomized rows"
+                style={{
+                  flex: 1,
+                  fontSize: 10,
+                  padding: '3px 6px',
+                  borderRadius: 3,
+                  background: 'rgba(34,197,94,0.10)',
+                  color: '#4ade80',
+                  border: '1px solid rgba(34,197,94,0.30)',
+                  cursor: 'pointer',
+                }}
+              >
+                Apply to all
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  console.info('[ui scene-zoom-clear-overrides] clicked', { rowIndex });
+                  onClearSceneZoomOverrides();
+                }}
+                title="Clear every row's per-row zoom so they all use the doc default"
+                style={{
+                  flex: 1,
+                  fontSize: 10,
+                  padding: '3px 6px',
+                  borderRadius: 3,
+                  background: 'transparent',
+                  color: 'var(--text-muted)',
+                  border: '1px solid rgba(255,255,255,0.10)',
+                  cursor: 'pointer',
+                }}
+              >
+                Reset overrides
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Transition override button */}
       <button

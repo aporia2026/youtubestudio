@@ -37,6 +37,7 @@ import {
 } from '@/components/production-doc/BrollCell';
 import { SectionThumbnailCard } from '@/components/production-doc/SectionThumbnailCard';
 import { OverlayCell } from '@/components/production-doc/OverlayCell';
+import { OverlayPositionEditor } from '@/components/production-doc/OverlayPositionEditor';
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
 import { MissingClipsModal } from '@/components/production-doc/MissingClipsModal';
@@ -194,6 +195,23 @@ interface ProductionRow {
   /** Per-row pillarbox fill color when layout = letterbox. Hex `#RRGGBB`.
    *  Falls back to doc-level default, then white. */
   pillarbox_color?: string;
+  /** Per-row static-zoom percentage applied to the rendered image / video.
+   *  100 = unchanged. <100 zooms out (image appears smaller, pillarbox /
+   *  scene-bg fills the surrounding area). >100 zooms in (image crops to
+   *  the centered window). Animation (Ken Burns, B-roll clip motion) is
+   *  unaffected — the zoom multiplies on top of the animated transform.
+   *  Falls back to `ProductionDoc.scene_zoom_default`, then 100. */
+  scene_zoom?: number;
+  /** Manual overlay placement set via drag-and-drop. When present, the
+   *  renderer ignores `overlay_zone` / `overlay_zone_resolved` and pins
+   *  the overlay's top-left corner at `(x_pct, y_pct)`% of the frame
+   *  (origin top-left). Cleared via the editor's "Reset" button so the
+   *  AI placement kicks back in. */
+  overlay_position?: { x_pct: number; y_pct: number };
+  /** Manual overlay width as % of the frame width (typical range 5–40).
+   *  When set, overrides `overlay_size` / `overlay_size_resolved` at
+   *  render time. Cleared together with `overlay_position` on reset. */
+  overlay_size_pct?: number;
   /** Cached pixel-saliency map for this row's generated image. Populated
    *  by `/api/generate/production-doc/image` after the image lands in R2. */
   image_saliency?: ImageSaliencyMap;
@@ -219,6 +237,14 @@ interface ProductionDoc {
   /** Doc-level fallback for `ProductionRow.pillarbox_color` when a row
    *  doesn't override. Hex `#RRGGBB`; defaults to white. */
   pillarbox_color_default?: string;
+  /** Doc-level fallback for `ProductionRow.section_title_layout` when a
+   *  row doesn't override. Mirrors the `pillarbox_color_default` pattern.
+   *  Undefined ⇒ renderer treats it as 'letterbox'. */
+  section_title_layout_default?: 'overlay' | 'letterbox';
+  /** Doc-level fallback for `ProductionRow.scene_zoom` when a row doesn't
+   *  override. Mirrors the `pillarbox_color_default` pattern. Undefined ⇒
+   *  100 (no zoom). Sensible range: 50–200. */
+  scene_zoom_default?: number;
   /** Per-doc override of the workspace's minimum scene duration (ms).
    *  Forwarded into `productionDocToVideoConfig`. Editable inline in the
    *  doc header. See `_plans/2026-05-17-scene-min-duration-and-tail-buffer.md`. */
@@ -2439,6 +2465,118 @@ function ProductionDocPage() {
     [historyEntryId],
   );
 
+  /**
+   * Promote a single row's pillarbox color to the doc-wide default. Per-row
+   * overrides on other rows stay intact — the editor uses
+   * `clearPillarboxOverrides` separately when they want the new default to
+   * sweep across every row. Same pattern is used for the stripe layout.
+   */
+  const applyPillarboxColorToAll = useCallback(
+    (color: string) => {
+      setDoc(prev => {
+        if (!prev) return prev;
+        const nextDoc = { ...prev, pillarbox_color_default: color };
+        if (historyEntryId) {
+          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+        }
+        return nextDoc;
+      });
+      toast.success('Set pillarbox color as the doc default.');
+    },
+    [historyEntryId],
+  );
+
+  const clearPillarboxOverrides = useCallback(() => {
+    setDoc(prev => {
+      if (!prev) return prev;
+      const before = prev.rows.filter(r => r.pillarbox_color).length;
+      if (before === 0) {
+        toast('No per-row pillarbox overrides to clear.');
+        return prev;
+      }
+      const nextRows = prev.rows.map(r =>
+        r.pillarbox_color ? { ...r, pillarbox_color: undefined } : r,
+      );
+      const nextDoc = { ...prev, rows: nextRows };
+      if (historyEntryId) {
+        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+      }
+      toast.success(`Cleared pillarbox overrides on ${before} row${before === 1 ? '' : 's'}.`);
+      return nextDoc;
+    });
+  }, [historyEntryId]);
+
+  const applyStripeLayoutToAll = useCallback(
+    (layout: 'overlay' | 'letterbox') => {
+      setDoc(prev => {
+        if (!prev) return prev;
+        const nextDoc = { ...prev, section_title_layout_default: layout };
+        if (historyEntryId) {
+          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+        }
+        return nextDoc;
+      });
+      toast.success(`Set ${layout} as the doc-default stripe layout.`);
+    },
+    [historyEntryId],
+  );
+
+  const clearStripeLayoutOverrides = useCallback(() => {
+    setDoc(prev => {
+      if (!prev) return prev;
+      const before = prev.rows.filter(r => r.section_title_layout).length;
+      if (before === 0) {
+        toast('No per-row stripe-layout overrides to clear.');
+        return prev;
+      }
+      const nextRows = prev.rows.map(r =>
+        r.section_title_layout ? { ...r, section_title_layout: undefined } : r,
+      );
+      const nextDoc = { ...prev, rows: nextRows };
+      if (historyEntryId) {
+        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+      }
+      toast.success(`Cleared stripe-layout overrides on ${before} row${before === 1 ? '' : 's'}.`);
+      return nextDoc;
+    });
+  }, [historyEntryId]);
+
+  const applySceneZoomToAll = useCallback(
+    (zoom: number) => {
+      const clamped = Math.max(50, Math.min(200, Math.round(zoom)));
+      setDoc(prev => {
+        if (!prev) return prev;
+        const nextDoc = { ...prev, scene_zoom_default: clamped };
+        if (historyEntryId) {
+          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+        }
+        return nextDoc;
+      });
+      toast.success(`Set ${clamped}% as the doc-default zoom.`);
+    },
+    [historyEntryId],
+  );
+
+  const clearSceneZoomOverrides = useCallback(() => {
+    setDoc(prev => {
+      if (!prev) return prev;
+      const before = prev.rows.filter(r => typeof r.scene_zoom === 'number').length;
+      if (before === 0) {
+        toast('No per-row zoom overrides to clear.');
+        return prev;
+      }
+      const nextRows = prev.rows.map(r =>
+        typeof r.scene_zoom === 'number' ? { ...r, scene_zoom: undefined } : r,
+      );
+      const nextDoc = { ...prev, rows: nextRows };
+      if (historyEntryId) {
+        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+      }
+      toast.success(`Cleared zoom overrides on ${before} row${before === 1 ? '' : 's'}.`);
+      return nextDoc;
+    });
+  }, [historyEntryId]);
+
   // — Image generation (declared before effects that reference it)
   const [rowImages, setRowImages] = useState<RowImageState[]>([]);
   const [imageProgress, setImageProgress] = useState({ done: 0, total: 0 });
@@ -2453,6 +2591,12 @@ function ProductionDocPage() {
   //   flow uses.
   const [editPanelRow, setEditPanelRow] = useState<number | null>(null);
   const [editBrushOpen, setEditBrushOpen] = useState(false);
+  // Drag-and-drop overlay position editor. `null` = closed; otherwise
+  // the row index whose overlay is being positioned. Lives at the page
+  // level (not the cell) because the editor needs the row's still image
+  // URL from `rowImages` and the fetched overlay URL from `rowOverlays`,
+  // both of which are page-scoped.
+  const [overlayPositionRow, setOverlayPositionRow] = useState<number | null>(null);
   const [editResult, setEditResult] = useState<{ imageUrl: string; saliency: ImageSaliencyMap | null } | null>(null);
 
   function closeEditPanel() {
@@ -6267,6 +6411,8 @@ function ProductionDocPage() {
                                 size={row.overlay_size}
                                 state={rowOverlays[i]}
                                 onRetry={() => fetchOverlayForRow(i, row.overlay_stock_terms!.trim())}
+                                onOpenPositionEditor={() => setOverlayPositionRow(i)}
+                                hasManualPosition={Boolean(row.overlay_position)}
                               />
                             ) : (
                               <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>—</span>
@@ -6299,8 +6445,11 @@ function ProductionDocPage() {
                             zoomTo={row.thumbnail_zoom_to}
                             sectionTitle={row.section_title}
                             sectionTitleLayout={row.section_title_layout}
+                            sectionTitleLayoutDefault={doc.section_title_layout_default}
                             pillarboxColor={row.pillarbox_color}
                             pillarboxColorDefault={doc.pillarbox_color_default}
+                            sceneZoom={row.scene_zoom}
+                            sceneZoomDefault={doc.scene_zoom_default}
                             transition={row.thumbnail_transition}
                             defaultTransition={doc.thumbnail?.defaultTransition}
                             sceneFade={row.scene_fade}
@@ -6312,6 +6461,13 @@ function ProductionDocPage() {
                             onChangeTransition={(t) => updateRow(i, { thumbnail_transition: t })}
                             onChangeSceneFade={(next) => updateRow(i, { scene_fade: next })}
                             onApplyTitleToRange={applyTitleToRange}
+                            onApplyPillarboxColorToAll={applyPillarboxColorToAll}
+                            onClearPillarboxOverrides={clearPillarboxOverrides}
+                            onApplyStripeLayoutToAll={applyStripeLayoutToAll}
+                            onClearStripeLayoutOverrides={clearStripeLayoutOverrides}
+                            onChangeSceneZoom={(z) => updateRow(i, { scene_zoom: z })}
+                            onApplySceneZoomToAll={applySceneZoomToAll}
+                            onClearSceneZoomOverrides={clearSceneZoomOverrides}
                           />
                         </td>
                       </tr>
@@ -6508,6 +6664,8 @@ function ProductionDocPage() {
                               size={row.overlay_size}
                               state={rowOverlays[i]}
                               onRetry={() => fetchOverlayForRow(i, row.overlay_stock_terms!.trim())}
+                              onOpenPositionEditor={() => setOverlayPositionRow(i)}
+                              hasManualPosition={Boolean(row.overlay_position)}
                             />
                           </div>
                         )}
@@ -6532,8 +6690,11 @@ function ProductionDocPage() {
                             zoomTo={row.thumbnail_zoom_to}
                             sectionTitle={row.section_title}
                             sectionTitleLayout={row.section_title_layout}
+                            sectionTitleLayoutDefault={doc.section_title_layout_default}
                             pillarboxColor={row.pillarbox_color}
                             pillarboxColorDefault={doc.pillarbox_color_default}
+                            sceneZoom={row.scene_zoom}
+                            sceneZoomDefault={doc.scene_zoom_default}
                             transition={row.thumbnail_transition}
                             defaultTransition={doc.thumbnail?.defaultTransition}
                             sceneFade={row.scene_fade}
@@ -6545,6 +6706,13 @@ function ProductionDocPage() {
                             onChangeTransition={(t) => updateRow(i, { thumbnail_transition: t })}
                             onChangeSceneFade={(next) => updateRow(i, { scene_fade: next })}
                             onApplyTitleToRange={applyTitleToRange}
+                            onApplyPillarboxColorToAll={applyPillarboxColorToAll}
+                            onClearPillarboxOverrides={clearPillarboxOverrides}
+                            onApplyStripeLayoutToAll={applyStripeLayoutToAll}
+                            onClearStripeLayoutOverrides={clearStripeLayoutOverrides}
+                            onChangeSceneZoom={(z) => updateRow(i, { scene_zoom: z })}
+                            onApplySceneZoomToAll={applySceneZoomToAll}
+                            onClearSceneZoomOverrides={clearSceneZoomOverrides}
                           />
                         </div>
                       </div>
@@ -6834,6 +7002,31 @@ function ProductionDocPage() {
           success it triggers `executeRender` directly, otherwise the
           user can explicitly accept a stills-only render or cancel.
           See `_plans/2026-05-17-render-state-hardening.md`. */}
+      {overlayPositionRow !== null && doc?.rows[overlayPositionRow] && rowOverlays[overlayPositionRow]?.status === 'done' && rowOverlays[overlayPositionRow]?.url && (
+        <OverlayPositionEditor
+          stillImageUrl={rowImages[overlayPositionRow]?.imageUrl}
+          overlayUrl={rowOverlays[overlayPositionRow]!.url!}
+          position={doc.rows[overlayPositionRow]!.overlay_position}
+          sizePct={doc.rows[overlayPositionRow]!.overlay_size_pct}
+          termsLabel={doc.rows[overlayPositionRow]!.overlay_stock_terms || ''}
+          onSave={(pos, size) => {
+            console.info('[ui overlay-position] saved', { rowIndex: overlayPositionRow, pos, size });
+            updateRow(overlayPositionRow, {
+              overlay_position: pos,
+              overlay_size_pct: size,
+            });
+          }}
+          onReset={() => {
+            console.info('[ui overlay-position] reset', { rowIndex: overlayPositionRow });
+            updateRow(overlayPositionRow, {
+              overlay_position: undefined,
+              overlay_size_pct: undefined,
+            });
+          }}
+          onClose={() => setOverlayPositionRow(null)}
+        />
+      )}
+
       {missingClipsModal && (
         <MissingClipsModal
           missing={missingClipsModal.missing}

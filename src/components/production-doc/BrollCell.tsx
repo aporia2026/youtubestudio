@@ -37,7 +37,9 @@ import {
   BROLL_FAMILY_LABEL,
   BROLL_FAMILY_ORDER,
   BROLL_MODELS,
+  DEFAULT_BROLL_I2V_MODEL_ID,
   DEFAULT_BROLL_MODEL_ID,
+  DEFAULT_BROLL_T2V_MODEL_ID,
   findBrollModel,
   pickModelForScene,
   type BrollClipRow,
@@ -219,30 +221,65 @@ export function writeBrollLockMap(map: BrollLockMap) {
 }
 
 /**
- * In-memory cache of the resolved user default so the picker doesn't fetch
+ * In-memory cache of the resolved user defaults so the picker doesn't fetch
  * once per cell. The first BrollCell to mount fetches; subsequent cells
- * read the cached value synchronously. Cache is cleared on PUT so the new
+ * read the cached value synchronously. Cache is replaced on PUT so the new
  * default propagates immediately across every cell on the page.
+ *
+ * Two slots — one per kind. A row with a still picks `i2v`; a row without
+ * a still picks `t2v`. The star icon in the picker writes to whichever
+ * kind matches the clicked model.
  */
-let userDefaultCache: { modelId: BrollModelId; isExplicit: boolean } | null = null;
-let userDefaultPromise: Promise<{ modelId: BrollModelId; isExplicit: boolean }> | null = null;
-const userDefaultListeners = new Set<(next: { modelId: BrollModelId; isExplicit: boolean }) => void>();
+interface UserDefaults {
+  t2vModelId: BrollModelId;
+  i2vModelId: BrollModelId;
+  t2vIsExplicit: boolean;
+  i2vIsExplicit: boolean;
+}
+let userDefaultCache: UserDefaults | null = null;
+let userDefaultPromise: Promise<UserDefaults> | null = null;
+const userDefaultListeners = new Set<(next: UserDefaults) => void>();
 
-async function fetchUserDefault(): Promise<{ modelId: BrollModelId; isExplicit: boolean }> {
+function fallbackDefaults(): UserDefaults {
+  return {
+    t2vModelId: DEFAULT_BROLL_T2V_MODEL_ID,
+    i2vModelId: DEFAULT_BROLL_I2V_MODEL_ID,
+    t2vIsExplicit: false,
+    i2vIsExplicit: false,
+  };
+}
+
+function resolveDefaultsFromResponse(data: Record<string, unknown>): UserDefaults {
+  const t2v = data.t2vModelId;
+  const i2v = data.i2vModelId;
+  return {
+    t2vModelId:
+      typeof t2v === 'string' && findBrollModel(t2v)?.kind === 'text-to-video'
+        ? t2v
+        : DEFAULT_BROLL_T2V_MODEL_ID,
+    i2vModelId:
+      typeof i2v === 'string' && findBrollModel(i2v)?.kind === 'image-to-video'
+        ? i2v
+        : DEFAULT_BROLL_I2V_MODEL_ID,
+    t2vIsExplicit: Boolean(data.t2vIsExplicit),
+    i2vIsExplicit: Boolean(data.i2vIsExplicit),
+  };
+}
+
+async function fetchUserDefault(): Promise<UserDefaults> {
   if (userDefaultCache) return userDefaultCache;
   if (userDefaultPromise) return userDefaultPromise;
   userDefaultPromise = (async () => {
     try {
       const res = await fetch('/api/user/settings/broll-default', { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { modelId?: string; isExplicit?: boolean };
-      const modelId = data.modelId && findBrollModel(data.modelId) ? data.modelId : DEFAULT_BROLL_MODEL_ID;
-      const resolved = { modelId, isExplicit: Boolean(data.isExplicit) };
+      const data = (await res.json()) as Record<string, unknown>;
+      const resolved = resolveDefaultsFromResponse(data);
       userDefaultCache = resolved;
       return resolved;
     } catch {
-      // Network failure — fall back to library default. The picker still works.
-      const fallback = { modelId: DEFAULT_BROLL_MODEL_ID, isExplicit: false };
+      // Network failure — fall back to library defaults. The picker still works.
+      const fallback = fallbackDefaults();
       userDefaultCache = fallback;
       return fallback;
     } finally {
@@ -252,6 +289,9 @@ async function fetchUserDefault(): Promise<{ modelId: BrollModelId; isExplicit: 
   return userDefaultPromise;
 }
 
+/** Persist the user's star choice. Server inspects the model's `kind` and
+ *  writes into the matching slot (t2v or i2v), leaving the opposite kind's
+ *  pin untouched. */
 async function saveUserDefault(modelId: BrollModelId | null): Promise<void> {
   const res = await fetch('/api/user/settings/broll-default', {
     method: 'PUT',
@@ -259,11 +299,8 @@ async function saveUserDefault(modelId: BrollModelId | null): Promise<void> {
     body: JSON.stringify({ modelId }),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = (await res.json()) as { modelId?: string; isExplicit?: boolean };
-  const next = {
-    modelId: data.modelId && findBrollModel(data.modelId) ? data.modelId : DEFAULT_BROLL_MODEL_ID,
-    isExplicit: Boolean(data.isExplicit),
-  };
+  const data = (await res.json()) as Record<string, unknown>;
+  const next = resolveDefaultsFromResponse(data);
   userDefaultCache = next;
   userDefaultListeners.forEach((fn) => fn(next));
 }
@@ -346,7 +383,12 @@ export function BrollCell({
   const [clip, setClip] = useState<BrollClipRow | null>(initialClip ?? null);
   const [phase, setPhase] = useState<Phase>(phaseFromClip(initialClip));
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [defaultModelId, setDefaultModelId] = useState<BrollModelId>(DEFAULT_BROLL_MODEL_ID);
+  // Two stars in the picker, one per kind. The cell's local `modelId`
+  // tracks whichever default is *appropriate for this row* (i2v when a
+  // still is present, otherwise t2v), unless the user has explicitly
+  // picked a model via the picker (modelIdLocked).
+  const [defaultT2vModelId, setDefaultT2vModelId] = useState<BrollModelId>(DEFAULT_BROLL_T2V_MODEL_ID);
+  const [defaultI2vModelId, setDefaultI2vModelId] = useState<BrollModelId>(DEFAULT_BROLL_I2V_MODEL_ID);
   const [modelId, setModelId] = useState<BrollModelId>(DEFAULT_BROLL_MODEL_ID);
   const [modelIdLocked, setModelIdLocked] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -362,26 +404,32 @@ export function BrollCell({
 
   // Subscribe to the user-default cache so a star-click in any cell on the
   // page propagates here immediately. The first cell to mount triggers the
-  // GET; the rest read from cache. We only adopt the new default into our
-  // local `modelId` if the user hasn't manually changed the picker (i.e.,
-  // `modelIdLocked` is false).
+  // GET; the rest read from cache. We only adopt a default into our local
+  // `modelId` if the user hasn't manually changed the picker (i.e.,
+  // `modelIdLocked` is false). The kind picked depends on whether the row
+  // has a still — i2v when it does, t2v when it doesn't — so generating
+  // the still later auto-promotes the cell to the i2v default.
   useEffect(() => {
     let cancelled = false;
+    const pickForRow = (defs: UserDefaults): BrollModelId =>
+      stillImageUrl ? defs.i2vModelId : defs.t2vModelId;
     fetchUserDefault().then((resolved) => {
       if (cancelled) return;
-      setDefaultModelId(resolved.modelId);
-      setModelId((current) => (modelIdLocked ? current : resolved.modelId));
+      setDefaultT2vModelId(resolved.t2vModelId);
+      setDefaultI2vModelId(resolved.i2vModelId);
+      setModelId((current) => (modelIdLocked ? current : pickForRow(resolved)));
     });
-    const listener = (next: { modelId: BrollModelId; isExplicit: boolean }) => {
-      setDefaultModelId(next.modelId);
-      setModelId((current) => (modelIdLocked ? current : next.modelId));
+    const listener = (next: UserDefaults) => {
+      setDefaultT2vModelId(next.t2vModelId);
+      setDefaultI2vModelId(next.i2vModelId);
+      setModelId((current) => (modelIdLocked ? current : pickForRow(next)));
     };
     userDefaultListeners.add(listener);
     return () => {
       cancelled = true;
       userDefaultListeners.delete(listener);
     };
-  }, [modelIdLocked]);
+  }, [modelIdLocked, stillImageUrl]);
 
   const updateClip = useCallback(
     (next: BrollClipRow | null) => {
@@ -712,7 +760,8 @@ export function BrollCell({
         {pickerOpen && (
           <ModelPicker
             value={modelId}
-            defaultModelId={defaultModelId}
+            defaultT2vModelId={defaultT2vModelId}
+            defaultI2vModelId={defaultI2vModelId}
             hasStill={Boolean(stillImageUrl)}
             onChange={(id) => {
               setModelId(id);
@@ -820,10 +869,22 @@ export function BrollCell({
   if (phase === 'failed') {
     const msg = errorMsg || clip?.error_message || 'Generation failed';
     return (
-      <div className="flex flex-col gap-1">
+      <div className="flex flex-col gap-1 relative">
         <span className="text-[11px]" style={{ color: '#f87171' }} title={msg}>
           ⚠ {truncate(msg, 28)}
         </span>
+        {/* Per-cell model swap so the user can recover from a model-specific
+            failure (e.g. Sora rejected the prompt, Kie returned no taskId)
+            without leaving the row. Retry below picks up the new modelId. */}
+        <button
+          type="button"
+          onClick={() => setPickerOpen((v) => !v)}
+          className="text-[10px] px-1 py-0.5 rounded text-left"
+          style={{ background: 'rgba(120,120,120,0.10)', color: 'var(--text-muted)' }}
+          title="Pick a different model"
+        >
+          {modelLabel(modelId)} ▾
+        </button>
         <div className="flex items-center gap-1">
           <button
             type="button"
@@ -848,6 +909,27 @@ export function BrollCell({
             </button>
           )}
         </div>
+        {pickerOpen && (
+          <ModelPicker
+            value={modelId}
+            defaultT2vModelId={defaultT2vModelId}
+            defaultI2vModelId={defaultI2vModelId}
+            hasStill={Boolean(stillImageUrl)}
+            onChange={(id) => {
+              setModelId(id);
+              setModelIdLocked(true);
+              setPickerOpen(false);
+            }}
+            onMakeDefault={async (id) => {
+              try {
+                await saveUserDefault(id);
+              } catch {
+                /* surfacing this in a cell-level toast would need parent wiring; swallow for now */
+              }
+            }}
+            onClose={() => setPickerOpen(false)}
+          />
+        )}
       </div>
     );
   }
@@ -867,19 +949,26 @@ function truncate(s: string, n: number): string {
 /** Picker is grouped two-deep: image-to-video first (recommended path for
  *  rows that already have a still), text-to-video below, with each section
  *  subdivided by provider family (Kling, Sora, Veo, Runway, Grok, Seedance).
- *  Each entry shows label + price. The user's current default has a filled
- *  star; clicking the star on a different row promotes it to the new
- *  default. Family subheadings keep the 25-entry list scannable. */
+ *  Each entry shows label + price.
+ *
+ *  Two stars are shown — one in the i2v section, one in the t2v section.
+ *  Each star marks the user's default for that kind. Clicking the star on
+ *  a different model in the same section promotes it to the new default
+ *  for that kind; the opposite kind's default is left untouched. The cell
+ *  uses whichever default matches its row (i2v when a still is present,
+ *  t2v otherwise). Family subheadings keep the 25-entry list scannable. */
 function ModelPicker({
   value,
-  defaultModelId,
+  defaultT2vModelId,
+  defaultI2vModelId,
   hasStill,
   onChange,
   onMakeDefault,
   onClose,
 }: {
   value: BrollModelId;
-  defaultModelId: BrollModelId;
+  defaultT2vModelId: BrollModelId;
+  defaultI2vModelId: BrollModelId;
   hasStill: boolean;
   onChange: (id: BrollModelId) => void;
   onMakeDefault: (id: BrollModelId) => void | Promise<void>;
@@ -917,7 +1006,10 @@ function ModelPicker({
               </div>
               {fam.models.map((m) => {
                 const isCurrent = m.id === value;
-                const isDefault = m.id === defaultModelId;
+                const isDefault =
+                  m.kind === 'image-to-video'
+                    ? m.id === defaultI2vModelId
+                    : m.id === defaultT2vModelId;
                 const disabled = m.kind === 'image-to-video' && !hasStill;
                 return (
                   <div
@@ -956,8 +1048,16 @@ function ModelPicker({
                         background: 'transparent',
                         color: isDefault ? '#facc15' : 'var(--text-muted)',
                       }}
-                      title={isDefault ? 'Current default' : 'Set as my default'}
-                      aria-label={isDefault ? 'Current default' : `Set ${m.label} as default`}
+                      title={
+                        isDefault
+                          ? `Current default for ${m.kind === 'image-to-video' ? 'image-to-video' : 'text-to-video'}`
+                          : `Set as default for ${m.kind === 'image-to-video' ? 'image-to-video' : 'text-to-video'}`
+                      }
+                      aria-label={
+                        isDefault
+                          ? `Current default for ${m.kind === 'image-to-video' ? 'image-to-video' : 'text-to-video'}`
+                          : `Set ${m.label} as default for ${m.kind === 'image-to-video' ? 'image-to-video' : 'text-to-video'}`
+                      }
                     >
                       {isDefault ? '★' : '☆'}
                     </button>

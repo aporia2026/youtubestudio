@@ -139,15 +139,42 @@ export const RealImageOverlay: React.FC<Props> = ({ shot, frameWidth: frameWidth
   // <Img> itself uses object-fit: contain so non-square logos sit centred
   // inside the box without distortion. This keeps positions predictable
   // regardless of the actual aspect ratio of the fetched overlay.
-  const overlayWidthPx = frameWidth * SIZE_WIDTH_RATIO[overlay.size];
+  //
+  // Width resolution: a manually-set `customSizePct` (from the drag editor)
+  // wins; otherwise we fall back to the zone-tier width ratio.
+  const sizeRatio =
+    typeof overlay.customSizePct === 'number' && Number.isFinite(overlay.customSizePct)
+      ? Math.max(0.02, Math.min(0.6, overlay.customSizePct / 100))
+      : SIZE_WIDTH_RATIO[overlay.size];
+  const overlayWidthPx = frameWidth * sizeRatio;
   const overlayHeightPx = overlayWidthPx;
-  const { left, top } = zonePosition(
-    overlay.zone,
-    overlayWidthPx,
-    overlayHeightPx,
-    frameWidth,
-    frameHeight,
-  );
+
+  // Position resolution: a manually-set `(customX, customY)` pair wins.
+  // Either alone is treated as "unset" (so partially-bad data falls back
+  // to AI placement instead of jumping into a corner). The values are
+  // top-left % of the frame; clamp so a drag that escaped the editor's
+  // bounds can't push the overlay fully off-screen.
+  let left: number;
+  let top: number;
+  if (
+    typeof overlay.customX === 'number' &&
+    typeof overlay.customY === 'number' &&
+    Number.isFinite(overlay.customX) &&
+    Number.isFinite(overlay.customY)
+  ) {
+    const clampedX = Math.max(0, Math.min(100, overlay.customX));
+    const clampedY = Math.max(0, Math.min(100, overlay.customY));
+    left = (clampedX / 100) * frameWidth;
+    top = (clampedY / 100) * frameHeight;
+  } else {
+    ({ left, top } = zonePosition(
+      overlay.zone,
+      overlayWidthPx,
+      overlayHeightPx,
+      frameWidth,
+      frameHeight,
+    ));
+  }
 
   const haloColor = overlay.haloColor;
   const haloBlurPx = (HALO_BLUR_PX_AT_1080 * compositionHeight) / 1080;

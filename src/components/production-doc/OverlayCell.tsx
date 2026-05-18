@@ -28,6 +28,14 @@ interface Props {
   size?: 'small' | 'medium' | 'large';
   state?: RowOverlayState;
   onRetry: () => void;
+  /** Open the drag-and-drop position editor for this row. Surfaced only
+   *  when the overlay has fetched successfully — there's nothing to
+   *  position before then. */
+  onOpenPositionEditor?: () => void;
+  /** True when the row has a manually-set position. Switches the
+   *  button label so the user can tell at a glance whether this row
+   *  is using the AI placement or their own. */
+  hasManualPosition?: boolean;
 }
 
 const ZONE_LABELS: Record<Zone, string> = {
@@ -41,7 +49,7 @@ const ZONE_LABELS: Record<Zone, string> = {
   'right-center': '→',
 };
 
-export function OverlayCell({ terms, zone, size, state, onRetry }: Props) {
+export function OverlayCell({ terms, zone, size, state, onRetry, onOpenPositionEditor, hasManualPosition }: Props) {
   const status = state?.status ?? 'idle';
   return (
     <div className="flex flex-col gap-1">
@@ -72,27 +80,48 @@ export function OverlayCell({ terms, zone, size, state, onRetry }: Props) {
       )}
 
       {status === 'done' && state?.url && (
-        <div className="flex items-center gap-1.5">
-          {/* 40x28 thumbnail in a table cell — next/image would require
-              configuring the R2 public domain in next.config and adds
-              runtime overhead unjustified for a status preview this small. */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={state.url}
-            alt={terms}
-            style={{
-              maxWidth: 40,
-              maxHeight: 28,
-              objectFit: 'contain',
-              background:
-                'repeating-conic-gradient(rgba(255,255,255,0.06) 0% 25%, transparent 0% 50%) 50% / 8px 8px',
-              borderRadius: 2,
-            }}
-            title="Auto-sourced overlay (transparent PNG, will be composited at render)"
-          />
-          <span className="text-[10px]" style={{ color: '#4ade80' }} title="Overlay ready">
-            ✓
-          </span>
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-1.5">
+            {/* 40x28 thumbnail in a table cell — next/image would require
+                configuring the R2 public domain in next.config and adds
+                runtime overhead unjustified for a status preview this small. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={state.url}
+              alt={terms}
+              style={{
+                maxWidth: 40,
+                maxHeight: 28,
+                objectFit: 'contain',
+                background:
+                  'repeating-conic-gradient(rgba(255,255,255,0.06) 0% 25%, transparent 0% 50%) 50% / 8px 8px',
+                borderRadius: 2,
+              }}
+              title="Auto-sourced overlay (transparent PNG, will be composited at render)"
+            />
+            <span className="text-[10px]" style={{ color: '#4ade80' }} title="Overlay ready">
+              ✓
+            </span>
+          </div>
+          {onOpenPositionEditor && (
+            <button
+              type="button"
+              onClick={onOpenPositionEditor}
+              className="text-[10px] px-1.5 py-0.5 rounded self-start"
+              style={{
+                background: hasManualPosition ? 'rgba(168,85,247,0.16)' : 'rgba(255,255,255,0.04)',
+                color: hasManualPosition ? '#c084fc' : 'var(--text-muted)',
+                border: `1px solid ${hasManualPosition ? 'rgba(168,85,247,0.35)' : 'rgba(255,255,255,0.10)'}`,
+              }}
+              title={
+                hasManualPosition
+                  ? 'Open the drag-and-drop editor — position is currently manual'
+                  : 'Open the drag-and-drop editor to set a custom position'
+              }
+            >
+              {hasManualPosition ? '✋ Position (manual)' : '✋ Position…'}
+            </button>
+          )}
         </div>
       )}
 

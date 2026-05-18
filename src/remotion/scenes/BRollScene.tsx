@@ -108,8 +108,23 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
     });
   }
 
+  // Static zoom applied as a wrapper transform so it multiplies on top of
+  // any animated transform (Ken Burns, B-roll playback) instead of replacing
+  // it. zoomScale === 1 ⇒ no zoom; the wrapper renders as a no-op. Clamped
+  // to [0.5, 2.0] so a corrupt doc value can't push the visual completely
+  // off-screen or so large that the browser drops frames re-compositing.
+  const rawZoom = typeof shot.sceneZoom === 'number' && Number.isFinite(shot.sceneZoom)
+    ? shot.sceneZoom
+    : 100;
+  const zoomScale = Math.max(0.5, Math.min(2.0, rawZoom / 100));
+  const zoomWrapperStyle: React.CSSProperties =
+    zoomScale === 1
+      ? {}
+      : { transform: `scale(${zoomScale})`, transformOrigin: 'center center' };
+
   return (
-    <AbsoluteFill style={{ background: brand.backgroundColor }}>
+    <AbsoluteFill style={{ background: brand.backgroundColor, overflow: 'hidden' }}>
+      <AbsoluteFill style={zoomWrapperStyle}>
       {useVideo ? (
         <AbsoluteFill style={{ overflow: 'hidden' }}>
           <OffthreadVideo
@@ -120,6 +135,12 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
             // with sound=true / Veo 3 with audio could leak otherwise.)
             muted
             playbackRate={playbackRate}
+            // pauseWhenBuffering: halt the whole player while this clip
+            // is loading instead of letting playback drift past it. In
+            // the preview, missing this causes the composition-level
+            // voiceover to pop/dip at scene boundaries as the browser
+            // allocates decoder resources for the newly-mounted video.
+            pauseWhenBuffering
             onError={() => setVideoError(true)}
             style={{
               width: '100%',
@@ -148,6 +169,7 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
           onError={() => setImgError(true)}
         />
       )}
+      </AbsoluteFill>
 
       {/* Subtle dark gradient at bottom for text readability */}
       <div

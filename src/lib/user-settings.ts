@@ -21,8 +21,26 @@ export interface UserSettings {
   /** Per-user default model for the production-doc B-roll / animation
    *  picker. `null` or absent means "fall back to the registry's
    *  DEFAULT_BROLL_MODEL_ID". Validated against the live registry at
-   *  the API layer before being persisted. */
+   *  the API layer before being persisted.
+   *
+   *  Historically a single field; since the per-kind split, this is the
+   *  default used when a row's auto-pick mode is image-to-video (the
+   *  registry default is also i2v) OR as a back-compat fallback for
+   *  accounts saved before the split. New writes go to
+   *  `default_broll_t2v_model_id` / `default_broll_i2v_model_id`. */
   default_broll_model_id?: string | null;
+  /** Per-user default model when the cell needs a text-to-video model
+   *  (rows without a still). Validated kind === 'text-to-video' at the
+   *  API layer. `null` or absent ⇒ fall back to the legacy
+   *  `default_broll_model_id` if it's a t2v model, otherwise to the
+   *  registry's `DEFAULT_BROLL_T2V_MODEL_ID`. */
+  default_broll_t2v_model_id?: string | null;
+  /** Per-user default model when the cell needs an image-to-video model
+   *  (rows that have a generated still). Validated kind ===
+   *  'image-to-video' at the API layer. `null` or absent ⇒ fall back to
+   *  the legacy `default_broll_model_id` if it's an i2v model, otherwise
+   *  to `DEFAULT_BROLL_MODEL_ID`. */
+  default_broll_i2v_model_id?: string | null;
   /** Per-user default visual-style preset for the production-doc form.
    *  Stored as the style slug (e.g. 'doodle_explainer', 'cinematic') or
    *  a workspace-saved style UUID. `null` or absent means "fall back to
@@ -77,6 +95,16 @@ export function parseUserSettings(encryptedBlob: string | null): UserSettings {
     out.default_broll_model_id = obj.default_broll_model_id;
   } else if (obj.default_broll_model_id === null) {
     out.default_broll_model_id = null;
+  }
+  if (typeof obj.default_broll_t2v_model_id === 'string') {
+    out.default_broll_t2v_model_id = obj.default_broll_t2v_model_id;
+  } else if (obj.default_broll_t2v_model_id === null) {
+    out.default_broll_t2v_model_id = null;
+  }
+  if (typeof obj.default_broll_i2v_model_id === 'string') {
+    out.default_broll_i2v_model_id = obj.default_broll_i2v_model_id;
+  } else if (obj.default_broll_i2v_model_id === null) {
+    out.default_broll_i2v_model_id = null;
   }
   if (typeof obj.default_style_preset === 'string') {
     out.default_style_preset = obj.default_style_preset;

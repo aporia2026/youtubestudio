@@ -107,17 +107,28 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
   return (
     <AbsoluteFill style={{ background: config.brand.backgroundColor }}>
 
-      {/* Voiceover audio — runs for the full video */}
+      {/* Voiceover audio — runs for the full video.
+       *
+       *  `pauseWhenBuffering` is critical for the preview player: when a
+       *  per-scene `<OffthreadVideo>` in BRollScene mounts and needs to
+       *  buffer, Chromium's audio scheduler can briefly drop frames on
+       *  *this* audio element — perceived by the user as a "voiceover
+       *  jump" at scene boundaries even though the timeline never seeks.
+       *  Enabling pauseWhenBuffering tells Remotion to halt the whole
+       *  player when buffering is in flight, so audio + frame advance
+       *  resume together. No effect during server-side export. */}
       {config.voiceoverUrl && (
-        <Audio src={config.voiceoverUrl} volume={1} />
+        <Audio src={config.voiceoverUrl} volume={1} pauseWhenBuffering />
       )}
 
-      {/* Background music — ducked under voiceover */}
+      {/* Background music — ducked under voiceover. Same buffering
+       *  guarantee as the voiceover so mid-render seeks don't drift. */}
       {config.musicUrl && (
         <Audio
           src={config.musicUrl}
           volume={config.musicVolume ?? 0.12}
           loop
+          pauseWhenBuffering
         />
       )}
 

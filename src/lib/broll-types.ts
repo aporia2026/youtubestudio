@@ -790,6 +790,16 @@ export type BrollModelId = string;
  *  overrides this; see `/api/user/preferences/broll-default`. */
 export const DEFAULT_BROLL_MODEL_ID = 'kling-v2-5-turbo-i2v-pro-10s';
 
+/** Library-level i2v default — alias of DEFAULT_BROLL_MODEL_ID, exported
+ *  alongside the t2v default so callers can pick the right one based on
+ *  whether the row has a still. */
+export const DEFAULT_BROLL_I2V_MODEL_ID = DEFAULT_BROLL_MODEL_ID;
+
+/** Library-level t2v default — used when the cell needs a text-to-video
+ *  model (no still on the row) and the user hasn't picked one. Same
+ *  Kling family as the i2v default so price + quality stay predictable. */
+export const DEFAULT_BROLL_T2V_MODEL_ID = 'kling-v2-5-turbo-t2v-pro-10s';
+
 /**
  * Map from 10s-tier model id → its same-architecture 5s sibling. Used by
  * `pickModelForScene` to auto-downgrade a long-tier choice when the

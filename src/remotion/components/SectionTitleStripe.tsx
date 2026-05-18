@@ -73,10 +73,15 @@ export const SectionTitleStripe: React.FC<SectionTitleStripeProps> = ({
           fontSize,
           fontWeight: 400,
           color: brand.titleColor || '#111111',
-          // Patrick Hand's metrics put descenders below the baseline; nudge up so
-          // the optical center lands in the middle of the stripe.
-          lineHeight: 1,
-          paddingBottom: Math.round(stripeHeight * 0.05),
+          // Line-height has to be tall enough to contain descenders
+          // (g, j, p, q, y). With lineHeight: 1 the line box ends exactly
+          // at the baseline, and combined with `overflow: hidden` below
+          // (kept so long titles can ellipsis) the descenders get clipped.
+          // 1.3 is the conventional minimum that fits descenders cleanly
+          // for hand-drawn fonts whose descenders run deeper than serif
+          // norms (Patrick Hand is one of those). Centering still works
+          // because the flex parent vertical-aligns the whole line box.
+          lineHeight: 1.3,
           maxWidth: '90%',
           whiteSpace: 'nowrap',
           overflow: 'hidden',

@@ -146,6 +146,12 @@ export interface VideoShot {
    *  doesn't cover. Only meaningful when `sectionTitleLayout === 'letterbox'`.
    *  Falls back to `VideoConfig.pillarboxColorDefault`, then to white. */
   pillarboxColor?: string;
+  /** Static zoom on the rendered image / video, as a percentage where
+   *  100 = unchanged. Multiplies on top of any animated transform so
+   *  Ken Burns / B-roll motion is preserved. The renderer wraps the
+   *  visual in a scaled container; surrounding area shows the scene
+   *  background (or pillarbox color in letterbox mode). Undefined ⇒ 100. */
+  sceneZoom?: number;
   /** Auto-sourced real-image overlay composited on top of the scene at
    *  the planned zone. Falsy = no overlay, scene renders unmodified.
    *
@@ -166,6 +172,15 @@ export interface VideoShot {
       | 'center-top' | 'center-bottom' | 'left-center' | 'right-center';
     size: 'small' | 'medium' | 'large';
     haloColor?: string;
+    /** Manual top-left position from drag-and-drop, as % of frame
+     *  width/height (0-100). When BOTH x and y are numbers, the
+     *  renderer ignores `zone` and pins the overlay to this position.
+     *  Either alone is treated as "unset" for safety. */
+    customX?: number;
+    customY?: number;
+    /** Manual width override (% of frame width). When a number, the
+     *  renderer ignores `size` and uses this directly. */
+    customSizePct?: number;
   };
 }
 

@@ -219,7 +219,20 @@ async function kieCreateVideoTask(args: {
     throw new Error('Kie.ai returned non-JSON response during task creation');
   }
   const taskId = (createData.data as Record<string, unknown> | undefined)?.taskId as string | undefined;
-  if (!taskId) throw new Error('No taskId returned from Kie.ai');
+  if (!taskId) {
+    // Kie sometimes returns 200 with `{ code, message }` describing the
+    // real failure (insufficient credits, model unavailable, banned input).
+    // Surface that to the caller so the UI shows *why* the task wasn't
+    // created instead of a flat "No taskId" message the user can't act on.
+    const code = (createData as Record<string, unknown>).code;
+    const message = (createData as Record<string, unknown>).msg
+      ?? (createData as Record<string, unknown>).message;
+    const detail =
+      typeof code !== 'undefined' || typeof message !== 'undefined'
+        ? `Kie.ai responded code=${String(code ?? '?')} message=${String(message ?? '(none)')}`
+        : `Kie.ai returned an unexpected body: ${JSON.stringify(createData).slice(0, 400)}`;
+    throw new Error(`No taskId returned from Kie.ai — ${detail}`);
+  }
   return { taskId };
 }
 
