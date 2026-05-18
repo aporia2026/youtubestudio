@@ -212,6 +212,10 @@ interface ProductionRow {
    *  When set, overrides `overlay_size` / `overlay_size_resolved` at
    *  render time. Cleared together with `overlay_position` on reset. */
   overlay_size_pct?: number;
+  /** Manual overlay height as % of frame height — set only by Shift+drag
+   *  on a resize handle (free aspect). Absent means height follows the
+   *  image's natural aspect. Phase 1 of the overlay-system overhaul. */
+  overlay_stretched_height_pct?: number;
   /** Cached pixel-saliency map for this row's generated image. Populated
    *  by `/api/generate/production-doc/image` after the image lands in R2. */
   image_saliency?: ImageSaliencyMap;
@@ -5048,6 +5052,7 @@ function ProductionDocPage() {
       | 'external_edit_intent'
       | 'stayed_here'
       | 'overlay_drag'
+      | 'overlay_resize'
       | 'overlay_accept'
       | 'overlay_reset',
     extra: { payload?: Record<string, unknown> } = {},
@@ -7172,36 +7177,64 @@ function ProductionDocPage() {
           overlayUrl={rowOverlays[overlayPositionRow]!.url!}
           position={doc.rows[overlayPositionRow]!.overlay_position}
           sizePct={doc.rows[overlayPositionRow]!.overlay_size_pct}
+          stretchedHeightPct={doc.rows[overlayPositionRow]!.overlay_stretched_height_pct}
           termsLabel={doc.rows[overlayPositionRow]!.overlay_stock_terms || ''}
-          onSave={(pos, size) => {
-            console.info('[ui overlay-position] saved', { rowIndex: overlayPositionRow, pos, size });
-            // Baseline telemetry: every save with a manual placement is
-            // logged as `overlay_drag` (user took a stance vs the AI's
-            // pick). Phase 2 will add `placement_model` discrimination —
-            // for now all rows are 'doc-gen-blind' (the doc-gen LLM's
-            // zone/size choice without vision awareness). See
-            // _plans/2026-05-18-overlay-system-overhaul.md.
+          onSave={(pos, size, stretchedH) => {
+            console.info('[ui overlay-position] saved', {
+              rowIndex: overlayPositionRow,
+              pos,
+              size,
+              stretchedH,
+            });
+            // Baseline telemetry — see plan-2026-05-18-overlay-system-overhaul.
+            // Position changes fire `overlay_drag`; size/stretch changes fire
+            // `overlay_resize`. Both may fire on the same save when the user
+            // dragged and resized in the same session. placement_model is
+            // hardcoded to 'doc-gen-blind' until Phase 2 introduces vision-
+            // aware placement that writes a different model id onto the row.
             const prev = doc?.rows[overlayPositionRow]?.overlay_position;
             const prevSize = doc?.rows[overlayPositionRow]?.overlay_size_pct;
+            const prevStretchedH = doc?.rows[overlayPositionRow]?.overlay_stretched_height_pct;
+            const positionChanged =
+              !prev || prev.x_pct !== pos.x_pct || prev.y_pct !== pos.y_pct;
+            const sizeChanged = prevSize !== size;
+            const stretchChanged = (prevStretchedH ?? null) !== stretchedH;
             const dx = prev ? pos.x_pct - prev.x_pct : 0;
             const dy = prev ? pos.y_pct - prev.y_pct : 0;
             const dragDistancePct = Math.sqrt(dx * dx + dy * dy);
-            recordEditorTelemetry('overlay_drag', {
-              payload: {
-                row_index: overlayPositionRow,
-                placement_model: 'doc-gen-blind',
-                prev_x_pct: prev?.x_pct ?? null,
-                prev_y_pct: prev?.y_pct ?? null,
-                prev_size_pct: prevSize ?? null,
-                new_x_pct: Number(pos.x_pct.toFixed(2)),
-                new_y_pct: Number(pos.y_pct.toFixed(2)),
-                new_size_pct: Number(size.toFixed(2)),
-                drag_distance_pct: Number(dragDistancePct.toFixed(2)),
-              },
-            });
+            if (positionChanged) {
+              recordEditorTelemetry('overlay_drag', {
+                payload: {
+                  row_index: overlayPositionRow,
+                  placement_model: 'doc-gen-blind',
+                  prev_x_pct: prev?.x_pct ?? null,
+                  prev_y_pct: prev?.y_pct ?? null,
+                  prev_size_pct: prevSize ?? null,
+                  new_x_pct: Number(pos.x_pct.toFixed(2)),
+                  new_y_pct: Number(pos.y_pct.toFixed(2)),
+                  new_size_pct: Number(size.toFixed(2)),
+                  drag_distance_pct: Number(dragDistancePct.toFixed(2)),
+                },
+              });
+            }
+            if (sizeChanged || stretchChanged) {
+              recordEditorTelemetry('overlay_resize', {
+                payload: {
+                  row_index: overlayPositionRow,
+                  placement_model: 'doc-gen-blind',
+                  prev_size_pct: prevSize ?? null,
+                  new_size_pct: Number(size.toFixed(2)),
+                  prev_stretched_height_pct: prevStretchedH ?? null,
+                  new_stretched_height_pct:
+                    stretchedH !== null ? Number(stretchedH.toFixed(2)) : null,
+                  free_aspect_used: stretchedH !== null,
+                },
+              });
+            }
             updateRow(overlayPositionRow, {
               overlay_position: pos,
               overlay_size_pct: size,
+              overlay_stretched_height_pct: stretchedH ?? undefined,
             });
           }}
           onReset={() => {
@@ -7215,6 +7248,7 @@ function ProductionDocPage() {
             updateRow(overlayPositionRow, {
               overlay_position: undefined,
               overlay_size_pct: undefined,
+              overlay_stretched_height_pct: undefined,
             });
           }}
           onClose={() => setOverlayPositionRow(null)}

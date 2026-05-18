@@ -243,6 +243,11 @@ export interface ProductionRow {
   /** Manual overlay width as % of frame width. Overrides `overlay_size`
    *  / `overlay_size_resolved` when set. */
   overlay_size_pct?: number;
+  /** Manual overlay height as % of frame height — set only by Shift+drag
+   *  on a resize handle (free aspect). Absent means height follows the
+   *  image's natural aspect. Phase 1 of
+   *  `_plans/2026-05-18-overlay-system-overhaul.md`. */
+  overlay_stretched_height_pct?: number;
   /** Cached saliency map of `imageUrl` for this row — populated by the
    *  image-generation route. Sparse: missing for rows whose image hasn't
    *  been generated, or which pre-date the feature. */
@@ -599,6 +604,10 @@ export function productionDocToVideoConfig(
                 : undefined,
             customSizePct:
               typeof row.overlay_size_pct === 'number' ? row.overlay_size_pct : undefined,
+            stretchedHeightPct:
+              typeof row.overlay_stretched_height_pct === 'number'
+                ? row.overlay_stretched_height_pct
+                : undefined,
           }
         : undefined;
 

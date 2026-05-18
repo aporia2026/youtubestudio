@@ -200,23 +200,37 @@ export const RealImageOverlay: React.FC<Props> = ({ shot, frameWidth: frameWidth
       ? Math.max(0.02, Math.min(0.6, overlay.customSizePct / 100))
       : SIZE_WIDTH_RATIO[overlay.size];
 
-  // Height comes from the image's natural aspect ratio (read at load time).
-  // Before onLoad fires the aspect is null and we fall back to 1:1 so the
-  // first render doesn't divide by null; delayRender holds the frame until
-  // the real aspect is in state, so this fallback never reaches a captured
-  // frame in practice.
+  // Height resolution order:
+  //   1. `stretchedHeightPct` (% of frame height) — set only when the
+  //      user freely stretched the overlay to a non-natural aspect in
+  //      the position editor. The renderer honours the squish verbatim
+  //      because that was a deliberate user choice.
+  //   2. Image's natural aspect ratio (read at load time via onLoad).
+  //   3. 1:1 fallback before onLoad fires. delayRender holds the frame
+  //      until the real aspect is in state, so the fallback never
+  //      reaches a captured frame in practice.
   //
   // Cap the height at 70% of the frame so a 1:3 portrait logo can't push
-  // past the safe area; when the cap bites we shrink the width to match so
-  // the container's aspect still tracks the image (the mask/halo geometry
-  // depends on container aspect ≈ image aspect).
+  // past the safe area; when the cap bites we shrink the width to match
+  // so the container's aspect still tracks the image (the mask/halo
+  // geometry depends on container aspect ≈ image aspect). The cap also
+  // applies to stretchedHeightPct so a runaway drag can't fill the frame.
   const effectiveAspect = aspect ?? 1;
   let overlayWidthPx = frameWidth * sizeRatio;
-  let overlayHeightPx = overlayWidthPx / effectiveAspect;
+  const stretchedH = overlay.stretchedHeightPct;
+  let overlayHeightPx =
+    typeof stretchedH === 'number' && Number.isFinite(stretchedH)
+      ? (Math.max(2, Math.min(70, stretchedH)) / 100) * frameHeight
+      : overlayWidthPx / effectiveAspect;
   const maxHeightPx = frameHeight * 0.7;
   if (overlayHeightPx > maxHeightPx) {
     overlayHeightPx = maxHeightPx;
-    overlayWidthPx = maxHeightPx * effectiveAspect;
+    // When stretched, don't shrink width on cap — the user explicitly
+    // chose this aspect and width. Only shrink width for the natural-
+    // aspect path so the container's aspect still tracks the image.
+    if (typeof stretchedH !== 'number') {
+      overlayWidthPx = maxHeightPx * effectiveAspect;
+    }
   }
 
   // Position resolution: a manually-set `(customX, customY)` pair wins.

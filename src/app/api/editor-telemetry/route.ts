@@ -13,12 +13,20 @@ import { logger } from '@/lib/logger';
  *   - `render_clicked`         — shot-graph editor probe.
  *   - `external_edit_intent`   — shot-graph editor probe.
  *   - `stayed_here`            — shot-graph editor probe.
- *   - `overlay_drag`           — user moved or resized the overlay away
- *                                from the AI-planned placement before save.
+ *   - `overlay_drag`           — user moved the overlay away from the
+ *                                AI-planned placement before save.
  *                                Payload: { row_index, placement_model,
  *                                  prev_x_pct, prev_y_pct, prev_size_pct,
  *                                  new_x_pct, new_y_pct, new_size_pct,
  *                                  drag_distance_pct }.
+ *   - `overlay_resize`         — user resized the overlay (corner/edge
+ *                                handle, or slider). Fires alongside
+ *                                overlay_drag if both changed in the same
+ *                                save. Payload: { row_index,
+ *                                  placement_model, prev_size_pct,
+ *                                  new_size_pct, prev_stretched_height_pct,
+ *                                  new_stretched_height_pct,
+ *                                  free_aspect_used: boolean }.
  *   - `overlay_accept`         — user saved the editor without changing
  *                                position or size. Implicit "AI was right."
  *                                Payload: { row_index, placement_model,
@@ -50,6 +58,7 @@ const ALLOWED_EVENTS = new Set([
   'external_edit_intent',
   'stayed_here',
   'overlay_drag',
+  'overlay_resize',
   'overlay_accept',
   'overlay_reset',
 ]);
