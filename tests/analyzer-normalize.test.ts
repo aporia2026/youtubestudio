@@ -47,6 +47,7 @@ function buildVideo(opts: {
   duration: number;
   scenes: AnalyzedScene[];
   packs: StylePack[];
+  chapters?: Array<{ start: number; end: number; title: string }>;
 }): AnalyzedVideo {
   return {
     meta: {
@@ -55,10 +56,10 @@ function buildVideo(opts: {
       channel: 'c',
       duration_seconds: opts.duration,
       analyzer_version: 'v1',
-      prompt_version: 'v1.2.0',
+      prompt_version: 'v1.5.0',
       analyzed_at: '2026-05-19T00:00:00Z',
     },
-    transcript: { text: '', chapters: [] },
+    transcript: { text: '', chapters: opts.chapters ?? [] },
     scenes: opts.scenes,
     style_packs: opts.packs,
     strategic_report: {
@@ -204,5 +205,85 @@ describe('normalizeAnalyzedVideo — scene-boundary warnings', () => {
     const input = buildVideo({ duration: 100, scenes: [], packs: [pack('a', 0)] });
     const out = normalizeAnalyzedVideo(input);
     expect(out.warnings.some((w) => w.includes('scenes: empty array'))).toBe(true);
+  });
+});
+
+describe('normalizeAnalyzedVideo — chapter-boundary warnings (v1.5.0)', () => {
+  it('emits zero chapter warnings when chapters are absent', () => {
+    const input = buildVideo({
+      duration: 100,
+      scenes: [scene(0, 100, 'a')],
+      packs: [pack('a', 0)],
+      // chapters defaults to []
+    });
+    const chapterWarnings = normalizeAnalyzedVideo(input).warnings.filter((w) => w.startsWith('chapters'));
+    expect(chapterWarnings).toEqual([]);
+  });
+
+  it('emits zero chapter warnings on a clean payload', () => {
+    const input = buildVideo({
+      duration: 100,
+      scenes: [scene(0, 100, 'a')],
+      packs: [pack('a', 0)],
+      chapters: [
+        { start: 0, end: 50, title: 'Intro' },
+        { start: 50, end: 100, title: 'Outro' },
+      ],
+    });
+    const chapterWarnings = normalizeAnalyzedVideo(input).warnings.filter((w) => w.startsWith('chapters'));
+    expect(chapterWarnings).toEqual([]);
+  });
+
+  it('warns when chapters[last].end overflows duration (the v1.4.0 Casey defect)', () => {
+    const input = buildVideo({
+      duration: 277,
+      scenes: [scene(0, 277, 'a')],
+      packs: [pack('a', 0)],
+      chapters: [
+        { start: 0, end: 200, title: 'A' },
+        { start: 200, end: 437, title: 'B' },
+      ],
+    });
+    const out = normalizeAnalyzedVideo(input);
+    expect(out.warnings.some((w) => w.includes('chapters[last].end overflow') && w.includes('437') && w.includes('277'))).toBe(true);
+  });
+
+  it('warns when chapters[0].start is not 0', () => {
+    const input = buildVideo({
+      duration: 100,
+      scenes: [scene(0, 100, 'a')],
+      packs: [pack('a', 0)],
+      chapters: [{ start: 10, end: 100, title: 'Late' }],
+    });
+    const out = normalizeAnalyzedVideo(input);
+    expect(out.warnings.some((w) => w.includes('chapters[0].start'))).toBe(true);
+  });
+
+  it('warns on a gap between consecutive chapters', () => {
+    const input = buildVideo({
+      duration: 100,
+      scenes: [scene(0, 100, 'a')],
+      packs: [pack('a', 0)],
+      chapters: [
+        { start: 0, end: 40, title: 'A' },
+        { start: 50, end: 100, title: 'B' },
+      ],
+    });
+    const out = normalizeAnalyzedVideo(input);
+    expect(out.warnings.some((w) => w.includes('chapters[0..1]') && w.includes('gap'))).toBe(true);
+  });
+
+  it('warns on overlapping consecutive chapters', () => {
+    const input = buildVideo({
+      duration: 100,
+      scenes: [scene(0, 100, 'a')],
+      packs: [pack('a', 0)],
+      chapters: [
+        { start: 0, end: 60, title: 'A' },
+        { start: 50, end: 100, title: 'B' },
+      ],
+    });
+    const out = normalizeAnalyzedVideo(input);
+    expect(out.warnings.some((w) => w.includes('chapters[0..1]') && w.includes('overlap'))).toBe(true);
   });
 });
