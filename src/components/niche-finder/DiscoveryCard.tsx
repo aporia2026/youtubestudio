@@ -29,6 +29,12 @@ interface DiscoveryCardProps {
    *  level — clicking drills into the sub-niche's micro-niches.
    *  Omitted at the micro-niche (leaf) level. */
   onDrill?: () => void;
+  /** When true, the card is rendered dimmed with a "doesn't match
+   *  filter" badge. Used in Browse Categories so scored sub-niches
+   *  that fail the active filter stay visible instead of vanishing
+   *  out of the grid — the operator can still see what exists and
+   *  decide whether to loosen the filter. */
+  dimmed?: boolean;
 }
 
 export function DiscoveryCard({
@@ -39,6 +45,7 @@ export function DiscoveryCard({
   sourceTab,
   highlighted = false,
   onDrill,
+  dimmed = false,
 }: DiscoveryCardProps): React.ReactElement {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -90,7 +97,8 @@ export function DiscoveryCard({
         display: 'flex',
         flexDirection: 'column',
         gap: 10,
-        transition: 'background 0.2s, border-color 0.2s',
+        transition: 'background 0.2s, border-color 0.2s, opacity 0.2s',
+        opacity: dimmed ? 0.45 : 1,
       }}
     >
       <div>
@@ -112,6 +120,24 @@ export function DiscoveryCard({
               }}
             >
               Sweet spot
+            </span>
+          )}
+          {dimmed && (
+            <span
+              title="This niche doesn't match the active filter. Loosen the filter or pick a different preset to bring it back."
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: 0.3,
+                color: '#94a3b8',
+                background: 'rgba(148,163,184,0.10)',
+                border: '1px solid rgba(148,163,184,0.30)',
+                padding: '2px 6px',
+                borderRadius: 4,
+                textTransform: 'uppercase',
+              }}
+            >
+              Filtered out
             </span>
           )}
           <FavoriteButton

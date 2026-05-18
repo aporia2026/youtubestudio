@@ -557,6 +557,15 @@ function CategoryTab({ locale }: { locale: NicheFinderLocale }): React.ReactElem
     return filterAndSortDiscoveries(scoredAsDiscoveryItems, filters);
   }, [scoredAsDiscoveryItems, filters]);
 
+  // Set of slugs that pass the active filter. The grid renders every
+  // scored sub-niche; ones outside this set are shown dimmed with a
+  // "Filtered out" badge instead of being dropped from the layout —
+  // so the operator can see what exists and decide whether to loosen
+  // the filter, rather than watching cards vanish during scoring.
+  const matchedSlugs = useMemo(() => {
+    return new Set((filtered ?? []).map((f) => f.slug));
+  }, [filtered]);
+
   const unscoredCount = children?.filter((c) => c.level !== 'category' && c.scores === null).length ?? 0;
   const scoredCount = scoredAsDiscoveryItems?.length ?? 0;
 
@@ -709,7 +718,8 @@ function CategoryTab({ locale }: { locale: NicheFinderLocale }): React.ReactElem
 
           <TaxonomyGrid
             allChildren={children}
-            scored={filtered ?? []}
+            scoredAll={scoredAsDiscoveryItems ?? []}
+            matchedSlugs={matchedSlugs}
             highlightedSlug={highlightedSlug}
             currentParentLevel={currentParent.level}
             onDrill={drillIn}
@@ -810,7 +820,8 @@ function CategoryGrid({
 
 function TaxonomyGrid({
   allChildren,
-  scored,
+  scoredAll,
+  matchedSlugs,
   highlightedSlug,
   currentParentLevel,
   onDrill,
@@ -821,7 +832,15 @@ function TaxonomyGrid({
    *  Used to look up the original taxonomy node by slug when a scored
    *  card emits onDrill, since DiscoveryCard doesn't carry the node id. */
   allChildren: TaxonomyChildPayload[];
-  scored: DiscoveryResultItem[];
+  /** Every scored sub-niche, INCLUDING those that don't match the
+   *  active filter. The grid renders all of them but dims the ones
+   *  not in `matchedSlugs` — keeps cards on screen so the operator
+   *  can see what exists and decide whether to loosen filters. */
+  scoredAll: DiscoveryResultItem[];
+  /** Slugs of scored sub-niches that pass the active filter. Items
+   *  in `scoredAll` not in this set get rendered dimmed with a
+   *  "Filtered out" badge. */
+  matchedSlugs: ReadonlySet<string>;
   highlightedSlug: string | null;
   currentParentLevel: 'category' | 'subniche' | 'microniche';
   onDrill: (node: TaxonomyChildPayload) => void;
@@ -836,7 +855,7 @@ function TaxonomyGrid({
     for (const c of allChildren) m.set(c.slug, c);
     return m;
   }, [allChildren]);
-  const allEmpty = scored.length === 0 && unscored.length === 0;
+  const allEmpty = scoredAll.length === 0 && unscored.length === 0;
   if (allEmpty) {
     return (
       <div
@@ -850,7 +869,7 @@ function TaxonomyGrid({
           fontSize: 13,
         }}
       >
-        No niches match these filters. Loosen one or hit{' '}
+        No niches to show yet. Try{' '}
         <button
           onClick={onResetFilters}
           style={{
@@ -865,7 +884,7 @@ function TaxonomyGrid({
         >
           Reset
         </button>
-        .
+        {' '}or come back once scoring finishes.
       </div>
     );
   }
@@ -889,7 +908,7 @@ function TaxonomyGrid({
           errored={unscoredHasError}
         />
       ))}
-      {scored.map((r) => (
+      {scoredAll.map((r) => (
         <DiscoveryCard
           key={r.slug}
           slug={r.slug}
@@ -898,6 +917,7 @@ function TaxonomyGrid({
           scores={r.scores}
           sourceTab="category"
           highlighted={r.slug === highlightedSlug}
+          dimmed={!matchedSlugs.has(r.slug)}
           onDrill={
             childLevelIsLeaf
               ? undefined
