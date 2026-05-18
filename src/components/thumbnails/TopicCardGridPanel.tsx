@@ -179,10 +179,14 @@ export function TopicCardGridPanel({
     [prefilledLabels],
   );
 
+  // Reference image is optional — the server falls back to the bundled
+  // curated default (public/thumbnail-formats/topic-card-grid-default.png)
+  // when no upload is provided. If neither is available the server returns
+  // a clear error; we don't pre-block the click for that case so the user
+  // sees the actionable server message.
   const canGenerateCards =
     !!title.trim() &&
     !!niche.trim() &&
-    !!referenceImageUrl.trim() &&
     gridRows >= 1 &&
     gridCols >= 1 &&
     (formatMode !== 'pre-fill' || prefilledLabelsList.length === totalCards);
@@ -194,12 +198,10 @@ export function TopicCardGridPanel({
 
   async function runStep1() {
     if (!canGenerateCards) {
-      if (!referenceImageUrl.trim()) {
-        toast.error('Upload a reference image first — it locks the typography for this format.');
-      } else if (formatMode === 'pre-fill' && prefilledLabelsList.length !== totalCards) {
+      if (formatMode === 'pre-fill' && prefilledLabelsList.length !== totalCards) {
         toast.error(`Pre-fill mode needs exactly ${totalCards} labels (one per line). You have ${prefilledLabelsList.length}.`);
       } else {
-        toast.error('Title, niche, and a reference image are required.');
+        toast.error('Title and niche are required.');
       }
       return;
     }
@@ -512,15 +514,12 @@ export function TopicCardGridPanel({
             </div>
           )}
 
-          {/* Reference image requirement notice */}
+          {/* Reference image notice — optional, server falls back to a
+              curated default when nothing is uploaded. */}
           {!referenceImageUrl.trim() && (
-            <div className="text-xs px-3 py-2 rounded-lg" style={{
-              background: 'rgba(234,179,8,0.08)',
-              border: '1px solid rgba(234,179,8,0.3)',
-              color: 'var(--accent-yellow)',
-            }}>
-              A reference image is required for this format — it locks the typography. Upload one above (in the Image Generation section) before generating.
-            </div>
+            <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              No reference uploaded — we&apos;ll use a bundled curated default. Upload one above (Image Generation section) to lock the typography to your own font.
+            </p>
           )}
           {referenceImageUrl.trim() && (
             <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>

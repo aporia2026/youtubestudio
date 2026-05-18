@@ -29,6 +29,14 @@
  *                          spending on the references that already
  *                          passed.
  *
+ *   EVAL_STABILITY_RUNS    Optional integer in [1, 5]. When > 1, each
+ *                          reference is analyzed that many times in
+ *                          sequence and pairwise compareAnalyses diffs
+ *                          are written to <slug>-stability.json. Use
+ *                          to spot pack-count / scene-count drift
+ *                          across re-runs of the same input. Costs
+ *                          scale linearly. Defaults to 1.
+ *
  * Output: one subdirectory per run under `_plans/eval-runs/` named
  * after the current ISO date, containing per-reference `*-raw.txt`,
  * `*-parsed.json` (when the JSON parsed and matched the schema), or
@@ -49,6 +57,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { analyzeYouTubeVideo } from '../src/lib/ai';
+import { compareAnalyses, summarizeDiff, type AnalysisDiff } from '../src/lib/analyzer/compare';
 import { buildAnalyzerPrompt } from '../src/lib/analyzer/prompt';
 import { validateAnalyzedVideo, type AnalyzedVideo } from '../src/lib/analyzer/types';
 import { canonicalYoutubeUrl, extractYoutubeVideoId } from '../src/lib/analyzer/url';
@@ -88,6 +97,11 @@ const REFERENCES: readonly Reference[] = [
 
 const MODEL_ID = process.env.EVAL_MODEL_ID?.trim() || 'kie-gemini-2.5-pro';
 const ONLY_SLUG = process.env.EVAL_ONLY?.trim() || null;
+// Stability mode — when > 1, each reference is analyzed STABILITY_RUNS
+// times in sequence and the pairwise compareAnalyses diffs are written
+// to <slug>-stability.json. Used to spot pack-count / scene-count
+// drift across re-runs of the same input. Costs scale linearly.
+const STABILITY_RUNS = Math.max(1, Math.min(5, Number(process.env.EVAL_STABILITY_RUNS || '1')));
 
 interface PerRefSummary {
   slug: string;
@@ -98,6 +112,7 @@ interface PerRefSummary {
   rawLength: number;
   stylePackCount: number | null;
   failureReason: string | null;
+  stabilityRun: number; // 1-indexed; 1 for the only run when STABILITY_RUNS=1
 }
 
 async function main(): Promise<void> {
@@ -119,139 +134,194 @@ async function main(): Promise<void> {
     modelId: MODEL_ID,
     outDir,
     targets: targets.map((t) => t.slug),
+    stabilityRuns: STABILITY_RUNS,
   });
 
   const summary: PerRefSummary[] = [];
 
   for (const ref of targets) {
-    const videoId = extractYoutubeVideoId(ref.url);
-    if (!videoId) {
-      console.error('[eval-deep-analyzer bad-url]', { slug: ref.slug, url: ref.url });
-      summary.push({
-        slug: ref.slug,
-        archetype: ref.archetype,
-        url: ref.url,
-        status: 'gemini-error',
-        elapsedMs: 0,
-        rawLength: 0,
-        stylePackCount: null,
-        failureReason: 'extractYoutubeVideoId returned null',
-      });
-      continue;
-    }
-    const canonical = canonicalYoutubeUrl(videoId);
-
-    const { system, user } = buildAnalyzerPrompt({
-      videoTitle: ref.title,
-      channelTitle: ref.channel,
-      videoUrl: canonical,
-    });
-
-    console.info('[eval-deep-analyzer call]', { slug: ref.slug, model: MODEL_ID, url: canonical });
-    const startedAt = Date.now();
-
-    let raw: string;
-    try {
-      raw = await analyzeYouTubeVideo({
-        modelId: MODEL_ID,
-        youtubeUrl: canonical,
-        prompt: user,
-        systemPrompt: system,
-        maxTokens: 32_000,
-        temperature: 0.3,
-      });
-    } catch (err) {
-      const elapsedMs = Date.now() - startedAt;
-      const detail = err instanceof Error ? err.message : String(err);
-      const stack = err instanceof Error ? err.stack ?? detail : detail;
-      console.error('[eval-deep-analyzer gemini-error]', { slug: ref.slug, elapsedMs, detail });
-      writeFileSync(join(outDir, `${ref.slug}-error.txt`), stack);
-      summary.push({
-        slug: ref.slug,
-        archetype: ref.archetype,
-        url: canonical,
-        status: 'gemini-error',
-        elapsedMs,
-        rawLength: 0,
-        stylePackCount: null,
-        failureReason: detail,
-      });
-      continue;
-    }
-    const elapsedMs = Date.now() - startedAt;
-    writeFileSync(join(outDir, `${ref.slug}-raw.txt`), raw);
-    console.info('[eval-deep-analyzer raw-written]', {
-      slug: ref.slug,
-      elapsedMs,
-      rawLength: raw.length,
-    });
-
-    let parsed: unknown;
-    try {
-      parsed = parseLlmJson(raw);
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      console.error('[eval-deep-analyzer parse-error]', { slug: ref.slug, detail });
-      writeFileSync(join(outDir, `${ref.slug}-parse-error.txt`), detail);
-      summary.push({
-        slug: ref.slug,
-        archetype: ref.archetype,
-        url: canonical,
-        status: 'parse-error',
-        elapsedMs,
-        rawLength: raw.length,
-        stylePackCount: null,
-        failureReason: detail,
-      });
-      continue;
+    const runs: AnalyzedVideo[] = [];
+    for (let runIdx = 1; runIdx <= STABILITY_RUNS; runIdx++) {
+      const video = await analyzeOneRun({ ref, runIdx, outDir, summary });
+      if (video) runs.push(video);
     }
 
-    const validation = validateAnalyzedVideo(parsed);
-    if (!validation.ok) {
-      console.error('[eval-deep-analyzer schema-mismatch]', { slug: ref.slug, reason: validation.reason });
-      writeFileSync(join(outDir, `${ref.slug}-schema-mismatch.json`), JSON.stringify(parsed, null, 2));
-      writeFileSync(join(outDir, `${ref.slug}-schema-reason.txt`), validation.reason);
-      summary.push({
-        slug: ref.slug,
-        archetype: ref.archetype,
-        url: canonical,
-        status: 'schema-mismatch',
-        elapsedMs,
-        rawLength: raw.length,
-        stylePackCount: null,
-        failureReason: `validateAnalyzedVideo: ${validation.reason}`,
-      });
-      continue;
+    // Pairwise stability diffs — only emitted when running 2+ analyses
+    // of the same input. Adjacent-pair diff (run1 vs run2, run2 vs
+    // run3, ...) gives a quick read on whether successive runs are
+    // structurally agreeing.
+    if (STABILITY_RUNS > 1 && runs.length >= 2) {
+      const stabilityReport: Array<{ pair: string; headline: string; diff: AnalysisDiff }> = [];
+      for (let i = 0; i < runs.length - 1; i++) {
+        const diff = compareAnalyses(runs[i], runs[i + 1]);
+        const headline = summarizeDiff(diff);
+        stabilityReport.push({ pair: `run${i + 1} vs run${i + 2}`, headline, diff });
+        console.info('[eval-deep-analyzer stability]', { slug: ref.slug, pair: `run${i + 1} vs run${i + 2}`, headline });
+      }
+      writeFileSync(
+        join(outDir, `${ref.slug}-stability.json`),
+        JSON.stringify(stabilityReport, null, 2),
+      );
     }
-
-    const ok: AnalyzedVideo = validation.value;
-    writeFileSync(join(outDir, `${ref.slug}-parsed.json`), JSON.stringify(ok, null, 2));
-    console.info('[eval-deep-analyzer parsed]', {
-      slug: ref.slug,
-      stylePacks: ok.style_packs.length,
-      sceneCount: ok.scenes.length,
-    });
-    summary.push({
-      slug: ref.slug,
-      archetype: ref.archetype,
-      url: canonical,
-      status: 'ok',
-      elapsedMs,
-      rawLength: raw.length,
-      stylePackCount: ok.style_packs.length,
-      failureReason: null,
-    });
   }
 
   writeFileSync(
     join(outDir, 'summary.json'),
     JSON.stringify(
-      { modelId: MODEL_ID, completedAt: new Date().toISOString(), references: summary },
+      {
+        modelId: MODEL_ID,
+        stabilityRuns: STABILITY_RUNS,
+        completedAt: new Date().toISOString(),
+        references: summary,
+      },
       null,
       2,
     ),
   );
   console.info('[eval-deep-analyzer done]', { outDir, summary });
+}
+
+/**
+ * Run the analyzer once for a given reference, write all artefacts to
+ * outDir, and push a PerRefSummary entry. Returns the parsed
+ * AnalyzedVideo on success, null on any failure. Filenames carry a
+ * `-runN` suffix when STABILITY_RUNS > 1; otherwise they keep the
+ * legacy unsuffixed form so single-run output stays compatible with
+ * prior tooling.
+ */
+async function analyzeOneRun({
+  ref,
+  runIdx,
+  outDir,
+  summary,
+}: {
+  ref: Reference;
+  runIdx: number;
+  outDir: string;
+  summary: PerRefSummary[];
+}): Promise<AnalyzedVideo | null> {
+  const fileSuffix = STABILITY_RUNS > 1 ? `-run${runIdx}` : '';
+
+  const videoId = extractYoutubeVideoId(ref.url);
+  if (!videoId) {
+    console.error('[eval-deep-analyzer bad-url]', { slug: ref.slug, url: ref.url });
+    summary.push({
+      slug: ref.slug,
+      archetype: ref.archetype,
+      url: ref.url,
+      status: 'gemini-error',
+      elapsedMs: 0,
+      rawLength: 0,
+      stylePackCount: null,
+      failureReason: 'extractYoutubeVideoId returned null',
+      stabilityRun: runIdx,
+    });
+    return null;
+  }
+  const canonical = canonicalYoutubeUrl(videoId);
+
+  const { system, user } = buildAnalyzerPrompt({
+    videoTitle: ref.title,
+    channelTitle: ref.channel,
+    videoUrl: canonical,
+  });
+
+  console.info('[eval-deep-analyzer call]', { slug: ref.slug, runIdx, model: MODEL_ID, url: canonical });
+  const startedAt = Date.now();
+
+  let raw: string;
+  try {
+    raw = await analyzeYouTubeVideo({
+      modelId: MODEL_ID,
+      youtubeUrl: canonical,
+      prompt: user,
+      systemPrompt: system,
+      maxTokens: 32_000,
+      temperature: 0.3,
+    });
+  } catch (err) {
+    const elapsedMs = Date.now() - startedAt;
+    const detail = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack ?? detail : detail;
+    console.error('[eval-deep-analyzer gemini-error]', { slug: ref.slug, runIdx, elapsedMs, detail });
+    writeFileSync(join(outDir, `${ref.slug}${fileSuffix}-error.txt`), stack);
+    summary.push({
+      slug: ref.slug,
+      archetype: ref.archetype,
+      url: canonical,
+      status: 'gemini-error',
+      elapsedMs,
+      rawLength: 0,
+      stylePackCount: null,
+      failureReason: detail,
+      stabilityRun: runIdx,
+    });
+    return null;
+  }
+  const elapsedMs = Date.now() - startedAt;
+  writeFileSync(join(outDir, `${ref.slug}${fileSuffix}-raw.txt`), raw);
+  console.info('[eval-deep-analyzer raw-written]', { slug: ref.slug, runIdx, elapsedMs, rawLength: raw.length });
+
+  let parsed: unknown;
+  try {
+    parsed = parseLlmJson(raw);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error('[eval-deep-analyzer parse-error]', { slug: ref.slug, runIdx, detail });
+    writeFileSync(join(outDir, `${ref.slug}${fileSuffix}-parse-error.txt`), detail);
+    summary.push({
+      slug: ref.slug,
+      archetype: ref.archetype,
+      url: canonical,
+      status: 'parse-error',
+      elapsedMs,
+      rawLength: raw.length,
+      stylePackCount: null,
+      failureReason: detail,
+      stabilityRun: runIdx,
+    });
+    return null;
+  }
+
+  const validation = validateAnalyzedVideo(parsed);
+  if (!validation.ok) {
+    console.error('[eval-deep-analyzer schema-mismatch]', { slug: ref.slug, runIdx, reason: validation.reason });
+    writeFileSync(join(outDir, `${ref.slug}${fileSuffix}-schema-mismatch.json`), JSON.stringify(parsed, null, 2));
+    writeFileSync(join(outDir, `${ref.slug}${fileSuffix}-schema-reason.txt`), validation.reason);
+    summary.push({
+      slug: ref.slug,
+      archetype: ref.archetype,
+      url: canonical,
+      status: 'schema-mismatch',
+      elapsedMs,
+      rawLength: raw.length,
+      stylePackCount: null,
+      failureReason: `validateAnalyzedVideo: ${validation.reason}`,
+      stabilityRun: runIdx,
+    });
+    return null;
+  }
+
+  const ok: AnalyzedVideo = validation.value;
+  writeFileSync(join(outDir, `${ref.slug}${fileSuffix}-parsed.json`), JSON.stringify(ok, null, 2));
+  console.info('[eval-deep-analyzer parsed]', {
+    slug: ref.slug,
+    runIdx,
+    stylePacks: ok.style_packs.length,
+    sceneCount: ok.scenes.length,
+  });
+  summary.push({
+    slug: ref.slug,
+    archetype: ref.archetype,
+    url: canonical,
+    status: 'ok',
+    elapsedMs,
+    rawLength: raw.length,
+    stylePackCount: ok.style_packs.length,
+    failureReason: null,
+    stabilityRun: runIdx,
+  });
+  return ok;
 }
 
 function resolveScriptDir(): string {

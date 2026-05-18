@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { generateText, getModelById } from '@/lib/ai';
 import {
   topicCardGridLlmPrompt,
@@ -12,6 +14,30 @@ import { parseLlmJson } from '@/lib/parse-llm-json';
 import { makeSpendContext } from '@/lib/ai-spend';
 import { logger } from '@/lib/logger';
 import { assertSafePublicUrl } from '@/lib/url-safety';
+
+/**
+ * Path to the bundled default reference PNG (committed in this repo, served
+ * from /public). When the user doesn't upload their own reference we read
+ * this file from disk and base64-encode it for the LLM — no HTTP round-
+ * trip, works identically on local dev and on Vercel.
+ *
+ * If the file doesn't exist yet (the PNG hasn't been generated + committed)
+ * the loader returns null and the API falls back to requiring an upload.
+ * This lets the optionality code ship before the PNG itself.
+ */
+const BUNDLED_REFERENCE_PATH = path.join(
+  process.cwd(),
+  'public/thumbnail-formats/topic-card-grid-default.png',
+);
+
+async function loadBundledReference(): Promise<{ base64: string; mimeType: string } | null> {
+  try {
+    const buf = await fs.readFile(BUNDLED_REFERENCE_PATH);
+    return { base64: buf.toString('base64'), mimeType: 'image/png' };
+  } catch {
+    return null;
+  }
+}
 
 export const maxDuration = 120;
 
@@ -142,16 +168,83 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Reference image is required in Phase 1 (curated default PNG lands in
-    // Phase 2). Fetch it here and pass the bytes to generateText.
+    // Reference image: user-uploaded OR the bundled curated default. The
+    // curated default lives at public/thumbnail-formats/topic-card-grid-
+    // default.png — we read it from disk here so it works identically on
+    // local dev and Vercel. If neither is present, we still require the
+    // user to upload.
     const referenceImageUrl = (body.referenceImageUrl || '').trim();
-    if (!referenceImageUrl) {
-      return NextResponse.json(
-        {
-          error: 'A reference image is required for this format. Upload one or paste a public HTTPS URL.',
-        },
-        { status: 400 },
-      );
+    let base64: string;
+    let mimeType: string;
+    let rawHostForError = '';
+
+    if (referenceImageUrl) {
+      // User-provided reference: fetch + base64 it, same flow as before.
+      const fetchStart = Date.now();
+      let imgRes: Response;
+      try {
+        try {
+          rawHostForError = new URL(referenceImageUrl).hostname;
+        } catch {
+          /* fall through */
+        }
+        const safeUrl = assertSafePublicUrl(referenceImageUrl, { allowedProtocols: ['https:'] });
+        imgRes = await fetch(safeUrl);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        logger.warn('[thumb-format-grid cards] reference rejected', { reason, host: rawHostForError });
+        return NextResponse.json(
+          { error: `Reference image URL was rejected (${rawHostForError || 'unknown host'}): ${reason}` },
+          { status: 400 },
+        );
+      }
+      if (!imgRes.ok) {
+        return NextResponse.json(
+          { error: `Failed to fetch reference image (HTTP ${imgRes.status}).` },
+          { status: 502 },
+        );
+      }
+      const declaredLen = Number.parseInt(imgRes.headers.get('content-length') ?? '', 10);
+      if (Number.isFinite(declaredLen) && declaredLen > MAX_REFERENCE_BYTES) {
+        return NextResponse.json({ error: 'Reference image exceeds 8 MB cap' }, { status: 413 });
+      }
+      const arrayBuf = await imgRes.arrayBuffer();
+      if (arrayBuf.byteLength > MAX_REFERENCE_BYTES) {
+        return NextResponse.json({ error: 'Reference image exceeds 8 MB cap' }, { status: 413 });
+      }
+      const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+      mimeType = contentType.includes('png')
+        ? 'image/png'
+        : contentType.includes('webp')
+          ? 'image/webp'
+          : contentType.includes('gif')
+            ? 'image/gif'
+            : 'image/jpeg';
+      base64 = Buffer.from(arrayBuf).toString('base64');
+      logger.info('[thumb-format-grid cards] reference fetch', {
+        host: rawHostForError,
+        bytes: arrayBuf.byteLength,
+        mime: mimeType,
+        duration_ms: Date.now() - fetchStart,
+      });
+    } else {
+      // No user reference — try the bundled curated default.
+      const bundled = await loadBundledReference();
+      if (!bundled) {
+        return NextResponse.json(
+          {
+            error: 'A reference image is required for this format. Upload one or paste a public HTTPS URL. (The bundled default has not been generated for this deployment yet — run scripts/generate-default-grid-reference.ts.)',
+          },
+          { status: 400 },
+        );
+      }
+      base64 = bundled.base64;
+      mimeType = bundled.mimeType;
+      rawHostForError = '<bundled-default>';
+      logger.info('[thumb-format-grid cards] bundled reference used', {
+        bytes: Buffer.from(bundled.base64, 'base64').byteLength,
+        mime: mimeType,
+      });
     }
 
     logger.info('[thumb-format-grid cards] start', {
@@ -160,60 +253,8 @@ export async function POST(req: NextRequest) {
       gridRows,
       gridCols,
       mode,
-      has_user_reference: true,
+      has_user_reference: !!referenceImageUrl,
       prefilled_count: prefilledLabels?.length ?? 0,
-    });
-
-    // Fetch + base64 the reference. Mirrors the multimodal flow shipped on
-    // 2026-05-18 (assertSafePublicUrl + plain fetch — the pinned-dispatcher
-    // variant trips R2 on Vercel).
-    const fetchStart = Date.now();
-    let imgRes: Response;
-    let rawHostForError = '';
-    try {
-      try {
-        rawHostForError = new URL(referenceImageUrl).hostname;
-      } catch {
-        /* fall through */
-      }
-      const safeUrl = assertSafePublicUrl(referenceImageUrl, { allowedProtocols: ['https:'] });
-      imgRes = await fetch(safeUrl);
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      logger.warn('[thumb-format-grid cards] reference rejected', { reason, host: rawHostForError });
-      return NextResponse.json(
-        { error: `Reference image URL was rejected (${rawHostForError || 'unknown host'}): ${reason}` },
-        { status: 400 },
-      );
-    }
-    if (!imgRes.ok) {
-      return NextResponse.json(
-        { error: `Failed to fetch reference image (HTTP ${imgRes.status}).` },
-        { status: 502 },
-      );
-    }
-    const declaredLen = Number.parseInt(imgRes.headers.get('content-length') ?? '', 10);
-    if (Number.isFinite(declaredLen) && declaredLen > MAX_REFERENCE_BYTES) {
-      return NextResponse.json({ error: 'Reference image exceeds 8 MB cap' }, { status: 413 });
-    }
-    const arrayBuf = await imgRes.arrayBuffer();
-    if (arrayBuf.byteLength > MAX_REFERENCE_BYTES) {
-      return NextResponse.json({ error: 'Reference image exceeds 8 MB cap' }, { status: 413 });
-    }
-    const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
-    const mimeType = contentType.includes('png')
-      ? 'image/png'
-      : contentType.includes('webp')
-        ? 'image/webp'
-        : contentType.includes('gif')
-          ? 'image/gif'
-          : 'image/jpeg';
-    const base64 = Buffer.from(arrayBuf).toString('base64');
-    logger.info('[thumb-format-grid cards] reference fetch', {
-      host: rawHostForError,
-      bytes: arrayBuf.byteLength,
-      mime: mimeType,
-      duration_ms: Date.now() - fetchStart,
     });
 
     const promptInput: LlmPromptInput = {

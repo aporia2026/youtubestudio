@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
 import { createKieTask, pollKieResult } from '@/lib/kie-poll';
+import { getAppUrl } from '@/lib/email';
 import {
   topicCardGridImagePrompt,
   validateCardList,
@@ -14,6 +17,32 @@ import {
 } from '@/lib/thumbnail-formats/topic-card-grid';
 import { assertSafePublicUrl } from '@/lib/url-safety';
 import type { ThumbnailRegion } from '@/remotion/types';
+
+const BUNDLED_REFERENCE_FILENAME = 'topic-card-grid-default.png';
+const BUNDLED_REFERENCE_PATH = path.join(
+  process.cwd(),
+  'public/thumbnail-formats',
+  BUNDLED_REFERENCE_FILENAME,
+);
+
+/**
+ * Returns the public URL of the bundled curated default reference image
+ * IFF it exists on disk in this deployment. Kie needs a public URL to
+ * fetch the reference, so we hand it `${getAppUrl()}/thumbnail-formats/
+ * topic-card-grid-default.png` — same file Next.js serves from /public.
+ *
+ * Returns null when the PNG hasn't been generated and committed yet, so
+ * the API can fall back to "reference upload required" cleanly.
+ */
+async function bundledReferenceUrlIfPresent(): Promise<string | null> {
+  try {
+    await fs.access(BUNDLED_REFERENCE_PATH);
+    const base = getAppUrl().replace(/\/$/, '');
+    return `${base}/thumbnail-formats/${BUNDLED_REFERENCE_FILENAME}`;
+  } catch {
+    return null;
+  }
+}
 
 export const maxDuration = 300;
 
@@ -87,7 +116,8 @@ export async function POST(req: NextRequest) {
     const gridCols = Number(body.gridCols);
     const cards = body.cards;
     const palette = body.globalPalette;
-    const referenceImageUrl = (body.referenceImageUrl || '').trim();
+    let referenceImageUrl = (body.referenceImageUrl || '').trim();
+    let usedBundledDefault = false;
 
     if (!Number.isInteger(gridRows) || gridRows < 1 || gridRows > MAX_GRID_DIM) {
       return NextResponse.json(
@@ -108,10 +138,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'globalPalette is required' }, { status: 400 });
     }
     if (!referenceImageUrl) {
-      return NextResponse.json(
-        { error: 'A reference image is required for this format.' },
-        { status: 400 },
-      );
+      // Try the bundled curated default before failing.
+      const bundledUrl = await bundledReferenceUrlIfPresent();
+      if (!bundledUrl) {
+        return NextResponse.json(
+          {
+            error: 'A reference image is required for this format. Upload one or run scripts/generate-default-grid-reference.ts to bundle the curated default.',
+          },
+          { status: 400 },
+        );
+      }
+      referenceImageUrl = bundledUrl;
+      usedBundledDefault = true;
     }
     const config = IMAGE_MODEL_MAP[imageModelId];
     if (!config) {
@@ -170,7 +208,8 @@ export async function POST(req: NextRequest) {
       gridCols,
       cards_count: cards.length,
       prompt_chars: prompt.length,
-      has_user_reference: true,
+      has_user_reference: !usedBundledDefault,
+      used_bundled_default: usedBundledDefault,
       ref_host: safeRefUrl.hostname,
     });
 
