@@ -1,7 +1,24 @@
 # 2026-05-18 — Deep analyzer fidelity eval (Phase 0)
 
 **Date:** 2026-05-18
-**Status:** **COMPLETE (2026-05-18). Ship-gate verdict: PASS (3 of 3 references = YES).** Three non-blocking defects filed for follow-up — see "Recommended fixes before the next round of operator use" near the end of this doc. Local-env blocker (Kie YouTube passthrough doesn't work) is preserved below for the record; the actual eval runs went through prod with the production `GOOGLE_AI_API_KEY` (the operator is the only user, so prod testing was appropriate).
+**Status:** **COMPLETE (2026-05-18, fixes verified 2026-05-19). Ship-gate verdict: PASS (3 of 3 references = YES).** Three eval-surfaced fixes have shipped and been verified in prod — see "Fix verification" below. Local-env blocker (Kie YouTube passthrough doesn't work) is preserved below for the record; the actual eval runs went through prod with the production `GOOGLE_AI_API_KEY` (the operator is the only user, so prod testing was appropriate).
+
+## Fix verification (Casey re-run, 2026-05-19, analysis id `0632997e-a99a-47d4-97b7-9e2b15e9fad7`)
+
+Three fixes shipped in commit `cba0d59`. Re-ran Reference B (Casey "Make It Count") on prod with the new code live. Result: **all three fixes confirmed working.**
+
+| Fix | Pre-fix behavior | Post-fix behavior | Verdict |
+|---|---|---|---|
+| `meta.analyzed_at` server-side overwrite | `"2024-04-25T18:30:00Z"` (fabricated, 3 of 3 runs) | `"2026-05-18T21:34:54.798Z"` matching `completedAt` within 13 ms (ISO with ms = `new Date().toISOString()` signature) | ✅ FIRED |
+| `meta.video_id` server-side overwrite | `"5_XSY_w94cM"` on Reference A (1 of 3 runs) | `"WxfZkMm3wcg"` matches canonical URL id exactly | ✅ FIRED (operationally deterministic now regardless of Gemini's output) |
+| Music attribution prompt rule (#11) | `"'Sail' by AWOLNATION, though not explicitly named"` on Reference B | All 3 packs describe music by character only. Zero named tracks, zero hedged phrases. | ✅ HELD |
+| Bonus — `prompt_version` bump | n/a | Wrapper + `meta.prompt_version` both `v1.1.0`. Cache key invalidation worked cleanly: re-run produced a fresh analysis instead of returning the old cached row. | ✅ LIVE |
+
+### Two follow-on observations from comparing three runs of the same input
+
+1. **Non-determinism in `style_packs.length`.** Three runs of the same Casey URL produced **1, then 2, then 3** style packs. The v1.1.0 prompt change shouldn't affect pack count, but the model is non-deterministic at temp=0.3 anyway. If the operator hits "Re-analyze" expecting a stable refresh, they may get materially different output. **Follow-up:** add a stability check (run the same video twice, diff the outputs) before any UI copy that promises consistent re-analysis. Worth filing alongside the other lower-priority follow-ups.
+2. **The Reference B scene-overflow defect reproduces deterministically.** Original Casey run had scenes ending at 437s with `duration_seconds=277s`. This re-run reproduces the exact same overflow (scenes still end at 437s). It's a stable bug, not Gemini variance — a strong candidate for the next prompt iteration or a post-parse sanity check that clips/rescales scenes to match `duration_seconds`.
+3. **The 3-pack output is defensible, not a regression.** Packs are `travel-montage` (243s, the main visual mode), `intro-text` (10s, the cold-open text-on-black premise card), and `quote-card` (24s, inspirational-quote overlays during the journey). The `intro-text` pack is unambiguously a distinct visual treatment. The `quote-card` pack is a judgment call — those moments have travel footage underneath, but the analyzer treated the overlay as the dominant element. Either interpretation is defensible. The original golden's "ONE pack should cover the entire runtime" still holds for the *travel footage itself* — the new packs are carve-outs for text-treatment moments, not over-fragmentation of the run-and-gun footage.
 
 ## Pre-run blocker (2026-05-18) — `GOOGLE_AI_API_KEY` missing
 
