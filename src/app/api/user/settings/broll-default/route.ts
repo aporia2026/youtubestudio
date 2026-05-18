@@ -36,18 +36,24 @@ import {
  */
 export const GET = apiRoute.authed(async (session) => {
   const settings = await getUserSettings(session.uid);
+  // Use explicit ternaries here, NOT `x && fn(x)`. With strict TS the
+  // logical-AND keeps the empty string `""` in the result union (because
+  // the left side is a string, and `""` short-circuits), which makes
+  // optional-chain access on `.kind` fail to type-check. Plain strings
+  // from settings can be empty, so falsy-by-truthy fallback is correct
+  // but `?` chaining on the union needs the falsy side to be a non-object.
   const legacy = settings.default_broll_model_id ?? null;
-  const legacyModel = legacy && findBrollModel(legacy);
+  const legacyModel = legacy ? findBrollModel(legacy) : undefined;
 
   const storedT2v = settings.default_broll_t2v_model_id ?? null;
-  const validT2v = storedT2v && findBrollModel(storedT2v);
+  const validT2v = storedT2v ? findBrollModel(storedT2v) : undefined;
   const t2vFromKindField = validT2v?.kind === 'text-to-video' ? storedT2v : null;
   const t2vFromLegacy = legacyModel?.kind === 'text-to-video' ? legacy : null;
   const t2vResolved = t2vFromKindField ?? t2vFromLegacy ?? null;
   const t2vModelId = t2vResolved ?? DEFAULT_BROLL_T2V_MODEL_ID;
 
   const storedI2v = settings.default_broll_i2v_model_id ?? null;
-  const validI2v = storedI2v && findBrollModel(storedI2v);
+  const validI2v = storedI2v ? findBrollModel(storedI2v) : undefined;
   const i2vFromKindField = validI2v?.kind === 'image-to-video' ? storedI2v : null;
   const i2vFromLegacy = legacyModel?.kind === 'image-to-video' ? legacy : null;
   const i2vResolved = i2vFromKindField ?? i2vFromLegacy ?? null;
@@ -122,16 +128,16 @@ export const PUT = apiRoute.authed(async (session, req: NextRequest) => {
 
   const storedT2v = merged.default_broll_t2v_model_id ?? null;
   const storedI2v = merged.default_broll_i2v_model_id ?? null;
+  const t2vIsExplicit =
+    !!storedT2v && (storedT2v ? findBrollModel(storedT2v) : undefined)?.kind === 'text-to-video';
+  const i2vIsExplicit =
+    !!storedI2v && (storedI2v ? findBrollModel(storedI2v) : undefined)?.kind === 'image-to-video';
   return NextResponse.json({
     ok: true,
-    t2vModelId: storedT2v && findBrollModel(storedT2v)?.kind === 'text-to-video'
-      ? storedT2v
-      : DEFAULT_BROLL_T2V_MODEL_ID,
-    i2vModelId: storedI2v && findBrollModel(storedI2v)?.kind === 'image-to-video'
-      ? storedI2v
-      : DEFAULT_BROLL_I2V_MODEL_ID,
-    t2vIsExplicit: Boolean(storedT2v && findBrollModel(storedT2v)?.kind === 'text-to-video'),
-    i2vIsExplicit: Boolean(storedI2v && findBrollModel(storedI2v)?.kind === 'image-to-video'),
+    t2vModelId: t2vIsExplicit && storedT2v ? storedT2v : DEFAULT_BROLL_T2V_MODEL_ID,
+    i2vModelId: i2vIsExplicit && storedI2v ? storedI2v : DEFAULT_BROLL_I2V_MODEL_ID,
+    t2vIsExplicit,
+    i2vIsExplicit,
     modelId: raw,
     isExplicit: true,
   });
