@@ -30,13 +30,16 @@ interface FilterBarProps {
   value: BrowseFilters;
   onChange: (next: BrowseFilters) => void;
   onReset: () => void;
-  /** Current language + region selections. Owned by the parent because
-   *  changing either triggers a refetch from the discovery API. */
-  language: string;
-  region: string;
-  onLocaleChange: (next: { language: string; region: string }) => void;
+  /** Locale selects are now rendered by the global niche-finder picker.
+   *  Pass these only when this bar is used standalone (e.g. an embed
+   *  outside the niche-finder hub). When omitted, the Audience row is
+   *  not rendered. */
+  language?: string;
+  region?: string;
+  onLocaleChange?: (next: { language: string; region: string }) => void;
   /** Disables locale selects while a refetch is in flight so the
-   *  user can't queue up a second request. */
+   *  user can't queue up a second request. Only meaningful when the
+   *  locale props are also provided. */
   refetching?: boolean;
 }
 
@@ -223,27 +226,29 @@ export function BrowseFilterBar({
         ))}
       </Row>
 
-      <Row label="Audience">
-        <Select
-          value={language}
-          onChange={(v) => onLocaleChange({ language: v, region })}
-          options={LANGUAGE_OPTIONS}
-          disabled={refetching}
-          ariaLabel="Language"
-        />
-        <Select
-          value={region}
-          onChange={(v) => onLocaleChange({ language, region: v })}
-          options={REGION_OPTIONS}
-          disabled={refetching}
-          ariaLabel="Region"
-        />
-        {refetching && (
-          <span style={{ fontSize: 11, color: '#94a3b8' }}>
-            Rescoring with new audience…
-          </span>
-        )}
-      </Row>
+      {language !== undefined && region !== undefined && onLocaleChange && (
+        <Row label="Audience">
+          <Select
+            value={language}
+            onChange={(v) => onLocaleChange({ language: v, region })}
+            options={LANGUAGE_OPTIONS}
+            disabled={refetching}
+            ariaLabel="Language"
+          />
+          <Select
+            value={region}
+            onChange={(v) => onLocaleChange({ language, region: v })}
+            options={REGION_OPTIONS}
+            disabled={refetching}
+            ariaLabel="Region"
+          />
+          {refetching && (
+            <span style={{ fontSize: 11, color: '#94a3b8' }}>
+              Rescoring with new audience…
+            </span>
+          )}
+        </Row>
+      )}
 
       <Row label="Sort by">
         {SORT_OPTIONS.map((o) => (

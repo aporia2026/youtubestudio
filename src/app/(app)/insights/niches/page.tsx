@@ -37,6 +37,11 @@ import { BrowseFilterBar } from '@/components/niche-finder/BrowseFilterBar';
 import { BrowsePresetBar } from '@/components/niche-finder/BrowsePresetBar';
 import { BrowseQuadrantView } from '@/components/niche-finder/BrowseQuadrantView';
 import { NicheFinderModelPicker } from '@/components/niche-finder/NicheFinderModelPicker';
+import {
+  NicheFinderLocalePicker,
+  useNicheFinderLocale,
+  type NicheFinderLocale,
+} from '@/components/niche-finder/NicheFinderLocalePicker';
 import { CrossCategorySearchModal } from '@/components/niche-finder/CrossCategorySearchModal';
 import { FavoritesTab } from '@/components/niche-finder/FavoritesTab';
 import type { NicheScores } from '@/lib/niche-finder/types';
@@ -85,13 +90,16 @@ interface ScoreResultPayload {
 
 export default function NicheHubPage(): React.ReactElement {
   const [tab, setTab] = useState<TabKey>('type');
+  const { locale, setLocale } = useNicheFinderLocale();
 
   return (
     <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto', color: '#e2e8f0' }}>
       <h1 style={{ fontSize: 28, fontWeight: 600, marginBottom: 4 }}>Find what to make videos about</h1>
-      <p style={{ color: '#94a3b8', marginBottom: 24, lineHeight: 1.5 }}>
+      <p style={{ color: '#94a3b8', marginBottom: 16, lineHeight: 1.5 }}>
         Five ways to find niches. Pick the one that matches what you already know about your idea.
       </p>
+
+      <NicheFinderLocalePicker value={locale} onChange={setLocale} />
 
       <div
         role="tablist"
@@ -123,19 +131,19 @@ export default function NicheHubPage(): React.ReactElement {
         {TABS.find((t) => t.key === tab)?.hint}
       </div>
 
-      {tab === 'type' && <TypeNicheTab />}
-      {tab === 'interests' && <InterestsTab />}
-      {tab === 'channel' && <ChannelTab />}
-      {tab === 'category' && <CategoryTab />}
+      {tab === 'type' && <TypeNicheTab locale={locale} />}
+      {tab === 'interests' && <InterestsTab locale={locale} />}
+      {tab === 'channel' && <ChannelTab locale={locale} />}
+      {tab === 'category' && <CategoryTab locale={locale} />}
       {tab === 'favorites' && <FavoritesTab />}
-      {tab === 'outliers' && <OutliersTab />}
+      {tab === 'outliers' && <OutliersTab locale={locale} />}
     </div>
   );
 }
 
 // ─── Tab: type a niche ──────────────────────────────────────────────────────
 
-function TypeNicheTab(): React.ReactElement {
+function TypeNicheTab({ locale }: { locale: NicheFinderLocale }): React.ReactElement {
   const router = useRouter();
   const [niche, setNiche] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -155,7 +163,11 @@ function TypeNicheTab(): React.ReactElement {
         const res = await fetch('/api/niche-finder/deep-dive', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ nicheText: trimmed }),
+          body: JSON.stringify({
+            nicheText: trimmed,
+            language: locale.language,
+            region: locale.region,
+          }),
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
@@ -169,7 +181,7 @@ function TypeNicheTab(): React.ReactElement {
         setSubmitting(false);
       }
     },
-    [niche, router],
+    [niche, locale, router],
   );
 
   return (
@@ -193,7 +205,7 @@ function TypeNicheTab(): React.ReactElement {
 
 // ─── Tab: interests ─────────────────────────────────────────────────────────
 
-function InterestsTab(): React.ReactElement {
+function InterestsTab({ locale }: { locale: NicheFinderLocale }): React.ReactElement {
   const [interests, setInterests] = useState(['', '', '']);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -213,7 +225,11 @@ function InterestsTab(): React.ReactElement {
         const res = await fetch('/api/niche-finder/discover/from-interests', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ interests: cleaned }),
+          body: JSON.stringify({
+            interests: cleaned,
+            language: locale.language,
+            region: locale.region,
+          }),
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -234,7 +250,7 @@ function InterestsTab(): React.ReactElement {
         setSubmitting(false);
       }
     },
-    [interests],
+    [interests, locale],
   );
 
   return (
@@ -273,7 +289,7 @@ function InterestsTab(): React.ReactElement {
 
 // ─── Tab: channel ───────────────────────────────────────────────────────────
 
-function ChannelTab(): React.ReactElement {
+function ChannelTab({ locale }: { locale: NicheFinderLocale }): React.ReactElement {
   const [url, setUrl] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -293,7 +309,11 @@ function ChannelTab(): React.ReactElement {
         const res = await fetch('/api/niche-finder/discover/from-channel', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ channelUrl: trimmed }),
+          body: JSON.stringify({
+            channelUrl: trimmed,
+            language: locale.language,
+            region: locale.region,
+          }),
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -319,7 +339,7 @@ function ChannelTab(): React.ReactElement {
         setSubmitting(false);
       }
     },
-    [url],
+    [url, locale],
   );
 
   return (
@@ -351,7 +371,7 @@ function ChannelTab(): React.ReactElement {
 
 // ─── Tab: category (hierarchical drill-down) ────────────────────────────────
 
-function CategoryTab(): React.ReactElement {
+function CategoryTab({ locale }: { locale: NicheFinderLocale }): React.ReactElement {
   // Breadcrumb path: empty array = root. Each entry is the node clicked
   // to drill down. UI reads from this to render crumbs and to know what
   // parent to query.
@@ -364,11 +384,10 @@ function CategoryTab(): React.ReactElement {
   const [brainstorming, setBrainstorming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<BrowseFilters>(DEFAULT_BROWSE_FILTERS);
-  // Locale lives at the parent because changing it triggers a refetch
-  // — the AI taxonomy generations and YouTube samples are locale-
-  // specific. Defaults match the operator's primary audience.
-  const [language, setLanguage] = useState('en');
-  const [region, setRegion] = useState('US');
+  // Locale is owned by the page-level global picker. CategoryTab reads
+  // it as a prop and rebuilds the breadcrumb when it changes — category
+  // IDs are locale-scoped (each locale has its own row tree).
+  const { language, region } = locale;
   const [showQuadrant, setShowQuadrant] = useState(false);
   const [highlightedSlug, setHighlightedSlug] = useState<string | null>(null);
   const [crossCatOpen, setCrossCatOpen] = useState(false);
@@ -466,11 +485,13 @@ function CategoryTab(): React.ReactElement {
     [scoreNodes],
   );
 
-  // Initial load.
+  // Initial load + re-load whenever the global locale changes. Reset
+  // breadcrumbs because category IDs are locale-scoped.
   useEffect(() => {
+    setCrumbs([]);
     void loadLevel(null, language, region);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [language, region]);
 
   const drillIn = useCallback(
     (node: TaxonomyChildPayload) => {
@@ -528,17 +549,6 @@ function CategoryTab(): React.ReactElement {
     }
   }, [currentParent, language, region, loadLevel]);
 
-  const onLocaleChange = useCallback(
-    (next: { language: string; region: string }) => {
-      setLanguage(next.language);
-      setRegion(next.region);
-      // Locale change resets the breadcrumb because category IDs are
-      // locale-scoped (each locale has its own row tree).
-      setCrumbs([]);
-      void loadLevel(null, next.language, next.region);
-    },
-    [loadLevel],
-  );
 
   // Client-side narrowing applies only at sub-niche / micro-niche levels.
   // The filter has no meaning over category-level nodes (they're not scored).
@@ -650,9 +660,6 @@ function CategoryTab(): React.ReactElement {
             value={filters}
             onChange={setFilters}
             onReset={() => setFilters(DEFAULT_BROWSE_FILTERS)}
-            language={language}
-            region={region}
-            onLocaleChange={onLocaleChange}
             refetching={loadingLevel}
           />
 
@@ -963,7 +970,7 @@ function SkeletonDiscoveryCard({
  *  above the preset bar. */
 type OutlierSearchSource = 'breakouts' | 'trending' | 'favorites';
 
-function OutliersTab(): React.ReactElement {
+function OutliersTab({ locale }: { locale: NicheFinderLocale }): React.ReactElement {
   const [niche, setNiche] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -991,7 +998,12 @@ function OutliersTab(): React.ReactElement {
       const res = await fetch('/api/niche-finder/outliers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source: 'niche', niche: trimmed }),
+        body: JSON.stringify({
+          source: 'niche',
+          niche: trimmed,
+          language: locale.language,
+          region: locale.region,
+        }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -1011,7 +1023,7 @@ function OutliersTab(): React.ReactElement {
     } finally {
       setSubmitting(false);
     }
-  }, []);
+  }, [locale]);
 
   /** General-source fetch — empties the niche input + hits the
    *  source-discriminated path on the same endpoint. The empty-niche
@@ -1025,7 +1037,11 @@ function OutliersTab(): React.ReactElement {
       const res = await fetch('/api/niche-finder/outliers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source }),
+        body: JSON.stringify({
+          source,
+          language: locale.language,
+          regionCode: locale.region,
+        }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -1054,7 +1070,7 @@ function OutliersTab(): React.ReactElement {
     } finally {
       setSubmitting(false);
     }
-  }, []);
+  }, [locale]);
 
   const onSubmit = useCallback(
     (e: React.FormEvent) => {

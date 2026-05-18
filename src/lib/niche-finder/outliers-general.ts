@@ -33,6 +33,7 @@ import {
   fetchChannelsBatch,
   fetchVideosBatch,
   isShort,
+  passesLanguageFilter,
   type FetchedVideo,
 } from './youtube-fetch';
 
@@ -58,14 +59,18 @@ export async function dispatchGeneralOutliers(args: {
   source: GeneralOutlierSource;
   /** Optional region for source='trending'. Defaults to 'US'. */
   regionCode?: string;
+  /** Optional language (ISO 639-1, e.g. 'en'). When set, the post-fetch
+   *  language filter drops videos that don't match. Defaults to 'en'
+   *  upstream of this dispatcher. */
+  language?: string;
 }): Promise<OutlierFinderResult> {
   switch (args.source) {
     case 'breakouts':
-      return findMyChannelBreakouts(args.workspaceId);
+      return findMyChannelBreakouts(args.workspaceId, args.language);
     case 'trending':
-      return findYouTubeTrending(args.regionCode ?? 'US');
+      return findYouTubeTrending(args.regionCode ?? 'US', args.language);
     case 'favorites':
-      return findOutliersAcrossFavorites(args.workspaceId);
+      return findOutliersAcrossFavorites(args.workspaceId, args.language);
   }
 }
 
@@ -83,6 +88,7 @@ interface BreakoutFireRow {
  *  reflects current view counts (not the snapshot at fire time). */
 export async function findMyChannelBreakouts(
   workspaceId: string,
+  language?: string,
 ): Promise<OutlierFinderResult> {
   const { rows } = await sql<BreakoutFireRow>`
     SELECT youtube_video_id, fired_at::text AS fired_at
@@ -104,7 +110,10 @@ export async function findMyChannelBreakouts(
   // Operator's focus is long-form; Shorts they post still surface in
   // their own breakout-fires table but shouldn't dominate the niche-
   // finder discovery surface. Match harvestClusterSample's default.
-  const videos = fetched.filter((v) => !isShort(v.durationIso));
+  let videos = fetched.filter((v) => !isShort(v.durationIso));
+  if (language) {
+    videos = videos.filter((v) => passesLanguageFilter(v, language));
+  }
   const channelIds = Array.from(new Set(videos.map((v) => v.channelId).filter((id) => id.length > 0)));
   const channels = await fetchChannelsBatch(channelIds);
 
@@ -129,6 +138,8 @@ interface TrendingVideoItem {
     publishedAt?: string;
     tags?: string[];
     thumbnails?: { high?: { url: string }; maxres?: { url: string } };
+    defaultLanguage?: string;
+    defaultAudioLanguage?: string;
   };
   statistics?: { viewCount?: string };
   contentDetails?: { duration?: string };
@@ -137,15 +148,20 @@ interface TrendingVideoItem {
 /** Pull YouTube's regional trending chart and reshape into OutlierVideo[].
  *  Bypasses the 7-day youtube-fetch cache because trending is high-
  *  churn — operator wants the actual current list. We still cache
- *  in-memory for 15 minutes via a module-level Map keyed by region. */
+ *  in-memory for 15 minutes via a module-level Map keyed by (region,
+ *  language) — trending is region-specific but the language-filtered
+ *  view of it is a per-operator slice. */
 const TRENDING_CACHE = new Map<string, { fetchedAt: number; result: OutlierFinderResult }>();
 const TRENDING_TTL_MS = 15 * 60 * 1000;
 
 export async function findYouTubeTrending(
   regionCode: string,
+  language?: string,
 ): Promise<OutlierFinderResult> {
   const region = (regionCode || 'US').toUpperCase().slice(0, 2);
-  const cached = TRENDING_CACHE.get(region);
+  const lang = (language || '').toLowerCase().split('-')[0];
+  const cacheKey = `${region}|${lang}`;
+  const cached = TRENDING_CACHE.get(cacheKey);
   if (cached && Date.now() - cached.fetchedAt < TRENDING_TTL_MS) {
     return cached.result;
   }
@@ -199,6 +215,8 @@ export async function findYouTubeTrending(
       tags: item.snippet?.tags ?? [],
       thumbnailUrl:
         item.snippet?.thumbnails?.maxres?.url ?? item.snippet?.thumbnails?.high?.url ?? null,
+      defaultLanguage: item.snippet?.defaultLanguage ?? null,
+      defaultAudioLanguage: item.snippet?.defaultAudioLanguage ?? null,
     });
   }
 
@@ -206,18 +224,21 @@ export async function findYouTubeTrending(
   // makes them rarely "breakouts" in views÷subs terms, but we still
   // surface the score honestly so the operator can spot the rare
   // genuine outlier (small channel that's gone trending).
+  const filteredVideos = lang
+    ? fetchedVideos.filter((v) => passesLanguageFilter(v, lang))
+    : fetchedVideos;
   const channelIds = Array.from(
-    new Set(fetchedVideos.map((v) => v.channelId).filter((id) => id.length > 0)),
+    new Set(filteredVideos.map((v) => v.channelId).filter((id) => id.length > 0)),
   );
   const channels = await fetchChannelsBatch(channelIds);
 
-  const outliers = buildOutliers(fetchedVideos, channels);
+  const outliers = buildOutliers(filteredVideos, channels);
   const result: OutlierFinderResult = {
     niche: `YouTube trending — ${region}`,
     videos: outliers,
     fetchOk: true,
   };
-  TRENDING_CACHE.set(region, { fetchedAt: Date.now(), result });
+  TRENDING_CACHE.set(cacheKey, { fetchedAt: Date.now(), result });
   return result;
 }
 
@@ -234,6 +255,7 @@ interface FavoriteForScan {
  *  existing per-niche outlier search on each, merge + dedupe. */
 export async function findOutliersAcrossFavorites(
   workspaceId: string,
+  language?: string,
 ): Promise<OutlierFinderResult> {
   // Read niche names directly — bypass listFavorites to avoid pulling
   // every column when we only need slug + name. We also filter out
@@ -266,7 +288,7 @@ export async function findOutliersAcrossFavorites(
   const perNiche = await Promise.all(
     favorites.map(async (f) => {
       try {
-        const r = await findOutliers({ niche: f.niche_name });
+        const r = await findOutliers({ niche: f.niche_name, language });
         return { name: f.niche_name, videos: r.videos };
       } catch (err) {
         logger.warn('outliers-general: per-favorite findOutliers failed', {

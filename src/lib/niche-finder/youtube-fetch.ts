@@ -47,6 +47,13 @@ interface VideoListItem {
     publishedAt?: string;
     tags?: string[];
     thumbnails?: { high?: { url: string }; maxres?: { url: string } };
+    /** ISO 639-1 language code the uploader declared for the metadata.
+     *  Often missing; when present it's authoritative. */
+    defaultLanguage?: string;
+    /** ISO 639-1 language code the uploader declared for the audio
+     *  track. Surfaces on YouTube Studio's language field, not all
+     *  videos have it set. When present it's our strongest signal. */
+    defaultAudioLanguage?: string;
   };
   statistics?: { viewCount?: string };
   contentDetails?: { duration?: string };
@@ -61,6 +68,13 @@ interface ChannelListItem {
 /** Tag fetched with display data so the UI doesn't have to refetch. */
 export interface FetchedVideo extends SampledVideo {
   thumbnailUrl: string | null;
+  /** Uploader-declared metadata language. `null` when YouTube didn't
+   *  return one (most videos). The language filter reads this when set
+   *  and falls back to the title-script heuristic otherwise. */
+  defaultLanguage: string | null;
+  /** Uploader-declared audio-track language. Same shape + same fallback
+   *  semantics as `defaultLanguage`. */
+  defaultAudioLanguage: string | null;
 }
 
 export interface FetchedChannel extends SampledChannel {
@@ -221,6 +235,8 @@ export async function fetchVideosBatch(videoIds: readonly string[]): Promise<Fet
           item.snippet?.thumbnails?.maxres?.url ??
           item.snippet?.thumbnails?.high?.url ??
           null,
+        defaultLanguage: item.snippet?.defaultLanguage ?? null,
+        defaultAudioLanguage: item.snippet?.defaultAudioLanguage ?? null,
       });
     }
   }
@@ -291,6 +307,14 @@ export async function fetchChannelsBatch(channelIds: readonly string[]): Promise
  * `long` > 20 min) doesn't map cleanly to "anything but Shorts" — the
  * `short` bucket includes 60s-4min content the operator wants to keep —
  * so we filter post-fetch on the exact ≤60s threshold instead.
+ *
+ * `relevanceLanguage` is the soft YouTube bias (advisory). When set
+ * AND `filterByLanguage` is true (default), we additionally apply a
+ * post-fetch language filter that drops videos failing
+ * `passesLanguageFilter` — YouTube's relevance bias often leaks
+ * non-target-language content for popular global queries (e.g. a
+ * "movies" search with relevanceLanguage=en still returns Bollywood
+ * results without this filter).
  */
 export async function harvestClusterSample(
   query: string,
@@ -301,6 +325,10 @@ export async function harvestClusterSample(
     order?: 'relevance' | 'viewCount' | 'date';
     pages?: number;
     excludeShorts?: boolean;
+    /** Apply the post-fetch language filter when `relevanceLanguage`
+     *  is set. Defaults to `true`; pass `false` for callers that want
+     *  YouTube's soft bias only (no hard drop). */
+    filterByLanguage?: boolean;
   } = {},
 ): Promise<{ videos: FetchedVideo[]; channels: FetchedChannel[] }> {
   const videoIds = await searchVideosForCluster(query, {
@@ -313,9 +341,13 @@ export async function harvestClusterSample(
   if (videoIds.length === 0) return { videos: [], channels: [] };
 
   const fetchedVideos = await fetchVideosBatch(videoIds);
-  const videos = opts.excludeShorts === false
+  let videos = opts.excludeShorts === false
     ? fetchedVideos
     : fetchedVideos.filter((v) => !isShort(v.durationIso));
+  if (opts.relevanceLanguage && opts.filterByLanguage !== false) {
+    const requested = opts.relevanceLanguage;
+    videos = videos.filter((v) => passesLanguageFilter(v, requested));
+  }
   const uniqueChannelIds = Array.from(
     new Set(videos.map((v) => v.channelId).filter((id) => id.length > 0)),
   );
@@ -329,4 +361,124 @@ export async function harvestClusterSample(
 export function isShort(durationIso: string): boolean {
   const seconds = parseDurationToSeconds(durationIso);
   return seconds > 0 && seconds <= SHORTS_MAX_SECONDS;
+}
+
+/** Minimum fraction of letters in the title that must fall in the
+ *  Basic Latin / Latin-1 Supplement / Latin Extended A,B blocks for
+ *  `isLatinDominantTitle` to return true. 50% covers titles like
+ *  "नमस्ते - Hello World" (mixed) without dropping accented Spanish/
+ *  French / German titles. */
+const LATIN_DOMINANCE_MIN = 0.5;
+
+/** Heuristic check used by the language filter. Returns `true` when at
+ *  least LATIN_DOMINANCE_MIN of the title's letter characters fall in
+ *  the Latin Unicode blocks. Titles with NO letters (digits + punctuation
+ *  only) return true — they carry no language signal so we don't drop
+ *  them. Exported for tests. */
+export function isLatinDominantTitle(title: string): boolean {
+  if (typeof title !== 'string') return true;
+  let latin = 0;
+  let nonLatin = 0;
+  for (const ch of title) {
+    const code = ch.codePointAt(0)!;
+    // Skip whitespace, digits, common punctuation — not language signal.
+    // Letter ranges checked below; everything else is ignored.
+    const isAsciiLetter = (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a);
+    const isLatin1Letter = code >= 0xc0 && code <= 0xff && code !== 0xd7 && code !== 0xf7;
+    const isLatinExtA = code >= 0x100 && code <= 0x17f;
+    const isLatinExtB = code >= 0x180 && code <= 0x24f;
+    if (isAsciiLetter || isLatin1Letter || isLatinExtA || isLatinExtB) {
+      latin++;
+      continue;
+    }
+    // Anything else in the Letter category counts as non-Latin. We
+    // approximate "Letter" by checking the major non-Latin script
+    // ranges most likely to appear in YouTube titles. Adding ranges is
+    // cheap; missing one only makes the filter less aggressive.
+    const isDevanagari = code >= 0x900 && code <= 0x97f;
+    const isArabic = code >= 0x600 && code <= 0x6ff;
+    const isCyrillic = code >= 0x400 && code <= 0x4ff;
+    const isGreek = code >= 0x370 && code <= 0x3ff;
+    const isHebrew = code >= 0x590 && code <= 0x5ff;
+    const isThai = code >= 0xe00 && code <= 0xe7f;
+    const isCJK = (code >= 0x4e00 && code <= 0x9fff) || (code >= 0x3040 && code <= 0x30ff) || (code >= 0xac00 && code <= 0xd7af);
+    const isBengali = code >= 0x980 && code <= 0x9ff;
+    const isTamil = code >= 0xb80 && code <= 0xbff;
+    const isTelugu = code >= 0xc00 && code <= 0xc7f;
+    const isKannada = code >= 0xc80 && code <= 0xcff;
+    const isMalayalam = code >= 0xd00 && code <= 0xd7f;
+    const isGurmukhi = code >= 0xa00 && code <= 0xa7f;
+    if (
+      isDevanagari ||
+      isArabic ||
+      isCyrillic ||
+      isGreek ||
+      isHebrew ||
+      isThai ||
+      isCJK ||
+      isBengali ||
+      isTamil ||
+      isTelugu ||
+      isKannada ||
+      isMalayalam ||
+      isGurmukhi
+    ) {
+      nonLatin++;
+    }
+    // Punctuation, digits, emoji, etc — ignored.
+  }
+  const totalLetters = latin + nonLatin;
+  if (totalLetters === 0) return true; // no letter signal → don't drop.
+  return latin / totalLetters >= LATIN_DOMINANCE_MIN;
+}
+
+/** Whether `videoLang` (the uploader's declared language, e.g. "en",
+ *  "en-US", "hi") is compatible with the requested filter language.
+ *  Compares the ISO 639-1 prefix case-insensitively. Returns `null`
+ *  when the video carries no declared language — caller decides what
+ *  that means. */
+function compareLanguageTag(videoLang: string | null, requested: string): boolean | null {
+  if (!videoLang) return null;
+  const a = videoLang.toLowerCase().split('-')[0];
+  const b = requested.toLowerCase().split('-')[0];
+  return a === b;
+}
+
+/** Decide whether a fetched video survives the language filter. The
+ *  call returns `true` for "keep this video", `false` for "drop". The
+ *  request-side check happens at the call site — this helper assumes
+ *  `requestedLanguage` is already non-empty. Exported for tests. */
+export function passesLanguageFilter(
+  video: Pick<FetchedVideo, 'title' | 'defaultAudioLanguage' | 'defaultLanguage'>,
+  requestedLanguage: string,
+): boolean {
+  const audioMatch = compareLanguageTag(video.defaultAudioLanguage, requestedLanguage);
+  if (audioMatch === true) return true; // Explicit match — keep.
+  if (audioMatch === false) return false; // Explicit mismatch — drop.
+
+  const metaMatch = compareLanguageTag(video.defaultLanguage, requestedLanguage);
+  if (metaMatch === true) return true;
+  if (metaMatch === false) return false;
+
+  // No explicit tag → fall back to script. Only meaningful when the
+  // requested language is Latin-scripted (English, Spanish, French,
+  // German, etc.). For non-Latin requests we keep the video because
+  // we can't tell from the title alone.
+  if (isLatinScriptLanguage(requestedLanguage)) {
+    return isLatinDominantTitle(video.title);
+  }
+  return true;
+}
+
+/** Whether `lang` is a language we expect to be written in Latin
+ *  script. Used by `passesLanguageFilter` to decide when the title-
+ *  script heuristic is meaningful. Conservative — adding a language
+ *  here makes the script check active; omitting one keeps results
+ *  permissive. */
+function isLatinScriptLanguage(lang: string): boolean {
+  const code = lang.toLowerCase().split('-')[0];
+  return [
+    'en', 'es', 'fr', 'de', 'pt', 'it', 'nl', 'sv', 'no', 'da',
+    'fi', 'pl', 'ro', 'cs', 'sk', 'hu', 'tr', 'id', 'vi',
+  ].includes(code);
 }

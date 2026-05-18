@@ -31,6 +31,14 @@ export interface UserSettings {
    *  precedence over this for normal refreshes so the user's most recent
    *  choice always wins for the current doc. */
   default_style_preset?: string | null;
+  /** Niche-finder default language as an ISO 639-1 code (e.g. 'en').
+   *  Drives `relevanceLanguage` on YouTube searches AND the post-fetch
+   *  language filter. `null` or absent means "fall back to 'en'". */
+  niche_finder_language?: string | null;
+  /** Niche-finder default region as an ISO 3166-1 alpha-2 code
+   *  (e.g. 'US'). Drives `regionCode` on YouTube searches. `null` or
+   *  absent means "fall back to 'US'". */
+  niche_finder_region?: string | null;
 }
 
 const DEFAULTS: UserSettings = { v: SETTINGS_VERSION };
@@ -74,6 +82,16 @@ export function parseUserSettings(encryptedBlob: string | null): UserSettings {
     out.default_style_preset = obj.default_style_preset;
   } else if (obj.default_style_preset === null) {
     out.default_style_preset = null;
+  }
+  if (typeof obj.niche_finder_language === 'string') {
+    out.niche_finder_language = obj.niche_finder_language;
+  } else if (obj.niche_finder_language === null) {
+    out.niche_finder_language = null;
+  }
+  if (typeof obj.niche_finder_region === 'string') {
+    out.niche_finder_region = obj.niche_finder_region;
+  } else if (obj.niche_finder_region === null) {
+    out.niche_finder_region = null;
   }
   return out;
 }

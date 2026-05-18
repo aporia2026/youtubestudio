@@ -89,6 +89,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       workspaceId: session.ws,
       source,
       regionCode: parseOptionalString(raw.regionCode, 4),
+      language: parseOptionalString(raw.language, 16),
     });
     return NextResponse.json(result);
   } catch (err) {

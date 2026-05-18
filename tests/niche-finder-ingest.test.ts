@@ -9,6 +9,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import { parseSuggestResponse, suggestUrl } from '@/lib/niche-finder/youtube-suggest';
+import {
+  isLatinDominantTitle,
+  passesLanguageFilter,
+} from '@/lib/niche-finder/youtube-fetch';
 
 describe('parseSuggestResponse', () => {
   it('parses the standard YouTube Suggest tuple shape', () => {
@@ -79,5 +83,100 @@ describe('suggestUrl', () => {
 
   it('passes locale through', () => {
     expect(suggestUrl('sport', 'es')).toContain('hl=es');
+  });
+});
+
+describe('isLatinDominantTitle', () => {
+  it('accepts plain English', () => {
+    expect(isLatinDominantTitle('Top 10 Movies of 2025')).toBe(true);
+  });
+
+  it('accepts accented Latin (Spanish / French / German / Portuguese)', () => {
+    expect(isLatinDominantTitle('¿Qué pasó con la película?')).toBe(true);
+    expect(isLatinDominantTitle('Le film le plus drôle')).toBe(true);
+    expect(isLatinDominantTitle('Größte Filme aller Zeiten')).toBe(true);
+  });
+
+  it('drops Devanagari-dominant (Hindi) titles', () => {
+    expect(isLatinDominantTitle('हिंदी मूवी कलेक्शन')).toBe(false);
+  });
+
+  it('drops CJK-dominant titles', () => {
+    expect(isLatinDominantTitle('日本のアニメ映画')).toBe(false);
+    expect(isLatinDominantTitle('한국 영화 베스트')).toBe(false);
+    expect(isLatinDominantTitle('中国电影推荐')).toBe(false);
+  });
+
+  it('drops Arabic / Cyrillic / Thai titles', () => {
+    expect(isLatinDominantTitle('أفضل الأفلام العربية')).toBe(false);
+    expect(isLatinDominantTitle('Лучшие русские фильмы')).toBe(false);
+    expect(isLatinDominantTitle('ภาพยนตร์ไทยที่ดีที่สุด')).toBe(false);
+  });
+
+  it('keeps mixed-script titles when Latin dominates the letter count', () => {
+    // "Hello World" = 10 Latin letters; "नमस्ते" = 6 Devanagari code
+    // points (including combining marks). 10 / 16 = 62% Latin — keep.
+    expect(isLatinDominantTitle('Hello World नमस्ते')).toBe(true);
+  });
+
+  it('drops mixed-script titles when non-Latin dominates the letter count', () => {
+    // 5 ASCII letters vs many Devanagari code points — non-Latin dominates.
+    expect(isLatinDominantTitle('Hello नमस्तेजीवन भारत संगीत')).toBe(false);
+  });
+
+  it('keeps titles with no letters (digits / emoji / punctuation only)', () => {
+    expect(isLatinDominantTitle('2025!!! 🎬')).toBe(true);
+    expect(isLatinDominantTitle('????')).toBe(true);
+    expect(isLatinDominantTitle('')).toBe(true);
+  });
+
+  it('handles non-string input gracefully', () => {
+    // @ts-expect-error intentionally wrong type
+    expect(isLatinDominantTitle(undefined)).toBe(true);
+    // @ts-expect-error intentionally wrong type
+    expect(isLatinDominantTitle(null)).toBe(true);
+  });
+});
+
+describe('passesLanguageFilter', () => {
+  function v(partial: Partial<{ title: string; defaultAudioLanguage: string | null; defaultLanguage: string | null }>) {
+    return {
+      title: 'A Reasonable Title',
+      defaultAudioLanguage: null,
+      defaultLanguage: null,
+      ...partial,
+    };
+  }
+
+  it('keeps a video whose audio-language tag matches the requested language', () => {
+    expect(
+      passesLanguageFilter(v({ title: 'भारत', defaultAudioLanguage: 'en' }), 'en'),
+    ).toBe(true);
+  });
+
+  it('drops a video whose audio-language tag mismatches the requested language', () => {
+    expect(
+      passesLanguageFilter(
+        v({ title: 'Hello world', defaultAudioLanguage: 'hi' }),
+        'en',
+      ),
+    ).toBe(false);
+  });
+
+  it('falls back to title-script heuristic when no language tag is set', () => {
+    expect(passesLanguageFilter(v({ title: 'Top movies' }), 'en')).toBe(true);
+    expect(passesLanguageFilter(v({ title: 'हिंदी मूवी' }), 'en')).toBe(false);
+  });
+
+  it('compares only the ISO 639-1 prefix (en-US vs en-GB)', () => {
+    expect(
+      passesLanguageFilter(v({ defaultAudioLanguage: 'en-US' }), 'en-GB'),
+    ).toBe(true);
+  });
+
+  it('keeps the video when the requested language is non-Latin-scripted and no tag is set', () => {
+    // No `defaultAudioLanguage`/`defaultLanguage`, requested 'hi' (Hindi).
+    // Script heuristic does not apply, so we don't drop a Latin title.
+    expect(passesLanguageFilter(v({ title: 'Top videos' }), 'hi')).toBe(true);
   });
 });

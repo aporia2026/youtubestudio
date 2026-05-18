@@ -25,6 +25,8 @@ function v(partial: Partial<FetchedVideo>): FetchedVideo {
     durationIso: 'PT5M',
     tags: [],
     thumbnailUrl: null,
+    defaultLanguage: null,
+    defaultAudioLanguage: null,
     ...partial,
   };
 }
