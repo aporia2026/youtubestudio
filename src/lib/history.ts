@@ -144,6 +144,45 @@ export interface ThumbnailHistoryEntry {
   imageModel?: string;
   videoTitle?: string;
   scheduleItemId?: string;
+  /** Set when this entry came from a thumbnail format (Topic Card Grid, etc.)
+   *  rather than the free-form 5-concept generator. Old entries leave this
+   *  field undefined and render via the free-form code path. */
+  format?: 'topic-card-grid';
+  /** Format-specific payload, discriminated by `format`. */
+  formatPayload?: TopicCardGridHistoryPayload;
+}
+
+/** Stored alongside a `format: 'topic-card-grid'` thumbnail history entry.
+ *  Captures the full input + output so a restored entry can be re-rendered
+ *  (Step 2 only, no fresh Step 1 spend) without re-asking the user. */
+export interface TopicCardGridHistoryPayload {
+  gridRows: number;
+  gridCols: number;
+  gridMode: 'preset' | 'custom';
+  /** Which flow mode the user generated under. */
+  mode: 'review' | 'pre-fill' | 'one-shot';
+  /** The cards as actually fed to Step 2 (post-user-edit). */
+  cards: Array<{
+    index: number;
+    label: string;
+    icon_concept: string;
+    accent_color?: string;
+  }>;
+  globalPalette: {
+    background: string;
+    primary_accent: string;
+    secondary_accent: string;
+  };
+  imageUrl: string;
+  /** Computed region rectangles for the rendered grid (intrinsic-image pixels). */
+  regions: Array<{ id: string; label: string; x: number; y: number; w: number; h: number }>;
+  /** The reference image URL that anchored the run, if the user provided one. */
+  referenceImageUrl?: string;
+  /** The image model used in Step 2 (defaults to gpt-image-2-i2i). */
+  formatImageModel: string;
+  /** Output dimensions used for region math. */
+  outputWidth: number;
+  outputHeight: number;
 }
 
 export interface QAHistoryEntry {

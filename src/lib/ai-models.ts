@@ -43,6 +43,7 @@ export type AppFeature =
   | 'seo-optimizer'
   | 'youtube-description'
   | 'thumbnail-generate'
+  | 'thumbnail-format-grid'
   | 'image-style-analyze'
   | 'narrator-split-sections'
   | 'script-format'
@@ -97,6 +98,7 @@ export const APP_FEATURES: AppFeatureSpec[] = [
   { id: 'seo-optimizer', label: 'SEO Optimizer', description: 'Optimizes titles, descriptions, and tags', section: 'create', defaultModelId: SONNET },
   { id: 'youtube-description', label: 'YouTube Description', description: 'Generates the description / chapter list / tags for a script', section: 'create', defaultModelId: HAIKU },
   { id: 'thumbnail-generate', label: 'Thumbnail Generator', description: 'Drafts thumbnail concepts + copy variants', section: 'create', defaultModelId: SONNET },
+  { id: 'thumbnail-format-grid', label: 'Thumbnail Format — Topic Card Grid', description: 'LLM step for the Topic Card Grid format (card list + global palette)', section: 'create', defaultModelId: 'kie-gemini-2.5-pro' },
   { id: 'image-style-analyze', label: 'Image Style Analyze', description: 'Reads a thumbnail image and extracts style/composition', section: 'create', defaultModelId: HAIKU },
   { id: 'narrator-split-sections', label: 'Narrator — Split Sections', description: 'Splits a long script into narrator-friendly sections', section: 'create', defaultModelId: HAIKU },
   { id: 'script-format', label: 'Script Format (ElevenLabs)', description: 'Reformats a script for ElevenLabs voiceover ingestion', section: 'create', defaultModelId: KIE_GEMINI_FLASH },
