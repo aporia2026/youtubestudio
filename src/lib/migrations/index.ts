@@ -73,6 +73,8 @@ import migration0070 from './0070_add_channel_visual_brand_kit';
 // import migration0071 from './0071_add_default_broll_model_to_collaborators';
 import migration0072 from './0072_broll_clips_production_doc_id';
 import migration0073 from './0073_reheal_composite_workspace_constraints';
+import migration0074 from './0074_create_youtube_analyses';
+import migration0075 from './0075_workspace_analyzer_daily_cap_override';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -153,6 +155,8 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   // TODO(broll-plan): re-add `migration0071,` once the file is created.
   migration0072,
   migration0073,
+  migration0074,
+  migration0075,
 ]);
 
 /**

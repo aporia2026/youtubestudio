@@ -18,6 +18,7 @@ import type {
   MonetizationCheckResult,
   MonetizationStatus,
 } from '@/lib/niche-finder/monetization-scrape';
+import Link from 'next/link';
 import { FavoriteButton } from './FavoriteButton';
 import type { FavoriteSourceTab } from '@/lib/niche-finder/favorites';
 import type { NicheScores } from '@/lib/niche-finder/types';
@@ -308,6 +309,25 @@ export function OutlierCard({
               flexWrap: 'wrap',
             }}
           >
+            <Link
+              href={`/analyze?videoId=${encodeURIComponent(video.videoId)}&title=${encodeURIComponent(video.title)}&channel=${encodeURIComponent(video.channelTitle ?? '')}&autostart=1`}
+              prefetch={false}
+              onClick={(e) => e.stopPropagation()}
+              title="Run the deep video analyzer on this video — produces a style pack and strategic insights."
+              style={{
+                padding: '3px 8px',
+                background: 'rgba(124,58,237,0.10)',
+                color: '#c4b5fd',
+                border: '1px solid rgba(124,58,237,0.35)',
+                borderRadius: 6,
+                fontSize: 11,
+                fontWeight: 500,
+                textDecoration: 'none',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Analyze video
+            </Link>
             {monet ? (
               <MonetizationPill
                 status={monet.status}
