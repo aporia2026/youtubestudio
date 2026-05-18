@@ -39,6 +39,7 @@ import {
 import { SectionThumbnailCard } from '@/components/production-doc/SectionThumbnailCard';
 import { OverlayCell } from '@/components/production-doc/OverlayCell';
 import { OverlayPositionEditor } from '@/components/production-doc/OverlayPositionEditor';
+import { OverlayEditDialog } from '@/components/production-doc/OverlayEditDialog';
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
 import { MissingClipsModal } from '@/components/production-doc/MissingClipsModal';
@@ -2686,6 +2687,12 @@ function ProductionDocPage() {
   const RETHINK_MAX_ATTEMPTS = 5;
   const [rethinkAttempts, setRethinkAttempts] = useState<Record<number, number>>({});
   const [rethinkingRows, setRethinkingRows] = useState<Set<number>>(() => new Set());
+
+  // Phase 5 — overlay AI-edit dialog. Single-row at a time (matches
+  // overlayPositionRow's pattern). Mounted from the position editor's
+  // ✎ button; on accept, the row's overlay URL is swapped to the new
+  // R2 URL returned by /api/overlay/edit.
+  const [overlayEditRow, setOverlayEditRow] = useState<number | null>(null);
 
   // — B-roll clips per row (rowIndex → { status, videoUrl }). The BrollCell
   //   owns its own clip lifecycle and reports up via `onClipChange`; we keep
@@ -7487,6 +7494,7 @@ function ProductionDocPage() {
           onRethink={() => { void rethinkOverlayPlacement(overlayPositionRow); }}
           isRethinking={rethinkingRows.has(overlayPositionRow)}
           rethinkExhausted={(rethinkAttempts[overlayPositionRow] ?? 0) >= RETHINK_MAX_ATTEMPTS}
+          onEditImage={() => setOverlayEditRow(overlayPositionRow)}
           onSave={(pos, size, stretchedH) => {
             console.info('[ui overlay-position] saved', {
               rowIndex: overlayPositionRow,
@@ -7562,6 +7570,38 @@ function ProductionDocPage() {
           onClose={() => setOverlayPositionRow(null)}
         />
       )}
+
+      {/* Phase 5 — AI image-edit dialog. Mounts on top of the position
+          editor when the user clicks ✎ Edit image. On accept the
+          row's overlay URL is swapped to the new R2 URL; the renderer's
+          Phase 0 onLoad reads the natural aspect of the edited image
+          and reshapes the container accordingly, so a square edit of a
+          wide wordmark "just works" without any aspect tracking here. */}
+      {overlayEditRow !== null &&
+        doc?.rows[overlayEditRow] &&
+        rowOverlays[overlayEditRow]?.status === 'done' &&
+        rowOverlays[overlayEditRow]?.url && (
+          <OverlayEditDialog
+            overlayUrl={rowOverlays[overlayEditRow]!.url!}
+            termsLabel={doc.rows[overlayEditRow]!.overlay_stock_terms || ''}
+            onAccept={(newOverlayUrl, mode) => {
+              console.info('[ui overlay-edit] accepted', {
+                rowIndex: overlayEditRow,
+                mode,
+                newOverlayUrl,
+              });
+              setRowOverlays((prev) => ({
+                ...prev,
+                [overlayEditRow]: {
+                  ...prev[overlayEditRow],
+                  status: 'done',
+                  url: newOverlayUrl,
+                },
+              }));
+            }}
+            onClose={() => setOverlayEditRow(null)}
+          />
+        )}
 
       {missingClipsModal && (
         <MissingClipsModal

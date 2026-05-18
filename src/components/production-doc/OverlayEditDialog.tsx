@@ -1,0 +1,511 @@
+"use client";
+
+/**
+ * AI-edit dialog for an overlay image — Phase 5 of
+ * `_plans/2026-05-18-overlay-system-overhaul.md`.
+ *
+ * Two edit modes, selected by tab:
+ *
+ *   - Smart edit (default per council) — Nano Banana 2 via Kie. Prompt
+ *     only, no mask. ~$0.034/edit batch. Best for "make it blue", "remove
+ *     the tagline", "make it 3D". The 80% case.
+ *
+ *   - Brush mask — GPT-image-1.5 via Kie with paint mask. Opens the
+ *     existing MaskBrushEditor as a sub-modal; on its onApply, fires
+ *     the edit call against /api/overlay/edit?mode=brush. Best for
+ *     "regenerate just this region" — the 20% case where prompt-only
+ *     can't target precisely.
+ *
+ * Flow within the dialog:
+ *   1. User picks a mode and submits.
+ *   2. Loading spinner while /api/overlay/edit is in flight.
+ *   3. Result returns → preview the new overlay alongside the original
+ *      with Accept | Discard buttons.
+ *   4. Accept → calls onAccept(newOverlayUrl) and closes.
+ *   5. Discard → wipes the pending result and returns to step 1 so the
+ *      user can iterate without losing the original.
+ *
+ * No edit history yet — the dialog is a one-shot apply surface. Phase 5.1
+ * can add a per-overlay history array if users actually need to revert
+ * past edits.
+ *
+ * Cost is surfaced inline so the user knows what each apply costs. The
+ * brush-mask quality tier lives on the MaskBrushEditor itself.
+ */
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { MaskBrushEditor } from './MaskBrushEditor';
+
+interface OverlayEditDialogProps {
+  /** Current overlay URL — used as the source for any edit. */
+  overlayUrl: string;
+  /** Terms label shown in the header so the user knows which overlay
+   *  they're editing if several rows are open across the doc. */
+  termsLabel: string;
+  /** Called when the user clicks Accept on a pending edit result.
+   *  The parent persists the new URL to the row. */
+  onAccept: (newOverlayUrl: string, mode: 'smart' | 'brush') => void;
+  onClose: () => void;
+}
+
+type EditMode = 'smart' | 'brush';
+
+export function OverlayEditDialog({
+  overlayUrl,
+  termsLabel,
+  onAccept,
+  onClose,
+}: OverlayEditDialogProps) {
+  const [mode, setMode] = useState<EditMode>('smart');
+  const [smartPrompt, setSmartPrompt] = useState('');
+  const [isWorking, setIsWorking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pendingResultUrl, setPendingResultUrl] = useState<string | null>(null);
+  const [pendingMode, setPendingMode] = useState<EditMode | null>(null);
+  const [brushOpen, setBrushOpen] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Lock page scroll while the dialog is open — same pattern as the
+  // position editor + transition dialog so this feels like part of
+  // the same modal family.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, []);
+
+  // Esc to close, but only when nothing's pending — a half-finished edit
+  // shouldn't vanish on an accidental key press.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !pendingResultUrl && !isWorking && !brushOpen) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pendingResultUrl, isWorking, brushOpen, onClose]);
+
+  // Focus the textarea when smart mode opens so the user can just
+  // start typing — saves a click on the common path.
+  useEffect(() => {
+    if (mode === 'smart' && !pendingResultUrl && !brushOpen) {
+      textareaRef.current?.focus();
+    }
+  }, [mode, pendingResultUrl, brushOpen]);
+
+  const applySmartEdit = useCallback(async () => {
+    const promptTrimmed = smartPrompt.trim();
+    if (!promptTrimmed) {
+      setError('Type a prompt first — e.g. "make the logo blue" or "remove the tagline".');
+      return;
+    }
+    setError(null);
+    setIsWorking(true);
+    console.info('[overlay edit] smart edit submit', {
+      overlayUrl,
+      promptLength: promptTrimmed.length,
+    });
+    try {
+      const res = await fetch('/api/overlay/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'smart',
+          overlayUrl,
+          prompt: promptTrimmed,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        overlayUrl?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.overlayUrl) {
+        setError(data.error || `Edit failed (HTTP ${res.status})`);
+        return;
+      }
+      setPendingResultUrl(data.overlayUrl);
+      setPendingMode('smart');
+      console.info('[overlay edit] smart edit result', { newUrl: data.overlayUrl });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Edit request failed');
+    } finally {
+      setIsWorking(false);
+    }
+  }, [overlayUrl, smartPrompt]);
+
+  const applyBrushEdit = useCallback(
+    async (args: { maskUrl: string; prompt: string; quality: 'low' | 'medium' | 'high' }) => {
+      setBrushOpen(false);
+      setError(null);
+      setIsWorking(true);
+      console.info('[overlay edit] brush edit submit', {
+        overlayUrl,
+        maskUrl: args.maskUrl,
+        quality: args.quality,
+        promptLength: args.prompt.length,
+      });
+      try {
+        const res = await fetch('/api/overlay/edit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'brush',
+            overlayUrl,
+            prompt: args.prompt,
+            mask: { url: args.maskUrl, quality: args.quality },
+          }),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          overlayUrl?: string;
+          error?: string;
+        };
+        if (!res.ok || !data.overlayUrl) {
+          setError(data.error || `Edit failed (HTTP ${res.status})`);
+          return;
+        }
+        setPendingResultUrl(data.overlayUrl);
+        setPendingMode('brush');
+        console.info('[overlay edit] brush edit result', { newUrl: data.overlayUrl });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Edit request failed');
+      } finally {
+        setIsWorking(false);
+      }
+    },
+    [overlayUrl],
+  );
+
+  const acceptPending = useCallback(() => {
+    if (!pendingResultUrl || !pendingMode) return;
+    console.info('[overlay edit] accept', { newUrl: pendingResultUrl, mode: pendingMode });
+    onAccept(pendingResultUrl, pendingMode);
+    onClose();
+  }, [pendingResultUrl, pendingMode, onAccept, onClose]);
+
+  const discardPending = useCallback(() => {
+    console.info('[overlay edit] discard pending result');
+    setPendingResultUrl(null);
+    setPendingMode(null);
+    setError(null);
+  }, []);
+
+  // ─── Render ──────────────────────────────────────────────────────────
+
+  const checkerBg =
+    'repeating-conic-gradient(rgba(255,255,255,0.06) 0% 25%, transparent 0% 50%) 50% / 16px 16px';
+
+  const dialog = (
+    <>
+      <div
+        onClick={(e) => {
+          if (e.target === e.currentTarget && !pendingResultUrl && !isWorking && !brushOpen) {
+            onClose();
+          }
+        }}
+        style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: 1100,
+          background: 'rgba(0,0,0,0.78)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 24,
+        }}
+      >
+        <div
+          style={{
+            background: '#0f1115',
+            borderRadius: 12,
+            border: '1px solid rgba(255,255,255,0.10)',
+            width: 'min(720px, 95vw)',
+            maxHeight: '90vh',
+            overflow: 'auto',
+            boxShadow: '0 30px 80px rgba(0,0,0,0.5)',
+          }}
+        >
+          <div style={{ padding: '14px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>
+              Edit overlay image
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+              {pendingResultUrl
+                ? 'Review the result. Accept to replace the overlay, or Discard to try another edit.'
+                : 'Smart edit handles the 80% case with a sentence. Brush mask is the precise escape hatch.'}
+              <span style={{ color: '#fbbf24', marginLeft: 6 }}>✦ {termsLabel}</span>
+            </div>
+          </div>
+
+          {/* Pending-result preview takes over the body — the user is
+              deciding between Accept and Discard, no edit affordances. */}
+          {pendingResultUrl ? (
+            <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                    Before
+                  </div>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={overlayUrl}
+                    alt="overlay before edit"
+                    style={{ width: '100%', height: 240, objectFit: 'contain', background: checkerBg, borderRadius: 6 }}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ fontSize: 10, color: '#a78bfa', textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                    After ({pendingMode === 'smart' ? 'smart edit' : 'brush mask'})
+                  </div>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={pendingResultUrl}
+                    alt="overlay after edit"
+                    style={{
+                      width: '100%',
+                      height: 240,
+                      objectFit: 'contain',
+                      background: checkerBg,
+                      borderRadius: 6,
+                      outline: '1px solid rgba(168,85,247,0.40)',
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {/* Mode tabs. Pinned-pill style so it's obvious which is
+                  active — and the inactive tab still looks clickable so
+                  the user knows they have a choice. */}
+              <div style={{ display: 'flex', gap: 4, padding: 3, background: 'rgba(255,255,255,0.04)', borderRadius: 8, alignSelf: 'flex-start' }}>
+                <button
+                  type="button"
+                  onClick={() => setMode('smart')}
+                  disabled={isWorking}
+                  style={{
+                    fontSize: 12,
+                    padding: '6px 14px',
+                    borderRadius: 6,
+                    background: mode === 'smart' ? 'rgba(168,85,247,0.20)' : 'transparent',
+                    color: mode === 'smart' ? '#c084fc' : 'var(--text-muted)',
+                    border: 'none',
+                    cursor: isWorking ? 'not-allowed' : 'pointer',
+                    fontWeight: mode === 'smart' ? 600 : 400,
+                  }}
+                >
+                  Smart edit
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode('brush')}
+                  disabled={isWorking}
+                  style={{
+                    fontSize: 12,
+                    padding: '6px 14px',
+                    borderRadius: 6,
+                    background: mode === 'brush' ? 'rgba(168,85,247,0.20)' : 'transparent',
+                    color: mode === 'brush' ? '#c084fc' : 'var(--text-muted)',
+                    border: 'none',
+                    cursor: isWorking ? 'not-allowed' : 'pointer',
+                    fontWeight: mode === 'brush' ? 600 : 400,
+                  }}
+                >
+                  Brush mask
+                </button>
+              </div>
+
+              {/* Source preview — small thumbnail so the user keeps the
+                  reference visible while writing prompts. */}
+              <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={overlayUrl}
+                  alt="overlay source"
+                  style={{ width: 120, height: 120, objectFit: 'contain', background: checkerBg, borderRadius: 6, flexShrink: 0 }}
+                />
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
+                  {mode === 'smart' ? (
+                    <>
+                      <label htmlFor="overlay-edit-prompt" style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                        What to change
+                      </label>
+                      <textarea
+                        id="overlay-edit-prompt"
+                        ref={textareaRef}
+                        value={smartPrompt}
+                        onChange={(e) => setSmartPrompt(e.target.value)}
+                        placeholder='e.g. "make the logo blue", "remove the tagline below"'
+                        rows={4}
+                        maxLength={2000}
+                        disabled={isWorking}
+                        style={{
+                          fontSize: 13,
+                          padding: '8px 10px',
+                          borderRadius: 6,
+                          background: 'rgba(255,255,255,0.04)',
+                          color: 'var(--text)',
+                          border: '1px solid rgba(255,255,255,0.10)',
+                          resize: 'vertical',
+                          fontFamily: 'inherit',
+                          width: '100%',
+                        }}
+                      />
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                        ~$0.034 per edit · Nano Banana 2 segments the region the prompt describes.
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                        Paint the region of the overlay you want to change, then type a prompt for the new content. GPT-image-1.5 regenerates only the painted pixels.
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setBrushOpen(true)}
+                        disabled={isWorking}
+                        style={{
+                          fontSize: 12,
+                          padding: '8px 14px',
+                          borderRadius: 6,
+                          background: 'rgba(168,85,247,0.22)',
+                          color: '#c084fc',
+                          border: '1px solid rgba(168,85,247,0.45)',
+                          cursor: isWorking ? 'not-allowed' : 'pointer',
+                          alignSelf: 'flex-start',
+                        }}
+                      >
+                        🖌 Open brush editor →
+                      </button>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                        $0.034 medium / $0.133 high · cost set in the brush editor.
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {error && (
+                <div
+                  role="alert"
+                  style={{
+                    fontSize: 11,
+                    color: '#f87171',
+                    padding: '6px 10px',
+                    background: 'rgba(239,68,68,0.10)',
+                    border: '1px solid rgba(239,68,68,0.30)',
+                    borderRadius: 4,
+                  }}
+                >
+                  {error}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div
+            style={{
+              padding: '12px 18px',
+              borderTop: '1px solid rgba(255,255,255,0.08)',
+              display: 'flex',
+              gap: 8,
+              justifyContent: 'flex-end',
+            }}
+          >
+            {pendingResultUrl ? (
+              <>
+                <button
+                  type="button"
+                  onClick={discardPending}
+                  style={{
+                    fontSize: 12,
+                    padding: '8px 14px',
+                    borderRadius: 6,
+                    background: 'transparent',
+                    color: 'var(--text-muted)',
+                    border: '1px solid rgba(255,255,255,0.10)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Discard, try again
+                </button>
+                <button
+                  type="button"
+                  onClick={acceptPending}
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    padding: '8px 14px',
+                    borderRadius: 6,
+                    background: 'rgba(74,222,128,0.20)',
+                    color: '#4ade80',
+                    border: '1px solid rgba(74,222,128,0.45)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Accept — replace overlay
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  disabled={isWorking}
+                  style={{
+                    fontSize: 12,
+                    padding: '8px 14px',
+                    borderRadius: 6,
+                    background: 'transparent',
+                    color: 'var(--text)',
+                    border: '1px solid rgba(255,255,255,0.10)',
+                    cursor: isWorking ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  Cancel
+                </button>
+                {mode === 'smart' && (
+                  <button
+                    type="button"
+                    onClick={applySmartEdit}
+                    disabled={isWorking || !smartPrompt.trim()}
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      padding: '8px 14px',
+                      borderRadius: 6,
+                      background: 'rgba(168,85,247,0.22)',
+                      color: '#c084fc',
+                      border: '1px solid rgba(168,85,247,0.45)',
+                      cursor: isWorking || !smartPrompt.trim() ? 'not-allowed' : 'pointer',
+                      opacity: isWorking || !smartPrompt.trim() ? 0.6 : 1,
+                    }}
+                  >
+                    {isWorking ? 'Editing…' : 'Apply smart edit'}
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Brush editor mounts on top of this dialog. On its onApply we
+          fire the brush-mode call directly — the brush editor closes
+          itself by calling its own onCancel before onApply resolves. */}
+      {brushOpen && (
+        <MaskBrushEditor
+          sourceImageUrl={overlayUrl}
+          onCancel={() => setBrushOpen(false)}
+          onApply={(args) => applyBrushEdit(args)}
+        />
+      )}
+    </>
+  );
+
+  if (typeof document === 'undefined') return null;
+  return createPortal(dialog, document.body);
+}

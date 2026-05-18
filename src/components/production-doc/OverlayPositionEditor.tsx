@@ -78,6 +78,11 @@ interface OverlayPositionEditorProps {
   /** True when this row has burned through its session rethink budget.
    *  Disables the button with an explanatory tooltip. */
   rethinkExhausted?: boolean;
+  /** Phase 5 — invoked when the user clicks ✎ in the header to open the
+   *  AI image-edit dialog. Absent ⇒ the button is hidden. The parent
+   *  mounts OverlayEditDialog on this trigger; on accept the parent
+   *  updates rowOverlays[i].url and closes both dialogs. */
+  onEditImage?: () => void;
   /** Called when the user clicks Save. `stretchedHeightPct` is non-null
    *  only when free-aspect drag produced a manual height; pass it through
    *  to the row so the renderer honours the squish. Null clears any
@@ -148,6 +153,7 @@ export function OverlayPositionEditor({
   onRethink,
   isRethinking,
   rethinkExhausted,
+  onEditImage,
   onSave,
   onReset,
   onClose,
@@ -519,26 +525,60 @@ export function OverlayPositionEditor({
           boxShadow: '0 30px 80px rgba(0,0,0,0.5)',
         }}
       >
-        <div style={{ padding: '14px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>
-            Position overlay
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-            Drag the overlay onto the spot you want. Saving overrides the AI's planned zone for this row.
-            <span style={{ color: '#fbbf24', marginLeft: 6 }}>✦ {termsLabel}</span>
-          </div>
-          {/* Smart-placement rationale — only when present. Quiet line
-              that mirrors the colour family of the existing subtitle so
-              it doesn't compete with the action affordances. Shows the
-              model attribution as a tooltip on hover. */}
-          {placementReason && placementReason.trim() && (
-            <div
-              title={placementModel ? `Placement by ${placementModel}` : undefined}
-              style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.45, fontStyle: 'italic' }}
-            >
-              <span style={{ color: '#a78bfa' }}>AI placed here: </span>
-              {placementReason}
+        <div
+          style={{
+            padding: '14px 18px',
+            borderBottom: '1px solid rgba(255,255,255,0.08)',
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: 12,
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>
+              Position overlay
             </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+              Drag the overlay onto the spot you want. Saving overrides the AI's planned zone for this row.
+              <span style={{ color: '#fbbf24', marginLeft: 6 }}>✦ {termsLabel}</span>
+            </div>
+            {/* Smart-placement rationale — only when present. Quiet line
+                that mirrors the colour family of the existing subtitle
+                so it doesn't compete with the action affordances. Shows
+                the model attribution as a tooltip on hover. */}
+            {placementReason && placementReason.trim() && (
+              <div
+                title={placementModel ? `Placement by ${placementModel}` : undefined}
+                style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.45, fontStyle: 'italic' }}
+              >
+                <span style={{ color: '#a78bfa' }}>AI placed here: </span>
+                {placementReason}
+              </div>
+            )}
+          </div>
+          {/* Phase 5 — ✎ button opens the AI image-edit dialog. Top-
+              right of the header keeps it away from the primary action
+              area at the bottom; the icon is quiet so the user doesn't
+              feel pressured to use it. */}
+          {onEditImage && (
+            <button
+              type="button"
+              onClick={onEditImage}
+              title="Edit this overlay image with AI (Smart edit or Brush mask)"
+              style={{
+                fontSize: 12,
+                padding: '6px 10px',
+                borderRadius: 6,
+                background: 'rgba(168,85,247,0.14)',
+                color: '#c084fc',
+                border: '1px solid rgba(168,85,247,0.30)',
+                cursor: 'pointer',
+                flexShrink: 0,
+              }}
+            >
+              ✎ Edit image
+            </button>
           )}
         </div>
 
