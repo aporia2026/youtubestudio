@@ -77,6 +77,54 @@ export function ShotInspector({
     | { kind: 'error'; message: string }
   >({ kind: 'idle' });
 
+  const [regenState, setRegenState] = useState<
+    | { kind: 'idle' }
+    | { kind: 'generating' }
+    | { kind: 'error'; message: string }
+  >({ kind: 'idle' });
+
+  const handleRegenerate = useCallback(async () => {
+    if (!onUploadImage) return;
+    const prompt = row.ai_image_prompt?.trim() || row.visual_description?.trim();
+    if (!prompt) {
+      setRegenState({
+        kind: 'error',
+        message: 'No prompt to regenerate from. Edit the row’s prompt first.',
+      });
+      return;
+    }
+    setRegenState({ kind: 'generating' });
+    try {
+      const res = await fetch('/api/generate/production-doc/image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt,
+          onScreenText: row.on_screen_text ?? '',
+          sectionTitle: row.section_title ?? '',
+        }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || `Generate failed: HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as { imageUrl?: string };
+      if (typeof data.imageUrl !== 'string') {
+        throw new Error('Server response missing imageUrl');
+      }
+      console.info('[editor inspector] regenerate complete', {
+        shotIndex,
+        imageUrl: data.imageUrl,
+      });
+      onUploadImage(data.imageUrl);
+      setRegenState({ kind: 'idle' });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn('[editor inspector] regenerate failed', { detail: message });
+      setRegenState({ kind: 'error', message });
+    }
+  }, [onUploadImage, row.ai_image_prompt, row.visual_description, row.on_screen_text, row.section_title, shotIndex]);
+
   const [projectClips, setProjectClips] = useState<
     | { kind: 'idle' }
     | { kind: 'loading' }
@@ -281,6 +329,28 @@ export function ShotInspector({
               JPG, PNG, WebP, or GIF · max 10 MB. The new still replaces this shot
               immediately; Cmd/Ctrl+Z undoes.
             </div>
+
+            {/* Regenerate from this row's current prompt. Calls the
+                existing /api/generate/production-doc/image route so
+                pricing + rate-limit + R2 mirroring behave identically
+                to a Production-Doc-page regenerate. */}
+            <button
+              type="button"
+              onClick={handleRegenerate}
+              disabled={regenState.kind === 'generating'}
+              className="w-full text-xs px-3 py-1.5 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
+              style={{ borderColor: 'var(--card-border)' }}
+              title="Re-run the image generator on this row's current prompt"
+            >
+              {regenState.kind === 'generating'
+                ? 'Regenerating…'
+                : 'Regenerate from prompt'}
+            </button>
+            {regenState.kind === 'error' && (
+              <div className="text-[10px]" style={{ color: '#f87171' }}>
+                {regenState.message}
+              </div>
+            )}
           </div>
         )}
 
