@@ -1,9 +1,21 @@
 # Thumbnail Format: Topic Card Grid
 
 **Date:** 2026-05-19
-**Status:** Pending approval
+**Status:** Pending approval (revised after feedback round 1)
 **Owner:** Yoav
 **Prereq:** `_plans/2026-05-18-thumbnail-reference-multimodal.md` (multimodal reference image — shipped 2026-05-18)
+
+## Revision log
+
+**2026-05-19 r2 — feedback incorporated:**
+- Grid size: presets PLUS a custom mode (manual rows × cols).
+- LLM model: user-pickable with workspace default; new `thumbnail-format-grid` AppFeature key feeds the existing per-feature resolver.
+- Image model: default `gpt-image-2-i2i`, user can override with a warning.
+- **Two-step flow**: LLM generates card list → user reviews/edits inline → user clicks Generate Image. Plus a "pre-fill" advanced mode where the user types titles up-front and skips the LLM. Plus a "trust me, generate everything" shortcut.
+- **Region marking**: regions computed deterministically from the layout math and returned with the image URL. Auto-flow into production-doc.
+- Outer spacing: explicit — outer margin equals inter-card gutter on all four sides of the canvas.
+- Curated default reference: generated once by us, committed, approved by user before merge.
+- Language: English only for v1 (no Hebrew label rendering).
 
 ---
 
@@ -26,7 +38,9 @@ Decomposed precisely so the implementation can lock onto every element:
 
 2. **Grid**
    - N rows × M columns, exact count enforced by prompt.
-   - White gutters between cards (~12-16 px equivalent in 1280×720), even on all sides including the canvas edges.
+   - **Outer margin**: white space around the entire grid on all four sides (top, bottom, left, right) of the canvas. Width = same as inter-card gutter, so the spacing reads as uniform. The references the user provided show this clearly on the 2×3 antivirus/ransomware examples; we standardize on this regardless of grid size.
+   - **Inter-card gutters**: white, even on all sides between cards.
+   - Both outer margin and gutters scale with output resolution. At 1280×720 (default): ~14 px. At 1920×1080: ~21 px. (Proportion: ~1.1% of canvas width.)
    - All cards same size; grid is uniform, not freeform.
 
 3. **Card frame**
@@ -65,11 +79,46 @@ The user's own reference grids were produced with GPT Image 2 — proof of capab
 
 ---
 
-## Pipeline (two server-side calls per generation)
+## Pipeline (two-step, with mandatory user review between steps)
+
+The pipeline is split into two server-side calls separated by an editable UI step. This is the change from r1 — the user has confirmed the LLM sometimes picks wrong card titles from the script, and they want a chance to fix them before the (more expensive) image call runs.
+
+```
+[User input: title, niche, script, grid size, model, optional reference]
+                            │
+                            ▼
+              ┌─────────────────────────────┐
+              │  Step 1 — LLM card list     │   (cheap, fast)
+              │  Output: { cards[], palette}│
+              └─────────────────────────────┘
+                            │
+                            ▼
+              ┌─────────────────────────────┐
+              │  USER REVIEW + EDIT         │   (UI step, no API call)
+              │  - Edit any label           │
+              │  - Edit any icon_concept    │
+              │  - Reorder cards            │
+              │  - Add/remove (if grid       │
+              │    custom mode)              │
+              └─────────────────────────────┘
+                            │
+                            ▼
+              ┌─────────────────────────────┐
+              │  Step 2 — GPT Image 2 i2i   │   (expensive, slow)
+              │  Output: imageUrl + regions │
+              └─────────────────────────────┘
+```
+
+Two shortcut modes the user can pick instead of the default flow:
+
+- **"Pre-fill mode"** — user provides the card list themselves up-front (paste a comma-separated list of labels), the LLM only fills in `icon_concept` per label. Useful when the user knows exactly what the cards should be and doesn't want the LLM second-guessing the topics.
+- **"One-shot mode"** — skip the review step. Step 1 → Step 2 immediately. For confident runs / regenerations.
+
+The default is **two-step with review**. The shortcut modes are surfaced as smaller buttons next to the main "Generate" CTA.
 
 ### Step 1 — LLM "card list" generation (multimodal)
 
-**Model:** Default `kie-gemini-2.5-pro` (vision-capable, multimodal — sees the reference, available on the user's existing Kie account). User can override with any model in the existing `CONCEPT_VISION_MODELS` set.
+**Model:** User-pickable from the AI Model dropdown that already exists on the page. The format-grid feature gets its own `AppFeature` key (`'thumbnail-format-grid'`) so the existing per-feature default-model resolver picks up workspace overrides automatically. Default: `kie-gemini-2.5-pro` (matches what the user has been using). Any model in the existing `CONCEPT_VISION_MODELS` set is allowed.
 
 **Inputs:**
 - `title` (the video title)
@@ -117,7 +166,7 @@ Validation: card count MUST equal `gridRows * gridCols`. Each `icon_concept` MUS
 
 ### Step 2 — GPT Image 2 i2i composite
 
-**Model:** `gpt-image-2-i2i` (Kie endpoint). Hard-locked for this format — no override.
+**Model:** Defaults to `gpt-image-2-i2i` (Kie endpoint) — the only model that reliably renders the format's typography. The user can override via the Image Model dropdown, but if they pick anything else the UI shows a warning: "GPT Image 2 i2i is recommended for this format. Other models will produce a different style and likely mangle the per-card typography." We don't block — the user owns the choice.
 
 **Inputs:**
 - Reference image (same one used in Step 1).
@@ -176,7 +225,59 @@ Built dynamically. Token budget: GPT Image 2 i2i prompts go up to ~5000 chars pe
 
 ### Output
 
-A single image URL returned by Kie.ai. Displayed in the page as one large preview with Download / Copy URL / "Set as YouTube Thumbnail" actions, same as the existing flow but without the 5-concept card stack.
+A single image URL returned by Kie.ai, **plus a deterministic regions array** (see next section). Displayed in the page as one large preview with Download / Copy URL / "Set as YouTube Thumbnail" actions, same as the existing flow but without the 5-concept card stack.
+
+---
+
+## Region marking (production-doc ready)
+
+The existing production-doc thumbnail flow has an "Auto-detect regions" button that sends the thumbnail to a vision model to identify each panel of a collage. Since this format owns the layout math, **we can compute every region deterministically and return it with the image URL** — no vision pass needed when the thumbnail lands in production-doc.
+
+### Computation
+
+Given output dimensions `W × H` (default 1280 × 720), grid `rows × cols`, outer margin `OM`, inter-card gutter `G`:
+
+```
+card_w = (W − 2·OM − (cols − 1)·G) / cols
+card_h = (H − 2·OM − (rows − 1)·G) / rows
+
+For each (row r, col c):
+  x = OM + c · (card_w + G)
+  y = OM + r · (card_h + G)
+  region.full_card  = { x, y, w: card_w, h: card_h }
+  region.illustration = { x, y, w: card_w, h: card_h * 0.80 }
+  region.label_strip  = { x, y: y + card_h * 0.80, w: card_w, h: card_h * 0.20 }
+```
+
+We default to `OM = G = round(W * 0.011)` (≈14 px at 1280, 21 px at 1920) — see anatomy section.
+
+### Output shape
+
+The format's API response carries the regions alongside `imageUrl`:
+
+```ts
+{
+  imageUrl: string;
+  regions: ThumbnailRegion[]; // same shape as src/remotion/types.ts
+}
+```
+
+Where each entry's `label` is the card's label (same one in the white strip), `id` is a fresh uuid, and `(x, y, w, h)` is the **full card** rectangle (illustration + label strip) — this matches what the production-doc region editor expects for a zoom target.
+
+### Wiring
+
+Three places consume this:
+
+1. **Thumbnail history entry** — stores `regions` alongside the imageUrl so a restored entry brings the regions with it (no re-computation, no vision call).
+2. **Schedule-link saver** — when the user presses the existing "Save to schedule item" CTA on the thumbnails page, the `buildPatch` extends to include `thumbnail_regions: regions`. Project / schedule-item / production-doc schema already accepts a regions array on the linked thumbnail (verified against existing ThumbnailRegionEditor consumer in `src/components/production-doc/ThumbnailRegionEditor.tsx`).
+3. **"Set as YouTube Thumbnail"** flow — when the user pushes the image to a channel video via the existing dialog, the regions ride along on the same payload. The downstream channel/video record already stores regions when present.
+
+Net effect: when the user generates a Topic Card Grid thumbnail and lands it on a section divider in production-doc, the regions are already there. The "Auto-detect regions" button becomes a no-op fallback for non-grid thumbnails.
+
+### Edge cases
+
+- **User uses one-shot mode and the model produces a wrong card count** (asked for 9, got 8): the computed regions assume 9; the 9th region maps to empty canvas. The user sees the misalignment in the preview and regenerates. We can also do a vision-based sanity check post-generation but it's not worth the cost for v1; visual review catches it.
+- **User overrides the image model** (e.g. picks Nano Banana): regions still computed deterministically — they describe the INTENDED layout, even if the actual rendered image doesn't match. We surface a warning at save-time: "Regions assume the Topic Card Grid layout. Your generated image used a different model; regions may not align."
 
 ---
 
@@ -205,28 +306,69 @@ Above the existing `AI Model` field, add a `Format` dropdown:
 - (Placeholder for future: `N Levels Explained`.)
 
 When `Topic Card Grid` is selected:
-- A `Grid size` selector appears (radio group or compact dropdown): `2×2 (4 cards)`, `2×3 (6)`, `3×3 (9)`, `3×4 (12)`, `4×3 (12)`, `4×4 (16)`, `3×6 (18)`, `4×6 (24)`. Default `3×3`.
-- The `Image Generation` section collapses to a fixed display: "Image model: GPT Image 2 (locked for this format)". No model picker. Existing `Image Generation` toggle is hidden (always on for this format).
-- The Text Overlay & Style block is hidden (typography is driven by the reference image; embedded text is banned per the simplicity rule).
-- A new small inline notice next to the reference upload: "Optional — uses our curated style if you don't upload one. Your upload locks the typography to your font."
-- The `Generate Concepts` button changes to `Generate Thumbnail`.
 
-### Right panel changes
+**Grid size — presets + custom:**
+- A row of preset chips: `2×2`, `2×3`, `3×3`, `3×4`, `4×3`, `4×4`, `3×6`, `4×6`. Default `3×3`.
+- After the chips, a `Custom…` chip that reveals two number inputs labelled "Rows" and "Cols" (1–8 each), live-validated. The count below updates ("12 cards"). Custom is its own grid value — picking a preset clears custom and vice versa.
 
-- Loading state: a single skeleton card (not the 5-card stack).
-- Result: one large image preview with Download / Copy URL / Set-as-Thumbnail actions.
-- Below the image: a collapsed details accordion showing the LLM-generated card list (label + icon concept per card) so the user can see what was rendered and decide whether to regenerate.
-- A `Regenerate` button (re-runs both steps with same inputs) and a `Regenerate with new card list` button (re-runs LLM step with `temperature=0.9` to vary the cards).
+**Image model — defaults locked-recommended but overridable:**
+- A small Image Model dropdown appears with `GPT Image 2 (Image-to-Image) — recommended` as the highlighted default. Other i2i models are pickable but selecting them shows an inline warning under the dropdown: "This format is calibrated for GPT Image 2. Other models will produce a different style."
+- T2I models are NOT in this list (the reference image is mandatory for the format's typography lock).
+
+**Hidden / collapsed:**
+- The existing Text Overlay & Style block is hidden (typography is driven by the reference image; embedded text is banned per the simplicity rule).
+- The "Enable image generation" toggle is hidden — always on for this format.
+
+**Reference image:**
+- Small inline notice next to the reference upload: "Optional — uses our curated style if you don't upload one. Your upload locks the typography to your font."
+- Preview shows whichever reference is active (user-uploaded OR the curated default).
+
+**Mode chips for the generation flow:**
+- A small row of three mode chips above the main CTA: `Review cards` (default), `Pre-fill cards`, `One-shot`.
+  - `Review cards`: standard two-step flow (LLM → review → image).
+  - `Pre-fill cards`: a `Card titles` textarea appears below the script field — one title per line. Step 1 only fills in icon concepts.
+  - `One-shot`: skip review, run both steps back-to-back.
+- The CTA label changes with the mode:
+  - `Generate card list` (Review cards)
+  - `Generate thumbnail` (Pre-fill cards — runs both because the user already provided titles)
+  - `Generate thumbnail` (One-shot)
+
+### Right panel — TWO states
+
+**State A — after Step 1 (Review mode):**
+The right panel shows an editable card table. One row per card with:
+- Drag handle (reorder)
+- `#` column (index)
+- `Label` text input
+- `Icon concept` text input (longer, with placeholder showing the model's suggestion)
+- `Accent color` swatch (click to edit; defaults to the global palette)
+- A small "🗑 Delete" button (only enabled when in Custom grid mode where total cards is the count of rows)
+
+Below the table:
+- Validation banner showing card count vs grid count. If they don't match, the `Generate Image` button is disabled with a clear message.
+- A `Regenerate card list` button (re-runs Step 1, temp 0.9, discards edits with confirm).
+- The primary `Generate Image` button.
+- An estimated cost line: "≈ $0.05–$0.11 per generation" (sourced from the format's cost projection).
+
+**State B — after Step 2 (image rendered):**
+- Single large image preview with Download / Copy URL / Set-as-Thumbnail / "Copy regions JSON" actions.
+- A collapsed accordion showing the final card list (read-only) for reference.
+- A `Region overlay` toggle that draws the computed region boxes over the preview — visual sanity check that the rendered grid lines up with our region math.
+- A `Regenerate image` button (re-runs Step 2 only, same card list) and an `Edit cards` button (returns to State A).
 
 ### History
 
 Same history machinery, but each entry stores:
 - `format: 'topic-card-grid'`
-- `gridRows`, `gridCols`
-- The full `cards` list from Step 1.
+- `gridRows`, `gridCols`, `gridMode: 'preset' | 'custom'`
+- `mode: 'review' | 'pre-fill' | 'one-shot'` (the flow mode the user generated under)
+- The full **edited** `cards` list (post-review, the one that was actually fed to Step 2).
 - The final `imageUrl`.
+- The computed `regions` array.
+- The reference image URL that was used (so restore + regenerate uses the same anchor).
+- The LLM model used + the image model used.
 
-Restore loads the form fields and shows the result. Re-running uses the stored card list as a "seed" the LLM can edit (future enhancement — not v1).
+Restore loads the form fields, the card list (in editable form), and the result image. The user can immediately tweak any card and click `Regenerate image` without re-paying for Step 1.
 
 ---
 
@@ -262,22 +404,31 @@ Specifically:
 
 ## Observability (rule 14)
 
-Namespace: `[thumb-format-grid]`. Log at every step.
+Namespace: `[thumb-format-grid]`. Log at every step in every endpoint.
 
-Server (`/api/thumbnails/format/topic-card-grid/route.ts`):
-- `[thumb-format-grid] start` — `{ modelId, gridRows, gridCols, has_user_reference: bool }`
-- `[thumb-format-grid] llm step done` — `{ duration_ms, cards_count, validation_passed: bool, retries_used }`
-- `[thumb-format-grid] llm validation failed` — `{ reason, offending_card_index }`
-- `[thumb-format-grid] image step start` — `{ prompt_chars }`
-- `[thumb-format-grid] image step done` — `{ duration_ms, task_id }`
-- `[thumb-format-grid] done` — `{ total_ms, image_url_host }`
-- `[thumb-format-grid] error` — `{ stage, detail }`
+Server — `/api/thumbnails/format/topic-card-grid/cards`:
+- `[thumb-format-grid cards] start` — `{ modelId, gridRows, gridCols, mode, has_user_reference, prefilled_count }`
+- `[thumb-format-grid cards] validation failed` — `{ reason, offending_card_index, retries_so_far }`
+- `[thumb-format-grid cards] done` — `{ duration_ms, cards_count, retries_used }`
+- `[thumb-format-grid cards] error` — `{ stage, detail }`
+
+Server — `/api/thumbnails/format/topic-card-grid/image`:
+- `[thumb-format-grid image] start` — `{ imageModelId, gridRows, gridCols, cards_count, prompt_chars, has_user_reference }`
+- `[thumb-format-grid image] regions computed` — `{ regions_count, outer_margin, gutter, card_w, card_h }`
+- `[thumb-format-grid image] done` — `{ duration_ms, task_id, image_url_host }`
+- `[thumb-format-grid image] error` — `{ stage, detail }`
 
 Client:
-- `console.info('[thumbnails format-grid] sending', { gridRows, gridCols, modelId, hasUserReference })` before the request.
-- `console.info('[thumbnails format-grid] received', { imageUrl, cardsCount })` after.
+- `console.info('[thumbnails format-grid cards] requesting', { gridRows, gridCols, modelId, mode })`
+- `console.info('[thumbnails format-grid cards] received', { cardsCount, editsApplied: 0 })`
+- `console.info('[thumbnails format-grid image] requesting', { cardsCount, imageModelId, editsApplied })`
+- `console.info('[thumbnails format-grid image] received', { imageUrl, regionsCount })`
 
-Spend logs: `featureArea: 'thumbnail_format_topic_card_grid'` so we can see cost-per-generation in the existing spend dashboard.
+Spend logs: two separate entries per generation —
+- `featureArea: 'thumbnail_format_topic_card_grid_cards'` for Step 1 (LLM)
+- `featureArea: 'thumbnail_format_topic_card_grid_image'` for Step 2 (image)
+
+So the cost dashboard can attribute cleanly even when the user runs Step 1 multiple times before locking in a card list.
 
 ---
 
@@ -295,52 +446,87 @@ Nothing else is hardcoded that the user might want to flip.
 
 ## Cost (rule 8)
 
-Per generation:
-- 1 × LLM call to `kie-gemini-2.5-pro` (default) — ~500 tokens in (system + user + image), ~1500 tokens out (card list JSON). At Kie's listed pricing of $1.25/M in, $5/M out (per `ai-models.ts`), that's ~$0.0001 + ~$0.0075 ≈ **$0.008 per call**.
+The two-step flow lets the user pay for Step 1 separately from Step 2, which is the right shape: regenerate-card-list is cheap, regenerate-image is expensive.
+
+Per Step 1 (LLM card list):
+- 1 × LLM call to `kie-gemini-2.5-pro` (default) — ~500 tokens in (system + user + image), ~1500 tokens out (card list JSON). At Kie's listed pricing of $1.25/M in, $5/M out (per `ai-models.ts`), that's ~$0.0001 + ~$0.0075 ≈ **$0.008 per Step 1 call**.
+
+Per Step 2 (image):
 - 1 × GPT Image 2 i2i call. Kie.ai's published price for GPT Image 2 has been around $0.04–$0.10 per 1K image at the time of this plan — **verify on the Kie dashboard before merge** per principle 8.
 
-Total per-thumbnail: roughly **$0.05–$0.11**. Compared to the existing "Free-form 5 concepts + 5 separate image generations" path (~$0.25–$0.50), this is cheaper, not more expensive.
+Per full generation (Step 1 + Step 2): roughly **$0.05–$0.11**. Per re-generate-card-list: just Step 1, ~$0.008. Per re-generate-image (same cards): just Step 2.
 
-Per-generation cost is shown to the user post-generation as a small `Cost: ~$X.XX` line under the image, sourced from the spend log row (same pattern used elsewhere).
+Compared to the existing "Free-form 5 concepts + 5 separate image generations" path (~$0.25–$0.50), this is cheaper end-to-end and lets the user iterate on the card list without burning image-generation budget.
+
+Per-generation cost is shown to the user post-generation:
+- Below the card-list table on State A: `Step 1 cost: ~$X.XX` and `Estimated Step 2: $0.05–$0.10`.
+- Below the result image on State B: `This generation: ~$X.XX (cards ~$0.01 + image ~$X.XX)`.
+
+Sourced from the spend log rows; same pattern used elsewhere.
 
 ---
 
 ## File-level change list
 
 New:
-- `src/lib/thumbnail-formats/topic-card-grid.ts` — pure module with the prompt builders, the validation schema, and the banned-phrase list.
-- `src/app/api/thumbnails/format/topic-card-grid/route.ts` — the new endpoint that runs the two-step pipeline.
-- `public/thumbnail-formats/topic-card-grid-default.png` — curated default reference (one-time generated by us).
+- `src/lib/thumbnail-formats/topic-card-grid.ts` — pure module with the LLM prompt builder, the image-prompt builder, the card-list validation schema, the banned-phrase list, and the **region computation function** (pure: `computeRegions(width, height, rows, cols, outerMargin, gutter): ThumbnailRegion[]`). Unit-testable in isolation.
+- `src/app/api/thumbnails/format/topic-card-grid/cards/route.ts` — Step 1 endpoint. Inputs: `{ modelId, title, niche, script?, description?, gridRows, gridCols, mode, referenceImageUrl?, prefilledLabels? }`. Returns: `{ cards: [...], global_palette: {...} }`.
+- `src/app/api/thumbnails/format/topic-card-grid/image/route.ts` — Step 2 endpoint. Inputs: `{ imageModelId?, cards: [...], global_palette: {...}, gridRows, gridCols, referenceImageUrl?, outputWidth?, outputHeight? }`. Returns: `{ imageUrl, regions, taskId }`. Computes regions deterministically before calling the image model so the response is one round-trip.
+- `public/thumbnail-formats/topic-card-grid-default.png` — curated default reference (one-time generated by us; user approves before merge).
 - `_plans/2026-05-19-thumbnail-format-topic-card-grid.md` — this plan.
 
 Modified:
-- `src/app/(app)/thumbnails/page.tsx` — add Format dropdown, grid size selector, swap the right panel when Topic Card Grid is selected, wire to the new endpoint, history entry shape change.
-- `src/lib/history.ts` — extend `ThumbnailHistoryEntry` with optional `format`, `gridRows`, `gridCols`, `formatCards` fields. Old entries (no format set) continue rendering as the free-form 5-concept view.
-- `src/lib/prompts.ts` — add `topicCardGridLlmPrompt({ title, niche, script, description, gridRows, gridCols })` builder. Reuses the multimodal `image` plumbing on `generateText` (already shipped).
+- `src/app/(app)/thumbnails/page.tsx` — add Format dropdown, grid-size selector (presets + custom), mode chips (Review / Pre-fill / One-shot), the new editable card table (State A right panel), the result panel with region overlay toggle (State B), wire to the two new endpoints, history entry shape change.
+- `src/lib/history.ts` — extend `ThumbnailHistoryEntry` with optional `format`, `gridRows`, `gridCols`, `gridMode`, `mode`, `formatCards`, `regions`, `formatReferenceImageUrl`, `formatImageModel` fields. Old entries (no format set) continue rendering as the free-form 5-concept view.
+- `src/lib/ai-models.ts` — add `'thumbnail-format-grid'` to the `AppFeature` union and a corresponding `AppFeatureSpec` so the per-feature default-model resolver picks it up. Default model: `kie-gemini-2.5-pro`.
+- `src/lib/prompts.ts` — re-export `topicCardGridLlmPrompt` and `topicCardGridImagePrompt` builders from `thumbnail-formats/topic-card-grid.ts` for symmetry with the existing prompt exports.
 - `src/app/api/thumbnails/generate/route.ts` — unchanged (free-form path stays as-is).
 
+Schedule-link / saver integration:
+- The existing `ScheduleSaverRegistration` on `thumbnails/page.tsx` extends its `buildPatch` so the patch carries `thumbnail_regions: regions` whenever the active result is a format-grid generation.
+- No schema change needed on the receiving side — production-doc + ThumbnailRegionEditor already accept a `regions` array on a thumbnail record.
+
 Unchanged but relevant:
-- `src/app/api/thumbnails/image/route.ts` — still used for the free-form per-card path. The new format calls `gpt-image-2-image-to-image` directly via the same `createKieTask`/`pollKieResult` helpers, not through `/api/thumbnails/image`, because the format endpoint owns its own prompt construction.
+- `src/app/api/thumbnails/image/route.ts` — still used for the free-form per-card path. The new format endpoints call `gpt-image-2-image-to-image` directly via the same `createKieTask`/`pollKieResult` helpers, not through `/api/thumbnails/image`, because the format endpoint owns its own prompt construction.
 - `src/lib/ai.ts` — already supports `image` via the Kie path (shipped 2026-05-18).
+- `src/app/api/production-doc/thumbnail/auto-regions/route.ts` — unchanged. Becomes a fallback used only when a thumbnail wasn't produced by this format.
 
 ---
 
 ## QA plan
 
-Golden path:
-1. Pick `Topic Card Grid`, grid `3×3`, niche `Cybersecurity & Antivirus`, title `Every Major Cyber Attack in History Explained in 8 Minutes`, paste script, no reference upload.
-2. Click `Generate Thumbnail`.
-3. Expect: one 16:9 image with 9 cards in 3×3, black canvas + white gutters + black-bordered cards, single icon per card, white label band per card with the card title, no embedded text in any illustration. Curated-default-style typography.
-4. Open the cards-list accordion — confirm 9 distinct labels + icon concepts.
+Golden path (Review mode — default):
+1. Pick `Topic Card Grid`, grid `3×3`, mode `Review cards`, niche `Cybersecurity & Antivirus`, title `Every Major Cyber Attack in History Explained in 8 Minutes`, paste script, no reference upload.
+2. Click `Generate card list`. Right panel shows 9 editable rows.
+3. Confirm all 9 labels are distinct and plausibly from the script. Edit one label (e.g. change "Solar Sunrise" → "First Nation-State Hack"); edit one icon concept.
+4. Click `Generate Image`.
+5. Expect: one 16:9 image with 9 cards in 3×3, black canvas + outer margin + white gutters + black-bordered cards, single icon per card, white label band per card with the EDITED card titles, no embedded text in any illustration. Curated-default-style typography.
+6. Toggle `Region overlay` — confirm the 9 region boxes line up visually with the 9 cards.
+7. Click `Set as YouTube Thumbnail` (or `Save to schedule item`) — confirm `thumbnail_regions` is persisted on the receiving record.
+
+Golden path (Pre-fill mode):
+1. Same starting state but pick `Pre-fill cards`.
+2. Type 9 labels in the textarea, one per line.
+3. Click `Generate thumbnail`.
+4. Expect: Step 1 only fills in icon concepts for the provided labels; Step 2 generates the image with those exact labels.
+
+Golden path (One-shot mode):
+1. Same starting state but pick `One-shot`.
+2. Click `Generate thumbnail`.
+3. Expect: both steps run back-to-back without showing the review table.
 
 Edge cases:
 - Grid `2×2` → 4 cards. Should look spacious, not stretched.
 - Grid `4×6` → 24 cards. Highest density; confirm cards stay readable.
-- User uploads their own reference (the existing cyber-attacks 3×6) → the model uses their font and structural language but still keeps cards simple (banlist enforces it).
-- Title in a language with non-Latin script — confirm labels render (out of scope to guarantee; surface a warning if the model misrenders).
+- Custom grid `5×3` → 15 cards. Confirm validation accepts it and layout math holds.
+- Custom grid `9×9` → 81 cards. Confirm we reject above the cap (max 8 each in plan).
+- User uploads their own reference (the cyber-attacks 3×6) → the model uses their font and structural language but still keeps cards simple (banlist enforces it).
+- User edits the card list to a count that doesn't match the grid (e.g. deletes a row in 3×3 leaving 8) → `Generate Image` is disabled with a clear validation message.
 - Script empty, niche empty → LLM should still produce sensible cards from the title alone.
-- LLM returns 8 cards instead of 9 → server retries once, then surfaces an error.
+- LLM returns 8 cards instead of 9 → server retries once, then surfaces an error; review-mode UI still renders the 8 it got so the user can fix it.
 - LLM proposes `icon_concept` containing `screenshot` → server rewrites that card, max 3 rewrites.
+- User overrides the image model to Nano Banana → warning banner shown in left panel; warning persists on the result image; saved entry tags the image model used so the user can see why a future restore looks different.
+- User picks `One-shot` then realises a label is wrong → clicks `Edit cards` on State B, lands back in the editable table with the actual card list, fixes label, clicks `Regenerate image` (Step 2 only — no new Step 1 spend).
 
 Regressions to verify:
 - Free-form 5-concept path still works (unchanged code).
@@ -348,6 +534,7 @@ Regressions to verify:
 - History restore for both free-form entries and new format entries.
 - Schedule-link prefill still works on the page.
 - The reference-image SSRF guard still allows R2 URLs (verified on 2026-05-18 fix).
+- Production-doc's `Auto-detect regions` still works on free-form thumbnails.
 
 ---
 
@@ -362,9 +549,16 @@ Regressions to verify:
 
 ---
 
-## Open questions for sign-off
+## Open questions / decisions
 
-1. **Curated default reference image.** I'll generate it once via GPT Image 2 with the simplicity-locked prompt and commit it. Do you want to approve the rendered PNG before it lands, or fine to ship whatever first looks right?
-2. **Grid sizes.** Is the list `2×2, 2×3, 3×3, 3×4, 4×3, 4×4, 3×6, 4×6` the right set, or do you want others (e.g. 5×3, 2×4)?
-3. **Title language.** Your examples are English. Hebrew-titled videos — should labels stay English (transliteration) or use Hebrew? GPT Image 2's Hebrew rendering is good but not as reliable as English; flagging up-front.
-4. **Default LLM model.** I've set `kie-gemini-2.5-pro` as the default for this format. OK or do you prefer Claude Sonnet 4.6 (direct, vision)?
+Closed in r2:
+- ~~**Title language.**~~ → English only for v1. Documented in revision log.
+- ~~**Default LLM model.**~~ → `kie-gemini-2.5-pro` default, user-pickable, workspace default flows through the per-feature resolver. Documented.
+- ~~**Grid sizes.**~~ → Presets `2×2, 2×3, 3×3, 3×4, 4×3, 4×4, 3×6, 4×6` + Custom mode (1–8 rows × 1–8 cols).
+- ~~**Curated default reference image.**~~ → I'll generate it via GPT Image 2 with the simplicity-locked prompt; you approve before merge.
+
+Still open:
+1. **Approval gate for the curated default PNG.** Concretely: do you want me to commit a draft PNG as part of the build PR so you can see it in the diff, or generate and DM it to you before I start the PR? Both work — let me know your preferred review surface.
+2. **Region overlay default state.** When State B renders, should `Region overlay` start ON or OFF? Default ON forces you to see whether regions align; default OFF gives a cleaner first-look. Lean ON.
+3. **Two-step vs implicit auto-Step-1.** When the user picks `Topic Card Grid` and immediately clicks the CTA without changing the mode chip from default Review, the CTA reads `Generate card list`. Is that fine, or do you want it to always say `Generate thumbnail` and silently auto-advance the user through the review state? Lean keeping `Generate card list` — it sets expectations that the next click is the costly one.
+4. **Custom grid max.** I capped Custom at 8×8 = 64 cards. Above that GPT Image 2 starts to drift. Are you OK with that cap, or do you want it tighter (4×4 max) / looser (10×10)?
