@@ -254,7 +254,35 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     );
   }
 
-  const result: AnalyzedVideo = validation.value;
+  // Gemini hallucinates two meta fields with measurable frequency
+  // (see `_plans/2026-05-18-youtube-deep-analyzer-eval.md`):
+  //   - meta.analyzed_at: wrong year on 3/3 eval references
+  //   - meta.video_id: wrong id on 1/3 eval references
+  // Both have ground-truth values already in scope here (the URL we
+  // canonicalized + the current clock). Overwrite before persisting
+  // so downstream consumers never see fabricated values. Log the
+  // overwrite at info level so we can track how often Gemini gets it
+  // right going forward.
+  const serverAnalyzedAt = new Date().toISOString();
+  const geminiAnalyzedAt = validation.value.meta.analyzed_at;
+  const geminiVideoId = validation.value.meta.video_id;
+  const videoIdMismatch = geminiVideoId !== videoId;
+  const result: AnalyzedVideo = {
+    ...validation.value,
+    meta: {
+      ...validation.value.meta,
+      video_id: videoId,
+      analyzed_at: serverAnalyzedAt,
+    },
+  };
+  logger.info('youtube-deep-analyze: meta overwrites applied', {
+    analysisId,
+    video_id: videoId,
+    gemini_analyzed_at: geminiAnalyzedAt,
+    server_analyzed_at: serverAnalyzedAt,
+    gemini_video_id: geminiVideoId,
+    video_id_mismatch: videoIdMismatch,
+  });
 
   // Cost accounting deferred — `analyzeYouTubeVideo` returns a plain
   // string, so we don't have token-usage at hand. The daily cap is

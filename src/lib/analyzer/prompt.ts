@@ -84,6 +84,8 @@ export function buildAnalyzerPrompt(input: BuildAnalyzerPromptInput): BuiltAnaly
     '',
     `10. transcript.text is a faithful word-level transcript of the audio. If the video has no spoken audio, return an empty string. transcript.chapters is your own segmentation (no need to honor YouTube's chapters if they're absent or misleading) — 3-10 chapters typically, with non-overlapping start/end seconds.`,
     '',
+    `11. Attribution honesty. For music_and_sfx and any field that would name a specific track, artist, song, film, book, or other identifiable work: ONLY attribute by name when the credit appears in the video itself — in on-screen text, in the end credits, or spoken by a narrator. If you can hear the character of the music (tempo, instrumentation, mood) but no credit is visible or spoken, describe ONLY the character and do NOT name a track or artist. Phrases like "though not explicitly named", "possibly", "likely", or "sounds like" applied to a specific title are forbidden — those are the exact pattern this rule exists to prevent. When uncertain, leave the title out entirely.`,
+    '',
     'Return ONLY the JSON. No prose, no explanation, no markdown.',
   ].join('\n');
 
