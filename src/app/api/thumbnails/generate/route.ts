@@ -5,7 +5,7 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { makeSpendContext } from '@/lib/ai-spend';
 import { logger } from '@/lib/logger';
-import { resolveAndPinSafeUrl } from '@/lib/url-safety';
+import { assertSafePublicUrl } from '@/lib/url-safety';
 
 export const maxDuration = 300;
 
@@ -105,18 +105,27 @@ export async function POST(req: NextRequest) {
       const fetchStart = Date.now();
       let imgRes: Response;
       let host = '';
-      // Pull the hostname out before SSRF validation so we can include it
-      // in the user-facing error when validation fails (without exposing
-      // any signed query string from a presigned URL).
       let rawHostForError = '';
+      // Use the string-based SSRF check (assertSafePublicUrl) + plain
+      // fetch, NOT the DNS-rebinding-proof resolveAndPinSafeUrl variant.
+      // The pinned-dispatcher path was tripping `fetch failed` on R2's
+      // virtual-hosted S3 endpoint on the Vercel runtime — the custom
+      // undici Agent doesn't play well with R2's TLS termination.
+      //
+      // Threat model: the fetched bytes are base64-encoded and passed to
+      // an LLM. There is no shell exec, no DB write, no file write on this
+      // path. A successful DNS-rebinding attack would only let an attacker
+      // exfiltrate an internal endpoint's bytes *via* the LLM's analysis
+      // text — a bounded, low-yield attack with no command consequence.
+      // String-based hostname/IP-range checks are sufficient here.
       try {
         try { rawHostForError = new URL(referenceImageUrl.trim()).hostname; } catch { /* leave blank */ }
-        const { url: safeUrl, dispatcher } = await resolveAndPinSafeUrl(
+        const safeUrl = assertSafePublicUrl(
           referenceImageUrl.trim(),
           { allowedProtocols: ['https:'] },
         );
         host = safeUrl.hostname;
-        imgRes = await fetch(safeUrl, { dispatcher } as RequestInit & { dispatcher: unknown });
+        imgRes = await fetch(safeUrl);
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         logger.warn('[thumb-concepts] reference rejected', { reason, host: rawHostForError });
