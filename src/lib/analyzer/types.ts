@@ -26,7 +26,7 @@
  */
 
 export const ANALYZER_VERSION = 'v1';
-export const PROMPT_VERSION = 'v1.3.0';
+export const PROMPT_VERSION = 'v1.4.0';
 
 /** Stage of a row in `youtube_analyses`. The route flips it through
  *  these states during a single inline POST: 'analyzing' on insert,

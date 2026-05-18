@@ -236,8 +236,15 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   } catch (err) {
     const reason = err instanceof Error ? `Failed to parse Gemini JSON: ${err.message}` : 'Failed to parse Gemini JSON';
     await failAnalysis({ workspaceId: session.ws, analysisId, reason, costUsd: 0 });
-    logger.warn('youtube-deep-analyze: parse failure', { analysisId, video_id: videoId, raw_head: raw.slice(0, 300) });
-    return NextResponse.json({ error: reason, analysisId, rawHead: raw.slice(0, 500) }, { status: 502 });
+    logger.warn('youtube-deep-analyze: parse failure', {
+      analysisId,
+      video_id: videoId,
+      raw_head: raw.slice(0, 600),
+    });
+    // Match the schema-mismatch path's 2 KB raw window so the
+    // operator can see the actual character that broke parsing
+    // without grepping logs.
+    return NextResponse.json({ error: reason, analysisId, rawHead: raw.slice(0, 2000) }, { status: 502 });
   }
 
   const validation = validateAnalyzedVideo(parsed);
