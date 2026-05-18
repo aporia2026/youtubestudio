@@ -2557,6 +2557,57 @@ function ProductionDocPage() {
     [historyEntryId],
   );
 
+  /**
+   * Title Card → section title propagation. Stamps the title card's text
+   * (`on_screen_text || script_text`, trimmed) onto every row AFTER the
+   * card, stopping at (but not including) the next Title Card row — or
+   * the end of the doc if there isn't one. The title card row itself is
+   * intentionally left alone (its own visual already carries the title;
+   * adding the stripe on top would just duplicate it).
+   */
+  const applyTitleCardAsSectionTitle = useCallback(
+    (titleCardRowIndex: number) => {
+      setDoc(prev => {
+        if (!prev) return prev;
+        const sourceRow = prev.rows[titleCardRowIndex];
+        if (!sourceRow || sourceRow.visual_type !== 'Title Card') {
+          toast.error('Not a Title Card row.');
+          return prev;
+        }
+        const text =
+          (sourceRow.on_screen_text?.trim() || sourceRow.script_text?.trim() || '').trim();
+        if (!text) {
+          toast.error('Title Card has no On-Screen Text or Script Text to use.');
+          return prev;
+        }
+        // End of section = the row JUST BEFORE the next Title Card row.
+        // Walk forward from the row after this title card.
+        let endIndex = prev.rows.length - 1;
+        for (let i = titleCardRowIndex + 1; i < prev.rows.length; i++) {
+          if (prev.rows[i]!.visual_type === 'Title Card') {
+            endIndex = i - 1;
+            break;
+          }
+        }
+        if (endIndex < titleCardRowIndex + 1) {
+          toast('No following rows under this title card.');
+          return prev;
+        }
+        const nextRows = prev.rows.map((r, i) =>
+          i > titleCardRowIndex && i <= endIndex ? { ...r, section_title: text } : r,
+        );
+        const nextDoc = { ...prev, rows: nextRows };
+        if (historyEntryId) {
+          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+        }
+        const count = endIndex - titleCardRowIndex;
+        toast.success(`Applied "${text}" as section title to ${count} row${count === 1 ? '' : 's'}.`);
+        return nextDoc;
+      });
+    },
+    [historyEntryId],
+  );
+
   const clearSceneZoomOverrides = useCallback(() => {
     setDoc(prev => {
       if (!prev) return prev;
@@ -6468,6 +6519,9 @@ function ProductionDocPage() {
                             onChangeSceneZoom={(z) => updateRow(i, { scene_zoom: z })}
                             onApplySceneZoomToAll={applySceneZoomToAll}
                             onClearSceneZoomOverrides={clearSceneZoomOverrides}
+                            visualType={row.visual_type}
+                            titleCardSourceText={(row.on_screen_text || row.script_text || '').trim()}
+                            onApplyTitleCardAsSectionTitle={() => applyTitleCardAsSectionTitle(i)}
                           />
                         </td>
                       </tr>
@@ -6713,6 +6767,9 @@ function ProductionDocPage() {
                             onChangeSceneZoom={(z) => updateRow(i, { scene_zoom: z })}
                             onApplySceneZoomToAll={applySceneZoomToAll}
                             onClearSceneZoomOverrides={clearSceneZoomOverrides}
+                            visualType={row.visual_type}
+                            titleCardSourceText={(row.on_screen_text || row.script_text || '').trim()}
+                            onApplyTitleCardAsSectionTitle={() => applyTitleCardAsSectionTitle(i)}
                           />
                         </div>
                       </div>

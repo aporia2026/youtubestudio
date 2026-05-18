@@ -99,6 +99,16 @@ interface SectionRowControlsProps {
    *  (0-indexed). The parent walks the doc and sets each row's
    *  `section_title` to the same value in one update. */
   onApplyTitleToRange: (startRow: number, endRow: number, title: string) => void;
+  /** This row's `visual_type` (e.g. 'Title Card', 'B-Roll'). The Title
+   *  Card propagation button only renders on Title Card rows. */
+  visualType: string;
+  /** Pre-resolved propagation text (`on_screen_text || script_text`).
+   *  Computed at the page level so the rule lives in one place. Empty
+   *  string ⇒ the button is hidden (nothing meaningful to propagate). */
+  titleCardSourceText: string;
+  /** Apply `titleCardSourceText` as `section_title` on every row AFTER
+   *  this one, stopping before the next Title Card row (or end of doc). */
+  onApplyTitleCardAsSectionTitle: () => void;
   /** Set the doc-level pillarbox color default. Per-row overrides are
    *  left intact (see `onClearPillarboxOverrides` for the matching wipe). */
   onApplyPillarboxColorToAll: (color: string) => void;
@@ -128,6 +138,7 @@ export function SectionRowControls({
   onApplyPillarboxColorToAll, onClearPillarboxOverrides,
   onApplyStripeLayoutToAll, onClearStripeLayoutOverrides,
   onChangeSceneZoom, onApplySceneZoomToAll, onClearSceneZoomOverrides,
+  visualType, titleCardSourceText, onApplyTitleCardAsSectionTitle,
 }: SectionRowControlsProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
   // Inline "apply to range" picker — collapsed by default, expands into
@@ -250,6 +261,41 @@ export function SectionRowControls({
           ))}
         </select>
       </div>
+
+      {/* Title Card → section title propagation. Only renders on rows whose
+          `visual_type` is 'Title Card' and that have a non-empty source
+          text. One click stamps the title card's text onto every
+          following row's `section_title`, stopping at (but not including)
+          the next Title Card row. The button sits above the section
+          title input so it reads as "do this *to* this section",
+          adjacent to the field it ultimately affects on the OTHER rows. */}
+      {visualType === 'Title Card' && titleCardSourceText.trim().length > 0 && (
+        <button
+          type="button"
+          onClick={() => {
+            console.info('[ui titlecard-apply-section] clicked', {
+              rowIndex,
+              text: titleCardSourceText.trim(),
+            });
+            onApplyTitleCardAsSectionTitle();
+          }}
+          title={`Set "${titleCardSourceText.trim()}" as the section title on every row under this title card, up to the next title card`}
+          style={{
+            fontSize: 10,
+            padding: '4px 6px',
+            borderRadius: 4,
+            background: 'rgba(124,58,237,0.14)',
+            color: '#a78bfa',
+            border: '1px solid rgba(124,58,237,0.40)',
+            cursor: 'pointer',
+            textAlign: 'left',
+            alignSelf: 'flex-start',
+            fontWeight: 600,
+          }}
+        >
+          ⤓ Use as section title for this section
+        </button>
+      )}
 
       {/* Section title input */}
       <input
