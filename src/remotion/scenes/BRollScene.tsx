@@ -91,9 +91,18 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
   const clipSeconds = shot.videoDurationSeconds && shot.videoDurationSeconds > 0
     ? shot.videoDurationSeconds
     : 10;
+  // Editor's head + tail trim narrows the source clip's playable
+  // range. Effective clip duration = clipSeconds - trimStart - trimEnd.
+  // Floor at 0.1s so a runaway trim can't divide by zero or produce
+  // a NaN playback rate. The startFrom prop on OffthreadVideo handles
+  // the head; this rate change handles the tail by speeding the clip
+  // up enough that the trimmed-out frames never play.
+  const trimStartSec = (shot.trimStartMs ?? 0) / 1000;
+  const trimEndSec = (shot.trimEndMs ?? 0) / 1000;
+  const effectiveClipSeconds = Math.max(0.1, clipSeconds - trimStartSec - trimEndSec);
   const PLAYBACK_RATE_MIN = 0.5;
   const PLAYBACK_RATE_MAX = 2.0;
-  const rawPlaybackRate = sceneSeconds > 0 ? clipSeconds / sceneSeconds : 1;
+  const rawPlaybackRate = sceneSeconds > 0 ? effectiveClipSeconds / sceneSeconds : 1;
   const playbackRate = Math.max(PLAYBACK_RATE_MIN, Math.min(PLAYBACK_RATE_MAX, rawPlaybackRate));
   // One-shot diagnostic so a viewer seeing "the clip looks weird" can
   // reason from the console instead of guessing. Frame 0 only — a 7s
@@ -102,6 +111,9 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
     console.info('[broll playback fit]', {
       sceneSeconds: Number(sceneSeconds.toFixed(2)),
       clipSeconds,
+      trimStartSec,
+      trimEndSec,
+      effectiveClipSeconds: Number(effectiveClipSeconds.toFixed(2)),
       rawPlaybackRate: Number(rawPlaybackRate.toFixed(3)),
       playbackRate: Number(playbackRate.toFixed(3)),
       clamped: rawPlaybackRate !== playbackRate,
