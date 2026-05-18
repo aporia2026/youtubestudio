@@ -62,15 +62,31 @@ const IMAGE_MODELS = [
  * can pre-warn the user.
  */
 const CONCEPT_VISION_MODELS = new Set<string>([
+  // Anthropic direct
   'claude-opus-4-6',
   'claude-sonnet-4-6',
   'claude-haiku-4-5-20251001',
+  // OpenAI direct (multimodal chat)
   'gpt-4o',
   'gpt-4o-mini',
+  // Google direct (Gemini 2.x)
   'gemini-2.0-flash',
   'gemini-2.0-flash-thinking-exp',
   'gemini-2.5-flash',
   'gemini-2.5-pro',
+  // Kie.ai — Gemini variants
+  'kie-gemini-2.5-flash',
+  'kie-gemini-2.5-pro',
+  'kie-gemini-3-flash',
+  'kie-gemini-3-pro',
+  'kie-gemini-3.1-pro',
+  // Kie.ai — Claude variants
+  'kie-claude-opus-4-7',
+  'kie-claude-opus-4-6',
+  'kie-claude-sonnet-4-6',
+  'kie-claude-sonnet-4-5',
+  'kie-claude-opus-4-5',
+  'kie-claude-haiku-4-5',
 ]);
 
 interface CtrBreakdownEntry {
@@ -294,7 +310,7 @@ function ThumbnailsPage() {
     const trimmedRefUrl = referenceImageUrl.trim();
     const hasReference = trimmedRefUrl.length > 0;
     if (hasReference && !CONCEPT_VISION_MODELS.has(modelId)) {
-      toast.error('This AI Model can\'t read the reference image. Switch to Claude 4.x, GPT-4o, or Gemini 2.x to use it — or remove the reference.');
+      toast.error('This AI Model can\'t read the reference image. Pick any Claude, Gemini, GPT-4o, or Kie Claude / Kie Gemini variant — or remove the reference.');
       return;
     }
     console.info('[thumbnails generate] sending', { hasReference, modelId });

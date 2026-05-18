@@ -140,7 +140,14 @@ function extractKieGeminiContent(data: unknown): string {
   return '';
 }
 
-async function kieGeminiFetch(kieModelId: string, prompt: string, systemPrompt?: string, stream = false, maxTokens = 4000) {
+async function kieGeminiFetch(
+  kieModelId: string,
+  prompt: string,
+  systemPrompt?: string,
+  stream = false,
+  maxTokens = 4000,
+  image?: { base64: string; mimeType: string },
+) {
   const apiKey = requireKieKey();
   const url = `${KIE_BASE}/${kieModelId}/v1/chat/completions`;
 
@@ -150,10 +157,20 @@ async function kieGeminiFetch(kieModelId: string, prompt: string, systemPrompt?:
   // when given the legacy string form. Sending the array form universally
   // is OpenAI-compatible and works on every Kie route.
   // Ref: https://docs.kie.ai/market/gemini/gemini-3-1-pro
-  type ContentBlock = { type: 'text'; text: string };
+  //
+  // Image input: Kie's Gemini endpoint accepts the OpenAI-compatible
+  // `{type:'image_url', image_url:{url}}` block — confirmed by
+  // analyzeYouTubeVideo() below which passes a YouTube URL the same way.
+  // Inline base64 data URLs work identically.
+  type TextBlock = { type: 'text'; text: string };
+  type ImageBlock = { type: 'image_url'; image_url: { url: string } };
+  type ContentBlock = TextBlock | ImageBlock;
   const messages: { role: string; content: ContentBlock[] }[] = [];
   if (systemPrompt) messages.push({ role: 'system', content: [{ type: 'text', text: systemPrompt }] });
-  messages.push({ role: 'user', content: [{ type: 'text', text: prompt }] });
+  const userContent: ContentBlock[] = [];
+  if (image) userContent.push({ type: 'image_url', image_url: { url: `data:${image.mimeType};base64,${image.base64}` } });
+  userContent.push({ type: 'text', text: prompt });
+  messages.push({ role: 'user', content: userContent });
 
   const body: Record<string, unknown> = { messages, stream, max_tokens: maxTokens };
 
@@ -179,13 +196,40 @@ async function kieGeminiFetch(kieModelId: string, prompt: string, systemPrompt?:
   });
 }
 
-async function kieClaudeFetch(kieModelId: string, prompt: string, systemPrompt?: string, maxTokens = 4000, stream = false, cache = false) {
+async function kieClaudeFetch(
+  kieModelId: string,
+  prompt: string,
+  systemPrompt?: string,
+  maxTokens = 4000,
+  stream = false,
+  cache = false,
+  image?: { base64: string; mimeType: string },
+) {
   const apiKey = requireKieKey();
   const url = `${KIE_BASE}/claude/v1/messages`;
+  // Image input: Kie's /claude/v1/messages is a faithful passthrough to
+  // Anthropic's Messages API, which expects an array of content blocks
+  // with `{type:'image', source:{type:'base64', media_type, data}}` for
+  // images. Anything Anthropic-format accepts here.
+  type TextBlock = { type: 'text'; text: string };
+  type ImageBlock = {
+    type: 'image';
+    source: { type: 'base64'; media_type: string; data: string };
+  };
+  type ContentBlock = TextBlock | ImageBlock;
+  // Keep the no-image path bit-exact with the previous behaviour (plain
+  // string content) so existing text-only callers are not perturbed by
+  // the switch to block form.
+  const userContent: string | ContentBlock[] = image
+    ? [
+        { type: 'image', source: { type: 'base64', media_type: image.mimeType, data: image.base64 } },
+        { type: 'text', text: prompt },
+      ]
+    : prompt;
   const body: Record<string, unknown> = {
     model: kieModelId,
     max_tokens: maxTokens,
-    messages: [{ role: 'user', content: prompt }],
+    messages: [{ role: 'user', content: userContent }],
     stream,
     // Kie's /claude/v1/messages silently injects a skill-system tool that
     // the model reflexively calls (`view` against /mnt/skills/public/md/SKILL.md)
@@ -288,12 +332,19 @@ async function kieRetry(fn: () => Promise<Response>, attempts = 3): Promise<Resp
 
 // --- Non-streaming ---
 
-async function kieGenerateText(modelId: string, prompt: string, systemPrompt?: string, maxTokens = 4000, cache = false): Promise<string> {
+async function kieGenerateText(
+  modelId: string,
+  prompt: string,
+  systemPrompt?: string,
+  maxTokens = 4000,
+  cache = false,
+  image?: { base64: string; mimeType: string },
+): Promise<string> {
   const config = KIE_MODEL_MAP[modelId];
   if (!config) throw new Error(`Unknown Kie model: ${modelId}`);
 
   if (config.endpointType === 'gemini') {
-    const res = await kieRetry(() => kieGeminiFetch(config.kieModelId, prompt, systemPrompt, false, maxTokens));
+    const res = await kieRetry(() => kieGeminiFetch(config.kieModelId, prompt, systemPrompt, false, maxTokens, image));
     if (!res.ok) throw new Error(await kieErrorMessage(res));
     const data = await res.json();
     throwIfKieBodyError(data);
@@ -301,7 +352,7 @@ async function kieGenerateText(modelId: string, prompt: string, systemPrompt?: s
   }
 
   if (config.endpointType === 'claude') {
-    const res = await kieRetry(() => kieClaudeFetch(config.kieModelId, prompt, systemPrompt, maxTokens, false, cache));
+    const res = await kieRetry(() => kieClaudeFetch(config.kieModelId, prompt, systemPrompt, maxTokens, false, cache, image));
     if (!res.ok) throw new Error(await kieErrorMessage(res));
     const data = await res.json();
     // Find the text block — skip thinking blocks
@@ -310,6 +361,15 @@ async function kieGenerateText(modelId: string, prompt: string, systemPrompt?: s
   }
 
   if (config.endpointType === 'gpt-responses' || config.endpointType === 'codex-responses') {
+    // GPT / Codex Responses paths take `input: string` here — image input
+    // would require restructuring the body into the Responses block form
+    // (`{type:'input_image', image_url:...}`). Not wired yet — callers that
+    // need vision on Kie should pick a Kie Gemini or Kie Claude model.
+    if (image) {
+      throw new Error(
+        `Model "${modelId}" routes through Kie's GPT/Codex Responses API, which doesn't yet accept image input in this app. Pick a Kie Gemini or Kie Claude model to use the reference image.`,
+      );
+    }
     const fetcher = config.endpointType === 'gpt-responses' ? kieGptResponsesFetch : kieCodexResponsesFetch;
     const res = await kieRetry(() => fetcher(config.kieModelId, prompt, systemPrompt, false, maxTokens));
     if (!res.ok) throw new Error(await kieErrorMessage(res));
@@ -542,7 +602,7 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
   };
 
   if (model.provider === 'kie') {
-    return kieGenerateText(opts.modelId, effectivePrompt, systemPrompt, maxTokens, opts.cache);
+    return kieGenerateText(opts.modelId, effectivePrompt, systemPrompt, maxTokens, opts.cache, opts.image);
   }
 
   if (model.provider === 'perplexity') {

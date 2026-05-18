@@ -19,33 +19,49 @@ const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
 /**
  * Vision-capable models for the concept generator.
  *
- * Restricted to the direct provider SDKs (`anthropic`, `openai`, `google`)
- * because that's where `generateText` actually forwards the `image` option
- * to the upstream API. The Kie provider branch in src/lib/ai.ts:544
- * currently drops images — its Claude + Gemini fetchers only send text
- * content blocks. Until that branch is extended, picking a `kie-*` model
- * for this route would silently produce text-only concepts. See
- * _plans/2026-05-18-thumbnail-reference-multimodal.md for the trade-off.
+ * Includes every model whose `generateText` path forwards the `image`
+ * option to its upstream API. As of the Kie-image patch in src/lib/ai.ts,
+ * Kie Gemini (`/{model}/v1/chat/completions`) and Kie Claude
+ * (`/claude/v1/messages`) both pass image blocks through faithfully —
+ * Gemini via OpenAI-style `{type:'image_url'}` (same shape used in
+ * analyzeYouTubeVideo()) and Claude via Anthropic-style
+ * `{type:'image', source:{type:'base64', ...}}`.
  *
- * GPT-5 family is intentionally excluded — vision support for the
- * gpt-5 / gpt-5-mini / gpt-5-nano variants over chat.completions has
- * not been verified against our SDK path. Add explicitly once confirmed.
+ * Kie GPT / Kie Codex (Responses API) is NOT in the list — those paths
+ * send `input: string` and would need a body restructure for vision.
+ * Direct OpenAI GPT-5 family is also excluded until vision support is
+ * verified end-to-end against our SDK path.
  */
 const VISION_ALLOWED = new Set<string>([
-  // Anthropic — every Claude 4.x model accepts image blocks
+  // Anthropic direct — every Claude 4.x model accepts image blocks
   'claude-opus-4-6',
   'claude-sonnet-4-6',
   'claude-haiku-4-5-20251001',
-  // OpenAI — multimodal chat models (verified via SDK image_url path)
+  // OpenAI direct — multimodal chat models (verified via SDK image_url path)
   'gpt-4o',
   'gpt-4o-mini',
-  // Google — Gemini models accept inlineData blocks. The 3.x direct
-  // entries are listed as "unverified, returns 404" in ai-models.ts,
-  // so only the 2.x family is included here.
+  // Google direct — Gemini models accept inlineData blocks. The 3.x
+  // direct entries are listed as "unverified, returns 404" in
+  // ai-models.ts, so only the 2.x family is included here.
   'gemini-2.0-flash',
   'gemini-2.0-flash-thinking-exp',
   'gemini-2.5-flash',
   'gemini-2.5-pro',
+  // Kie.ai — Gemini variants. All routed through Kie's
+  // OpenAI-compatible chat completions endpoint with image_url blocks.
+  'kie-gemini-2.5-flash',
+  'kie-gemini-2.5-pro',
+  'kie-gemini-3-flash',
+  'kie-gemini-3-pro',
+  'kie-gemini-3.1-pro',
+  // Kie.ai — Claude variants. All routed through Kie's
+  // /claude/v1/messages passthrough with Anthropic-style image blocks.
+  'kie-claude-opus-4-7',
+  'kie-claude-opus-4-6',
+  'kie-claude-sonnet-4-6',
+  'kie-claude-sonnet-4-5',
+  'kie-claude-opus-4-5',
+  'kie-claude-haiku-4-5',
 ]);
 
 export async function POST(req: NextRequest) {
@@ -89,7 +105,12 @@ export async function POST(req: NextRequest) {
       const fetchStart = Date.now();
       let imgRes: Response;
       let host = '';
+      // Pull the hostname out before SSRF validation so we can include it
+      // in the user-facing error when validation fails (without exposing
+      // any signed query string from a presigned URL).
+      let rawHostForError = '';
       try {
+        try { rawHostForError = new URL(referenceImageUrl.trim()).hostname; } catch { /* leave blank */ }
         const { url: safeUrl, dispatcher } = await resolveAndPinSafeUrl(
           referenceImageUrl.trim(),
           { allowedProtocols: ['https:'] },
@@ -97,11 +118,10 @@ export async function POST(req: NextRequest) {
         host = safeUrl.hostname;
         imgRes = await fetch(safeUrl, { dispatcher } as RequestInit & { dispatcher: unknown });
       } catch (err) {
-        logger.warn('[thumb-concepts] reference rejected', {
-          reason: err instanceof Error ? err.message : String(err),
-        });
+        const reason = err instanceof Error ? err.message : String(err);
+        logger.warn('[thumb-concepts] reference rejected', { reason, host: rawHostForError });
         return NextResponse.json({
-          error: 'Reference image URL was rejected — must be a public HTTPS URL.',
+          error: `Reference image URL was rejected (${rawHostForError || 'unknown host'}): ${reason}`,
         }, { status: 400 });
       }
       if (!imgRes.ok) {
