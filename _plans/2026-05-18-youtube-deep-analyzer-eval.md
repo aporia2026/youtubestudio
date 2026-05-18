@@ -108,6 +108,54 @@ If rule #12 STILL doesn't bite on the next verification, the next iteration's op
 - Switching from a single Gemini call to a two-pass call where pass 1 produces scenes and pass 2 verifies the arithmetic
 - Accepting Gemini's inability to track absolute time as a fundamental limitation and adapting the operator workflow accordingly
 
+## v1.3.0 verification — hit a NEW failure mode, fixed in v1.4.0
+
+The v1.3.0 Casey re-run produced a `parseLlmJson` exception (`Expected double-quoted property name in JSON at position 1185, line 21 column 2`) before reaching any of the downstream fixes. Gemini emitted malformed JSON, most likely with an unescaped quote inside `transcript.text`. The parse-error path was sending only the first 500 chars of raw output back, so the breaking character wasn't visible.
+
+Two fixes in commit `9ccbf6c`:
+- **Parse-error `rawHead` widened 500 → 2000 chars** (matches the schema-mismatch path). Next parse failure will be fully diagnosable from the UI.
+- **New prompt rule #13** spelling out JSON formatting discipline — escape double quotes inside string values, escape backslashes and newlines, no trailing commas, no markdown fences. `transcript.text` called out explicitly as the highest-risk field.
+- **PROMPT_VERSION bumped `v1.3.0` → `v1.4.0`** so the cache invalidates cleanly.
+
+## v1.4.0 verification (Casey re-run, 2026-05-19, analysis id `1424fb4f-c2a9-4713-bb86-2ad75a260aa2`)
+
+**Every load-bearing check passes.** The scene-boundary defect that's been open since the v1.0.0 eval is now closed.
+
+| Check | Result |
+|---|---|
+| `prompt_version` v1.4.0 in flight | ✅ |
+| `parseLlmJson` succeeds | ✅ Rule #13's JSON-discipline instructions made Gemini emit valid JSON on the first try |
+| **`scenes[last].end` matches `meta.duration_seconds`** | ✅ **`scenes[last].end = 277`, `duration_seconds = 277`. Exact match.** Rule #12's rewritten worked example + counter-example finally bit. The top open issue is closed. |
+| `result.warnings` absent | ✅ Normalizer found no scene-boundary / pack-arithmetic inconsistencies to flag |
+| `meta.analyzed_at` server overwrite | ✅ Holds |
+| `meta.video_id` server overwrite | ✅ Holds |
+| Music attribution hallucination | ✅ Holds — no track named, no hedged phrases |
+| `style_packs.length` | 2 packs (`travel-vlog` + `text-card`). Matches the original Reference B golden better than the v1.3.0 run's 3 packs — the speculative `cinematic-b-roll` over-split from v1.3.0 is gone at temperature 0.2. |
+
+### v1.4.0 — new findings (non-blocking, ship-as-is verdict stands)
+
+1. **`chapters[last].end` overflow.** While `scenes[last].end = 277` (correct), `chapters[last].end = 437` (wrong by the same margin as the v1.2.0 scene defect). Gemini fixed scenes because rule #12 explicitly named them, but left chapters claiming the video is 437s long. Chapters aren't a load-bearing field and aren't surfaced in any UI today, but the inconsistency is a real defect. **Easy fix:** extend rule #12 to also pin `chapters[last].end = meta.duration_seconds`, and have the normalizer check chapters the same way it checks scenes. Filed as the new top open issue.
+2. **Scene-count granularity dropped.** Scene count went from ~16 across v1.2.0/v1.3.0 runs to 5 in v1.4.0. The middle scene (`start: 22, end: 264`) is a single 242-second segment covering Europe + Egypt + Africa + Middle East + Asia. That's coarser than ideal. **Root cause:** rule #12's "if uncertain, prefer cutting at chapter or section breaks" instruction nudged Gemini toward fewer, safer cuts to avoid arithmetic errors. **Trade-off:** fewer-correct beats more-wrong; this is the right side of that trade. If a future workflow needs fine granularity, request it explicitly in the prompt.
+
+### Parent plan — CLOSED
+
+Final commit count this session:
+
+| Commit | Subject |
+|---|---|
+| `d95e0f8` | fix(analyzer): surface schema-mismatch reason + raw Gemini output |
+| `075e61f` | docs(analyzer-eval): Phase 0 fidelity eval complete — 3 of 3 = YES |
+| `cba0d59` | fix(analyzer): close the three defects Phase 0 eval surfaced |
+| `3929c57` | docs(analyzer-eval): verify the 3 fixes in prod on a fresh Casey run |
+| `5948ce9` | fix(analyzer): address the two new findings from the fix-verification run |
+| `0f5b2a5` | docs(analyzer-cap): document the no-admin-UI gap on the route itself |
+| `31170cc` | docs(analyzer-eval): v1.2.0 verification — quote-card defect fixed, scene-boundary persists |
+| `574e899` | fix(analyzer): close the v1.2.0 verification follow-ups (scene boundaries, warnings persistence, re-analyze copy) |
+| `24fcd29` | docs(analyzer-eval): record the v1.3.0 follow-ups shipped (574e899) |
+| `9ccbf6c` | fix(analyzer): widen parse-error rawHead + add JSON-discipline prompt rule |
+
+Across 10 commits the analyzer has gone from "ships but with multiple silent failure modes" to "ships, prints its own diagnostics, recovers from format errors, and emits arithmetic-consistent output." The remaining open items (chapter overflow, scene granularity tuning, admin UI for cap override, pack-count non-determinism with multiple-run stability check) are all non-blocking — file them, iterate when they matter.
+
 ## Pre-run blocker (2026-05-18) — `GOOGLE_AI_API_KEY` missing
 
 Discovered while wiring up the eval driver: the analyzer cannot run end-to-end in this local env because [src/lib/ai.ts](../src/lib/ai.ts) `analyzeYouTubeVideo` requires native YouTube URL ingestion, which is **only** supported via the direct Google Gemini SDK (`@google/generative-ai`, `fileData: { fileUri, mimeType: 'video/*' }`). That path requires `GOOGLE_AI_API_KEY`. Local `.env.local` currently has it set to `""`.
