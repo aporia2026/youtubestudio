@@ -8,11 +8,14 @@ import {
   getImagesBucket,
   uploadToBucket,
 } from '@/lib/r2';
+import sharp from 'sharp';
 import {
   decideOverlayPlacement,
   type SaliencyCell,
   type OverlayPlacementDecision,
 } from '@/lib/overlay-placement-ai';
+import { gateRmbgOutput } from '@/lib/overlay-rmbg-gate';
+import { tiebreakRmbg } from '@/lib/overlay-rmbg-tiebreaker';
 
 /**
  * POST /api/overlay/fetch
@@ -73,6 +76,14 @@ type GracefulResult =
        *  call failed — in either case the caller keeps the doc-gen-
        *  blind zone/size already on the row. */
       placement?: OverlayPlacementDecision;
+      /** Phase 4 RMBG-gate outcome. `true` = the heuristic gate (and,
+       *  if invoked, the vision tiebreaker) approved the cutout; we
+       *  uploaded the RMBG output to R2. `false` = we reverted to a
+       *  PNG-re-encoded copy of the original Brave-source image
+       *  because the cutout was unusable. `undefined` = the route
+       *  didn't run the gate (cache hit, or gate errored — caller
+       *  shouldn't assume anything). */
+      rmbgKept?: boolean;
     }
   | { overlayUrl: null; reason: string };
 
@@ -490,15 +501,78 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     // Pre-flight the download — we only RMBG something we could fetch
     // ourselves. (Replicate fetches the source URL directly anyway, but
     // pre-flighting gives us a clearer error if the source is dead.)
-    await downloadImage(hit.url);
+    // The bytes are kept so the Phase 4 gate can reuse them without a
+    // second network fetch when reverting to original.
+    const originalDownload = await downloadImage(hit.url);
 
     const cutoutBytes = await removeBackground(hit.url, replicateToken);
 
-    await uploadToBucket(bucket, key, cutoutBytes, 'image/png');
+    // ── Phase 4: smart-RMBG gate ───────────────────────────────────
+    //
+    // The gate is wrapped in try/catch so a decoder bug or memory
+    // hiccup never breaks the calling flow — on any failure we ship
+    // the RMBG cutout as-is, which is the same behaviour as before
+    // Phase 4 landed. The `rmbgKept` field on the response tells the
+    // client which path we took so the UI can surface it.
+    let finalBytes = cutoutBytes;
+    let rmbgKept = true;
+    try {
+      const gate = await gateRmbgOutput(cutoutBytes);
+      logger.info('[overlay rmbg] gate', {
+        workspace: session.ws,
+        decision: gate.decision,
+        alphaCoverage: gate.alphaCoverage,
+        edgeHaloBleed: gate.edgeHaloBleed,
+        componentCount: gate.componentCount,
+        reason: gate.reason,
+      });
+
+      if (gate.decision === 'revert-original') {
+        // Re-encode the original as PNG so the storage MIME type stays
+        // consistent across the pipeline (downstream code assumes PNG
+        // for overlays). For an opaque JPG source, the result is an
+        // opaque PNG — RMBG was useless on it and we have nothing
+        // better to offer; the renderer's elliptical mask still gives
+        // a soft edge, just not a fully transparent one.
+        finalBytes = await sharp(originalDownload.bytes).png().toBuffer();
+        rmbgKept = false;
+      } else if (gate.decision === 'ambiguous') {
+        const tiebreaker = await tiebreakRmbg({
+          originalBytes: originalDownload.bytes,
+          originalMimeType: originalDownload.contentType,
+          cutoutBytes,
+        });
+        logger.info('[overlay rmbg] tiebreaker', {
+          workspace: session.ws,
+          vote: tiebreaker?.vote ?? null,
+          reason: tiebreaker?.reason ?? null,
+          model: tiebreaker?.model ?? null,
+        });
+        if (tiebreaker?.vote === 'a') {
+          finalBytes = await sharp(originalDownload.bytes).png().toBuffer();
+          rmbgKept = false;
+        }
+        // tiebreaker?.vote === 'b' OR 'either' OR null → keep RMBG.
+      }
+      // gate.decision === 'keep-rmbg' → no-op (finalBytes already = cutoutBytes).
+    } catch (gateErr) {
+      logger.warn('[overlay rmbg] gate threw — keeping RMBG output', {
+        workspace: session.ws,
+        detail: gateErr instanceof Error ? gateErr.message : String(gateErr),
+      });
+    }
+
+    await uploadToBucket(bucket, key, finalBytes, 'image/png');
     const overlayUrl = await getDownloadUrlForBucket(bucket, key, process.env.R2_IMAGES_PUBLIC_URL);
 
     const placement = await maybeDecidePlacement(overlayUrl);
-    const result: GracefulResult = { overlayUrl, cached: false, sourceUrl: hit.url, placement };
+    const result: GracefulResult = {
+      overlayUrl,
+      cached: false,
+      sourceUrl: hit.url,
+      placement,
+      rmbgKept,
+    };
     return NextResponse.json(result);
   } catch (err) {
     logger.warn('Overlay fetch failed', {

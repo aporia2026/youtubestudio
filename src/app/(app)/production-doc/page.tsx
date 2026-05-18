@@ -226,6 +226,10 @@ interface ProductionRow {
    *  `kie-gemini-3.1-pro`); `'doc-gen-blind'` for rows whose
    *  zone/size came from the text-only doc-gen LLM. */
   overlay_placement_model?: string;
+  /** Phase 4 — `true` when the RMBG cutout was uploaded to R2,
+   *  `false` when the heuristic gate / vision tiebreaker decided the
+   *  original was cleaner and we re-encoded it as PNG instead. */
+  overlay_rmbg_kept?: boolean;
   /** Cached pixel-saliency map for this row's generated image. Populated
    *  by `/api/generate/production-doc/image` after the image lands in R2. */
   image_saliency?: ImageSaliencyMap;
@@ -4263,6 +4267,8 @@ function ProductionDocPage() {
           customYPct?: number;
           reason: string;
         };
+        /** Phase 4 — true when RMBG was used, false when reverted. */
+        rmbgKept?: boolean;
       };
       if (!res.ok) {
         setRowOverlays((prev) => ({
@@ -4276,6 +4282,16 @@ function ProductionDocPage() {
           ...prev,
           [rowIndex]: { status: 'done', url: data.overlayUrl!, sourceUrl: data.sourceUrl },
         }));
+        // Phase 4 — persist the RMBG-gate outcome on the row. Separate
+        // updateRow so it lands even when no Phase-2 placement was
+        // returned (e.g. sceneImageUrl wasn't provided this call).
+        if (typeof data.rmbgKept === 'boolean') {
+          console.info('[ui overlay-rmbg] gate outcome', {
+            rowIndex,
+            rmbgKept: data.rmbgKept,
+          });
+          updateRow(rowIndex, { overlay_rmbg_kept: data.rmbgKept });
+        }
         // Phase 2: when the route returned a smart placement, write the
         // decision onto the row. Only write fields the AI actually
         // produced — `mode: 'zone'` leaves customX/Y null; `mode:

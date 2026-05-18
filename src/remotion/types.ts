@@ -195,6 +195,13 @@ export interface VideoShot {
      *  and for rows that opted out. Phase 2 of the overlay-system
      *  overhaul. */
     placementReason?: string;
+    /** Phase 4 — whether the RMBG cutout was used (`true`) or reverted
+     *  to the original Brave-source image (`false`). The renderer
+     *  doesn't act on this — it's metadata for the UI so the editor
+     *  can surface "background removed" vs "original kept". Absent =
+     *  the gate didn't run (cache hit, pre-Phase-4 row, or gate
+     *  errored). */
+    rmbgKept?: boolean;
   };
   // ─── Shot-graph editor fields ──────────────────────────────────────
   //

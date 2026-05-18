@@ -257,6 +257,11 @@ export interface ProductionRow {
    *  zone/size came from the text-only doc-gen LLM. Drives the per-
    *  model drag-rate telemetry signal. */
   overlay_placement_model?: string;
+  /** Phase 4 — `true` when the RMBG cutout was uploaded to R2,
+   *  `false` when the heuristic gate (or vision tiebreaker) decided
+   *  the original Brave-source image was a cleaner overlay and we
+   *  re-encoded that as PNG instead. Absent on pre-Phase-4 rows. */
+  overlay_rmbg_kept?: boolean;
   /** Cached saliency map of `imageUrl` for this row — populated by the
    *  image-generation route. Sparse: missing for rows whose image hasn't
    *  been generated, or which pre-date the feature. */
@@ -621,6 +626,8 @@ export function productionDocToVideoConfig(
               typeof row.overlay_placement_reason === 'string' && row.overlay_placement_reason.length > 0
                 ? row.overlay_placement_reason
                 : undefined,
+            rmbgKept:
+              typeof row.overlay_rmbg_kept === 'boolean' ? row.overlay_rmbg_kept : undefined,
           }
         : undefined;
 
