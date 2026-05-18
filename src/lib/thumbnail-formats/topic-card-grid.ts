@@ -40,17 +40,28 @@ export interface TopicCard {
   accent_color?: string;
 }
 
+/**
+ * Optional palette guidance. Pre-1.5 this was hard-required and we forced it
+ * into every card; that produced uniform red/amber-on-black grids regardless
+ * of subject and stopped the model from rendering brand-accurate visuals
+ * (Sony in real Sony blue, Yahoo in real Yahoo purple, etc.). The new shape:
+ * the LLM may suggest a palette as a soft hint, but the image prompt does
+ * NOT enforce it — each card uses whatever colors fit the subject naturally.
+ *
+ * Keep the field on the type for backwards compatibility with stored history
+ * entries; new generations may emit a default `#000000 / inherit / inherit`
+ * shape if the LLM doesn't supply one. Consumers should treat it as
+ * informational, not load-bearing.
+ */
 export interface GlobalPalette {
-  /** Card illustration background. Default `#000000`. */
   background: string;
-  /** Primary accent color across all cards (e.g. dominant red). */
   primary_accent: string;
-  /** Secondary accent color (e.g. amber highlight). */
   secondary_accent: string;
 }
 
 export interface CardListResult {
   cards: TopicCard[];
+  /** Optional. See `GlobalPalette` — informational only post-1.5. */
   global_palette: GlobalPalette;
   /** Optional free-form note from the LLM that we forward to the image prompt
    *  (e.g. "rim-lit treatment across all cards"). Sanitised before use. */
@@ -128,32 +139,26 @@ export function computeRegions(
   return regions;
 }
 
-// ─── Banlist + validation ───────────────────────────────────────────────────
+// ─── Validation ─────────────────────────────────────────────────────────────
 
 /**
- * Phrases that disqualify a card's `icon_concept`. Each entry maps to a short
- * human-readable reason that the LLM-revise retry can quote back into the
- * fix-this prompt. Case-insensitive word-boundary match.
+ * Card concepts the model should NOT produce. The aggressive r1 banlist
+ * (text / screenshot / UI / person / face / scene / busy / detailed) is
+ * gone in r1.5 — competitor analysis showed those are exactly the kinds of
+ * cards that work: real virus ransom screens, real product photos, real
+ * brand logos, real character faces. The banlist was the wrong solution.
  *
- * The list is intentionally aggressive because the cost of letting bad cards
- * through is a generated thumbnail with busy/illegible content — exactly the
- * outcome we were hired to prevent. Better to over-flag and re-prompt than to
- * under-flag and ship a bad thumbnail.
+ * What stays banned: "invented" text overlays (fake captions the model
+ * makes up on its own). Authentic-to-subject text (the actual WannaCry
+ * ransom text, the actual ILOVEYOU file extension) is fine and recognisable.
+ *
+ * In practice this means the banlist is effectively empty for normal LLM
+ * output; we retain the structure so we can re-add narrow bans cheaply if
+ * a specific failure mode emerges.
  */
 export const ICON_CONCEPT_BANLIST: readonly { match: RegExp; reason: string }[] = [
-  { match: /\btext\b/i, reason: 'no embedded text in the illustration' },
-  { match: /\bcaption\b/i, reason: 'no captions in the illustration' },
-  { match: /\bscreenshot\b/i, reason: 'no UI screenshots' },
-  { match: /\bUI\b/, reason: 'no UI mockups' },
-  { match: /\binterface\b/i, reason: 'no interface mockups' },
-  { match: /\bperson\b|\bpeople\b/i, reason: 'no people' },
-  { match: /\bface\b|\bfaces\b/i, reason: 'no human faces' },
-  { match: /\bcrowd\b/i, reason: 'no crowds' },
-  { match: /\bscene\b/i, reason: 'one isolated icon — not a scene' },
-  { match: /\bmultiple\b/i, reason: 'one icon — not multiple subjects' },
-  { match: /\bbusy\b/i, reason: 'simple — not busy' },
-  { match: /\bcomplex\b/i, reason: 'simple — not complex' },
-  { match: /\bdetailed\b/i, reason: 'iconic — not detailed' },
+  // Intentionally empty post-1.5. Add a narrow regex here if a specific
+  // failure mode (e.g. "stick-figure clipart") starts dominating outputs.
 ];
 
 export type ValidationResult =
@@ -251,33 +256,30 @@ export function topicCardGridLlmPrompt(input: LlmPromptInput): { system: string;
   const total = gridRows * gridCols;
   const usingPrefilled = !!prefilledLabels && prefilledLabels.length === total;
 
-  const system = `You are designing a YouTube thumbnail in the "Topic Card Grid" format. The thumbnail is an N×M grid of cards. Each card has a dark-background illustration on top and a white label strip on the bottom. The grid is decorative + informational: it previews the video's content at a glance.
+  const system = `You are designing a YouTube thumbnail in the "Topic Card Grid" format. The thumbnail is an N×M grid of cards. Each card has an illustration region on top and a white label strip on the bottom. The grid is informational: it previews the video's content at a glance with each card showing one of the things the video covers.
 
-YOUR JOB: produce exactly ${total} card entries (the user has chosen a ${gridRows}×${gridCols} grid) and a single global palette that ties them together.
+YOUR JOB: produce exactly ${total} card entries (the user has chosen a ${gridRows}×${gridCols} grid).
 
-EVERY card's illustration MUST be:
-- ONE bold central icon or symbol — vertically and horizontally centered, generously padded.
-- On a dark/black background.
-- Recognisable at 168×94 px (YouTube mobile thumbnail size). The icon idea must work small.
+THE GOAL FOR EACH CARD: depict the subject in the most IMMEDIATELY RECOGNISABLE way possible. The viewer should be able to look at a card and know what it represents in under a second — even at 168×94 px (YouTube mobile size).
 
-EVERY card's illustration MUST NOT be:
-- A scene with multiple subjects.
-- A UI screenshot, app mockup, or interface render.
-- A photo of a person or any human face (unless the topic is literally a named person AND no symbol works).
-- An illustration with embedded text, labels, or captions inside it.
-- Busy, detailed, or cluttered. We want iconic and clean.
+The most recognisable depictions are usually NOT abstract icons. They are:
+- The subject's REAL BRAND LOGO when it's a company or product (Sony, Yahoo, Microsoft, MGM, Kaseya, etc.). Brand logos rendered on a clean background are encouraged — this is fair use under YouTube's policy.
+- The subject's REAL VISUAL IDENTITY when it's a piece of software, malware, or media (the WannaCry ransom screen, the ILOVEYOU pixel-mail icon, the Bonzi Buddy purple monkey, the Petya skull, a Minecraft Herobrine frame, a Pokémon Lavender Town screenshot).
+- A REAL PRODUCT PHOTO when it's a physical product or toy (Buckyballs, Easy Bake Oven, an Aqua Dots box).
+- A REAL NEWS/HISTORICAL PHOTO when it's a public event or incident (Mars Climate Orbiter, Cambridge Analytica hearing, a Boeing 737 MAX crash site, Stuxnet centrifuges).
+- A REAL FACE/PHOTO when it's a named person (criminals, historical figures, executives).
 
-If a topic resists iconification, pick the closest concrete symbol:
-- "Data breach" → broken padlock.
-- "Awareness" → shield, lightbulb, or eye.
-- "AI threat" → microchip with a glow.
-- "Pipeline attack" → a single pipe with a crack.
+Use an abstract symbol/icon ONLY when none of the above apply — when the subject genuinely has no canonical visual identity.
 
-The label is short (1–4 words ideally). The user reads it; it isn't part of the illustration.
+Each card stands on its own:
+- Background, colors, and visual treatment should fit the subject naturally. A logo on white. A virus screen on dark. A product photo on its natural backdrop. DO NOT force a uniform colour palette across all cards. Visual variety across the grid is a feature, not a bug — different cards naturally have different palettes.
+- One focal subject per card. No collages of three unrelated things on a single card.
+- Mobile-readable: the subject must be recognisable when the card is small. If you can't tell what it is at thumbnail size, simplify the framing (closer crop on the logo, the most iconic frame of the screen, etc.) but DON'T strip out the recognisability.
+- Embedded text inside the illustration is fine IF it's authentic to the subject (the actual WannaCry header, the actual file extension shown in the ILOVEYOU email). Do NOT invent captions, labels, or pull-quotes that aren't part of the subject's real identity.
 
-A reference image is attached to this message. Match its visual style: layout, gutters, borders, the hand-drawn-feeling label font. KEEP per-card illustrations SIMPLER than the reference if the reference shows busy detailed cards — we want clean iconic cards.
+The label below each card is short (1–4 words). It identifies the card; it isn't repeated inside the illustration.
 
-Pick ONE global palette: black background + 2 accent colors that fit the niche. All ${total} cards share that palette; individual cards can vary their accent within it.
+A reference image is attached to this message. Match its STRUCTURE precisely (grid layout, gutters, borders, the hand-drawn-feeling label font). Do NOT inherit its specific palette or per-card content — your cards should fit the user's topic, not the reference's topic.
 
 Cards are ordered left-to-right, top-to-bottom in the grid.
 
@@ -285,17 +287,17 @@ Return JSON only — no prose, no markdown fences. Schema:
 
 {
   "cards": [
-    { "index": 1, "label": "<1-4 words>", "icon_concept": "<one bold central icon/symbol on dark background, NO text, NO scene, NO person, NO UI>", "accent_color": "<hex or omit>" }
+    { "index": 1, "label": "<1-4 words>", "icon_concept": "<concrete description of the most recognisable depiction of this subject — name the real logo / screen / product / photo when one exists; let the natural colors and background come through>", "accent_color": "<hex if a specific accent matters for this card, otherwise omit>" }
   ],
   "global_palette": {
     "background": "#000000",
-    "primary_accent": "<hex>",
-    "secondary_accent": "<hex>"
+    "primary_accent": "inherit",
+    "secondary_accent": "inherit"
   },
-  "notes_for_image_model": "<one short sentence of style guidance, optional>"
+  "notes_for_image_model": "<one short sentence of overall style guidance, optional>"
 }
 
-The cards array MUST contain EXACTLY ${total} entries.`;
+The cards array MUST contain EXACTLY ${total} entries. The global_palette is optional and informational only — do NOT design the cards to share a forced palette.`;
 
   const userParts: string[] = [];
   userParts.push(`**Video Title:** ${title}`);
@@ -337,15 +339,15 @@ export interface ImagePromptInput {
  * conflicting instructions.
  */
 export function topicCardGridImagePrompt(input: ImagePromptInput): string {
-  const { cards, palette, gridRows, gridCols, notesForImageModel } = input;
+  const { cards, gridRows, gridCols, notesForImageModel } = input;
   const total = gridRows * gridCols;
   const safeNotes = notesForImageModel ? sanitizeForPrompt(notesForImageModel, 300) : '';
 
   const cardLines = cards
     .map((c) => {
       const label = sanitizeForPrompt(c.label, 60);
-      const concept = sanitizeForPrompt(c.icon_concept, 200);
-      const accent = c.accent_color ? ` (accent: ${sanitizeForPrompt(c.accent_color, 16)})` : '';
+      const concept = sanitizeForPrompt(c.icon_concept, 250);
+      const accent = c.accent_color ? ` (accent hint: ${sanitizeForPrompt(c.accent_color, 16)})` : '';
       return `${c.index}. Label: "${label}" — Illustration: ${concept}${accent}`;
     })
     .join('\n');
@@ -353,7 +355,6 @@ export function topicCardGridImagePrompt(input: ImagePromptInput): string {
   return `Create a YouTube thumbnail in the "Topic Card Grid" format, 16:9.
 
 LAYOUT (strict):
-- Pure black canvas behind everything.
 - An evenly-spaced ${gridRows} rows × ${gridCols} columns grid of identical-size cards = ${total} cards total.
 - A WHITE outer margin around the entire grid on all four sides of the canvas (top, bottom, left, right) — same width as the inter-card gutter.
 - WHITE gutters of uniform width separating every card from its neighbours.
@@ -363,22 +364,19 @@ LAYOUT (strict):
   • Bottom region (~20% of card height): a pure white horizontal strip containing the card's label.
 - A 1 px black hairline separates the illustration region from the white label strip.
 
-PER-CARD ILLUSTRATION RULES (strict):
-- Dark background (${sanitizeForPrompt(palette.background, 16)} or near-black).
-- ONE bold central icon or symbol per card — vertically and horizontally centred, generously padded so the icon doesn't touch the card edges.
-- NO embedded text anywhere inside the illustration.
-- NO captions, NO labels, NO numbers as the main subject.
-- NO UI screenshots, NO interface mockups, NO multi-subject scenes, NO human faces.
-- Consistent rim lighting / soft glow across every card. Same lighting language throughout.
-- Color treatment across all cards: background ${sanitizeForPrompt(palette.background, 16)}, primary accent ${sanitizeForPrompt(palette.primary_accent, 16)}, secondary accent ${sanitizeForPrompt(palette.secondary_accent, 16)}.
-- Each icon must be recognisable at 168×94 px (YouTube mobile thumbnail size). If you can't see what it is at small size, it's too detailed.
+PER-CARD ILLUSTRATION RULES:
+- Depict each subject in its MOST RECOGNISABLE form. Brand logos rendered on a clean background, real virus/software screens, real product photos, real characters, real news photos — whatever is most immediately identifiable for that specific subject. This is fair use under YouTube's policy and is what the user wants.
+- One focal subject per card. No collages of multiple unrelated things on a single card.
+- Background and colors PER CARD should fit the subject naturally. A logo on white. A virus screen on dark. A product on its natural backdrop. Do NOT force a uniform colour scheme across all cards — visual variety across the grid is expected and good.
+- Recognisable at 168×94 px (YouTube mobile thumbnail size). Crop and frame each card so the subject is obvious at small size; if a subject is detail-dense, frame the most iconic moment of it.
+- Embedded text inside an illustration is FINE when it is authentic to the subject (the real text on the WannaCry ransom note, the real filename on the ILOVEYOU email, the real brand wordmark of a logo). Do NOT invent fake captions, made-up labels, pretend pull-quotes, or any text that isn't part of the subject's actual visual identity.
 
 LABEL STRIP RULES (strict):
 - Pure white background.
 - Card label rendered in the SAME hand-drawn humanist font as the attached reference image's typography (friendly weight, slight slope, NOT a system sans-serif).
 - Label color: solid black.
 - Centred horizontally and vertically in the strip.
-- Labels go ONLY in the white strip — they NEVER appear in the illustration.
+- Labels go ONLY in the white strip — they NEVER appear in the illustration except as part of the subject's authentic visual identity.
 
 CARDS (render exactly these ${total} cards, in this order, reading left-to-right then top-to-bottom):
 
@@ -386,10 +384,9 @@ ${cardLines}
 
 ABSOLUTE REQUIREMENTS — DO NOT VIOLATE:
 - The grid MUST contain EXACTLY ${total} cards. Not one more, not one fewer.
-- Per-card illustrations MUST be simpler than any reference image you've seen — one bold isolated icon per card, no detail clutter. This is the most common failure mode of this format; do not repeat it.
-- NO embedded text inside any card's illustration. Labels go ONLY in the white strips.
+- One focal subject per card — no multi-subject collages within a single card.
 - Do NOT add a master title, watermark, channel logo, or any text outside the grid.
-- Match the LAYOUT (grid + gutters + outer margin) and TYPOGRAPHY of the attached reference image precisely.
+- Match the LAYOUT (grid + gutters + outer margin) and the LABEL TYPOGRAPHY of the attached reference image precisely. Do NOT inherit the reference's specific palette or per-card content — those are dictated by THIS card list, not by the reference's topic.
 
 ${safeNotes ? `STYLE NOTE: ${safeNotes}` : ''}`.trim();
 }
@@ -429,11 +426,15 @@ export function parseCardListResult(raw: unknown): CardListResult {
     };
   });
 
+  // Palette is informational only post-1.5; the image prompt does not enforce
+  // it. We still parse and pass through any value the LLM emits so history
+  // entries from r1 round-trip without crashing, but new entries can safely
+  // leave the accents as `inherit`.
   const paletteRaw = (obj.global_palette ?? {}) as Record<string, unknown>;
   const global_palette: GlobalPalette = {
     background: String(paletteRaw.background ?? '#000000'),
-    primary_accent: String(paletteRaw.primary_accent ?? '#e63a3a'),
-    secondary_accent: String(paletteRaw.secondary_accent ?? '#ffb238'),
+    primary_accent: String(paletteRaw.primary_accent ?? 'inherit'),
+    secondary_accent: String(paletteRaw.secondary_accent ?? 'inherit'),
   };
 
   return {

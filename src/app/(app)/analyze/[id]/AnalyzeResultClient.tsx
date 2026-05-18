@@ -319,6 +319,40 @@ export function AnalyzeResultClient({ initial }: Props): React.ReactElement {
     <main style={{ padding: '32px 24px', maxWidth: 1080, margin: '0 auto' }}>
       {header}
 
+      {result.warnings && result.warnings.length > 0 && (
+        <div
+          role="status"
+          style={{
+            marginBottom: 20,
+            padding: '10px 14px',
+            borderRadius: 6,
+            background: 'rgba(234, 179, 8, 0.08)',
+            border: '1px solid rgba(234, 179, 8, 0.30)',
+            color: '#fde68a',
+            fontSize: 13,
+            lineHeight: 1.5,
+          }}
+        >
+          <strong style={{ fontWeight: 600 }}>
+            Analyzer flagged {result.warnings.length === 1 ? '1 inconsistency' : `${result.warnings.length} inconsistencies`} in Gemini&apos;s output.
+          </strong>{' '}
+          The style packs and strategic report are still usable — these warnings are about
+          scene-boundary / pack-arithmetic consistency, not content quality. Re-analyze if you want a fresh run.
+          <details style={{ marginTop: 6 }}>
+            <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--text-secondary)' }}>
+              Show details ({result.warnings.length})
+            </summary>
+            <ul style={{ marginTop: 8, marginBottom: 0, paddingLeft: 22, fontSize: 12, color: 'var(--text-primary)' }}>
+              {result.warnings.map((w, i) => (
+                <li key={i} style={{ marginBottom: 4 }}>
+                  <code style={{ background: 'rgba(0,0,0,0.30)', padding: '1px 6px', borderRadius: 4 }}>{w}</code>
+                </li>
+              ))}
+            </ul>
+          </details>
+        </div>
+      )}
+
       <nav
         role="tablist"
         style={{

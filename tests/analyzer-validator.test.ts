@@ -157,6 +157,42 @@ describe('validateAnalyzedVideo — top-level failures', () => {
   });
 });
 
+describe('validateAnalyzedVideo — optional warnings field', () => {
+  it('accepts a payload with no warnings field', () => {
+    const x = validBase() as Record<string, unknown>;
+    expect('warnings' in x).toBe(false);
+    expect(validateAnalyzedVideo(x).ok).toBe(true);
+  });
+
+  it('accepts warnings as a string[] when present', () => {
+    const x = validBase() as Record<string, unknown>;
+    x.warnings = ['scenes[last].end overflow: 437s vs 277s', 'scenes[0..1]: gap of 1.5s'];
+    expect(validateAnalyzedVideo(x).ok).toBe(true);
+  });
+
+  it('accepts empty warnings array (the normalizer never writes this, but the shape is valid)', () => {
+    const x = validBase() as Record<string, unknown>;
+    x.warnings = [];
+    expect(validateAnalyzedVideo(x).ok).toBe(true);
+  });
+
+  it('rejects warnings when it is not an array', () => {
+    const x = validBase() as Record<string, unknown>;
+    x.warnings = 'not-an-array';
+    const r = validateAnalyzedVideo(x);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe('warnings: expected array when present');
+  });
+
+  it('points at the specific warnings index that is not a string', () => {
+    const x = validBase() as Record<string, unknown>;
+    x.warnings = ['ok', 42];
+    const r = validateAnalyzedVideo(x);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe('warnings[1]: expected string');
+  });
+});
+
 describe('isAnalyzedVideo (boolean wrapper)', () => {
   it('mirrors validateAnalyzedVideo on the happy path', () => {
     expect(isAnalyzedVideo(validBase())).toBe(true);

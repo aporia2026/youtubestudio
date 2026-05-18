@@ -26,7 +26,7 @@
  */
 
 export const ANALYZER_VERSION = 'v1';
-export const PROMPT_VERSION = 'v1.2.0';
+export const PROMPT_VERSION = 'v1.3.0';
 
 /** Stage of a row in `youtube_analyses`. The route flips it through
  *  these states during a single inline POST: 'analyzing' on insert,
@@ -119,6 +119,15 @@ export interface AnalyzedVideo {
   scenes: AnalyzedScene[];
   style_packs: StylePack[];
   strategic_report: StrategicReport;
+  /**
+   * Server-side consistency warnings attached by `normalizeAnalyzedVideo`
+   * (see ./normalize.ts). Populated when scene boundaries, pack
+   * identities, or pack arithmetic disagree with `meta.duration_seconds`.
+   * Optional / absent on a clean payload. Persisted alongside the
+   * result so the GET endpoint can surface them without the operator
+   * having to grep server logs.
+   */
+  warnings?: string[];
 }
 
 // ─── Structural guard ─────────────────────────────────────────────────
@@ -244,6 +253,16 @@ export function validateAnalyzedVideo(x: unknown): AnalyzedVideoValidation {
   if (!Array.isArray(r.replication_ideas)) return fail('strategic_report.replication_ideas: expected array');
   for (let i = 0; i < r.replication_ideas.length; i++) {
     if (typeof r.replication_ideas[i] !== 'string') return fail(`strategic_report.replication_ideas[${i}]: expected string`);
+  }
+
+  // `warnings` is optional (server-attached after parse), but if
+  // present it must be an array of strings — anything else here is a
+  // bug in our own code, not a Gemini schema mismatch.
+  if (x.warnings !== undefined) {
+    if (!Array.isArray(x.warnings)) return fail('warnings: expected array when present');
+    for (let i = 0; i < x.warnings.length; i++) {
+      if (typeof x.warnings[i] !== 'string') return fail(`warnings[${i}]: expected string`);
+    }
   }
 
   return { ok: true, value: x as unknown as AnalyzedVideo };

@@ -667,14 +667,35 @@ function CardTableState(props: CardTableProps) {
                 onChange={(e) => props.onUpdate(i, { label: e.target.value })}
                 maxLength={60}
               />
-              <input
-                type="color"
-                value={card.accent_color || '#ffffff'}
-                onChange={(e) => props.onUpdate(i, { accent_color: e.target.value })}
-                className="w-6 h-6 rounded cursor-pointer"
-                style={{ border: '1px solid var(--border)', background: 'none' }}
-                title="Accent color (optional)"
-              />
+              {card.accent_color ? (
+                <div className="flex items-center gap-1">
+                  <input
+                    type="color"
+                    value={card.accent_color}
+                    onChange={(e) => props.onUpdate(i, { accent_color: e.target.value })}
+                    className="w-6 h-6 rounded cursor-pointer"
+                    style={{ border: '1px solid var(--border)', background: 'none' }}
+                    title="Accent color"
+                  />
+                  <button
+                    onClick={() => props.onUpdate(i, { accent_color: undefined })}
+                    className="text-[9px] px-1 rounded"
+                    style={{ background: 'var(--bg-card)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}
+                    title="Clear accent — let the model pick natural colors"
+                  >
+                    ×
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => props.onUpdate(i, { accent_color: '#ff3b3b' })}
+                  className="text-[10px] px-1.5 py-0.5 rounded"
+                  style={{ background: 'var(--bg-card)', color: 'var(--text-muted)', border: '1px dashed var(--border)' }}
+                  title="Add an accent color hint for this card (optional)"
+                >
+                  + color
+                </button>
+              )}
               <button
                 onClick={() => props.onMove(i, -1)}
                 disabled={i === 0}

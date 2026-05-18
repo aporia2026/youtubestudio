@@ -209,7 +209,13 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       // The schema is rich — give Gemini enough headroom. Real outputs
       // are typically 8-30K tokens depending on video length.
       maxTokens: 32_000,
-      temperature: 0.3,
+      // Lowered from 0.3 to 0.2 in v1.3.0 to reduce pack-count non-
+      // determinism across re-runs of the same input (Phase 0 eval
+      // recorded 1/2/3/3 packs across four Casey runs at temp=0.3).
+      // 0.2 still leaves room for varied phrasing in
+      // strategic_report.* fields without making the entire
+      // taxonomy decision a coin flip.
+      temperature: 0.2,
     });
   } catch (err) {
     const detail = err instanceof Error ? err.message : 'Gemini call failed';
@@ -290,7 +296,13 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   // mutate scene timings here — those are Gemini's source of truth
   // for downstream rendering and the operator should see them as-is,
   // with the warnings explaining where they're inconsistent.
-  const { video: result, warnings: analysisWarnings } = normalizeAnalyzedVideo(overwritten);
+  //
+  // Warnings ride along inside the persisted result (result.warnings)
+  // so the GET endpoint surfaces them without the operator having to
+  // grep server logs. Absent on a clean payload.
+  const { video: normalized, warnings: analysisWarnings } = normalizeAnalyzedVideo(overwritten);
+  const result: AnalyzedVideo =
+    analysisWarnings.length > 0 ? { ...normalized, warnings: analysisWarnings } : normalized;
   if (analysisWarnings.length > 0) {
     logger.warn('youtube-deep-analyze: normalization warnings', {
       analysisId,
@@ -318,12 +330,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     style_pack_count: result.style_packs.length,
   });
 
-  return NextResponse.json({
-    analysisId,
-    cached: false,
-    result,
-    ...(analysisWarnings.length > 0 ? { warnings: analysisWarnings } : {}),
-  });
+  return NextResponse.json({ analysisId, cached: false, result });
 });
 
 /**

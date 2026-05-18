@@ -286,8 +286,9 @@ export function AnalyzeEntryClient({ initialRecent }: Props): React.ReactElement
           </div>
         )}
         <p style={{ marginTop: 12, fontSize: 12, color: 'var(--text-tertiary)' }}>
-          Up to 60 min videos. Each new analysis counts toward a 20-per-day soft cap. Same video re-analyzed is
-          a cache hit (free, instant).
+          Up to 60 min videos. Each new analysis counts toward a 20-per-day soft cap. Re-opening the same video
+          returns the cached result instantly (free); the explicit Re-analyze button runs Gemini fresh and may
+          produce slightly different output between runs.
         </p>
       </section>
 
@@ -387,7 +388,7 @@ export function AnalyzeEntryClient({ initialRecent }: Props): React.ReactElement
                       onClick={(e) => {
                         e.preventDefault();
                         void submit(item.videoUrl, true);
-                        toast.info('Re-analyzing…', { description: 'Old result will be replaced when this finishes.' });
+                        toast.info('Re-analyzing…', { description: 'Old result will be replaced when this finishes. Gemini output may vary slightly between runs.' });
                       }}
                       style={{
                         padding: '4px 10px',
