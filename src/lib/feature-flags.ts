@@ -12,7 +12,7 @@
  */
 
 /**
- * Shot-graph editor (`/editor/[projectId]`).
+ * Shot-graph editor (`/edit/[projectId]`).
  *
  * Phase 1 of `_plans/2026-05-18-shot-graph-editor.md`. Default off.
  * Opt-in by setting `EDITOR_V1_ENABLED=true` in the environment

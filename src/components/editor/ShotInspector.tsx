@@ -172,7 +172,7 @@ export function ShotInspector({
       }
       setRephraseState({ kind: 'rephrasing', style });
       try {
-        const res = await fetch('/api/editor/rephrase', {
+        const res = await fetch('/api/edit/rephrase', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text, style }),

@@ -146,7 +146,7 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
    */
   const reloadFromServer = useCallback(async () => {
     try {
-      const res = await fetch(`/api/editor/${encodeURIComponent(projectId)}`);
+      const res = await fetch(`/api/edit/${encodeURIComponent(projectId)}`);
       if (!res.ok) {
         setSaveStatus({ kind: 'error', message: `Reload failed: HTTP ${res.status}` });
         return;

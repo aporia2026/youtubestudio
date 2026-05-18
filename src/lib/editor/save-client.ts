@@ -41,7 +41,7 @@ export async function saveEditorPayload(args: {
 }): Promise<SaveResult> {
   const { projectId, version, payload, signal } = args;
   try {
-    const res = await fetch(`/api/editor/${encodeURIComponent(projectId)}`, {
+    const res = await fetch(`/api/edit/${encodeURIComponent(projectId)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ version, payload }),

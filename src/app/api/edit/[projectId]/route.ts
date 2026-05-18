@@ -9,14 +9,14 @@ import { logger } from '@/lib/logger';
  * Shot-graph editor save endpoint — Phase 2 of
  * `_plans/2026-05-18-shot-graph-editor.md`.
  *
- * `PATCH /api/editor/:projectId` writes the editor's `payload` JSONB
+ * `PATCH /api/edit/:projectId` writes the editor's `payload` JSONB
  * back to `user_history`. Optimistic locking via the `version`
  * integer added in migration 0079 — the request carries the version
  * the client read on load; the UPDATE only fires when that version
  * still matches. A mismatch returns 409 plus the current row so the
  * client can show "newer version exists — reload?".
  *
- * `GET /api/editor/:projectId` re-reads the doc — used by the
+ * `GET /api/edit/:projectId` re-reads the doc — used by the
  * conflict-recovery flow ("reload" button on the 409 toast).
  *
  * Single-owner-edits for v1 (operator confirmed): only the row's
@@ -101,7 +101,7 @@ export const PATCH = apiRoute.authed(async (
   }
 
   // Optimistic-locking UPDATE. Workspace + owner are the same
-  // constraints the read path enforces (see /editor/[projectId]/page.tsx):
+  // constraints the read path enforces (see /edit/[projectId]/page.tsx):
   // a row that's missing OR not owned OR stale returns 0 affected rows,
   // and we branch on the cause below.
   const updateResult = await sql<{ new_version: number }>`
