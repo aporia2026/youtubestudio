@@ -15,6 +15,7 @@ import type { ProductionDoc } from '@/remotion/utils';
 export interface EditorSavePayload {
   doc: ProductionDoc;
   rowImages: Record<number, string>;
+  voiceoverUrl?: string;
 }
 
 export type SaveResult =

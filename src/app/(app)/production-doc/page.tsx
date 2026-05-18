@@ -4498,6 +4498,13 @@ function ProductionDocPage() {
         script: script.trim() || undefined,
         videoTitle: scheduleItem?.title?.trim() || topic.trim() || undefined,
         scheduleItemId: scheduleItemId || undefined,
+        // Persist the voiceover URL on the saved entry so the
+        // shot-graph editor (/edit/[projectId]) can replay audio in
+        // its preview without re-fetching from a separate source.
+        // Empty string means "no VO yet" — saved as undefined so
+        // older entries' "voiceoverUrl missing" path stays distinct
+        // from "explicitly cleared."
+        voiceoverUrl: voiceoverUrl || undefined,
       });
       setHistoryEntryId(savedEntry.id);
       // Optimistic prepend — see voiceover/generator save handlers.
@@ -5030,13 +5037,19 @@ function ProductionDocPage() {
   }, [historyEntryId, docRowsLength]);
 
   /**
-   * Phase 0 telemetry probe (shot-graph editor plan). Fire-and-
-   * forget POST to /api/editor-telemetry; never blocks the caller,
-   * never throws into the UI. A failed insert is a logged warning
-   * server-side — the calling flow continues regardless.
+   * Phase 0 telemetry probe (shot-graph editor plan + overlay-system
+   * overhaul plan). Fire-and-forget POST to /api/editor-telemetry; never
+   * blocks the caller, never throws into the UI. A failed insert is a
+   * logged warning server-side — the calling flow continues regardless.
    */
   async function recordEditorTelemetry(
-    event: 'render_clicked' | 'external_edit_intent' | 'stayed_here',
+    event:
+      | 'render_clicked'
+      | 'external_edit_intent'
+      | 'stayed_here'
+      | 'overlay_drag'
+      | 'overlay_accept'
+      | 'overlay_reset',
     extra: { payload?: Record<string, unknown> } = {},
   ): Promise<void> {
     try {
@@ -7162,6 +7175,30 @@ function ProductionDocPage() {
           termsLabel={doc.rows[overlayPositionRow]!.overlay_stock_terms || ''}
           onSave={(pos, size) => {
             console.info('[ui overlay-position] saved', { rowIndex: overlayPositionRow, pos, size });
+            // Baseline telemetry: every save with a manual placement is
+            // logged as `overlay_drag` (user took a stance vs the AI's
+            // pick). Phase 2 will add `placement_model` discrimination —
+            // for now all rows are 'doc-gen-blind' (the doc-gen LLM's
+            // zone/size choice without vision awareness). See
+            // _plans/2026-05-18-overlay-system-overhaul.md.
+            const prev = doc?.rows[overlayPositionRow]?.overlay_position;
+            const prevSize = doc?.rows[overlayPositionRow]?.overlay_size_pct;
+            const dx = prev ? pos.x_pct - prev.x_pct : 0;
+            const dy = prev ? pos.y_pct - prev.y_pct : 0;
+            const dragDistancePct = Math.sqrt(dx * dx + dy * dy);
+            recordEditorTelemetry('overlay_drag', {
+              payload: {
+                row_index: overlayPositionRow,
+                placement_model: 'doc-gen-blind',
+                prev_x_pct: prev?.x_pct ?? null,
+                prev_y_pct: prev?.y_pct ?? null,
+                prev_size_pct: prevSize ?? null,
+                new_x_pct: Number(pos.x_pct.toFixed(2)),
+                new_y_pct: Number(pos.y_pct.toFixed(2)),
+                new_size_pct: Number(size.toFixed(2)),
+                drag_distance_pct: Number(dragDistancePct.toFixed(2)),
+              },
+            });
             updateRow(overlayPositionRow, {
               overlay_position: pos,
               overlay_size_pct: size,
@@ -7169,6 +7206,12 @@ function ProductionDocPage() {
           }}
           onReset={() => {
             console.info('[ui overlay-position] reset', { rowIndex: overlayPositionRow });
+            recordEditorTelemetry('overlay_reset', {
+              payload: {
+                row_index: overlayPositionRow,
+                placement_model: 'doc-gen-blind',
+              },
+            });
             updateRow(overlayPositionRow, {
               overlay_position: undefined,
               overlay_size_pct: undefined,

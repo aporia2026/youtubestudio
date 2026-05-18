@@ -57,6 +57,9 @@ interface HistoryPayload {
   doc?: ProductionDoc;
   rowImages?: Record<number, string>;
   title?: string;
+  /** Voiceover MP3 URL persisted on the user_history row. Threaded
+   *  into the Remotion player so the editor preview has audio. */
+  voiceoverUrl?: string;
 }
 
 function isPlainObject(x: unknown): x is Record<string, unknown> {
@@ -71,7 +74,11 @@ function parsePayload(payload: unknown): HistoryPayload | null {
     ? (payload.rowImages as Record<number, string>)
     : {};
   const title = typeof payload.title === 'string' ? payload.title : undefined;
-  return { doc, rowImages, title };
+  const voiceoverUrl =
+    typeof payload.voiceoverUrl === 'string' && payload.voiceoverUrl
+      ? payload.voiceoverUrl
+      : undefined;
+  return { doc, rowImages, title, voiceoverUrl };
 }
 
 function relativeTimeShort(thenMs: number, nowMs: number): string {
@@ -134,6 +141,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     initialEditorState({
       doc: doc ?? PLACEHOLDER_DOC,
       rowImages,
+      voiceoverUrl: parsed?.voiceoverUrl,
       version,
     }),
     projectId,
@@ -149,8 +157,10 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       const url = state.rowImages[i];
       return url ? { status: 'ready', imageUrl: url } : null;
     });
-    return productionDocToVideoConfig(state.doc, rowImageArr, {});
-  }, [doc, state.doc, state.rowImages]);
+    return productionDocToVideoConfig(state.doc, rowImageArr, {
+      voiceoverUrl: state.voiceoverUrl,
+    });
+  }, [doc, state.doc, state.rowImages, state.voiceoverUrl]);
 
   const inputProps = useMemo(() => (videoConfig ? { config: videoConfig } : null), [videoConfig]);
 

@@ -188,6 +188,10 @@ export interface ProductionDocHistoryEntry {
    *  status + url so a refresh + history restore can rebuild the
    *  parent's `rowOverlays` map without re-fetching from Brave. */
   rowOverlays?: Record<number, { status: string; url?: string }>;
+  /** Voiceover MP3 URL, when one's been generated/assigned. Persisted
+   *  so the shot-graph editor at /edit/[projectId] can play audio in
+   *  the preview without re-fetching from a separate source. */
+  voiceoverUrl?: string;
   videoTitle?: string;
   scheduleItemId?: string;
   /** Per-video override for the channel's visual brand kit (fonts /

@@ -53,6 +53,12 @@ export const EDITOR_MAX_SHOT_MS = 5 * 60 * 1000;
 export interface EditorState {
   doc: ProductionDoc;
   rowImages: Record<number, string>;
+  /** Voiceover MP3 URL passed through to productionDocToVideoConfig
+   *  so the Remotion preview includes audio. Read from the saved
+   *  payload on mount; persisted back on every save so the round-trip
+   *  preserves it even when the editor doesn't change it. Future
+   *  audio-retiming work will dispatch commands against this slot. */
+  voiceoverUrl: string | undefined;
   version: number;
   /** True from the moment an editing command runs until the save
    *  endpoint acknowledges. Drives the toolbar's "Saved · Saving · …"
@@ -88,7 +94,13 @@ export type EditorCommand =
   | { type: 'SET_PLAYHEAD'; ms: number }
   | { type: 'SET_SELECTION'; shotIndex: number | null }
   | { type: 'MARK_SAVED'; version: number; savedAt: number }
-  | { type: 'RESET_FROM_SERVER'; doc: ProductionDoc; rowImages: Record<number, string>; version: number }
+  | {
+      type: 'RESET_FROM_SERVER';
+      doc: ProductionDoc;
+      rowImages: Record<number, string>;
+      voiceoverUrl?: string;
+      version: number;
+    }
   | { type: 'UNDO' }
   | { type: 'REDO' }
   | { type: 'RESIZE_SHOT'; shotIndex: number; durationMs: number }
@@ -286,6 +298,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           ...state,
           doc: cmd.doc,
           rowImages: cmd.rowImages,
+          voiceoverUrl: cmd.voiceoverUrl,
           version: cmd.version,
           isDirty: false,
           undoStack: [],
@@ -940,11 +953,13 @@ export function rowStartTimesMs(doc: ProductionDoc): number[] {
 export function initialEditorState(args: {
   doc: ProductionDoc;
   rowImages: Record<number, string>;
+  voiceoverUrl?: string;
   version: number;
 }): EditorState {
   return {
     doc: args.doc,
     rowImages: args.rowImages,
+    voiceoverUrl: args.voiceoverUrl,
     version: args.version,
     isDirty: false,
     selection: null,
@@ -957,9 +972,14 @@ export function initialEditorState(args: {
 
 /** Serialise the editor's persistable state back to the
  *  `user_history.payload` shape. Excludes the transient slots. */
-export function persistableFromState(state: EditorState): { doc: ProductionDoc; rowImages: Record<number, string> } {
+export function persistableFromState(state: EditorState): {
+  doc: ProductionDoc;
+  rowImages: Record<number, string>;
+  voiceoverUrl?: string;
+} {
   return {
     doc: state.doc,
     rowImages: state.rowImages,
+    voiceoverUrl: state.voiceoverUrl,
   };
 }
