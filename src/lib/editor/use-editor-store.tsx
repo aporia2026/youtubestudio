@@ -156,13 +156,22 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
         typeof data.payload === 'object' && data.payload !== null &&
         typeof data.version === 'number'
       ) {
-        const p = data.payload as { doc?: unknown; rowImages?: unknown; voiceoverUrl?: unknown };
+        const p = data.payload as {
+          doc?: unknown;
+          rowImages?: unknown;
+          voiceoverUrl?: unknown;
+          captions?: unknown;
+        };
         if (p.doc && typeof p.doc === 'object') {
           dispatch({
             type: 'RESET_FROM_SERVER',
             doc: p.doc as EditorState['doc'],
             rowImages: (p.rowImages as Record<number, string>) ?? {},
             voiceoverUrl: typeof p.voiceoverUrl === 'string' ? p.voiceoverUrl : undefined,
+            captions:
+              p.captions && typeof p.captions === 'object'
+                ? (p.captions as EditorState['captions'])
+                : undefined,
             version: data.version,
           });
           setSaveStatus({ kind: 'idle' });

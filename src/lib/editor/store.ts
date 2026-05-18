@@ -36,6 +36,7 @@
  * and version, dropping the user's unsaved edits.
  */
 import type { ProductionDoc } from '@/remotion/utils';
+import type { CaptionsBundle } from './captions';
 import { stampEditedAt } from './edited-at';
 
 const UNDO_STACK_DEPTH = 200;
@@ -59,6 +60,11 @@ export interface EditorState {
    *  preserves it even when the editor doesn't change it. Future
    *  audio-retiming work will dispatch commands against this slot. */
   voiceoverUrl: string | undefined;
+  /** Captions bundle generated from voiceoverUrl by the Phase 4
+   *  transcription endpoint. The editor's caption overlay reads
+   *  segments from here; reload-from-server refreshes after a
+   *  regenerate. */
+  captions: CaptionsBundle | undefined;
   version: number;
   /** True from the moment an editing command runs until the save
    *  endpoint acknowledges. Drives the toolbar's "Saved · Saving · …"
@@ -99,6 +105,7 @@ export type EditorCommand =
       doc: ProductionDoc;
       rowImages: Record<number, string>;
       voiceoverUrl?: string;
+      captions?: CaptionsBundle;
       version: number;
     }
   | { type: 'UNDO' }
@@ -304,6 +311,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           doc: cmd.doc,
           rowImages: cmd.rowImages,
           voiceoverUrl: cmd.voiceoverUrl,
+          captions: cmd.captions,
           version: cmd.version,
           isDirty: false,
           undoStack: [],
@@ -999,12 +1007,14 @@ export function initialEditorState(args: {
   doc: ProductionDoc;
   rowImages: Record<number, string>;
   voiceoverUrl?: string;
+  captions?: CaptionsBundle;
   version: number;
 }): EditorState {
   return {
     doc: args.doc,
     rowImages: args.rowImages,
     voiceoverUrl: args.voiceoverUrl,
+    captions: args.captions,
     version: args.version,
     isDirty: false,
     selection: null,
@@ -1021,10 +1031,12 @@ export function persistableFromState(state: EditorState): {
   doc: ProductionDoc;
   rowImages: Record<number, string>;
   voiceoverUrl?: string;
+  captions?: CaptionsBundle;
 } {
   return {
     doc: state.doc,
     rowImages: state.rowImages,
     voiceoverUrl: state.voiceoverUrl,
+    captions: state.captions,
   };
 }

@@ -40,6 +40,7 @@ import {
   rowStartTimesMs,
 } from '@/lib/editor/store';
 import { useEditorStore } from '@/lib/editor/use-editor-store';
+import { activeCaption } from '@/lib/editor/captions';
 import { Timeline } from '@/components/editor/Timeline';
 import { ShotInspector } from '@/components/editor/ShotInspector';
 import { VoiceoverDriftReport } from '@/components/editor/VoiceoverDriftReport';
@@ -60,6 +61,9 @@ interface HistoryPayload {
   /** Voiceover MP3 URL persisted on the user_history row. Threaded
    *  into the Remotion player so the editor preview has audio. */
   voiceoverUrl?: string;
+  /** Captions bundle from the transcription pipeline. Cached on the
+   *  payload so reloads pick them up without re-running OpenAI. */
+  captions?: import('@/lib/editor/captions').CaptionsBundle;
 }
 
 function isPlainObject(x: unknown): x is Record<string, unknown> {
@@ -78,7 +82,10 @@ function parsePayload(payload: unknown): HistoryPayload | null {
     typeof payload.voiceoverUrl === 'string' && payload.voiceoverUrl
       ? payload.voiceoverUrl
       : undefined;
-  return { doc, rowImages, title, voiceoverUrl };
+  const captions = isPlainObject(payload.captions)
+    ? (payload.captions as unknown as HistoryPayload['captions'])
+    : undefined;
+  return { doc, rowImages, title, voiceoverUrl, captions };
 }
 
 function relativeTimeShort(thenMs: number, nowMs: number): string {
@@ -142,11 +149,56 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       doc: doc ?? PLACEHOLDER_DOC,
       rowImages,
       voiceoverUrl: parsed?.voiceoverUrl,
+      captions: parsed?.captions,
       version,
     }),
     projectId,
   );
   const { state, apply, flushSave, reloadFromServer, saveStatus, canUndo, canRedo } = store;
+
+  // ─── Caption regeneration ─────────────────────────────────────
+  // Server-side updates payload.captions + bumps version; we
+  // reload-from-server to merge the result into editor state.
+  const [captionsRegenState, setCaptionsRegenState] = useState<
+    | { kind: 'idle' }
+    | { kind: 'running' }
+    | { kind: 'error'; message: string }
+  >({ kind: 'idle' });
+
+  const handleRegenerateCaptions = useCallback(async () => {
+    if (!state.voiceoverUrl) {
+      setCaptionsRegenState({
+        kind: 'error',
+        message: 'No voiceover URL — assign or generate one first.',
+      });
+      return;
+    }
+    setCaptionsRegenState({ kind: 'running' });
+    try {
+      // Flush any pending edits before the server's JSONB merge to
+      // avoid racing against the version-bump.
+      await flushSave();
+      const res = await fetch(`/api/edit/${encodeURIComponent(projectId)}/captions/regenerate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || `Caption regen failed: HTTP ${res.status}`);
+      }
+      // Server bumped version. Reload to merge new captions + version.
+      await reloadFromServer();
+      setCaptionsRegenState({ kind: 'idle' });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn('[editor captions] regen failed', { detail: message });
+      setCaptionsRegenState({ kind: 'error', message });
+    }
+  }, [flushSave, projectId, reloadFromServer, state.voiceoverUrl]);
+
+  // Current playhead in seconds for the caption overlay lookup.
+  const playheadSeconds = state.playheadMs / 1000;
 
   // Derive the VideoConfig the player will render. Memoized so the
   // Remotion player's inputProps reference is stable across renders
@@ -354,6 +406,25 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
           <button
             type="button"
+            onClick={() => { void handleRegenerateCaptions(); }}
+            disabled={captionsRegenState.kind === 'running' || !state.voiceoverUrl}
+            className="text-xs px-2.5 py-1.5 rounded border transition-colors hover:bg-white/5 disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ borderColor: 'var(--card-border)' }}
+            title={
+              state.voiceoverUrl
+                ? 'Generate captions from the voiceover via gpt-4o-mini-transcribe'
+                : 'Assign a voiceover first'
+            }
+          >
+            {captionsRegenState.kind === 'running'
+              ? 'Captioning…'
+              : state.captions
+                ? 'Regen captions'
+                : 'Generate captions'}
+          </button>
+
+          <button
+            type="button"
             onClick={handleSplit}
             disabled={!splitTarget?.validSplit}
             className="text-xs px-2.5 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/5"
@@ -491,7 +562,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
       <div className="flex gap-4 items-start">
         <div
-          className="rounded-lg overflow-hidden border flex-1 min-w-0"
+          className="rounded-lg overflow-hidden border flex-1 min-w-0 relative"
           style={{ borderColor: 'var(--card-border)', background: '#000' }}
         >
           <Player
@@ -506,6 +577,40 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             style={{ width: '100%', aspectRatio: `${videoConfig.width} / ${videoConfig.height}` }}
             acknowledgeRemotionLicense
           />
+
+          {/* Caption overlay. Rendered as an HTML layer on top of
+              the Remotion player (not inside the composition), so
+              edits + regenerations show instantly without re-
+              rendering the underlying video. Lambda renders won't
+              include this layer in v1 — captions for actual MP4
+              export land with a follow-up Lambda integration. */}
+          {state.captions && state.captions.segments.length > 0 && (() => {
+            const active = activeCaption(state.captions.segments, playheadSeconds);
+            if (!active) return null;
+            return (
+              <div
+                className="absolute left-0 right-0 pointer-events-none flex items-end justify-center"
+                style={{
+                  bottom: 'calc(15% + 48px)', // sit above the player's controls bar
+                  paddingLeft: '8%',
+                  paddingRight: '8%',
+                }}
+              >
+                <span
+                  className="px-3 py-1 rounded text-center"
+                  style={{
+                    background: 'rgba(0, 0, 0, 0.75)',
+                    color: '#fff',
+                    fontSize: 'clamp(12px, 2.2vw, 20px)',
+                    lineHeight: 1.3,
+                    textShadow: '0 1px 2px rgba(0,0,0,0.8)',
+                  }}
+                >
+                  {active.text}
+                </span>
+              </div>
+            );
+          })()}
         </div>
 
         {state.selection !== null && state.doc.rows[state.selection] && (
