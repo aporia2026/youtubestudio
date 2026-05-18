@@ -45,6 +45,7 @@ import { ShotInspector } from '@/components/editor/ShotInspector';
 import { VoiceoverDriftReport } from '@/components/editor/VoiceoverDriftReport';
 import { TextOverlayManager } from '@/components/editor/TextOverlayManager';
 import { VoiceoverRegenModal } from '@/components/editor/VoiceoverRegenModal';
+import { RegenerateFromScriptModal } from '@/components/editor/RegenerateFromScriptModal';
 
 interface EditorClientProps {
   projectId: string;
@@ -138,6 +139,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // Whole-VO regeneration modal. Triggered from the toolbar; on
   // success the editor reloads from server to pick up the new URL.
   const [showVoRegen, setShowVoRegen] = useState(false);
+  // Regenerate-doc-from-script modal — heaviest action in the
+  // editor. Server-side merge respects per-field editedAt.
+  const [showRegenFromScript, setShowRegenFromScript] = useState(false);
 
   // Timeline zoom. Lives in the client because zoom is a viewing
   // preference, not part of the doc; we deliberately don't persist
@@ -457,6 +461,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
           <button
             type="button"
+            onClick={() => setShowRegenFromScript(true)}
+            className="text-xs px-2.5 py-1.5 rounded border transition-colors hover:bg-white/5"
+            style={{ borderColor: 'var(--card-border)' }}
+            title="Edit the full script and regenerate the doc (preserves your manual edits via edited_at)"
+          >
+            Regen doc
+          </button>
+
+          <button
+            type="button"
             onClick={handleSplit}
             disabled={!splitTarget?.validSplit}
             className="text-xs px-2.5 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/5"
@@ -614,6 +628,18 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           onClose={() => setShowVoRegen(false)}
           onSuccess={async () => {
             setShowVoRegen(false);
+            await reloadFromServer();
+          }}
+        />
+      )}
+
+      {showRegenFromScript && (
+        <RegenerateFromScriptModal
+          projectId={projectId}
+          doc={state.doc}
+          onClose={() => setShowRegenFromScript(false)}
+          onSuccess={async () => {
+            setShowRegenFromScript(false);
             await reloadFromServer();
           }}
         />
