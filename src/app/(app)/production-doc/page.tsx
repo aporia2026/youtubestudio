@@ -3619,6 +3619,12 @@ function ProductionDocPage() {
   // direct from storage (no /api/download-proxy hop → no 300s Vercel
   // function cap on multi-GB downloads).
   const [renderDownloadUrl, setRenderDownloadUrl] = useState<string | null>(null);
+  // Phase 0 telemetry: a one-time post-render survey asking whether
+  // the creator plans to finish in CapCut / Premiere / elsewhere, or
+  // stay in this app. Drives the shot-graph editor build decision
+  // (see _plans/2026-05-18-shot-graph-editor.md). Resets when a new
+  // render starts so a fresh `done` shows the survey again.
+  const [renderSurveyDismissed, setRenderSurveyDismissed] = useState(false);
   const renderPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // One-shot guard: surface the localStorage-quota toast at most once per
   // session so a tight render-typing-render loop doesn't spam the user.
@@ -5024,6 +5030,35 @@ function ProductionDocPage() {
   }, [historyEntryId, docRowsLength]);
 
   /**
+   * Phase 0 telemetry probe (shot-graph editor plan). Fire-and-
+   * forget POST to /api/editor-telemetry; never blocks the caller,
+   * never throws into the UI. A failed insert is a logged warning
+   * server-side — the calling flow continues regardless.
+   */
+  async function recordEditorTelemetry(
+    event: 'render_clicked' | 'external_edit_intent' | 'stayed_here',
+    extra: { payload?: Record<string, unknown> } = {},
+  ): Promise<void> {
+    try {
+      console.info('[editor telemetry] post', { event, projectId: historyEntryId });
+      await fetch('/api/editor-telemetry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event,
+          project_id: historyEntryId,
+          payload: extra.payload ?? null,
+        }),
+      });
+    } catch (err) {
+      console.warn('[editor telemetry] post failed', {
+        event,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
    * Entry point for the Render button. Runs the missing-clips
    * preflight: if any row has a generated clip in localStorage but
    * NOT in state, opens `MissingClipsModal` and aborts. The modal
@@ -5033,6 +5068,19 @@ function ProductionDocPage() {
    */
   async function startVideoRender() {
     if (!doc) return;
+    // Phase 0: record render-click intent regardless of whether the
+    // missing-clips preflight short-circuits. Captures the moment
+    // the creator commits to rendering — the survey on `done` then
+    // tells us whether they plan to finish here or elsewhere.
+    setRenderSurveyDismissed(false);
+    void recordEditorTelemetry('render_clicked', {
+      payload: {
+        shot_count: doc.rows.length,
+        has_voiceover: Boolean(voiceoverUrl),
+        has_overlays: Object.values(rowOverlays).some(Boolean),
+        animate_scenes: animateScenes,
+      },
+    });
     const missing = findMissingClipsForRender();
     console.info('[render preflight]', {
       missingClipCount: missing.length,
@@ -6929,6 +6977,52 @@ function ProductionDocPage() {
                   <p className="text-xs" style={{ color: '#f87171' }}>
                     Render failed. Check server logs for details — the toast above carries the reason.
                   </p>
+                )}
+
+                {/* Phase 0 telemetry: post-render finish-flow survey.
+                    Drives the shot-graph editor build decision — see
+                    _plans/2026-05-18-shot-graph-editor.md. One-tap,
+                    dismissable, no nagging. */}
+                {renderStatus === 'done' && !renderSurveyDismissed && (
+                  <div
+                    className="mt-3 p-3 rounded-lg border text-xs space-y-2"
+                    style={{ borderColor: 'var(--card-border)', background: 'var(--card-bg)' }}
+                  >
+                    <p style={{ color: 'var(--fg)' }}>
+                      Where will you finish this video?
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {([
+                        { id: 'capcut',   label: 'CapCut' },
+                        { id: 'premiere', label: 'Premiere' },
+                        { id: 'other',    label: 'Other editor' },
+                      ] as const).map(opt => (
+                        <button
+                          key={opt.id}
+                          className="px-2.5 py-1 rounded border text-xs hover:bg-white/5 transition-colors"
+                          style={{ borderColor: 'var(--card-border)', color: 'var(--fg-muted)' }}
+                          onClick={() => {
+                            void recordEditorTelemetry('external_edit_intent', {
+                              payload: { destination: opt.id },
+                            });
+                            setRenderSurveyDismissed(true);
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                      <button
+                        className="px-2.5 py-1 rounded border text-xs hover:bg-white/5 transition-colors"
+                        style={{ borderColor: 'var(--card-border)', color: 'var(--accent-purple-bright)' }}
+                        onClick={() => {
+                          void recordEditorTelemetry('stayed_here');
+                          setRenderSurveyDismissed(true);
+                        }}
+                      >
+                        Finishing here
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
             )}

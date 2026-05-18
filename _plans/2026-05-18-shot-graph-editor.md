@@ -505,36 +505,89 @@ The lazy-user path, refresh-safe, mobile-aware.
 
 ## Open questions
 
-1. **JSONB vs typed table for `VideoConfig` storage.** Today it lives
-   in `pipeline_stage_artefacts.metadata_jsonb`. Editing it as
-   structured data with row-level constraints, foreign keys to
-   `broll_clips`, and migration safety would benefit from a typed
-   `video_configs` table. The migration is non-trivial (existing
-   rows must move + the auto-pipeline must write to the new table).
-   **Resolve before Phase 1 starts.** Defer answer until I read
-   `src/lib/auto-pipeline/stages/generate-production-doc.ts` and
-   measure the row count. Tentative: keep in JSONB, add typed
-   accessors in TS — cheapest path that doesn't paint us into a
-   corner.
+1. **JSONB vs typed table for `VideoConfig` storage.** ✅ **Resolved
+   2026-05-18 — stay JSONB, no new `video_configs` table, no new
+   migration to move rows.**
+   - **Correction to the plan's premise:** `VideoConfig` is NOT
+     persisted. The auto-pipeline writes the LLM's *production doc*
+     to `pipeline_stage_artefacts.metadata_jsonb` (see
+     [generate-production-doc.ts:143-151](../src/lib/auto-pipeline/stages/generate-production-doc.ts#L143-L151));
+     the user-facing `/production-doc` page persists doc edits via
+     `user_history` (table from migration 0049, polymorphic
+     `kind`/`payload` JSONB, per-user, see
+     [history.ts:1011](../src/lib/history.ts#L1011)). The Remotion
+     `VideoConfig` shape is reconstructed on the fly at render time
+     from the doc.
+   - **Implication:** the editor edits *the doc*, not a derived
+     `VideoConfig`. The plan's proposed `trimStartMs` / `muted` /
+     `playbackRate` / `transitionInId` fields live on the doc-row
+     shape as **additive optional fields**, same pattern as
+     `sceneFade` / `sectionTitle` / `sceneZoom`. **Confirmed by
+     operator 2026-05-18.**
+   - **TS-only changes** in `src/remotion/types.ts` and the doc-row
+     type. No SQL migration for these fields.
 2. **Does `@remotion/player` support live `inputProps` updates
-   without remount?** Public docs were silent on this. Need a Phase 1
-   spike: a 30-line test that mutates `inputProps` 100x and confirms
-   the player reflects each change without flicker. If it remounts,
-   we wrap with a memoization layer; if not, we proceed as planned.
-3. **ElevenLabs re-pace API contract.** Does ElevenLabs support
+   without remount?** ✅ **Resolved 2026-05-18 — yes, no spike
+   needed.**
+   - Verified via Remotion docs (Context7, `/remotion-dev/remotion`).
+     Canonical pattern is `useMemo(() => ({ ...props }), [deps])` +
+     `<Player inputProps={inputProps} />`. Docs label this
+     *"Real-time prop updates via React state."* Player re-renders
+     on reference change, does NOT remount.
+   - `PlayerRef` exposes `play`, `pause`, `seekTo`,
+     `getCurrentFrame`, plus `addEventListener('frameupdate' |
+     'timeupdate' | 'seeked')`. `frameupdate.detail.frame` is the
+     current frame (available since v3.2.27).
+   - **Footgun:** any inputProps value that is a fresh function /
+     object on every render will re-render every consumer.
+     Memoize at primitive granularity. Zustand + immer's structural
+     sharing handles this cleanly.
+3. **Multi-user editing inside a workspace.** ✅ **Resolved
+   2026-05-18 — single-owner-edits for v1.** Owner can edit,
+   teammates view read-only. Matches the deferred-multiplayer
+   decision. No CRDT, no presence, no workspace-scope migration in
+   Phase 1.
+4. **Shared-record version column.** ✅ **Resolved 2026-05-18 —
+   single new migration `0078`: add `version INT NOT NULL DEFAULT 1`
+   to `user_history`.** Updates send `version` in the body; server
+   runs `UPDATE ... SET payload=$1, version=version+1 WHERE id=$2
+   AND version=$3`. 0 rows affected → 409 + current row, client
+   shows "newer version exists — reload?" toast.
+5. **Editor billing visibility.** ✅ **Resolved 2026-05-18 — build
+   the soft cap + per-session cost meter from day one.** 10-regens
+   soft warning, 20-regens hard cap per project per 24h
+   (server-enforced). Cost meter visible in the editor chrome by
+   default. Adds ~2 days to Phase 3 but protects against the happy-
+   regen loop.
+6. **ElevenLabs re-pace API contract.** Does ElevenLabs support
    re-generating a voiceover at *per-segment* target durations, or
    only globally? If only globally, the *Re-pace voiceover* button
    has to be smarter — possibly split the script into segments and
    request each one with its target duration. **Resolve in Phase 3
-   recon.**
-4. **Captions package.** Confirm `@remotion/captions` exists or
+   recon.** (Not a Phase 1 blocker.)
+7. **Captions package.** Confirm `@remotion/captions` exists or
    determine the render-path equivalent. The Explore recon noted
    captions are "burned in" on shorts via `SubtitleText` — that
-   pattern may extend cleanly to longform.
-5. **Editor billing visibility.** Do we surface per-session cost to
-   the creator? Anvevoice-style cost-meter ("This session: $0.42")
-   builds trust but can scare casual users. Default: hidden, opt-in
-   in account settings. Revisit after telemetry data from Phase 0.
+   pattern may extend cleanly to longform. **Resolve in Phase 4
+   recon.** (Not a Phase 1 blocker.)
+
+## Phase 1 corrections (2026-05-18 recon)
+
+The recon pass before Phase 1 surfaced two corrections to the
+original plan. Both are reflected in the resolved opens above; this
+section calls them out for anyone reading the plan top-down.
+
+- **No `video_configs` table.** The plan referenced creating one;
+  scrap that. Edits live on the doc row in `user_history.payload`
+  (or in `pipeline_stage_artefacts.metadata_jsonb` for auto-
+  pipeline-generated docs). The renderer keeps reconstructing
+  `VideoConfig` at request time and now reads the new optional
+  fields.
+- **One migration for Phase 1, not two.** Migration `0078` adds
+  `version INT NOT NULL DEFAULT 1` to `user_history` and nothing
+  else. No `VideoShot`-shape SQL change; those are TS-only.
+- **`@remotion/player` spike is dropped.** Q2 is answered by docs.
+  Pocket the spike day for the timeline component instead.
 
 ## Effort estimate
 

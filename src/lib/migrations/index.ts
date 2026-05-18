@@ -77,6 +77,8 @@ import migration0074 from './0074_create_youtube_analyses';
 import migration0075 from './0075_workspace_analyzer_daily_cap_override';
 import migration0076 from './0076_competitor_naming_bridge';
 import migration0077 from './0077_saved_channel_names_workspace_scope';
+import migration0078 from './0078_create_editor_telemetry';
+import migration0079 from './0079_user_history_version_column';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -161,6 +163,8 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0075,
   migration0076,
   migration0077,
+  migration0078,
+  migration0079,
 ]);
 
 /**

@@ -182,6 +182,44 @@ export interface VideoShot {
      *  renderer ignores `size` and uses this directly. */
     customSizePct?: number;
   };
+  // ─── Shot-graph editor fields ──────────────────────────────────────
+  //
+  // Phase 1 additions for `_plans/2026-05-18-shot-graph-editor.md`.
+  // Every field below is optional; absent on a shot means "behave as
+  // before." The renderer reads each when present, falls back to the
+  // pre-editor behaviour otherwise. Persistence is on the doc-row
+  // shape (JSONB in `user_history.payload`) — no SQL migration. See
+  // the plan's "Phase 1 corrections" section.
+
+  /** Head-trim on the underlying clip. Number of milliseconds skipped
+   *  from the source clip's start. Used by BRollScene to advance the
+   *  source's playhead without changing the shot's `durationMs`.
+   *  Snap-to-frame at the data layer; renderer floors to nearest
+   *  `1000/fps` ms. */
+  trimStartMs?: number;
+  /** Tail-trim on the underlying clip. Number of milliseconds dropped
+   *  from the source clip's end. Same snap-to-frame rules. */
+  trimEndMs?: number;
+  /** Per-shot mute toggle. When true, the shot's audio track is
+   *  silenced at render time — voiceover + music still play (those
+   *  are master tracks on `VideoConfig`). v1 only mutes the source
+   *  clip's own audio when present. */
+  muted?: boolean;
+  /** Playback rate for the source clip. 1 = normal, 0.5 = half-speed,
+   *  2 = double. Renderer multiplies the source's playhead advance
+   *  by this value. Out of scope: speed ramps (Remotion `interpolate`
+   *  on `playbackRate` over time) — that's v2. */
+  playbackRate?: number;
+  /** Cross-fade transition INTO this shot. `null` / undefined =
+   *  hard-cut (today's behaviour). Phase 4 wires this to
+   *  `<TransitionSeries>` with `@remotion/transitions`. v1 only
+   *  supports the literal `'cross-fade'`. */
+  transitionInId?: 'cross-fade' | null;
+  /** UTC ISO timestamp of the last manual edit to this shot's
+   *  fields. Used by Phase 3's conflict resolution rule: if the
+   *  shot was edited more recently than a pending regen, the
+   *  manual edit wins. Server-enforced. */
+  editedAt?: string;
 }
 
 // ─── Video Config ──────────────────────────────────────────────────────────────
