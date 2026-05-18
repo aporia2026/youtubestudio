@@ -248,16 +248,19 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         selection={state.selection}
         playheadMs={state.playheadMs}
         onSelect={(shotIndex) => apply({ type: 'SET_SELECTION', shotIndex })}
+        onResize={(shotIndex, durationMs) =>
+          apply({ type: 'RESIZE_SHOT', shotIndex, durationMs })
+        }
       />
 
       <div
         className="p-3 rounded-lg border text-xs"
         style={{ borderColor: 'var(--card-border)', color: 'var(--fg-muted)' }}
       >
-        <strong style={{ color: 'var(--fg)' }}>Foundation in place.</strong> Editing commands
-        (trim, split, delete, reorder, mute) land in follow-up commits per the plan&apos;s
-        per-command cadence. Selection + playhead + undo / redo / save plumbing are wired
-        and ready.
+        <strong style={{ color: 'var(--fg)' }}>Drag a shot&apos;s trailing edge to resize it.</strong>{' '}
+        Cmd / Ctrl+Z undoes. The cascade shifts every later shot&apos;s start time by the
+        delta. Hold ESC mid-drag to cancel. Split, delete, reorder, and mute commands ship
+        in follow-up commits.
       </div>
     </div>
   );

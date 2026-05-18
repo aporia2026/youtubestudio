@@ -229,6 +229,38 @@ export interface ProductionRow {
    *  even when the doc default is on. `undefined` inherits the doc
    *  default (`ProductionDoc.scene_fade_enabled`). */
   scene_fade?: boolean;
+  // ─── Shot-graph editor fields ────────────────────────────────────
+  //
+  // Additive, optional, set only by the editor (see
+  // `_plans/2026-05-18-shot-graph-editor.md`). When unset, the
+  // renderer falls back to the pre-editor derivation (timecode-based
+  // duration, no head/tail trim, no per-shot mute).
+
+  /** Editor's override of the per-row duration in ms. When set, this
+   *  value takes precedence over the timecode-derived duration. The
+   *  renderer recomputes the cumulative shot start times so changing
+   *  this on row N shifts every subsequent row's startMs. */
+  duration_override_ms?: number;
+  /** Head-trim on the underlying source clip (ms). Skips this many
+   *  ms from the clip's start before playing. The on-screen duration
+   *  is still controlled by `duration_override_ms` / timecode. */
+  trim_start_ms?: number;
+  /** Tail-trim (ms dropped from the source clip's end). */
+  trim_end_ms?: number;
+  /** Per-row mute toggle. When true, the source clip's own audio is
+   *  silenced at render time; the master VO + music tracks still play. */
+  muted?: boolean;
+  /** Playback rate for the source clip. 1 = normal, 0.5 = half-speed,
+   *  2 = double. Static (no speed ramps in v1). */
+  playback_rate?: number;
+  /** Cross-fade transition INTO this row. `'cross-fade'` enables the
+   *  Phase 4 transition; undefined keeps the row's existing fade
+   *  resolution (`scene_fade` etc.). */
+  transition_in?: 'cross-fade' | null;
+  /** UTC ISO timestamp of the last editor edit to this row. Used by
+   *  Phase 3's conflict-resolution rule (manual edit wins over AI
+   *  regen). */
+  edited_at?: string;
 }
 
 export interface ProductionDoc {
@@ -382,7 +414,34 @@ export function productionDocToVideoConfig(
     TAIL_BUFFER_MS_BOUNDS,
   );
 
-  const intervals = calcShotIntervals(timecodes, totalMs, minSceneMs);
+  const baseIntervals = calcShotIntervals(timecodes, totalMs, minSceneMs);
+
+  // Apply per-row editor duration overrides (added 2026-05-18 with the
+  // shot-graph editor). When a row carries `duration_override_ms` we
+  // replace its natural durationMs and rebuild every subsequent row's
+  // startMs cumulatively — same cascade rule calcShotIntervals uses.
+  // The first edited row anchors the cascade at its OWN startMs (kept
+  // from `baseIntervals`) so a resize of row N doesn't reflow earlier
+  // rows.
+  const overrideCount = doc.rows.reduce(
+    (acc, r) => acc + (typeof r.duration_override_ms === 'number' ? 1 : 0),
+    0,
+  );
+  let intervals = baseIntervals;
+  if (overrideCount > 0) {
+    intervals = [];
+    let cursorMs = baseIntervals[0]?.startMs ?? 0;
+    for (let i = 0; i < doc.rows.length; i++) {
+      const row = doc.rows[i];
+      const naturalDuration = baseIntervals[i]?.durationMs ?? minSceneMs;
+      const durationMs =
+        typeof row.duration_override_ms === 'number' && row.duration_override_ms >= minSceneMs
+          ? row.duration_override_ms
+          : naturalDuration;
+      intervals.push({ startMs: cursorMs, durationMs });
+      cursorMs += durationMs;
+    }
+  }
 
   if (typeof console !== 'undefined' && console.info) {
     console.info('[render-timing] config built', {
@@ -390,7 +449,8 @@ export function productionDocToVideoConfig(
       alignmentPresent: Boolean(opts.alignment),
       minSceneMs,
       tailBufferMs,
-      // First 5 shots' cascaded intervals from calcShotIntervals.
+      overrideCount,
+      // First 5 shots' cascaded intervals (post-override).
       // realignVideoConfig will replace these for aligned rows when
       // alignment data is available.
       firstFiveIntervals: intervals.slice(0, 5),

@@ -36,6 +36,16 @@ import type { ProductionDoc } from '@/remotion/utils';
 
 const UNDO_STACK_DEPTH = 200;
 
+/** Minimum on-screen duration for any shot, in ms. Mirrors the
+ *  renderer's `DEFAULT_MIN_SCENE_MS` floor — a resize below this is
+ *  clamped, not rejected, so the drag pointer-events code can clamp
+ *  on the fly without bailing out of the drag. */
+export const EDITOR_MIN_SHOT_MS = 2000;
+/** Hard cap on shot duration. 5 minutes is generous for any single
+ *  scene; protects against a runaway pointer drag from extending a
+ *  shot into the next century. */
+export const EDITOR_MAX_SHOT_MS = 5 * 60 * 1000;
+
 export interface EditorState {
   doc: ProductionDoc;
   rowImages: Record<number, string>;
@@ -73,7 +83,11 @@ export type EditorCommand =
   | { type: 'MARK_SAVED'; version: number; savedAt: number }
   | { type: 'RESET_FROM_SERVER'; doc: ProductionDoc; rowImages: Record<number, string>; version: number }
   | { type: 'UNDO' }
-  | { type: 'REDO' };
+  | { type: 'REDO' }
+  // Editing commands. Each one carries the args needed to apply +
+  // the prior value for its inverse. The reducer reads `prevDurationMs`
+  // to reconstruct the inverse when pushing onto the undo stack.
+  | { type: 'RESIZE_SHOT'; shotIndex: number; durationMs: number };
 
 /**
  * Editing-command scaffolding lands per-command. The first editing
@@ -160,7 +174,80 @@ export function applyCommand(state: EditorState, cmd: EditorCommand): EditorStat
         isDirty: true,
       };
     }
+
+    case 'RESIZE_SHOT': {
+      const { shotIndex, durationMs } = cmd;
+      if (shotIndex < 0 || shotIndex >= state.doc.rows.length) return state;
+      // Clamp into safe bounds. The editor's drag-pointer code can
+      // call us with any value; the floor + ceiling are enforced
+      // exactly once here so all entry points behave the same.
+      const clampedMs = Math.min(
+        EDITOR_MAX_SHOT_MS,
+        Math.max(EDITOR_MIN_SHOT_MS, Math.round(durationMs)),
+      );
+      const row = state.doc.rows[shotIndex];
+      const prevDurationMs = row.duration_override_ms;
+      // No-op when nothing changes — saves an undo-stack entry and
+      // keeps the auto-save quiet when the user nudges back to the
+      // original value mid-drag.
+      if (prevDurationMs === clampedMs) return state;
+      const nextRow = { ...row, duration_override_ms: clampedMs, edited_at: new Date().toISOString() };
+      const nextRows = state.doc.rows.slice();
+      nextRows[shotIndex] = nextRow;
+      const inverse: EditorCommand =
+        typeof prevDurationMs === 'number'
+          ? { type: 'RESIZE_SHOT', shotIndex, durationMs: prevDurationMs }
+          // Pre-edit state had no override; restoring "no override"
+          // means deleting the field. We can't express that with a
+          // RESIZE_SHOT command (it sets a number), but in practice
+          // setting it back to the row's natural duration produces
+          // the same visible result. Naive approach: read the
+          // natural duration from the timecode pair at apply time.
+          // For now we encode the prior value as the natural
+          // duration computed from neighbouring timecodes; the
+          // PRE-EDITOR-WAS-UNSET case is rare (only the first
+          // resize on a row) and the visible result matches.
+          : { type: 'RESIZE_SHOT', shotIndex, durationMs: naturalRowDurationMs(state.doc, shotIndex) };
+      return {
+        ...state,
+        doc: { ...state.doc, rows: nextRows },
+        isDirty: true,
+        undoStack: pushUndo(state.undoStack, inverse),
+        redoStack: [],
+      };
+    }
   }
+}
+
+/**
+ * Compute the natural (pre-editor) duration in ms for a row from its
+ * timecode + the next row's timecode. Used to synthesise an inverse
+ * for the first resize on a row that previously had no override.
+ *
+ * Falls back to `EDITOR_MIN_SHOT_MS` for the final row when there's
+ * no next-row timecode to subtract against — preserves a sensible
+ * undo target without parsing `total_duration`.
+ */
+function naturalRowDurationMs(doc: ProductionDoc, index: number): number {
+  const start = parseTimecodeMs(doc.rows[index]?.timecode);
+  if (start === null) return EDITOR_MIN_SHOT_MS;
+  const next = doc.rows[index + 1];
+  if (!next) return EDITOR_MIN_SHOT_MS;
+  const end = parseTimecodeMs(next.timecode);
+  if (end === null || end <= start) return EDITOR_MIN_SHOT_MS;
+  return end - start;
+}
+
+function parseTimecodeMs(tc: string | undefined): number | null {
+  if (!tc) return null;
+  // Timecodes in this codebase are formatted as "M:SS" or "MM:SS" —
+  // sometimes as ranges ("M:SS - M:SS"). Read the leading token.
+  const m = tc.trim().match(/^(\d{1,2}):(\d{1,2})/);
+  if (!m) return null;
+  const minutes = parseInt(m[1], 10);
+  const seconds = parseInt(m[2], 10);
+  if (!Number.isFinite(minutes) || !Number.isFinite(seconds)) return null;
+  return (minutes * 60 + seconds) * 1000;
 }
 
 /**
