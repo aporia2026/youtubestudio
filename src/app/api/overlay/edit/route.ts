@@ -15,6 +15,8 @@ import {
   getImagesBucket,
   uploadToBucket,
 } from '@/lib/r2';
+import { removeBackground } from '@/lib/overlay-rmbg';
+import { gateRmbgOutput } from '@/lib/overlay-rmbg-gate';
 
 export const maxDuration = 300;
 
@@ -24,10 +26,16 @@ export const maxDuration = 300;
  *
  * Two tiers, matching the row-image edit route's shape:
  *
- *   1. Smart edit  (`mode: 'smart'`)  — Nano Banana 2 via Kie's
- *      `google/nano-banana-edit`. Prompt + source only; the model
- *      segments the region the prompt describes. ~$0.034 batch /
- *      ~$0.067 real-time. Default mode.
+ *   1. Smart edit  (`mode: 'smart'`)  — Nano Banana (Gemini 2.5 Flash
+ *      Image) via Kie's `google/nano-banana-edit`. Prompt + source
+ *      only; the model segments the region the prompt describes.
+ *      Cost (2026-05-19, verified): Kie marketing says ~$0.02/edit
+ *      for this route; Google's direct rate is $0.039. The exact
+ *      Kie credit-debit is not first-party verifiable from public
+ *      pages — eyeball one real call in the Kie dashboard. Default
+ *      mode. (To upgrade to Nano Banana 2 / Gemini 3.1 Flash Image
+ *      Preview, swap the Kie slug — pricing then becomes tiered at
+ *      0.5K $0.045 → 4K $0.151 per Google direct.)
  *
  *   2. Brush mask  (`mode: 'brush'`)  — GPT-4o image via Kie's
  *      `gpt4o-image/generate`. Mask + prompt + quality tier. Mask is
@@ -62,6 +70,12 @@ interface EditRequestBody {
   prompt?: string;
   mode?: string;
   mask?: { url?: string; quality?: 'low' | 'medium' | 'high' };
+  /** When true (default), re-run Bria RMBG on the edit output so any
+   *  background the model accidentally introduced is removed before
+   *  the result lands in R2. Costs ~$0.018 (fal.ai) / ~$0.058
+   *  (Replicate) extra per edit. Set false to skip if the user
+   *  explicitly wants the model's exact output preserved. */
+  rerunRmbg?: boolean;
 }
 
 /** Map an aspect ratio number → the Kie `image_size` literal that's
@@ -204,22 +218,79 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     // Mirror the result to R2 under `overlays/edit-…` so the source
     // cache key (`overlays/<ws>/<hash>.png`) is preserved — a future
     // re-fetch of the same stock_terms still hits its own cache.
+    // Step order:
+    //   1. Fetch the Kie-hosted result bytes.
+    //   2. (optional) Auto-RMBG: re-run Bria on the bytes so any
+    //      background the model accidentally introduced is removed.
+    //      Gate the cutout via the Phase 4 heuristic — if RMBG ate
+    //      everything we keep the model's output rather than ship a
+    //      blank PNG.
+    //   3. Upload to R2.
     let finalUrl = resultUrl;
+    let rmbgKept: boolean | undefined;
     try {
       const imgRes = await fetch(resultUrl);
-      if (imgRes.ok) {
-        const contentType = imgRes.headers.get('content-type') || 'image/png';
-        const buffer = Buffer.from(await imgRes.arrayBuffer());
-        const ext = contentType.includes('png') ? 'png' : 'jpg';
-        const randomSuffix = Math.random().toString(36).slice(2, 10);
-        const bucket = getImagesBucket();
-        const r2Key = `overlays/edit-${session.ws}-${Date.now()}-${randomSuffix}.${ext}`;
-        await uploadToBucket(bucket, r2Key, buffer, contentType);
-        finalUrl = await getDownloadUrlForBucket(bucket, r2Key, process.env.R2_IMAGES_PUBLIC_URL);
-      } else {
+      if (!imgRes.ok) {
         logger.warn('[overlay edit] result fetch non-OK — falling back to Kie URL', {
           status: imgRes.status,
         });
+      } else {
+        const contentType = imgRes.headers.get('content-type') || 'image/png';
+        // Annotate as `Buffer` rather than the inferred `Buffer<ArrayBuffer>`
+        // — the cutout assignment below comes from `removeBackground`'s
+        // `Buffer<ArrayBufferLike>` return type, which is only assignable
+        // to the wider `Buffer` alias.
+        let buffer: Buffer = Buffer.from(await imgRes.arrayBuffer());
+        let outputContentType = contentType;
+
+        // Auto-RMBG is on by default — overlays are transparent PNGs by
+        // contract, and Nano Banana / GPT-image sometimes return an
+        // opaque background even when the prompt asks otherwise.
+        const shouldRerunRmbg = body.rerunRmbg !== false;
+        const replicateToken = process.env.REPLICATE_API_TOKEN;
+        if (shouldRerunRmbg && replicateToken) {
+          try {
+            const cutoutBytes = await removeBackground({
+              imageBytes: buffer,
+              imageMimeType: contentType,
+              replicateToken,
+            });
+            // Phase 4 gate the cutout — if RMBG ate the subject (alpha
+            // coverage < 5%) we keep the model's output instead of
+            // shipping a blank PNG. Halo / shattered components are
+            // accepted here because we're already downstream of an
+            // AI edit that the user is going to preview & accept.
+            const gate = await gateRmbgOutput(cutoutBytes);
+            logger.info('[overlay edit] auto-rmbg gate', {
+              workspace: session.ws,
+              decision: gate.decision,
+              alphaCoverage: gate.alphaCoverage,
+              edgeHaloBleed: gate.edgeHaloBleed,
+              reason: gate.reason,
+            });
+            if (gate.decision === 'revert-original') {
+              rmbgKept = false;
+            } else {
+              buffer = cutoutBytes;
+              outputContentType = 'image/png';
+              rmbgKept = true;
+            }
+          } catch (rmbgErr) {
+            // RMBG hiccup never blocks the edit accept — log + fall
+            // through to the unprocessed model output.
+            logger.warn('[overlay edit] auto-rmbg failed — keeping model output', {
+              detail: rmbgErr instanceof Error ? rmbgErr.message : String(rmbgErr),
+            });
+            rmbgKept = false;
+          }
+        }
+
+        const ext = outputContentType.includes('png') ? 'png' : 'jpg';
+        const randomSuffix = Math.random().toString(36).slice(2, 10);
+        const bucket = getImagesBucket();
+        const r2Key = `overlays/edit-${session.ws}-${Date.now()}-${randomSuffix}.${ext}`;
+        await uploadToBucket(bucket, r2Key, buffer, outputContentType);
+        finalUrl = await getDownloadUrlForBucket(bucket, r2Key, process.env.R2_IMAGES_PUBLIC_URL);
       }
     } catch (mirrorErr) {
       logger.warn('[overlay edit] R2 mirror failed — falling back to Kie URL', {
@@ -231,8 +302,9 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       workspace: session.ws,
       mode,
       finalUrl,
+      rmbgKept: rmbgKept ?? null,
     });
-    return NextResponse.json({ overlayUrl: finalUrl, mode });
+    return NextResponse.json({ overlayUrl: finalUrl, mode, rmbgKept });
   } catch (err) {
     logger.error('Overlay edit failed', {
       detail: err instanceof Error ? err.message : String(err),

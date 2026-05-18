@@ -262,6 +262,13 @@ export interface ProductionRow {
    *  the original Brave-source image was a cleaner overlay and we
    *  re-encoded that as PNG instead. Absent on pre-Phase-4 rows. */
   overlay_rmbg_kept?: boolean;
+  /** Phase 5 — stack of prior overlay URLs (R2 keys) the row has been
+   *  through via AI edits. Oldest first, most-recent-last. Capped at
+   *  3 entries so we don't bloat saved-doc payloads. Each Accept on
+   *  the edit dialog pushes the current URL onto this stack; an
+   *  "Undo edit" button pops the most recent entry back into the
+   *  live overlay slot. */
+  overlay_edit_history?: string[];
   /** Cached saliency map of `imageUrl` for this row — populated by the
    *  image-generation route. Sparse: missing for rows whose image hasn't
    *  been generated, or which pre-date the feature. */

@@ -355,7 +355,7 @@ export function OverlayEditDialog({
                         }}
                       />
                       <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                        ~$0.034 per edit · Nano Banana 2 segments the region the prompt describes.
+                        ~$0.02 per edit · Nano Banana (Gemini 2.5 Flash Image) segments the region the prompt describes.
                       </div>
                     </>
                   ) : (

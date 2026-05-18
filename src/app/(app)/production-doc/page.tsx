@@ -40,6 +40,7 @@ import { SectionThumbnailCard } from '@/components/production-doc/SectionThumbna
 import { OverlayCell } from '@/components/production-doc/OverlayCell';
 import { OverlayPositionEditor } from '@/components/production-doc/OverlayPositionEditor';
 import { OverlayEditDialog } from '@/components/production-doc/OverlayEditDialog';
+import { OverlayContextMenu } from '@/components/production-doc/OverlayContextMenu';
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
 import { MissingClipsModal } from '@/components/production-doc/MissingClipsModal';
@@ -231,6 +232,9 @@ interface ProductionRow {
    *  `false` when the heuristic gate / vision tiebreaker decided the
    *  original was cleaner and we re-encoded it as PNG instead. */
   overlay_rmbg_kept?: boolean;
+  /** Phase 5 — stack of prior overlay URLs after AI edits. Most-recent
+   *  last; cap 3. Undo pops the tail back into the live overlay slot. */
+  overlay_edit_history?: string[];
   /** Cached pixel-saliency map for this row's generated image. Populated
    *  by `/api/generate/production-doc/image` after the image lands in R2. */
   image_saliency?: ImageSaliencyMap;
@@ -2690,9 +2694,49 @@ function ProductionDocPage() {
 
   // Phase 5 — overlay AI-edit dialog. Single-row at a time (matches
   // overlayPositionRow's pattern). Mounted from the position editor's
-  // ✎ button; on accept, the row's overlay URL is swapped to the new
-  // R2 URL returned by /api/overlay/edit.
+  // ✎ button OR the overlay cell's ✎ button; on accept, the row's
+  // overlay URL is swapped to the new R2 URL returned by
+  // /api/overlay/edit. The replaced URL is pushed onto the row's
+  // overlay_edit_history stack (cap 3) so Undo can roll it back.
   const [overlayEditRow, setOverlayEditRow] = useState<number | null>(null);
+
+  // Phase 5 — right-click context menu state. When set, mounts an
+  // OverlayContextMenu at the cursor coords with the row's relevant
+  // actions. Cleared on item-click, click-outside, or Escape.
+  const [overlayContextMenu, setOverlayContextMenu] = useState<{
+    rowIndex: number;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  /** Maximum depth of the per-row edit-history stack. 3 matches the
+   *  plan and keeps saved-doc payloads small — three R2 URLs is ~600
+   *  bytes per row. */
+  const OVERLAY_EDIT_HISTORY_CAP = 3;
+
+  /** Phase 5 — undo the most recent AI edit on a row. Pops the last
+   *  URL off `overlay_edit_history` and swaps it back into the live
+   *  overlay slot. No-op when the stack is empty. */
+  function undoOverlayEdit(rowIndex: number): void {
+    const row = doc?.rows[rowIndex];
+    const history = row?.overlay_edit_history;
+    if (!row || !history || history.length === 0) {
+      console.warn('[ui overlay-edit] undo skipped — no history', { rowIndex });
+      return;
+    }
+    const previousUrl = history[history.length - 1]!;
+    const nextHistory = history.slice(0, -1);
+    console.info('[ui overlay-edit] undo', {
+      rowIndex,
+      restoredUrl: previousUrl,
+      remainingHistory: nextHistory.length,
+    });
+    updateRow(rowIndex, { overlay_edit_history: nextHistory });
+    setRowOverlays((prev) => ({
+      ...prev,
+      [rowIndex]: { ...prev[rowIndex], status: 'done', url: previousUrl },
+    }));
+  }
 
   // — B-roll clips per row (rowIndex → { status, videoUrl }). The BrollCell
   //   owns its own clip lifecycle and reports up via `onClipChange`; we keep
@@ -6808,6 +6852,12 @@ function ProductionDocPage() {
                                 onRethink={() => { void rethinkOverlayPlacement(i); }}
                                 isRethinking={rethinkingRows.has(i)}
                                 rethinkExhausted={(rethinkAttempts[i] ?? 0) >= RETHINK_MAX_ATTEMPTS}
+                                onEditImage={() => setOverlayEditRow(i)}
+                                onUndoEdit={() => undoOverlayEdit(i)}
+                                canUndoEdit={(row.overlay_edit_history?.length ?? 0) > 0}
+                                onShowContextMenu={(x, y) =>
+                                  setOverlayContextMenu({ rowIndex: i, x, y })
+                                }
                               />
                             ) : (
                               <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>—</span>
@@ -7067,6 +7117,12 @@ function ProductionDocPage() {
                               onRethink={() => { void rethinkOverlayPlacement(i); }}
                               isRethinking={rethinkingRows.has(i)}
                               rethinkExhausted={(rethinkAttempts[i] ?? 0) >= RETHINK_MAX_ATTEMPTS}
+                              onEditImage={() => setOverlayEditRow(i)}
+                              onUndoEdit={() => undoOverlayEdit(i)}
+                              canUndoEdit={(row.overlay_edit_history?.length ?? 0) > 0}
+                              onShowContextMenu={(x, y) =>
+                                setOverlayContextMenu({ rowIndex: i, x, y })
+                              }
                             />
                           </div>
                         )}
@@ -7585,11 +7641,23 @@ function ProductionDocPage() {
             overlayUrl={rowOverlays[overlayEditRow]!.url!}
             termsLabel={doc.rows[overlayEditRow]!.overlay_stock_terms || ''}
             onAccept={(newOverlayUrl, mode) => {
+              // Push the about-to-be-replaced URL onto the row's edit
+              // history so Undo can roll it back. Cap at 3 entries —
+              // anything beyond gets shifted off the front (oldest is
+              // dropped first).
+              const replacedUrl = rowOverlays[overlayEditRow]?.url;
+              const prevHistory = doc?.rows[overlayEditRow]?.overlay_edit_history ?? [];
+              const nextHistory = replacedUrl
+                ? [...prevHistory, replacedUrl].slice(-OVERLAY_EDIT_HISTORY_CAP)
+                : prevHistory;
               console.info('[ui overlay-edit] accepted', {
                 rowIndex: overlayEditRow,
                 mode,
                 newOverlayUrl,
+                replacedUrl,
+                historyDepthAfter: nextHistory.length,
               });
+              updateRow(overlayEditRow, { overlay_edit_history: nextHistory });
               setRowOverlays((prev) => ({
                 ...prev,
                 [overlayEditRow]: {
@@ -7602,6 +7670,61 @@ function ProductionDocPage() {
             onClose={() => setOverlayEditRow(null)}
           />
         )}
+
+      {/* Phase 5 — right-click context menu on the overlay cell. Items
+          are computed against the live row so e.g. "Undo last edit"
+          only appears when there's something to undo. Click on an
+          item fires the same handler the inline button would. */}
+      {overlayContextMenu &&
+        doc?.rows[overlayContextMenu.rowIndex] &&
+        (() => {
+          const i = overlayContextMenu.rowIndex;
+          const row = doc.rows[i]!;
+          const overlayState = rowOverlays[i];
+          const canUndo = (row.overlay_edit_history?.length ?? 0) > 0;
+          return (
+            <OverlayContextMenu
+              x={overlayContextMenu.x}
+              y={overlayContextMenu.y}
+              onClose={() => setOverlayContextMenu(null)}
+              items={[
+                {
+                  label: '✎ Edit image',
+                  onClick: () => setOverlayEditRow(i),
+                  disabled: overlayState?.status !== 'done',
+                  title: 'Open the AI image-edit dialog (Smart edit or Brush mask)',
+                },
+                {
+                  label: '↻ Rethink placement',
+                  onClick: () => { void rethinkOverlayPlacement(i); },
+                  disabled:
+                    overlayState?.status !== 'done' ||
+                    rethinkingRows.has(i) ||
+                    (rethinkAttempts[i] ?? 0) >= RETHINK_MAX_ATTEMPTS,
+                  title: 'Ask the AI for a new size + position on this overlay',
+                },
+                {
+                  label: '🔁 Replace overlay (re-search)',
+                  onClick: () => {
+                    const terms = row.overlay_stock_terms?.trim();
+                    if (terms) void fetchOverlayForRow(i, terms);
+                  },
+                  disabled: !row.overlay_stock_terms?.trim(),
+                  title: 'Re-run Brave search + RMBG with the same stock terms (replaces the current overlay)',
+                },
+                {
+                  label: '↶ Undo last edit',
+                  onClick: () => undoOverlayEdit(i),
+                  disabled: !canUndo,
+                  separatorAbove: true,
+                  title: canUndo
+                    ? 'Restore the overlay state from before the most recent AI edit'
+                    : 'No edits to undo yet',
+                },
+              ]}
+            />
+          );
+        })()}
 
       {missingClipsModal && (
         <MissingClipsModal

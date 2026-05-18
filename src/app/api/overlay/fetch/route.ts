@@ -16,6 +16,7 @@ import {
 } from '@/lib/overlay-placement-ai';
 import { gateRmbgOutput } from '@/lib/overlay-rmbg-gate';
 import { tiebreakRmbg } from '@/lib/overlay-rmbg-tiebreaker';
+import { removeBackground } from '@/lib/overlay-rmbg';
 
 /**
  * POST /api/overlay/fetch
@@ -50,11 +51,8 @@ import { tiebreakRmbg } from '@/lib/overlay-rmbg-tiebreaker';
 export const maxDuration = 60;
 
 const BRAVE_IMAGE_SEARCH = 'https://api.search.brave.com/res/v1/images/search';
-// Replicate slug: `bria/remove-background` runs Bria's RMBG-2.0 model.
-// The earlier `briaai/rmbg-2.0` slug doesn't exist on Replicate (it's
-// the HuggingFace slug, not the Replicate one) and returned 404.
-const REPLICATE_RMBG_URL =
-  'https://api.replicate.com/v1/models/bria/remove-background/predictions';
+// The Replicate RMBG call lives in src/lib/overlay-rmbg.ts so the
+// Phase 5 edit route can also re-run RMBG on AI-edited overlays.
 const MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 5_000;
 const MIN_RESULT_WIDTH = 200;
@@ -241,47 +239,6 @@ async function downloadImage(url: string): Promise<{ bytes: Buffer; contentType:
   } finally {
     clearTimeout(timer);
   }
-}
-
-async function removeBackground(imageUrl: string, replicateToken: string): Promise<Buffer> {
-  // `Prefer: wait` blocks the response until the prediction finishes (up to
-  // 60 s) so we don't have to poll. RMBG typically completes in 1-2 s.
-  // The Bria input schema accepts a public URL or a base64 data URL in
-  // the `image` field; we pass the Brave-sourced URL directly.
-  const create = await fetch(REPLICATE_RMBG_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Token ${replicateToken}`,
-      'Content-Type': 'application/json',
-      Prefer: 'wait=30',
-    },
-    body: JSON.stringify({ input: { image: imageUrl } }),
-  });
-  if (!create.ok) {
-    // Capture Replicate's actual error body — same reasoning as the
-    // Brave call above. A 404 used to surface as "Replicate RMBG
-    // failed (404)" with no detail; now the slug-doesn't-exist /
-    // model-private / auth-failed cases each propagate distinguishable
-    // text the caller can act on.
-    const body = await create.text().catch(() => '');
-    const snippet = body.slice(0, 400);
-    logger.warn('Replicate RMBG non-OK', { status: create.status, body: snippet });
-    throw new Error(`Replicate RMBG failed (${create.status}): ${snippet || 'no body'}`);
-  }
-  const data = (await create.json()) as {
-    status?: string;
-    output?: string | string[];
-    error?: string;
-  };
-  if (data.error) throw new Error(`Replicate RMBG: ${data.error}`);
-  if (data.status && data.status !== 'succeeded') {
-    throw new Error(`Replicate RMBG did not complete (status: ${data.status})`);
-  }
-  const outputUrl = Array.isArray(data.output) ? data.output[0] : data.output;
-  if (!outputUrl) throw new Error('Replicate RMBG returned no output URL');
-  const fetched = await fetch(outputUrl);
-  if (!fetched.ok) throw new Error(`Failed to fetch RMBG output (${fetched.status})`);
-  return Buffer.from(await fetched.arrayBuffer());
 }
 
 export const POST = apiRoute.authed(async (session, req: NextRequest) => {
@@ -505,7 +462,10 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     // second network fetch when reverting to original.
     const originalDownload = await downloadImage(hit.url);
 
-    const cutoutBytes = await removeBackground(hit.url, replicateToken);
+    const cutoutBytes = await removeBackground({
+      imageUrl: hit.url,
+      replicateToken,
+    });
 
     // ── Phase 4: smart-RMBG gate ───────────────────────────────────
     //

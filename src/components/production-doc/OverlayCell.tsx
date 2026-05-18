@@ -47,6 +47,22 @@ interface Props {
   /** True when this row has burned through its session rethink budget.
    *  Greys out the ↻ button with an explanatory tooltip. */
   rethinkExhausted?: boolean;
+  /** Phase 5 — invoked when the user clicks the ✎ button to open the
+   *  AI image-edit dialog. Surfaced only when the overlay is `done`
+   *  AND the parent wired the handler. */
+  onEditImage?: () => void;
+  /** Phase 5 — invoked when the user clicks the ↶ Undo button. The
+   *  parent pops the row's `overlay_edit_history` stack and restores
+   *  the previous URL into the live overlay slot. Surfaced only when
+   *  `canUndoEdit` is true. */
+  onUndoEdit?: () => void;
+  /** True when the row's `overlay_edit_history` is non-empty — i.e.
+   *  there's at least one prior overlay URL we can revert to. */
+  canUndoEdit?: boolean;
+  /** Phase 5 — invoked on right-click of the overlay cell. Parent
+   *  opens an OverlayContextMenu at the cursor coords. Absent ⇒
+   *  right-click falls through to the browser's default menu. */
+  onShowContextMenu?: (x: number, y: number) => void;
 }
 
 const ZONE_LABELS: Record<Zone, string> = {
@@ -71,10 +87,27 @@ export function OverlayCell({
   onRethink,
   isRethinking,
   rethinkExhausted,
+  onEditImage,
+  onUndoEdit,
+  canUndoEdit,
+  onShowContextMenu,
 }: Props) {
   const status = state?.status ?? 'idle';
   return (
-    <div className="flex flex-col gap-1">
+    <div
+      className="flex flex-col gap-1"
+      // Right-click → parent opens an OverlayContextMenu at the cursor.
+      // Only intercept when (a) the overlay is in `done` state (something
+      // to act on) AND (b) the parent wired the handler. Otherwise let
+      // the browser's default menu through.
+      onContextMenu={
+        onShowContextMenu && status === 'done'
+          ? (e) => {
+              e.preventDefault();
+              onShowContextMenu(e.clientX, e.clientY);
+            }
+          : undefined
+      }>
       <div className="flex items-center gap-1">
         <span
           className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]"
@@ -170,6 +203,45 @@ export function OverlayCell({
                 }
               >
                 {isRethinking ? '↻ …' : '↻ Rethink'}
+              </button>
+            )}
+            {/* Phase 5 — ✎ Edit image. Direct cell-level entry for the
+                AI image-edit dialog so the user doesn't have to open
+                the position editor first. Council outcome wanted this
+                wired alongside the position-editor surface. */}
+            {onEditImage && (
+              <button
+                type="button"
+                onClick={onEditImage}
+                className="text-[10px] px-1.5 py-0.5 rounded self-start"
+                style={{
+                  background: 'rgba(168,85,247,0.14)',
+                  color: '#c084fc',
+                  border: '1px solid rgba(168,85,247,0.30)',
+                  cursor: 'pointer',
+                }}
+                title="Edit this overlay image with AI (Smart edit or Brush mask)"
+              >
+                ✎ Edit
+              </button>
+            )}
+            {/* Phase 5 — Undo last AI edit. Visible only when the row's
+                edit-history stack is non-empty. Single click pops the
+                most recent prior overlay URL back into the live slot. */}
+            {onUndoEdit && canUndoEdit && (
+              <button
+                type="button"
+                onClick={onUndoEdit}
+                className="text-[10px] px-1.5 py-0.5 rounded self-start"
+                style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  color: 'var(--text-muted)',
+                  border: '1px solid rgba(255,255,255,0.10)',
+                  cursor: 'pointer',
+                }}
+                title="Undo the most recent AI edit on this overlay"
+              >
+                ↶ Undo
               </button>
             )}
           </div>
