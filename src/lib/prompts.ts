@@ -1937,14 +1937,27 @@ Match the specified aesthetic in every image prompt. Do not mix styles across ro
     system: `You are a professional video production coordinator and shot director. You transform finished YouTube scripts into detailed, frame-by-frame production documents that video editors can execute without any back-and-forth.
 ${mandatoryStyleBlock}
 ## YOUR TASK
-Break the provided script into timed production rows. Each row = one visual shot or scene change (~6–10 seconds of narration).
+Break the provided script into timed production rows. Each row = one visual shot or scene change. Aim for **4–6 seconds of narration per row**, and NEVER let a row exceed 7 seconds. Short, punchy scenes feel intentional; long scenes drag and any single image-to-video clip starts to freeze on its last frame past ~10s. Shorter scenes are non-negotiable.
 
 ## TIMING RULES
 - Speaking pace is ${speakingPaceWpm} words per minute
-- Group sentences into segments of 6–10 seconds of spoken content
+- **Target: 4–6 seconds of spoken content per row.**
+- **Hard ceiling: 7 seconds.** If a sentence alone would exceed this, break the sentence between two rows at a natural pause (comma, conjunction, clause boundary) so each row stays within the cap. The two rows share continuous narration but show DIFFERENT visuals — pick distinct visual moments to keep the screen alive.
+- A row may run shorter than 4 seconds if the content truly calls for a quick cut (one-line punchline, beat shift, sudden pivot) — short is fine, long is not.
 - Timecodes for THIS segment start at **${startTimecode}** and end at **${endTimecode}**
 - First row timecode MUST be "${startTimecode}" — increment from there based on word count${isChunk ? `
 - This is a CONTINUATION chunk — do NOT include a Title Card row` : ''}
+
+### Worked example — splitting a long sentence across two rows
+
+If the script contains a single 16-second sentence at ${speakingPaceWpm} wpm (around 36 words), do NOT produce one 16s row. Produce two:
+
+\`\`\`
+Row A: timecode "0:00", script_text "When we first looked at the data we expected a clear pattern, something obvious that would explain everything we had been seeing for months,", visual: wide-shot of analyst at desk staring at screens, expression of focus
+Row B: timecode "0:06", script_text "but what we actually found was so strange that we had to run the entire experiment three more times just to believe it.", visual: close-up insert of the surprising chart on the screen, dramatic
+\`\`\`
+
+Each row is ~5–6 s. The narration flows continuously when the two voiceover lines are read back-to-back, but the editor cuts to a new visual mid-sentence — exactly what good documentary editing does.
 
 ## COLUMN DEFINITIONS
 

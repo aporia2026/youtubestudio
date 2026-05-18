@@ -34,11 +34,14 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  BROLL_FAMILY_LABEL,
+  BROLL_FAMILY_ORDER,
   BROLL_MODELS,
   DEFAULT_BROLL_MODEL_ID,
   findBrollModel,
   pickModelForScene,
   type BrollClipRow,
+  type BrollFamily,
   type BrollModelDescriptor,
   type BrollModelId,
   type BrollModelKind,
@@ -861,10 +864,12 @@ function truncate(s: string, n: number): string {
   return s.slice(0, Math.max(0, n - 1)).trimEnd() + '…';
 }
 
-/** Picker is grouped: image-to-video first (recommended path for rows that
- *  already have a still), text-to-video below. Each row shows label + price.
- *  The user's current default has a filled star; clicking the star on a
- *  different row promotes it to the new default. */
+/** Picker is grouped two-deep: image-to-video first (recommended path for
+ *  rows that already have a still), text-to-video below, with each section
+ *  subdivided by provider family (Kling, Sora, Veo, Runway, Grok, Seedance).
+ *  Each entry shows label + price. The user's current default has a filled
+ *  star; clicking the star on a different row promotes it to the new
+ *  default. Family subheadings keep the 25-entry list scannable. */
 function ModelPicker({
   value,
   defaultModelId,
@@ -880,88 +885,112 @@ function ModelPicker({
   onMakeDefault: (id: BrollModelId) => void | Promise<void>;
   onClose: () => void;
 }) {
-  const grouped = useMemo(() => groupModelsByKind(BROLL_MODELS), []);
+  const grouped = useMemo(() => groupModelsByKindAndFamily(BROLL_MODELS), []);
   return (
     <div
       className="absolute z-20 mt-6 rounded shadow-lg p-1 flex flex-col gap-1"
       style={{
         background: 'var(--bg-elevated, #1a1a1a)',
         border: '1px solid var(--border)',
-        minWidth: 240,
+        minWidth: 260,
+        maxHeight: '70vh',
+        overflowY: 'auto',
         top: 0,
       }}
       onMouseLeave={onClose}
     >
       {grouped.map((group) => (
-        <div key={group.kind} className="flex flex-col gap-0.5">
+        <div key={group.kind} className="flex flex-col gap-1">
           <div
             className="text-[9px] uppercase tracking-wider px-2 py-0.5"
             style={{ color: 'var(--text-muted)' }}
           >
             {group.kind === 'image-to-video' ? 'Animate this image' : 'Generate from text'}
           </div>
-          {group.models.map((m) => {
-            const isCurrent = m.id === value;
-            const isDefault = m.id === defaultModelId;
-            const disabled = m.kind === 'image-to-video' && !hasStill;
-            return (
+          {group.families.map((fam) => (
+            <div key={`${group.kind}:${fam.family}`} className="flex flex-col gap-0.5">
               <div
-                key={m.id}
-                className="flex items-center gap-1 px-1"
-                style={{
-                  background: isCurrent ? 'rgba(168,85,247,0.16)' : 'transparent',
-                  borderRadius: 4,
-                  opacity: disabled ? 0.45 : 1,
-                }}
+                className="text-[10px] px-2 pt-1"
+                style={{ color: 'var(--text-tertiary, var(--text-muted))', fontWeight: 600 }}
               >
-                <button
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => !disabled && onChange(m.id as BrollModelId)}
-                  className="flex-1 text-left text-xs px-1 py-1 rounded"
-                  style={{
-                    color: isCurrent ? '#c084fc' : 'var(--text-secondary)',
-                    cursor: disabled ? 'not-allowed' : 'pointer',
-                    background: 'transparent',
-                  }}
-                  title={disabled ? 'Needs a still image to animate' : m.blurb}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span>{m.label}</span>
-                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                      {m.priceUsdLabel}
-                    </span>
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onMakeDefault(m.id as BrollModelId)}
-                  className="text-xs px-1 py-1 rounded"
-                  style={{
-                    background: 'transparent',
-                    color: isDefault ? '#facc15' : 'var(--text-muted)',
-                  }}
-                  title={isDefault ? 'Current default' : 'Set as my default'}
-                  aria-label={isDefault ? 'Current default' : `Set ${m.label} as default`}
-                >
-                  {isDefault ? '★' : '☆'}
-                </button>
+                {BROLL_FAMILY_LABEL[fam.family]}
               </div>
-            );
-          })}
+              {fam.models.map((m) => {
+                const isCurrent = m.id === value;
+                const isDefault = m.id === defaultModelId;
+                const disabled = m.kind === 'image-to-video' && !hasStill;
+                return (
+                  <div
+                    key={m.id}
+                    className="flex items-center gap-1 px-1"
+                    style={{
+                      background: isCurrent ? 'rgba(168,85,247,0.16)' : 'transparent',
+                      borderRadius: 4,
+                      opacity: disabled ? 0.45 : 1,
+                    }}
+                  >
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => !disabled && onChange(m.id as BrollModelId)}
+                      className="flex-1 text-left text-xs px-1 py-1 rounded"
+                      style={{
+                        color: isCurrent ? '#c084fc' : 'var(--text-secondary)',
+                        cursor: disabled ? 'not-allowed' : 'pointer',
+                        background: 'transparent',
+                      }}
+                      title={disabled ? 'Needs a still image to animate' : m.blurb}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span>{m.label}</span>
+                        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                          {m.priceUsdLabel}
+                        </span>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onMakeDefault(m.id as BrollModelId)}
+                      className="text-xs px-1 py-1 rounded"
+                      style={{
+                        background: 'transparent',
+                        color: isDefault ? '#facc15' : 'var(--text-muted)',
+                      }}
+                      title={isDefault ? 'Current default' : 'Set as my default'}
+                      aria-label={isDefault ? 'Current default' : `Set ${m.label} as default`}
+                    >
+                      {isDefault ? '★' : '☆'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
         </div>
       ))}
     </div>
   );
 }
 
-function groupModelsByKind(
+/** Two-deep grouping: first by kind (i2v / t2v), then by family. Families
+ *  empty in either kind are dropped from the result so the picker only
+ *  shows headings that have entries beneath them. Family order is the
+ *  canonical `BROLL_FAMILY_ORDER`. */
+function groupModelsByKindAndFamily(
   models: readonly BrollModelDescriptor[],
-): { kind: BrollModelKind; models: BrollModelDescriptor[] }[] {
-  const i2v = models.filter((m) => m.kind === 'image-to-video');
-  const t2v = models.filter((m) => m.kind === 'text-to-video');
+): {
+  kind: BrollModelKind;
+  families: { family: BrollFamily; models: BrollModelDescriptor[] }[];
+}[] {
+  function familiesFor(kind: BrollModelKind) {
+    const kindModels = models.filter((m) => m.kind === kind);
+    return BROLL_FAMILY_ORDER.map((family) => ({
+      family,
+      models: kindModels.filter((m) => m.family === family),
+    })).filter((g) => g.models.length > 0);
+  }
   return [
-    { kind: 'image-to-video', models: i2v },
-    { kind: 'text-to-video', models: t2v },
+    { kind: 'image-to-video', families: familiesFor('image-to-video') },
+    { kind: 'text-to-video', families: familiesFor('text-to-video') },
   ];
 }

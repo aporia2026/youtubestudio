@@ -7,6 +7,10 @@ import { apiRoute } from '@/lib/route-helpers';
 import { resolveStyle } from '@/lib/production-doc-styles';
 import { getEffectiveModelId } from '@/lib/model-defaults';
 import { logger } from '@/lib/logger';
+import {
+  validateAndSplitOverlongRows,
+  type ProductionDocRowLike,
+} from '@/lib/production-doc-postprocess';
 
 export const maxDuration = 300;
 
@@ -114,9 +118,13 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     );
   }
 
-  let result;
+  let result: {
+    rows?: ProductionDocRowLike[];
+    speaking_pace_wpm?: number;
+    [k: string]: unknown;
+  };
   try {
-    result = parseLlmJson(raw);
+    result = parseLlmJson(raw) as typeof result;
   } catch (parseErr) {
     // Surface the real cause so the client can distinguish truncation from
     // malformed JSON — generic "try again" hides a multi-minute failure.
@@ -130,5 +138,33 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     );
   }
 
-  return NextResponse.json({ result });
+  // Post-pass: enforce the 7s per-row narration ceiling. The prompt asks
+  // the model to keep rows in the 4–6s range, but LLMs are unreliable at
+  // length constraints — this deterministic pass catches any overruns and
+  // splits them on sentence boundaries before the doc reaches the editor.
+  // Title Card rows are exempt (they're 1–2s by design).
+  let generation_warnings: string[] = [];
+  if (Array.isArray(result.rows) && result.rows.length > 0) {
+    const wpm =
+      typeof result.speaking_pace_wpm === 'number'
+        ? result.speaking_pace_wpm
+        : typeof speakingPaceWpm === 'number'
+          ? speakingPaceWpm
+          : 135;
+    const split = validateAndSplitOverlongRows(result.rows, wpm);
+    if (split.overlongRowCount > 0) {
+      logger.info('[production-doc post-validate]', {
+        modelId: effectiveModelId,
+        inputRowCount: result.rows.length,
+        outputRowCount: split.rows.length,
+        overlongRowCount: split.overlongRowCount,
+        splitCount: split.splitCount,
+        warningCount: split.warnings.length,
+      });
+      result.rows = split.rows;
+      generation_warnings = split.warnings;
+    }
+  }
+
+  return NextResponse.json({ result, generation_warnings });
 });

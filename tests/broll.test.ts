@@ -153,25 +153,151 @@ describe('BROLL_MODELS registry', () => {
   });
 
   it('image-to-video bodies carry the still image URL', () => {
+    const STILL = 'https://example.com/x.jpg';
     for (const m of BROLL_MODELS) {
       if (m.kind !== 'image-to-video') continue;
       const body = m.buildBody({
         prompt: 'test',
         aspectRatio: '16:9',
         durationSeconds: m.durationSeconds,
-        stillImageUrl: 'https://example.com/x.jpg',
+        stillImageUrl: STILL,
       });
-      const input = body.input as Record<string, unknown>;
-      const carries =
-        input?.image_url === 'https://example.com/x.jpg' ||
-        (Array.isArray(input?.image_urls) &&
-          (input.image_urls as string[])[0] === 'https://example.com/x.jpg');
-      expect(carries).toBe(true);
+      const input = (body.input as Record<string, unknown> | undefined) ?? {};
+      // The wire shape varies by endpoint family:
+      //   - createTask models (Kling, Sora, Grok, Seedance) nest the URL
+      //     under `input.image_url` / `image_urls` / `first_frame_url` /
+      //     `input_urls`.
+      //   - Runway (runway-generate) puts `imageUrl` at the top level.
+      //   - Veo 3.1 (veo-generate) puts `imageUrls` at the top level.
+      const nestedHit =
+        input.image_url === STILL ||
+        (Array.isArray(input.image_urls) && (input.image_urls as string[])[0] === STILL) ||
+        input.first_frame_url === STILL ||
+        (Array.isArray(input.input_urls) && (input.input_urls as string[])[0] === STILL);
+      const topLevelHit =
+        body.imageUrl === STILL ||
+        (Array.isArray(body.imageUrls) && (body.imageUrls as string[])[0] === STILL);
+      expect(nestedHit || topLevelHit).toBe(true);
     }
   });
 
   it('rejects unknown model lookups', () => {
     expect(findBrollModel('does-not-exist')).toBeUndefined();
+  });
+
+  it('every model is tagged with a family', () => {
+    for (const m of BROLL_MODELS) {
+      expect(m.family).toBeDefined();
+      expect(['kling', 'sora', 'veo', 'runway', 'grok', 'seedance']).toContain(m.family);
+    }
+  });
+
+  it('Grok Imagine i2v sends image_urls inside input + 720p resolution', () => {
+    const m = findBrollModel('grok-imagine-i2v-10s');
+    expect(m).toBeDefined();
+    const body = m!.buildBody({
+      prompt: 'p',
+      aspectRatio: '16:9',
+      durationSeconds: 10,
+      stillImageUrl: 'https://example.com/x.jpg',
+    });
+    expect(body.model).toBe('grok-imagine/image-to-video');
+    const input = body.input as Record<string, unknown>;
+    expect(input.image_urls).toEqual(['https://example.com/x.jpg']);
+    expect(input.resolution).toBe('720p');
+    expect(input.duration).toBe('10');
+    expect(input.mode).toBe('normal');
+  });
+
+  it('Veo 3.1 Fast i2v uses /veo/generate shape with REFERENCE_2_VIDEO', () => {
+    const m = findBrollModel('veo-3-1-fast-i2v');
+    expect(m).toBeDefined();
+    expect(m!.endpoint).toBe('veo-generate');
+    const body = m!.buildBody({
+      prompt: 'p',
+      aspectRatio: '16:9',
+      durationSeconds: 8,
+      stillImageUrl: 'https://example.com/x.jpg',
+    });
+    expect(body.model).toBe('veo3_fast');
+    expect(body.generationType).toBe('REFERENCE_2_VIDEO');
+    expect(body.imageUrls).toEqual(['https://example.com/x.jpg']);
+    // Veo 3.1 puts image at top level, NOT inside `input`.
+    expect((body as Record<string, unknown>).input).toBeUndefined();
+  });
+
+  it('Veo 3.1 Lite t2v omits imageUrls', () => {
+    const m = findBrollModel('veo-3-1-lite-t2v');
+    expect(m).toBeDefined();
+    const body = m!.buildBody({
+      prompt: 'p',
+      aspectRatio: '16:9',
+      durationSeconds: 8,
+    });
+    expect(body.model).toBe('veo3_lite');
+    expect(body.generationType).toBe('TEXT_2_VIDEO');
+    expect(body.imageUrls).toBeUndefined();
+  });
+
+  it('Runway i2v puts imageUrl at top level (not aspectRatio)', () => {
+    const m = findBrollModel('runway-i2v-5s-720p');
+    expect(m).toBeDefined();
+    const body = m!.buildBody({
+      prompt: 'p',
+      aspectRatio: '16:9',
+      durationSeconds: 5,
+      stillImageUrl: 'https://example.com/x.jpg',
+    });
+    expect(body.imageUrl).toBe('https://example.com/x.jpg');
+    expect(body.duration).toBe(5);
+    expect(body.quality).toBe('720p');
+    // aspectRatio is ignored when imageUrl is present per Kie docs — we
+    // omit it on the i2v shape rather than send a redundant value.
+    expect(body.aspectRatio).toBeUndefined();
+  });
+
+  it('Runway t2v carries aspectRatio (camelCase) but no imageUrl', () => {
+    const m = findBrollModel('runway-t2v-5s-720p');
+    const body = m!.buildBody({
+      prompt: 'p',
+      aspectRatio: '9:16',
+      durationSeconds: 5,
+    });
+    expect(body.aspectRatio).toBe('9:16');
+    expect(body.imageUrl).toBeUndefined();
+  });
+
+  it('Seedance 2 i2v uses first_frame_url + generate_audio:false', () => {
+    const m = findBrollModel('seedance-2-i2v');
+    const body = m!.buildBody({
+      prompt: 'p',
+      aspectRatio: '16:9',
+      durationSeconds: 5,
+      stillImageUrl: 'https://example.com/x.jpg',
+    });
+    expect(body.model).toBe('bytedance/seedance-2');
+    const input = body.input as Record<string, unknown>;
+    expect(input.first_frame_url).toBe('https://example.com/x.jpg');
+    expect(input.generate_audio).toBe(false);
+    expect(input.resolution).toBe('720p');
+  });
+
+  it('Seedance 1.5 Pro snaps duration to the nearest of 4/8/12', () => {
+    const m = findBrollModel('seedance-1-5-pro-i2v');
+    const at5 = m!.buildBody({
+      prompt: 'p',
+      aspectRatio: '16:9',
+      durationSeconds: 5,
+      stillImageUrl: 'https://example.com/x.jpg',
+    });
+    expect((at5.input as Record<string, unknown>).duration).toBe('4');
+    const at10 = m!.buildBody({
+      prompt: 'p',
+      aspectRatio: '16:9',
+      durationSeconds: 10,
+      stillImageUrl: 'https://example.com/x.jpg',
+    });
+    expect((at10.input as Record<string, unknown>).duration).toBe('8');
   });
 });
 

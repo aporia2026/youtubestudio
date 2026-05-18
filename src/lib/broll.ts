@@ -43,13 +43,31 @@ export type { BrollClipRow } from './broll-types';
 const KIE_BASE = 'https://api.kie.ai/api/v1/jobs';
 /** Runway has its own endpoint outside the unified `/jobs/createTask` pattern. */
 const KIE_RUNWAY_BASE = 'https://api.kie.ai/api/v1/runway';
+/** Veo 3.1 lives on a separate endpoint family with its own status-polling
+ *  response shape (`successFlag` integer vs the unified `state` string). */
+const KIE_VEO_BASE = 'https://api.kie.ai/api/v1/veo';
 
 /** Map a model descriptor's `endpoint` field to the absolute URL used for
  *  task creation. New endpoints are added here so the wire layer stays the
  *  one place that knows about Kie's URL space. */
 function resolveCreateTaskUrl(endpoint: BrollModelDescriptor['endpoint']): string {
   if (endpoint === 'runway-generate') return `${KIE_RUNWAY_BASE}/generate`;
+  if (endpoint === 'veo-generate') return `${KIE_VEO_BASE}/generate`;
   return `${KIE_BASE}/createTask`;
+}
+
+/** Map a model descriptor's `endpoint` field to the absolute URL used for
+ *  status polling. Most endpoints share `/jobs/recordInfo`; Veo 3.1 has
+ *  its own `/veo/record-info` with a different response shape (handled
+ *  by `parseVeoStatus` rather than `parseJobsStatus`). */
+function resolveStatusUrl(
+  endpoint: BrollModelDescriptor['endpoint'],
+  taskId: string,
+): string {
+  if (endpoint === 'veo-generate') {
+    return `${KIE_VEO_BASE}/record-info?taskId=${encodeURIComponent(taskId)}`;
+  }
+  return `${KIE_BASE}/recordInfo?taskId=${encodeURIComponent(taskId)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,12 +225,19 @@ async function kieCreateVideoTask(args: {
 
 /** Single status read against Kie. Does NOT loop — the lazy polling pattern
  *  has the calling route invoke this once per client poll. Returns null on
- *  transient infrastructure errors so the caller leaves status='generating'. */
+ *  transient infrastructure errors so the caller leaves status='generating'.
+ *
+ *  Dispatches on `endpoint` because Veo 3.1's status endpoint
+ *  (`/api/v1/veo/record-info`) returns a different shape — `successFlag`
+ *  integer + `response.fullResultUrls` array — versus the unified
+ *  `/api/v1/jobs/recordInfo` shape (`state` string + `resultJson.resultUrls`). */
 async function kieFetchVideoStatus(args: {
   apiKey: string;
   taskId: string;
+  endpoint: BrollModelDescriptor['endpoint'];
 }): Promise<KieStatusResult | null> {
-  const res = await fetch(`${KIE_BASE}/recordInfo?taskId=${encodeURIComponent(args.taskId)}`, {
+  const url = resolveStatusUrl(args.endpoint, args.taskId);
+  const res = await fetch(url, {
     headers: { Authorization: `Bearer ${args.apiKey}` },
   });
   if (!res.ok) {
@@ -226,6 +251,12 @@ async function kieFetchVideoStatus(args: {
   } catch {
     return null;
   }
+  return args.endpoint === 'veo-generate' ? parseVeoStatus(data) : parseJobsStatus(data);
+}
+
+/** Parse the standard `/api/v1/jobs/recordInfo` response shape used by
+ *  Kling, Sora, Runway, Grok, Seedance, and the legacy Veo 3 endpoints. */
+function parseJobsStatus(data: Record<string, unknown>): KieStatusResult {
   const inner = (data.data as Record<string, unknown> | undefined) ?? {};
   const state = inner.state;
   let parsed: Record<string, unknown> = {};
@@ -250,6 +281,34 @@ async function kieFetchVideoStatus(args: {
     width: typeof widthRaw === 'number' ? widthRaw : undefined,
     height: typeof heightRaw === 'number' ? heightRaw : undefined,
     failMsg: typeof inner.failMsg === 'string' ? inner.failMsg : undefined,
+  };
+}
+
+/** Parse the `/api/v1/veo/record-info` response shape (Veo 3.1). The
+ *  `successFlag` integer encodes status: 0 = generating, 1 = success,
+ *  2 = failed, 3 = generation failed. Video URLs land in
+ *  `response.fullResultUrls`. */
+function parseVeoStatus(data: Record<string, unknown>): KieStatusResult {
+  const inner = (data.data as Record<string, unknown> | undefined) ?? {};
+  const flag = inner.successFlag;
+  let state: KieStatusResult['state'] = 'generating';
+  if (flag === 1) state = 'success';
+  else if (flag === 2 || flag === 3) state = 'fail';
+  const response = (inner.response as Record<string, unknown> | undefined) ?? {};
+  const fullUrls = response.fullResultUrls as string[] | undefined;
+  // Fall back to `resultUrls` in case Kie ever consolidates the field name.
+  const resultUrls = response.resultUrls as string[] | undefined;
+  const urls = fullUrls && fullUrls.length > 0 ? fullUrls : resultUrls ?? [];
+  const videoUrl = urls.length > 0 ? urls[0] : undefined;
+  const errorMessage =
+    (inner.errorMessage as string | undefined) || (inner.errorMsg as string | undefined);
+  return {
+    state,
+    videoUrl,
+    thumbnailUrl: undefined,
+    width: undefined,
+    height: undefined,
+    failMsg: state === 'fail' ? errorMessage || 'Veo 3.1 generation failed' : undefined,
   };
 }
 
@@ -383,9 +442,20 @@ export async function getAndAdvanceBrollClip(
   if (row.status !== 'generating' && row.status !== 'pending') return row;
   if (!row.task_id) return row;
 
+  // Dispatch the status call to the right endpoint family. The clip row
+  // stores `model_id`; the model descriptor tells us which Kie URL space
+  // (jobs/recordInfo vs veo/record-info) owns this taskId. Unknown
+  // models (e.g. a deleted registry entry that still has clips in flight)
+  // fall back to the default jobs endpoint.
+  const modelForStatus = findBrollModel(row.model_id);
+  const statusEndpoint = modelForStatus?.endpoint ?? 'createTask';
   let kieStatus: KieStatusResult | null = null;
   try {
-    kieStatus = await kieFetchVideoStatus({ apiKey: kieApiKey, taskId: row.task_id });
+    kieStatus = await kieFetchVideoStatus({
+      apiKey: kieApiKey,
+      taskId: row.task_id,
+      endpoint: statusEndpoint,
+    });
   } catch (err) {
     logger.warn('broll: Kie status fetch threw, leaving row in-flight', {
       clipId,

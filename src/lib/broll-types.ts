@@ -63,6 +63,35 @@ export type BrollStatus = 'pending' | 'generating' | 'ready' | 'failed';
 /** Whether the model accepts a reference image as its first frame. */
 export type BrollModelKind = 'text-to-video' | 'image-to-video';
 
+/** Provider/architecture family — used by the picker UI to group entries
+ *  under subheadings (Kling, Sora, Veo, Runway, Grok, Seedance) so a 25+
+ *  model list scans like a menu instead of a flat dump. New families
+ *  are appended; the picker iterates `BROLL_FAMILY_ORDER` to render
+ *  groups in a stable order. */
+export type BrollFamily = 'kling' | 'sora' | 'veo' | 'runway' | 'grok' | 'seedance';
+
+/** Display order for picker family subheadings. Picker UI iterates this
+ *  array and renders one group per family, skipping families with no
+ *  entries. */
+export const BROLL_FAMILY_ORDER: ReadonlyArray<BrollFamily> = [
+  'kling',
+  'sora',
+  'veo',
+  'runway',
+  'grok',
+  'seedance',
+];
+
+/** Human label per family — picker subheading text. */
+export const BROLL_FAMILY_LABEL: Readonly<Record<BrollFamily, string>> = Object.freeze({
+  kling: 'Kling',
+  sora: 'Sora',
+  veo: 'Google Veo',
+  runway: 'Runway',
+  grok: 'Grok Imagine',
+  seedance: 'ByteDance Seedance',
+});
+
 /** Arguments passed into the per-model body builder. The orchestrator
  *  pre-validates the inputs the model actually needs — `stillImageUrl`
  *  is guaranteed non-empty for `kind: 'image-to-video'`. */
@@ -79,6 +108,7 @@ export interface BrollModelDescriptor {
   id: string;
   label: string;
   kind: BrollModelKind;
+  family: BrollFamily;
   provider: 'kie';
   /** Display-only USD price quoted from the Kie pricing page. NEVER used
    *  to bill; just shown in the picker so the user sees cost-per-click. */
@@ -88,9 +118,11 @@ export interface BrollModelDescriptor {
   /** Generation duration in seconds (5 or 10 for most i2v models). */
   durationSeconds: number;
   supportedAspects: ReadonlyArray<'16:9' | '9:16' | '1:1'>;
-  /** Kie endpoint path. Most models use `/createTask`; Runway has its own
-   *  endpoint. Stored relative to KIE_BASE so the wire layer concatenates. */
-  endpoint: 'createTask' | 'runway-generate';
+  /** Kie endpoint path. Most models use `/jobs/createTask`; Runway has
+   *  `/runway/generate`; Veo 3.1 has `/veo/generate` with its own status
+   *  polling shape. The wire layer in `src/lib/broll.ts` resolves this
+   *  to a full URL and matches the status response shape to the endpoint. */
+  endpoint: 'createTask' | 'runway-generate' | 'veo-generate';
   /** Short blurb shown in the picker. Kept under ~80 chars. */
   blurb: string;
   /** True when this model is the suggested default for its kind. The
@@ -210,6 +242,180 @@ function buildVeo3QualityT2VBody(args: BuildBrollBodyArgs): Record<string, unkno
   };
 }
 
+// ─── Grok Imagine i2v ───────────────────────────────────────────────────────
+// xAI's Grok Imagine — accepts a still + prompt and returns an animated clip.
+// Cheapest tier in the i2v lineup at $0.015/sec (720p). Uses Kie's unified
+// `/jobs/createTask` endpoint. Image is passed as an array of URLs (max 7,
+// we only ever send one). `mode: 'normal'` is the safe default; 'spicy' is
+// unavailable for external image URLs per Kie's docs.
+function buildGrokImagineI2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return {
+    model: 'grok-imagine/image-to-video',
+    ...(args.callbackUrl ? { callBackUrl: args.callbackUrl } : {}),
+    input: {
+      image_urls: args.stillImageUrl ? [args.stillImageUrl] : [],
+      prompt: args.prompt,
+      mode: 'normal',
+      duration: String(args.durationSeconds),
+      resolution: '720p',
+      aspect_ratio: args.aspectRatio,
+      nsfw_checker: false,
+    },
+  };
+}
+
+// ─── Veo 3.1 family ─────────────────────────────────────────────────────────
+// Veo 3.1 uses a DIFFERENT endpoint than Veo 3 (`/api/v1/veo/generate` instead
+// of `/api/v1/jobs/createTask`) and a different status-polling response shape.
+// The wire layer dispatches on `endpoint: 'veo-generate'`.
+//
+// Three quality tiers — Lite ($0.15/video), Fast ($0.30/video), Quality
+// ($1.25/video) — and two generation modes:
+//   - TEXT_2_VIDEO         — no reference image, prompt only
+//   - REFERENCE_2_VIDEO    — single reference image, only supported on Fast
+// (Quality's image-mode is FIRST_AND_LAST_FRAMES_2_VIDEO which needs two
+//  images — not exposed here.)
+function buildVeo31Body(
+  args: BuildBrollBodyArgs,
+  modelString: 'veo3_lite' | 'veo3_fast' | 'veo3',
+  generationType: 'TEXT_2_VIDEO' | 'REFERENCE_2_VIDEO',
+): Record<string, unknown> {
+  return {
+    model: modelString,
+    prompt: args.prompt,
+    ...(args.callbackUrl ? { callBackUrl: args.callbackUrl } : {}),
+    aspect_ratio: args.aspectRatio === '1:1' ? '16:9' : args.aspectRatio,
+    resolution: '720p',
+    generationType,
+    enableTranslation: false,
+    ...(generationType === 'REFERENCE_2_VIDEO' && args.stillImageUrl
+      ? { imageUrls: [args.stillImageUrl] }
+      : {}),
+  };
+}
+
+function buildVeo31LiteT2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildVeo31Body(args, 'veo3_lite', 'TEXT_2_VIDEO');
+}
+
+function buildVeo31FastT2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildVeo31Body(args, 'veo3_fast', 'TEXT_2_VIDEO');
+}
+
+function buildVeo31FastI2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildVeo31Body(args, 'veo3_fast', 'REFERENCE_2_VIDEO');
+}
+
+function buildVeo31QualityT2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildVeo31Body(args, 'veo3', 'TEXT_2_VIDEO');
+}
+
+// ─── Runway ─────────────────────────────────────────────────────────────────
+// Kie.ai exposes Runway as a SINGLE endpoint with no `model` parameter —
+// the variant is implicit from the duration + quality knobs. So the registry
+// holds tier-combination entries (5s/10s × i2v/t2v) rather than model
+// variants. Field is `aspectRatio` (camelCase, unlike most other models).
+// `aspectRatio` is documented as ignored when `imageUrl` is provided.
+function buildRunwayI2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return {
+    prompt: args.prompt,
+    imageUrl: args.stillImageUrl,
+    duration: args.durationSeconds <= 5 ? 5 : 10,
+    quality: '720p',
+    ...(args.callbackUrl ? { callBackUrl: args.callbackUrl } : {}),
+  };
+}
+
+function buildRunwayT2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return {
+    prompt: args.prompt,
+    aspectRatio: args.aspectRatio,
+    duration: args.durationSeconds <= 5 ? 5 : 10,
+    quality: '720p',
+    ...(args.callbackUrl ? { callBackUrl: args.callbackUrl } : {}),
+  };
+}
+
+// ─── Seedance 2 / 2 Fast (ByteDance) ────────────────────────────────────────
+// Seedance 2 and Seedance 2 Fast share an input shape — they differ only in
+// model string and pricing. Image-to-video uses `first_frame_url` (single
+// still). `generate_audio: false` keeps the per-clip cost on the cheaper
+// "no-video-input" tier of kie.ai's pricing matrix (audio output bumps the
+// price ~2× on Seedance). Duration units: integer seconds, 4–15.
+function buildSeedance2Body(
+  args: BuildBrollBodyArgs,
+  modelString: 'bytedance/seedance-2' | 'bytedance/seedance-2-fast',
+  hasImage: boolean,
+): Record<string, unknown> {
+  return {
+    model: modelString,
+    ...(args.callbackUrl ? { callBackUrl: args.callbackUrl } : {}),
+    input: {
+      prompt: args.prompt,
+      ...(hasImage && args.stillImageUrl ? { first_frame_url: args.stillImageUrl } : {}),
+      resolution: '720p',
+      aspect_ratio: args.aspectRatio,
+      duration: Math.max(4, Math.min(15, args.durationSeconds)),
+      generate_audio: false,
+      nsfw_checker: false,
+    },
+  };
+}
+
+function buildSeedance2I2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildSeedance2Body(args, 'bytedance/seedance-2', true);
+}
+
+function buildSeedance2T2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildSeedance2Body(args, 'bytedance/seedance-2', false);
+}
+
+function buildSeedance2FastI2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildSeedance2Body(args, 'bytedance/seedance-2-fast', true);
+}
+
+function buildSeedance2FastT2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildSeedance2Body(args, 'bytedance/seedance-2-fast', false);
+}
+
+// ─── Seedance 1.5 Pro ───────────────────────────────────────────────────────
+// Older Seedance generation. Different input shape than Seedance 2 — uses
+// `input_urls` (array, max 2) for the still and a STRING duration that must
+// be one of '4', '8', '12'. The aspect_ratio field is required on this one.
+function buildSeedance15ProBody(
+  args: BuildBrollBodyArgs,
+  hasImage: boolean,
+): Record<string, unknown> {
+  // Snap to nearest supported tier — Seedance 1.5 Pro only accepts 4 / 8 / 12.
+  const supported: ReadonlyArray<4 | 8 | 12> = [4, 8, 12];
+  const requested = Math.max(4, Math.min(12, args.durationSeconds));
+  const tier = supported.reduce((best, t) =>
+    Math.abs(t - requested) < Math.abs(best - requested) ? t : best,
+  );
+  return {
+    model: 'bytedance/seedance-1.5-pro',
+    ...(args.callbackUrl ? { callBackUrl: args.callbackUrl } : {}),
+    input: {
+      prompt: args.prompt,
+      ...(hasImage && args.stillImageUrl ? { input_urls: [args.stillImageUrl] } : {}),
+      aspect_ratio: args.aspectRatio,
+      resolution: '720p',
+      duration: String(tier) as '4' | '8' | '12',
+      fixed_lens: false,
+      generate_audio: false,
+      nsfw_checker: false,
+    },
+  };
+}
+
+function buildSeedance15ProI2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildSeedance15ProBody(args, true);
+}
+
+function buildSeedance15ProT2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildSeedance15ProBody(args, false);
+}
+
 // ─── Registry ───────────────────────────────────────────────────────────────
 //
 // Order = display order in the picker. The picker UI groups by `kind` —
@@ -221,6 +427,7 @@ export const BROLL_MODELS: readonly BrollModelDescriptor[] = [
     id: 'kling-v2-5-turbo-i2v-pro-10s',
     label: 'Kling 2.5 Turbo (10s)',
     kind: 'image-to-video',
+    family: 'kling',
     provider: 'kie',
     priceUsdLabel: '$0.42',
     priceUsd: 0.42,
@@ -235,6 +442,7 @@ export const BROLL_MODELS: readonly BrollModelDescriptor[] = [
     id: 'kling-v2-5-turbo-i2v-pro-5s',
     label: 'Kling 2.5 Turbo (5s)',
     kind: 'image-to-video',
+    family: 'kling',
     provider: 'kie',
     priceUsdLabel: '$0.21',
     priceUsd: 0.21,
@@ -248,6 +456,7 @@ export const BROLL_MODELS: readonly BrollModelDescriptor[] = [
     id: 'kling-2-6-i2v-10s',
     label: 'Kling 2.6 (10s)',
     kind: 'image-to-video',
+    family: 'kling',
     provider: 'kie',
     priceUsdLabel: '$0.55',
     priceUsd: 0.55,
@@ -261,6 +470,7 @@ export const BROLL_MODELS: readonly BrollModelDescriptor[] = [
     id: 'kling-2-6-i2v-5s',
     label: 'Kling 2.6 (5s)',
     kind: 'image-to-video',
+    family: 'kling',
     provider: 'kie',
     priceUsdLabel: '$0.275',
     priceUsd: 0.275,
@@ -274,20 +484,137 @@ export const BROLL_MODELS: readonly BrollModelDescriptor[] = [
     id: 'sora-2-i2v-10s',
     label: 'Sora 2 i2v (10s)',
     kind: 'image-to-video',
+    family: 'sora',
     provider: 'kie',
-    priceUsdLabel: '~$1.00',
-    priceUsd: 1.0,
+    // kie.ai Standard tier, verified 2026-05-18 from market page screenshots.
+    // Prior label was '~$1.00' — overstated cost by ~6.7×.
+    priceUsdLabel: '$0.15',
+    priceUsd: 0.15,
     durationSeconds: 10,
     supportedAspects: ['16:9', '9:16'],
     endpoint: 'createTask',
     blurb: 'OpenAI Sora 2 i2v. Best for cinematic + photoreal stills.',
     buildBody: buildSora2I2VBody,
   },
+  {
+    id: 'sora-2-i2v-15s',
+    label: 'Sora 2 i2v (15s)',
+    kind: 'image-to-video',
+    family: 'sora',
+    provider: 'kie',
+    priceUsdLabel: '$0.175',
+    priceUsd: 0.175,
+    durationSeconds: 15,
+    supportedAspects: ['16:9', '9:16'],
+    endpoint: 'createTask',
+    blurb: 'Longer Sora 2 i2v clip — 15s n_frames tier.',
+    buildBody: buildSora2I2VBody,
+  },
+  // ─── Image-to-video (new families) ──────────────────────────────────────
+  {
+    id: 'grok-imagine-i2v-10s',
+    label: 'Grok Imagine (10s, 720p)',
+    kind: 'image-to-video',
+    family: 'grok',
+    provider: 'kie',
+    priceUsdLabel: '$0.15',
+    priceUsd: 0.15,
+    durationSeconds: 10,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: 'xAI Grok Imagine i2v — tied with Sora 2 as the cheapest tier.',
+    buildBody: buildGrokImagineI2VBody,
+  },
+  {
+    id: 'veo-3-1-fast-i2v',
+    label: 'Veo 3.1 Fast i2v',
+    kind: 'image-to-video',
+    family: 'veo',
+    provider: 'kie',
+    priceUsdLabel: '$0.30',
+    priceUsd: 0.30,
+    durationSeconds: 8,
+    supportedAspects: ['16:9', '9:16'],
+    endpoint: 'veo-generate',
+    blurb: 'Veo 3.1 Fast with reference image (REFERENCE_2_VIDEO mode).',
+    buildBody: buildVeo31FastI2VBody,
+  },
+  {
+    id: 'runway-i2v-5s-720p',
+    label: 'Runway i2v (5s, 720p)',
+    kind: 'image-to-video',
+    family: 'runway',
+    provider: 'kie',
+    priceUsdLabel: '$0.06',
+    priceUsd: 0.06,
+    durationSeconds: 5,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'runway-generate',
+    blurb: 'Cheapest i2v in the lineup — Runway short clip.',
+    buildBody: buildRunwayI2VBody,
+  },
+  {
+    id: 'runway-i2v-10s-720p',
+    label: 'Runway i2v (10s, 720p)',
+    kind: 'image-to-video',
+    family: 'runway',
+    provider: 'kie',
+    priceUsdLabel: '$0.15',
+    priceUsd: 0.15,
+    durationSeconds: 10,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'runway-generate',
+    blurb: 'Runway 10s i2v — value-tier longer clip.',
+    buildBody: buildRunwayI2VBody,
+  },
+  {
+    id: 'seedance-2-i2v',
+    label: 'Seedance 2 i2v (5s, 720p)',
+    kind: 'image-to-video',
+    family: 'seedance',
+    provider: 'kie',
+    priceUsdLabel: '~$1.03 (5s)',
+    priceUsd: 1.025,
+    durationSeconds: 5,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: 'ByteDance Seedance 2 i2v — $0.205/sec, no-video-input tier.',
+    buildBody: buildSeedance2I2VBody,
+  },
+  {
+    id: 'seedance-2-fast-i2v',
+    label: 'Seedance 2 Fast i2v (5s, 720p)',
+    kind: 'image-to-video',
+    family: 'seedance',
+    provider: 'kie',
+    priceUsdLabel: '~$0.83 (5s)',
+    priceUsd: 0.825,
+    durationSeconds: 5,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: 'Faster Seedance 2 tier — $0.165/sec.',
+    buildBody: buildSeedance2FastI2VBody,
+  },
+  {
+    id: 'seedance-1-5-pro-i2v',
+    label: 'Seedance 1.5 Pro i2v (8s, 720p)',
+    kind: 'image-to-video',
+    family: 'seedance',
+    provider: 'kie',
+    priceUsdLabel: '$0.14',
+    priceUsd: 0.14,
+    durationSeconds: 8,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: 'Older but cheap — flat $0.14 per 8s 720p clip, no audio.',
+    buildBody: buildSeedance15ProI2VBody,
+  },
   // ─── Text-to-video ──────────────────────────────────────────────────────
   {
     id: 'kling-v2-5-turbo-t2v-pro-10s',
     label: 'Kling 2.5 Turbo t2v (10s)',
     kind: 'text-to-video',
+    family: 'kling',
     provider: 'kie',
     priceUsdLabel: '$0.42',
     priceUsd: 0.42,
@@ -301,6 +628,7 @@ export const BROLL_MODELS: readonly BrollModelDescriptor[] = [
     id: 'sora-2',
     label: 'Sora 2 t2v',
     kind: 'text-to-video',
+    family: 'sora',
     provider: 'kie',
     priceUsdLabel: '~$0.80',
     priceUsd: 0.8,
@@ -312,29 +640,144 @@ export const BROLL_MODELS: readonly BrollModelDescriptor[] = [
   },
   {
     id: 'veo-3-fast',
-    label: 'Veo 3 (Fast)',
+    label: 'Veo 3 (Fast, legacy)',
     kind: 'text-to-video',
+    family: 'veo',
     provider: 'kie',
     priceUsdLabel: '$0.40',
     priceUsd: 0.4,
     durationSeconds: 8,
     supportedAspects: ['16:9', '9:16'],
     endpoint: 'createTask',
-    blurb: 'Google Veo 3 Fast — cheap photoreal landscapes.',
+    blurb: 'Legacy Veo 3 Fast endpoint — kept for backward compatibility.',
     buildBody: buildVeo3FastT2VBody,
   },
   {
     id: 'veo-3-quality',
-    label: 'Veo 3 (Quality)',
+    label: 'Veo 3 (Quality, legacy)',
     kind: 'text-to-video',
+    family: 'veo',
     provider: 'kie',
     priceUsdLabel: '$2.00',
     priceUsd: 2.0,
     durationSeconds: 8,
     supportedAspects: ['16:9', '9:16'],
     endpoint: 'createTask',
-    blurb: 'Google Veo 3 Quality — slow + pricey hero shots.',
+    blurb: 'Legacy Veo 3 Quality endpoint — kept for backward compatibility.',
     buildBody: buildVeo3QualityT2VBody,
+  },
+  // ─── Text-to-video (new families) ───────────────────────────────────────
+  {
+    id: 'veo-3-1-lite-t2v',
+    label: 'Veo 3.1 Lite t2v',
+    kind: 'text-to-video',
+    family: 'veo',
+    provider: 'kie',
+    priceUsdLabel: '$0.15',
+    priceUsd: 0.15,
+    durationSeconds: 8,
+    supportedAspects: ['16:9', '9:16'],
+    endpoint: 'veo-generate',
+    blurb: 'Cheapest Veo tier — high-volume budget t2v at 720p.',
+    buildBody: buildVeo31LiteT2VBody,
+  },
+  {
+    id: 'veo-3-1-fast-t2v',
+    label: 'Veo 3.1 Fast t2v',
+    kind: 'text-to-video',
+    family: 'veo',
+    provider: 'kie',
+    priceUsdLabel: '$0.30',
+    priceUsd: 0.30,
+    durationSeconds: 8,
+    supportedAspects: ['16:9', '9:16'],
+    endpoint: 'veo-generate',
+    blurb: 'Veo 3.1 Fast — strong quality for the price.',
+    buildBody: buildVeo31FastT2VBody,
+  },
+  {
+    id: 'veo-3-1-quality-t2v',
+    label: 'Veo 3.1 Quality t2v',
+    kind: 'text-to-video',
+    family: 'veo',
+    provider: 'kie',
+    priceUsdLabel: '$1.25',
+    priceUsd: 1.25,
+    durationSeconds: 8,
+    supportedAspects: ['16:9', '9:16'],
+    endpoint: 'veo-generate',
+    blurb: 'Veo 3.1 flagship — hero shots at 720p.',
+    buildBody: buildVeo31QualityT2VBody,
+  },
+  {
+    id: 'runway-t2v-5s-720p',
+    label: 'Runway t2v (5s, 720p)',
+    kind: 'text-to-video',
+    family: 'runway',
+    provider: 'kie',
+    priceUsdLabel: '$0.06',
+    priceUsd: 0.06,
+    durationSeconds: 5,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'runway-generate',
+    blurb: 'Cheapest t2v in the lineup — Runway short clip.',
+    buildBody: buildRunwayT2VBody,
+  },
+  {
+    id: 'runway-t2v-10s-720p',
+    label: 'Runway t2v (10s, 720p)',
+    kind: 'text-to-video',
+    family: 'runway',
+    provider: 'kie',
+    priceUsdLabel: '$0.15',
+    priceUsd: 0.15,
+    durationSeconds: 10,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'runway-generate',
+    blurb: 'Runway 10s t2v — value-tier longer clip.',
+    buildBody: buildRunwayT2VBody,
+  },
+  {
+    id: 'seedance-2-t2v',
+    label: 'Seedance 2 t2v (5s, 720p)',
+    kind: 'text-to-video',
+    family: 'seedance',
+    provider: 'kie',
+    priceUsdLabel: '~$1.03 (5s)',
+    priceUsd: 1.025,
+    durationSeconds: 5,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: 'ByteDance Seedance 2 t2v — same per-second price as i2v.',
+    buildBody: buildSeedance2T2VBody,
+  },
+  {
+    id: 'seedance-2-fast-t2v',
+    label: 'Seedance 2 Fast t2v (5s, 720p)',
+    kind: 'text-to-video',
+    family: 'seedance',
+    provider: 'kie',
+    priceUsdLabel: '~$0.83 (5s)',
+    priceUsd: 0.825,
+    durationSeconds: 5,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: 'Faster Seedance 2 t2v tier.',
+    buildBody: buildSeedance2FastT2VBody,
+  },
+  {
+    id: 'seedance-1-5-pro-t2v',
+    label: 'Seedance 1.5 Pro t2v (8s, 720p)',
+    kind: 'text-to-video',
+    family: 'seedance',
+    provider: 'kie',
+    priceUsdLabel: '$0.14',
+    priceUsd: 0.14,
+    durationSeconds: 8,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: 'Older Seedance — flat $0.14 per 8s 720p clip.',
+    buildBody: buildSeedance15ProT2VBody,
   },
 ];
 
