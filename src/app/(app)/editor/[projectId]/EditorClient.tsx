@@ -160,22 +160,46 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     apply({ type: 'SPLIT_SHOT', shotIndex: splitTarget.shotIndex, splitAtMs: splitTarget.splitAtMs });
   }, [apply, splitTarget]);
 
-  // 'B' keyboard shortcut for split — CapCut / FCP convention.
-  // Ignored when focus is in a text input so typing "b" in a field
-  // doesn't blade the timeline.
+  const handleDelete = useCallback(
+    (mode: 'ripple' | 'blank') => {
+      if (state.selection === null) return;
+      // Refuse to delete the last remaining shot — the reducer
+      // also guards but we early-return here so the toolbar button
+      // disables itself for the right reason.
+      if (state.doc.rows.length <= 1) return;
+      apply({ type: 'DELETE_SHOT', shotIndex: state.selection, mode });
+    },
+    [apply, state.doc.rows.length, state.selection],
+  );
+
+  // Keyboard shortcuts:
+  //   B          → split at playhead (CapCut / FCP blade)
+  //   Delete     → ripple-delete selected shot
+  //   Shift+Del  → blank-delete selected shot (keeps the slot)
+  // All shortcuts are ignored when focus is in a text input so
+  // typing in a future inline editor doesn't trigger them.
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (e.key.toLowerCase() !== 'b') return;
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName?.toLowerCase();
       if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return;
-      e.preventDefault();
-      handleSplit();
+      // Bail on modifier combos that belong to other handlers
+      // (Cmd/Ctrl+Z, Cmd/Ctrl+S already bound at the store layer).
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const key = e.key.toLowerCase();
+      if (key === 'b') {
+        e.preventDefault();
+        handleSplit();
+        return;
+      }
+      if (key === 'delete' || key === 'backspace') {
+        e.preventDefault();
+        handleDelete(e.shiftKey ? 'blank' : 'ripple');
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [handleSplit]);
+  }, [handleDelete, handleSplit]);
 
   // Subscribe to frame updates so the playhead reflects the live
   // play position. Throttled at the ms-rounded level so React only
@@ -242,6 +266,21 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             }
           >
             ✂ Split at playhead
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleDelete('ripple')}
+            disabled={state.selection === null || state.doc.rows.length <= 1}
+            className="text-xs px-2.5 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/5"
+            style={{ borderColor: 'var(--card-border)' }}
+            title={
+              state.selection === null
+                ? 'Select a shot to delete it (Delete)'
+                : `Delete shot ${state.selection + 1} (Delete; Shift+Delete to keep the slot)`
+            }
+          >
+            ✕ Delete
           </button>
 
           <button
@@ -324,11 +363,11 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         className="p-3 rounded-lg border text-xs"
         style={{ borderColor: 'var(--card-border)', color: 'var(--fg-muted)' }}
       >
-        <strong style={{ color: 'var(--fg)' }}>Drag a shot&apos;s trailing edge to resize, or
-        press B to split it at the playhead.</strong>{' '}
-        Cmd / Ctrl+Z undoes. Both halves of a split clone the original&apos;s visual content,
-        so the renderer plays them from the same source clip. Delete, reorder, and mute
-        ship in follow-up commits.
+        <strong style={{ color: 'var(--fg)' }}>Resize</strong> drag the trailing edge.{' '}
+        <strong style={{ color: 'var(--fg)' }}>Split</strong> press B at the playhead.{' '}
+        <strong style={{ color: 'var(--fg)' }}>Delete</strong> select a shot + Delete (ripple)
+        or Shift+Delete (blank — keeps the slot, plays black, voiceover stays aligned).{' '}
+        Cmd / Ctrl+Z undoes. Reorder + mute ship in follow-up commits.
       </div>
     </div>
   );

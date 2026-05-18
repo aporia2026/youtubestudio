@@ -95,7 +95,21 @@ export type EditorCommand =
   // MERGE_ADJACENT_SHOTS exists only as the inverse of SPLIT_SHOT.
   // Users never dispatch it directly; the reducer emits it when
   // building an undo entry.
-  | { type: 'MERGE_ADJACENT_SHOTS'; shotIndex: number; restoredDurationOverrideMs: number | null };
+  | { type: 'MERGE_ADJACENT_SHOTS'; shotIndex: number; restoredDurationOverrideMs: number | null }
+  | { type: 'DELETE_SHOT'; shotIndex: number; mode: 'ripple' | 'blank' }
+  // RESTORE_ROW exists only as the inverse of DELETE_SHOT. Carries
+  // the full pre-delete row (for content) + the prior rowImages[i]
+  // URL (so blanking out the image-state slot can be undone). Mode
+  // echoes the original delete's mode: 'insert' re-inserts the row
+  // (ripple inverse); 'replace' writes the row back over the
+  // existing blanked slot (blank inverse).
+  | {
+      type: 'RESTORE_ROW';
+      atIndex: number;
+      row: ProductionDoc['rows'][number];
+      rowImageUrl: string | null;
+      mode: 'insert' | 'replace';
+    };
 
 /** Discriminator: editing commands push to the undo stack; non-
  *  editing commands (selection, playhead, save lifecycle, undo/redo
@@ -105,10 +119,43 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'RESIZE_SHOT':
     case 'SPLIT_SHOT':
     case 'MERGE_ADJACENT_SHOTS':
+    case 'DELETE_SHOT':
+    case 'RESTORE_ROW':
       return true;
     default:
       return false;
   }
+}
+
+/**
+ * Re-key a `Record<number, string>` after a row is inserted or
+ * removed. The key is the row's index, so inserting at index N
+ * pushes every key ≥ N up by one; removing at index N pulls every
+ * key > N down by one.
+ *
+ * Used by DELETE_SHOT (ripple mode) + RESTORE_ROW (insert mode) so
+ * `rowImages` stays aligned with `doc.rows` indices.
+ */
+function reindexRowImages(
+  rowImages: Record<number, string>,
+  atIndex: number,
+  delta: 1 | -1,
+): Record<number, string> {
+  const out: Record<number, string> = {};
+  for (const [keyStr, url] of Object.entries(rowImages)) {
+    const key = Number(keyStr);
+    if (!Number.isFinite(key)) continue;
+    if (delta === 1) {
+      // Insert at atIndex: keys >= atIndex shift up by 1.
+      out[key >= atIndex ? key + 1 : key] = url;
+    } else {
+      // Remove at atIndex: drop the deleted key; keys > atIndex
+      // shift down by 1.
+      if (key === atIndex) continue;
+      out[key > atIndex ? key - 1 : key] = url;
+    }
+  }
+  return out;
 }
 
 function pushUndo(stack: EditorCommand[], cmd: EditorCommand): EditorCommand[] {
@@ -270,6 +317,169 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           doc: { ...state.doc, rows: nextRows },
           isDirty: true,
           selection: shotIndex,
+        },
+        inverse,
+      };
+    }
+
+    case 'DELETE_SHOT': {
+      const { shotIndex, mode } = cmd;
+      if (shotIndex < 0 || shotIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      // Refuse to delete the last remaining shot — an empty doc
+      // breaks the renderer's totalFrames calculation downstream.
+      // Phase 2 doesn't surface a "delete the whole project" path;
+      // the user can go back to /production-doc for that.
+      if (state.doc.rows.length === 1) {
+        console.warn('[editor store] delete refused — can\'t empty the doc');
+        return { next: state, inverse: null };
+      }
+      const row = state.doc.rows[shotIndex];
+      const rowImageUrl = state.rowImages[shotIndex] ?? null;
+
+      if (mode === 'ripple') {
+        const nextRows = [
+          ...state.doc.rows.slice(0, shotIndex),
+          ...state.doc.rows.slice(shotIndex + 1),
+        ];
+        const nextImages = reindexRowImages(state.rowImages, shotIndex, -1);
+        const inverse: EditorCommand = {
+          type: 'RESTORE_ROW',
+          atIndex: shotIndex,
+          row,
+          rowImageUrl,
+          mode: 'insert',
+        };
+        // Selection: if the deleted row was selected, move to the
+        // row that now occupies its slot (or the previous one when
+        // we deleted the last row). Otherwise leave selection alone
+        // but reindex if it was after the deleted row.
+        let nextSelection = state.selection;
+        if (nextSelection !== null) {
+          if (nextSelection === shotIndex) {
+            nextSelection = Math.min(shotIndex, nextRows.length - 1);
+          } else if (nextSelection > shotIndex) {
+            nextSelection -= 1;
+          }
+        }
+        return {
+          next: {
+            ...state,
+            doc: { ...state.doc, rows: nextRows },
+            rowImages: nextImages,
+            selection: nextSelection,
+            isDirty: true,
+          },
+          inverse,
+        };
+      }
+
+      // 'blank' mode: replace the row's visual content with a black
+      // placeholder while keeping its slot + duration intact. VO
+      // and music continue to play; the screen goes black for the
+      // row's duration. Lets the user defer "fill this gap later"
+      // edits without rewriting the voiceover timing.
+      const blankedRow: ProductionDoc['rows'][number] = {
+        ...row,
+        // Drop the visual prompt + per-row image URL hint that the
+        // generator wrote. The renderer's row-state lookup uses
+        // rowImages[i]; clearing that slot (below) is the actual
+        // mechanism. Visual fields here are cleared so a re-generation
+        // round-trip can tell the row was deliberately blanked.
+        ai_image_prompt: '',
+        visual_description: '',
+        visual_type: 'blank',
+        on_screen_text: '',
+        edited_at: new Date().toISOString(),
+      };
+      const nextRows = state.doc.rows.slice();
+      nextRows[shotIndex] = blankedRow;
+      // Drop the rowImages slot for this index so productionDocToVideoConfig
+      // skips the image-state branch and the BRollScene falls back
+      // to the row's `backgroundColor` (we don't set one here so
+      // the renderer uses its default — black per BRollScene's
+      // current pre-image fallback).
+      const nextImages = { ...state.rowImages };
+      delete nextImages[shotIndex];
+      const inverse: EditorCommand = {
+        type: 'RESTORE_ROW',
+        atIndex: shotIndex,
+        row,
+        rowImageUrl,
+        mode: 'replace',
+      };
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          rowImages: nextImages,
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'RESTORE_ROW': {
+      const { atIndex, row, rowImageUrl, mode } = cmd;
+      if (atIndex < 0 || atIndex > state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      // Inverse depends on which mode this restore reverses.
+      if (mode === 'insert') {
+        // Reversing a ripple delete: insert the row back at atIndex
+        // and bump every subsequent rowImages key up by one.
+        // Its inverse is the original DELETE_SHOT (ripple).
+        const nextRows = [
+          ...state.doc.rows.slice(0, atIndex),
+          row,
+          ...state.doc.rows.slice(atIndex),
+        ];
+        let nextImages = reindexRowImages(state.rowImages, atIndex, 1);
+        if (rowImageUrl !== null) {
+          nextImages = { ...nextImages, [atIndex]: rowImageUrl };
+        }
+        const inverse: EditorCommand = {
+          type: 'DELETE_SHOT',
+          shotIndex: atIndex,
+          mode: 'ripple',
+        };
+        return {
+          next: {
+            ...state,
+            doc: { ...state.doc, rows: nextRows },
+            rowImages: nextImages,
+            isDirty: true,
+            selection: atIndex,
+          },
+          inverse,
+        };
+      }
+      // mode === 'replace' — reversing a blank delete: write the
+      // row back into its slot + restore the image URL if any.
+      if (atIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const nextRows = state.doc.rows.slice();
+      nextRows[atIndex] = row;
+      const nextImages = { ...state.rowImages };
+      if (rowImageUrl !== null) {
+        nextImages[atIndex] = rowImageUrl;
+      } else {
+        delete nextImages[atIndex];
+      }
+      const inverse: EditorCommand = {
+        type: 'DELETE_SHOT',
+        shotIndex: atIndex,
+        mode: 'blank',
+      };
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          rowImages: nextImages,
+          isDirty: true,
+          selection: atIndex,
         },
         inverse,
       };
