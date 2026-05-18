@@ -5,6 +5,7 @@ import { analyzeYouTubeVideo, modelSupportsVideo, getModelById } from '@/lib/ai'
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { logger } from '@/lib/logger';
 import { buildAnalyzerPrompt } from '@/lib/analyzer/prompt';
+import { normalizeAnalyzedVideo } from '@/lib/analyzer/normalize';
 import { validateAnalyzedVideo, type AnalyzedVideo } from '@/lib/analyzer/types';
 import { extractYoutubeVideoId, canonicalYoutubeUrl } from '@/lib/analyzer/url';
 import {
@@ -267,7 +268,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   const geminiAnalyzedAt = validation.value.meta.analyzed_at;
   const geminiVideoId = validation.value.meta.video_id;
   const videoIdMismatch = geminiVideoId !== videoId;
-  const result: AnalyzedVideo = {
+  const overwritten: AnalyzedVideo = {
     ...validation.value,
     meta: {
       ...validation.value.meta,
@@ -283,6 +284,21 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     gemini_video_id: geminiVideoId,
     video_id_mismatch: videoIdMismatch,
   });
+
+  // Recompute style_packs[].occupies_seconds from scene durations and
+  // collect scene-boundary / pack-id consistency warnings. We don't
+  // mutate scene timings here — those are Gemini's source of truth
+  // for downstream rendering and the operator should see them as-is,
+  // with the warnings explaining where they're inconsistent.
+  const { video: result, warnings: analysisWarnings } = normalizeAnalyzedVideo(overwritten);
+  if (analysisWarnings.length > 0) {
+    logger.warn('youtube-deep-analyze: normalization warnings', {
+      analysisId,
+      video_id: videoId,
+      warning_count: analysisWarnings.length,
+      warnings: analysisWarnings,
+    });
+  }
 
   // Cost accounting deferred — `analyzeYouTubeVideo` returns a plain
   // string, so we don't have token-usage at hand. The daily cap is
@@ -302,7 +318,12 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     style_pack_count: result.style_packs.length,
   });
 
-  return NextResponse.json({ analysisId, cached: false, result });
+  return NextResponse.json({
+    analysisId,
+    cached: false,
+    result,
+    ...(analysisWarnings.length > 0 ? { warnings: analysisWarnings } : {}),
+  });
 });
 
 /**
