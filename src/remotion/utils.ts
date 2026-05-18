@@ -177,6 +177,31 @@ export interface ImageSaliencyMap {
   dominantColors: string[];
 }
 
+/** Categorised edit tracking per row. Each field key matches the
+ *  store command category that touches it. Reads via
+ *  `@/lib/editor/edited-at::readRowEditedAt` to normalise the
+ *  legacy string shape. */
+export interface RowEditedAt {
+  /** When ANY edit landed on the row. Always the most recent of
+   *  every `fields` value. */
+  any: string;
+  /** Per-category timestamps. Absent key = no edit via that path. */
+  fields?: {
+    image?: string;
+    video?: string;
+    script_text?: string;
+    visual_description?: string;
+    ai_image_prompt?: string;
+    on_screen_text?: string;
+    duration?: string;
+    trim?: string;
+    mute?: string;
+    structure?: string;
+  };
+}
+
+export type RowEditedAtCategory = keyof NonNullable<RowEditedAt['fields']>;
+
 export interface ProductionRow {
   timecode: string;
   script_text: string;
@@ -257,10 +282,16 @@ export interface ProductionRow {
    *  Phase 4 transition; undefined keeps the row's existing fade
    *  resolution (`scene_fade` etc.). */
   transition_in?: 'cross-fade' | null;
-  /** UTC ISO timestamp of the last editor edit to this row. Used by
-   *  Phase 3's conflict-resolution rule (manual edit wins over AI
-   *  regen). */
-  edited_at?: string;
+  /** Editor edit tracking. Carries the timestamp of the last edit
+   *  AND per-category timestamps (image / video / script_text / etc.)
+   *  so future AI regen paths can honor the "manual edit wins over
+   *  AI regen" rule from `_plans/2026-05-18-shot-graph-editor.md`.
+   *
+   *  Backward-compat: legacy rows may carry a plain ISO-string
+   *  `edited_at` (the original Phase 1 shape). Callers that read
+   *  this field should use `readRowEditedAt` from
+   *  `@/lib/editor/edited-at` which normalises both shapes. */
+  edited_at?: RowEditedAt | string;
   /** Editor's pick-from-project override of the source video clip
    *  for this row. When set, the renderer uses this URL instead of
    *  the auto-pipeline's rowVideoClips entry. Cleared (undefined)
@@ -609,7 +640,7 @@ export function productionDocToVideoConfig(
       muted: row.muted,
       playbackRate: row.playback_rate,
       transitionInId: row.transition_in,
-      editedAt: row.edited_at,
+      // `edited_at` deliberately NOT threaded — see comment in VideoShot.
     };
   });
 

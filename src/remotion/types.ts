@@ -215,11 +215,11 @@ export interface VideoShot {
    *  `<TransitionSeries>` with `@remotion/transitions`. v1 only
    *  supports the literal `'cross-fade'`. */
   transitionInId?: 'cross-fade' | null;
-  /** UTC ISO timestamp of the last manual edit to this shot's
-   *  fields. Used by Phase 3's conflict resolution rule: if the
-   *  shot was edited more recently than a pending regen, the
-   *  manual edit wins. Server-enforced. */
-  editedAt?: string;
+  // Note: `edited_at` lives ONLY on the doc row (ProductionRow.edited_at)
+  // in the structured `{ any, fields }` shape — see `RowEditedAt`. It's
+  // never threaded into VideoShot because the renderer doesn't care
+  // about edit history, and carrying it here would force a string-vs-
+  // structured-object conversion at the boundary for no gain.
 }
 
 // ─── Video Config ──────────────────────────────────────────────────────────────

@@ -36,6 +36,7 @@
  * and version, dropping the user's unsaved edits.
  */
 import type { ProductionDoc } from '@/remotion/utils';
+import { stampEditedAt } from './edited-at';
 
 const UNDO_STACK_DEPTH = 200;
 
@@ -331,7 +332,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       const nextRow = {
         ...row,
         duration_override_ms: clampedMs,
-        edited_at: new Date().toISOString(),
+        edited_at: stampEditedAt(row.edited_at, 'duration'),
       };
       const nextRows = state.doc.rows.slice();
       nextRows[shotIndex] = nextRow;
@@ -366,12 +367,12 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         });
         return { next: state, inverse: null };
       }
-      const stamp = new Date().toISOString();
-      const firstHalf = { ...row, duration_override_ms: firstHalfMs, edited_at: stamp };
+      const splitStamp = stampEditedAt(row.edited_at, 'structure');
+      const firstHalf = { ...row, duration_override_ms: firstHalfMs, edited_at: splitStamp };
       // Structural clone with shifted-out duration. Same visual
       // content; the user diverges fields after the split if they
-      // want.
-      const secondHalf = { ...row, duration_override_ms: secondHalfMs, edited_at: stamp };
+      // want. Both halves carry the same per-category stamp.
+      const secondHalf = { ...row, duration_override_ms: secondHalfMs, edited_at: splitStamp };
       const nextRows = [
         ...state.doc.rows.slice(0, shotIndex),
         firstHalf,
@@ -409,7 +410,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       }
       const nextRow = {
         ...state.doc.rows[shotIndex],
-        edited_at: new Date().toISOString(),
+        edited_at: stampEditedAt(state.doc.rows[shotIndex].edited_at, 'image'),
       };
       const nextRows = state.doc.rows.slice();
       nextRows[shotIndex] = nextRow;
@@ -443,7 +444,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       const nextRow = {
         ...row,
         script_text: normalised,
-        edited_at: new Date().toISOString(),
+        edited_at: stampEditedAt(row.edited_at, 'script_text'),
       };
       const nextRows = state.doc.rows.slice();
       nextRows[shotIndex] = nextRow;
@@ -477,7 +478,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         ...row,
         video_url_override: url ?? undefined,
         video_duration_seconds_override: durationSeconds ?? undefined,
-        edited_at: new Date().toISOString(),
+        edited_at: stampEditedAt(row.edited_at, 'video'),
       };
       const nextRows = state.doc.rows.slice();
       nextRows[shotIndex] = nextRow;
@@ -530,7 +531,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         ...row,
         trim_start_ms: newStart ?? undefined,
         trim_end_ms: newEnd ?? undefined,
-        edited_at: new Date().toISOString(),
+        edited_at: stampEditedAt(row.edited_at, 'trim'),
       };
       const nextRows = state.doc.rows.slice();
       nextRows[shotIndex] = nextRow;
@@ -614,7 +615,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       const nextRow = {
         ...row,
         muted,
-        edited_at: new Date().toISOString(),
+        edited_at: stampEditedAt(row.edited_at, 'mute'),
       };
       const nextRows = state.doc.rows.slice();
       nextRows[shotIndex] = nextRow;
@@ -702,7 +703,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         visual_description: '',
         visual_type: 'blank',
         on_screen_text: '',
-        edited_at: new Date().toISOString(),
+        edited_at: stampEditedAt(row.edited_at, 'structure'),
       };
       const nextRows = state.doc.rows.slice();
       nextRows[shotIndex] = blankedRow;
