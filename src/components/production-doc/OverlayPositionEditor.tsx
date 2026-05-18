@@ -95,6 +95,14 @@ export function OverlayPositionEditor({
   const [yPct, setYPct] = useState(initialY);
   const [size, setSize] = useState(initialSize);
 
+  // Natural aspect ratio of the overlay PNG, captured from the <img> onLoad
+  // handler. Null until the image has loaded — we render with a square
+  // fallback until then so the user never sees a zero-height box. Mirrors
+  // the renderer's logic in `src/remotion/components/RealImageOverlay.tsx`
+  // so what the user positions here matches what plays back in the final
+  // render.
+  const [aspect, setAspect] = useState<number | null>(null);
+
   // Lock scroll + Esc-to-close, mirroring the TransitionDialog pattern
   // so the editor feels like part of the same family of dialogs.
   useEffect(() => {
@@ -126,13 +134,42 @@ export function OverlayPositionEditor({
 
   // Convert frame-% coordinates → preview-pixel coordinates and back.
   // The width depends on `size` because the overlay is sized as a %
-  // of frame width but rendered in preview pixels. Height matches
-  // width (the renderer treats the overlay box as square; the <img>
-  // inside uses object-fit:contain).
-  const overlayWidthPx = (size / 100) * PREVIEW_W;
-  const overlayHeightPx = overlayWidthPx;
+  // of frame width but rendered in preview pixels. Height comes from
+  // the image's natural aspect ratio (read at load time), mirroring the
+  // renderer's aspect-aware container so what the user positions here
+  // matches what plays back. Square fallback (aspect = 1) is in use
+  // before onLoad fires; the box reshapes the moment the image loads.
+  //
+  // Height cap: 70% of the preview matches the renderer's `frameHeight
+  // * 0.7` guard, so tall portrait logos shrink width proportionally
+  // instead of overflowing the preview.
+  const effectiveAspect = aspect ?? 1;
+  let overlayWidthPx = (size / 100) * PREVIEW_W;
+  let overlayHeightPx = overlayWidthPx / effectiveAspect;
+  const maxOverlayHeightPx = PREVIEW_H * 0.7;
+  if (overlayHeightPx > maxOverlayHeightPx) {
+    overlayHeightPx = maxOverlayHeightPx;
+    overlayWidthPx = maxOverlayHeightPx * effectiveAspect;
+  }
   const xPx = (xPct / 100) * PREVIEW_W;
   const yPx = (yPct / 100) * PREVIEW_H;
+
+  const onOverlayImgLoad = useCallback(
+    (e: React.SyntheticEvent<HTMLImageElement>) => {
+      const img = e.currentTarget;
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        const ratio = img.naturalWidth / img.naturalHeight;
+        setAspect(ratio);
+        console.info('[overlay editor] aspect resolved', {
+          overlayUrl,
+          naturalWidth: img.naturalWidth,
+          naturalHeight: img.naturalHeight,
+          aspect: Number(ratio.toFixed(3)),
+        });
+      }
+    },
+    [overlayUrl],
+  );
 
   const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -284,10 +321,15 @@ export function OverlayPositionEditor({
                 src={overlayUrl}
                 alt="overlay"
                 draggable={false}
+                onLoad={onOverlayImgLoad}
                 style={{
                   width: '100%',
                   height: '100%',
-                  objectFit: 'contain',
+                  // The bounding box matches the image's natural aspect after
+                  // onLoad, so `cover` produces identical output to `contain`
+                  // and avoids sub-pixel letterboxing — same call the renderer
+                  // makes for the same reason.
+                  objectFit: 'cover',
                   pointerEvents: 'none',
                 }}
               />

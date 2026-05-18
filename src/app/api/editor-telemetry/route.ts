@@ -5,15 +5,35 @@ import { sql } from '@/lib/db';
 import { logger } from '@/lib/logger';
 
 /**
- * Editor telemetry probe — Phase 0 of `_plans/2026-05-18-shot-graph-editor.md`.
+ * Editor telemetry probe — Phase 0 of `_plans/2026-05-18-shot-graph-editor.md`,
+ * extended in Phase 0 of `_plans/2026-05-18-overlay-system-overhaul.md` to
+ * also accept overlay-placement baseline events.
  *
- * Three event names are accepted in v0:
- *   - `render_clicked`
- *   - `external_edit_intent`
- *   - `stayed_here`
+ * Accepted event names:
+ *   - `render_clicked`         — shot-graph editor probe.
+ *   - `external_edit_intent`   — shot-graph editor probe.
+ *   - `stayed_here`            — shot-graph editor probe.
+ *   - `overlay_drag`           — user moved or resized the overlay away
+ *                                from the AI-planned placement before save.
+ *                                Payload: { row_index, placement_model,
+ *                                  prev_x_pct, prev_y_pct, prev_size_pct,
+ *                                  new_x_pct, new_y_pct, new_size_pct,
+ *                                  drag_distance_pct }.
+ *   - `overlay_accept`         — user saved the editor without changing
+ *                                position or size. Implicit "AI was right."
+ *                                Payload: { row_index, placement_model,
+ *                                  x_pct, y_pct, size_pct }.
+ *   - `overlay_reset`          — user cleared their manual placement,
+ *                                falling back to the AI's pick.
+ *                                Payload: { row_index, placement_model }.
+ *
+ * Together these three events let us compute the per-`placement_model`
+ * "drag rate" after ~100 docs in prod — the data Phase 2 needs to decide
+ * whether to upgrade the placement model.
  *
  * Future editor events (`editor_open`, `edit_applied`, `otio_exported`,
- * …) will land here too; the allow-list grows as the editor ships.
+ * `overlay_rethink`, …) will land here too; the allow-list grows as the
+ * editor ships.
  *
  * Body: `{ event: string, project_id?: string, payload?: Record<string, unknown> }`.
  * `payload` is a small JSONB blob — counters and discriminators only,
@@ -23,12 +43,15 @@ import { logger } from '@/lib/logger';
  * the client cannot falsify them.
  */
 
-// Allow-list of v0 event names. Reject everything else so a malformed
+// Allow-list of accepted event names. Reject everything else so a malformed
 // caller can't pollute the table with arbitrary strings.
 const ALLOWED_EVENTS = new Set([
   'render_clicked',
   'external_edit_intent',
   'stayed_here',
+  'overlay_drag',
+  'overlay_accept',
+  'overlay_reset',
 ]);
 
 // Hard upper bound on payload size after JSON.stringify. 4 KB is
