@@ -5,6 +5,7 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { fetchVideoMetadata, checkHandlesBatch, parseYouTubeUrl, fetchChannelData, fetchChannelVideosRich } from '@/lib/youtube';
 import { makeSpendContext } from '@/lib/ai-spend';
+import { apiRoute } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
 
 export const maxDuration = 300;
@@ -39,7 +40,13 @@ function normalizeName(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-export async function POST(req: NextRequest) {
+/**
+ * Audit: previously this route had ZERO auth. Anyone could spend
+ * workspace LLM budget by hitting it. Now wrapped + workspace-scoped via
+ * apiRoute.authed — the spend context carries the workspace id and the
+ * source-competitor link is tenant-validated below.
+ */
+export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   const { limited } = checkRateLimit(`channel-naming:${getClientIP(req)}`, 5, 60_000);
   if (limited) return NextResponse.json({ error: 'Rate limited' }, { status: 429 });
 
@@ -55,12 +62,17 @@ export async function POST(req: NextRequest) {
      *  never see the same suggestion twice. */
     existingNames?: string[];
     existingHandles?: string[];
+    /** Set when the naming request was seeded from a competitor (via
+     *  /api/competitors/[id]/naming-context). Pass-through only — echoed
+     *  back in the response so the client can forward it to the save API,
+     *  which persists it to saved_channel_names.source_competitor_id. */
+    sourceCompetitorId?: string;
   };
   try { body = await req.json(); } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { modelId, niche, freeText, referenceVideoUrls = [], referenceImages = [], count = 20, existingNames = [], existingHandles = [] } = body;
+  const { modelId, niche, freeText, referenceVideoUrls = [], referenceImages = [], count = 20, existingNames = [], existingHandles = [], sourceCompetitorId } = body;
   const excludedNameSet = new Set<string>(existingNames.map(n => normalizeName(n)).filter(Boolean));
   const excludedHandleSet = new Set<string>(existingHandles.map(h => h.toLowerCase().replace(/^@/, '').trim()).filter(Boolean));
   if (!modelId) return NextResponse.json({ error: 'modelId required' }, { status: 400 });
@@ -261,10 +273,12 @@ export async function POST(req: NextRequest) {
       refVideosUsed: refVideoData.length,
       refVideosFailed: refFetchFailures,
       availabilityCaveat: 'Availability is best-effort based on YouTube forHandle lookup. Always verify by visiting youtube.com/@handle before claiming.',
+      // Echo back so the client can forward to the save API on ⭐ Save.
+      sourceCompetitorId: sourceCompetitorId || null,
     });
   } catch (err) {
     logger.error('Channel naming error', { detail: err instanceof Error ? err.message : String(err) });
     const detail = err instanceof Error ? err.message : 'unknown';
     return NextResponse.json({ error: `Channel naming failed: ${detail}` }, { status: 500 });
   }
-}
+});

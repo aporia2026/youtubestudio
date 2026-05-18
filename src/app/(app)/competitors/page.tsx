@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
@@ -680,6 +681,11 @@ export default function CompetitorsPage() {
 
                   {detailTab === 'top' && (
                     <motion.div key="top" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                      <NamingBridgeCta
+                        competitorId={detailComp.id}
+                        title={`Want to start a channel like ${detailComp.title}?`}
+                        subtitle="Generate brandable name + @handle ideas seeded from this competitor's top performers and audience signals."
+                      />
                       <PerformerGrid videos={topVideos} accent="#10b981" label="top performer" />
                     </motion.div>
                   )}
@@ -720,15 +726,34 @@ export default function CompetitorsPage() {
 
                   {detailTab === 'analysis' && (
                     <motion.div key="analysis" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                      <div className="glass rounded-xl p-5 mb-6 flex items-center gap-3">
+                      <div className="glass rounded-xl p-5 mb-6 flex items-center gap-3 flex-wrap">
                         <button className="btn-primary flex items-center gap-2" onClick={runAnalysis} disabled={analyzing}>
                           {analyzing ? <Spinner /> : '🧠'} {analyzing ? 'Analyzing 200 videos...' : 'Run Deep Analysis'}
                         </button>
-                        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                        <Link
+                          href={`/channel-naming?fromCompetitor=${detailComp.id}`}
+                          className="btn-secondary flex items-center gap-2"
+                          title={analysis
+                            ? 'Open the naming workspace with this competitor as the seed'
+                            : 'Run analysis first for a richer seed — or jump in now with channel + top videos as context'}
+                        >
+                          ✨ Generate similar channel names →
+                        </Link>
+                        <span className="text-xs flex-1 min-w-[200px]" style={{ color: 'var(--text-muted)' }}>
                           Computes 50+ metrics deterministically, then synthesizes with the selected AI model. Zero hallucinations.
                         </span>
                       </div>
                       {analysis && <DeepAnalysisDisplay analysis={analysis} />}
+                      {analysis && (
+                        <CompetitorInlineNaming
+                          competitorId={detailComp.id}
+                          competitorTitle={detailComp.title}
+                        />
+                      )}
+                      <SavedNamesFromCompetitor
+                        competitorId={detailComp.id}
+                        competitorTitle={detailComp.title}
+                      />
                     </motion.div>
                   )}
 
@@ -751,6 +776,13 @@ export default function CompetitorsPage() {
                           Ideas accumulate across generations. Anchored to specific competitor videos and content gaps — run Deep Analysis first for richer gap detection.
                         </p>
                       </div>
+
+                      <NamingBridgeCta
+                        competitorId={detailComp.id}
+                        title="Or — name a whole channel like this one"
+                        subtitle="Jump to the naming workspace with this competitor's niche, top videos, and analysis loaded as the seed."
+                      />
+
 
                       {ideas.length > 0 && (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1380,6 +1412,324 @@ function Section({ title, children }: { title: string; children: React.ReactNode
     <div className="glass rounded-xl p-5">
       <h3 className="text-sm font-semibold uppercase tracking-wider mb-3" style={{ color: 'var(--text-muted)' }}>{title}</h3>
       {children}
+    </div>
+  );
+}
+
+/**
+ * Reusable CTA card that hands a competitor off to the Channel Naming page.
+ * Used in the Top and Ideas tabs as the entry to surface A of the
+ * competitor → naming bridge (the inline panel in Deep Analysis is the
+ * heavier in-context variant).
+ */
+function NamingBridgeCta({
+  competitorId, title, subtitle,
+}: {
+  competitorId: string;
+  title: string;
+  subtitle: string;
+}) {
+  return (
+    <div
+      className="glass rounded-xl p-5 mb-6 flex items-center gap-4 flex-wrap"
+      style={{ borderLeft: '3px solid #a78bfa' }}
+    >
+      <div className="flex-1 min-w-[280px]">
+        <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>{title}</div>
+        <div className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>{subtitle}</div>
+      </div>
+      <Link
+        href={`/channel-naming?fromCompetitor=${competitorId}`}
+        className="btn-primary flex items-center gap-2"
+      >
+        ✨ Generate similar channel names →
+      </Link>
+    </div>
+  );
+}
+
+/**
+ * Inline lightweight name generator (surface C of the bridge). Lives in
+ * the Deep Analysis tab below DeepAnalysisDisplay. Generates 5 candidates
+ * and shows them compactly — power features (filters, save, deeper
+ * iteration) live on the full /channel-naming page, reachable via the
+ * footer link.
+ *
+ * Two-call flow: (1) GET naming-context for the prefill payload (the
+ * generate API is unauthenticated so cannot hydrate server-side without
+ * breaking tenant scope), (2) POST naming/generate with that payload +
+ * sourceCompetitorId. The id flows through to save when the user clicks
+ * ⭐ on the full naming page.
+ */
+interface InlineCandidate {
+  name: string;
+  handle: string;
+  combinedScore: number;
+  reasoning: string;
+  available: boolean;
+  takenBy?: { id: string; title: string; thumbnail?: string };
+  checkError?: string;
+}
+
+function CompetitorInlineNaming({
+  competitorId, competitorTitle,
+}: {
+  competitorId: string;
+  competitorTitle: string;
+}) {
+  const [generating, setGenerating] = useState(false);
+  const [candidates, setCandidates] = useState<InlineCandidate[]>([]);
+
+  async function generate() {
+    setGenerating(true);
+    try {
+      const ctxRes = await fetch(`/api/competitors/${competitorId}/naming-context`);
+      if (!ctxRes.ok) {
+        const e = await ctxRes.json().catch(() => ({}));
+        throw new Error(e.error || 'Could not load competitor context');
+      }
+      const ctx = await ctxRes.json();
+
+      // Use the workspace default naming model — same default as /channel-naming
+      // (the inline panel intentionally doesn't expose a model picker; pick that
+      // battle on the full naming workspace).
+      const modelId = getFeatureDefaultModelId('channel-naming');
+
+      const genRes = await fetch('/api/channel-naming/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          modelId,
+          niche: ctx.namingSeed.niche,
+          freeText: ctx.namingSeed.freeText,
+          referenceVideoUrls: ctx.topVideoUrls,
+          referenceImages: (ctx.namingSeed.referenceImages || []).map((i: { base64: string; mimeType: string }) => ({ base64: i.base64, mimeType: i.mimeType })),
+          count: 10, // 10 generated, top 5 displayed inline
+          sourceCompetitorId: competitorId,
+        }),
+      });
+      const data = await genRes.json();
+      if (!genRes.ok) throw new Error(data.error || 'Failed');
+      setCandidates((data.candidates || []).slice(0, 5));
+      toast.success(`Generated 5 names seeded from ${competitorTitle}`);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Naming generation failed');
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  return (
+    <div className="glass rounded-xl p-5 mt-6" style={{ borderLeft: '3px solid #a78bfa' }}>
+      <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+        <div>
+          <h3 className="text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+            ✨ Channel Naming — seeded from this analysis
+          </h3>
+          <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+            Quick brand-name + @handle ideas for a channel positioned like {competitorTitle}.
+          </p>
+        </div>
+        <button className="btn-primary flex items-center gap-2" onClick={generate} disabled={generating}>
+          {generating ? <Spinner /> : '✨'} {candidates.length > 0 ? 'Generate 5 more' : 'Generate 5 similar names'}
+        </button>
+      </div>
+
+      {candidates.length > 0 && (
+        <div className="space-y-2 mb-3">
+          {candidates.map(c => (
+            <div
+              key={c.handle}
+              className="flex items-start gap-3 p-3 rounded-lg"
+              style={{
+                background: 'rgba(255,255,255,0.03)',
+                borderLeft: `3px solid ${c.available ? '#10b981' : '#6b7280'}`,
+              }}
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>{c.name}</span>
+                  <code className="text-xs font-mono" style={{ color: '#60a5fa' }}>@{c.handle}</code>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold" style={{
+                    background: c.available ? 'rgba(16,185,129,0.15)' : 'rgba(107,114,128,0.15)',
+                    color: c.available ? '#10b981' : '#9ca3af',
+                  }}>
+                    {c.available ? '✓ avail' : c.checkError ? '⚠ unchecked' : '✗ taken'}
+                  </span>
+                </div>
+                <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>{c.reasoning}</p>
+              </div>
+              <div className="text-right flex-shrink-0">
+                <div className="text-base font-bold" style={{ color: c.combinedScore >= 8 ? '#10b981' : c.combinedScore >= 6 ? '#f59e0b' : 'var(--text-secondary)' }}>
+                  {c.combinedScore.toFixed(1)}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="text-xs flex items-center justify-between gap-2 pt-3 border-t" style={{ borderColor: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>
+        <span>{candidates.length > 0 ? 'Want filters, scoring, save-to-library, more iterations?' : 'For filters, scoring, and saving, open the full workspace.'}</span>
+        <Link
+          href={`/channel-naming?fromCompetitor=${competitorId}`}
+          style={{ color: '#a78bfa' }}
+        >
+          Open full naming workspace →
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Reverse panel: names saved while studying THIS competitor. Renders
+ * nothing when empty — it's a "memory" surface, not a primary action.
+ * Self-contained: owns its own fetch + delete state, so the parent
+ * component doesn't need to wire anything beyond passing the id.
+ */
+interface SavedFromCompRow {
+  id: string;
+  name: string;
+  handle: string;
+  combined_score: number;
+  seo_score: number;
+  brand_score: number;
+  memorability_score: number;
+  was_available: boolean | null;
+  saved_at: string;
+  reasoning: string;
+}
+
+function SavedNamesFromCompetitor({
+  competitorId, competitorTitle,
+}: {
+  competitorId: string;
+  competitorTitle: string;
+}) {
+  const [saved, setSaved] = useState<SavedFromCompRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetch(`/api/competitors/${competitorId}/saved-names`)
+      .then(r => r.ok ? r.json() : { saved: [] })
+      .then(d => { if (!cancelled) setSaved(d.saved || []); })
+      .catch(() => { if (!cancelled) setSaved([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [competitorId]);
+
+  async function handleDelete(id: string) {
+    if (!confirm('Delete this saved name?')) return;
+    setDeletingId(id);
+    try {
+      const res = await fetch(`/api/channel-naming/saved/${id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.error || `HTTP ${res.status}`);
+      }
+      setSaved(prev => prev.filter(s => s.id !== id));
+      toast.success('Deleted');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Delete failed');
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  async function handleCopy(text: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success(`Copied ${label}`);
+    } catch { toast.error('Copy failed'); }
+  }
+
+  // Hide while loading and when empty — this is a recall surface, not a
+  // discovery surface; an empty card adds noise without value.
+  if (loading || saved.length === 0) return null;
+
+  return (
+    <div className="glass rounded-xl p-5 mt-6" style={{ borderLeft: '3px solid #10b981' }}>
+      <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+        <div>
+          <h3 className="text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+            ⭐ Names you saved while studying {competitorTitle}
+          </h3>
+          <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+            {saved.length} saved name{saved.length !== 1 ? 's' : ''} linked to this competitor.
+          </p>
+        </div>
+        <Link
+          href={`/channel-naming?fromCompetitor=${competitorId}`}
+          className="text-xs"
+          style={{ color: '#a78bfa' }}
+        >
+          Generate more →
+        </Link>
+      </div>
+
+      <div className="space-y-2">
+        {saved.map(s => (
+          <div
+            key={s.id}
+            className="flex items-start gap-3 p-3 rounded-lg"
+            style={{
+              background: 'rgba(255,255,255,0.03)',
+              borderLeft: `3px solid ${s.was_available ? '#10b981' : '#6b7280'}`,
+            }}
+          >
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>{s.name}</span>
+                <code className="text-xs font-mono" style={{ color: '#60a5fa' }}>@{s.handle}</code>
+                <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold" style={{
+                  background: s.was_available ? 'rgba(16,185,129,0.15)' : 'rgba(107,114,128,0.15)',
+                  color: s.was_available ? '#10b981' : '#9ca3af',
+                }}>
+                  {s.was_available ? '✓ was avail' : '✗ was taken'}
+                </span>
+                <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  saved {timeAgo(s.saved_at)}
+                </span>
+              </div>
+              {s.reasoning && (
+                <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>{s.reasoning}</p>
+              )}
+            </div>
+            <div className="text-right flex-shrink-0 flex flex-col items-end gap-1">
+              <div className="text-base font-bold" style={{ color: s.combined_score >= 8 ? '#10b981' : s.combined_score >= 6 ? '#f59e0b' : 'var(--text-secondary)' }}>
+                {s.combined_score.toFixed(1)}
+              </div>
+              <div className="flex gap-1">
+                <button
+                  className="text-[10px] px-2 py-0.5 rounded hover:bg-white/5"
+                  style={{ color: 'var(--text-muted)' }}
+                  onClick={() => handleCopy(`${s.name} · @${s.handle}`, 'name+handle')}
+                  title="Copy name and handle"
+                >📋</button>
+                <a
+                  href={`https://www.youtube.com/@${s.handle}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] px-2 py-0.5 rounded hover:bg-white/5"
+                  style={{ color: 'var(--text-muted)' }}
+                  title="Verify on YouTube"
+                >↗</a>
+                <button
+                  className="text-[10px] px-2 py-0.5 rounded hover:bg-white/5"
+                  style={{ color: '#ef4444' }}
+                  onClick={() => handleDelete(s.id)}
+                  disabled={deletingId === s.id}
+                  title="Delete saved name"
+                >✕</button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

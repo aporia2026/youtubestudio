@@ -51,10 +51,21 @@ export async function ensureChannelNamesSchema() {
         saved_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `;
-    // Add UNIQUE constraint on legacy tables that were created without it
-    try { await sql`ALTER TABLE saved_channel_names ADD CONSTRAINT saved_channel_names_handle_unique UNIQUE (handle)`; }
-    catch { /* already exists */ }
     try { await sql`CREATE INDEX IF NOT EXISTS idx_saved_names_saved_at ON saved_channel_names(saved_at DESC)`; } catch {}
+    // Workspace tenancy (mirrors migration 0077 — pre-multi-tenant lazy
+    // tables missed 0011-0013, so the column may not exist on every DB).
+    try { await sql`ALTER TABLE saved_channel_names ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE`; } catch {}
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_saved_names_workspace_saved_at ON saved_channel_names(workspace_id, saved_at DESC)`; } catch {}
+    // Swap legacy global UNIQUE(handle) for a workspace-scoped one. The
+    // INSERT path's ON CONFLICT references this composite. On a never-
+    // migrated DB the legacy constraint may not exist; the DROP is
+    // idempotent, the ADD then succeeds.
+    try { await sql`ALTER TABLE saved_channel_names DROP CONSTRAINT IF EXISTS saved_channel_names_handle_unique`; } catch {}
+    try { await sql`ALTER TABLE saved_channel_names ADD CONSTRAINT saved_channel_names_workspace_handle_unique UNIQUE (workspace_id, handle)`; } catch { /* already exists */ }
+    // Bridge to competitor Deep Intelligence (mirrors migration 0076 so
+    // hot deploys self-heal before the migration runner has fired).
+    try { await sql`ALTER TABLE saved_channel_names ADD COLUMN IF NOT EXISTS source_competitor_id UUID REFERENCES competitor_channels(id) ON DELETE SET NULL`; } catch {}
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_saved_names_source_competitor ON saved_channel_names(source_competitor_id) WHERE source_competitor_id IS NOT NULL`; } catch {}
     channelNamesMigrated = true;
   } catch (err) {
     logger.error('ensureChannelNamesSchema error', { detail: err instanceof Error ? err.message : String(err) });
@@ -134,6 +145,12 @@ export async function ensureCompetitorSchema() {
     await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS thumbnail_analyzed_at TIMESTAMPTZ`;
     // Widen outlier_score on pre-existing tables created with NUMERIC(8,2)
     try { await sql`ALTER TABLE competitor_videos ALTER COLUMN outlier_score TYPE NUMERIC(14,2)`; } catch {}
+
+    // Persisted Deep Analysis result so the naming-bridge can read it
+    // days after the analyze run (mirrors migration 0076 for hot deploys).
+    await sql`ALTER TABLE competitor_channels ADD COLUMN IF NOT EXISTS latest_deep_analysis_jsonb JSONB`;
+    await sql`ALTER TABLE competitor_channels ADD COLUMN IF NOT EXISTS latest_deep_analysis_niche TEXT`;
+    await sql`ALTER TABLE competitor_channels ADD COLUMN IF NOT EXISTS latest_deep_analysis_at TIMESTAMPTZ`;
 
     competitorMigrated = true;
   } catch (err) {

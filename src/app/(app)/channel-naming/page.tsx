@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { Suspense, useState, useEffect, useCallback, useRef } from 'react';
+import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelSelector } from '@/components/ui/ModelSelector';
@@ -107,7 +108,53 @@ async function resizeAndEncode(file: File, maxSide = 1024, quality = 0.82): Prom
   return { base64, mimeType: 'image/jpeg', previewUrl, bytes };
 }
 
-export default function ChannelNamingPage() {
+/** Workspace competitor as returned by GET /api/competitors — only the
+ *  fields the picker needs. `hasAnalysis` is derived client-side from
+ *  `latest_deep_analysis_at` so the picker can show an "analyzed ✓" badge.
+ */
+interface PickerCompetitor {
+  id: string;
+  title: string;
+  thumbnail_url: string;
+  subscriber_count: number;
+  hasAnalysis: boolean;
+}
+
+interface SeededFromInfo {
+  competitorId: string;
+  title: string;
+  thumbnail: string | null;
+  hasAnalysis: boolean;
+  analyzedAt: string | null;
+}
+
+interface NamingContextPayload {
+  channel: { id: string; title: string; handle: string | null; subs: number; thumbnail_url: string | null };
+  topVideoUrls: string[];
+  namingSeed: {
+    niche: string;
+    freeText: string;
+    referenceImages: { base64: string; mimeType: string; previewUrl: string }[];
+  };
+  hasAnalysis: boolean;
+  analyzedAt: string | null;
+}
+
+export default function ChannelNamingPageWrapper() {
+  // useSearchParams() requires a Suspense boundary in App Router — same
+  // pattern as src/app/(app)/thumbnails/page.tsx.
+  return (
+    <Suspense fallback={<div className="p-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>}>
+      <ChannelNamingPage />
+    </Suspense>
+  );
+}
+
+function ChannelNamingPage() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('channel-naming'));
   const [niche, setNiche] = useState('');
   const [nicheHints, setNicheHints] = useState<string[]>([]);
@@ -120,6 +167,15 @@ export default function ChannelNamingPage() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [batchNum, setBatchNum] = useState(0);
   const [stats, setStats] = useState<{ allChecked: number; availableCount: number; refVideosUsed?: number; refVideosFailed?: string[]; availabilityCaveat?: string } | null>(null);
+
+  // Competitor bridge — surfaces A (URL prefill), B (picker), and C
+  // (inline panel on competitor page → navigates here).
+  const [sourceCompetitorId, setSourceCompetitorId] = useState<string | null>(null);
+  const [seededFrom, setSeededFrom] = useState<SeededFromInfo | null>(null);
+  const [hydratingCompetitor, setHydratingCompetitor] = useState(false);
+  const [competitorsList, setCompetitorsList] = useState<PickerCompetitor[]>([]);
+  // Cancel out-of-order responses if the user switches competitors mid-fetch.
+  const hydrationSeqRef = useRef(0);
 
   // Saved
   const [saved, setSaved] = useState<SavedName[]>([]);
@@ -151,6 +207,104 @@ export default function ChannelNamingPage() {
     setFilterCategory(''); setFilterTechnique(''); setFilterPronounce(''); setFilterHandleLen('');
     setFilterText('');
     setSortBy('combined');
+  }
+
+  // ---- Competitor bridge ----
+
+  /** Pull the workspace's competitor list for the B-picker dropdown. */
+  const fetchCompetitorsList = useCallback(async () => {
+    try {
+      const res = await fetch('/api/competitors');
+      if (!res.ok) return;
+      const data = await res.json();
+      const list: PickerCompetitor[] = (data.competitors || []).map((c: { id: string; title: string; thumbnail_url?: string; subscriber_count?: number; latest_deep_analysis_at?: string | null }) => ({
+        id: c.id,
+        title: c.title,
+        thumbnail_url: c.thumbnail_url || '',
+        subscriber_count: Number(c.subscriber_count) || 0,
+        hasAnalysis: !!c.latest_deep_analysis_at,
+      }));
+      // Analyzed competitors first (more useful seeds), then alphabetical.
+      list.sort((a, b) => {
+        if (a.hasAnalysis !== b.hasAnalysis) return a.hasAnalysis ? -1 : 1;
+        return a.title.localeCompare(b.title);
+      });
+      setCompetitorsList(list);
+    } catch { /* picker is optional UI, silent fail is fine */ }
+  }, []);
+
+  /** Fetch the naming-context for a competitor and overwrite the form
+   *  inputs with the seeded values. Preserves any in-session generated
+   *  candidates (per the existing "accumulate, never wipe" pattern). */
+  const hydrateFromCompetitor = useCallback(async (competitorId: string) => {
+    const seq = ++hydrationSeqRef.current;
+    setHydratingCompetitor(true);
+    try {
+      const res = await fetch(`/api/competitors/${competitorId}/naming-context`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error || 'Could not load competitor context');
+        // Stale URL param (e.g. competitor was deleted) — clear it so the
+        // user isn't stuck with a broken seed source.
+        setSourceCompetitorId(null);
+        setSeededFrom(null);
+        return;
+      }
+      const data: NamingContextPayload = await res.json();
+      // A newer hydration started — drop this stale one.
+      if (seq !== hydrationSeqRef.current) return;
+
+      setSourceCompetitorId(data.channel.id);
+      setSeededFrom({
+        competitorId: data.channel.id,
+        title: data.channel.title,
+        thumbnail: data.channel.thumbnail_url,
+        hasAnalysis: data.hasAnalysis,
+        analyzedAt: data.analyzedAt,
+      });
+      setNiche(data.namingSeed.niche);
+      setFreeText(data.namingSeed.freeText);
+      setRefVideos(data.topVideoUrls);
+      // Replace ref images entirely with the channel avatar (if any) — the
+      // seed should be a fresh visual context, not stacked on prior uploads.
+      setRefImages(prev => {
+        // Free any prior object URLs to avoid memory leaks.
+        for (const img of prev) { try { URL.revokeObjectURL(img.preview); } catch {} }
+        return data.namingSeed.referenceImages.map(img => ({
+          base64: img.base64,
+          mimeType: img.mimeType,
+          preview: img.previewUrl,
+        }));
+      });
+      if (!data.hasAnalysis) {
+        toast.info(`Loaded ${data.channel.title} — run Deep Analysis on this competitor for a richer naming seed.`);
+      } else {
+        toast.success(`Seeded from ${data.channel.title}`);
+      }
+    } catch (err: unknown) {
+      if (seq !== hydrationSeqRef.current) return;
+      toast.error(err instanceof Error ? err.message : 'Could not load competitor context');
+    } finally {
+      if (seq === hydrationSeqRef.current) setHydratingCompetitor(false);
+    }
+  }, []);
+
+  /** Clear the source link but preserve the prefilled form text — the
+   *  user may want to keep the seeded prompt and just unlink it from the
+   *  saving provenance. */
+  function clearSourceLink() {
+    setSourceCompetitorId(null);
+    setSeededFrom(null);
+    // Strip the ?fromCompetitor param from the URL without unmounting the page.
+    router.replace(pathname, { scroll: false });
+  }
+
+  /** Picker change handler — re-points the seed at a different competitor
+   *  and syncs the URL so refresh preserves the source. */
+  function onPickCompetitor(competitorId: string) {
+    if (!competitorId) return;
+    router.replace(`${pathname}?fromCompetitor=${encodeURIComponent(competitorId)}`, { scroll: false });
+    hydrateFromCompetitor(competitorId);
   }
 
   function addVideo() {
@@ -223,6 +377,7 @@ export default function ChannelNamingPage() {
           count,
           existingNames,
           existingHandles,
+          sourceCompetitorId,
         }),
       });
       const data = await res.json();
@@ -317,6 +472,22 @@ export default function ChannelNamingPage() {
     primeHistoryCaches().then(() => setNicheHints(getRecentNiches())).catch(() => {});
   }, []);
 
+  // Surface A: arrive via /channel-naming?fromCompetitor=<id> — hydrate
+  // immediately. We intentionally only honour the param on first read;
+  // later picker changes drive hydration directly so we don't double-fetch.
+  const initialFromCompetitorRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (initialFromCompetitorRef.current !== null) return;
+    const fromCompetitor = searchParams.get('fromCompetitor');
+    initialFromCompetitorRef.current = fromCompetitor || '';
+    if (fromCompetitor) hydrateFromCompetitor(fromCompetitor);
+  }, [searchParams, hydrateFromCompetitor]);
+
+  // Surface B: picker dropdown. Fetched once on mount; refreshes after
+  // any successful hydration so a newly-analyzed competitor's badge
+  // updates without a page reload.
+  useEffect(() => { fetchCompetitorsList(); }, [fetchCompetitorsList]);
+
   async function saveCandidate(c: Candidate) {
     setSavingHandle(c.handle);
     try {
@@ -329,6 +500,7 @@ export default function ChannelNamingPage() {
           combinedScore: c.combinedScore,
           reasoning: c.reasoning, keywordCoverage: c.keyword_coverage, risks: c.risks,
           wasAvailable: c.available, aiModel: modelId,
+          sourceCompetitorId,
         }),
       });
       const data = await res.json();
@@ -400,6 +572,17 @@ export default function ChannelNamingPage() {
 
       <div className="glass rounded-xl p-6 mb-6 space-y-5">
         <ModelSelector value={modelId} onChange={setModelId} />
+
+        <CompetitorPicker
+          competitors={competitorsList}
+          value={sourceCompetitorId}
+          loading={hydratingCompetitor}
+          onPick={onPickCompetitor}
+        />
+
+        {seededFrom && (
+          <SeededFromChip info={seededFrom} onClear={clearSourceLink} />
+        )}
 
         <div>
           <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Niche</label>
@@ -866,6 +1049,81 @@ export default function ChannelNamingPage() {
           </>
         );
       })()}
+    </div>
+  );
+}
+
+function CompetitorPicker({
+  competitors, value, loading, onPick,
+}: {
+  competitors: PickerCompetitor[];
+  value: string | null;
+  loading: boolean;
+  onPick: (id: string) => void;
+}) {
+  if (competitors.length === 0) return null;
+  return (
+    <div>
+      <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
+        Start from a competitor (optional) — pulls niche, top videos, and analysis as the naming seed
+      </label>
+      <div className="flex gap-2 items-center">
+        <select
+          className="input-field flex-1"
+          value={value || ''}
+          onChange={e => onPick(e.target.value)}
+          disabled={loading}
+        >
+          <option value="">— pick a competitor —</option>
+          {competitors.map(c => (
+            <option key={c.id} value={c.id}>
+              {c.hasAnalysis ? '✓ ' : '  '}
+              {c.title} ({c.subscriber_count.toLocaleString()} subs)
+              {c.hasAnalysis ? ' · analyzed' : ''}
+            </option>
+          ))}
+        </select>
+        {loading && <Spinner size={14} />}
+      </div>
+      <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
+        ✓ marks competitors with a Deep Analysis run — those produce the richest naming seeds. Others use channel + top videos only.
+      </p>
+    </div>
+  );
+}
+
+function SeededFromChip({ info, onClear }: { info: SeededFromInfo; onClear: () => void }) {
+  return (
+    <div
+      className="flex items-center gap-3 px-3 py-2 rounded-lg"
+      style={{
+        background: 'linear-gradient(135deg, rgba(239,68,68,0.08), rgba(249,115,22,0.05))',
+        border: '1px solid rgba(249,115,22,0.2)',
+      }}
+    >
+      {info.thumbnail && (
+        <img
+          src={info.thumbnail}
+          alt=""
+          style={{ width: 32, height: 32, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }}
+        />
+      )}
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+          Seeded from <span style={{ color: '#f97316' }}>{info.title}</span>
+        </div>
+        <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          {info.hasAnalysis
+            ? `Using Deep Analysis seed. Names saved here will be linked to this competitor.`
+            : `No Deep Analysis yet — using channel + top videos only. Run analysis for a richer seed.`}
+        </div>
+      </div>
+      <button
+        className="text-xs px-2 py-1 rounded hover:bg-white/5"
+        style={{ color: 'var(--text-muted)' }}
+        onClick={onClear}
+        title="Unlink source — form text stays as-is"
+      >✕ unlink</button>
     </div>
   );
 }

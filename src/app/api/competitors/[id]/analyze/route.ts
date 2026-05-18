@@ -141,6 +141,27 @@ export const POST = apiRoute.authed(async (session, req: NextRequest, { params }
       return NextResponse.json({ error: 'Failed to parse analysis', raw: raw.slice(0, 500) }, { status: 500 });
     }
 
+    // Persist the latest analysis on the competitor row so the channel-naming
+    // bridge (`/api/competitors/[id]/naming-context`) can read it days later.
+    // Niche is stored alongside because the analysis JSON has no niche field —
+    // the user-supplied input at analyze time is the only authoritative source.
+    try {
+      await sql`
+        UPDATE competitor_channels
+           SET latest_deep_analysis_jsonb  = ${JSON.stringify(analysis)}::jsonb,
+               latest_deep_analysis_niche  = ${niche || null},
+               latest_deep_analysis_at     = NOW()
+         WHERE id = ${id}
+           AND workspace_id = ${session.ws}::uuid
+      `;
+    } catch (persistErr) {
+      // Non-fatal: the analysis itself succeeded and is returned to the client.
+      // The bridge will fall back to channel-only context on the next read.
+      logger.warn('Competitor analysis persist failed', {
+        detail: persistErr instanceof Error ? persistErr.message : String(persistErr),
+      });
+    }
+
     return NextResponse.json({ analysis, analytics });
   } catch (err) {
     logger.error('Competitor analysis error', { detail: err instanceof Error ? err.message : String(err) });
