@@ -92,10 +92,36 @@ const PLACEHOLDER_DOC: ProductionDoc = {
   speaking_pace_wpm: 150,
 };
 
+/** Timeline zoom — integer levels 1..10 (plan's `+`/`-` range).
+ *  Levels map to px/sec geometrically so each step feels like the
+ *  same proportional zoom: level 1 = 16 px/s (whole videos fit on
+ *  screen), level 5 ≈ 94 px/s (the default), level 10 = 800 px/s
+ *  (frame-level precision for trim drags). */
+const ZOOM_MIN_LEVEL = 1;
+const ZOOM_MAX_LEVEL = 10;
+const ZOOM_DEFAULT_LEVEL = 5;
+const ZOOM_STEP = 1;
+
+function zoomLevelToPxPerSecond(level: number): number {
+  const t = (level - ZOOM_MIN_LEVEL) / (ZOOM_MAX_LEVEL - ZOOM_MIN_LEVEL);
+  return Math.round(16 * Math.pow(800 / 16, t));
+}
+
 export default function EditorClient({ projectId, version, payload }: EditorClientProps) {
   const parsed = useMemo(() => parsePayload(payload), [payload]);
   const doc = parsed?.doc;
   const rowImages = useMemo(() => parsed?.rowImages ?? {}, [parsed]);
+
+  // Timeline zoom. Lives in the client because zoom is a viewing
+  // preference, not part of the doc; we deliberately don't persist
+  // it across reloads in v1.
+  const [zoomLevel, setZoomLevel] = useState(ZOOM_DEFAULT_LEVEL);
+  const pixelsPerSecond = useMemo(() => zoomLevelToPxPerSecond(zoomLevel), [zoomLevel]);
+  const handleZoomDelta = useCallback((delta: number) => {
+    setZoomLevel((prev) =>
+      Math.max(ZOOM_MIN_LEVEL, Math.min(ZOOM_MAX_LEVEL, prev + delta)),
+    );
+  }, []);
 
   // Hooks run unconditionally; conditional render via early return AFTER
   // the hooks declare their values.
@@ -222,11 +248,23 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       if (key === 'm') {
         e.preventDefault();
         handleToggleMute();
+        return;
+      }
+      // Zoom: `+` / `=` zoom in; `-` zoom out. Matches the plan's
+      // keyboard map and the muscle memory of every NLE.
+      if (key === '+' || key === '=') {
+        e.preventDefault();
+        handleZoomDelta(ZOOM_STEP);
+        return;
+      }
+      if (key === '-' || key === '_') {
+        e.preventDefault();
+        handleZoomDelta(-ZOOM_STEP);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [handleDelete, handleSplit, handleToggleMute]);
+  }, [handleDelete, handleSplit, handleToggleMute, handleZoomDelta]);
 
   // Subscribe to frame updates so the playhead reflects the live
   // play position. Throttled at the ms-rounded level so React only
@@ -378,6 +416,24 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         </div>
       </header>
 
+      {/* Zoom strip — sits between the toolbar and the player so
+          the slider visually belongs to the timeline below. */}
+      <div className="flex items-center justify-end gap-2 text-xs" style={{ color: 'var(--fg-muted)' }}>
+        <span title="Zoom out (−)">−</span>
+        <input
+          type="range"
+          min={ZOOM_MIN_LEVEL}
+          max={ZOOM_MAX_LEVEL}
+          step={1}
+          value={zoomLevel}
+          onChange={(e) => setZoomLevel(Number(e.target.value))}
+          className="w-32"
+          aria-label="Timeline zoom"
+        />
+        <span title="Zoom in (+)">+</span>
+        <span className="tabular-nums w-10 text-right">{zoomLevel}×</span>
+      </div>
+
       {saveStatus.kind === 'conflict' && (
         <ConflictBanner onReload={() => { void reloadFromServer(); }} />
       )}
@@ -406,6 +462,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         selection={state.selection}
         playheadMs={state.playheadMs}
         rowTrims={rowTrims}
+        pixelsPerSecond={pixelsPerSecond}
         onSelect={(shotIndex) => apply({ type: 'SET_SELECTION', shotIndex })}
         onResize={(shotIndex, durationMs) =>
           apply({ type: 'RESIZE_SHOT', shotIndex, durationMs })
