@@ -15,6 +15,7 @@ import { ThumbnailZoomScene } from '../scenes/ThumbnailZoomScene';
 import { SectionTitleStripe, clampSectionStripeFraction } from '../components/SectionTitleStripe';
 import { RealImageOverlay } from '../components/RealImageOverlay';
 import { CaptionsOverlay } from '../components/CaptionsOverlay';
+import { TextOverlayLayer } from '../components/TextOverlayLayer';
 import {
   VideoConfig,
   VideoShot,
@@ -238,6 +239,13 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
           />
         </Sequence>
       ))}
+
+      {/* Doc-level text overlays. Sit between scenes/stripes and
+          captions in z-order — overlays can decorate the video,
+          captions sit on top of them so dialogue stays readable. */}
+      {config.textOverlays && config.textOverlays.length > 0 && (
+        <TextOverlayLayer overlays={config.textOverlays} />
+      )}
 
       {/* Burned-in captions — Phase 4 of the shot-graph editor plan.
           Rendered LAST so the caption box sits above scenes + stripes

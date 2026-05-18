@@ -181,6 +181,13 @@ export interface VideoShot {
     /** Manual width override (% of frame width). When a number, the
      *  renderer ignores `size` and uses this directly. */
     customSizePct?: number;
+    /** Manual height override (% of frame height) — set only when the
+     *  user freely stretched the overlay to a non-natural aspect via
+     *  Shift+drag on a resize handle. When a finite number, the renderer
+     *  uses this height verbatim instead of deriving height from the
+     *  image's natural aspect. Absent ⇒ height follows natural aspect.
+     *  See Phase 1 of `_plans/2026-05-18-overlay-system-overhaul.md`. */
+    stretchedHeightPct?: number;
   };
   // ─── Shot-graph editor fields ──────────────────────────────────────
   //
@@ -277,6 +284,37 @@ export interface VideoConfig {
    *  Editor uses this for Lambda renders so the rendered MP4 carries
    *  the captions the user already saw in the editor's HTML overlay. */
   captions?: Array<{ start: number; end: number; text: string }>;
+  /** Doc-level text overlays — Phase 4 "master overlay layer." Each
+   *  overlay spans a configurable time window and lays its text at
+   *  one of two preset positions. Independent from per-shot
+   *  `onScreenText` (which the LowerThird handles per-row); these
+   *  overlays sit on top of any number of consecutive shots without
+   *  being tied to a single row. */
+  textOverlays?: TextOverlay[];
+}
+
+/** A single doc-level text overlay. Identified by `id` so commands
+ *  can update/delete one without ambiguity. */
+export interface TextOverlay {
+  id: string;
+  text: string;
+  /** Start time in ms from the start of the video. */
+  startMs: number;
+  /** End time in ms from the start of the video (exclusive). */
+  endMs: number;
+  /** Two presets in v1 — lower-third matches the existing LowerThird
+   *  zone, top-center sits below the section-title stripe area. */
+  position: 'lower-third' | 'top-center';
+  /** Font size as a fraction of frame height. 0.04 ≈ 43 px on a
+   *  1080p render — slightly bigger than the caption default. */
+  fontSizeFraction?: number;
+  /** Text color, hex `#RRGGBB`. Defaults to white when undefined. */
+  color?: string;
+  /** Background opacity 0..1. 0 = fully transparent text only;
+   *  0.85 = solid card. Defaults to 0.85. */
+  backgroundOpacity?: number;
+  /** Fade-in duration in ms. Defaults to 250 ms. */
+  fadeInMs?: number;
 }
 
 // ─── Render Job ───────────────────────────────────────────────────────────────

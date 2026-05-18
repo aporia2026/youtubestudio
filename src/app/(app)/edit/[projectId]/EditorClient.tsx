@@ -43,6 +43,7 @@ import { useEditorStore } from '@/lib/editor/use-editor-store';
 import { Timeline } from '@/components/editor/Timeline';
 import { ShotInspector } from '@/components/editor/ShotInspector';
 import { VoiceoverDriftReport } from '@/components/editor/VoiceoverDriftReport';
+import { TextOverlayManager } from '@/components/editor/TextOverlayManager';
 
 interface EditorClientProps {
   projectId: string;
@@ -129,6 +130,10 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
   // Voiceover drift report modal — toggled from the toolbar.
   const [showDriftReport, setShowDriftReport] = useState(false);
+  // Doc-level text-overlay manager modal — toolbar entry point for
+  // creating / editing master overlays (independent of any single
+  // shot's `on_screen_text`).
+  const [showOverlayManager, setShowOverlayManager] = useState(false);
 
   // Timeline zoom. Lives in the client because zoom is a viewing
   // preference, not part of the doc; we deliberately don't persist
@@ -404,6 +409,21 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
           <button
             type="button"
+            onClick={() => setShowOverlayManager(true)}
+            className="text-xs px-2.5 py-1.5 rounded border transition-colors hover:bg-white/5"
+            style={{ borderColor: 'var(--card-border)' }}
+            title="Add or edit doc-level text overlays"
+          >
+            Overlays
+            {state.doc.text_overlays && state.doc.text_overlays.length > 0 && (
+              <span className="ml-1 tabular-nums" style={{ color: 'var(--accent-purple-bright, #a78bfa)' }}>
+                ({state.doc.text_overlays.length})
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
             onClick={() => { void handleRegenerateCaptions(); }}
             disabled={captionsRegenState.kind === 'running' || !state.voiceoverUrl}
             className="text-xs px-2.5 py-1.5 rounded border transition-colors hover:bg-white/5 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -555,6 +575,18 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           doc={state.doc}
           onClose={() => setShowDriftReport(false)}
           onJumpToShot={(shotIndex) => apply({ type: 'SET_SELECTION', shotIndex })}
+        />
+      )}
+
+      {showOverlayManager && (
+        <TextOverlayManager
+          overlays={state.doc.text_overlays ?? []}
+          playheadMs={state.playheadMs}
+          totalDurationMs={videoConfig.shots.reduce((a, s) => a + s.durationMs, 0)}
+          onClose={() => setShowOverlayManager(false)}
+          onAdd={(overlay) => apply({ type: 'ADD_TEXT_OVERLAY', overlay })}
+          onUpdate={(id, patch) => apply({ type: 'UPDATE_TEXT_OVERLAY', id, patch })}
+          onDelete={(id) => apply({ type: 'DELETE_TEXT_OVERLAY', id })}
         />
       )}
 

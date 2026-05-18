@@ -36,6 +36,7 @@
  * and version, dropping the user's unsaved edits.
  */
 import type { ProductionDoc } from '@/remotion/utils';
+import type { TextOverlay } from '@/remotion/types';
 import type { CaptionsBundle } from './captions';
 import { stampEditedAt } from './edited-at';
 
@@ -138,6 +139,12 @@ export type EditorCommand =
   // shot-1 and shot is what the user sees fade). `null` clears any
   // explicit override and falls back to the doc-level default.
   | { type: 'SET_TRANSITION_IN'; shotIndex: number; transition: 'cross-fade' | null }
+  // Doc-level text overlays. Append-and-edit feature; each overlay
+  // is identified by `id` (uuid client-generated). Inverses are
+  // symmetric: ADD ↔ DELETE, UPDATE inverts via the prior value.
+  | { type: 'ADD_TEXT_OVERLAY'; overlay: TextOverlay; insertAtIndex?: number }
+  | { type: 'UPDATE_TEXT_OVERLAY'; id: string; patch: Partial<Omit<TextOverlay, 'id'>> }
+  | { type: 'DELETE_TEXT_OVERLAY'; id: string }
   // Replace a shot's source video clip (the override read by
   // productionDocToVideoConfig over the auto-pipeline's
   // `rowVideoClips`). Pass `null` for both fields to clear.
@@ -187,6 +194,9 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'SET_ROW_VIDEO':
     case 'SET_ROW_SCRIPT':
     case 'SET_TRANSITION_IN':
+    case 'ADD_TEXT_OVERLAY':
+    case 'UPDATE_TEXT_OVERLAY':
+    case 'DELETE_TEXT_OVERLAY':
       return true;
     default:
       return false;
@@ -483,6 +493,90 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         next: {
           ...state,
           doc: { ...state.doc, rows: nextRows },
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'ADD_TEXT_OVERLAY': {
+      const overlays = state.doc.text_overlays ?? [];
+      const insertAt =
+        typeof cmd.insertAtIndex === 'number' &&
+        cmd.insertAtIndex >= 0 &&
+        cmd.insertAtIndex <= overlays.length
+          ? cmd.insertAtIndex
+          : overlays.length;
+      const nextOverlays = [
+        ...overlays.slice(0, insertAt),
+        cmd.overlay,
+        ...overlays.slice(insertAt),
+      ];
+      const inverse: EditorCommand = { type: 'DELETE_TEXT_OVERLAY', id: cmd.overlay.id };
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, text_overlays: nextOverlays },
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'UPDATE_TEXT_OVERLAY': {
+      const overlays = state.doc.text_overlays ?? [];
+      const idx = overlays.findIndex((o) => o.id === cmd.id);
+      if (idx === -1) return { next: state, inverse: null };
+      const prev = overlays[idx];
+      const next = { ...prev, ...cmd.patch };
+      // Build the inverse as the SAME patch shape with the prior
+      // values for every field the forward patch touched. The
+      // `as unknown as Record<...>` casts are unavoidable because
+      // keyof on a TextOverlay member isn't structurally compatible
+      // with an index signature in TS's variance model.
+      const inversePatch: Partial<Omit<TextOverlay, 'id'>> = {};
+      const prevAsRecord = prev as unknown as Record<string, unknown>;
+      const nextAsRecord = next as unknown as Record<string, unknown>;
+      const inverseAsRecord = inversePatch as unknown as Record<string, unknown>;
+      const patchKeys = Object.keys(cmd.patch) as Array<keyof Omit<TextOverlay, 'id'>>;
+      patchKeys.forEach((k) => {
+        inverseAsRecord[k as string] = prevAsRecord[k as string];
+      });
+      // No-op when nothing actually changed.
+      const anyDiff = patchKeys.some((k) => prevAsRecord[k as string] !== nextAsRecord[k as string]);
+      if (!anyDiff) return { next: state, inverse: null };
+      const nextOverlays = overlays.slice();
+      nextOverlays[idx] = next;
+      const inverse: EditorCommand = {
+        type: 'UPDATE_TEXT_OVERLAY',
+        id: cmd.id,
+        patch: inversePatch,
+      };
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, text_overlays: nextOverlays },
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'DELETE_TEXT_OVERLAY': {
+      const overlays = state.doc.text_overlays ?? [];
+      const idx = overlays.findIndex((o) => o.id === cmd.id);
+      if (idx === -1) return { next: state, inverse: null };
+      const removed = overlays[idx];
+      const nextOverlays = overlays.filter((_, i) => i !== idx);
+      const inverse: EditorCommand = {
+        type: 'ADD_TEXT_OVERLAY',
+        overlay: removed,
+        insertAtIndex: idx,
+      };
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, text_overlays: nextOverlays },
           isDirty: true,
         },
         inverse,

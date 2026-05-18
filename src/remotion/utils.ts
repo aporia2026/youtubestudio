@@ -335,6 +335,12 @@ export interface ProductionDoc {
    *  the closing fade-out of the outro. Per-row `scene_fade` overrides.
    *  See `_plans/2026-05-17-scene-transition-controls.md`. */
   scene_fade_enabled?: boolean;
+  /** Doc-level text overlays — Phase 4 master overlay layer (shot-
+   *  graph editor plan). Each overlay spans a configurable time
+   *  window independent of any row. Persisted on the doc so editor
+   *  + render see the same data. Empty array OR undefined renders
+   *  nothing. */
+  text_overlays?: import('@/remotion/types').TextOverlay[];
 }
 
 export interface RowImageState {
@@ -681,6 +687,7 @@ export function productionDocToVideoConfig(
     tailBufferMs,
     sceneFadeEnabled: doc.scene_fade_enabled,
     captions: opts.captions,
+    textOverlays: doc.text_overlays,
   };
 
   return opts.alignment ? realignVideoConfig(config, opts.alignment).config : config;
