@@ -42,6 +42,7 @@ import {
 import { useEditorStore } from '@/lib/editor/use-editor-store';
 import { Timeline } from '@/components/editor/Timeline';
 import { ShotInspector } from '@/components/editor/ShotInspector';
+import { VoiceoverDriftReport } from '@/components/editor/VoiceoverDriftReport';
 
 interface EditorClientProps {
   projectId: string;
@@ -112,6 +113,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   const parsed = useMemo(() => parsePayload(payload), [payload]);
   const doc = parsed?.doc;
   const rowImages = useMemo(() => parsed?.rowImages ?? {}, [parsed]);
+
+  // Voiceover drift report modal — toggled from the toolbar.
+  const [showDriftReport, setShowDriftReport] = useState(false);
 
   // Timeline zoom. Lives in the client because zoom is a viewing
   // preference, not part of the doc; we deliberately don't persist
@@ -321,6 +325,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
           <button
             type="button"
+            onClick={() => setShowDriftReport(true)}
+            className="text-xs px-2.5 py-1.5 rounded border transition-colors hover:bg-white/5"
+            style={{ borderColor: 'var(--card-border)' }}
+            title="Show voiceover drift report — narration vs shot durations"
+          >
+            Drift report
+          </button>
+
+          <button
+            type="button"
             onClick={handleSplit}
             disabled={!splitTarget?.validSplit}
             className="text-xs px-2.5 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/5"
@@ -437,6 +451,14 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
       {saveStatus.kind === 'conflict' && (
         <ConflictBanner onReload={() => { void reloadFromServer(); }} />
+      )}
+
+      {showDriftReport && (
+        <VoiceoverDriftReport
+          doc={state.doc}
+          onClose={() => setShowDriftReport(false)}
+          onJumpToShot={(shotIndex) => apply({ type: 'SET_SELECTION', shotIndex })}
+        />
       )}
 
       <div className="flex gap-4 items-start">
