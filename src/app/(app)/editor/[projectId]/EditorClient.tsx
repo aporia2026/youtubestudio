@@ -41,6 +41,7 @@ import {
 } from '@/lib/editor/store';
 import { useEditorStore } from '@/lib/editor/use-editor-store';
 import { Timeline } from '@/components/editor/Timeline';
+import { ShotInspector } from '@/components/editor/ShotInspector';
 
 interface EditorClientProps {
   projectId: string;
@@ -438,22 +439,35 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         <ConflictBanner onReload={() => { void reloadFromServer(); }} />
       )}
 
-      <div
-        className="rounded-lg overflow-hidden border"
-        style={{ borderColor: 'var(--card-border)', background: '#000' }}
-      >
-        <Player
-          ref={playerRef}
-          component={YouTubeVideo}
-          inputProps={inputProps}
-          durationInFrames={totalFrames}
-          compositionWidth={videoConfig.width}
-          compositionHeight={videoConfig.height}
-          fps={videoConfig.fps}
-          controls
-          style={{ width: '100%', aspectRatio: `${videoConfig.width} / ${videoConfig.height}` }}
-          acknowledgeRemotionLicense
-        />
+      <div className="flex gap-4 items-start">
+        <div
+          className="rounded-lg overflow-hidden border flex-1 min-w-0"
+          style={{ borderColor: 'var(--card-border)', background: '#000' }}
+        >
+          <Player
+            ref={playerRef}
+            component={YouTubeVideo}
+            inputProps={inputProps}
+            durationInFrames={totalFrames}
+            compositionWidth={videoConfig.width}
+            compositionHeight={videoConfig.height}
+            fps={videoConfig.fps}
+            controls
+            style={{ width: '100%', aspectRatio: `${videoConfig.width} / ${videoConfig.height}` }}
+            acknowledgeRemotionLicense
+          />
+        </div>
+
+        {state.selection !== null && state.doc.rows[state.selection] && (
+          <ShotInspector
+            shotIndex={state.selection}
+            shot={videoConfig.shots[state.selection]}
+            row={state.doc.rows[state.selection]}
+            thumbnailUrl={state.rowImages[state.selection] ?? null}
+            totalShots={state.doc.rows.length}
+            onClose={() => apply({ type: 'SET_SELECTION', shotIndex: null })}
+          />
+        )}
       </div>
 
       <Timeline
