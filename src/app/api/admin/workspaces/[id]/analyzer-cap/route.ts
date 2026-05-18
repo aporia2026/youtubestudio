@@ -25,21 +25,9 @@ import { extractIp, writeAudit } from '@/lib/audit';
  * "history" surface yet, but the audit log is the source of truth
  * for future "who raised this cap" questions.
  *
- * NO ADMIN UI YET (deferred 2026-05-19). The parent plan's Phase 4
- * step 2 ("Surface in the admin panel where other workspace settings
- * live") is intentionally not built — for a single-user system the
- * 20/day default is never approached and a full admin UI would be
- * scope creep on an unshipped customisation. To adjust the cap today,
- * call this endpoint directly (admin role required):
- *
- *   curl -X PUT https://<host>/api/admin/workspaces/<ws>/analyzer-cap \
- *        -H 'cookie: <admin session cookie>' \
- *        -H 'content-type: application/json' \
- *        -d '{"override": 100}'
- *
- * The minimal UI lift (a single number input + Save on a workspace-
- * detail admin page) is filed as a follow-up; build it when there's
- * a second user on the system.
+ * Admin UI: `/admin/workspaces/[id]` exposes this as a number input
+ * with a Save button. Reach it via the user-detail page's workspace
+ * memberships list (each membership row links here).
  */
 
 // Keep in sync with DEFAULT_DAILY_ANALYSIS_CAP_PER_USER in

@@ -211,12 +211,21 @@ export default function AdminUserDetailPage({ params }: { params: Promise<{ id: 
                 style={{
                   display: 'flex',
                   justifyContent: 'space-between',
+                  alignItems: 'center',
                   padding: '6px 0',
                   borderBottom: '1px solid rgba(255,255,255,0.04)',
                   fontSize: 14,
                 }}
               >
-                <span>{m.workspace_name}</span>
+                <a
+                  href={`/admin/workspaces/${m.workspace_id}`}
+                  style={{ color: 'var(--text-primary)', textDecoration: 'none' }}
+                  title="Open workspace admin to adjust analyzer cap"
+                  onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
+                  onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
+                >
+                  {m.workspace_name}
+                </a>
                 <span style={{ color: 'var(--text-muted)' }}>{m.role}</span>
               </li>
             ))}
