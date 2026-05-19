@@ -46,9 +46,16 @@ export interface NLevel {
    *  abstract icons. */
   illustration_concept: string;
   /** Optional per-level accent color (e.g. green for "passive recon", red
-   *  for "exfiltration"). Soft hint to the image model; can be omitted to
-   *  let the model pick what fits. */
+   *  for "exfiltration"). Soft hint to the image model by default; can be
+   *  omitted to let the model pick what fits. */
   accent_color?: string;
+  /** When true, the image prompt treats `accent_color` as authoritative —
+   *  the model is instructed to use that exact color as the slice's
+   *  dominant background at full saturation, not as a vibe nudge. When
+   *  false or undefined, the color is passed as a soft "(accent hint)"
+   *  the model may freely reinterpret. Lock state is per-slice; LLM-
+   *  suggested colors default to unlocked. */
+  accent_color_locked?: boolean;
 }
 
 export interface LevelListResult {
@@ -408,7 +415,20 @@ export function nLevelsImagePrompt(input: ImagePromptInput): string {
     .map((l) => {
       const label = sanitizeForPrompt(l.label ?? '', 60);
       const concept = sanitizeForPrompt(l.illustration_concept, 250);
-      const accent = l.accent_color ? ` (accent hint: ${sanitizeForPrompt(l.accent_color, 16)})` : '';
+      // Two color modes:
+      //  - Locked: authoritative. The user picked this color and means it.
+      //    The image model gets explicit "MUST be exactly this color at
+      //    full saturation" language that overrides the "pick a fitting
+      //    background" guidance further up in the prompt.
+      //  - Unlocked (hint): the historical soft suggestion. The model is
+      //    free to interpret loosely.
+      let accent = '';
+      if (l.accent_color) {
+        const safeColor = sanitizeForPrompt(l.accent_color, 16);
+        accent = l.accent_color_locked
+          ? `. SLICE COLOR LOCK: the slice background MUST be ${safeColor} at full, vivid saturation. Do NOT darken, desaturate, tint, or shift the hue toward a moodier variant. The LEVEL heading and label stay white (or a clearly contrasting near-white) over this background.`
+          : ` (accent hint: ${safeColor})`;
+      }
       // Render with the slice's exact `level` number (user may have
       // assigned non-sequential numbers like [1, 7]). Heading depends on
       // the global showLevelLabels toggle AND the per-slice label data.
@@ -438,7 +458,7 @@ SLICES REGION (strict):
   • A bold "LEVEL N" heading. N is the slice's level NUMBER (taken verbatim from the list below — numbers do NOT have to be 1, 2, 3 sequentially; the user may have picked e.g. [1, 7] to skip middle steps. Render whatever number is given). Numbers visually prominent (large bold sans-serif). White or near-white on the slice's background.
   • DIRECTLY BELOW: the slice's short label in bold ALL-CAPS sans-serif (same colour as the LEVEL heading or a fitting contrast). 1–2 lines max. SOME SLICES HAVE NO LABEL — for those, render ONLY the LEVEL N heading at the top of the slice and leave the rest blank for the illustration. Don't invent a substitute label.
   • Filling the rest of the slice height: the illustration — depicting the level's subject as recognisably as possible.
-- Each slice has its OWN background and colour treatment that fits its content. A "passive reconnaissance" slice might be cool green; an "exfiltration" slice deep red. Visual progression across slices is a feature.
+- Each slice has its OWN background and colour treatment that fits its content. A "passive reconnaissance" slice might be cool green; an "exfiltration" slice deep red. Visual progression across slices is a feature. EXCEPTION: when a slice has an explicit "SLICE COLOR LOCK" instruction in its line below, that locked colour is authoritative; use it as the dominant background at full saturation regardless of what would otherwise "fit" the content. Do NOT darken or desaturate a locked colour for mood.
 - Real brand logos, real software screens, real product photos, real characters, real news photos — whatever depicts each level's subject most recognisably. This is fair use under YouTube's policy.
 - One focal subject per slice. No collages of unrelated elements.
 - Recognisable at 168×94 px (YouTube mobile thumbnail size).
@@ -534,6 +554,10 @@ export function parseLevelListResult(raw: unknown, fallbackTitle: string, fallba
       label: String(e.label ?? '').trim(),
       illustration_concept: concept,
       accent_color: e.accent_color ? String(e.accent_color) : undefined,
+      // Pass through if the client sent it (e.g. via the image route's
+      // re-validation). The LLM step itself never emits this — it's a
+      // user-set per-slice flag that travels through the levels list.
+      accent_color_locked: e.accent_color_locked === true ? true : undefined,
     };
   });
 

@@ -198,6 +198,10 @@ export interface NLevelsHistoryPayload {
     label: string;
     illustration_concept: string;
     accent_color?: string;
+    /** Per-slice color lock flag. Old entries leave this undefined; on
+     *  restore, undefined means the color is a soft hint (matches the
+     *  pre-toggle behaviour). */
+    accent_color_locked?: boolean;
   }>;
   /** Whether this generation included the grunge bottom title bar. Old
    *  entries (pre-toggle) leave this undefined and restore treats them as

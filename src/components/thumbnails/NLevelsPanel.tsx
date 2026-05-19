@@ -24,6 +24,12 @@ export interface FormatLevel {
   label: string;
   illustration_concept: string;
   accent_color?: string;
+  /** When true, the image model is instructed to use `accent_color` as the
+   *  slice's dominant background at full saturation. When false / undefined,
+   *  the color is a soft hint the model may freely reinterpret. Defaults to
+   *  locked when the user adds a color via the "+ color" button; LLM-
+   *  suggested colors come in unlocked. */
+  accent_color_locked?: boolean;
 }
 
 export interface NLevelsGenerationResult {
@@ -800,8 +806,29 @@ function LevelTableState(props: LevelTableProps) {
                     style={{ border: '1px solid var(--border)', background: 'none' }}
                     title="Accent color"
                   />
+                  {/* Lock toggle: when locked, the image model is told to
+                      use this exact color at full saturation. When unlocked
+                      (hint), the model may freely reinterpret; softer,
+                      moodier renders are common. */}
                   <button
-                    onClick={() => props.onUpdate(i, { accent_color: undefined })}
+                    onClick={() => props.onUpdate(i, { accent_color_locked: !level.accent_color_locked })}
+                    className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded"
+                    style={{
+                      background: level.accent_color_locked ? 'rgba(124,58,237,0.2)' : 'var(--bg-card)',
+                      color: level.accent_color_locked ? 'var(--accent-purple-bright)' : 'var(--text-muted)',
+                      border: `1px solid ${level.accent_color_locked ? 'rgba(124,58,237,0.4)' : 'var(--border)'}`,
+                    }}
+                    title={
+                      level.accent_color_locked
+                        ? 'Color locked. The model must use this exact color at full saturation. Click to switch to a soft hint.'
+                        : 'Color is a hint. The model may darken or reinterpret it. Click to lock the exact color.'
+                    }
+                    aria-pressed={!!level.accent_color_locked}
+                  >
+                    {level.accent_color_locked ? 'Lock' : 'Hint'}
+                  </button>
+                  <button
+                    onClick={() => props.onUpdate(i, { accent_color: undefined, accent_color_locked: undefined })}
                     className="text-[9px] px-1 rounded"
                     style={{ background: 'var(--bg-card)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}
                     title="Clear accent"
@@ -811,10 +838,10 @@ function LevelTableState(props: LevelTableProps) {
                 </div>
               ) : (
                 <button
-                  onClick={() => props.onUpdate(i, { accent_color: '#7c3aed' })}
+                  onClick={() => props.onUpdate(i, { accent_color: '#7c3aed', accent_color_locked: true })}
                   className="text-[10px] px-1.5 py-0.5 rounded"
                   style={{ background: 'var(--bg-card)', color: 'var(--text-muted)', border: '1px dashed var(--border)' }}
-                  title="Add an accent color hint for this slice"
+                  title="Add an accent color for this slice (defaults to locked; the model will use this exact color)"
                 >
                   + color
                 </button>

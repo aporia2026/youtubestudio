@@ -172,6 +172,25 @@ export async function POST(req: NextRequest) {
       notesForImageModel: body.notesForImageModel,
     });
 
+    // Per-slice accent color lock distribution — surfaces in logs the
+    // single biggest driver of "the colors came out darker than I picked"
+    // complaints. `locked` slices get authoritative prompt language;
+    // `hint` slices get the soft suggestion; `none` skip color guidance
+    // entirely.
+    const colorLockStats = levels.reduce(
+      (acc, l) => {
+        if (!l.accent_color) acc.none += 1;
+        else if (l.accent_color_locked) acc.locked += 1;
+        else acc.hint += 1;
+        return acc;
+      },
+      { locked: 0, hint: 0, none: 0 },
+    );
+    logger.info('[thumb-format-n-levels image] color lock distribution', {
+      total: levels.length,
+      ...colorLockStats,
+    });
+
     logger.info('[thumb-format-n-levels image] start', {
       imageModelId,
       provider: config.provider,

@@ -608,6 +608,7 @@ function ThumbnailsPage() {
           label: l.label,
           illustration_concept: l.illustration_concept,
           accent_color: l.accent_color,
+          accent_color_locked: l.accent_color_locked,
         })),
         showBottomTitle: nLevelsResult.showBottomTitle,
         showLevelLabels: nLevelsResult.showLevelLabels,
