@@ -86,19 +86,6 @@ export const DEFAULT_TAIL_BUFFER_MS = 400;
 export const MIN_SCENE_MS_BOUNDS = { min: 500, max: 10_000 } as const;
 export const TAIL_BUFFER_MS_BOUNDS = { min: 0, max: 3_000 } as const;
 
-// ─── Thumbnail-region zoom padding ────────────────────────────────────────────
-//
-// Per `_plans/2026-05-20-render-config-drop-zoom-padding-region-import.md`:
-// the historical `ThumbnailZoomScene` framing scaled the region exactly
-// to canvas, producing an over-tight crop with no breathing room. The
-// new default pulls the camera back ~15% on each side so a marked
-// region sits inside the frame with visible surrounding content.
-//
-// Range is clamped server- AND client-side so a malformed payload can
-// never produce an infinite scale or NaN inside Remotion.
-export const DEFAULT_REGION_ZOOM_PADDING_PCT = 15;
-export const REGION_ZOOM_PADDING_BOUNDS = { min: 0, max: 50 } as const;
-
 /** Clamp `n` to `[bounds.min, bounds.max]`. Used by the timing knobs. */
 export function clampSceneTiming(n: number, bounds: { min: number; max: number }): number {
   if (!Number.isFinite(n)) return bounds.min;
@@ -296,15 +283,6 @@ export interface ProductionRow {
   image_saliency?: ImageSaliencyMap;
   /** Per-row transition override; falls back to ProductionDoc.thumbnail.defaultTransition. */
   thumbnail_transition?: ThumbnailTransitionConfig;
-  /** Camera padding for the thumbnail-zoom framing on this row, as a
-   *  percent of the region's longest edge added on each side. Higher
-   *  pulls the camera back so the region sits inside the frame with
-   *  breathing room. Range `[0, 50]`. Falls back to
-   *  `ProductionDoc.region_zoom_padding_default_pct`, then to the
-   *  built-in default (15). Only meaningful when `thumbnail_zoom_to`
-   *  is set. See
-   *  `_plans/2026-05-20-render-config-drop-zoom-padding-region-import.md`. */
-  region_zoom_padding_pct?: number;
   /** Per-row override of the scene-to-scene cross fade. `true` forces a
    *  fade even when the doc default is off; `false` forces a hard cut
    *  even when the doc default is on. `undefined` inherits the doc
@@ -377,13 +355,6 @@ export interface ProductionDoc {
   /** Doc-level fallback for the static scene zoom percentage. Per-row
    *  `scene_zoom` overrides this. Undefined ⇒ 100 (no zoom). */
   scene_zoom_default?: number;
-  /** Doc-level fallback for the thumbnail-region camera padding (percent
-   *  of the region's longest edge added on each side). Per-row
-   *  `region_zoom_padding_pct` overrides this. Range `[0, 50]`.
-   *  Undefined ⇒ built-in default (15) so existing renders pull the
-   *  camera back slightly from the over-tight exact-region framing.
-   *  See `_plans/2026-05-20-render-config-drop-zoom-padding-region-import.md`. */
-  region_zoom_padding_default_pct?: number;
   /** Per-doc override of the workspace's minimum scene duration (ms).
    *  When omitted, the workspace default (or `DEFAULT_MIN_SCENE_MS`)
    *  applies. See `_plans/2026-05-17-scene-min-duration-and-tail-buffer.md`. */
@@ -720,21 +691,6 @@ export function productionDocToVideoConfig(
           ? doc.scene_zoom_default
           : undefined,
       thumbnailTransition: row.thumbnail_transition,
-      // Resolve thumbnail-region camera padding for THIS row. Order:
-      //   row.region_zoom_padding_pct → doc.region_zoom_padding_default_pct
-      //   → DEFAULT_REGION_ZOOM_PADDING_PCT (15).
-      // Clamped to [0, 50] so a stale/legacy value can't break the math
-      // inside ThumbnailZoomScene. Only meaningful when thumbnail_zoom_to
-      // is set; harmless otherwise (the scene router ignores it).
-      regionZoomPaddingPct: clampSceneTiming(
-        typeof row.region_zoom_padding_pct === 'number' && Number.isFinite(row.region_zoom_padding_pct)
-          ? row.region_zoom_padding_pct
-          : typeof doc.region_zoom_padding_default_pct === 'number' &&
-              Number.isFinite(doc.region_zoom_padding_default_pct)
-            ? doc.region_zoom_padding_default_pct
-            : DEFAULT_REGION_ZOOM_PADDING_PCT,
-        REGION_ZOOM_PADDING_BOUNDS,
-      ),
       // Editor's `transition_in: 'cross-fade'` and the doc's existing
       // `scene_fade: true` mean the same thing at render time — fade
       // INTO this shot. The editor uses `transition_in` because it's

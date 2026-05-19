@@ -32,7 +32,6 @@ import {
   uploadToBucket,
 } from '@/lib/r2';
 import { getLambdaOutputDownloadUrl } from '@/lib/lambda-s3';
-import { buildRenderConfigSummary, type RenderConfigSummary } from '@/lib/render-config-summary';
 
 // ─── Backend selection ────────────────────────────────────────────────────────
 
@@ -103,12 +102,6 @@ async function ensureTable() {
   // — see `buildRenderDownloadFilename` in `r2.ts`. Nullable: legacy rows
   // and scratch-mode renders without a title fall back to the renderId.
   await sql`ALTER TABLE render_jobs ADD COLUMN IF NOT EXISTS title           TEXT`;
-  // Phase A of render-config-drop diagnostics (plan
-  // `_plans/2026-05-20-render-config-drop-zoom-padding-region-import.md`).
-  // Source of truth is migration 0080; this ALTER is the dev-mode safety
-  // net for projects whose migrations haven't run yet. JSONB so we can
-  // query individual fields with `->`/`->>` if the bug recurs.
-  await sql`ALTER TABLE render_jobs ADD COLUMN IF NOT EXISTS config_summary JSONB`;
 }
 
 // ─── Absolutize same-origin URLs before sending to a remote renderer ─────────
@@ -297,28 +290,6 @@ export async function POST(req: NextRequest) {
   // shows up in the same trace as the render that proceeded without it.
   logger.info('[render] alignment outcome', { renderId, ...alignmentTelemetry });
 
-  // Phase A diagnostics: capture the EXACT shape Remotion will see —
-  // post-absolutize, post-realign. Persisted on the row + echoed back
-  // to the client via GET so the user can spot dropped fields (missing
-  // voiceover, empty videoUrl, suppressLowerThirds=false despite the
-  // toggle, etc.) without us re-running the render.
-  const configSummary = buildRenderConfigSummary(effectiveConfig);
-  logger.info('[render config persisted]', {
-    renderId,
-    shotCount: configSummary.shotCount,
-    voiceoverPresent: configSummary.voiceover.present,
-    animateScenesResolved: configSummary.animateScenesResolved,
-    suppressLowerThirds: configSummary.flags.suppressLowerThirds,
-  });
-  // Failure here is non-fatal — diagnostics are nice-to-have, the render
-  // itself should never be blocked by a UPDATE that has a column issue.
-  await updateJob(renderId, { config_summary: configSummary }).catch((err) => {
-    logger.warn('[render] config_summary persist failed', {
-      renderId,
-      detail: err instanceof Error ? err.message : String(err),
-    });
-  });
-
   if (backend === 'lambda') {
     try {
       await startLambdaRender(renderId, effectiveConfig);
@@ -358,7 +329,6 @@ export async function GET(req: NextRequest) {
     lambda_render_id: string | null; lambda_bucket: string | null;
     estimated_cost: number | null;
     title: string | null;
-    config_summary: RenderConfigSummary | null;
   };
 
   try {
@@ -453,11 +423,6 @@ export async function GET(req: NextRequest) {
       startedAt: job.started_at,
       elapsedMs: Date.now() - job.started_at,
       estimatedCost: job.estimated_cost,
-      // Phase A diagnostics: redacted summary of the VideoConfig that
-      // hit Remotion. Lets the user (and us) diff intended vs rendered
-      // without re-running the job. Null on legacy rows / Lambda
-      // kickoff paths that pre-date the migration.
-      configSummary: job.config_summary,
     });
   } catch (err) {
     logger.error('[render] DB read failed', { detail: err instanceof Error ? err.message : String(err) });
@@ -470,7 +435,6 @@ export async function GET(req: NextRequest) {
 async function updateJob(renderId: string, fields: {
   status?: string; progress?: number; output_url?: string; error?: string; finished_at?: number;
   lambda_render_id?: string; lambda_bucket?: string; estimated_cost?: number;
-  config_summary?: RenderConfigSummary;
 }) {
   // Use fully parameterized queries — no string interpolation of user-controlled values.
   const sets: string[] = [];
@@ -484,7 +448,6 @@ async function updateJob(renderId: string, fields: {
   if (fields.lambda_render_id !== undefined) { sets.push(`lambda_render_id = $${p++}`); values.push(fields.lambda_render_id); }
   if (fields.lambda_bucket    !== undefined) { sets.push(`lambda_bucket = $${p++}`);    values.push(fields.lambda_bucket); }
   if (fields.estimated_cost   !== undefined) { sets.push(`estimated_cost = $${p++}`);   values.push(fields.estimated_cost); }
-  if (fields.config_summary   !== undefined) { sets.push(`config_summary = $${p++}::jsonb`); values.push(JSON.stringify(fields.config_summary)); }
   if (sets.length === 0) return;
   values.push(renderId);
   await sql.query(`UPDATE render_jobs SET ${sets.join(', ')} WHERE id = $${p}`, values);

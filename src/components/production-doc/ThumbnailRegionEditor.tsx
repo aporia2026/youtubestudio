@@ -32,7 +32,6 @@ import {
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
 import type { ThumbnailRegion, VideoThumbnail } from '@/remotion/types';
-import { RegionJsonImportDialog } from './RegionJsonImportDialog';
 
 // ─── Tunables ─────────────────────────────────────────────────────────────────
 
@@ -246,10 +245,6 @@ export function ThumbnailRegionEditor({ thumbnail, onSave, onClose }: ThumbnailR
   // and pushes the previous state onto the undo stack so the user can
   // back out if the result isn't right.
   const [autoDetecting, setAutoDetecting] = useState(false);
-  // Phase D of plan 2026-05-20 — paste-JSON entry point. The dialog
-  // owns parsing + validation; on Import we push current regions onto
-  // the undo stack (so Ctrl-Z reverts) and overwrite.
-  const [jsonImportOpen, setJsonImportOpen] = useState(false);
   // Which vision model to use for auto-detect. Persisted in localStorage
   // across editor opens. Default biases toward Kie-routed Gemini Flash
   // because that's the path most users have configured (Kie token is
@@ -768,21 +763,6 @@ export function ThumbnailRegionEditor({ thumbnail, onSave, onClose }: ThumbnailR
               )}
             </button>
             <button
-              onClick={() => setJsonImportOpen(true)}
-              title="Paste regions JSON copied from the Thumbnails page (Topic Card Grid / N Levels)."
-              style={{
-                fontSize: 12, fontWeight: 500, padding: '8px 12px', borderRadius: 6,
-                background: 'rgba(139,92,246,0.14)',
-                color: '#a78bfa',
-                border: '1px solid rgba(139,92,246,0.40)',
-                cursor: 'pointer',
-                display: 'inline-flex', alignItems: 'center', gap: 6,
-                whiteSpace: 'nowrap',
-              }}
-            >
-              📋 Paste JSON
-            </button>
-            <button
               onClick={handleCancel}
               aria-label="Close"
               style={{
@@ -963,22 +943,6 @@ export function ThumbnailRegionEditor({ thumbnail, onSave, onClose }: ThumbnailR
           </div>
         </div>
       </div>
-      {jsonImportOpen && (
-        <RegionJsonImportDialog
-          imageWidth={thumbnail.width}
-          imageHeight={thumbnail.height}
-          existingRegionCount={regions.length}
-          onImport={(imported) => {
-            pushUndo();
-            setRegions(imported);
-            setSelectedId(null);
-            setLabelEditingId(null);
-            setFreshlyDrawnId(null);
-            setDeletingIds(new Set());
-          }}
-          onClose={() => setJsonImportOpen(false)}
-        />
-      )}
     </div>
   );
 

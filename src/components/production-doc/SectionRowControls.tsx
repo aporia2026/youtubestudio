@@ -73,16 +73,6 @@ interface SectionRowControlsProps {
   /** Doc-level fallback for `sceneZoom`. Surfaces in the row UI so the
    *  displayed value reflects what the renderer will actually use. */
   sceneZoomDefault: number | undefined;
-  /** Per-row thumbnail-region camera padding (percent of the region's
-   *  longest edge added on each side). Higher pulls the camera back
-   *  from the marked region. Range `[0, 50]`. Undefined inherits the
-   *  doc default, which itself falls back to the built-in default (15).
-   *  Only visible when `zoomTo` is set (a region target picked). See
-   *  `_plans/2026-05-20-render-config-drop-zoom-padding-region-import.md`. */
-  regionZoomPaddingPct: number | undefined;
-  /** Doc-level fallback for `regionZoomPaddingPct`. Surfaced so the
-   *  slider's displayed default mirrors the effective render value. */
-  regionZoomPaddingDefaultPct: number | undefined;
   transition: ThumbnailTransitionConfig | undefined;
   defaultTransition: ThumbnailTransitionConfig | undefined;
   /** Per-row scene-fade override. `undefined` inherits the doc default.
@@ -105,12 +95,6 @@ interface SectionRowControlsProps {
   onApplySceneZoomToAll: (zoom: number) => void;
   /** Clear every row's `scene_zoom` so they all inherit the doc default. */
   onClearSceneZoomOverrides: () => void;
-  /** Update this row's region-zoom padding. `undefined` clears the
-   *  per-row value so the doc default takes over. */
-  onChangeRegionZoomPadding: (next: number | undefined) => void;
-  /** Promote this row's effective region-zoom padding to the doc-level
-   *  default. Mirrors `onApplySceneZoomToAll` for the scene-zoom field. */
-  onApplyRegionZoomPaddingToAll: (paddingPct: number) => void;
   /** Apply `title` to every row from `startRow` to `endRow` inclusive
    *  (0-indexed). The parent walks the doc and sets each row's
    *  `section_title` to the same value in one update. */
@@ -146,7 +130,6 @@ export function SectionRowControls({
   sectionTitleLayout, sectionTitleLayoutDefault,
   pillarboxColor, pillarboxColorDefault,
   sceneZoom, sceneZoomDefault,
-  regionZoomPaddingPct, regionZoomPaddingDefaultPct,
   transition, defaultTransition,
   sceneFade, sceneFadeDefault,
   onChangeZoomTo, onChangeSectionTitle, onChangeSectionTitleLayout,
@@ -155,7 +138,6 @@ export function SectionRowControls({
   onApplyPillarboxColorToAll, onClearPillarboxOverrides,
   onApplyStripeLayoutToAll, onClearStripeLayoutOverrides,
   onChangeSceneZoom, onApplySceneZoomToAll, onClearSceneZoomOverrides,
-  onChangeRegionZoomPadding, onApplyRegionZoomPaddingToAll,
   visualType, titleCardSourceText, onApplyTitleCardAsSectionTitle,
 }: SectionRowControlsProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -279,95 +261,6 @@ export function SectionRowControls({
           ))}
         </select>
       </div>
-
-      {/* Region-zoom padding slider — Phase C of plan 2026-05-20.
-       *
-       *  Only visible when this row actually zooms to a region. Higher
-       *  padding pulls the camera back so the marked region sits inside
-       *  the frame with breathing room (instead of filling it
-       *  edge-to-edge, which the user reported as "too focused").
-       *
-       *  Display the EFFECTIVE value (per-row override → doc default →
-       *  built-in 15) so the slider matches what the renderer will use.
-       *  Pin the override to `undefined` when the slider lands back on
-       *  the doc default — keeps the doc clean of redundant per-row
-       *  values. */}
-      {zoomTo && (() => {
-        const effectivePadding =
-          typeof regionZoomPaddingPct === 'number'
-            ? regionZoomPaddingPct
-            : typeof regionZoomPaddingDefaultPct === 'number'
-              ? regionZoomPaddingDefaultPct
-              : 15;
-        const docFallback =
-          typeof regionZoomPaddingDefaultPct === 'number' ? regionZoomPaddingDefaultPct : 15;
-        const overrideActive = typeof regionZoomPaddingPct === 'number';
-        return (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <label
-              style={{
-                fontSize: 10,
-                color: 'var(--text-muted)',
-                textTransform: 'uppercase',
-                letterSpacing: 0.5,
-                whiteSpace: 'nowrap',
-              }}
-              title="How much breathing room around the region. 0 = exact region, 50 = far pull-back."
-            >
-              Padding
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={50}
-              step={1}
-              value={effectivePadding}
-              onChange={(e) => {
-                const next = Number(e.target.value);
-                // Clear the per-row override when the slider lands
-                // exactly on the doc default — keeps the row JSON
-                // free of redundant per-row values that would shadow
-                // future doc-default changes.
-                if (next === docFallback) {
-                  onChangeRegionZoomPadding(undefined);
-                } else {
-                  onChangeRegionZoomPadding(next);
-                }
-              }}
-              style={{ flex: 1, accentColor: '#8b5cf6' }}
-              aria-label={`Region zoom padding (${effectivePadding}%)`}
-            />
-            <span
-              style={{
-                fontSize: 11,
-                color: overrideActive ? '#a78bfa' : 'var(--text-muted)',
-                fontVariantNumeric: 'tabular-nums',
-                minWidth: 32,
-                textAlign: 'right',
-              }}
-            >
-              {effectivePadding}%
-            </span>
-            <button
-              type="button"
-              onClick={() => onApplyRegionZoomPaddingToAll(effectivePadding)}
-              title="Use this padding as the doc-level default for all rows"
-              style={{
-                fontSize: 10,
-                padding: '3px 6px',
-                borderRadius: 4,
-                background: 'transparent',
-                color: 'var(--text-muted)',
-                border: '1px solid rgba(255,255,255,0.10)',
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              Apply to all
-            </button>
-          </div>
-        );
-      })()}
 
       {/* Title Card → section title propagation. Only renders on rows whose
           `visual_type` is 'Title Card' and that have a non-empty source

@@ -127,16 +127,6 @@ export interface VideoShot {
   thumbnailZoomTo?: string;
   /** Per-shot transition override. Falls back to VideoConfig.thumbnail.defaultTransition. */
   thumbnailTransition?: ThumbnailTransitionConfig;
-  /** Resolved camera padding (percent of the region's longest edge added
-   *  on each side) for the thumbnail-zoom framing. The renderer inflates
-   *  the region by this fraction before computing the cover scale, so a
-   *  higher value pulls the camera back. Resolved upstream from the row
-   *  override → doc default → built-in default (15) inside
-   *  `productionDocToVideoConfig`. Range `[0, 50]`. Undefined ⇒ 0 (no
-   *  padding, exact-region framing — backwards-compat with pre-padding
-   *  renders). See
-   *  `_plans/2026-05-20-render-config-drop-zoom-padding-region-import.md`. */
-  regionZoomPaddingPct?: number;
   /** Per-shot override of the scene-to-scene cross fade. `true` forces a
    *  fade even when the doc default is off; `false` forces a hard cut
    *  even when the doc default is on. `undefined` falls through to

@@ -57,12 +57,6 @@ interface ThumbnailZoomSceneProps {
   /** When false, suppress the opening 4-frame fade-in. Mirrors the
    *  scene-fade toggle other scenes respect. Defaults `true`. */
   fadeEnabled?: boolean;
-  /** Camera padding around the region for the target framing, as a
-   *  percent of the region's longest edge added on each side. Higher
-   *  pulls the camera back further. Range `[0, 50]`. Resolved upstream
-   *  in `productionDocToVideoConfig`; the renderer treats undefined as
-   *  0 for backwards compatibility with pre-padding configs. */
-  paddingPct?: number;
 }
 
 interface Framing {
@@ -99,26 +93,25 @@ function containFraming(tW: number, tH: number, cW: number, cH: number): Framing
 }
 
 /**
- * Compute the framing that shows the whole marked region with optional
- * breathing-room padding.
+ * Compute the framing that shows the whole marked region without over-zoom.
  *
- * Switched from COVER to CONTAIN scaling earlier (no more "middle-band
- * crop" on tall+narrow regions inside wide canvases). The 2026-05-20
- * iteration adds `paddingPct` — a creator-controllable amount of
- * breathing room around the region. The math inflates the region by
- * `paddingPx = max(rw, rh) * paddingPct/100` on each side before
- * computing scale, then picks the SMALLEST scale that keeps the
- * inflated rectangle inside the canvas. Focus stays at the region
- * center (we never shift away from what the user marked), clamped to
- * image bounds so the canvas keeps filling with image pixels.
+ * The previous implementation used COVER scaling (`Math.max(cW/rw, cH/rh)`),
+ * which fills the canvas with the region but CROPS the axis that doesn't
+ * match canvas aspect. For a tall+narrow region (tile of a grid thumbnail)
+ * inside a wide+short canvas, this meant zooming in until horizontal
+ * filled and silently chopping ~50% off top and bottom of the marked tile.
+ * Users reported "way too much zoom" — what they marked was the WHOLE
+ * tile, what they saw was the middle band only.
  *
- *   paddingPct = 0  ⇒  byte-identical to the pre-padding contain math.
- *   paddingPct = 50 ⇒  region inflated by 50% of its longest edge on
- *                      each side — camera pulls back substantially.
+ * Switch to CONTAIN (`min`): pick the SMALLEST scale that keeps the whole
+ * region inside the canvas. Then clamp focusX/focusY so the camera stays
+ * inside the image bounds — that way the canvas stays filled with image
+ * pixels (we see neighbouring content where the region doesn't reach the
+ * canvas edge) instead of exposing the background colour as letterbox.
  *
- * Tiny images smaller than the canvas at contain-scale still show
- * background letterbox; we don't up-rez since that would reintroduce
- * the over-zoom this fixed.
+ * Tiny images that are smaller than the canvas at contain-scale fall
+ * through with background letterbox visible; we don't try to up-rez here
+ * because that would silently re-introduce the over-zoom this fixed.
  */
 function regionFraming(
   r: ThumbnailRegion,
@@ -126,19 +119,10 @@ function regionFraming(
   cH: number,
   imgW: number,
   imgH: number,
-  paddingPct: number,
 ): Framing {
   const rw = Math.max(r.w, MIN_DIM);
   const rh = Math.max(r.h, MIN_DIM);
-  // Inflate the region by `paddingPct` of its longest edge so the
-  // computed scale leaves breathing room around what the creator
-  // marked. Using the longest edge (rather than per-axis) keeps the
-  // padding visually balanced — a tall narrow region gets the same
-  // absolute padding on its short axis as its long axis.
-  const padPx = Math.max(0, paddingPct) * Math.max(rw, rh) / 100;
-  const rwPadded = rw + 2 * padPx;
-  const rhPadded = rh + 2 * padPx;
-  const scale = Math.min(cW / rwPadded, cH / rhPadded);
+  const scale = Math.min(cW / rw, cH / rh);
   // Half-canvas in image-pixel units after scaling. Focus clamped to this
   // inset on each side keeps the visible canvas filled with image pixels.
   const halfW = cW / (2 * scale);
@@ -186,7 +170,6 @@ function easingToSpringConfig(easing: ThumbnailTransitionConfig['easing']) {
 
 export const ThumbnailZoomScene: React.FC<ThumbnailZoomSceneProps> = ({
   durationInFrames, brand, thumbnail, region, previousRegion, transition, fadeEnabled = true,
-  paddingPct = 0,
 }) => {
   const frame = useCurrentFrame();
   const { fps, width: cW, height: cH } = useVideoConfig();
@@ -199,15 +182,10 @@ export const ThumbnailZoomScene: React.FC<ThumbnailZoomSceneProps> = ({
   const holdFrames = Math.max(0, msToFrame(holdAtFullMs, fps));
   const zoomFrames = Math.max(1, msToFrame(zoomDurationMs, fps));
 
-  // Clamp paddingPct defensively at the renderer too — even though
-  // upstream resolution already clamps, a hand-edited config or a
-  // legacy row could carry an out-of-bounds value. Caps at 50.
-  const clampedPadding = Math.max(0, Math.min(50, paddingPct));
-
   const contain = containFraming(thumbnail.width, thumbnail.height, cW, cH);
-  const target = regionFraming(region, cW, cH, thumbnail.width, thumbnail.height, clampedPadding);
+  const target = regionFraming(region, cW, cH, thumbnail.width, thumbnail.height);
   const from = previousRegion
-    ? regionFraming(previousRegion, cW, cH, thumbnail.width, thumbnail.height, clampedPadding)
+    ? regionFraming(previousRegion, cW, cH, thumbnail.width, thumbnail.height)
     : null;
 
   // One-shot diagnostic dump per scene mount. We only emit on frame 0 so
@@ -221,10 +199,6 @@ export const ThumbnailZoomScene: React.FC<ThumbnailZoomSceneProps> = ({
       region: { id: region.id, label: region.label, x: region.x, y: region.y, w: region.w, h: region.h },
       previousRegionId: previousRegion?.id ?? null,
       transition: { kind: transition.kind, holdAtFullMs, zoomDurationMs, easing },
-      // Phase C of plan 2026-05-20 — what padding actually got applied,
-      // post-clamp. If the rendered scene looks too tight, this is the
-      // first number to check.
-      paddingPct: clampedPadding,
       containFraming: contain,
       targetFraming: target,
       targetTransform: framingToPixelTransform(target, cW, cH),
