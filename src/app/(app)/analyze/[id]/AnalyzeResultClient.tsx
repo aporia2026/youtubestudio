@@ -32,6 +32,23 @@ import { StrategicReportPanel } from './StrategicReportPanel';
 
 export type { AnalysisStage };
 
+/**
+ * Shared style for the analyzer→consumer bridge buttons in the
+ * "Use this analysis as input" row. Kept as a const so the buttons
+ * stay visually consistent as more bridges land in Phase 3.
+ */
+const bridgeButtonStyle: React.CSSProperties = {
+  padding: '5px 12px',
+  background: 'rgba(124, 58, 237, 0.12)',
+  color: '#c4b5fd',
+  border: '1px solid rgba(124, 58, 237, 0.35)',
+  borderRadius: 6,
+  fontSize: 12,
+  fontWeight: 500,
+  textDecoration: 'none',
+  whiteSpace: 'nowrap',
+};
+
 export interface AnalysisSnapshot {
   id: string;
   videoId: string;
@@ -318,6 +335,45 @@ export function AnalyzeResultClient({ initial }: Props): React.ReactElement {
   return (
     <main style={{ padding: '32px 24px', maxWidth: 1080, margin: '0 auto' }}>
       {header}
+
+      <nav
+        aria-label="Use this analysis as input"
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 8,
+          marginBottom: 20,
+          padding: '10px 14px',
+          background: 'rgba(124, 58, 237, 0.05)',
+          border: '1px solid rgba(124, 58, 237, 0.20)',
+          borderRadius: 8,
+          alignItems: 'center',
+        }}
+      >
+        <span style={{ fontSize: 12, color: 'var(--text-tertiary)', marginRight: 4 }}>
+          Use this analysis as input:
+        </span>
+        <Link
+          href={`/ideas?from=analyzer&analysisId=${encodeURIComponent(snap.id)}`}
+          prefetch={false}
+          style={bridgeButtonStyle}
+          title="Open the idea generator with this analysis's strategic report + chapter outline as referenceContext"
+        >
+          Generate ideas
+        </Link>
+        <Link
+          href={`/seo?from=analyzer&analysisId=${encodeURIComponent(snap.id)}`}
+          prefetch={false}
+          style={bridgeButtonStyle}
+          title="Open the SEO optimizer with this analysis's hook + transcript as additionalContext"
+        >
+          SEO-optimize a title
+        </Link>
+        <span style={{ flex: 1 }} />
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          More bridges (production doc, script, thumbnails) ship from each style pack&apos;s Save-as-preset flow.
+        </span>
+      </nav>
 
       {result.warnings && result.warnings.length > 0 && (
         <div

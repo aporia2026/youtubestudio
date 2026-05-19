@@ -277,6 +277,64 @@ function IdeasPage() {
     return () => { cancelled = true; };
   }, [scheduleItemId, schedulePrefilled]);
 
+  // Analyzer flywheel prefill (Phase 2 of _plans/2026-05-19-analyzer-
+  // as-input-source.md). Runs on mount when `?from=analyzer&analysisId=`
+  // is present. Fetches the analyzer row, synthesises a reference
+  // context block from its strategic report + chapters + style packs,
+  // and stores it on `analyzerContext` to be prepended into refContext
+  // at generate time. A banner above the niche picker surfaces the
+  // active analyzer source so the operator knows ideas will be biased
+  // by the analyzed video's identity.
+  const [analyzerContext, setAnalyzerContext] = useState<{ analysisId: string; source: string; block: string } | null>(null);
+  const [analyzerPrefillApplied, setAnalyzerPrefillApplied] = useState(false);
+  useEffect(() => {
+    if (analyzerPrefillApplied) return;
+    if (search.get('from') !== 'analyzer') return;
+    const analysisId = search.get('analysisId');
+    if (!analysisId) return;
+    setAnalyzerPrefillApplied(true);
+    (async () => {
+      try {
+        const res = await fetch(`/api/analyze/youtube-video/${analysisId}`);
+        if (!res.ok) {
+          toast.error('Could not load analyzer context', {
+            description: `Server returned ${res.status}. The analyzer link may have expired.`,
+          });
+          return;
+        }
+        const data = (await res.json()) as {
+          id: string;
+          videoTitle: string | null;
+          channelTitle: string | null;
+          result: {
+            meta?: { title?: string; channel?: string; duration_seconds?: number };
+            transcript?: { chapters?: Array<{ title: string }> };
+            style_packs?: Array<{ label?: string; overall_look?: string }>;
+            strategic_report?: {
+              hook?: { what_works?: string };
+              structure?: string;
+              standout_techniques?: string[];
+            };
+          } | null;
+        };
+        if (!data.result) {
+          toast.error('Analyzer row had no usable result');
+          return;
+        }
+        const block = buildAnalyzerReferenceBlock(data);
+        const sourceLabel = data.videoTitle || data.result?.meta?.title || data.id;
+        setAnalyzerContext({ analysisId: data.id, source: sourceLabel, block });
+        toast.message(`Loaded analyzer reference: "${sourceLabel}"`, {
+          description: 'Ideas will draw from this video\'s hook, structure, and visual identity.',
+        });
+      } catch (err) {
+        toast.error('Failed to load analyzer context', {
+          description: err instanceof Error ? err.message : 'network error',
+        });
+      }
+    })();
+  }, [search, analyzerPrefillApplied]);
+
   // Niche-finder flywheel prefill (Phase 13.2.F). Runs on mount when
   // ?from=niche-finder is present. Reads the `niche` query param +
   // sessionStorage entry written by GenerateIdeasButton, sets the
@@ -433,6 +491,16 @@ function IdeasPage() {
         refContext = analyses.filter(Boolean).map((a, idx) =>
           `### REFERENCE VIDEO ${idx + 1}: "${a!.title}" by ${a!.channelTitle} (${a!.viewCount.toLocaleString()} views)\n${a!.styleAnalysis}`
         ).join('\n\n---\n\n');
+      }
+
+      // Prepend the deep-analyzer reference block if this generation
+      // was deep-linked from /analyze/[id] via ?from=analyzer. The
+      // block is built once at prefill time (the useEffect above) so
+      // we don't re-fetch on every generate.
+      if (analyzerContext) {
+        refContext = refContext
+          ? `${analyzerContext.block}\n\n---\n\n${refContext}`
+          : analyzerContext.block;
       }
 
       // STEP 2: Scrape Reddit (if enabled)
@@ -720,6 +788,43 @@ function IdeasPage() {
           <h2 className="text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Generator Settings</h2>
 
           <ModelSelector value={modelId} onChange={setModelId} />
+
+          {analyzerContext && (
+            <div
+              role="status"
+              style={{
+                padding: '8px 10px',
+                background: 'rgba(124, 58, 237, 0.10)',
+                border: '1px solid rgba(124, 58, 237, 0.30)',
+                borderRadius: 6,
+                fontSize: 12,
+                color: 'var(--text-secondary)',
+                display: 'flex',
+                gap: 8,
+                alignItems: 'center',
+              }}
+            >
+              <span style={{ flex: 1 }}>
+                Bias by analyzer: <strong style={{ color: 'var(--text-primary)' }}>{analyzerContext.source}</strong>
+              </span>
+              <button
+                type="button"
+                onClick={() => setAnalyzerContext(null)}
+                title="Clear analyzer bias and generate ideas from the niche alone"
+                style={{
+                  padding: '2px 8px',
+                  background: 'transparent',
+                  border: '1px solid var(--border-bright)',
+                  borderRadius: 4,
+                  color: 'var(--text-muted)',
+                  fontSize: 11,
+                  cursor: 'pointer',
+                }}
+              >
+                Clear
+              </button>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Niche</label>
@@ -1298,4 +1403,57 @@ function IdeasPage() {
       />
     </div>
   );
+}
+
+/**
+ * Synthesise a reference-context block from a deep-analyzer row so the
+ * idea generator can be biased by an analyzed video's identity. Picks
+ * the load-bearing fields: hook, structure, standout techniques,
+ * chapter outline, and the visual identity from style packs. Format
+ * mirrors the existing per-reference-video block so the LLM treats it
+ * the same way at prompt time.
+ */
+function buildAnalyzerReferenceBlock(data: {
+  videoTitle: string | null;
+  channelTitle: string | null;
+  result: {
+    meta?: { title?: string; channel?: string; duration_seconds?: number };
+    transcript?: { chapters?: Array<{ title: string }> };
+    style_packs?: Array<{ label?: string; overall_look?: string }>;
+    strategic_report?: {
+      hook?: { what_works?: string };
+      structure?: string;
+      standout_techniques?: string[];
+    };
+  } | null;
+}): string {
+  const r = data.result;
+  const title = data.videoTitle || r?.meta?.title || 'Analyzed video';
+  const channel = data.channelTitle || r?.meta?.channel || 'unknown channel';
+  const duration = r?.meta?.duration_seconds;
+  const hookWorks = r?.strategic_report?.hook?.what_works?.trim();
+  const structure = r?.strategic_report?.structure?.trim();
+  const techniques = (r?.strategic_report?.standout_techniques ?? []).filter((s): s is string => typeof s === 'string' && s.trim().length > 0);
+  const chapters = (r?.transcript?.chapters ?? []).map((c) => c.title).filter(Boolean);
+  const styleLines = (r?.style_packs ?? [])
+    .filter((p) => p.label && p.overall_look)
+    .map((p) => `- ${p.label}: ${p.overall_look}`);
+
+  const lines: string[] = [
+    `### ANALYZER REFERENCE: "${title}" by ${channel}${duration ? ` (${duration}s)` : ''}`,
+  ];
+  if (hookWorks) lines.push('', '**Hook (what works):**', hookWorks);
+  if (structure) lines.push('', '**Narrative structure:**', structure);
+  if (techniques.length) {
+    lines.push('', '**Standout techniques:**');
+    for (const t of techniques) lines.push(`- ${t}`);
+  }
+  if (chapters.length) {
+    lines.push('', '**Chapter outline:**');
+    for (const c of chapters) lines.push(`- ${c}`);
+  }
+  if (styleLines.length) {
+    lines.push('', '**Visual identity:**', ...styleLines);
+  }
+  return lines.join('\n');
 }
