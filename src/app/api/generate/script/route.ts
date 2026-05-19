@@ -4,6 +4,8 @@ import { scriptGenerationPrompt, scriptExpansionPrompt, SCRIPT_WPM } from '@/lib
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { getSession } from '@/lib/session';
 import { resolveBrandKitForRequest } from '@/lib/channel-brand-kit';
+import { resolveStyle } from '@/lib/production-doc-styles';
+import { logger } from '@/lib/logger';
 import { countWords } from '@/lib/utils';
 import { domainErrorResponse } from '@/lib/route-helpers';
 
@@ -46,7 +48,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext, previousScripts, seriesContext, constraints, channelId } = await req.json();
+    const { modelId, topic, niche, duration, tone, style, audience, context, referenceContext, previousScripts, seriesContext, constraints, channelId, stylePreset } = await req.json();
 
     if (!topic || !niche) {
       return NextResponse.json({ error: 'topic and niche are required' }, { status: 400 });
@@ -67,6 +69,24 @@ export async function POST(req: NextRequest) {
           typeof channelId === 'string' ? channelId : undefined,
         )
       : null;
+
+    // Resolve the optional style preset (built-in slug or saved
+    // production_doc_styles row UUID). Workspace-scoped via session.ws;
+    // an unknown / wrong-workspace id resolves to null and the script
+    // prompt falls back to its pre-preset shape — never block
+    // generation on a stale preset link.
+    const resolvedPreset =
+      session && typeof stylePreset === 'string' && stylePreset.trim()
+        ? await resolveStyle(stylePreset, session.ws)
+        : null;
+    if (resolvedPreset) {
+      logger.info('[analyzer-bridge script-gen]', {
+        workspace_id: session?.ws,
+        style_preset_id: resolvedPreset.id,
+        style_preset_label: resolvedPreset.label,
+        origin: resolvedPreset.origin,
+      });
+    }
 
     // Fold recent scripts into additionalContext so the LLM avoids repeating
     // its own prior hooks/angles for this user. Matches the same mechanism
@@ -105,6 +125,13 @@ export async function POST(req: NextRequest) {
       referenceContext,
       constraints,
       brandKit,
+      stylePreset: resolvedPreset
+        ? {
+            label: resolvedPreset.label,
+            description: resolvedPreset.description,
+            mixing_rules: resolvedPreset.mixing_rules,
+          }
+        : null,
     });
 
     // Stream response.

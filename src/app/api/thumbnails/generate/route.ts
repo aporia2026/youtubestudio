@@ -6,6 +6,8 @@ import { parseLlmJson } from '@/lib/parse-llm-json';
 import { makeSpendContext } from '@/lib/ai-spend';
 import { logger } from '@/lib/logger';
 import { assertSafePublicUrl } from '@/lib/url-safety';
+import { getSession } from '@/lib/session';
+import { resolveStyle } from '@/lib/production-doc-styles';
 
 export const maxDuration = 300;
 
@@ -72,10 +74,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Rate limited — try again in ${Math.ceil(resetIn / 1000)}s` }, { status: 429 });
     }
 
-    const { modelId, title, niche, script, description, referenceImageUrl } = await req.json();
+    const { modelId, title, niche, script, description, referenceImageUrl, stylePreset } = await req.json();
 
     if (!title || !niche) {
       return NextResponse.json({ error: 'title and niche are required' }, { status: 400 });
+    }
+
+    // Optional style preset (built-in slug or saved UUID). Workspace-
+    // scoped via session.ws; an unknown / wrong-workspace id resolves
+    // to null and the thumbnail prompt falls back to its pre-preset
+    // shape, preserving backwards compat.
+    const session = await getSession();
+    const resolvedPreset =
+      session && typeof stylePreset === 'string' && stylePreset.trim()
+        ? await resolveStyle(stylePreset, session.ws)
+        : null;
+    if (resolvedPreset) {
+      logger.info('[analyzer-bridge thumbnail-gen]', {
+        workspace_id: session?.ws,
+        style_preset_id: resolvedPreset.id,
+        style_preset_label: resolvedPreset.label,
+        origin: resolvedPreset.origin,
+        has_suffix: !!resolvedPreset.ai_image_suffix,
+      });
     }
 
     const model = getModelById(modelId);
@@ -176,6 +197,14 @@ export async function POST(req: NextRequest) {
       script,
       description,
       hasReferenceImage: !!referenceImage,
+      stylePreset: resolvedPreset
+        ? {
+            label: resolvedPreset.label,
+            description: resolvedPreset.description,
+            mixing_rules: resolvedPreset.mixing_rules,
+            ai_image_suffix: resolvedPreset.ai_image_suffix,
+          }
+        : null,
     });
 
     const raw = await generateText({

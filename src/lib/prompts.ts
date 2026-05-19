@@ -39,6 +39,77 @@ function sectionWordBudget(targetWords: number, skipHook: boolean): {
   return { hook, intro, main, outro, perMainSection };
 }
 
+/**
+ * Render the style-preset block injected into the user prompt below
+ * the reference-context block and above the structure. Returns an
+ * empty string when no preset is supplied — the calling template's
+ * surrounding whitespace already handles spacing so byte-identical
+ * output when this block is empty preserves the legacy prompt shape
+ * for backwards compat.
+ */
+function buildStylePresetPromptBlock(preset?: ScriptStylePreset | null): string {
+  if (!preset) return '';
+  const desc = preset.description?.trim();
+  const rules = preset.mixing_rules?.trim();
+  if (!desc && !rules) {
+    // Style with only a label is too thin to inject as a guidance
+    // block — silently omit. The label alone is already covered by
+    // the top-level `style` free-text param.
+    return '';
+  }
+  const lines: string[] = [
+    '',
+    `## STYLE PRESET — "${preset.label}":`,
+    'These are the producer-curated style directives. Treat them as voice/aesthetic guardrails for THIS script. They sit BELOW any USER DIRECTION block above but ABOVE the generic structure template.',
+    '',
+  ];
+  if (desc) lines.push(`**Style summary:** ${desc}`);
+  if (rules) lines.push(`**Mixing rules:**\n${rules}`);
+  return lines.join('\n');
+}
+
+/**
+ * Render the style-preset block for the thumbnail prompt. The
+ * thumbnail variant differs from the script variant: `ai_image_suffix`
+ * is the load-bearing field here (it ends up in every concept's
+ * image_generation_prompt). Mixing rules + description shape the
+ * composition; the suffix anchors the eventual image gen call.
+ */
+function buildThumbnailStylePresetBlock(preset?: ThumbnailStylePreset | null): string {
+  if (!preset) return '';
+  const desc = preset.description?.trim();
+  const rules = preset.mixing_rules?.trim();
+  const suffix = preset.ai_image_suffix?.trim();
+  if (!desc && !rules && !suffix) return '';
+  const lines: string[] = [
+    '',
+    `## STYLE PRESET — "${preset.label}":`,
+    'Lock every concept to this style. Treat it as the operator-curated visual identity for this video. Each concept varies in content but the style stays constant.',
+    '',
+  ];
+  if (desc) lines.push(`**Style summary:** ${desc}`);
+  if (rules) lines.push(`**Mixing rules:**\n${rules}`);
+  if (suffix) lines.push(`**Image suffix:** \`${suffix}\` — every concept\'s \`image_generation_prompt\` must end with this suffix verbatim (see the JSON spec below).`);
+  return lines.join('\n');
+}
+
+/**
+ * Shape the script prompt builder accepts for a resolved style preset
+ * (the `production_doc_styles` row, or a built-in slug, after passing
+ * through `resolveStyle`). Only the fields that meaningfully shape a
+ * SCRIPT are surfaced here — `ai_image_suffix` is image-specific and
+ * deliberately excluded; thumbnail generation uses that field via its
+ * own prompt builder.
+ */
+export interface ScriptStylePreset {
+  /** Human-readable name for the prompt to reference. */
+  label: string;
+  /** Optional one-liner describing what this style is. */
+  description?: string;
+  /** Free-form mixing rules from `production_doc_styles.mixing_rules`. */
+  mixing_rules?: string;
+}
+
 export function scriptGenerationPrompt({
   topic,
   niche,
@@ -50,6 +121,7 @@ export function scriptGenerationPrompt({
   referenceContext,
   constraints,
   brandKit,
+  stylePreset,
 }: {
   topic: string;
   niche: string;
@@ -64,6 +136,12 @@ export function scriptGenerationPrompt({
    *  generic style guidance further down in the prompt. Pass `null` (or
    *  omit) when no channel is active or its kit is empty. */
   brandKit?: ChannelBrandKit | null;
+  /** Optional resolved style preset (built-in slug or saved row,
+   *  pre-resolved via `resolveStyle`). When present, the style's
+   *  label/description/mixing_rules are injected into the user
+   *  prompt as a STYLE PRESET block. When absent, the prompt is
+   *  byte-identical to the pre-preset version — backwards compat. */
+  stylePreset?: ScriptStylePreset | null;
 }): { system: string; user: string } {
   const wordsPerMinute = SCRIPT_WPM;
   const targetWords = targetDurationMinutes * wordsPerMinute;
@@ -107,6 +185,7 @@ export function scriptGenerationPrompt({
   };
   const styleNote = styleInstructions[style || ''] || '';
   const brandKitBlock = buildBrandKitPromptBlock(brandKit);
+  const stylePresetBlock = buildStylePresetPromptBlock(stylePreset);
 
   return {
     system: `You are the world's top YouTube scriptwriter. You've written scripts for 50M+ subscriber channels. Every script you produce is IMMEDIATELY publish-ready — no QA pass needed.
@@ -193,7 +272,7 @@ ${referenceContext}
 - Match their pacing rhythm, transition style, and audience address patterns
 - Use similar emotional triggers and curiosity mechanisms adapted to this topic
 - If multiple references are provided, synthesize the best elements from each` : ''}
-${styleNote}
+${styleNote}${stylePresetBlock}
 
 ## Structure (follow precisely — word counts are SPOKEN words, excluding [VISUAL CUE: ...] / [PAUSE] / [SFX: ...]):
 
@@ -1039,12 +1118,27 @@ Return ONLY valid JSON.`,
 // FEATURE: AI Thumbnail Concept Generator
 // ============================================================
 
+/**
+ * Shape the thumbnail prompt builder accepts for a resolved style
+ * preset. Differs from `ScriptStylePreset` in that `ai_image_suffix`
+ * IS load-bearing here — it gets appended to every concept's
+ * `image_generation_prompt` so downstream Midjourney/DALL·E prompts
+ * inherit the style verbatim.
+ */
+export interface ThumbnailStylePreset {
+  label: string;
+  description?: string;
+  mixing_rules?: string;
+  ai_image_suffix?: string;
+}
+
 export function thumbnailConceptPrompt({
   title,
   niche,
   script,
   description,
   hasReferenceImage,
+  stylePreset,
 }: {
   title: string;
   niche: string;
@@ -1056,6 +1150,12 @@ export function thumbnailConceptPrompt({
    *  thumbnail in that exact visual language — see _plans/2026-05-18-
    *  thumbnail-reference-multimodal.md for the rationale. */
   hasReferenceImage?: boolean;
+  /** Optional resolved style preset (built-in slug or saved row,
+   *  pre-resolved via `resolveStyle`). When present the style's
+   *  ai_image_suffix is appended to every concept's image generation
+   *  prompt; mixing_rules drive composition guidance. When absent the
+   *  prompt is byte-identical to the pre-preset version. */
+  stylePreset?: ThumbnailStylePreset | null;
 }): { system: string; user: string } {
   const nicheStyles: Record<string, string> = {
     'Gaming': 'Bright neon colors, character close-ups, minimal text, action shots. High saturation.',
@@ -1068,6 +1168,9 @@ export function thumbnailConceptPrompt({
     'Cooking': 'Overhead food shots, vibrant colors, close-up textures, warm lighting.',
   };
   const nicheHint = nicheStyles[niche] || 'Adapt to this niche\'s visual conventions while standing out from competitors.';
+
+  const stylePresetBlock = buildThumbnailStylePresetBlock(stylePreset);
+  const suffixForPrompts = stylePreset?.ai_image_suffix?.trim() || '';
 
   return {
     system: `You are an elite YouTube thumbnail designer and click psychology expert. You've designed thumbnails for channels with 100M+ views. You understand the science of what makes people click — visual hierarchy, emotional triggers, color psychology, and the split-second decision viewers make when scrolling.
@@ -1136,6 +1239,7 @@ The score/composition/text-overlay/color-palette fields below should also reflec
 **Niche:** ${niche}
 ${description ? `**Video Description:** ${description.slice(0, 500)}` : ''}
 ${script ? `**Script Excerpt (for context):** ${script.slice(0, 2000)}` : ''}
+${stylePresetBlock}
 
 ## Return this EXACT JSON format:
 
@@ -1182,7 +1286,7 @@ ${script ? `**Script Excerpt (for context):** ${script.slice(0, 2000)}` : ''}
           "niche_fit": { "score": <0-100>, "reason": "<why>" }
         }
       },
-      "image_generation_prompt": "<detailed prompt for Midjourney/DALL-E to generate this thumbnail — include style, composition, lighting, camera angle, color grading${hasReferenceImage ? '. CRITICAL: open the prompt by describing the visual style of the attached reference image in concrete terms (layout, subject treatment, face/no-face, density, palette, typography placement) so the image model reproduces that style. Only after the style is locked in writing should the concept-specific content follow' : ''}>",
+      "image_generation_prompt": "<detailed prompt for Midjourney/DALL-E to generate this thumbnail — include style, composition, lighting, camera angle, color grading${hasReferenceImage ? '. CRITICAL: open the prompt by describing the visual style of the attached reference image in concrete terms (layout, subject treatment, face/no-face, density, palette, typography placement) so the image model reproduces that style. Only after the style is locked in writing should the concept-specific content follow' : ''}${suffixForPrompts ? `. Then APPEND verbatim at the end of the prompt: \`${suffixForPrompts}\` — this is the style preset's image suffix and must be the trailing portion of every concept's image_generation_prompt without modification` : ''}>",
       "why_it_works": "<1-2 sentences — the core psychological reason this thumbnail will get clicks>",
       "mobile_test": "<will this be legible and impactful at 168x94 pixels? what might get lost?>"
     }
