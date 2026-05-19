@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateText, getModelById } from '@/lib/ai';
 import { channelNamingPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
-import { parseLlmJson } from '@/lib/parse-llm-json';
+import { parseLlmJson, salvageTruncatedJsonArray } from '@/lib/parse-llm-json';
 import { fetchVideoMetadata, checkHandlesBatch, parseYouTubeUrl, fetchChannelData, fetchChannelVideosRich } from '@/lib/youtube';
 import { makeSpendContext } from '@/lib/ai-spend';
 import { apiRoute } from '@/lib/route-helpers';
@@ -157,6 +157,10 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     // 2) Build prompt — append the exclusion list to freeText so the LLM
     // sees what NOT to suggest. Server still post-filters as a safety net.
     const clampedCount = Math.min(40, Math.max(10, Number(count) || 20));
+    // Ask the model for a few extra candidates so post-filter dedupe doesn't
+    // leave us short. The token budget below is computed against this same
+    // number so the JSON doesn't get truncated mid-array.
+    const askCount = clampedCount + Math.min(10, Math.ceil(clampedCount * 0.2));
     const exclusionNote = (existingNames.length + existingHandles.length) > 0
       ? `\n\nALREADY-GENERATED NAMES — DO NOT REPEAT THESE OR ANY CLOSE VARIANTS:\n${
           [...new Set([...existingNames, ...existingHandles.map(h => `@${h.replace(/^@/, '')}`)])]
@@ -170,8 +174,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       freeText: (freeText || '') + exclusionNote,
       referenceVideosSummary: refSummary,
       hasImages: referenceImages.length > 0,
-      // Ask for a few extra candidates so post-filter dedupe doesn't leave us short.
-      count: clampedCount + Math.min(10, Math.ceil(clampedCount * 0.2)),
+      count: askCount,
     });
 
     // 3) Generate candidates. Only pass ONE image (most providers support one-at-a-time
@@ -182,13 +185,18 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       ? `${user}\n\n(Note: ${referenceImages.length} reference images provided; the first is attached for visual tone, the rest follow the same aesthetic.)`
       : user;
 
-    // Each candidate now carries ~17 fields including a 2-sentence reasoning.
-    // With a competitor seed (ref image + ref videos + rich freeText) the
-    // prompt asks the model to ground 2/3 of candidates in those cues, which
-    // pushes per-candidate output to ~300-400 tokens. The old 250/candidate
-    // budget truncated the JSON mid-array on those paths and the parser
-    // would fail with "Failed to parse candidates".
-    const tokenBudget = Math.min(16000, 2500 + clampedCount * 450);
+    // Each candidate carries ~17 fields including a ≥2-sentence reasoning,
+    // three arrays (semantic_territory, keyword_coverage, rejected_alternatives),
+    // and free-form fields (visual_mental_image, tagline_suggestion,
+    // domain_check_note, social_handle_consistency). Real per-candidate cost
+    // on the heaviest seeded path (competitor + ref image + ref videos) lands
+    // at ~500-700 tokens, not the 250-450 the older budgets assumed.
+    //
+    // Budget against the count we ACTUALLY ask the model for (askCount,
+    // computed above), at 650/candidate, then cap at 16k — GPT-4o's hard
+    // output ceiling. Anything below that truncates the JSON mid-array and
+    // the parser fails with "Failed to parse candidates".
+    const tokenBudget = Math.min(16000, 2500 + askCount * 650);
     const raw = await generateText({
       modelId,
       prompt: augmentedPrompt,
@@ -201,17 +209,36 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
 
     let parsed: unknown;
     try { parsed = parseLlmJson(raw); } catch {
-      logger.error('[channel-naming parse] failed to parse model JSON', {
-        modelId,
-        tokenBudget,
-        requestedCount: clampedCount,
-        rawLength: raw.length,
-        rawTail: raw.slice(-200),
-        hasImage: !!firstImage,
-        refVideosUsed: refVideoData.length,
-        seededFromCompetitor: !!sourceCompetitorId,
-      });
-      return NextResponse.json({ error: 'Failed to parse candidates', raw: raw.slice(0, 500) }, { status: 500 });
+      // Truncation salvage: if the model hit its output cap mid-JSON, we
+      // still have a prefix of complete candidate objects. Pull them out
+      // and continue with a reduced set rather than failing the whole
+      // request. The token-budget fix above should make this rare, but it's
+      // a real failure mode on the heaviest seeded path with chatty models.
+      const salvaged = salvageTruncatedJsonArray(raw);
+      if (salvaged && salvaged.length > 0) {
+        logger.warn('[channel-naming parse] salvaged truncated JSON', {
+          modelId,
+          tokenBudget,
+          requestedCount: clampedCount,
+          askedFromModel: askCount,
+          salvagedCount: salvaged.length,
+          rawLength: raw.length,
+        });
+        parsed = salvaged;
+      } else {
+        logger.error('[channel-naming parse] failed to parse model JSON', {
+          modelId,
+          tokenBudget,
+          requestedCount: clampedCount,
+          askedFromModel: askCount,
+          rawLength: raw.length,
+          rawTail: raw.slice(-200),
+          hasImage: !!firstImage,
+          refVideosUsed: refVideoData.length,
+          seededFromCompetitor: !!sourceCompetitorId,
+        });
+        return NextResponse.json({ error: 'Failed to parse candidates', raw: raw.slice(0, 500) }, { status: 500 });
+      }
     }
 
     // Accept both { candidates: [...] } and root-level array shapes
