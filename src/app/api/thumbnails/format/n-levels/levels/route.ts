@@ -29,6 +29,36 @@ const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
 // to read at any size).
 const MAX_LEVEL_COUNT = 20;
 
+/**
+ * Per-LLM-call timeout — see the matching constant in the topic-card-grid
+ * cards route for the rationale. 150s lets a validation retry fit inside
+ * the 300s function budget and surfaces a clean error before Vercel's
+ * hard kill returns a raw 504.
+ */
+const LLM_CALL_TIMEOUT_MS = 150_000;
+
+const FAST_VISION_MODEL_SUGGESTIONS = [
+  'Gemini 2.5 Flash (or kie-gemini-2.5-flash)',
+  'Gemini 3 Flash (kie-gemini-3-flash)',
+  'Claude Haiku 4.5',
+  'GPT-4o Mini',
+];
+
+function withTimeout<T>(promise: Promise<T>, ms: number, modelName: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(
+        `Model "${modelName}" took longer than ${Math.round(ms / 1000)}s on this prompt. ` +
+        `Try a faster vision model — recommended picks: ${FAST_VISION_MODEL_SUGGESTIONS.join(', ')}.`,
+      ));
+    }, ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
 const VISION_ALLOWED = new Set<string>([
   'claude-opus-4-6',
   'claude-sonnet-4-6',
@@ -209,17 +239,21 @@ export async function POST(req: NextRequest) {
     const { system, user } = nLevelsLlmPrompt(promptInput);
 
     const callLlm = async (userPrompt: string, temperature: number) =>
-      generateText({
-        modelId,
-        prompt: userPrompt,
-        systemPrompt: system,
-        maxTokens: 4000,
-        temperature,
-        image: { base64, mimeType },
-        spend: await makeSpendContext('thumbnail_format_n_levels_list', {
-          metadata: { niche, count, mode },
+      withTimeout(
+        generateText({
+          modelId,
+          prompt: userPrompt,
+          systemPrompt: system,
+          maxTokens: 4000,
+          temperature,
+          image: { base64, mimeType },
+          spend: await makeSpendContext('thumbnail_format_n_levels_list', {
+            metadata: { niche, count, mode },
+          }),
         }),
-      });
+        LLM_CALL_TIMEOUT_MS,
+        model.name,
+      );
 
     let raw = await callLlm(user, 0.7);
     let parsed: LevelListResult | null = null;

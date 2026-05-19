@@ -30,6 +30,45 @@ const BUNDLED_REFERENCE_PATH = path.join(
   'public/thumbnail-formats/topic-card-grid-default.png',
 );
 
+/**
+ * Per-LLM-call timeout. Vercel's maxDuration on this route is 300s; we cap
+ * a single LLM call at 150s so a validation retry can still fit inside the
+ * function budget and so the user sees a clean error message instead of a
+ * raw platform-level 504 when a slow model + long script + multimodal
+ * image stack stretches a single call past 5 minutes.
+ *
+ * Picked the ceiling above the typical Gemini Pro + 1.1 MB image + 12k
+ * char script response time (~30-90s) with comfortable headroom.
+ */
+const LLM_CALL_TIMEOUT_MS = 150_000;
+
+/** Models known to be substantially faster on this route — surfaced in the
+ *  timeout error message so the user can pick one quickly. Reasoning
+ *  models (Gemini Pro, Claude Opus) and any Kie-routed reasoning variant
+ *  are the slow ones; the Flash / Haiku / GPT-4o-mini tier is the fast
+ *  tier and stays under 30s on this prompt size. */
+const FAST_VISION_MODEL_SUGGESTIONS = [
+  'Gemini 2.5 Flash (or kie-gemini-2.5-flash)',
+  'Gemini 3 Flash (kie-gemini-3-flash)',
+  'Claude Haiku 4.5',
+  'GPT-4o Mini',
+];
+
+function withTimeout<T>(promise: Promise<T>, ms: number, modelName: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(
+        `Model "${modelName}" took longer than ${Math.round(ms / 1000)}s on this prompt. ` +
+        `Try a faster vision model — recommended picks: ${FAST_VISION_MODEL_SUGGESTIONS.join(', ')}.`,
+      ));
+    }, ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
 async function loadBundledReference(): Promise<{ base64: string; mimeType: string } | null> {
   try {
     const buf = await fs.readFile(BUNDLED_REFERENCE_PATH);
@@ -271,18 +310,26 @@ export async function POST(req: NextRequest) {
     // One generation + one retry on validation failure. The retry tightens
     // temperature and quotes the specific reason so the LLM can fix the
     // exact card that failed.
+    //
+    // Each call is wrapped in withTimeout so a slow model can't run out
+    // the Vercel function budget — the user sees an actionable error
+    // pointing at faster alternatives instead of a platform 504.
     const callLlm = async (userPrompt: string, temperature: number) =>
-      generateText({
-        modelId,
-        prompt: userPrompt,
-        systemPrompt: system,
-        maxTokens: 4000,
-        temperature,
-        image: { base64, mimeType },
-        spend: await makeSpendContext('thumbnail_format_topic_card_grid_cards', {
-          metadata: { niche, gridRows, gridCols, mode },
+      withTimeout(
+        generateText({
+          modelId,
+          prompt: userPrompt,
+          systemPrompt: system,
+          maxTokens: 4000,
+          temperature,
+          image: { base64, mimeType },
+          spend: await makeSpendContext('thumbnail_format_topic_card_grid_cards', {
+            metadata: { niche, gridRows, gridCols, mode },
+          }),
         }),
-      });
+        LLM_CALL_TIMEOUT_MS,
+        model.name,
+      );
 
     let raw = await callLlm(user, 0.7);
     let parsed: CardListResult | null = null;
