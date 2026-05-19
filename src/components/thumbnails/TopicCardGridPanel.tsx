@@ -55,6 +55,7 @@ export interface FormatGenerationResult {
 const GRID_PRESETS: { label: string; rows: number; cols: number }[] = [
   { label: '2×2', rows: 2, cols: 2 },
   { label: '2×3', rows: 2, cols: 3 },
+  { label: '2×4', rows: 2, cols: 4 },
   { label: '3×3', rows: 3, cols: 3 },
   { label: '3×4', rows: 3, cols: 4 },
   { label: '4×3', rows: 4, cols: 3 },
@@ -71,6 +72,7 @@ const IMAGE_MODELS = [
 ];
 
 const REGION_OVERLAY_PREF_KEY = 'topic_card_grid_region_overlay';
+const IMAGE_MODEL_PREF_KEY = 'topic_card_grid_default_image_model';
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
@@ -104,7 +106,11 @@ export function TopicCardGridPanel({
 }: Props) {
   // Grid configuration
   const [gridMode, setGridMode] = useState<'preset' | 'custom'>('preset');
-  const [presetIdx, setPresetIdx] = useState(2); // 3×3 default
+  // 3×3 default — its index shifts when GRID_PRESETS changes, so look it up
+  // by value rather than hard-coding an index that's easy to break.
+  const [presetIdx, setPresetIdx] = useState(
+    () => GRID_PRESETS.findIndex((p) => p.rows === 3 && p.cols === 3),
+  );
   const [customRows, setCustomRows] = useState(3);
   const [customCols, setCustomCols] = useState(3);
 
@@ -116,8 +122,22 @@ export function TopicCardGridPanel({
   const [formatMode, setFormatMode] = useState<'review' | 'pre-fill' | 'one-shot'>('review');
   const [prefilledLabels, setPrefilledLabels] = useState('');
 
-  // Image model (defaults to recommended)
-  const [imageModelId, setImageModelId] = useState('gpt-image-2-i2i');
+  // Image model — defaults to the recommended gpt-image-2-i2i, but
+  // auto-remembers the user's last choice in localStorage so whatever they
+  // picked last time becomes their personal default on the next page load.
+  const [imageModelId, setImageModelId] = useState<string>(() => {
+    if (typeof window === 'undefined') return 'gpt-image-2-i2i';
+    try {
+      const stored = localStorage.getItem(IMAGE_MODEL_PREF_KEY);
+      if (stored && IMAGE_MODELS.some((m) => m.value === stored)) return stored;
+    } catch {
+      /* fall through to default */
+    }
+    return 'gpt-image-2-i2i';
+  });
+  useEffect(() => {
+    try { localStorage.setItem(IMAGE_MODEL_PREF_KEY, imageModelId); } catch { /* ignore */ }
+  }, [imageModelId]);
 
   // Flow state
   const [busyStep, setBusyStep] = useState<'idle' | 'cards' | 'image'>('idle');

@@ -52,6 +52,7 @@ const IMAGE_MODELS = [
 ];
 
 const REGION_OVERLAY_PREF_KEY = 'n_levels_region_overlay';
+const IMAGE_MODEL_PREF_KEY = 'n_levels_default_image_model';
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
@@ -86,8 +87,21 @@ export function NLevelsPanel({
   const [formatMode, setFormatMode] = useState<'review' | 'pre-fill' | 'one-shot'>('review');
   const [prefilledLabels, setPrefilledLabels] = useState('');
 
-  // Image model
-  const [imageModelId, setImageModelId] = useState('gpt-image-2-i2i');
+  // Image model — defaults to gpt-image-2-i2i but auto-remembers the user's
+  // last choice in localStorage so their personal default sticks.
+  const [imageModelId, setImageModelId] = useState<string>(() => {
+    if (typeof window === 'undefined') return 'gpt-image-2-i2i';
+    try {
+      const stored = localStorage.getItem(IMAGE_MODEL_PREF_KEY);
+      if (stored && IMAGE_MODELS.some((m) => m.value === stored)) return stored;
+    } catch {
+      /* fall through */
+    }
+    return 'gpt-image-2-i2i';
+  });
+  useEffect(() => {
+    try { localStorage.setItem(IMAGE_MODEL_PREF_KEY, imageModelId); } catch { /* ignore */ }
+  }, [imageModelId]);
 
   // Flow state
   const [busyStep, setBusyStep] = useState<'idle' | 'list' | 'image'>('idle');

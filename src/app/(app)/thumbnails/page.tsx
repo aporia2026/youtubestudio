@@ -210,7 +210,22 @@ function ThumbnailsPage() {
   // Image generation
   const [imageGenEnabled, setImageGenEnabled] = useState(false);
   const [showImageSection, setShowImageSection] = useState(false);
-  const [imageModel, setImageModel] = useState(IMAGE_MODELS[0].value);
+  // Free-form image model — defaults to GPT Image 2 (text-to-image) but
+  // auto-remembers the user's last choice in localStorage. Whatever they
+  // pick once becomes their personal default on subsequent visits.
+  const [imageModel, setImageModel] = useState<string>(() => {
+    if (typeof window === 'undefined') return 'gpt-image-2-t2i';
+    try {
+      const stored = localStorage.getItem('thumb_default_image_model_free_form');
+      if (stored && IMAGE_MODELS.some((m) => m.value === stored)) return stored;
+    } catch {
+      /* fall through */
+    }
+    return 'gpt-image-2-t2i';
+  });
+  useEffect(() => {
+    try { localStorage.setItem('thumb_default_image_model_free_form', imageModel); } catch { /* ignore */ }
+  }, [imageModel]);
   const [referenceImageUrl, setReferenceImageUrl] = useState('');
   const [generatingImages, setGeneratingImages] = useState<Record<number, boolean>>({});
   const [generatedImages, setGeneratedImages] = useState<Record<number, string>>({});
