@@ -80,6 +80,13 @@ export async function generateImageOpenAI(opts: OpenAIImageOptions): Promise<Ope
   const size: OpenAIImageSize = opts.size ?? '1536x1024';
   const quality: OpenAIImageQuality = opts.quality ?? 'medium';
 
+  // Note on `response_format`: OpenAI removed this parameter for the
+  // gpt-image-* family — passing it now returns `400 Unknown parameter:
+  // 'response_format'`. For these models the API always returns
+  // `b64_json` inline (no `url` mode available). We just read it off the
+  // response. Older models (dall-e-*) still accept the param; we don't
+  // target them here.
+
   if (opts.referenceImage) {
     // Image-to-image via /v1/images/edits. The SDK's `images.edit` method
     // wraps the multipart upload — we hand it a File-like blob built from
@@ -97,7 +104,6 @@ export async function generateImageOpenAI(opts: OpenAIImageOptions): Promise<Ope
       prompt: opts.prompt,
       size,
       quality,
-      response_format: 'b64_json',
       n: 1,
     });
     const data = response.data?.[0];
@@ -117,7 +123,6 @@ export async function generateImageOpenAI(opts: OpenAIImageOptions): Promise<Ope
     prompt: opts.prompt,
     size,
     quality,
-    response_format: 'b64_json',
     n: 1,
   });
   const data = response.data?.[0];
