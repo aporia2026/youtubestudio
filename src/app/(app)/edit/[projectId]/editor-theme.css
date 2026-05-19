@@ -1,0 +1,241 @@
+/**
+ * Editor-only theme overrides — Phase 1 of
+ * `_plans/2026-05-19-editor-real-nle-look.md`.
+ *
+ * Why this file exists:
+ *
+ * 1. The editor was referencing CSS variables (`--card-border`,
+ *    `--fg`, `--bg`, `--fg-muted`) that don't exist in
+ *    `globals.css`. Every place they appeared, the browser
+ *    fell through to default colors, which is why the editor
+ *    looked janky and inconsistent vs the rest of the app.
+ *    This file aliases those names to the canonical workspace
+ *    tokens so every editor surface reads from a single source
+ *    of truth.
+ *
+ * 2. The editor needs slightly different density and contrast
+ *    from the rest of the app — the rest of the app is a
+ *    dashboard; the editor is a tool. Backgrounds are a hair
+ *    darker, borders are subtler, type density is tighter,
+ *    accent usage is reserved for active states.
+ *
+ * Scope: every selector below is gated by `.editor-root` so the
+ * overrides only land inside the editor's render tree. No effect
+ * on /production-doc, /settings, or anywhere else.
+ */
+
+.editor-root {
+  /* ─── Alias the names the editor's existing code uses ──── */
+  --fg: var(--text-primary);
+  --fg-muted: var(--text-muted);
+  --card-border: var(--border);
+  --bg: var(--bg-primary);
+  --bg-secondary: var(--bg-secondary);
+
+  /* ─── Editor-specific density tokens ────────────────────── */
+  --editor-header-height: 48px;
+  --editor-leftrail-width: 64px;
+  --editor-leftrail-drawer-width: 240px;
+  --editor-inspector-width: 320px;
+  --editor-timeline-height: 280px;
+  --editor-transport-height: 44px;
+
+  /* ─── Cooler, denser dark palette ───────────────────────── */
+  /* Slightly darker canvas so the preview frame pops. */
+  --editor-canvas: #050507;
+  /* Panel background — used for left rail, inspector, timeline.
+     Same hue as bg-primary, 2-3% lighter so panel/canvas
+     separation is visible without harsh borders. */
+  --editor-panel: #0c0c14;
+  /* Panel hover state — gives mouse a clear target. */
+  --editor-panel-hover: #14142a;
+  /* Subtle inset edge between panels. Replaces the loud 10%
+     white border in the existing CSS. */
+  --editor-edge: rgba(255, 255, 255, 0.05);
+  --editor-edge-strong: rgba(255, 255, 255, 0.10);
+  /* Accent is the workspace purple, but pinned to the brighter
+     variant so it reads as "active" not "decorative". */
+  --editor-accent: var(--accent-purple-bright);
+  --editor-accent-soft: rgba(157, 92, 255, 0.18);
+  /* Track tint for the timeline lanes (video vs audio vs caps
+     vs overlays). Slight hue separation so the eye can target
+     the right track without reading labels. */
+  --editor-lane-video: rgba(157, 92, 255, 0.06);
+  --editor-lane-audio: rgba(34, 211, 238, 0.06);
+  --editor-lane-captions: rgba(245, 158, 11, 0.06);
+  --editor-lane-overlays: rgba(16, 185, 129, 0.06);
+  /* Playhead — a single high-contrast yellow line spanning all
+     tracks, the way CapCut / Premiere do it. */
+  --editor-playhead: #fbbf24;
+}
+
+/* Base typography inside the editor: denser line-heights and
+   slightly heavier weight so the layout reads "professional"
+   instead of "cramped". */
+.editor-root {
+  font-feature-settings: 'tnum' 1, 'cv11' 1;
+  line-height: 1.35;
+}
+.editor-root .ed-mono {
+  font-feature-settings: 'tnum' 1;
+}
+
+/* Canvas — the full editor background. Slightly darker than the
+   rest of the app so panels read as raised. */
+.editor-root {
+  background: var(--editor-canvas);
+  color: var(--fg);
+}
+
+/* Panel chrome — single class every editor panel uses. */
+.editor-panel {
+  background: var(--editor-panel);
+  border: 1px solid var(--editor-edge);
+  border-radius: 10px;
+}
+.editor-panel-flat {
+  background: var(--editor-panel);
+  border: none;
+}
+
+/* Subtle divider element — replaces the heavy borders the
+   existing editor draws between toolbar buttons. */
+.editor-divider {
+  background: var(--editor-edge);
+  width: 1px;
+  align-self: stretch;
+}
+.editor-divider-h {
+  background: var(--editor-edge);
+  height: 1px;
+  width: 100%;
+}
+
+/* Icon button — single class for every clickable icon in the
+   header, transport, left rail, inspector. */
+.editor-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.editor-icon-btn:hover {
+  background: var(--editor-panel-hover);
+  color: var(--fg);
+}
+.editor-icon-btn[aria-pressed='true'],
+.editor-icon-btn.is-active {
+  color: var(--editor-accent);
+  background: var(--editor-accent-soft);
+}
+.editor-icon-btn[disabled] {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Larger labelled button (header save / export / etc.) */
+.editor-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--editor-edge);
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.editor-btn:hover {
+  background: var(--editor-panel-hover);
+  border-color: var(--editor-edge-strong);
+}
+.editor-btn-primary {
+  background: var(--editor-accent-soft);
+  border-color: transparent;
+  color: var(--editor-accent);
+}
+.editor-btn-primary:hover {
+  background: rgba(157, 92, 255, 0.28);
+}
+.editor-btn[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Layout grid for the editor chrome. Header on top, left rail +
+   center + inspector in the middle, timeline at the bottom. */
+.editor-grid {
+  display: grid;
+  grid-template-rows: var(--editor-header-height) 1fr var(--editor-timeline-height);
+  grid-template-columns: var(--editor-leftrail-width) 1fr var(--editor-inspector-width);
+  grid-template-areas:
+    'header header  header'
+    'rail   preview inspector'
+    'tl     tl      tl';
+  height: 100vh;
+  width: 100%;
+  gap: 8px;
+  padding: 8px;
+  box-sizing: border-box;
+}
+.editor-grid[data-rail-open='true'] {
+  grid-template-columns: var(--editor-leftrail-drawer-width) 1fr var(--editor-inspector-width);
+}
+.editor-area-header {
+  grid-area: header;
+}
+.editor-area-rail {
+  grid-area: rail;
+  min-width: 0;
+  overflow: hidden;
+}
+.editor-area-preview {
+  grid-area: preview;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.editor-area-inspector {
+  grid-area: inspector;
+  min-width: 0;
+  overflow: hidden;
+}
+.editor-area-timeline {
+  grid-area: tl;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Scrollbar tuning inside editor panels — narrower + cooler
+   to match the chrome. Falls back to the OS default on browsers
+   that don't support `::-webkit-scrollbar`. */
+.editor-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.editor-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.editor-scroll::-webkit-scrollbar-thumb {
+  background: var(--editor-edge-strong);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.editor-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+  background-clip: padding-box;
+}

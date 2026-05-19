@@ -46,6 +46,7 @@ import { useEditorStore } from '@/lib/editor/use-editor-store';
 import { Timeline } from '@/components/editor/Timeline';
 import { ShotInspector } from '@/components/editor/ShotInspector';
 import { StatusBar } from '@/components/editor/StatusBar';
+import { EditorChrome } from '@/components/editor/EditorChrome';
 import {
   getDefaultZoomLevel,
   getShowThumbnails,
@@ -1018,9 +1019,14 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     );
   }
 
-  return (
-    <div className="p-6 space-y-4 max-w-7xl mx-auto">
-      <header className="flex items-center justify-between gap-3 flex-wrap">
+  // Phase 1 of `_plans/2026-05-19-editor-real-nle-look.md` slices the
+  // editor into named slots that mount into a CSS-grid chrome. The
+  // existing toolbar / preview / inspector / timeline content stays
+  // identical — only the surrounding layout changed. Phases 2-5
+  // incrementally replace each slot's content with CapCut-style
+  // components.
+  const headerSlot = (
+    <div className="flex items-center justify-between gap-3 flex-wrap h-full px-2">
         <div className="min-w-0">
           <h1 className="text-xl font-semibold truncate">
             {payload.title || state.doc.title || 'Untitled project'}
@@ -1248,11 +1254,21 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             ← Production Doc
           </Link>
         </div>
-      </header>
+    </div>
+  );
 
-      {/* Zoom strip — sits between the toolbar and the player so
-          the slider visually belongs to the timeline below. */}
-      <div className="flex items-center justify-end gap-2 text-xs" style={{ color: 'var(--fg-muted)' }}>
+  const leftRailSlot = (
+    <div className="h-full p-2 text-xs editor-scroll" style={{ color: 'var(--fg-muted)', overflow: 'auto' }}>
+      <div className="font-medium mb-1" style={{ color: 'var(--fg)' }}>Tools</div>
+      <p style={{ color: 'var(--fg-muted)' }}>
+        Coming in Phase 3 — Shots / Media / Audio / Captions / AI Tools tabs.
+        Use the toolbar above for now.
+      </p>
+    </div>
+  );
+
+  const zoomStrip = (
+    <div className="flex items-center justify-end gap-2 text-xs px-2" style={{ color: 'var(--fg-muted)' }}>
         <span title="Zoom out (−)">−</span>
         <input
           type="range"
@@ -1266,8 +1282,12 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         />
         <span title="Zoom in (+)">+</span>
         <span className="tabular-nums w-10 text-right">{zoomLevel}×</span>
-      </div>
+    </div>
+  );
 
+  const previewSlot = (
+    <>
+      {zoomStrip}
       {saveStatus.kind === 'conflict' && (
         <ConflictBanner
           onReload={() => {
@@ -1276,6 +1296,152 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           }}
         />
       )}
+      <div
+        className="rounded-lg overflow-hidden border flex-1 min-w-0 relative"
+        style={{ borderColor: 'var(--card-border)', background: '#000' }}
+      >
+        <Player
+          ref={playerRef}
+          component={YouTubeVideo}
+          inputProps={inputProps}
+          durationInFrames={totalFrames}
+          compositionWidth={videoConfig.width}
+          compositionHeight={videoConfig.height}
+          fps={videoConfig.fps}
+          controls
+          style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+          acknowledgeRemotionLicense
+        />
+        {/* Captions are rendered INSIDE the Remotion composition
+            via <CaptionsOverlay>, so they appear in both the editor
+            preview AND in Lambda renders. No separate HTML overlay
+            needed. */}
+      </div>
+    </>
+  );
+
+  const inspectorSlot =
+    state.selection !== null && state.doc.rows[state.selection] ? (
+      <div className="h-full editor-scroll" style={{ overflow: 'auto' }}>
+        <ShotInspector
+          shotIndex={state.selection}
+          shot={videoConfig.shots[state.selection]}
+          row={state.doc.rows[state.selection]}
+          thumbnailUrl={state.rowImages[state.selection] ?? null}
+          totalShots={state.doc.rows.length}
+          projectId={projectId}
+          onClose={() => apply({ type: 'SET_SELECTION', shotIndex: null })}
+          onUploadImage={(url) =>
+            apply({ type: 'SET_ROW_IMAGE', shotIndex: state.selection as number, url })
+          }
+          onPickProjectClip={(url, durationSeconds) =>
+            apply({
+              type: 'SET_ROW_VIDEO',
+              shotIndex: state.selection as number,
+              url,
+              durationSeconds,
+            })
+          }
+          onGenerateClip={() => {
+            void handleGenerateClip(state.selection as number);
+          }}
+          clipStatus={state.rowVideoClips[state.selection]?.status}
+          brollModelId={userBrollModelId}
+          onUpdateScript={(text) =>
+            apply({
+              type: 'SET_ROW_SCRIPT',
+              shotIndex: state.selection as number,
+              text,
+            })
+          }
+          onUpdateRow={(patch) => updateRow(state.selection as number, patch)}
+          overlayState={state.rowOverlays[state.selection]}
+          isRethinkingOverlay={rethinkingRows.has(state.selection)}
+          rethinkExhausted={(rethinkAttempts[state.selection] ?? 0) >= RETHINK_MAX_ATTEMPTS}
+          editHistoryDepth={
+            state.doc.rows[state.selection]?.overlay_edit_history?.length ?? 0
+          }
+          onOpenOverlayPosition={() => setOverlayPositionRow(state.selection)}
+          onOpenOverlayEdit={() => setOverlayEditRow(state.selection)}
+          onRethinkOverlay={() => {
+            void rethinkOverlayPlacement(state.selection as number);
+          }}
+          onUndoOverlayEdit={() => undoOverlayEdit(state.selection as number)}
+          onShowOverlayContextMenu={(x, y) =>
+            setOverlayContextMenu({ rowIndex: state.selection as number, x, y })
+          }
+        />
+      </div>
+    ) : (
+      <div className="h-full flex items-center justify-center p-4 text-xs text-center" style={{ color: 'var(--fg-muted)' }}>
+        Select a shot on the timeline below to inspect or edit it.
+      </div>
+    );
+
+  const timelineSlot = (
+    <div className="h-full flex flex-col p-2 gap-2 editor-scroll" style={{ overflow: 'auto' }}>
+      <Timeline
+        config={videoConfig}
+        rowImages={getShowThumbnails() ? state.rowImages : {}}
+        selection={state.selection}
+        playheadMs={state.playheadMs}
+        rowTrims={rowTrims}
+        pixelsPerSecond={pixelsPerSecond}
+        onSelect={(shotIndex) => apply({ type: 'SET_SELECTION', shotIndex })}
+        onResize={(shotIndex, durationMs) =>
+          apply({ type: 'RESIZE_SHOT', shotIndex, durationMs })
+        }
+        onReorder={(fromIndex, toIndex) =>
+          apply({ type: 'REORDER_SHOTS', fromIndex, toIndex })
+        }
+        onTrim={(shotIndex, values) =>
+          apply({ type: 'TRIM_SHOT', shotIndex, ...values })
+        }
+        rowTransitions={rowTransitions}
+        onToggleTransition={(shotIndex, transition) =>
+          apply({ type: 'SET_TRANSITION_IN', shotIndex, transition })
+        }
+      />
+      <StatusBar
+        playheadMs={state.playheadMs}
+        totalDurationMs={videoConfig.shots.reduce((acc, s) => acc + s.durationMs, 0)}
+        selection={state.selection}
+        selectionScriptPreview={
+          state.selection !== null
+            ? (state.doc.rows[state.selection]?.script_text ?? null)
+            : null
+        }
+        saveStatusLabel={statusBarSaveLabel(saveStatus, state.isDirty)}
+        showShortcutHints={getShowShortcutHints()}
+        readiness={{
+          shotCount: state.doc.rows.length,
+          imageCount: Object.values(state.rowImages).filter(Boolean).length,
+          clipCount: Object.values(state.rowVideoClips).filter((c) => c && c.status === 'ready').length,
+          overlayPlannedCount: state.doc.rows.filter((r) => Boolean(r.overlay_stock_terms?.trim())).length,
+          overlayReadyCount: Object.values(state.rowOverlays).filter((o) => o?.status === 'done').length,
+          hasVoiceover: Boolean(state.voiceoverUrl),
+          hasCaptions: Boolean(state.captions),
+        }}
+      />
+    </div>
+  );
+
+  return (
+    <>
+      <EditorChrome
+        slots={{
+          header: headerSlot,
+          leftRail: leftRailSlot,
+          preview: previewSlot,
+          inspector: inspectorSlot,
+          timeline: timelineSlot,
+        }}
+      />
+
+      {/* Floating modals — rendered outside the chrome grid because
+          they're position:fixed overlays. Keeping them after the
+          chrome means the layout grid doesn't have to budget any
+          space for them. */}
 
       {showDriftReport && (
         <VoiceoverDriftReport
@@ -1325,130 +1491,6 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           }}
         />
       )}
-
-      <div className="flex gap-4 items-start">
-        <div
-          className="rounded-lg overflow-hidden border flex-1 min-w-0 relative"
-          style={{ borderColor: 'var(--card-border)', background: '#000' }}
-        >
-          <Player
-            ref={playerRef}
-            component={YouTubeVideo}
-            inputProps={inputProps}
-            durationInFrames={totalFrames}
-            compositionWidth={videoConfig.width}
-            compositionHeight={videoConfig.height}
-            fps={videoConfig.fps}
-            controls
-            style={{ width: '100%', aspectRatio: `${videoConfig.width} / ${videoConfig.height}` }}
-            acknowledgeRemotionLicense
-          />
-
-          {/* Captions are rendered INSIDE the Remotion composition
-              via <CaptionsOverlay> (Phase 4 wiring), so they appear
-              in both the editor preview AND in Lambda renders. No
-              separate HTML overlay needed. */}
-        </div>
-
-        {state.selection !== null && state.doc.rows[state.selection] && (
-          <ShotInspector
-            shotIndex={state.selection}
-            shot={videoConfig.shots[state.selection]}
-            row={state.doc.rows[state.selection]}
-            thumbnailUrl={state.rowImages[state.selection] ?? null}
-            totalShots={state.doc.rows.length}
-            projectId={projectId}
-            onClose={() => apply({ type: 'SET_SELECTION', shotIndex: null })}
-            onUploadImage={(url) =>
-              apply({ type: 'SET_ROW_IMAGE', shotIndex: state.selection as number, url })
-            }
-            onPickProjectClip={(url, durationSeconds) =>
-              apply({
-                type: 'SET_ROW_VIDEO',
-                shotIndex: state.selection as number,
-                url,
-                durationSeconds,
-              })
-            }
-            onGenerateClip={() => {
-              void handleGenerateClip(state.selection as number);
-            }}
-            clipStatus={state.rowVideoClips[state.selection]?.status}
-            brollModelId={userBrollModelId}
-            onUpdateScript={(text) =>
-              apply({
-                type: 'SET_ROW_SCRIPT',
-                shotIndex: state.selection as number,
-                text,
-              })
-            }
-            onUpdateRow={(patch) => updateRow(state.selection as number, patch)}
-            overlayState={state.rowOverlays[state.selection]}
-            isRethinkingOverlay={rethinkingRows.has(state.selection)}
-            rethinkExhausted={(rethinkAttempts[state.selection] ?? 0) >= RETHINK_MAX_ATTEMPTS}
-            editHistoryDepth={
-              state.doc.rows[state.selection]?.overlay_edit_history?.length ?? 0
-            }
-            onOpenOverlayPosition={() => setOverlayPositionRow(state.selection)}
-            onOpenOverlayEdit={() => setOverlayEditRow(state.selection)}
-            onRethinkOverlay={() => {
-              void rethinkOverlayPlacement(state.selection as number);
-            }}
-            onUndoOverlayEdit={() => undoOverlayEdit(state.selection as number)}
-            onShowOverlayContextMenu={(x, y) =>
-              setOverlayContextMenu({ rowIndex: state.selection as number, x, y })
-            }
-          />
-        )}
-      </div>
-
-      <Timeline
-        config={videoConfig}
-        // Pass an empty map when the user has thumbnails switched off
-        // in settings — the Timeline falls back to colored blocks per
-        // shot instead of pulling images. Cheaper on slow machines.
-        rowImages={getShowThumbnails() ? state.rowImages : {}}
-        selection={state.selection}
-        playheadMs={state.playheadMs}
-        rowTrims={rowTrims}
-        pixelsPerSecond={pixelsPerSecond}
-        onSelect={(shotIndex) => apply({ type: 'SET_SELECTION', shotIndex })}
-        onResize={(shotIndex, durationMs) =>
-          apply({ type: 'RESIZE_SHOT', shotIndex, durationMs })
-        }
-        onReorder={(fromIndex, toIndex) =>
-          apply({ type: 'REORDER_SHOTS', fromIndex, toIndex })
-        }
-        onTrim={(shotIndex, values) =>
-          apply({ type: 'TRIM_SHOT', shotIndex, ...values })
-        }
-        rowTransitions={rowTransitions}
-        onToggleTransition={(shotIndex, transition) =>
-          apply({ type: 'SET_TRANSITION_IN', shotIndex, transition })
-        }
-      />
-
-      <StatusBar
-        playheadMs={state.playheadMs}
-        totalDurationMs={videoConfig.shots.reduce((acc, s) => acc + s.durationMs, 0)}
-        selection={state.selection}
-        selectionScriptPreview={
-          state.selection !== null
-            ? (state.doc.rows[state.selection]?.script_text ?? null)
-            : null
-        }
-        saveStatusLabel={statusBarSaveLabel(saveStatus, state.isDirty)}
-        showShortcutHints={getShowShortcutHints()}
-        readiness={{
-          shotCount: state.doc.rows.length,
-          imageCount: Object.values(state.rowImages).filter(Boolean).length,
-          clipCount: Object.values(state.rowVideoClips).filter((c) => c && c.status === 'ready').length,
-          overlayPlannedCount: state.doc.rows.filter((r) => Boolean(r.overlay_stock_terms?.trim())).length,
-          overlayReadyCount: Object.values(state.rowOverlays).filter((o) => o?.status === 'done').length,
-          hasVoiceover: Boolean(state.voiceoverUrl),
-          hasCaptions: Boolean(state.captions),
-        }}
-      />
 
       {/* Phase 5.2 overlay-port — three modal surfaces mount here so
           every overlay action in the editor reuses the same UI the
@@ -1664,7 +1706,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             />
           );
         })()}
-    </div>
+    </>
   );
 }
 
