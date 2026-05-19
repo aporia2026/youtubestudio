@@ -54,6 +54,11 @@ interface ShotInspectorProps {
    *  textarea OR via the AI rephrase button). Dispatches
    *  SET_ROW_SCRIPT. */
   onUpdateScript?: (text: string) => void;
+  /** Called when the user edits any other row field inline (visual
+   *  description, AI image prompt, on-screen text, section title).
+   *  Dispatches PATCH_ROW so each edit lands on the undo stack and
+   *  auto-save picks it up. */
+  onUpdateRow?: (patch: Partial<ProductionDoc['rows'][number]>) => void;
   // ─── Phase 5.2 overlay-port — props for the overlay control surface ──
   /** The row's current overlay state (URL + status). When absent or
    *  not `done`, the overlay section in the inspector hides its
@@ -99,6 +104,7 @@ export function ShotInspector({
   onUploadImage,
   onPickProjectClip,
   onUpdateScript,
+  onUpdateRow,
   overlayState,
   isRethinkingOverlay,
   rethinkExhausted,
@@ -585,10 +591,32 @@ export function ShotInspector({
 
         <div className="p-4 space-y-4 text-xs">
           {/* Visual_description — the prompt the doc generator wrote
-              to drive image / video generation. Read-only in this
-              commit; the rewrite-with-AI commit makes it editable. */}
-          <Field label="Visual description" value={row.visual_description || '—'} />
-          <Field label="AI image prompt" value={row.ai_image_prompt || '—'} mono />
+              to drive image / video generation. Editable inline so
+              the user can tweak the prompt and either regenerate the
+              image (button above) or just refine what the doc says
+              about this shot. */}
+          {onUpdateRow ? (
+            <EditableTextarea
+              label="Visual description"
+              value={row.visual_description ?? ''}
+              onCommit={(v) => onUpdateRow({ visual_description: v })}
+              minRows={2}
+            />
+          ) : (
+            <Field label="Visual description" value={row.visual_description || '—'} />
+          )}
+          {onUpdateRow ? (
+            <EditableTextarea
+              label="AI image prompt"
+              value={row.ai_image_prompt ?? ''}
+              onCommit={(v) => onUpdateRow({ ai_image_prompt: v })}
+              minRows={3}
+              mono
+              placeholder="The prompt the image generator will use…"
+            />
+          ) : (
+            <Field label="AI image prompt" value={row.ai_image_prompt || '—'} mono />
+          )}
           {/* Voiceover script — editable inline. Commits on blur
               (or on AI rephrase). Cmd/Ctrl+Z still walks the undo
               stack through SET_ROW_SCRIPT commands. */}
@@ -646,8 +674,29 @@ export function ShotInspector({
             )}
           </div>
 
-          {row.on_screen_text && (
-            <Field label="On-screen text" value={row.on_screen_text} />
+          {onUpdateRow ? (
+            <EditableInput
+              label="On-screen text"
+              value={row.on_screen_text ?? ''}
+              onCommit={(v) =>
+                onUpdateRow({ on_screen_text: v.length > 0 ? v : undefined })
+              }
+              placeholder="Lower-third / kinetic-text caption for this shot"
+            />
+          ) : (
+            row.on_screen_text && <Field label="On-screen text" value={row.on_screen_text} />
+          )}
+          {onUpdateRow ? (
+            <EditableInput
+              label="Section title"
+              value={row.section_title ?? ''}
+              onCommit={(v) =>
+                onUpdateRow({ section_title: v.length > 0 ? v : undefined })
+              }
+              placeholder="If set, a section-title stripe / divider renders on this shot"
+            />
+          ) : (
+            row.section_title && <Field label="Section title" value={row.section_title} />
           )}
 
           {(typeof row.trim_start_ms === 'number' || typeof row.trim_end_ms === 'number') && (
@@ -891,6 +940,113 @@ function Field({ label, value, mono = false, highlight = null }: FieldProps): Re
       >
         {value}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Editable single-line input. Local draft state buffers keystrokes;
+ * the commit fires on blur OR when the user presses Enter, so the
+ * undo stack records one entry per logical edit instead of one per
+ * keystroke. Empty strings are passed through unchanged — callers
+ * decide whether to remap "" → undefined for nullable fields.
+ */
+function EditableInput({
+  label,
+  value,
+  onCommit,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onCommit: (next: string) => void;
+  placeholder?: string;
+}): React.ReactElement {
+  const [draft, setDraft] = useState(value);
+  // Keep the draft in sync if the canonical value changes from
+  // outside (e.g. undo / redo, doc regen). The cheap reference check
+  // avoids clobbering an in-progress edit.
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+  const commit = () => {
+    if (draft !== value) onCommit(draft);
+  };
+  return (
+    <div className="space-y-1">
+      <div className="font-medium" style={{ color: 'var(--fg)' }}>
+        {label}
+      </div>
+      <input
+        type="text"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            (e.target as HTMLInputElement).blur();
+          }
+        }}
+        placeholder={placeholder}
+        className="w-full text-xs rounded border px-2 py-1.5"
+        style={{
+          borderColor: 'var(--card-border)',
+          background: 'var(--bg)',
+          color: 'var(--fg)',
+        }}
+      />
+    </div>
+  );
+}
+
+/**
+ * Editable multi-line textarea. Same blur-to-commit behaviour as
+ * `EditableInput`; Enter inserts a newline (typical textarea
+ * semantics) — callers blur to commit.
+ */
+function EditableTextarea({
+  label,
+  value,
+  onCommit,
+  minRows = 2,
+  mono = false,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onCommit: (next: string) => void;
+  minRows?: number;
+  mono?: boolean;
+  placeholder?: string;
+}): React.ReactElement {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+  const commit = () => {
+    if (draft !== value) onCommit(draft);
+  };
+  return (
+    <div className="space-y-1">
+      <div className="font-medium" style={{ color: 'var(--fg)' }}>
+        {label}
+      </div>
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        placeholder={placeholder}
+        rows={minRows}
+        className={`w-full text-xs rounded border px-2 py-1.5 resize-y ${mono ? 'font-mono' : ''}`}
+        style={{
+          borderColor: 'var(--card-border)',
+          background: 'var(--bg)',
+          color: 'var(--fg)',
+          minHeight: `${minRows * 1.6}em`,
+        }}
+        spellCheck
+      />
     </div>
   );
 }

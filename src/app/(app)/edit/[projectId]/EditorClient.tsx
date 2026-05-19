@@ -105,15 +105,12 @@ function zoomLevelToPxPerSecond(level: number): number {
 }
 
 export default function EditorClient({ projectId, version, payload }: EditorClientProps) {
-  // Aliases that match the field names the rest of the component
-  // expects. `payload` is the canonical shape; we destructure to
-  // keep the downstream code's references short.
+  // Initial values for the store. After mount the store owns the
+  // working copy; this destructure is just the seed handed to
+  // `initialEditorState`. Everything else reads from `state.*` so
+  // edits flow through the command pipeline and undo/redo works.
   const doc = payload.doc;
   const rowImages = payload.rowImages;
-  const rowVideoClips = payload.rowVideoClips;
-  const flags = payload.flags;
-  const musicUrl = payload.musicUrl;
-  const brandKitOverride = payload.brandKitOverride;
 
   // Voiceover drift report modal — toggled from the toolbar.
   const [showDriftReport, setShowDriftReport] = useState(false);
@@ -148,6 +145,12 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       voiceoverUrl: payload.voiceoverUrl,
       captions: payload.captions,
       rowOverlays: payload.rowOverlays,
+      rowVideoClips: payload.rowVideoClips,
+      musicUrl: payload.musicUrl,
+      brandKitOverride: payload.brandKitOverride,
+      channelId: payload.channelId,
+      voiceoverAlignment: payload.voiceoverAlignment,
+      flags: payload.flags,
       version,
     }),
     projectId,
@@ -617,7 +620,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     // this commit the editor never threaded clips through, so every
     // shot rendered as a still even when a B-roll animation existed.
     const rowVideoClipArr: (RowVideoClipState | null)[] = state.doc.rows.map((_, i) => {
-      const clip = rowVideoClips[i];
+      const clip = state.rowVideoClips[i];
       if (!clip) return null;
       return {
         status: clip.status,
@@ -629,7 +632,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     // sparse by row index; the renderer wants `boolean[]` semantically
     // aligned with the rows array.
     const rowLockedArr = state.doc.rows.map((_, i) =>
-      Boolean(flags.rowLockedAsStill[i]),
+      Boolean(state.flags.rowLockedAsStill[i]),
     );
     return productionDocToVideoConfig(state.doc, rowImageArr, {
       voiceoverUrl: state.voiceoverUrl,
@@ -639,10 +642,11 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       rowOverlays: state.rowOverlays,
       rowVideoClips: rowVideoClipArr,
       rowLockedAsStill: rowLockedArr,
-      animateScenes: flags.animateScenes,
-      suppressLowerThirds: flags.suppressLowerThirds,
-      musicUrl,
-      brand: brandKitOverride,
+      animateScenes: state.flags.animateScenes,
+      suppressLowerThirds: state.flags.suppressLowerThirds,
+      musicUrl: state.musicUrl,
+      brand: state.brandKitOverride,
+      alignment: state.voiceoverAlignment,
     });
   }, [
     doc,
@@ -651,10 +655,11 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     state.voiceoverUrl,
     state.captions,
     state.rowOverlays,
-    rowVideoClips,
-    flags,
-    musicUrl,
-    brandKitOverride,
+    state.rowVideoClips,
+    state.flags,
+    state.musicUrl,
+    state.brandKitOverride,
+    state.voiceoverAlignment,
   ]);
 
   const inputProps = useMemo(() => (videoConfig ? { config: videoConfig } : null), [videoConfig]);
@@ -960,6 +965,52 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               : 'Mute'}
           </button>
 
+          {/* Doc-level flag toggles — Phase 3b of the parity
+              refactor. Two compact pill-buttons next to mute. Each
+              flip dispatches SET_FLAGS so undo / redo / autosave all
+              pick it up. */}
+          <button
+            type="button"
+            onClick={() =>
+              apply({ type: 'SET_FLAGS', flags: { animateScenes: !state.flags.animateScenes } })
+            }
+            className="text-xs px-2.5 py-1.5 rounded border transition-colors hover:bg-white/5"
+            style={{
+              borderColor: 'var(--card-border)',
+              color: state.flags.animateScenes ? 'var(--accent-purple-bright, #a78bfa)' : undefined,
+            }}
+            title={
+              state.flags.animateScenes
+                ? 'Animations on — B-roll clips play in their shots'
+                : 'Animations off — every shot renders as a still + Ken Burns'
+            }
+          >
+            {state.flags.animateScenes ? '🎬 Animate' : '🎬 Stills'}
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              apply({
+                type: 'SET_FLAGS',
+                flags: { suppressLowerThirds: !state.flags.suppressLowerThirds },
+              })
+            }
+            className="text-xs px-2.5 py-1.5 rounded border transition-colors hover:bg-white/5"
+            style={{
+              borderColor: 'var(--card-border)',
+              color: state.flags.suppressLowerThirds
+                ? 'var(--accent-purple-bright, #a78bfa)'
+                : undefined,
+            }}
+            title={
+              state.flags.suppressLowerThirds
+                ? 'Lower-thirds hidden across all shots'
+                : 'Lower-thirds visible — toggle to hide on-screen-text overlays'
+            }
+          >
+            {state.flags.suppressLowerThirds ? '⤓ Lower-3rd off' : '⤓ Lower-3rd on'}
+          </button>
+
           <button
             type="button"
             onClick={() => apply({ type: 'UNDO' })}
@@ -1139,6 +1190,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                 text,
               })
             }
+            onUpdateRow={(patch) => updateRow(state.selection as number, patch)}
             overlayState={state.rowOverlays[state.selection]}
             isRethinkingOverlay={rethinkingRows.has(state.selection)}
             rethinkExhausted={(rethinkAttempts[state.selection] ?? 0) >= RETHINK_MAX_ATTEMPTS}
@@ -1194,7 +1246,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         readiness={{
           shotCount: state.doc.rows.length,
           imageCount: Object.values(state.rowImages).filter(Boolean).length,
-          clipCount: Object.values(rowVideoClips).filter((c) => c && c.status === 'ready').length,
+          clipCount: Object.values(state.rowVideoClips).filter((c) => c && c.status === 'ready').length,
           overlayPlannedCount: state.doc.rows.filter((r) => Boolean(r.overlay_stock_terms?.trim())).length,
           overlayReadyCount: Object.values(state.rowOverlays).filter((o) => o?.status === 'done').length,
           hasVoiceover: Boolean(state.voiceoverUrl),

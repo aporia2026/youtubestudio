@@ -1,21 +1,46 @@
 /**
  * Save-client for the shot-graph editor.
  *
- * Phase 2 of `_plans/2026-05-18-shot-graph-editor.md`. Wraps the
- * PATCH /api/editor/:projectId call with a discriminated result
+ * Phase 2 of `_plans/2026-05-18-shot-graph-editor.md`, extended in
+ * Phase 3b of `_plans/2026-05-19-editor-production-doc-parity.md`
+ * with the full canonical-payload shape. Wraps the
+ * PATCH /api/edit/:projectId call with a discriminated result
  * union so the caller can branch on success / conflict / failure
  * without parsing strings.
+ *
+ * The payload shape now matches `ProjectPayload` so an editor save
+ * preserves every field production-doc wrote (rowVideoClips,
+ * brandKitOverride, musicUrl, channelId, voiceoverAlignment, flags).
+ * Before this commit, the editor's save dropped every field it
+ * didn't know about, silently wiping production-doc's contributions
+ * on the next save.
  *
  * Decoupled from React deliberately — this module is testable
  * standalone and the React adapter (`use-editor-store.tsx`) just
  * sequences calls into the store.
  */
-import type { ProductionDoc } from '@/remotion/utils';
+import type {
+  ProductionDoc,
+  RowOverlayRenderState,
+  RowVideoClipState,
+} from '@/remotion/utils';
+import type { BrandKit } from '@/remotion/types';
+import type { ForcedAlignmentResponse } from '@/lib/elevenlabs';
+import type { ProjectPayloadFlags } from '@/lib/project/payload';
+import type { CaptionsBundle } from './captions';
 
 export interface EditorSavePayload {
   doc: ProductionDoc;
   rowImages: Record<number, string>;
   voiceoverUrl?: string;
+  captions?: CaptionsBundle;
+  rowOverlays?: Record<number, RowOverlayRenderState>;
+  rowVideoClips?: Record<number, RowVideoClipState>;
+  musicUrl?: string;
+  brandKitOverride?: Partial<BrandKit>;
+  channelId?: string;
+  voiceoverAlignment?: ForcedAlignmentResponse;
+  flags?: ProjectPayloadFlags;
 }
 
 export type SaveResult =

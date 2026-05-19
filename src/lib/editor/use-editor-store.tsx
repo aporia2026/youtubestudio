@@ -162,6 +162,12 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
           voiceoverUrl?: unknown;
           captions?: unknown;
           rowOverlays?: unknown;
+          rowVideoClips?: unknown;
+          musicUrl?: unknown;
+          brandKitOverride?: unknown;
+          channelId?: unknown;
+          voiceoverAlignment?: unknown;
+          flags?: unknown;
         };
         if (p.doc && typeof p.doc === 'object') {
           dispatch({
@@ -176,6 +182,24 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
             rowOverlays:
               p.rowOverlays && typeof p.rowOverlays === 'object'
                 ? (p.rowOverlays as EditorState['rowOverlays'])
+                : undefined,
+            rowVideoClips:
+              p.rowVideoClips && typeof p.rowVideoClips === 'object'
+                ? (p.rowVideoClips as EditorState['rowVideoClips'])
+                : undefined,
+            musicUrl: typeof p.musicUrl === 'string' ? p.musicUrl : undefined,
+            brandKitOverride:
+              p.brandKitOverride && typeof p.brandKitOverride === 'object'
+                ? (p.brandKitOverride as EditorState['brandKitOverride'])
+                : undefined,
+            channelId: typeof p.channelId === 'string' ? p.channelId : undefined,
+            voiceoverAlignment:
+              p.voiceoverAlignment && typeof p.voiceoverAlignment === 'object'
+                ? (p.voiceoverAlignment as EditorState['voiceoverAlignment'])
+                : undefined,
+            flags:
+              p.flags && typeof p.flags === 'object'
+                ? (p.flags as EditorState['flags'])
                 : undefined,
             version: data.version,
           });

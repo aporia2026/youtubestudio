@@ -35,8 +35,10 @@
  * dispatches `RESET_FROM_SERVER` with the server's current payload
  * and version, dropping the user's unsaved edits.
  */
-import type { ProductionDoc, RowOverlayRenderState } from '@/remotion/utils';
-import type { TextOverlay } from '@/remotion/types';
+import type { ProductionDoc, RowOverlayRenderState, RowVideoClipState } from '@/remotion/utils';
+import type { BrandKit, TextOverlay } from '@/remotion/types';
+import type { ForcedAlignmentResponse } from '@/lib/elevenlabs';
+import type { ProjectPayloadFlags } from '@/lib/project/payload';
 import type { CaptionsBundle } from './captions';
 import { stampEditedAt } from './edited-at';
 
@@ -74,6 +76,26 @@ export interface EditorState {
    *  here, the editor's preview wouldn't show any overlays. See
    *  `_plans/2026-05-18-overlay-system-overhaul.md`. */
   rowOverlays: Record<number, RowOverlayRenderState>;
+  /** Per-row B-roll clip state — sparse, keyed by row index. The
+   *  editor doesn't generate clips (yet); this slot is pass-through
+   *  so the next save preserves whatever production-doc wrote.
+   *  Phase 2 of `_plans/2026-05-19-editor-production-doc-parity.md`. */
+  rowVideoClips: Record<number, RowVideoClipState>;
+  /** Background music URL. Pass-through state for now; the editor
+   *  doesn't change it yet. */
+  musicUrl: string | undefined;
+  /** Per-doc visual brand kit override (pass-through; falls back to
+   *  the channel kit and DEFAULT_BRAND_KIT in the renderer). */
+  brandKitOverride: Partial<BrandKit> | undefined;
+  /** Workspace's pinned channel for this project (pass-through). */
+  channelId: string | undefined;
+  /** Word-level alignment from ElevenLabs (pass-through; the editor's
+   *  preview uses it for scene-timing realignment). */
+  voiceoverAlignment: ForcedAlignmentResponse | undefined;
+  /** Project-level flags (animateScenes, suppressLowerThirds,
+   *  overlaysDisabled, rowLockedAsStill). The editor's toolbar
+   *  toggles flip these via SET_FLAGS; all other paths preserve. */
+  flags: ProjectPayloadFlags;
   version: number;
   /** True from the moment an editing command runs until the save
    *  endpoint acknowledges. Drives the toolbar's "Saved · Saving · …"
@@ -116,12 +138,24 @@ export type EditorCommand =
       voiceoverUrl?: string;
       captions?: CaptionsBundle;
       rowOverlays?: Record<number, RowOverlayRenderState>;
+      rowVideoClips?: Record<number, RowVideoClipState>;
+      musicUrl?: string;
+      brandKitOverride?: Partial<BrandKit>;
+      channelId?: string;
+      voiceoverAlignment?: ForcedAlignmentResponse;
+      flags?: ProjectPayloadFlags;
       version: number;
     }
   | { type: 'UNDO' }
   | { type: 'REDO' }
   | { type: 'RESIZE_SHOT'; shotIndex: number; durationMs: number }
   | { type: 'SPLIT_SHOT'; shotIndex: number; splitAtMs: number }
+  /** Toolbar flag toggle — animateScenes / suppressLowerThirds /
+   *  overlaysDisabled (the per-row `rowLockedAsStill` map mutates
+   *  via the same path but is patched in full when it changes).
+   *  Inverse stores the prior flag state so undo restores the
+   *  exact previous configuration. */
+  | { type: 'SET_FLAGS'; flags: Partial<ProjectPayloadFlags> }
   // MERGE_ADJACENT_SHOTS exists only as the inverse of SPLIT_SHOT.
   // Users never dispatch it directly; the reducer emits it when
   // building an undo entry.
@@ -264,6 +298,7 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'SET_ROW_OVERLAY':
     case 'ACCEPT_OVERLAY_EDIT':
     case 'REVERT_OVERLAY_EDIT_TO':
+    case 'SET_FLAGS':
       return true;
     default:
       return false;
@@ -390,6 +425,12 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           voiceoverUrl: cmd.voiceoverUrl,
           captions: cmd.captions,
           rowOverlays: cmd.rowOverlays ?? {},
+          rowVideoClips: cmd.rowVideoClips ?? {},
+          musicUrl: cmd.musicUrl,
+          brandKitOverride: cmd.brandKitOverride,
+          channelId: cmd.channelId,
+          voiceoverAlignment: cmd.voiceoverAlignment,
+          flags: cmd.flags ?? state.flags,
           version: cmd.version,
           isDirty: false,
           undoStack: [],
@@ -878,6 +919,45 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       };
     }
 
+    case 'SET_FLAGS': {
+      // Doc-level flag toggle (animateScenes / suppressLowerThirds /
+      // overlaysDisabled / rowLockedAsStill). Merges the partial into
+      // the current flags; the inverse is the prior flags so undo
+      // restores exactly the previous configuration even for
+      // partial-key toggles.
+      const prev = state.flags;
+      const merged: ProjectPayloadFlags = {
+        animateScenes:
+          cmd.flags.animateScenes !== undefined ? cmd.flags.animateScenes : prev.animateScenes,
+        suppressLowerThirds:
+          cmd.flags.suppressLowerThirds !== undefined
+            ? cmd.flags.suppressLowerThirds
+            : prev.suppressLowerThirds,
+        overlaysDisabled:
+          cmd.flags.overlaysDisabled !== undefined
+            ? cmd.flags.overlaysDisabled
+            : prev.overlaysDisabled,
+        rowLockedAsStill:
+          cmd.flags.rowLockedAsStill !== undefined
+            ? cmd.flags.rowLockedAsStill
+            : prev.rowLockedAsStill,
+      };
+      // No-op short-circuit so the undo stack doesn't grow with
+      // "toggle" entries that don't actually change anything.
+      if (
+        merged.animateScenes === prev.animateScenes &&
+        merged.suppressLowerThirds === prev.suppressLowerThirds &&
+        merged.overlaysDisabled === prev.overlaysDisabled &&
+        merged.rowLockedAsStill === prev.rowLockedAsStill
+      ) {
+        return { next: state, inverse: null };
+      }
+      return {
+        next: { ...state, flags: merged, isDirty: true },
+        inverse: { type: 'SET_FLAGS', flags: prev },
+      };
+    }
+
     case 'SET_ROW_VIDEO': {
       const { shotIndex, url, durationSeconds } = cmd;
       if (shotIndex < 0 || shotIndex >= state.doc.rows.length) {
@@ -1358,6 +1438,12 @@ export function initialEditorState(args: {
   voiceoverUrl?: string;
   captions?: CaptionsBundle;
   rowOverlays?: Record<number, RowOverlayRenderState>;
+  rowVideoClips?: Record<number, RowVideoClipState>;
+  musicUrl?: string;
+  brandKitOverride?: Partial<BrandKit>;
+  channelId?: string;
+  voiceoverAlignment?: ForcedAlignmentResponse;
+  flags?: ProjectPayloadFlags;
   version: number;
 }): EditorState {
   return {
@@ -1366,6 +1452,17 @@ export function initialEditorState(args: {
     voiceoverUrl: args.voiceoverUrl,
     captions: args.captions,
     rowOverlays: args.rowOverlays ?? {},
+    rowVideoClips: args.rowVideoClips ?? {},
+    musicUrl: args.musicUrl,
+    brandKitOverride: args.brandKitOverride,
+    channelId: args.channelId,
+    voiceoverAlignment: args.voiceoverAlignment,
+    flags: args.flags ?? {
+      animateScenes: true,
+      suppressLowerThirds: false,
+      overlaysDisabled: false,
+      rowLockedAsStill: {},
+    },
     version: args.version,
     isDirty: false,
     selection: null,
@@ -1384,6 +1481,12 @@ export function persistableFromState(state: EditorState): {
   voiceoverUrl?: string;
   captions?: CaptionsBundle;
   rowOverlays?: Record<number, RowOverlayRenderState>;
+  rowVideoClips?: Record<number, RowVideoClipState>;
+  musicUrl?: string;
+  brandKitOverride?: Partial<BrandKit>;
+  channelId?: string;
+  voiceoverAlignment?: ForcedAlignmentResponse;
+  flags: ProjectPayloadFlags;
 } {
   return {
     doc: state.doc,
@@ -1395,5 +1498,16 @@ export function persistableFromState(state: EditorState): {
     // open the doc there. Omit when empty to keep payloads small for
     // rows that never had an overlay.
     rowOverlays: Object.keys(state.rowOverlays).length > 0 ? state.rowOverlays : undefined,
+    // Phase 3b parity refactor: every previously-pass-through field
+    // round-trips so an editor save doesn't wipe production-doc's
+    // contributions. The editor's toolbar mutates `flags`; the rest
+    // (rowVideoClips, music, brand, channel, alignment) are
+    // pass-through for now.
+    rowVideoClips: Object.keys(state.rowVideoClips).length > 0 ? state.rowVideoClips : undefined,
+    musicUrl: state.musicUrl,
+    brandKitOverride: state.brandKitOverride,
+    channelId: state.channelId,
+    voiceoverAlignment: state.voiceoverAlignment,
+    flags: state.flags,
   };
 }
