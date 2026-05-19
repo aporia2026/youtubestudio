@@ -50,6 +50,13 @@ const IMAGE_MODELS = [
   { value: 'nano-banana', label: 'NanoBanana (Text-to-Image)' },
   { value: 'gpt-image-2-t2i', label: 'GPT Image 2 (Text-to-Image)' },
   { value: 'gpt-image-2-openai-t2i', label: 'GPT Image 2 via OpenAI (Text-to-Image, faster)' },
+  // Ideogram v3 — strongest at rendering legible text inside the image,
+  // which is exactly what thumbnail copy needs. Three tiers, same model
+  // under the hood; the speed/quality is the rendering_speed field on
+  // the wire. See src/app/api/thumbnails/image/route.ts.
+  { value: 'ideogram-v3-quality-t2i', label: 'Ideogram v3 Quality (Text-to-Image, best text)' },
+  { value: 'ideogram-v3-balanced-t2i', label: 'Ideogram v3 Balanced (Text-to-Image)' },
+  { value: 'ideogram-v3-turbo-t2i', label: 'Ideogram v3 Turbo (Text-to-Image, fastest)' },
   { value: 'grok-imagine-i2i', label: 'Grok Imagine (Image-to-Image)' },
   { value: 'flux2-pro-i2i', label: 'Flux2 Pro (Image-to-Image)' },
   { value: 'flux2-flex-i2i', label: 'Flux2 Flex (Image-to-Image)' },

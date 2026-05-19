@@ -21,6 +21,18 @@ export const IMAGE_MODELS: ImageModelSpec[] = [
   { value: 'flux2-flex-t2i', label: 'Flux 2 Flex', kieModel: 'flux-2/flex-text-to-image', hint: 'Flux 2 — balanced cost/quality' },
   { value: 'nano-banana', label: 'Google NanoBanana', kieModel: 'google/nano-banana', hint: 'Google Imagen via Kie.ai' },
   { value: 'gpt-image-2-t2i', label: 'GPT Image 2', kieModel: 'gpt-image-2-text-to-image', hint: 'OpenAI image model via Kie.ai' },
+  // Ideogram v3 — best-in-class for rendering legible text inside the image
+  // (signage, posters, hand-lettered captions). Caveat for the production-doc
+  // flow: any text Ideogram renders will be warped by the downstream i2v
+  // step if the row gets animated. Useful for still-only rows or when the
+  // on-screen-text directive is the whole point of the scene.
+  //
+  // All three tiers share one model string (`ideogram/v3-text-to-image`); the
+  // tier is the `rendering_speed` field, set in buildKieImageInput. Two tiers
+  // exposed here (Quality + Turbo); the middle "Balanced" tier sits close
+  // enough to Quality that adding it bloats the picker without adding choice.
+  { value: 'ideogram-v3-quality-t2i', label: 'Ideogram v3 Quality', kieModel: 'ideogram/v3-text-to-image', hint: 'Best-in-class text rendering — $0.05/image' },
+  { value: 'ideogram-v3-turbo-t2i', label: 'Ideogram v3 Turbo', kieModel: 'ideogram/v3-text-to-image', hint: 'Cheap, fast text rendering — $0.0175/image' },
 ];
 
 export const DEFAULT_IMAGE_MODEL = IMAGE_MODELS[0].value;
@@ -37,8 +49,9 @@ export function buildKieImageInput(modelValue: string, prompt: string): Record<s
   const kieModel = spec?.kieModel ?? IMAGE_MODELS[0].kieModel;
   const input: Record<string, unknown> = { prompt };
 
-  // GPT Image 2 doesn't document an nsfw_checker field; sending it can 422.
-  if (!kieModel.startsWith('gpt-image-2')) {
+  // GPT Image 2 and Ideogram v3 don't document an nsfw_checker field;
+  // sending it can 422 on stricter validators.
+  if (!kieModel.startsWith('gpt-image-2') && !kieModel.startsWith('ideogram/')) {
     input.nsfw_checker = true;
   }
 
@@ -51,6 +64,17 @@ export function buildKieImageInput(modelValue: string, prompt: string): Record<s
   } else if (kieModel.startsWith('gpt-image-2')) {
     input.aspect_ratio = '16:9';
     input.resolution = '1K';
+  } else if (kieModel === 'ideogram/v3-text-to-image') {
+    // Ideogram uses enum names for aspect (not "16:9") and routes the
+    // tier through the rendering_speed field — all three tiers share
+    // the single `ideogram/v3-text-to-image` model string, so the
+    // speed is encoded in the spec value.
+    input.image_size = 'landscape_16_9';
+    input.rendering_speed = modelValue.includes('turbo')
+      ? 'TURBO'
+      : modelValue.includes('balanced')
+        ? 'BALANCED'
+        : 'QUALITY';
   } else {
     input.aspect_ratio = '16:9';
   }

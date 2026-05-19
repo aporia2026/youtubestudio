@@ -23,7 +23,15 @@ export const maxDuration = 300;
  * uses `image_urls`. The provider tag below selects the code path.
  */
 type ModelConfig =
-  | { provider: 'kie'; model: string; type: 'text-to-image' | 'image-to-image' }
+  | {
+      provider: 'kie';
+      model: string;
+      type: 'text-to-image' | 'image-to-image';
+      /** Ideogram v3 routes its tier through the `rendering_speed` field
+       *  while all three tiers share one model string, so the speed has
+       *  to live alongside `model` instead of being inferred from it. */
+      renderingSpeed?: 'QUALITY' | 'BALANCED' | 'TURBO';
+    }
   | { provider: 'openai'; type: 'text-to-image' | 'image-to-image' };
 
 const MODEL_MAP: Record<string, ModelConfig> = {
@@ -32,6 +40,11 @@ const MODEL_MAP: Record<string, ModelConfig> = {
   'flux2-flex-t2i': { provider: 'kie', model: 'flux-2/flex-text-to-image', type: 'text-to-image' },
   'nano-banana': { provider: 'kie', model: 'google/nano-banana', type: 'text-to-image' },
   'gpt-image-2-t2i': { provider: 'kie', model: 'gpt-image-2-text-to-image', type: 'text-to-image' },
+  // Ideogram v3 — single model string, tier via renderingSpeed. See
+  // the input-building block below for the field translation.
+  'ideogram-v3-quality-t2i': { provider: 'kie', model: 'ideogram/v3-text-to-image', type: 'text-to-image', renderingSpeed: 'QUALITY' },
+  'ideogram-v3-balanced-t2i': { provider: 'kie', model: 'ideogram/v3-text-to-image', type: 'text-to-image', renderingSpeed: 'BALANCED' },
+  'ideogram-v3-turbo-t2i': { provider: 'kie', model: 'ideogram/v3-text-to-image', type: 'text-to-image', renderingSpeed: 'TURBO' },
   'grok-imagine-i2i': { provider: 'kie', model: 'grok-imagine/image-to-image', type: 'image-to-image' },
   'flux2-pro-i2i': { provider: 'kie', model: 'flux-2/pro-image-to-image', type: 'image-to-image' },
   'flux2-flex-i2i': { provider: 'kie', model: 'flux-2/flex-image-to-image', type: 'image-to-image' },
@@ -131,12 +144,12 @@ export async function POST(req: NextRequest) {
     // Kie.ai path (default).
     const apiKey = requireKieKey();
 
-    // Build request body. GPT Image 2 doesn't document an nsfw_checker
-    // field (per Kie market spec) — including it risks a 422 on stricter
-    // validators. Every other Kie image model accepts it.
+    // Build request body. GPT Image 2 and Ideogram v3 don't document an
+    // nsfw_checker field (per Kie market spec) — including it risks a 422
+    // on stricter validators. Every other Kie image model accepts it.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const input: Record<string, any> = { prompt };
-    if (!config.model.startsWith('gpt-image-2')) {
+    if (!config.model.startsWith('gpt-image-2') && !config.model.startsWith('ideogram/')) {
       input.nsfw_checker = true;
     }
 
@@ -151,6 +164,12 @@ export async function POST(req: NextRequest) {
       } else if (config.model.startsWith('gpt-image-2')) {
         input.aspect_ratio = '16:9';
         input.resolution = '1K';
+      } else if (config.model === 'ideogram/v3-text-to-image') {
+        // Ideogram uses enum names for aspect (`landscape_16_9`, not the
+        // "16:9" string the others take) and routes the tier through
+        // `rendering_speed`. Tier is locked on the config from MODEL_MAP.
+        input.image_size = 'landscape_16_9';
+        input.rendering_speed = config.renderingSpeed ?? 'QUALITY';
       } else {
         input.aspect_ratio = '16:9';
       }
