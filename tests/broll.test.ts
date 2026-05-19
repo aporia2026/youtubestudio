@@ -329,6 +329,66 @@ describe('BROLL_MODELS registry', () => {
     expect((at10.input as Record<string, unknown>).duration).toBe('8');
   });
 
+  it('Kling 3.0 i2v: unified model string + mode field, sound:false, no negative_prompt', () => {
+    const m = findBrollModel('kling-3-0-pro-i2v-10s');
+    expect(m).toBeDefined();
+    const body = m!.buildBody({
+      prompt: 'p',
+      aspectRatio: '16:9',
+      durationSeconds: 10,
+      stillImageUrl: 'https://example.com/x.jpg',
+    });
+    expect(body.model).toBe('kling-3.0/video');
+    const input = body.input as Record<string, unknown>;
+    expect(input.image_urls).toEqual(['https://example.com/x.jpg']);
+    expect(input.mode).toBe('pro');
+    expect(input.sound).toBe(false);
+    expect(input.multi_shots).toBe(false);
+    expect(input.duration).toBe('10');
+    expect(input.aspect_ratio).toBe('16:9');
+    // 3.0 has no negative_prompt support — make sure we don't accidentally
+    // send one (Kie would either reject the body or silently drop it).
+    expect(input.negative_prompt).toBeUndefined();
+  });
+
+  it('Kling 3.0 std / pro / 4K all use mode field, not separate model strings', () => {
+    const std = findBrollModel('kling-3-0-std-i2v-10s')!.buildBody({
+      prompt: 'p',
+      aspectRatio: '16:9',
+      durationSeconds: 10,
+      stillImageUrl: 'https://example.com/x.jpg',
+    });
+    const pro = findBrollModel('kling-3-0-pro-i2v-10s')!.buildBody({
+      prompt: 'p',
+      aspectRatio: '16:9',
+      durationSeconds: 10,
+      stillImageUrl: 'https://example.com/x.jpg',
+    });
+    const k4 = findBrollModel('kling-3-0-4k-i2v-10s')!.buildBody({
+      prompt: 'p',
+      aspectRatio: '16:9',
+      durationSeconds: 10,
+      stillImageUrl: 'https://example.com/x.jpg',
+    });
+    expect(std.model).toBe('kling-3.0/video');
+    expect(pro.model).toBe('kling-3.0/video');
+    expect(k4.model).toBe('kling-3.0/video');
+    expect((std.input as Record<string, unknown>).mode).toBe('std');
+    expect((pro.input as Record<string, unknown>).mode).toBe('pro');
+    expect((k4.input as Record<string, unknown>).mode).toBe('4K');
+  });
+
+  it('Kling 3.0 t2v omits image_urls (vs i2v which includes them)', () => {
+    const t2v = findBrollModel('kling-3-0-pro-t2v-10s')!.buildBody({
+      prompt: 'p',
+      aspectRatio: '16:9',
+      durationSeconds: 10,
+    });
+    const input = t2v.input as Record<string, unknown>;
+    expect(input.image_urls).toBeUndefined();
+    expect(input.mode).toBe('pro');
+  });
+
   it('Seedance 1.5 Pro 720p / 480p variants send the right resolution', () => {
     const args = {
       prompt: 'p',

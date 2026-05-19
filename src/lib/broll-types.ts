@@ -188,6 +188,65 @@ function buildKling26I2VBody(args: BuildBrollBodyArgs): Record<string, unknown> 
   };
 }
 
+// ─── Kling 3.0 ──────────────────────────────────────────────────────────────
+// Kling 3.0 ships a different wire shape than 2.5 / 2.6:
+//   - ONE model string (`kling-3.0/video`) for every tier and both modes
+//     (t2v and i2v). The resolution tier is the `mode` field:
+//       'std' → 720p, 'pro' → 1080p (Kie's default), '4K' → 2160p.
+//   - Duration is any integer 3–15 as a string, not the '5' | '10' enum
+//     the older Kling builders cast to.
+//   - NO `negative_prompt` field. The 2.5 / 2.6 builders use it to stop
+//     gibberish text from floating in the frame; 3.0 has no equivalent
+//     toggle, so the only way to suppress text is to put instructions in
+//     the prompt itself. We do not auto-append that here — it would change
+//     generation behaviour unpredictably. The picker blurbs flag the
+//     limitation so users know.
+// `multi_shots: false` and `sound: false` are locked on: every production-doc
+// row is single-shot and audio-disabled (we use the row's own narration track).
+function buildKling30Body(
+  args: BuildBrollBodyArgs,
+  mode: 'std' | 'pro' | '4K',
+  hasImage: boolean,
+): Record<string, unknown> {
+  return {
+    model: 'kling-3.0/video',
+    ...(args.callbackUrl ? { callBackUrl: args.callbackUrl } : {}),
+    input: {
+      prompt: args.prompt,
+      ...(hasImage && args.stillImageUrl ? { image_urls: [args.stillImageUrl] } : {}),
+      aspect_ratio: args.aspectRatio,
+      duration: String(args.durationSeconds),
+      mode,
+      sound: false,
+      multi_shots: false,
+    },
+  };
+}
+
+function buildKling30StdI2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildKling30Body(args, 'std', true);
+}
+
+function buildKling30StdT2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildKling30Body(args, 'std', false);
+}
+
+function buildKling30ProI2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildKling30Body(args, 'pro', true);
+}
+
+function buildKling30ProT2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildKling30Body(args, 'pro', false);
+}
+
+function buildKling30K4I2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildKling30Body(args, '4K', true);
+}
+
+function buildKling30K4T2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
+  return buildKling30Body(args, '4K', false);
+}
+
 function buildSora2I2VBody(args: BuildBrollBodyArgs): Record<string, unknown> {
   // Sora 2 i2v expresses orientation as `landscape` / `portrait`, not 16:9 / 9:16.
   const orientation = args.aspectRatio === '9:16' ? 'portrait' : 'landscape';
@@ -494,6 +553,90 @@ export const BROLL_MODELS: readonly BrollModelDescriptor[] = [
     buildBody: buildKling26I2VBody,
   },
   {
+    id: 'kling-3-0-std-i2v-10s',
+    label: 'Kling 3.0 Std (10s, 720p)',
+    kind: 'image-to-video',
+    family: 'kling',
+    provider: 'kie',
+    priceUsdLabel: '$0.70',
+    priceUsd: 0.7,
+    durationSeconds: 10,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: 'Kling 3.0 standard tier — 720p. No negative_prompt support.',
+    buildBody: buildKling30StdI2VBody,
+  },
+  {
+    id: 'kling-3-0-std-i2v-5s',
+    label: 'Kling 3.0 Std (5s, 720p)',
+    kind: 'image-to-video',
+    family: 'kling',
+    provider: 'kie',
+    priceUsdLabel: '$0.35',
+    priceUsd: 0.35,
+    durationSeconds: 5,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: 'Half-cost 5s of Kling 3.0 standard at 720p.',
+    buildBody: buildKling30StdI2VBody,
+  },
+  {
+    id: 'kling-3-0-pro-i2v-10s',
+    label: 'Kling 3.0 Pro (10s, 1080p)',
+    kind: 'image-to-video',
+    family: 'kling',
+    provider: 'kie',
+    priceUsdLabel: '$0.90',
+    priceUsd: 0.9,
+    durationSeconds: 10,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: "Kling 3.0 Pro — 1080p, the model's default mode.",
+    buildBody: buildKling30ProI2VBody,
+  },
+  {
+    id: 'kling-3-0-pro-i2v-5s',
+    label: 'Kling 3.0 Pro (5s, 1080p)',
+    kind: 'image-to-video',
+    family: 'kling',
+    provider: 'kie',
+    priceUsdLabel: '$0.45',
+    priceUsd: 0.45,
+    durationSeconds: 5,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: 'Half-cost 5s of Kling 3.0 Pro at 1080p.',
+    buildBody: buildKling30ProI2VBody,
+  },
+  {
+    id: 'kling-3-0-4k-i2v-10s',
+    label: 'Kling 3.0 4K (10s, 2160p)',
+    kind: 'image-to-video',
+    family: 'kling',
+    provider: 'kie',
+    priceUsdLabel: '$3.35',
+    priceUsd: 3.35,
+    durationSeconds: 10,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: 'Kling 3.0 at 4K — premium hero shots, ~3.7× the Pro cost.',
+    buildBody: buildKling30K4I2VBody,
+  },
+  {
+    id: 'kling-3-0-4k-i2v-5s',
+    label: 'Kling 3.0 4K (5s, 2160p)',
+    kind: 'image-to-video',
+    family: 'kling',
+    provider: 'kie',
+    priceUsdLabel: '$1.68',
+    priceUsd: 1.675,
+    durationSeconds: 5,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: 'Half-cost 5s of Kling 3.0 at 4K.',
+    buildBody: buildKling30K4I2VBody,
+  },
+  {
     id: 'sora-2-i2v-10s',
     label: 'Sora 2 i2v (10s)',
     kind: 'image-to-video',
@@ -653,6 +796,48 @@ export const BROLL_MODELS: readonly BrollModelDescriptor[] = [
     endpoint: 'createTask',
     blurb: 'Kling text-to-video for rows without a reference still.',
     buildBody: buildKlingV25TurboT2VBody,
+  },
+  {
+    id: 'kling-3-0-std-t2v-10s',
+    label: 'Kling 3.0 Std t2v (10s, 720p)',
+    kind: 'text-to-video',
+    family: 'kling',
+    provider: 'kie',
+    priceUsdLabel: '$0.70',
+    priceUsd: 0.7,
+    durationSeconds: 10,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: 'Kling 3.0 standard t2v — 720p. No negative_prompt support.',
+    buildBody: buildKling30StdT2VBody,
+  },
+  {
+    id: 'kling-3-0-pro-t2v-10s',
+    label: 'Kling 3.0 Pro t2v (10s, 1080p)',
+    kind: 'text-to-video',
+    family: 'kling',
+    provider: 'kie',
+    priceUsdLabel: '$0.90',
+    priceUsd: 0.9,
+    durationSeconds: 10,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: "Kling 3.0 Pro t2v — 1080p, the model's default mode.",
+    buildBody: buildKling30ProT2VBody,
+  },
+  {
+    id: 'kling-3-0-4k-t2v-10s',
+    label: 'Kling 3.0 4K t2v (10s, 2160p)',
+    kind: 'text-to-video',
+    family: 'kling',
+    provider: 'kie',
+    priceUsdLabel: '$3.35',
+    priceUsd: 3.35,
+    durationSeconds: 10,
+    supportedAspects: ['16:9', '9:16', '1:1'],
+    endpoint: 'createTask',
+    blurb: 'Kling 3.0 4K t2v — premium hero shots at 2160p.',
+    buildBody: buildKling30K4T2VBody,
   },
   {
     id: 'sora-2',
@@ -858,6 +1043,9 @@ export const DEFAULT_BROLL_T2V_MODEL_ID = 'kling-v2-5-turbo-t2v-pro-10s';
 const FIVE_SECOND_VARIANT_OF: Readonly<Record<string, string>> = Object.freeze({
   'kling-v2-5-turbo-i2v-pro-10s': 'kling-v2-5-turbo-i2v-pro-5s',
   'kling-2-6-i2v-10s': 'kling-2-6-i2v-5s',
+  'kling-3-0-std-i2v-10s': 'kling-3-0-std-i2v-5s',
+  'kling-3-0-pro-i2v-10s': 'kling-3-0-pro-i2v-5s',
+  'kling-3-0-4k-i2v-10s': 'kling-3-0-4k-i2v-5s',
 });
 
 /** Threshold (seconds) at or below which we use the 5s tier. Above this,
