@@ -168,6 +168,8 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
           channelId?: unknown;
           voiceoverAlignment?: unknown;
           flags?: unknown;
+          linkedProjectId?: unknown;
+          linkedScheduleItemId?: unknown;
         };
         if (p.doc && typeof p.doc === 'object') {
           dispatch({
@@ -201,6 +203,9 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
               p.flags && typeof p.flags === 'object'
                 ? (p.flags as EditorState['flags'])
                 : undefined,
+            linkedProjectId: typeof p.linkedProjectId === 'string' ? p.linkedProjectId : undefined,
+            linkedScheduleItemId:
+              typeof p.linkedScheduleItemId === 'string' ? p.linkedScheduleItemId : undefined,
             version: data.version,
           });
           setSaveStatus({ kind: 'idle' });

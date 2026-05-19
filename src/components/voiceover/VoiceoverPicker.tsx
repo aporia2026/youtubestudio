@@ -1,0 +1,535 @@
+'use client';
+
+/**
+ * Shared voiceover picker — Batch A of
+ * `_plans/2026-05-20-editor-prod-doc-parity-batches.md`.
+ *
+ * Lifted out of `app/(app)/production-doc/page.tsx` so both the
+ * production-doc page and the editor's Audio panel mount the same
+ * component. Behaviour matches the inline original verbatim:
+ *
+ *   - Merges two sources on mount: ElevenLabs history (per-user) and
+ *     workspace `/api/voiceovers/library` (narrator stitched / full,
+ *     plus other media_assets).
+ *   - Auto-picks the best match on first load via `pickBestVoiceover`
+ *     (scheduleItem > project > title > most-recent).
+ *   - `userTouchedRef` guards the auto-pick so a manual selection is
+ *     never silently clobbered.
+ *   - Preview audio plays inline on the play-button click; stops on
+ *     unmount / select / close.
+ *
+ * The picker is intentionally framework-aware about the visual chrome —
+ * it uses `var(--text-*)` / `var(--border)` tokens that exist in both
+ * production-doc and the editor's scoped theme (editor-theme.css
+ * aliases `--card-border` and friends to the canonical workspace
+ * tokens). Both surfaces get the same look without duplication.
+ */
+
+import { useEffect, useRef, useState } from 'react';
+import { toast } from 'sonner';
+import { getVoiceoverHistory } from '@/lib/history';
+import {
+  describeMatchSignal,
+  pickBestVoiceover,
+  relativeVoiceoverTime,
+  sourceLabel,
+  type VoiceoverItem,
+} from '@/lib/voiceovers/picker-types';
+
+export interface VoiceoverPickerProps {
+  /** Current URL (controlled — keeps Remotion player API untouched). */
+  value: string;
+  /** Setter that also persists "user touched this" intent. */
+  onChange: (url: string, source: 'auto' | 'manual' | 'clear') => void;
+  /** Schedule item id we're linked to, if any (strongest match signal). */
+  scheduleItemId: string | null | undefined;
+  /** Project id (projects.id, not user_history.id). Matches narrator audio
+   *  and other media_assets. */
+  projectId: string | null | undefined;
+  /** Title candidates to match against entry.videoTitle (in priority order). */
+  titleCandidates: Array<string | null | undefined>;
+  /** Optional namespace prefix for the picker's `[voiceover-picker]` logs.
+   *  Defaults to `voiceover-picker` so each surface labels its own events
+   *  for the observability trail. */
+  logNamespace?: string;
+}
+
+interface LibraryRow {
+  id: string;
+  audioUrl: string;
+  name: string;
+  narratorName: string | null;
+  projectId: string | null;
+  projectTitle: string | null;
+  assignmentId: string | null;
+  scheduleItemId: string | null;
+  timestamp: number;
+  source: 'narrator_full' | 'narrator_stitched' | 'other';
+}
+
+export function VoiceoverPicker({
+  value,
+  onChange,
+  scheduleItemId,
+  projectId,
+  titleCandidates,
+  logNamespace = 'voiceover-picker',
+}: VoiceoverPickerProps) {
+  const [items, setItems] = useState<VoiceoverItem[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [autoMatchedId, setAutoMatchedId] = useState<string | null>(null);
+  const userTouchedRef = useRef(false);
+  const playingIdRef = useRef<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playingId, setPlayingId] = useState<string | null>(null);
+
+  // Initial load — fetch both sources in parallel and merge. Failures on
+  // one source don't block the other; an offline media_assets call still
+  // shows the user's ElevenLabs history and vice versa.
+  useEffect(() => {
+    let cancelled = false;
+
+    const elevenlabsPromise = getVoiceoverHistory()
+      .then((list) =>
+        list.map(
+          (e): VoiceoverItem => ({
+            id: `el:${e.id}`,
+            source: 'elevenlabs',
+            audioUrl: e.audioUrl,
+            voiceName: e.voiceName,
+            badgeLabel: null,
+            videoTitle: e.videoTitle ?? null,
+            projectId: null,
+            assignmentId: null,
+            scheduleItemId: e.scheduleItemId ?? null,
+            timestamp: e.timestamp,
+            summary: e.textPreview
+              ? `${e.charCount.toLocaleString()} chars · ${e.textPreview.slice(0, 60)}${
+                  e.textPreview.length > 60 ? '…' : ''
+                }`
+              : null,
+          }),
+        ),
+      )
+      .catch(() => [] as VoiceoverItem[]);
+
+    const libraryPromise = fetch('/api/voiceovers/library', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : { voiceovers: [] as LibraryRow[] }))
+      .then((data: { voiceovers?: LibraryRow[] }) =>
+        (data.voiceovers || []).map(
+          (e): VoiceoverItem => ({
+            id: `lib:${e.id}`,
+            source: e.source === 'other' ? 'media_asset' : e.source,
+            audioUrl: e.audioUrl,
+            voiceName: e.narratorName || e.name || 'Narrator',
+            badgeLabel:
+              e.source === 'narrator_stitched'
+                ? 'stitched'
+                : e.source === 'narrator_full'
+                  ? 'full upload'
+                  : null,
+            videoTitle: e.projectTitle,
+            projectId: e.projectId,
+            assignmentId: e.assignmentId,
+            scheduleItemId: e.scheduleItemId,
+            timestamp: e.timestamp,
+            summary: null,
+          }),
+        ),
+      )
+      .catch(() => [] as VoiceoverItem[]);
+
+    Promise.all([elevenlabsPromise, libraryPromise])
+      .then(([a, b]) => {
+        if (cancelled) return;
+        // Dedupe on audioUrl — if the same blob URL shows up under both sources
+        // (rare, but possible if a narrator approval was also logged to history)
+        // we keep the first occurrence, which preserves source ordering.
+        const seen = new Set<string>();
+        const merged: VoiceoverItem[] = [];
+        for (const item of [...a, ...b].sort((x, y) => y.timestamp - x.timestamp)) {
+          if (!item.audioUrl || seen.has(item.audioUrl)) continue;
+          seen.add(item.audioUrl);
+          merged.push(item);
+        }
+        setItems(merged);
+        setLoaded(true);
+        console.info(`[${logNamespace}] loaded`, {
+          elCount: a.length,
+          libCount: b.length,
+          mergedCount: merged.length,
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLoaded(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [logNamespace]);
+
+  // Auto-match — re-runs when matching context changes. Skips silently
+  // once the user has clicked something to avoid clobbering their choice.
+  const titleKey = titleCandidates.filter(Boolean).join('||');
+  useEffect(() => {
+    if (!loaded || userTouchedRef.current) return;
+    const match = pickBestVoiceover(items, scheduleItemId, projectId, titleCandidates);
+    if (match?.audioUrl && match.audioUrl !== value) {
+      const signal = describeMatchSignal(match, scheduleItemId, projectId, titleCandidates);
+      // Don't fire auto-match when nothing actually matched — only the
+      // "recent" fallback. The user shouldn't be surprised by a random
+      // recent voiceover landing on a fresh project.
+      if (signal !== 'recent') {
+        console.info(`[${logNamespace}] auto-matched`, {
+          source: match.source,
+          signal,
+          narratorName: match.voiceName,
+        });
+        onChange(match.audioUrl, 'auto');
+        setAutoMatchedId(match.id);
+      } else {
+        setAutoMatchedId(match.id);
+      }
+    } else if (match?.id) {
+      setAutoMatchedId(match.id);
+    }
+    // titleCandidates is captured via titleKey; suppress exhaustive-deps for
+    // the array identity warning that doesn't reflect a real dependency change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, items, scheduleItemId, projectId, titleKey, value, logNamespace]);
+
+  // Stop preview audio if the picker unmounts or the popover closes.
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, []);
+
+  function togglePreview(item: VoiceoverItem) {
+    if (!item.audioUrl) return;
+    if (playingIdRef.current === item.id && audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+      playingIdRef.current = null;
+      setPlayingId(null);
+      return;
+    }
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    const audio = new Audio(item.audioUrl);
+    audio.onended = () => {
+      if (playingIdRef.current === item.id) {
+        playingIdRef.current = null;
+        setPlayingId(null);
+      }
+    };
+    audio.onerror = () => {
+      playingIdRef.current = null;
+      setPlayingId(null);
+      toast.error('Could not play preview');
+    };
+    audioRef.current = audio;
+    playingIdRef.current = item.id;
+    setPlayingId(item.id);
+    audio.play().catch(() => {
+      playingIdRef.current = null;
+      setPlayingId(null);
+    });
+  }
+
+  function selectItem(item: VoiceoverItem) {
+    userTouchedRef.current = true;
+    console.info(`[${logNamespace}] manual select`, {
+      source: item.source,
+      narratorName: item.voiceName,
+    });
+    onChange(item.audioUrl, 'manual');
+    setOpen(false);
+  }
+
+  function clearSelection() {
+    userTouchedRef.current = true;
+    onChange('', 'clear');
+    setOpen(false);
+  }
+
+  const selected = items.find((i) => i.audioUrl === value) || null;
+  const matchedToCurrent = selected && autoMatchedId === selected.id;
+
+  // ─── Trigger button (collapsed state) ──────────────────────────────────
+  const triggerLabel = (() => {
+    if (!loaded) return 'Loading voiceovers…';
+    if (selected) {
+      const title = selected.videoTitle?.trim();
+      return title
+        ? `${selected.voiceName} · ${title}`
+        : `${selected.voiceName} (${relativeVoiceoverTime(selected.timestamp)})`;
+    }
+    if (value) return 'External URL set';
+    if (items.length === 0) return 'No voiceovers in library yet';
+    return 'Select a voiceover…';
+  })();
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="input-field text-xs"
+        style={{
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          textAlign: 'left',
+          cursor: 'pointer',
+        }}
+      >
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            style={{ color: selected ? '#a78bfa' : 'var(--text-muted)', flexShrink: 0 }}
+          >
+            <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+            <path d="M21 19a2 2 0 0 1-2 2h-1v-7h3zM3 19a2 2 0 0 0 2 2h1v-7H3z" />
+          </svg>
+          <span
+            style={{
+              color: selected || value ? 'var(--text-primary)' : 'var(--text-muted)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {triggerLabel}
+          </span>
+          {matchedToCurrent && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded-full whitespace-nowrap"
+              style={{ background: 'rgba(168,85,247,0.18)', color: '#c084fc', flexShrink: 0 }}
+              title="Auto-matched to this video"
+            >
+              auto-matched
+            </span>
+          )}
+        </span>
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          style={{
+            color: 'var(--text-muted)',
+            transform: open ? 'rotate(180deg)' : 'none',
+            transition: 'transform 0.15s',
+            flexShrink: 0,
+          }}
+        >
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </button>
+
+      {open && (
+        <>
+          {/* Click-outside catcher */}
+          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+          <div
+            style={{
+              position: 'absolute',
+              top: 'calc(100% + 4px)',
+              left: 0,
+              right: 0,
+              zIndex: 50,
+              maxHeight: 380,
+              overflowY: 'auto',
+              background: 'var(--bg-elevated, #181818)',
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              boxShadow: '0 10px 30px rgba(0,0,0,0.45)',
+              padding: 4,
+            }}
+          >
+            {items.length === 0 ? (
+              <div className="text-xs px-3 py-4 text-center" style={{ color: 'var(--text-muted)' }}>
+                No voiceovers yet. Record one in{' '}
+                <strong style={{ color: 'var(--text-secondary)' }}>Voiceover Studio</strong> or
+                assign a <strong style={{ color: 'var(--text-secondary)' }}>Narrator</strong> to a
+                project.
+              </div>
+            ) : (
+              <>
+                {value && (
+                  <button
+                    type="button"
+                    onClick={clearSelection}
+                    className="text-xs w-full text-left px-3 py-2 rounded"
+                    style={{ color: '#f87171', background: 'transparent' }}
+                    onMouseEnter={(e) =>
+                      (e.currentTarget.style.background = 'rgba(239,68,68,0.08)')
+                    }
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    ✕ Clear voiceover (silent video)
+                  </button>
+                )}
+                {items.map((item) => {
+                  const isSelected = item.audioUrl === value;
+                  const isAutoMatch = item.id === autoMatchedId;
+                  const srcColor =
+                    item.source === 'elevenlabs'
+                      ? '#60a5fa'
+                      : item.source.startsWith('narrator')
+                        ? '#34d399'
+                        : 'var(--text-muted)';
+                  const srcBg =
+                    item.source === 'elevenlabs'
+                      ? 'rgba(59,130,246,0.14)'
+                      : item.source.startsWith('narrator')
+                        ? 'rgba(16,185,129,0.14)'
+                        : 'rgba(255,255,255,0.06)';
+                  return (
+                    <div
+                      key={item.id}
+                      className="flex items-start gap-2 px-2 py-2 rounded"
+                      style={{
+                        background: isSelected ? 'rgba(168,85,247,0.14)' : 'transparent',
+                        cursor: 'pointer',
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!isSelected) e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isSelected) e.currentTarget.style.background = 'transparent';
+                      }}
+                      onClick={() => selectItem(item)}
+                    >
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          togglePreview(item);
+                        }}
+                        title={playingId === item.id ? 'Stop preview' : 'Play preview'}
+                        style={{
+                          width: 26,
+                          height: 26,
+                          flexShrink: 0,
+                          marginTop: 2,
+                          borderRadius: 13,
+                          background:
+                            playingId === item.id
+                              ? 'rgba(168,85,247,0.25)'
+                              : 'rgba(255,255,255,0.08)',
+                          border: 'none',
+                          color: playingId === item.id ? '#c084fc' : 'var(--text-secondary)',
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        {playingId === item.id ? (
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                            <rect x="6" y="5" width="4" height="14" rx="1" />
+                            <rect x="14" y="5" width="4" height="14" rx="1" />
+                          </svg>
+                        ) : (
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M8 5v14l11-7z" />
+                          </svg>
+                        )}
+                      </button>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="flex items-center gap-1.5" style={{ minWidth: 0 }}>
+                          <span
+                            className="text-xs font-medium"
+                            style={{
+                              color: isSelected ? '#c084fc' : 'var(--text-primary)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {item.voiceName}
+                          </span>
+                          <span
+                            className="text-[9px] px-1 py-0.5 rounded whitespace-nowrap"
+                            style={{ background: srcBg, color: srcColor }}
+                          >
+                            {sourceLabel(item.source)}
+                          </span>
+                          {item.badgeLabel && (
+                            <span
+                              className="text-[9px] px-1 py-0.5 rounded whitespace-nowrap"
+                              style={{
+                                background: 'rgba(255,255,255,0.06)',
+                                color: 'var(--text-muted)',
+                              }}
+                            >
+                              {item.badgeLabel}
+                            </span>
+                          )}
+                          {isAutoMatch && !isSelected && (
+                            <span
+                              className="text-[9px] px-1 py-0.5 rounded"
+                              style={{
+                                background: 'rgba(168,85,247,0.18)',
+                                color: '#c084fc',
+                              }}
+                            >
+                              match
+                            </span>
+                          )}
+                          <span
+                            className="text-[10px] ml-auto whitespace-nowrap"
+                            style={{ color: 'var(--text-muted)' }}
+                          >
+                            {relativeVoiceoverTime(item.timestamp)}
+                          </span>
+                        </div>
+                        {item.videoTitle && (
+                          <div
+                            className="text-[10px] truncate"
+                            style={{ color: 'var(--text-secondary)' }}
+                          >
+                            {item.videoTitle}
+                          </div>
+                        )}
+                        {item.summary && (
+                          <div
+                            className="text-[10px] truncate"
+                            style={{ color: 'var(--text-muted)' }}
+                          >
+                            {item.summary}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}

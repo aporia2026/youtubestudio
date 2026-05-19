@@ -96,6 +96,13 @@ export interface EditorState {
    *  overlaysDisabled, rowLockedAsStill). The editor's toolbar
    *  toggles flip these via SET_FLAGS; all other paths preserve. */
   flags: ProjectPayloadFlags;
+  /** `projects.id` this user_history project is linked to. Pass-through
+   *  state — the voiceover picker reads it to auto-match narrator
+   *  audio. Batch A of parity-batches. */
+  linkedProjectId: string | undefined;
+  /** `schedule_items.id` the project was created from, when applicable.
+   *  Strongest match signal for the voiceover picker. */
+  linkedScheduleItemId: string | undefined;
   version: number;
   /** True from the moment an editing command runs until the save
    *  endpoint acknowledges. Drives the toolbar's "Saved · Saving · …"
@@ -144,6 +151,8 @@ export type EditorCommand =
       channelId?: string;
       voiceoverAlignment?: ForcedAlignmentResponse;
       flags?: ProjectPayloadFlags;
+      linkedProjectId?: string;
+      linkedScheduleItemId?: string;
       version: number;
     }
   | { type: 'UNDO' }
@@ -161,6 +170,11 @@ export type EditorCommand =
    *  text so undo restores it. No-op when the new text matches the
    *  prior text. */
   | { type: 'UPDATE_CAPTION_SEGMENT'; segmentIndex: number; text: string }
+  /** Swap the project's voiceover URL. Used by the editor's
+   *  voiceover picker (auto-match + manual select). Inverse stores
+   *  the prior URL so undo restores it. Pass `null` / empty string
+   *  to clear. No-op when the new URL matches the prior URL. */
+  | { type: 'SET_VOICEOVER_URL'; url: string | null }
   /** Set / clear the per-row B-roll clip render state. Used by the
    *  editor's inspector when the user kicks off a clip generation,
    *  and by the EditorClient's poller as the clip progresses
@@ -318,6 +332,7 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'SET_FLAGS':
     case 'SET_ROW_VIDEO_CLIP':
     case 'UPDATE_CAPTION_SEGMENT':
+    case 'SET_VOICEOVER_URL':
       return true;
     default:
       return false;
@@ -450,6 +465,8 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           channelId: cmd.channelId,
           voiceoverAlignment: cmd.voiceoverAlignment,
           flags: cmd.flags ?? state.flags,
+          linkedProjectId: cmd.linkedProjectId,
+          linkedScheduleItemId: cmd.linkedScheduleItemId,
           version: cmd.version,
           isDirty: false,
           undoStack: [],
@@ -966,6 +983,26 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
 
       return {
         next: { ...state, rowVideoClips: nextClips, isDirty: !transient ? true : state.isDirty },
+        inverse,
+      };
+    }
+
+    case 'SET_VOICEOVER_URL': {
+      const prev = state.voiceoverUrl ?? undefined;
+      const next = cmd.url && cmd.url.length > 0 ? cmd.url : undefined;
+      if (prev === next) return { next: state, inverse: null };
+      // Swapping voiceoverUrl invalidates the cached alignment (which
+      // was computed against the prior MP3). The user can regen
+      // alignment if they want it back; silently clearing it stops
+      // the renderer from applying stale word-level timings.
+      const inverse: EditorCommand = { type: 'SET_VOICEOVER_URL', url: prev ?? null };
+      return {
+        next: {
+          ...state,
+          voiceoverUrl: next,
+          voiceoverAlignment: undefined,
+          isDirty: true,
+        },
         inverse,
       };
     }
@@ -1521,6 +1558,8 @@ export function initialEditorState(args: {
   channelId?: string;
   voiceoverAlignment?: ForcedAlignmentResponse;
   flags?: ProjectPayloadFlags;
+  linkedProjectId?: string;
+  linkedScheduleItemId?: string;
   version: number;
 }): EditorState {
   return {
@@ -1540,6 +1579,8 @@ export function initialEditorState(args: {
       overlaysDisabled: false,
       rowLockedAsStill: {},
     },
+    linkedProjectId: args.linkedProjectId,
+    linkedScheduleItemId: args.linkedScheduleItemId,
     version: args.version,
     isDirty: false,
     selection: null,
@@ -1564,12 +1605,16 @@ export function persistableFromState(state: EditorState): {
   channelId?: string;
   voiceoverAlignment?: ForcedAlignmentResponse;
   flags: ProjectPayloadFlags;
+  linkedProjectId?: string;
+  linkedScheduleItemId?: string;
 } {
   return {
     doc: state.doc,
     rowImages: state.rowImages,
     voiceoverUrl: state.voiceoverUrl,
     captions: state.captions,
+    linkedProjectId: state.linkedProjectId,
+    linkedScheduleItemId: state.linkedScheduleItemId,
     // Persist rowOverlays back so the production-doc page picks up any
     // overlay edits the user makes inside the editor next time they
     // open the doc there. Omit when empty to keep payloads small for

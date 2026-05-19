@@ -14,12 +14,25 @@
  */
 
 import { Mic2, Music2, RefreshCw } from 'lucide-react';
+import { VoiceoverPicker } from '@/components/voiceover/VoiceoverPicker';
 
 interface InspectorAudioTabProps {
   voiceoverUrl?: string;
   alignmentReady: boolean;
   musicUrl?: string;
   onRegenVO: () => void;
+  /** Batch A: callback fires when the picker auto-matches or the
+   *  user manually selects a voiceover. The parent dispatches an
+   *  appropriate store command (PATCH_ROW-style for voiceoverUrl;
+   *  pass null/empty to clear). */
+  onPickVoiceover: (url: string, source: 'auto' | 'manual' | 'clear') => void;
+  /** Linked `projects.id` for the picker's auto-match. */
+  linkedProjectId?: string;
+  /** Linked `schedule_items.id` — strongest match signal. */
+  linkedScheduleItemId?: string;
+  /** Title candidates the picker uses for fuzzy match (doc title,
+   *  schedule item title, etc.). */
+  titleCandidates: Array<string | null | undefined>;
 }
 
 export function InspectorAudioTab({
@@ -27,6 +40,10 @@ export function InspectorAudioTab({
   alignmentReady,
   musicUrl,
   onRegenVO,
+  onPickVoiceover,
+  linkedProjectId,
+  linkedScheduleItemId,
+  titleCandidates,
 }: InspectorAudioTabProps): React.ReactElement {
   return (
     <div className="p-3 flex flex-col gap-3">
@@ -52,9 +69,17 @@ export function InspectorAudioTab({
           )}
         </div>
 
-        <div className="text-[10px] truncate" style={{ color: 'var(--fg-muted)' }} title={voiceoverUrl}>
-          {voiceoverUrl ?? 'No voiceover attached'}
-        </div>
+        {/* Picker — same component production-doc uses. Auto-detects
+            the relevant narrator stitched / full upload by
+            schedule-item / project / title match. */}
+        <VoiceoverPicker
+          value={voiceoverUrl ?? ''}
+          onChange={onPickVoiceover}
+          scheduleItemId={linkedScheduleItemId}
+          projectId={linkedProjectId}
+          titleCandidates={titleCandidates}
+          logNamespace="editor voiceover"
+        />
 
         {voiceoverUrl && (
           <audio
@@ -74,7 +99,7 @@ export function InspectorAudioTab({
           title="Regenerate the voiceover from the current scripts via ElevenLabs"
         >
           <RefreshCw size={12} strokeWidth={2} />
-          <span>Regenerate voiceover</span>
+          <span>Generate new voiceover</span>
         </button>
       </div>
 

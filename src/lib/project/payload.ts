@@ -87,6 +87,20 @@ export interface ProjectPayload {
   channelId?: string;
 
   flags: ProjectPayloadFlags;
+
+  /** ID of the row in the `projects` table this user_history project is
+   *  linked to. Distinct from the editor's `projectId` URL param (which is
+   *  the `user_history.id`). Used by the voiceover picker to match
+   *  narrator audio (which keys on `projects.id`). Optional — older
+   *  projects pre-date this field and the picker falls back to title /
+   *  schedule-item matching for them. Batch A of
+   *  `_plans/2026-05-20-editor-prod-doc-parity-batches.md`. */
+  linkedProjectId?: string;
+  /** Schedule item id this project was created from, when applicable.
+   *  Strongest signal for the voiceover picker's auto-match (every
+   *  narrator assignment resolved server-side carries the same
+   *  schedule_item_id via `schedule_items.custom_fields`). */
+  linkedScheduleItemId?: string;
 }
 
 // ─── Type guards ─────────────────────────────────────────────────────
@@ -355,6 +369,25 @@ export function migratePayload(raw: unknown): MigrateResult {
   // channelId
   if (typeof raw.channelId === 'string' && raw.channelId.length > 0) {
     out.channelId = raw.channelId;
+  }
+
+  // linkedProjectId — projects.id this user_history row is linked to.
+  // Required by the voiceover picker's auto-match against narrator audio.
+  if (typeof raw.linkedProjectId === 'string' && raw.linkedProjectId.length > 0) {
+    out.linkedProjectId = raw.linkedProjectId;
+  }
+
+  // linkedScheduleItemId — schedule_items.id (when the project was
+  // created from a schedule). Strongest match signal for the picker.
+  if (typeof raw.linkedScheduleItemId === 'string' && raw.linkedScheduleItemId.length > 0) {
+    out.linkedScheduleItemId = raw.linkedScheduleItemId;
+  }
+  // Legacy alias: older payloads only had `scheduleItemId` at the top
+  // level (the schedule-handoff flow stamped it on saveProductionDocEntry
+  // before the parity refactor). Bridge it so existing rows pick up the
+  // strong match signal on next load.
+  if (!out.linkedScheduleItemId && typeof raw.scheduleItemId === 'string' && raw.scheduleItemId.length > 0) {
+    out.linkedScheduleItemId = raw.scheduleItemId;
   }
 
   // flags — every flag is optional with a default. Read each one

@@ -181,6 +181,8 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       channelId: payload.channelId,
       voiceoverAlignment: payload.voiceoverAlignment,
       flags: payload.flags,
+      linkedProjectId: payload.linkedProjectId,
+      linkedScheduleItemId: payload.linkedScheduleItemId,
       version,
     }),
     projectId,
@@ -1133,6 +1135,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             alignmentReady={Boolean(state.voiceoverAlignment)}
             musicUrl={state.musicUrl}
             onRegenVO={() => setShowVoRegen(true)}
+            onPickVoiceover={(url, source) => {
+              console.info('[editor voiceover] picker change', { source, url: url || '(cleared)' });
+              apply({ type: 'SET_VOICEOVER_URL', url: url || null });
+            }}
+            linkedProjectId={state.linkedProjectId}
+            linkedScheduleItemId={state.linkedScheduleItemId}
+            titleCandidates={[
+              payload.title || state.doc.title,
+              state.doc.title,
+            ]}
           />
         ),
         captions: (
@@ -1353,6 +1365,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             alignmentReady={Boolean(state.voiceoverAlignment)}
             musicUrl={state.musicUrl}
             onRegenVO={() => setShowVoRegen(true)}
+            onPickVoiceover={(url, source) => {
+              console.info('[editor voiceover] picker change', { source, url: url || '(cleared)' });
+              apply({ type: 'SET_VOICEOVER_URL', url: url || null });
+            }}
+            linkedProjectId={state.linkedProjectId}
+            linkedScheduleItemId={state.linkedScheduleItemId}
+            titleCandidates={[
+              payload.title || state.doc.title,
+              state.doc.title,
+            ]}
           />
         ),
         captions: (

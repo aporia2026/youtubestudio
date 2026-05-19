@@ -12,12 +12,17 @@
  */
 
 import { Mic, Music2, RefreshCw } from 'lucide-react';
+import { VoiceoverPicker } from '@/components/voiceover/VoiceoverPicker';
 
 interface AudioTabProps {
   voiceoverUrl?: string;
   alignmentReady: boolean;
   musicUrl?: string;
   onRegenVO: () => void;
+  onPickVoiceover: (url: string, source: 'auto' | 'manual' | 'clear') => void;
+  linkedProjectId?: string;
+  linkedScheduleItemId?: string;
+  titleCandidates: Array<string | null | undefined>;
 }
 
 export function AudioTab({
@@ -25,6 +30,10 @@ export function AudioTab({
   alignmentReady,
   musicUrl,
   onRegenVO,
+  onPickVoiceover,
+  linkedProjectId,
+  linkedScheduleItemId,
+  titleCandidates,
 }: AudioTabProps): React.ReactElement {
   return (
     <div className="flex flex-col gap-2">
@@ -46,18 +55,23 @@ export function AudioTab({
             </span>
           )}
         </div>
-        <div className="text-[10px] truncate" style={{ color: 'var(--fg-muted)' }} title={voiceoverUrl}>
-          {voiceoverUrl ?? 'No voiceover attached'}
-        </div>
+        <VoiceoverPicker
+          value={voiceoverUrl ?? ''}
+          onChange={onPickVoiceover}
+          scheduleItemId={linkedScheduleItemId}
+          projectId={linkedProjectId}
+          titleCandidates={titleCandidates}
+          logNamespace="editor voiceover-rail"
+        />
         <button
           type="button"
           onClick={onRegenVO}
           className="editor-btn"
           style={{ width: '100%' }}
-          title="Regenerate the voiceover from the current scripts"
+          title="Generate a new voiceover from the current scripts via ElevenLabs"
         >
           <RefreshCw size={12} strokeWidth={2} />
-          <span>Regenerate voiceover</span>
+          <span>Generate new voiceover</span>
         </button>
       </div>
 
