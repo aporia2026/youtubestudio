@@ -2016,6 +2016,7 @@ export function productionDocPrompt({
   creativeBrief,
   startTimecodeSeconds = 0,
   isChunk = false,
+  overlaysDisabled = false,
 }: {
   script: string;
   niche: string;
@@ -2028,6 +2029,12 @@ export function productionDocPrompt({
   startTimecodeSeconds?: number;
   /** True when this is a continuation chunk (suppress title card, adjust timecode start) */
   isChunk?: boolean;
+  /** Forwarded from the production-doc page's `overlays_disabled` toggle.
+   *  When true, the prompt instructs the LLM to leave `overlay_stock_terms`
+   *  empty on every row and rely entirely on baking brand/logo content
+   *  into `ai_image_prompt` instead. The doc-level skip flag on the page
+   *  still gates the actual auto-fetch even if the LLM ignored this. */
+  overlaysDisabled?: boolean;
 }): { system: string; user: string } {
   const wordCount = script.trim().split(/\s+/).length;
   const chunkDurationSeconds = Math.round((wordCount / speakingPaceWpm) * 60);
@@ -2042,7 +2049,12 @@ export function productionDocPrompt({
 
   const styleSuffix = style?.ai_image_suffix ?? null;
   const mixingRules = style?.mixing_rules?.trim() ?? '';
-  const allowOverlay = style?.allow_overlay_stock === true;
+  // Overlay stock terms are offered to the LLM only when (a) the style
+  // allows it AND (b) the user hasn't explicitly toggled overlays off
+  // on the doc. The page-level `overlays_disabled` flag is the final
+  // gate, but suppressing the field in the prompt prevents the LLM
+  // from producing data the page would immediately ignore.
+  const allowOverlay = style?.allow_overlay_stock === true && !overlaysDisabled;
 
   // Build the mandatory style block — controls HOW images look, not which shot types appear
   const mandatoryStyleBlock = (styleSuffix || creativeBrief || mixingRules) ? `
@@ -2147,9 +2159,33 @@ ${allowOverlay ? `**overlay_stock_terms** — OPTIONAL. 2–4 comma-separated ke
 
 **overlay_size** — REQUIRED whenever overlay_stock_terms is non-empty. One of: "small" (≈12% of frame width, for source badges and footnote logos), "medium" (≈18% of frame width, the default for brand marks and product logos), "large" (≈25% of frame width, for hero-stamp moments where the overlay is the point). Set to "" when overlay_stock_terms is empty.` : ''}
 
-**on_screen_text** — Text to display on screen — the title or label that should appear ON the image itself. The image generator bakes this into the still as designed typography, so keep it short (≤ 6 words) and impactful. Empty string if none.
+**on_screen_text** — OPTIONAL. A short, deliberate title or label to bake into the still as designed typography. **MUST be left as "" on the vast majority of rows.** On-screen text is a feature, not a default — it competes with the visual, raises CTR/comprehension only when it adds information the picture cannot, and looks cluttered when sprinkled across every shot. Use it ONLY when at least one of these applies:
+  - The row is a Statistics scene and the number is the point (e.g. "$2.4B", "47%", "12,000 ATTACKS/DAY")
+  - The row introduces a named entity for the first time and the wordmark belongs in the frame (e.g. "WANNACRY", "EQUIFAX")
+  - The row is a Lower Third row identifying a speaker / location / source (e.g. "DR. SARAH CHEN — MIT", "GENEVA, 2024")
+  - The script explicitly calls out a word for emphasis that the editor will want stamped (e.g. a one-word punch like "EXPOSED" or "GONE")
+  - The row is a Title Card (handled by the heading-extraction rule; on_screen_text = the heading)
+If none of the above truly applies, set on_screen_text to "". Do NOT add on_screen_text just because the script mentions a number, a brand, or a noun in passing — most rows do, and most don't earn screen text. Default = "". Keep it ≤ 6 words when present.
 
 **notes** — Editor production notes. Empty string if none.
+
+## BRAND, LOGO, AND PRODUCT HANDLING — BAKE INTO ai_image_prompt
+
+When the script mentions a real brand, product, app, named piece of software, or famous person (e.g. "Microsoft", "Windows 11", "iPhone", "Photoshop", "Cursor", "Tesla", "Google Search", "Elon Musk"), embed that brand's visual identity DIRECTLY into the row's \`ai_image_prompt\` rather than relegating it to an overlay or assuming the editor will add it later. The still must render the brand natively so subsequent animation does not warp a separately-pasted logo.
+
+Concrete phrasing patterns to use inside ai_image_prompt:
+- "with the [brand] logo prominently visible on [surface]"
+- "showing the [brand] wordmark in [position]"
+- "the [product]'s recognisable [feature] — [colour / shape detail]"
+- "centered on a famous photograph of [named person]"
+
+Worked examples:
+- Script says "let's open Cursor" → ai_image_prompt includes "a laptop screen showing the Cursor IDE with its dark theme and recognisable wordmark in the title bar"
+- Script says "use Google Search" → ai_image_prompt includes "a browser tab open to google.com with the multicolour Google wordmark centered above the search box"
+- Script says "the Windows logo started collapsing" → ai_image_prompt includes "the four-colour Windows panes cracked and crumbling apart, fragments mid-fall"
+- Script says "Tesla's Cybertruck rolled out" → ai_image_prompt includes "the angular stainless-steel Cybertruck silhouette, recognisable triangular profile"
+
+${overlaysDisabled ? `**OVERLAY MODE: OFF for this doc.** The user has disabled real-image overlays. Set \`overlay_stock_terms\` to "" on every row. Rely entirely on baking brand identity into ai_image_prompt per the patterns above.` : `The brand-bake-in rule applies whether or not the row also carries an \`overlay_stock_terms\` value — make the brand part of the picture first; an overlay is a redundancy, not a substitute.`}
 
 ## OUTPUT FORMAT
 \`\`\`json

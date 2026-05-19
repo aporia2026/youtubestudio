@@ -94,11 +94,21 @@ export interface BuildBrollPromptArgs {
   maxChars?: number;
 }
 
+// Tail constants. Two competing pressures shape these strings:
+//  1. The model should hold the source still's typography pixel-stable.
+//     Default i2v behaviour is to "re-render" every frame, which warps
+//     text, digits, logos, counters, license plates, UI labels — anything
+//     glyph-shaped. The fix is repeated, imperative, specific language.
+//     "Pixel-stable" and an enumeration of glyph types (text, digit,
+//     letter, logo, wordmark, number) cover every category the model
+//     might silently mis-categorise.
+//  2. The model still shouldn't hallucinate NEW text on top of the
+//     scene. The original "no on-screen text" wording is preserved.
 const CINEMATIC_TAIL_T2V =
-  'Subtle natural camera movement (slow push-in or parallax). Photoreal, no on-screen text, no logos, no captions, no watermarks.';
+  'Subtle natural camera movement (slow push-in or parallax). Photoreal. No on-screen text, no logos, no captions, no watermarks. If any glyphs do appear in the rendered frame (signage, license plates, screens, UI labels), they must stay pixel-stable across the clip and never morph, warp, twist, or re-letter mid-motion.';
 
 const MOTION_TAIL_I2V =
-  'Animate the described action with smooth, natural motion. Preserve the existing style and composition. No scene changes, no added text, no logos, no watermarks.';
+  'Animate the described action with smooth, natural motion. Preserve the existing style and composition. CRITICAL TEXT PRESERVATION: every piece of text, every digit, every letter, every logo, every wordmark, and every number that appears in the source image MUST stay pixel-stable across the entire clip. Do NOT redraw, re-render, re-letter, morph, warp, twist, animate, or stylise any glyph or any part of any glyph. Counters, timers, and numeric readouts stay frozen unless the source image already shows them changing. If you cannot animate the rest of the scene without disturbing a glyph, animate AROUND the glyph instead. No scene changes, no added text, no added logos, no watermarks.';
 
 /**
  * Compose the final prompt sent to the video model. Strategy:

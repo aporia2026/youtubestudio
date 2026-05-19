@@ -65,6 +65,12 @@ interface Props {
    *  opens an OverlayContextMenu at the cursor coords. Absent ⇒
    *  right-click falls through to the browser's default menu. */
   onShowContextMenu?: (x: number, y: number) => void;
+  /** Removes the overlay from the row. Renders as a small ✕ button in
+   *  the top-right of the cell on hover. The same destructive action
+   *  also lives in the right-click context menu; this hover affordance
+   *  is the discoverable version (right-click on a table cell is not
+   *  obvious to most users). Confirms before destroying. */
+  onRemove?: () => void;
 }
 
 const ZONE_LABELS: Record<Zone, string> = {
@@ -93,12 +99,16 @@ export function OverlayCell({
   onUndoEdit,
   editHistoryDepth,
   onShowContextMenu,
+  onRemove,
 }: Props) {
   const undoDepth = editHistoryDepth ?? 0;
   const status = state?.status ?? 'idle';
+  // Hover-✕ only makes sense when there's actually an overlay to remove.
+  // Mirrors the right-click context menu's visibility rule.
+  const canRemove = !!onRemove && status === 'done';
   return (
     <div
-      className="flex flex-col gap-1"
+      className="flex flex-col gap-1 relative group"
       // Right-click → parent opens an OverlayContextMenu at the cursor.
       // Only intercept when (a) the overlay is in `done` state (something
       // to act on) AND (b) the parent wired the handler. Otherwise let
@@ -111,6 +121,30 @@ export function OverlayCell({
             }
           : undefined
       }>
+      {canRemove && (
+        <button
+          type="button"
+          onClick={() => {
+            if (typeof window !== 'undefined' && !window.confirm('Remove this overlay from the row?')) return;
+            console.info('[overlay-skip] cell removed via hover');
+            onRemove?.();
+          }}
+          className="absolute -top-1 -right-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] leading-none rounded-full flex items-center justify-center"
+          style={{
+            width: 16,
+            height: 16,
+            background: 'rgba(239,68,68,0.85)',
+            color: 'white',
+            border: '1px solid rgba(255,255,255,0.2)',
+            cursor: 'pointer',
+            zIndex: 1,
+          }}
+          title="Remove this overlay (right-click also works)"
+          aria-label="Remove overlay"
+        >
+          ✕
+        </button>
+      )}
       <div className="flex items-center gap-1">
         <span
           className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]"

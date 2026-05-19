@@ -19,7 +19,8 @@ describe('buildBrollPrompt', () => {
     });
     expect(out).toContain('cinematic shot of a serene lake');
     // Cinematic tail is appended only on the t2v path.
-    expect(out).toMatch(/Photoreal,? no on-screen text/);
+    expect(out).toMatch(/Photoreal/);
+    expect(out).toMatch(/no on-screen text/i);
   });
 
   it('falls back to visual_description when no ai_image_prompt', () => {
@@ -28,7 +29,7 @@ describe('buildBrollPrompt', () => {
       visualDescription: 'A close-up of a fountain pen scribbling cursive on parchment, ink glistening',
     });
     expect(out).toContain('fountain pen');
-    expect(out).toMatch(/no on-screen text/);
+    expect(out).toMatch(/no on-screen text/i);
   });
 
   it('drops the photoreal tail on image-to-video and uses motion-only guidance', () => {
@@ -41,6 +42,33 @@ describe('buildBrollPrompt', () => {
     expect(out).not.toMatch(/Photoreal/);
     expect(out).toMatch(/Preserve the existing style/);
     expect(out).toMatch(/Animate the described action/);
+  });
+
+  it('i2v tail carries the glyph-preservation directive (text, digits, logos)', () => {
+    const out = buildBrollPrompt({
+      mode: 'image-to-video',
+      visualDescription: 'A pixelated 8-bit counter ticking from 06 to 07 above a hero shot of a stopwatch',
+    });
+    // Repeated, imperative language is the whole point — assert the key
+    // tokens are present so a future "small cleanup" doesn't accidentally
+    // weaken the prompt that fixes the warping bug.
+    expect(out).toMatch(/CRITICAL TEXT PRESERVATION/);
+    expect(out).toMatch(/pixel-stable/i);
+    expect(out).toMatch(/text/);
+    expect(out).toMatch(/digit/i);
+    expect(out).toMatch(/letter/i);
+    expect(out).toMatch(/logo/i);
+    expect(out).toMatch(/number/i);
+    expect(out).toMatch(/Counters,? timers,? and numeric readouts stay frozen/);
+  });
+
+  it('t2v tail also tells the model to keep any rendered glyphs pixel-stable', () => {
+    const out = buildBrollPrompt({
+      mode: 'text-to-video',
+      visualDescription: 'A wide shot of a New York street with neon storefront signs and license plates',
+    });
+    expect(out).toMatch(/pixel-stable/i);
+    expect(out).toMatch(/never morph, warp/i);
   });
 
   it('appends the style hint verbatim', () => {
@@ -65,10 +93,11 @@ describe('buildBrollPrompt', () => {
       mode: 'text-to-video',
       visualDescription: 'fallback',
       aiImagePrompt: huge,
-      maxChars: 600,
+      // Cap relaxed to fit the new (longer) preservation-aware tail.
+      maxChars: 900,
     });
-    expect(out.length).toBeLessThanOrEqual(600);
-    expect(out).toMatch(/no on-screen text/);
+    expect(out.length).toBeLessThanOrEqual(900);
+    expect(out).toMatch(/no on-screen text/i);
     expect(out).toContain('lorem ipsum');
   });
 

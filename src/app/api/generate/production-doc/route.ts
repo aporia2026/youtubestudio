@@ -36,6 +36,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     creativeBrief,
     startTimecodeSeconds,
     isChunk,
+    overlaysDisabled,
   } = body as {
     modelId?: string; script?: string; niche?: string; topic?: string;
     speakingPaceWpm?: number;
@@ -44,6 +45,11 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     stylePreset?: string;
     creativeBrief?: string;
     startTimecodeSeconds?: number; isChunk?: boolean;
+    /** Forwarded from the production-doc page's `overlays_disabled`
+     *  toggle. When true, the prompt instructs the LLM to leave
+     *  `overlay_stock_terms` empty on every row and bake brand
+     *  identity into ai_image_prompt instead. */
+    overlaysDisabled?: boolean;
   };
 
   if (!script || !niche) {
@@ -71,6 +77,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     script, niche, topic, speakingPaceWpm, style, creativeBrief,
     startTimecodeSeconds: typeof startTimecodeSeconds === 'number' ? startTimecodeSeconds : 0,
     isChunk: isChunk === true,
+    overlaysDisabled: overlaysDisabled === true,
   });
 
   const effectiveModelId = modelId || (await getEffectiveModelId(session.ws, 'production-doc'));

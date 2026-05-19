@@ -216,6 +216,14 @@ export interface ProductionRow {
   overlay_stock_terms?: string;
   overlay_zone?: OverlayZone;
   overlay_size?: OverlaySize;
+  /** Per-row escape hatch from the doc-level overlay behaviour. When
+   *  `true`, this row never auto-fetches an overlay even if
+   *  `overlay_stock_terms` is set AND the doc-level toggle would
+   *  otherwise allow it. When `false`, this row DOES auto-fetch even
+   *  when the doc-level `overlays_disabled` is on (rare — used to
+   *  force one specific row to keep an overlay in an otherwise
+   *  overlay-free doc). Undefined ⇒ follow the doc-level setting. */
+  skip_overlay?: boolean;
   /** Final overlay placement after saliency-aware resolution. When set,
    *  the renderer prefers these over `overlay_zone` / `overlay_size`.
    *  See `src/lib/overlay-placement.ts` for the resolver. */
@@ -367,6 +375,13 @@ export interface ProductionDoc {
    *  + render see the same data. Empty array OR undefined renders
    *  nothing. */
   text_overlays?: import('@/remotion/types').TextOverlay[];
+  /** When `true`, the editor SKIPS the auto-fetch overlay pipeline for
+   *  every row (Brave Search → RMBG → smart placement). Lets the user
+   *  rely on brand mentions baked directly into `ai_image_prompt`
+   *  instead of pasting separate stock PNGs on top of the still. Per-
+   *  row `skip_overlay` overrides this in either direction. Undefined
+   *  on legacy docs ⇒ historical behaviour (overlays auto-fetch). */
+  overlays_disabled?: boolean;
 }
 
 export interface RowImageState {

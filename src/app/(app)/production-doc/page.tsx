@@ -235,6 +235,11 @@ interface ProductionRow {
   /** Phase 5 — stack of prior overlay URLs after AI edits. Most-recent
    *  last; cap 3. Undo pops the tail back into the live overlay slot. */
   overlay_edit_history?: string[];
+  /** Per-row escape hatch from the doc-level overlay behaviour. `true`
+   *  skips the auto-fetch even when the doc allows; `false` forces the
+   *  auto-fetch even when the doc-level toggle is off. Undefined ⇒
+   *  follow the doc-level setting. */
+  skip_overlay?: boolean;
   /** Cached pixel-saliency map for this row's generated image. Populated
    *  by `/api/generate/production-doc/image` after the image lands in R2. */
   image_saliency?: ImageSaliencyMap;
@@ -279,6 +284,14 @@ interface ProductionDoc {
    *  shot hard-cut, including removing the opening fade-in and closing
    *  fade-out. Per-row `scene_fade` overrides per-row. */
   scene_fade_enabled?: boolean;
+  /** When `true`, the editor skips the auto-fetch overlay pipeline
+   *  (Brave Search → RMBG → smart placement) for every row in this
+   *  doc. Brand identity relies on being baked into `ai_image_prompt`
+   *  instead. Per-row `skip_overlay` overrides in either direction.
+   *  Undefined on legacy docs ⇒ overlays auto-fetch (historical
+   *  behaviour). Seeded on first generation from the user's
+   *  `overlaysDisabledPref` localStorage preference. */
+  overlays_disabled?: boolean;
 }
 
 interface RowImageState {
@@ -2141,6 +2154,23 @@ function ProductionDocPage() {
   useEffect(() => {
     try { localStorage.setItem('prodoc_image_model', imageModel); } catch { /* ignore */ }
   }, [imageModel]);
+  // User preference for the doc-level `overlays_disabled` flag on freshly-
+  // generated docs. localStorage-backed so a user who never wants overlay
+  // PNGs (because they bake brands into ai_image_prompt instead) doesn't
+  // have to flip the toggle on every generation. Existing docs carry their
+  // own `overlays_disabled` field independently — this only seeds new ones.
+  const [overlaysDisabledPref, setOverlaysDisabledPref] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return localStorage.getItem('prodoc_overlays_disabled_pref') === '1';
+    } catch { return false; }
+  });
+  useEffect(() => {
+    try {
+      if (overlaysDisabledPref) localStorage.setItem('prodoc_overlays_disabled_pref', '1');
+      else localStorage.removeItem('prodoc_overlays_disabled_pref');
+    } catch { /* ignore */ }
+  }, [overlaysDisabledPref]);
   const [speakingPace, setSpeakingPace] = useState(135);
   const [actualDuration, setActualDuration] = useState(''); // "mm:ss" of actual voiceover recording
   const [stylePreset, setStylePreset] = useState('doodle_explainer');
@@ -3089,26 +3119,35 @@ function ProductionDocPage() {
     onScreenText?: string;
     sectionTitle?: string;
     overlayStockTerms?: string;
+    skipOverlay?: boolean;
   }>>(() => {
     if (!doc) return [];
+    const docDisabled = doc.overlays_disabled === true;
     const out: Array<{
       rowIndex: number;
       prompt: string;
       onScreenText?: string;
       sectionTitle?: string;
       overlayStockTerms?: string;
+      skipOverlay?: boolean;
     }> = [];
     for (let i = 0; i < doc.rows.length; i++) {
       if (rowImages[i]?.status !== 'error') continue;
       const row = doc.rows[i];
       const prompt = row?.ai_image_prompt?.trim();
       if (!prompt) continue;
+      // Row-level wins in both directions: `skip_overlay === false`
+      // forces an overlay even in an overlays-disabled doc; `true`
+      // skips the auto-fetch even when the doc allows. Undefined
+      // falls back to the doc-level toggle.
+      const skipOverlay = typeof row?.skip_overlay === 'boolean' ? row.skip_overlay : docDisabled;
       out.push({
         rowIndex: i,
         prompt,
         onScreenText: row?.on_screen_text,
         sectionTitle: row?.section_title,
         overlayStockTerms: row?.overlay_stock_terms,
+        skipOverlay,
       });
     }
     return out;
@@ -3133,14 +3172,17 @@ function ProductionDocPage() {
     onScreenText?: string;
     sectionTitle?: string;
     overlayStockTerms?: string;
+    skipOverlay?: boolean;
   }>>(() => {
     if (!doc) return [];
+    const docDisabled = doc.overlays_disabled === true;
     const out: Array<{
       rowIndex: number;
       prompt: string;
       onScreenText?: string;
       sectionTitle?: string;
       overlayStockTerms?: string;
+      skipOverlay?: boolean;
     }> = [];
     for (let i = 0; i < doc.rows.length; i++) {
       const s = rowImages[i];
@@ -3151,12 +3193,14 @@ function ProductionDocPage() {
       const row = doc.rows[i];
       const prompt = row?.ai_image_prompt?.trim();
       if (!prompt) continue;
+      const skipOverlay = typeof row?.skip_overlay === 'boolean' ? row.skip_overlay : docDisabled;
       out.push({
         rowIndex: i,
         prompt,
         onScreenText: row?.on_screen_text,
         sectionTitle: row?.section_title,
         overlayStockTerms: row?.overlay_stock_terms,
+        skipOverlay,
       });
     }
     return out;
@@ -3194,6 +3238,7 @@ function ProductionDocPage() {
         onScreenText: item.onScreenText,
         sectionTitle: item.sectionTitle,
         overlayStockTerms: item.overlayStockTerms,
+        skipOverlay: item.skipOverlay,
       });
       setRetryingImages({ done: n + 1, total: failedImagePlan.length });
     }
@@ -3226,6 +3271,7 @@ function ProductionDocPage() {
         onScreenText: item.onScreenText,
         sectionTitle: item.sectionTitle,
         overlayStockTerms: item.overlayStockTerms,
+        skipOverlay: item.skipOverlay,
       });
       setRetryingImages({ done: n + 1, total: emptyImagePlan.length });
     }
@@ -4241,7 +4287,18 @@ function ProductionDocPage() {
   async function generateImageForRow(
     rowIndex: number,
     prompt: string,
-    meta: { onScreenText?: string; sectionTitle?: string; overlayStockTerms?: string } = {},
+    meta: {
+      onScreenText?: string;
+      sectionTitle?: string;
+      overlayStockTerms?: string;
+      /** True when the doc-level "Auto-generate overlays" toggle is OFF
+       *  OR this row has `skip_overlay: true`. Suppresses the post-
+       *  image auto-fetch of the overlay PNG. Existing fetched overlays
+       *  remain untouched; this only gates the trigger. Callers must
+       *  resolve doc-level vs row-level in their own scope (the comment
+       *  on the function explains why we can't read `doc` here). */
+      skipOverlay?: boolean;
+    } = {},
     signal?: AbortSignal,
   ): Promise<boolean> {
     setRowImages(prev => {
@@ -4276,10 +4333,15 @@ function ProductionDocPage() {
       if (saliency) applySaliencyToRow(rowIndex, saliency);
       // Fire-and-forget the overlay fetch in parallel with the next row's
       // image gen. Only triggers when the LLM planned an overlay for this
-      // row. Idempotent — the route's R2 cache short-circuits repeats.
-      if (overlayTerms) {
+      // row AND the user hasn't opted out of overlay auto-fetch (either
+      // doc-wide via the `overlays_disabled` toggle, or per-row via
+      // `skip_overlay`). Idempotent — the route's R2 cache short-circuits
+      // repeats when the user later opts back in.
+      if (overlayTerms && !meta.skipOverlay) {
         console.info('[prodoc image-gen] overlay queued', { rowIndex, overlayTerms });
         void fetchOverlayForRow(rowIndex, overlayTerms);
+      } else if (overlayTerms && meta.skipOverlay) {
+        console.info('[prodoc image-gen] overlay auto-fetch skipped per user setting', { rowIndex });
       }
       return true;
     } catch (err) {
@@ -4303,6 +4365,34 @@ function ProductionDocPage() {
   // The route degrades gracefully (no result / search down / RMBG down all
   // return 200 with `overlayUrl: null` + a `reason`), so a missing key or
   // a flaky source never breaks the row — the still alone is rendered.
+  /**
+   * Clear every overlay-related field on a row in one shot. Wraps the
+   * destructive cascade so the hover-✕, the right-click context menu,
+   * and (potentially) future surfaces all behave identically. Callers
+   * are responsible for the user-facing confirm dialog.
+   */
+  function removeOverlayFromRow(rowIndex: number): void {
+    setRowOverlays((prev) => {
+      const next = { ...prev };
+      delete next[rowIndex];
+      return next;
+    });
+    updateRow(rowIndex, {
+      overlay_stock_terms: undefined,
+      overlay_zone: undefined,
+      overlay_size: undefined,
+      overlay_zone_resolved: undefined,
+      overlay_size_resolved: undefined,
+      overlay_position: undefined,
+      overlay_size_pct: undefined,
+      overlay_stretched_height_pct: undefined,
+      overlay_placement_reason: undefined,
+      overlay_placement_model: undefined,
+      overlay_rmbg_kept: undefined,
+      overlay_edit_history: undefined,
+    });
+  }
+
   async function fetchOverlayForRow(rowIndex: number, overlayStockTerms: string): Promise<void> {
     setRowOverlays((prev) => ({ ...prev, [rowIndex]: { status: 'loading' } }));
     try {
@@ -4599,7 +4689,16 @@ function ProductionDocPage() {
     }
   }
 
-  async function generateImages(rows: ProductionRow[], signal?: AbortSignal) {
+  async function generateImages(
+    rows: ProductionRow[],
+    signal?: AbortSignal,
+    /** Doc-level "Auto-generate overlays" toggle, captured by the caller
+     *  from the freshly-returned doc. We accept it as a parameter rather
+     *  than reading `doc?.overlays_disabled` here because the auto-
+     *  pipeline calls `setDoc(result)` and then `generateImages(result.rows)`
+     *  in the same synchronous tick (see comment on generateImageForRow). */
+    docOverlaysDisabled?: boolean,
+  ) {
     const aiRows = rows
       .map((r, i) => ({ row: r, idx: i }))
       .filter(({ row }) => row.ai_image_prompt?.trim());
@@ -4632,6 +4731,9 @@ function ProductionDocPage() {
           if (signal?.aborted) return;
           // Read meta from the `rows` argument, not React `doc` state — see
           // generateImageForRow header for why.
+          const skipOverlay = typeof row.skip_overlay === 'boolean'
+            ? row.skip_overlay
+            : (docOverlaysDisabled === true);
           await generateImageForRow(
             idx,
             row.ai_image_prompt,
@@ -4639,6 +4741,7 @@ function ProductionDocPage() {
               onScreenText: row.on_screen_text,
               sectionTitle: row.section_title,
               overlayStockTerms: row.overlay_stock_terms,
+              skipOverlay,
             },
             signal,
           );
@@ -4780,6 +4883,7 @@ function ProductionDocPage() {
             creativeBrief: fullBrief || undefined,
             startTimecodeSeconds: timecodeOffsetSeconds,
             isChunk: isMultiChunk && chunkIdx > 0,
+            overlaysDisabled: overlaysDisabledPref,
           }),
         });
         let attempts = 0;
@@ -4838,6 +4942,10 @@ function ProductionDocPage() {
         total_duration: `${totalMins}:${String(totalSecs).padStart(2, '0')}`,
         total_words: totalWords,
         rows: allRows,
+        // Seed `overlays_disabled` from the user's input-panel preference
+        // so the doc carries the user's intent forward. The post-doc
+        // toggle near the rows table can override per-doc afterwards.
+        ...(overlaysDisabledPref ? { overlays_disabled: true as const } : {}),
       };
 
       appendLog(`Response received — parsing production doc...`);
@@ -4881,8 +4989,10 @@ function ProductionDocPage() {
       //     advance to "Recording".
       setTimeout(() => tableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
 
-      // Fire-and-forget image generation — passes the same abort signal so Stop also cancels images
-      generateImages(result.rows, controller.signal).catch(err => {
+      // Fire-and-forget image generation — passes the same abort signal so Stop also cancels images.
+      // Pass the freshly-returned doc's overlays_disabled flag explicitly
+      // because React state hasn't re-rendered yet (see generateImages signature).
+      generateImages(result.rows, controller.signal, result.overlays_disabled === true).catch(err => {
         if (err instanceof Error && err.name !== 'AbortError') {
           console.error('Image generation error:', err);
         }
@@ -6030,6 +6140,29 @@ function ProductionDocPage() {
           </select>
         </div>
 
+        {/* Overlay default — applies only to NEW generations. Existing docs
+            carry their own `overlays_disabled` flag (toggled inline near the
+            rows table). When unchecked, the doc-gen LLM is told to skip
+            overlay_stock_terms on every row and instead bake brand mentions
+            (Microsoft, iPhone, Tesla, etc.) directly into ai_image_prompt
+            so the still renders the brand natively. */}
+        <label
+          className="flex items-center gap-2 text-xs cursor-pointer self-start"
+          style={{ color: 'var(--text-secondary)' }}
+          title="When off, no real-image overlay PNGs are fetched on new docs. Brand mentions get baked directly into the AI image prompt so the still renders logos natively. Your preference is remembered."
+        >
+          <input
+            type="checkbox"
+            checked={!overlaysDisabledPref}
+            onChange={(e) => setOverlaysDisabledPref(!e.target.checked)}
+            style={{ accentColor: '#a855f7' }}
+          />
+          <span>Auto-generate real-image overlays on new docs</span>
+          <span style={{ color: 'var(--text-muted)' }}>
+            {overlaysDisabledPref ? '— off' : '— on'}
+          </span>
+        </label>
+
         {/* Model + Generate */}
         <div className="flex items-center gap-3">
           <div className="flex-1">
@@ -6188,6 +6321,46 @@ function ProductionDocPage() {
             tailBufferMs={doc.tail_buffer_ms}
             onChange={setSceneTiming}
           />
+
+          {/* Doc-level overlay toggle. When unchecked, the auto-fetch
+              pipeline (Brave → RMBG → smart placement) is skipped for
+              every row in this doc. Brand mentions and logos rely on
+              being baked into ai_image_prompt at doc-gen time instead
+              (see prompts.ts → productionDocPrompt). Per-row
+              `skip_overlay` overrides this in either direction. */}
+          <div
+            className="flex items-center gap-2 mb-4 px-3 py-2 rounded text-xs"
+            style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}
+          >
+            <label className="flex items-center gap-2 cursor-pointer" title="When off, no real-image overlays are auto-fetched. Mention brands directly in ai_image_prompt so they render natively in the still.">
+              <input
+                type="checkbox"
+                checked={doc.overlays_disabled !== true}
+                onChange={(e) => {
+                  const next: ProductionDoc = { ...doc };
+                  if (e.target.checked) {
+                    delete next.overlays_disabled;
+                  } else {
+                    next.overlays_disabled = true;
+                  }
+                  console.info('[overlay-skip] doc-level toggle', { overlays_disabled: next.overlays_disabled === true });
+                  setDoc(next);
+                  if (historyEntryId) {
+                    updateProductionDocEntry(historyEntryId, { doc: next }).catch(() => {});
+                  }
+                }}
+                style={{ accentColor: '#a855f7' }}
+              />
+              <span style={{ color: 'var(--text-secondary)' }}>
+                Auto-generate real-image overlays
+              </span>
+            </label>
+            <span style={{ color: 'var(--text-muted)' }}>
+              {doc.overlays_disabled === true
+                ? '— off: brands & logos must be in the image prompt itself'
+                : '— on: stock PNG overlays composited on top of stills'}
+            </span>
+          </div>
 
           {/* Legend */}
           <div className="flex flex-wrap gap-2 mb-4 items-center">
@@ -6722,6 +6895,9 @@ function ProductionDocPage() {
                                   onScreenText: row.on_screen_text,
                                   sectionTitle: row.section_title,
                                   overlayStockTerms: row.overlay_stock_terms,
+                                  skipOverlay: typeof row.skip_overlay === 'boolean'
+                                    ? row.skip_overlay
+                                    : doc?.overlays_disabled === true,
                                 });
                               }
                             }}
@@ -6897,6 +7073,7 @@ function ProductionDocPage() {
                                 onShowContextMenu={(x, y) =>
                                   setOverlayContextMenu({ rowIndex: i, x, y })
                                 }
+                                onRemove={() => removeOverlayFromRow(i)}
                               />
                             ) : (
                               <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>—</span>
@@ -7089,6 +7266,9 @@ function ProductionDocPage() {
                               onScreenText: row.on_screen_text,
                               sectionTitle: row.section_title,
                               overlayStockTerms: row.overlay_stock_terms,
+                              skipOverlay: typeof row.skip_overlay === 'boolean'
+                                ? row.skip_overlay
+                                : doc?.overlays_disabled === true,
                             })}
                             onUpload={(file) => { void uploadImageForRow(i, file); }}
                             onUrlImport={(url) => { void importImageUrlForRow(i, url); }}
@@ -7162,6 +7342,7 @@ function ProductionDocPage() {
                               onShowContextMenu={(x, y) =>
                                 setOverlayContextMenu({ rowIndex: i, x, y })
                               }
+                              onRemove={() => removeOverlayFromRow(i)}
                             />
                           </div>
                         )}
@@ -7784,6 +7965,20 @@ function ProductionDocPage() {
                   title: 'Clear manual position / size / stretch and fall back to the AI-planned zone',
                 },
                 {
+                  label: row.skip_overlay
+                    ? '↻ Allow overlay on this row'
+                    : '⊘ Skip overlay on this row',
+                  onClick: () => {
+                    const next = !row.skip_overlay;
+                    console.info('[overlay-skip] row-level toggle', { rowIndex: i, skip_overlay: next });
+                    updateRow(i, { skip_overlay: next || undefined });
+                  },
+                  separatorAbove: true,
+                  title: row.skip_overlay
+                    ? 'Re-enable overlay auto-fetch for this row (overrides the doc-level setting)'
+                    : 'Skip overlay auto-fetch for this row only (overrides the doc-level setting)',
+                },
+                {
                   label: '✕ Remove overlay',
                   onClick: () => {
                     const ok = window.confirm(
@@ -7791,25 +7986,7 @@ function ProductionDocPage() {
                     );
                     if (!ok) return;
                     console.info('[ui overlay] removed (via context menu)', { rowIndex: i });
-                    setRowOverlays((prev) => {
-                      const next = { ...prev };
-                      delete next[i];
-                      return next;
-                    });
-                    updateRow(i, {
-                      overlay_stock_terms: undefined,
-                      overlay_zone: undefined,
-                      overlay_size: undefined,
-                      overlay_zone_resolved: undefined,
-                      overlay_size_resolved: undefined,
-                      overlay_position: undefined,
-                      overlay_size_pct: undefined,
-                      overlay_stretched_height_pct: undefined,
-                      overlay_placement_reason: undefined,
-                      overlay_placement_model: undefined,
-                      overlay_rmbg_kept: undefined,
-                      overlay_edit_history: undefined,
-                    });
+                    removeOverlayFromRow(i);
                   },
                   destructive: true,
                   title: 'Clear all overlay state on this row (stock terms, image, placement, history)',
