@@ -1,8 +1,8 @@
 import { notFound } from 'next/navigation';
-import { sql } from '@vercel/postgres';
 import { getSession } from '@/lib/session';
 import { EDITOR_V1_ENABLED } from '@/lib/feature-flags';
 import { logger } from '@/lib/logger';
+import { loadProject } from '@/lib/project/persist';
 import EditorClient from './EditorClient';
 
 /**
@@ -49,17 +49,14 @@ export default async function EditorPage({
     notFound();
   }
 
-  const { rows } = await sql<{ payload: unknown; version: number }>`
-    SELECT payload, version
-      FROM user_history
-     WHERE id = ${projectId}::uuid
-       AND workspace_id = ${session.ws}::uuid
-       AND collaborator_id = ${session.uid}::uuid
-       AND kind = 'production_doc'
-     LIMIT 1
-  `;
-
-  if (rows.length === 0) {
+  // Route through the canonical persist layer so legacy payloads are
+  // migrated on read and the editor receives a typed `ProjectPayload`.
+  // The earlier inline SQL block here only returned the raw JSONB,
+  // which forced every consumer (including the editor's parsePayload)
+  // to do its own defensive shape-checking; consolidating in
+  // `loadProject` means the migration logic lives in one place.
+  const result = await loadProject(projectId, session);
+  if (result.kind === 'not_found') {
     logger.info('[editor route] project not found', {
       project_id: projectId,
       workspace_id: session.ws,
@@ -69,14 +66,16 @@ export default async function EditorPage({
 
   logger.info('[editor route] project loaded', {
     project_id: projectId,
-    version: rows[0].version,
+    version: result.version,
+    dropped_field_count: result.diagnostics.droppedFields.length,
+    defaulted_field_count: result.diagnostics.appliedDefaults.length,
   });
 
   return (
     <EditorClient
       projectId={projectId}
-      version={rows[0].version}
-      payload={rows[0].payload}
+      version={result.version}
+      payload={result.payload}
     />
   );
 }

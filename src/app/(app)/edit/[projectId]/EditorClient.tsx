@@ -34,7 +34,9 @@ import {
   type ProductionDoc,
   type RowImageState,
   type RowOverlayRenderState,
+  type RowVideoClipState,
 } from '@/remotion/utils';
+import type { ProjectPayload } from '@/lib/project/payload';
 import {
   EDITOR_MIN_SHOT_MS,
   initialEditorState,
@@ -43,6 +45,7 @@ import {
 import { useEditorStore } from '@/lib/editor/use-editor-store';
 import { Timeline } from '@/components/editor/Timeline';
 import { ShotInspector } from '@/components/editor/ShotInspector';
+import { StatusBar } from '@/components/editor/StatusBar';
 import { VoiceoverDriftReport } from '@/components/editor/VoiceoverDriftReport';
 import { TextOverlayManager } from '@/components/editor/TextOverlayManager';
 import { VoiceoverRegenModal } from '@/components/editor/VoiceoverRegenModal';
@@ -58,58 +61,12 @@ import { OverlayContextMenu } from '@/components/production-doc/OverlayContextMe
 interface EditorClientProps {
   projectId: string;
   version: number;
-  /** Raw `user_history.payload` JSONB. Parsed defensively because
-   *  the column is `JSONB` server-side; old rows from before recent
-   *  doc-shape additions may be missing fields. */
-  payload: unknown;
-}
-
-interface HistoryPayload {
-  doc?: ProductionDoc;
-  rowImages?: Record<number, string>;
-  title?: string;
-  /** Voiceover MP3 URL persisted on the user_history row. Threaded
-   *  into the Remotion player so the editor preview has audio. */
-  voiceoverUrl?: string;
-  /** Captions bundle from the transcription pipeline. Cached on the
-   *  payload so reloads pick them up without re-running OpenAI. */
-  captions?: import('@/lib/editor/captions').CaptionsBundle;
-  /** Per-row auto-fetched overlay state — sparse, keyed by row index.
-   *  Set by the production-doc page when an overlay was successfully
-   *  sourced + RMBG'd. Without this in the payload, the editor's
-   *  preview won't composite any overlay (the renderer keys on
-   *  `rowOverlays`, not on the row's `overlay_*` fields, for the
-   *  live URL). See `_plans/2026-05-18-overlay-system-overhaul.md`. */
-  rowOverlays?: Record<number, RowOverlayRenderState>;
-}
-
-function isPlainObject(x: unknown): x is Record<string, unknown> {
-  return typeof x === 'object' && x !== null && !Array.isArray(x);
-}
-
-function parsePayload(payload: unknown): HistoryPayload | null {
-  if (!isPlainObject(payload)) return null;
-  const doc = isPlainObject(payload.doc) ? (payload.doc as unknown as ProductionDoc) : undefined;
-  if (!doc || !Array.isArray((doc as ProductionDoc).rows)) return null;
-  const rowImages = isPlainObject(payload.rowImages)
-    ? (payload.rowImages as Record<number, string>)
-    : {};
-  const title = typeof payload.title === 'string' ? payload.title : undefined;
-  const voiceoverUrl =
-    typeof payload.voiceoverUrl === 'string' && payload.voiceoverUrl
-      ? payload.voiceoverUrl
-      : undefined;
-  const captions = isPlainObject(payload.captions)
-    ? (payload.captions as unknown as HistoryPayload['captions'])
-    : undefined;
-  // rowOverlays — persisted by production-doc when an overlay was
-  // sourced + RMBG'd. Keys are stringified row indexes in JSONB; the
-  // renderer wants numeric. Cast through Record<number, …> is safe
-  // since JS object property access coerces either way.
-  const rowOverlays = isPlainObject(payload.rowOverlays)
-    ? (payload.rowOverlays as unknown as Record<number, RowOverlayRenderState>)
-    : undefined;
-  return { doc, rowImages, title, voiceoverUrl, captions, rowOverlays };
+  /** Canonical project payload, already migrated server-side via
+   *  `loadProject`. The editor used to defensively re-parse the raw
+   *  JSONB here, but Phase 1 of the parity refactor moved that work
+   *  into the load path so every consumer (production-doc + editor)
+   *  sees the same canonical shape. */
+  payload: ProjectPayload;
 }
 
 function relativeTimeShort(thenMs: number, nowMs: number): string {
@@ -148,9 +105,15 @@ function zoomLevelToPxPerSecond(level: number): number {
 }
 
 export default function EditorClient({ projectId, version, payload }: EditorClientProps) {
-  const parsed = useMemo(() => parsePayload(payload), [payload]);
-  const doc = parsed?.doc;
-  const rowImages = useMemo(() => parsed?.rowImages ?? {}, [parsed]);
+  // Aliases that match the field names the rest of the component
+  // expects. `payload` is the canonical shape; we destructure to
+  // keep the downstream code's references short.
+  const doc = payload.doc;
+  const rowImages = payload.rowImages;
+  const rowVideoClips = payload.rowVideoClips;
+  const flags = payload.flags;
+  const musicUrl = payload.musicUrl;
+  const brandKitOverride = payload.brandKitOverride;
 
   // Voiceover drift report modal — toggled from the toolbar.
   const [showDriftReport, setShowDriftReport] = useState(false);
@@ -182,9 +145,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     initialEditorState({
       doc: doc ?? PLACEHOLDER_DOC,
       rowImages,
-      voiceoverUrl: parsed?.voiceoverUrl,
-      captions: parsed?.captions,
-      rowOverlays: parsed?.rowOverlays,
+      voiceoverUrl: payload.voiceoverUrl,
+      captions: payload.captions,
+      rowOverlays: payload.rowOverlays,
       version,
     }),
     projectId,
@@ -648,14 +611,51 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       const url = state.rowImages[i];
       return url ? { status: 'ready', imageUrl: url } : null;
     });
+    // rowVideoClips → array form for the renderer. Sparse: rows
+    // without a clip stay null so BRollScene falls back to the Ken
+    // Burns + still path. Phase 3 of the parity refactor: before
+    // this commit the editor never threaded clips through, so every
+    // shot rendered as a still even when a B-roll animation existed.
+    const rowVideoClipArr: (RowVideoClipState | null)[] = state.doc.rows.map((_, i) => {
+      const clip = rowVideoClips[i];
+      if (!clip) return null;
+      return {
+        status: clip.status,
+        videoUrl: clip.videoUrl,
+        durationSeconds: clip.durationSeconds,
+      };
+    });
+    // rowLockedAsStill → index→bool array form. The flags map is
+    // sparse by row index; the renderer wants `boolean[]` semantically
+    // aligned with the rows array.
+    const rowLockedArr = state.doc.rows.map((_, i) =>
+      Boolean(flags.rowLockedAsStill[i]),
+    );
     return productionDocToVideoConfig(state.doc, rowImageArr, {
       voiceoverUrl: state.voiceoverUrl,
       captions: state.captions?.segments,
       // Without this the renderer's overlay branch sees `overlayState`
       // as undefined and skips compositing every overlay on the doc.
       rowOverlays: state.rowOverlays,
+      rowVideoClips: rowVideoClipArr,
+      rowLockedAsStill: rowLockedArr,
+      animateScenes: flags.animateScenes,
+      suppressLowerThirds: flags.suppressLowerThirds,
+      musicUrl,
+      brand: brandKitOverride,
     });
-  }, [doc, state.doc, state.rowImages, state.voiceoverUrl, state.captions, state.rowOverlays]);
+  }, [
+    doc,
+    state.doc,
+    state.rowImages,
+    state.voiceoverUrl,
+    state.captions,
+    state.rowOverlays,
+    rowVideoClips,
+    flags,
+    musicUrl,
+    brandKitOverride,
+  ]);
 
   const inputProps = useMemo(() => (videoConfig ? { config: videoConfig } : null), [videoConfig]);
 
@@ -806,14 +806,18 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     };
   }, [videoConfig, apply]);
 
-  if (!parsed || !doc || !inputProps || !videoConfig) {
-    console.warn('[editor client] payload missing or unparseable', { projectId });
+  if (!doc || doc.rows.length === 0 || !inputProps || !videoConfig) {
+    console.warn('[editor client] payload missing rows', {
+      projectId,
+      hasDoc: Boolean(doc),
+      rowCount: doc?.rows.length ?? 0,
+    });
     return (
       <div className="p-8 max-w-2xl mx-auto space-y-3">
         <h1 className="text-xl font-semibold">Couldn&apos;t load this project</h1>
         <p className="text-sm" style={{ color: 'var(--fg-muted)' }}>
-          The production-doc row this URL points at is missing its <code>doc</code> payload,
-          or its shape is older than the editor expects.
+          The production-doc row this URL points at hasn&apos;t generated any
+          shots yet. Open the doc in the production-doc page first.
         </p>
         <Link href="/production-doc" className="text-sm underline">
           ← Back to Production Doc
@@ -827,7 +831,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       <header className="flex items-center justify-between gap-3 flex-wrap">
         <div className="min-w-0">
           <h1 className="text-xl font-semibold truncate">
-            {parsed.title || state.doc.title || 'Untitled project'}
+            {payload.title || state.doc.title || 'Untitled project'}
           </h1>
           <p className="text-xs" style={{ color: 'var(--fg-muted)' }}>
             {state.doc.rows.length} shots · {state.doc.total_duration} · version {state.version}
@@ -1177,18 +1181,26 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         }
       />
 
-      <div
-        className="p-3 rounded-lg border text-xs"
-        style={{ borderColor: 'var(--card-border)', color: 'var(--fg-muted)' }}
-      >
-        <strong style={{ color: 'var(--fg)' }}>Resize</strong> drag the trailing edge.{' '}
-        <strong style={{ color: 'var(--fg)' }}>Reorder</strong> drag the top grab handle.{' '}
-        <strong style={{ color: 'var(--fg)' }}>Split</strong> press B at the playhead.{' '}
-        <strong style={{ color: 'var(--fg)' }}>Delete</strong> select + Delete (ripple) or
-        Shift+Delete (blank — keeps the slot).{' '}
-        <strong style={{ color: 'var(--fg)' }}>Mute</strong> select + M.{' '}
-        Cmd / Ctrl+Z undoes anything.
-      </div>
+      <StatusBar
+        playheadMs={state.playheadMs}
+        totalDurationMs={videoConfig.shots.reduce((acc, s) => acc + s.durationMs, 0)}
+        selection={state.selection}
+        selectionScriptPreview={
+          state.selection !== null
+            ? (state.doc.rows[state.selection]?.script_text ?? null)
+            : null
+        }
+        saveStatusLabel={statusBarSaveLabel(saveStatus, state.isDirty)}
+        readiness={{
+          shotCount: state.doc.rows.length,
+          imageCount: Object.values(state.rowImages).filter(Boolean).length,
+          clipCount: Object.values(rowVideoClips).filter((c) => c && c.status === 'ready').length,
+          overlayPlannedCount: state.doc.rows.filter((r) => Boolean(r.overlay_stock_terms?.trim())).length,
+          overlayReadyCount: Object.values(state.rowOverlays).filter((o) => o?.status === 'done').length,
+          hasVoiceover: Boolean(state.voiceoverUrl),
+          hasCaptions: Boolean(state.captions),
+        }}
+      />
 
       {/* Phase 5.2 overlay-port — three modal surfaces mount here so
           every overlay action in the editor reuses the same UI the
@@ -1462,6 +1474,28 @@ function SaveStatusBadge({ status, isDirty }: SaveStatusBadgeProps): React.React
 }
 
 /** Re-render every `intervalMs` ms. Pass `null` to pause. */
+/** Flat-string version of the save status for the StatusBar. The
+ *  toolbar already shows a colored badge; the status bar just needs
+ *  one short label that fits on a single line at the bottom. */
+function statusBarSaveLabel(
+  status: ReturnType<typeof useEditorStore>['saveStatus'],
+  isDirty: boolean,
+): string {
+  switch (status.kind) {
+    case 'idle':
+      return isDirty ? 'Unsaved' : 'Saved';
+    case 'pending':
+    case 'saving':
+      return 'Saving…';
+    case 'saved':
+      return 'Saved';
+    case 'conflict':
+      return 'Conflict';
+    case 'error':
+      return 'Save error';
+  }
+}
+
 function useTick(intervalMs: number | null): [number, (n: number) => void] {
   const [n, setN] = useState(() => Date.now());
   useEffect(() => {
