@@ -47,6 +47,8 @@ import { Timeline } from '@/components/editor/Timeline';
 import { ShotInspector } from '@/components/editor/ShotInspector';
 import { StatusBar } from '@/components/editor/StatusBar';
 import { EditorChrome } from '@/components/editor/EditorChrome';
+import { EditorHeader } from '@/components/editor/EditorHeader';
+import { TransportBar, type PlaybackRate } from '@/components/editor/TransportBar';
 import {
   getDefaultZoomLevel,
   getShowThumbnails,
@@ -143,6 +145,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // settings audit); falls back to `ZOOM_DEFAULT_LEVEL` when the
   // setting is unset.
   const [zoomLevel, setZoomLevel] = useState<number>(() => getDefaultZoomLevel());
+  // Transport playback rate — passed as a prop to `<Player>` (the ref
+  // doesn't expose a setter). Local-only viewing preference.
+  const [playbackRate, setPlaybackRate] = useState<PlaybackRate>(1);
   const pixelsPerSecond = useMemo(() => zoomLevelToPxPerSecond(zoomLevel), [zoomLevel]);
   const handleZoomDelta = useCallback((delta: number) => {
     setZoomLevel((prev) =>
@@ -1019,25 +1024,70 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     );
   }
 
-  // Phase 1 of `_plans/2026-05-19-editor-real-nle-look.md` slices the
-  // editor into named slots that mount into a CSS-grid chrome. The
-  // existing toolbar / preview / inspector / timeline content stays
-  // identical — only the surrounding layout changed. Phases 2-5
-  // incrementally replace each slot's content with CapCut-style
-  // components.
-  const headerSlot = (
-    <div className="flex items-center justify-between gap-3 flex-wrap h-full px-2">
-        <div className="min-w-0">
-          <h1 className="text-xl font-semibold truncate">
-            {payload.title || state.doc.title || 'Untitled project'}
-          </h1>
-          <p className="text-xs" style={{ color: 'var(--fg-muted)' }}>
-            {state.doc.rows.length} shots · {state.doc.total_duration} · version {state.version}
-          </p>
-        </div>
+  // Real-NLE Phases 1+2 slice the editor into named slots that mount
+  // into the chrome grid. Phase 1 set up the shell; Phase 2 replaces
+  // the slot contents incrementally — header is now `EditorHeader`,
+  // and a `TransportBar` sits under the preview. AI tools (Drift /
+  // Overlays / Regen captions / Regen VO / Regen doc / Split / Delete
+  // / Mute / Animate / Lower-3rd) temporarily live in the leftRail
+  // slot until Phase 3 builds the real tabbed left rail.
 
-        <div className="flex items-center gap-2">
-          <SaveStatusBadge status={saveStatus} isDirty={state.isDirty} />
+  // Memoize the cumulative shot start times so the TransportBar's
+  // skip-prev / skip-next can land on the nearest boundary without
+  // recomputing on every keystroke.
+  const shotStartTimesMs = useMemo(() => rowStartTimesMs(state.doc), [state.doc]);
+
+  // Pre-compute the save-status label + color for the header pill so
+  // the in-place SaveStatusBadge doesn't have to reach into the
+  // store from inside the JSX.
+  const totalDurationMs = useMemo(
+    () => videoConfig?.shots.reduce((acc, s) => acc + s.durationMs, 0) ?? 0,
+    [videoConfig],
+  );
+  const saveStatusLabel = statusBarSaveLabel(saveStatus, state.isDirty);
+  const saveStatusColor = (() => {
+    if (saveStatus.kind === 'conflict') return '#fca5a5';
+    if (saveStatus.kind === 'error') return '#fca5a5';
+    if (state.isDirty) return 'var(--editor-accent)';
+    return 'var(--fg-muted)';
+  })();
+
+  const headerSlot = (
+    <EditorHeader
+      title={payload.title || state.doc.title || 'Untitled project'}
+      shotCount={state.doc.rows.length}
+      totalDuration={state.doc.total_duration}
+      version={state.version}
+      saveStatusLabel={saveStatusLabel}
+      saveStatusColor={saveStatusColor}
+      isDirty={state.isDirty}
+      canUndo={canUndo}
+      canRedo={canRedo}
+      onUndo={() => apply({ type: 'UNDO' })}
+      onRedo={() => apply({ type: 'REDO' })}
+      onSave={() => { void flushSave(); }}
+      exportHref={`/api/edit/${encodeURIComponent(projectId)}/export?format=otio`}
+      onHelp={() => {
+        // Help opens the StatusBar's existing shortcut overlay by
+        // dispatching the same custom event. The StatusBar listens
+        // for `editor:show-shortcuts` in Phase 6 polish; for now,
+        // log so the wiring is visible.
+        console.info('[editor header] help clicked');
+        window.dispatchEvent(new CustomEvent('editor:show-shortcuts'));
+      }}
+    />
+  );
+
+  // Holding area for AI tools + flag toggles until Phase 3's left
+  // rail tabs ship. These buttons are the same handlers as before;
+  // only their housing changed. Phase 3 replaces with proper tab
+  // components.
+  const __toolsHolder = (
+    <div className="h-full editor-scroll" style={{ overflow: 'auto', padding: '8px' }}>
+      <div className="text-[10px] uppercase tracking-wider mb-2 px-1" style={{ color: 'var(--fg-muted)' }}>
+        Tools (phase 3 places these in tabs)
+      </div>
+      <div className="flex flex-col items-stretch gap-1">
 
           <button
             type="button"
@@ -1204,68 +1254,14 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             {state.flags.suppressLowerThirds ? '⤓ Lower-3rd off' : '⤓ Lower-3rd on'}
           </button>
 
-          <button
-            type="button"
-            onClick={() => apply({ type: 'UNDO' })}
-            disabled={!canUndo}
-            className="text-xs px-2.5 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/5"
-            style={{ borderColor: 'var(--card-border)' }}
-            title="Undo (Cmd/Ctrl+Z)"
-          >
-            ↶ Undo
-          </button>
-          <button
-            type="button"
-            onClick={() => apply({ type: 'REDO' })}
-            disabled={!canRedo}
-            className="text-xs px-2.5 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/5"
-            style={{ borderColor: 'var(--card-border)' }}
-            title="Redo (Cmd/Ctrl+Shift+Z)"
-          >
-            ↷ Redo
-          </button>
-          <button
-            type="button"
-            onClick={() => { void flushSave(); }}
-            disabled={!state.isDirty}
-            className="text-xs px-3 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/5"
-            style={{
-              borderColor: state.isDirty ? 'var(--accent-purple-bright, #a78bfa)' : 'var(--card-border)',
-              color: state.isDirty ? 'var(--accent-purple-bright, #a78bfa)' : undefined,
-            }}
-            title="Save now (Cmd/Ctrl+S)"
-          >
-            Save
-          </button>
-          <a
-            href={`/api/edit/${encodeURIComponent(projectId)}/export?format=otio`}
-            className="text-xs px-2.5 py-1.5 rounded border hover:bg-white/5 transition-colors"
-            style={{ borderColor: 'var(--card-border)' }}
-            title="Download the timeline as OpenTimelineIO JSON. Importable into DaVinci Resolve, Premiere, and Final Cut via otioconvert."
-          >
-            Export .otio
-          </a>
-
-          <Link
-            href="/production-doc"
-            className="text-sm px-3 py-1.5 rounded border hover:bg-white/5 transition-colors"
-            style={{ borderColor: 'var(--card-border)' }}
-          >
-            ← Production Doc
-          </Link>
-        </div>
+      </div>
     </div>
   );
 
-  const leftRailSlot = (
-    <div className="h-full p-2 text-xs editor-scroll" style={{ color: 'var(--fg-muted)', overflow: 'auto' }}>
-      <div className="font-medium mb-1" style={{ color: 'var(--fg)' }}>Tools</div>
-      <p style={{ color: 'var(--fg-muted)' }}>
-        Coming in Phase 3 — Shots / Media / Audio / Captions / AI Tools tabs.
-        Use the toolbar above for now.
-      </p>
-    </div>
-  );
+  // Phase 2 wires the AI tools holder into the leftRail slot. Phase 3
+  // replaces this with proper tabbed components (Shots / Media /
+  // Audio / Captions / AI Tools / Settings).
+  const leftRailSlot = __toolsHolder;
 
   const zoomStrip = (
     <div className="flex items-center justify-end gap-2 text-xs px-2" style={{ color: 'var(--fg-muted)' }}>
@@ -1287,7 +1283,6 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
   const previewSlot = (
     <>
-      {zoomStrip}
       {saveStatus.kind === 'conflict' && (
         <ConflictBanner
           onReload={() => {
@@ -1297,8 +1292,8 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         />
       )}
       <div
-        className="rounded-lg overflow-hidden border flex-1 min-w-0 relative"
-        style={{ borderColor: 'var(--card-border)', background: '#000' }}
+        className="rounded-lg overflow-hidden flex-1 min-w-0 relative editor-panel"
+        style={{ background: '#000' }}
       >
         <Player
           ref={playerRef}
@@ -1308,7 +1303,8 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           compositionWidth={videoConfig.width}
           compositionHeight={videoConfig.height}
           fps={videoConfig.fps}
-          controls
+          playbackRate={playbackRate}
+          controls={false}
           style={{ width: '100%', height: '100%', objectFit: 'contain' }}
           acknowledgeRemotionLicense
         />
@@ -1317,6 +1313,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             preview AND in Lambda renders. No separate HTML overlay
             needed. */}
       </div>
+      <TransportBar
+        playerRef={playerRef}
+        playheadMs={state.playheadMs}
+        totalDurationMs={totalDurationMs}
+        shotStartTimesMs={shotStartTimesMs}
+        onSeek={(ms) => apply({ type: 'SET_PLAYHEAD', ms })}
+        fps={videoConfig.fps}
+        playbackRate={playbackRate}
+        onPlaybackRateChange={setPlaybackRate}
+      />
     </>
   );
 
@@ -1380,6 +1386,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
   const timelineSlot = (
     <div className="h-full flex flex-col p-2 gap-2 editor-scroll" style={{ overflow: 'auto' }}>
+      {zoomStrip}
       <Timeline
         config={videoConfig}
         rowImages={getShowThumbnails() ? state.rowImages : {}}
