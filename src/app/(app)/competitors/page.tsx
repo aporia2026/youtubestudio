@@ -583,6 +583,17 @@ export default function CompetitorsPage() {
                         <button className="btn-secondary text-xs flex items-center gap-1" onClick={() => syncCompetitor(c.id)} disabled={syncingId === c.id}>
                           {syncingId === c.id ? <Spinner size={12} /> : '↻'} Sync
                         </button>
+                        <a
+                          className="btn-secondary text-xs flex items-center gap-1"
+                          href={c.custom_url
+                            ? `https://www.youtube.com/${c.custom_url.startsWith('@') ? c.custom_url : '@' + c.custom_url}`
+                            : `https://www.youtube.com/channel/${c.channel_id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="Open channel on YouTube"
+                        >
+                          ▶ YouTube
+                        </a>
                         <button className="btn-secondary text-xs flex items-center gap-1" onClick={() => openDetail(c.id)}>👁 Open</button>
                         <button className="btn-secondary text-xs flex items-center gap-1" style={{ color: '#ef4444' }} onClick={() => deleteCompetitor(c.id)} disabled={deletingId === c.id}>
                           {deletingId === c.id ? <Spinner size={12} /> : '✕'} Delete
