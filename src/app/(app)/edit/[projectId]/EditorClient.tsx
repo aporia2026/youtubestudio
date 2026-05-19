@@ -57,6 +57,8 @@ import { TimelineV2 } from '@/components/editor/timeline-v2/TimelineV2';
 import { SectionThumbnailModal } from '@/components/editor/SectionThumbnailModal';
 import { MaskBrushEditor } from '@/components/production-doc/MaskBrushEditor';
 import type { ImageSaliencyMap } from '@/remotion/utils';
+import { ProjectSwitcher } from '@/components/editor/ProjectSwitcher';
+import { EditorEmptyState } from '@/components/editor/EditorEmptyState';
 import { ShotsTab } from '@/components/editor/leftrail/ShotsTab';
 import { MediaTab } from '@/components/editor/leftrail/MediaTab';
 import { AudioTab } from '@/components/editor/leftrail/AudioTab';
@@ -1159,6 +1161,15 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         console.info('[editor header] help clicked');
         window.dispatchEvent(new CustomEvent('editor:show-shortcuts'));
       }}
+      switcherSlot={
+        <ProjectSwitcher
+          currentProjectId={projectId}
+          isDirty={state.isDirty}
+          onReloadCurrent={async () => {
+            await reloadFromServer();
+          }}
+        />
+      }
     />
   );
 
@@ -1288,6 +1299,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     </div>
   );
 
+  // Empty-state detection — the canonical signal that the user
+  // landed on a project where production-doc hasn't finished its
+  // work. Triggers the overlay card with reload + open-doc + pick-
+  // another CTAs.
+  const imageReadyCount = Object.values(state.rowImages).filter(Boolean).length;
+  const clipReadyCount = Object.values(state.rowVideoClips).filter((c) => c?.status === 'ready').length;
+  const showEmptyOverlay =
+    state.doc.rows.length === 0 ||
+    (imageReadyCount === 0 && !state.voiceoverUrl && clipReadyCount === 0);
+
   const previewSlot = (
     <>
       {saveStatus.kind === 'conflict' && (
@@ -1319,6 +1340,22 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             via <CaptionsOverlay>, so they appear in both the editor
             preview AND in Lambda renders. No separate HTML overlay
             needed. */}
+
+        {showEmptyOverlay && (
+          <EditorEmptyState
+            kind={state.doc.rows.length === 0 ? 'no-rows' : 'no-assets'}
+            shotCount={state.doc.rows.length}
+            imageCount={imageReadyCount}
+            clipCount={clipReadyCount}
+            hasVoiceover={Boolean(state.voiceoverUrl)}
+            onReload={async () => {
+              await reloadFromServer();
+            }}
+            onOpenSwitcher={() =>
+              window.dispatchEvent(new CustomEvent('editor:open-switcher'))
+            }
+          />
+        )}
       </div>
       <TransportBar
         playerRef={playerRef}

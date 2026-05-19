@@ -42,6 +42,10 @@ interface EditorHeaderProps {
    *  we want the browser to download the .otio file natively). */
   exportHref: string;
   onHelp: () => void;
+  /** Optional slot for the project switcher (reload + history picker).
+   *  Lives at the left of the action cluster so the natural reading
+   *  order is: title → switch project → action verbs. */
+  switcherSlot?: React.ReactNode;
 }
 
 export function EditorHeader({
@@ -59,6 +63,7 @@ export function EditorHeader({
   onSave,
   exportHref,
   onHelp,
+  switcherSlot,
 }: EditorHeaderProps): React.ReactElement {
   return (
     <div className="flex items-center justify-between h-full px-3 gap-3">
@@ -78,6 +83,10 @@ export function EditorHeader({
 
       {/* Action cluster ──────────────────────────────────── */}
       <div className="flex items-center gap-1.5 shrink-0">
+        {switcherSlot}
+
+        {switcherSlot && <span className="editor-divider" aria-hidden />}
+
         <span
           className="text-[11px] tabular-nums px-2 py-1 rounded-md"
           style={{ color: saveStatusColor, background: 'transparent' }}
