@@ -103,22 +103,65 @@ export async function getAnalysisById(input: {
  * Reverse-chronological list for the /analyze page's recent-analyses
  * panel. Caps at 50 — the panel is meant to remind the operator of
  * what they've recently looked at, not be a historical archive.
+ *
+ * Optional `q` does case-insensitive substring matching across both
+ * video_title and channel_title — the two fields visible on each row,
+ * so the search field matches what the operator can already see.
+ * Optional `stage` filters to a single AnalysisStage. Both are
+ * additive — passing neither preserves the original "latest N rows"
+ * behavior unchanged.
  */
 export async function listRecentAnalyses(input: {
   workspaceId: string;
   limit?: number;
+  q?: string;
+  stage?: AnalysisStage;
 }): Promise<YoutubeAnalysisRow[]> {
   const limit = Math.min(Math.max(input.limit ?? 25, 1), 50);
+  const trimmedQ = input.q?.trim() ?? '';
+  const qLike = trimmedQ ? `%${trimmedQ}%` : null;
+  const stage = input.stage ?? null;
+
+  // Single parameterised query covering all four combinations of
+  // (q present/absent) × (stage present/absent). Postgres handles
+  // the NULL short-circuit cleanly: when qLike is NULL the ILIKE
+  // disjunction evaluates to NULL which short-circuits to TRUE under
+  // the `OR qLike IS NULL` wrapping; same for stage.
   const { rows } = await sql<YoutubeAnalysisRow>`
     SELECT id, workspace_id, requested_by, video_id, video_url, video_title,
            channel_title, model_id, analyzer_version, prompt_version, stage,
            failure_reason, result_jsonb, cost_usd, created_at, completed_at
       FROM youtube_analyses
      WHERE workspace_id = ${input.workspaceId}::uuid
+       AND (
+         ${qLike}::text IS NULL
+         OR video_title ILIKE ${qLike}
+         OR channel_title ILIKE ${qLike}
+       )
+       AND (${stage}::text IS NULL OR stage = ${stage})
      ORDER BY created_at DESC
      LIMIT ${limit}
   `;
   return rows;
+}
+
+/**
+ * Workspace-scoped hard delete. Returns true when a row matched and
+ * was removed, false when the id didn't exist in this workspace —
+ * the route maps `false` to 404, matching the 404-not-403 pattern
+ * the rest of the analyzer routes use to avoid disclosing the
+ * existence of cross-workspace rows.
+ */
+export async function deleteAnalysis(input: {
+  workspaceId: string;
+  analysisId: string;
+}): Promise<boolean> {
+  const { rowCount } = await sql`
+    DELETE FROM youtube_analyses
+     WHERE id = ${input.analysisId}::uuid
+       AND workspace_id = ${input.workspaceId}::uuid
+  `;
+  return (rowCount ?? 0) > 0;
 }
 
 /**

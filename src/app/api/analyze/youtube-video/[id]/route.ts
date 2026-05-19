@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apiRoute } from '@/lib/route-helpers';
-import { getAnalysisById } from '@/lib/analyzer/db';
+import { deleteAnalysis, getAnalysisById } from '@/lib/analyzer/db';
+import { logger } from '@/lib/logger';
 import { ANALYZER_VERSION, PROMPT_VERSION } from '@/lib/analyzer/types';
 
 /**
@@ -58,5 +59,33 @@ export const GET = apiRoute.authed(
       createdAt: row.created_at,
       completedAt: row.completed_at,
     });
+  },
+);
+
+/**
+ * DELETE — workspace-scoped hard delete of a single analysis row.
+ * Returns 204 on success, 404 on cross-workspace or missing id
+ * (same 404-not-403 pattern as GET to avoid disclosing existence).
+ */
+export const DELETE = apiRoute.authed(
+  async (
+    session,
+    _req: NextRequest,
+    { params }: { params: Promise<{ id: string }> },
+  ) => {
+    const { id } = await params;
+    if (!id || typeof id !== 'string') {
+      return NextResponse.json({ error: 'analysis id required' }, { status: 400 });
+    }
+    const deleted = await deleteAnalysis({ workspaceId: session.ws, analysisId: id });
+    if (!deleted) {
+      return NextResponse.json({ error: 'Analysis not found' }, { status: 404 });
+    }
+    logger.info('[analyzer-list delete]', {
+      analysis_id: id,
+      workspace_id: session.ws,
+      requested_by: session.uid,
+    });
+    return new NextResponse(null, { status: 204 });
   },
 );

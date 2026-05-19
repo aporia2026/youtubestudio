@@ -344,13 +344,31 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
  * GET /api/analyze/youtube-video — workspace's recent analyses, reverse
  * chronological, capped at 25 by default. Used by the /analyze entry
  * page's "Recent analyses" list. Workspace-scoped via apiRoute.authed.
+ *
+ * Query params (all optional):
+ *   limit — int, clamped to [1, 50]; defaults to 25.
+ *   q     — substring search across video_title + channel_title
+ *           (case-insensitive). Trimmed; empty after trim is a no-op.
+ *   stage — one of `done` | `analyzing` | `failed`. Anything else
+ *           silently ignored — we don't surface user-supplied input
+ *           in a 400 to keep the list endpoint forgiving.
  */
+const ALLOWED_STAGES: ReadonlyArray<'done' | 'analyzing' | 'failed'> = ['done', 'analyzing', 'failed'];
+
 export const GET = apiRoute.authed(async (session, req: NextRequest) => {
-  const limitParam = req.nextUrl.searchParams.get('limit');
+  const params = req.nextUrl.searchParams;
+  const limitParam = params.get('limit');
   const limit = limitParam ? Number(limitParam) : 25;
+  const q = params.get('q')?.trim() || undefined;
+  const stageParam = params.get('stage');
+  const stage = stageParam && (ALLOWED_STAGES as ReadonlyArray<string>).includes(stageParam)
+    ? (stageParam as 'done' | 'analyzing' | 'failed')
+    : undefined;
   const rows = await listRecentAnalyses({
     workspaceId: session.ws,
     limit: Number.isFinite(limit) ? limit : 25,
+    q,
+    stage,
   });
   return NextResponse.json({
     analyses: rows.map((r) => ({

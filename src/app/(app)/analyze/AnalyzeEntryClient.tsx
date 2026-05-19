@@ -57,6 +57,15 @@ interface AnalyzerError {
   rawHead?: string;
 }
 
+type StageFilter = 'all' | RecentAnalysisItem['stage'];
+
+const STAGE_FILTER_OPTIONS: ReadonlyArray<{ value: StageFilter; label: string }> = [
+  { value: 'all', label: 'All stages' },
+  { value: 'done', label: 'Ready' },
+  { value: 'analyzing', label: 'Analyzing' },
+  { value: 'failed', label: 'Failed' },
+];
+
 export function AnalyzeEntryClient({ initialRecent }: Props): React.ReactElement {
   const router = useRouter();
   const params = useSearchParams();
@@ -64,6 +73,9 @@ export function AnalyzeEntryClient({ initialRecent }: Props): React.ReactElement
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<AnalyzerError | null>(null);
   const [recent, setRecent] = useState<RecentAnalysisItem[]>(initialRecent);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [stageFilter, setStageFilter] = useState<StageFilter>('all');
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const autostartedRef = useRef(false);
 
   // Prefill from query string (?videoId=&title=&channel=). When
@@ -97,14 +109,55 @@ export function AnalyzeEntryClient({ initialRecent }: Props): React.ReactElement
 
   const refreshRecent = useCallback(async (): Promise<void> => {
     try {
-      const res = await fetch('/api/analyze/youtube-video', { method: 'GET' });
+      const qs = new URLSearchParams();
+      const q = searchQuery.trim();
+      if (q) qs.set('q', q);
+      if (stageFilter !== 'all') qs.set('stage', stageFilter);
+      const url = qs.toString() ? `/api/analyze/youtube-video?${qs.toString()}` : '/api/analyze/youtube-video';
+      const res = await fetch(url, { method: 'GET' });
       if (!res.ok) return;
       const data = (await res.json()) as { analyses: RecentAnalysisItem[] };
       setRecent(data.analyses);
     } catch {
       /* network blip — next tick retries */
     }
-  }, []);
+  }, [searchQuery, stageFilter]);
+
+  // Debounce the search query 250ms so we're not hammering the list
+  // endpoint on every keystroke. The stage filter is immediate since
+  // it's a discrete dropdown — no debounce useful there.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      void refreshRecent();
+    }, 250);
+    return () => clearTimeout(t);
+  }, [searchQuery, stageFilter, refreshRecent]);
+
+  const handleDelete = useCallback(
+    async (item: RecentAnalysisItem): Promise<void> => {
+      const label = item.videoTitle || item.videoId;
+      if (!window.confirm(`Delete the analysis for "${label}"? This can't be undone.`)) {
+        return;
+      }
+      setDeletingId(item.id);
+      // Optimistic local removal — restore on failure.
+      const previous = recent;
+      setRecent((current) => current.filter((r) => r.id !== item.id));
+      try {
+        const res = await fetch(`/api/analyze/youtube-video/${item.id}`, { method: 'DELETE' });
+        if (!res.ok && res.status !== 204) {
+          setRecent(previous);
+          toast.error('Delete failed', { description: `Server returned ${res.status}.` });
+        }
+      } catch (err) {
+        setRecent(previous);
+        toast.error('Delete failed', { description: err instanceof Error ? err.message : 'network error' });
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [recent],
+  );
 
   const submit = useCallback(
     async (overrideUrl?: string, force = false): Promise<void> => {
@@ -321,6 +374,45 @@ export function AnalyzeEntryClient({ initialRecent }: Props): React.ReactElement
           </button>
         </header>
 
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search by video title or channel…"
+            aria-label="Search analyses"
+            style={{
+              flex: 1,
+              padding: '7px 10px',
+              borderRadius: 6,
+              border: '1px solid var(--border-bright)',
+              background: 'var(--bg-input)',
+              color: 'var(--text-primary)',
+              fontSize: 13,
+              outline: 'none',
+            }}
+          />
+          <select
+            value={stageFilter}
+            onChange={(e) => setStageFilter(e.target.value as StageFilter)}
+            aria-label="Filter by stage"
+            style={{
+              padding: '7px 10px',
+              borderRadius: 6,
+              border: '1px solid var(--border-bright)',
+              background: 'var(--bg-input)',
+              color: 'var(--text-primary)',
+              fontSize: 13,
+              outline: 'none',
+              cursor: 'pointer',
+            }}
+          >
+            {STAGE_FILTER_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+        </div>
+
         {recent.length === 0 ? (
           <div
             style={{
@@ -332,7 +424,9 @@ export function AnalyzeEntryClient({ initialRecent }: Props): React.ReactElement
               textAlign: 'center',
             }}
           >
-            Your workspace has no analyses yet. Paste a URL above to start.
+            {searchQuery.trim() || stageFilter !== 'all'
+              ? 'No analyses match the current search or filter.'
+              : 'Your workspace has no analyses yet. Paste a URL above to start.'}
           </div>
         ) : (
           <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 10 }}>
@@ -348,9 +442,10 @@ export function AnalyzeEntryClient({ initialRecent }: Props): React.ReactElement
                     borderRadius: 10,
                     padding: '12px 16px',
                     display: 'grid',
-                    gridTemplateColumns: '1fr auto auto',
+                    gridTemplateColumns: '1fr auto auto auto',
                     gap: 12,
                     alignItems: 'center',
+                    opacity: deletingId === item.id ? 0.5 : 1,
                   }}
                 >
                   <Link
@@ -424,6 +519,29 @@ export function AnalyzeEntryClient({ initialRecent }: Props): React.ReactElement
                   ) : (
                     <span style={{ width: 1 }} />
                   )}
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      void handleDelete(item);
+                    }}
+                    disabled={deletingId === item.id}
+                    aria-label={`Delete analysis for ${item.videoTitle || item.videoId}`}
+                    title="Delete this analysis"
+                    style={{
+                      padding: '4px 8px',
+                      borderRadius: 6,
+                      border: '1px solid var(--border-bright)',
+                      background: 'transparent',
+                      color: deletingId === item.id ? 'var(--text-muted)' : 'var(--text-tertiary)',
+                      fontSize: 14,
+                      lineHeight: 1,
+                      cursor: deletingId === item.id ? 'wait' : 'pointer',
+                    }}
+                  >
+                    ×
+                  </button>
                 </li>
               );
             })}
