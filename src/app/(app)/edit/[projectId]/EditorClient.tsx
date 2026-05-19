@@ -415,6 +415,64 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     [state.doc.rows, state.rowImages, userBrollModelId, projectId, setRowVideoClip],
   );
 
+  // ─── Batch D: Animate-all batch ─────────────────────────────────
+  //
+  // Sequential loop that calls handleGenerateClip for every row that
+  // doesn't have a ready/generating clip AND has enough prompt text.
+  // Sequential (not parallel) for the same reason production-doc does:
+  // Kie's rate-limiter, and smooth progress reporting.
+  const [animateAllProgress, setAnimateAllProgress] = useState<{ done: number; total: number } | null>(null);
+
+  const animateAllCandidates = useMemo(() => {
+    const model = findBrollModel(userBrollModelId);
+    if (!model) return [] as number[];
+    const out: number[] = [];
+    state.doc.rows.forEach((row, i) => {
+      const existing = state.rowVideoClips[i];
+      if (existing && (existing.status === 'generating' || existing.status === 'ready')) return;
+      if (state.flags.rowLockedAsStill[i]) return;
+      const still = state.rowImages[i];
+      if (model.kind === 'image-to-video' && !still) return;
+      const visDesc = (row.visual_description ?? '').trim();
+      const aiPrompt = (row.ai_image_prompt ?? '').trim();
+      if (visDesc.length < 20 && aiPrompt.length < 20) return;
+      out.push(i);
+    });
+    return out;
+  }, [state.doc.rows, state.rowImages, state.rowVideoClips, state.flags.rowLockedAsStill, userBrollModelId]);
+
+  const animateAllCostUsd = useMemo(() => {
+    const model = findBrollModel(userBrollModelId);
+    if (!model) return 0;
+    return animateAllCandidates.length * model.priceUsd;
+  }, [animateAllCandidates, userBrollModelId]);
+
+  const handleAnimateAll = useCallback(async () => {
+    if (animateAllProgress) return;
+    if (animateAllCandidates.length === 0) return;
+    const model = findBrollModel(userBrollModelId);
+    if (!model) return;
+    const confirmed = window.confirm(
+      `Animate ${animateAllCandidates.length} shot${animateAllCandidates.length === 1 ? '' : 's'} with ${model.label}?\n\n` +
+        `Estimated cost: ~$${animateAllCostUsd.toFixed(2)}.\n\n` +
+        `Generations run sequentially. You can keep editing while they finish.`,
+    );
+    if (!confirmed) return;
+    console.info('[editor animate-all] start', {
+      count: animateAllCandidates.length,
+      costUsd: animateAllCostUsd,
+      modelId: userBrollModelId,
+    });
+    setAnimateAllProgress({ done: 0, total: animateAllCandidates.length });
+    for (let n = 0; n < animateAllCandidates.length; n++) {
+      const rowIndex = animateAllCandidates[n]!;
+      await handleGenerateClip(rowIndex);
+      setAnimateAllProgress({ done: n + 1, total: animateAllCandidates.length });
+    }
+    console.info('[editor animate-all] done');
+    setAnimateAllProgress(null);
+  }, [animateAllCandidates, animateAllCostUsd, animateAllProgress, handleGenerateClip, userBrollModelId]);
+
   // Poll loop for in-flight clips. Walks state.rowVideoClips on each
   // tick, fetches /api/broll/{id} for any row whose status is
   // 'generating', and dispatches SET_ROW_VIDEO_CLIP on each status
@@ -1181,24 +1239,31 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             onOpenSectionThumbnail={() => setShowSectionThumbnail(true)}
             sectionThumbnailRegionCount={state.doc.thumbnail?.regions?.length ?? 0}
             hasSectionThumbnail={Boolean(state.doc.thumbnail?.imageUrl)}
+            animateAllCandidateCount={animateAllCandidates.length}
+            animateAllCostUsd={animateAllCostUsd}
+            animateAllProgress={animateAllProgress}
+            brollModelId={userBrollModelId}
+            onAnimateAll={() => { void handleAnimateAll(); }}
+            brandKitChannelName={null}
+            hasBrandKitOverride={Boolean(state.brandKitOverride)}
           />
         ),
         settings: (
           <SettingsTab
             flags={state.flags}
             onSetFlags={(patch) => apply({ type: 'SET_FLAGS', flags: patch })}
-            // The doc-level `overlays_disabled` field needs a new
-            // PATCH_DOC command on the store to mutate safely; for
-            // Phase 3 it's read-only here (still toggleable from the
-            // production-doc page). A follow-up adds PATCH_DOC and
-            // wires this through.
+            // Batch D unblocked this — PATCH_DOC now exists, so the
+            // editor can toggle `overlays_disabled` on the doc.
             overlaysDisabledOnDoc={state.doc.overlays_disabled === true}
             onToggleOverlaysDisabledOnDoc={() =>
-              console.info('[editor leftrail settings] overlays-disabled toggle requested', {
-                current: state.doc.overlays_disabled === true,
-                note: 'PATCH_DOC command pending; flip from /production-doc for now',
+              apply({
+                type: 'PATCH_DOC',
+                patch: { overlays_disabled: !(state.doc.overlays_disabled === true) },
               })
             }
+            docMinSceneMs={state.doc.min_scene_ms}
+            docTailBufferMs={state.doc.tail_buffer_ms}
+            onSetSceneTiming={(patch) => apply({ type: 'PATCH_DOC', patch })}
           />
         ),
       }}

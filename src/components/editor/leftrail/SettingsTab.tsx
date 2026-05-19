@@ -24,6 +24,17 @@ interface SettingsTabProps {
    *  stays uniform. */
   overlaysDisabledOnDoc: boolean;
   onToggleOverlaysDisabledOnDoc: () => void;
+  // ─── Batch D: scene timing ──────────────────────────────────────
+  /** Per-doc override of the workspace minimum scene duration (ms).
+   *  Falls back to workspace default when undefined. */
+  docMinSceneMs: number | undefined;
+  /** Per-doc override of the tail buffer after a row's narration
+   *  ends (ms). Falls back to workspace default when undefined. */
+  docTailBufferMs: number | undefined;
+  /** Patches `doc.min_scene_ms` / `doc.tail_buffer_ms` through
+   *  PATCH_DOC. Pass `undefined` to clear and inherit the workspace
+   *  default. */
+  onSetSceneTiming: (patch: { min_scene_ms?: number; tail_buffer_ms?: number }) => void;
 }
 
 export function SettingsTab({
@@ -31,6 +42,9 @@ export function SettingsTab({
   onSetFlags,
   overlaysDisabledOnDoc,
   onToggleOverlaysDisabledOnDoc,
+  docMinSceneMs,
+  docTailBufferMs,
+  onSetSceneTiming,
 }: SettingsTabProps): React.ReactElement {
   return (
     <div className="flex flex-col gap-2">
@@ -65,6 +79,44 @@ export function SettingsTab({
         onChange={() => onToggleOverlaysDisabledOnDoc()}
       />
 
+      {/* Batch D — scene timing. Doc-level overrides of the workspace
+          min-scene-duration and tail-buffer-after-narration. */}
+      <div className="space-y-3 mt-2 pt-3" style={{ borderTop: '1px solid var(--editor-edge)' }}>
+        <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--fg-muted)' }}>
+          Scene timing
+        </div>
+        <SliderRow
+          label="Min scene duration"
+          unit="ms"
+          min={1500}
+          max={5000}
+          step={100}
+          value={docMinSceneMs}
+          fallback={2400}
+          subtitle={
+            docMinSceneMs !== undefined
+              ? 'Doc override active'
+              : 'Inheriting workspace default (2400 ms)'
+          }
+          onChange={(v) => onSetSceneTiming({ min_scene_ms: v })}
+        />
+        <SliderRow
+          label="Tail buffer after narration"
+          unit="ms"
+          min={0}
+          max={2000}
+          step={50}
+          value={docTailBufferMs}
+          fallback={400}
+          subtitle={
+            docTailBufferMs !== undefined
+              ? 'Doc override active'
+              : 'Inheriting workspace default (400 ms)'
+          }
+          onChange={(v) => onSetSceneTiming({ tail_buffer_ms: v })}
+        />
+      </div>
+
       <p className="text-[10px] mt-2 px-1" style={{ color: 'var(--fg-muted)' }}>
         Per-device viewing preferences (default zoom, thumbnails on/off,
         keyboard hints) live in{' '}
@@ -73,6 +125,68 @@ export function SettingsTab({
         </a>
         .
       </p>
+    </div>
+  );
+}
+
+function SliderRow({
+  label,
+  unit,
+  min,
+  max,
+  step,
+  value,
+  fallback,
+  subtitle,
+  onChange,
+}: {
+  label: string;
+  unit: string;
+  min: number;
+  max: number;
+  step: number;
+  value: number | undefined;
+  fallback: number;
+  subtitle: string;
+  onChange: (next: number | undefined) => void;
+}) {
+  const effective = value ?? fallback;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-medium" style={{ color: 'var(--fg)' }}>
+          {label}
+        </span>
+        <span className="text-[10px] tabular-nums ed-mono" style={{ color: 'var(--fg)' }}>
+          {effective} {unit}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={effective}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full"
+        aria-label={label}
+      />
+      <div className="flex items-center justify-between">
+        <span className="text-[10px]" style={{ color: 'var(--fg-muted)' }}>
+          {subtitle}
+        </span>
+        {value !== undefined && (
+          <button
+            type="button"
+            onClick={() => onChange(undefined)}
+            className="text-[10px] underline"
+            style={{ color: 'var(--fg-muted)' }}
+            title="Clear doc-level override; inherit workspace default"
+          >
+            clear
+          </button>
+        )}
+      </div>
     </div>
   );
 }
