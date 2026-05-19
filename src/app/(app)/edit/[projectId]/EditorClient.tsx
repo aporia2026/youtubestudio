@@ -54,6 +54,7 @@ import { EditorInspector, type InspectorTabId } from '@/components/editor/Editor
 import { InspectorAudioTab } from '@/components/editor/inspector/InspectorAudioTab';
 import { InspectorCaptionsTab } from '@/components/editor/inspector/InspectorCaptionsTab';
 import { TimelineV2 } from '@/components/editor/timeline-v2/TimelineV2';
+import { SectionThumbnailModal } from '@/components/editor/SectionThumbnailModal';
 import { ShotsTab } from '@/components/editor/leftrail/ShotsTab';
 import { MediaTab } from '@/components/editor/leftrail/MediaTab';
 import { AudioTab } from '@/components/editor/leftrail/AudioTab';
@@ -149,6 +150,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // Regenerate-doc-from-script modal — heaviest action in the
   // editor. Server-side merge respects per-field editedAt.
   const [showRegenFromScript, setShowRegenFromScript] = useState(false);
+  // Batch B — section thumbnail modal. Opens from the AI Tools tab
+  // OR from the per-shot inspector's "Edit thumbnail / regions" link.
+  const [showSectionThumbnail, setShowSectionThumbnail] = useState(false);
 
   // Timeline zoom. Lives in the client because zoom is a viewing
   // preference, not part of the doc. The user's preferred default
@@ -1165,6 +1169,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             regenCaptionsLabel={regenCaptionsLabel}
             onRegenVO={() => setShowVoRegen(true)}
             onRegenDoc={() => setShowRegenFromScript(true)}
+            onOpenSectionThumbnail={() => setShowSectionThumbnail(true)}
+            sectionThumbnailRegionCount={state.doc.thumbnail?.regions?.length ?? 0}
+            hasSectionThumbnail={Boolean(state.doc.thumbnail?.imageUrl)}
           />
         ),
         settings: (
@@ -1357,6 +1364,8 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               onShowOverlayContextMenu={(x, y) =>
                 setOverlayContextMenu({ rowIndex: state.selection as number, x, y })
               }
+              docThumbnail={state.doc.thumbnail}
+              onOpenSectionThumbnail={() => setShowSectionThumbnail(true)}
             />
           ) : undefined,
         audio: (
@@ -1501,6 +1510,20 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             closeAllOverlayModals();
             await reloadFromServer();
           }}
+        />
+      )}
+
+      {showSectionThumbnail && (
+        <SectionThumbnailModal
+          value={state.doc.thumbnail}
+          onChange={(next) => {
+            console.info('[editor section-thumbnail] change', {
+              hasImage: Boolean(next?.imageUrl),
+              regionCount: next?.regions?.length ?? 0,
+            });
+            apply({ type: 'PATCH_DOC', patch: { thumbnail: next } });
+          }}
+          onClose={() => setShowSectionThumbnail(false)}
         />
       )}
 

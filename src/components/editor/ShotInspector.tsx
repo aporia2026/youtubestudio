@@ -19,7 +19,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, RefreshCw, Sparkles, Undo2 } from 'lucide-react';
 import type { ProductionDoc, RowOverlayRenderState } from '@/remotion/utils';
-import type { VideoShot } from '@/remotion/types';
+import type { VideoShot, VideoThumbnail } from '@/remotion/types';
 
 /** A clip from /api/broll. Trimmed to the fields the picker needs. */
 interface ProjectClip {
@@ -99,6 +99,16 @@ interface ShotInspectorProps {
   /** Open the right-click context menu at the cursor coords. The
    *  parent renders OverlayContextMenu at the given (x, y). */
   onShowOverlayContextMenu?: (x: number, y: number) => void;
+  // ─── Batch B: section thumbnail region zoom ───────────────────────
+  /** The doc's composite section thumbnail (if any). When present and
+   *  it has regions, the inspector renders a "Zoom into region" picker
+   *  for this shot. */
+  docThumbnail?: VideoThumbnail;
+  /** Open the section-thumbnail modal (upload / replace / draw
+   *  regions). Surfaced as a small "Edit thumbnail" link next to the
+   *  picker so the user can create regions without leaving the
+   *  inspector. */
+  onOpenSectionThumbnail?: () => void;
 }
 
 function fmt(ms: number | undefined): string {
@@ -132,6 +142,8 @@ export function ShotInspector({
   onRethinkOverlay,
   onUndoOverlayEdit,
   onShowOverlayContextMenu,
+  docThumbnail,
+  onOpenSectionThumbnail,
 }: ShotInspectorProps): React.ReactElement {
   const undoDepth = editHistoryDepth ?? 0;
   const overlayReady = overlayState?.status === 'done' && Boolean(overlayState.url);
@@ -781,6 +793,58 @@ export function ShotInspector({
             />
           ) : (
             row.section_title && <Field label="Section title" value={row.section_title} />
+          )}
+
+          {/* Section-thumbnail region zoom (Batch B). Only renders when
+              the doc has a composite thumbnail with at least one drawn
+              region; otherwise the section thumbnail is a doc-level
+              concern surfaced from the AI Tools tab. */}
+          {onUpdateRow && (
+            <div className="space-y-1">
+              <div className="font-medium flex items-center justify-between" style={{ color: 'var(--fg)' }}>
+                <span>Section thumbnail zoom</span>
+                {onOpenSectionThumbnail && (
+                  <button
+                    type="button"
+                    onClick={onOpenSectionThumbnail}
+                    className="text-[10px] underline"
+                    style={{ color: 'var(--editor-accent, #a78bfa)' }}
+                  >
+                    {docThumbnail ? 'Edit thumbnail / regions' : 'Add thumbnail'}
+                  </button>
+                )}
+              </div>
+              {docThumbnail && docThumbnail.regions.length > 0 ? (
+                <select
+                  value={row.thumbnail_zoom_to ?? ''}
+                  onChange={(e) =>
+                    onUpdateRow({
+                      thumbnail_zoom_to: e.target.value || undefined,
+                    })
+                  }
+                  className="w-full text-xs rounded border px-2 py-1.5"
+                  style={{
+                    borderColor: 'var(--card-border)',
+                    background: 'var(--bg)',
+                    color: 'var(--fg)',
+                  }}
+                  aria-label="Zoom into region for this shot"
+                >
+                  <option value="">— Show full thumbnail —</option>
+                  {docThumbnail.regions.map((reg) => (
+                    <option key={reg.id} value={reg.id}>
+                      {reg.label || reg.id}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="text-[10px]" style={{ color: 'var(--fg-muted)' }}>
+                  {docThumbnail
+                    ? 'No regions drawn yet. Click "Edit thumbnail / regions" to add some.'
+                    : 'No section thumbnail yet. Click "Add thumbnail" to upload one.'}
+                </div>
+              )}
+            </div>
           )}
 
           {(typeof row.trim_start_ms === 'number' || typeof row.trim_end_ms === 'number') && (

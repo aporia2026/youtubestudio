@@ -17,6 +17,7 @@
 import {
   Activity,
   FileText,
+  ImageIcon,
   Layers,
   Mic,
   Sparkles,
@@ -33,6 +34,10 @@ interface AIToolsTabProps {
   regenCaptionsLabel: string;
   onRegenVO: () => void;
   onRegenDoc: () => void;
+  // ─── Batch B: section thumbnail ─────────────────────────────────
+  onOpenSectionThumbnail: () => void;
+  sectionThumbnailRegionCount: number;
+  hasSectionThumbnail: boolean;
 }
 
 export function AIToolsTab({
@@ -44,6 +49,9 @@ export function AIToolsTab({
   regenCaptionsLabel,
   onRegenVO,
   onRegenDoc,
+  onOpenSectionThumbnail,
+  sectionThumbnailRegionCount,
+  hasSectionThumbnail,
 }: AIToolsTabProps): React.ReactElement {
   return (
     <div className="flex flex-col gap-1.5">
@@ -52,6 +60,18 @@ export function AIToolsTab({
         label="Drift report"
         subtitle="Narration vs shot durations"
         onClick={onDriftReport}
+      />
+      <ToolRow
+        icon={ImageIcon}
+        label="Section thumbnail"
+        subtitle={
+          !hasSectionThumbnail
+            ? 'Upload a composite thumbnail for section transitions'
+            : sectionThumbnailRegionCount === 0
+              ? 'Uploaded — draw regions to enable per-shot zoom'
+              : `${sectionThumbnailRegionCount} region${sectionThumbnailRegionCount === 1 ? '' : 's'} drawn`
+        }
+        onClick={onOpenSectionThumbnail}
       />
       <ToolRow
         icon={Layers}

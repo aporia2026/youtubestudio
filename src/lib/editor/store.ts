@@ -175,6 +175,12 @@ export type EditorCommand =
    *  the prior URL so undo restores it. Pass `null` / empty string
    *  to clear. No-op when the new URL matches the prior URL. */
   | { type: 'SET_VOICEOVER_URL'; url: string | null }
+  /** Doc-level patch — used for fields that live on `state.doc`
+   *  itself (thumbnail, overlays_disabled, scene_fade_enabled,
+   *  min_scene_ms, etc.) rather than per-row. Inverse stores the
+   *  prior shallow-merge of the patched keys so undo restores them
+   *  one at a time. Batch B of parity-batches. */
+  | { type: 'PATCH_DOC'; patch: Partial<ProductionDoc> }
   /** Set / clear the per-row B-roll clip render state. Used by the
    *  editor's inspector when the user kicks off a clip generation,
    *  and by the EditorClient's poller as the clip progresses
@@ -333,6 +339,7 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'SET_ROW_VIDEO_CLIP':
     case 'UPDATE_CAPTION_SEGMENT':
     case 'SET_VOICEOVER_URL':
+    case 'PATCH_DOC':
       return true;
     default:
       return false;
@@ -984,6 +991,33 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       return {
         next: { ...state, rowVideoClips: nextClips, isDirty: !transient ? true : state.isDirty },
         inverse,
+      };
+    }
+
+    case 'PATCH_DOC': {
+      // Shallow merge of doc-level fields. Inverse captures the
+      // prior values of EXACTLY the keys being patched so undo
+      // reverses only what changed (not the whole doc).
+      const patchKeys = Object.keys(cmd.patch) as Array<keyof ProductionDoc>;
+      if (patchKeys.length === 0) return { next: state, inverse: null };
+      // No-op short-circuit: if every key already matches its
+      // current value, skip the dispatch + undo stack entry.
+      const anyChanged = patchKeys.some((k) => state.doc[k] !== cmd.patch[k]);
+      if (!anyChanged) return { next: state, inverse: null };
+      const inversePatch: Partial<ProductionDoc> = {};
+      for (const k of patchKeys) {
+        // `as never` because TS can't prove the key-type alignment
+        // across the dynamic patch; the runtime safety is the
+        // key-by-key copy from the same `state.doc` we're reading.
+        (inversePatch[k] as never) = state.doc[k] as never;
+      }
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, ...cmd.patch },
+          isDirty: true,
+        },
+        inverse: { type: 'PATCH_DOC', patch: inversePatch },
       };
     }
 
