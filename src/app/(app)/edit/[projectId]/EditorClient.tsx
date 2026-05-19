@@ -50,6 +50,9 @@ import { EditorChrome } from '@/components/editor/EditorChrome';
 import { EditorHeader } from '@/components/editor/EditorHeader';
 import { TransportBar, type PlaybackRate } from '@/components/editor/TransportBar';
 import { EditorLeftRail } from '@/components/editor/EditorLeftRail';
+import { EditorInspector, type InspectorTabId } from '@/components/editor/EditorInspector';
+import { InspectorAudioTab } from '@/components/editor/inspector/InspectorAudioTab';
+import { InspectorCaptionsTab } from '@/components/editor/inspector/InspectorCaptionsTab';
 import { ShotsTab } from '@/components/editor/leftrail/ShotsTab';
 import { MediaTab } from '@/components/editor/leftrail/MediaTab';
 import { AudioTab } from '@/components/editor/leftrail/AudioTab';
@@ -1236,63 +1239,134 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     </>
   );
 
-  const inspectorSlot =
-    state.selection !== null && state.doc.rows[state.selection] ? (
-      <div className="h-full editor-scroll" style={{ overflow: 'auto' }}>
-        <ShotInspector
-          shotIndex={state.selection}
-          shot={videoConfig.shots[state.selection]}
-          row={state.doc.rows[state.selection]}
-          thumbnailUrl={state.rowImages[state.selection] ?? null}
-          totalShots={state.doc.rows.length}
-          projectId={projectId}
-          onClose={() => apply({ type: 'SET_SELECTION', shotIndex: null })}
-          onUploadImage={(url) =>
-            apply({ type: 'SET_ROW_IMAGE', shotIndex: state.selection as number, url })
-          }
-          onPickProjectClip={(url, durationSeconds) =>
-            apply({
-              type: 'SET_ROW_VIDEO',
-              shotIndex: state.selection as number,
-              url,
-              durationSeconds,
-            })
-          }
-          onGenerateClip={() => {
-            void handleGenerateClip(state.selection as number);
-          }}
-          clipStatus={state.rowVideoClips[state.selection]?.status}
-          brollModelId={userBrollModelId}
-          onUpdateScript={(text) =>
-            apply({
-              type: 'SET_ROW_SCRIPT',
-              shotIndex: state.selection as number,
-              text,
-            })
-          }
-          onUpdateRow={(patch) => updateRow(state.selection as number, patch)}
-          overlayState={state.rowOverlays[state.selection]}
-          isRethinkingOverlay={rethinkingRows.has(state.selection)}
-          rethinkExhausted={(rethinkAttempts[state.selection] ?? 0) >= RETHINK_MAX_ATTEMPTS}
-          editHistoryDepth={
-            state.doc.rows[state.selection]?.overlay_edit_history?.length ?? 0
-          }
-          onOpenOverlayPosition={() => setOverlayPositionRow(state.selection)}
-          onOpenOverlayEdit={() => setOverlayEditRow(state.selection)}
-          onRethinkOverlay={() => {
-            void rethinkOverlayPlacement(state.selection as number);
-          }}
-          onUndoOverlayEdit={() => undoOverlayEdit(state.selection as number)}
-          onShowOverlayContextMenu={(x, y) =>
-            setOverlayContextMenu({ rowIndex: state.selection as number, x, y })
-          }
-        />
-      </div>
-    ) : (
-      <div className="h-full flex items-center justify-center p-4 text-xs text-center" style={{ color: 'var(--fg-muted)' }}>
-        Select a shot on the timeline below to inspect or edit it.
-      </div>
-    );
+  // Phase 4 — tabbed inspector. The Shot tab hosts the existing
+  // ShotInspector body; the Audio / Captions tabs land here for
+  // the first time. The active tab auto-switches based on
+  // `inspectorSelectionKind`: a shot tile selection → 'shot', a
+  // timeline audio-lane click (Phase 5) → 'audio', a caption pill
+  // click (Phase 5) → 'captions'. Manual tab clicks override the
+  // auto-switch until the next selection lands.
+  const inspectorSelectionKind: InspectorTabId | null =
+    state.selection !== null ? 'shot' : null;
+
+  const inspectorSlot = (
+    <EditorInspector
+      selectionKind={inspectorSelectionKind}
+      kebabContent={
+        <div className="space-y-2">
+          <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: 'var(--fg-muted)' }}>
+            Project settings
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              apply({ type: 'SET_FLAGS', flags: { animateScenes: !state.flags.animateScenes } })
+            }
+            className="editor-btn w-full justify-between"
+            title={
+              state.flags.animateScenes
+                ? 'Animations on — toggle to render every shot as a still'
+                : 'Animations off — toggle to play B-roll clips'
+            }
+          >
+            <span>Animate scenes</span>
+            <span style={{ color: state.flags.animateScenes ? 'var(--editor-accent)' : 'var(--fg-muted)' }}>
+              {state.flags.animateScenes ? 'On' : 'Off'}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              apply({
+                type: 'SET_FLAGS',
+                flags: { suppressLowerThirds: !state.flags.suppressLowerThirds },
+              })
+            }
+            className="editor-btn w-full justify-between"
+          >
+            <span>Lower-thirds</span>
+            <span style={{ color: !state.flags.suppressLowerThirds ? 'var(--editor-accent)' : 'var(--fg-muted)' }}>
+              {state.flags.suppressLowerThirds ? 'Hidden' : 'Visible'}
+            </span>
+          </button>
+          <p className="text-[10px] pt-1" style={{ color: 'var(--fg-muted)' }}>
+            More project settings live in the left rail’s Settings tab.
+          </p>
+        </div>
+      }
+      slots={{
+        shot:
+          state.selection !== null && state.doc.rows[state.selection] ? (
+            <ShotInspector
+              shotIndex={state.selection}
+              shot={videoConfig.shots[state.selection]}
+              row={state.doc.rows[state.selection]}
+              thumbnailUrl={state.rowImages[state.selection] ?? null}
+              totalShots={state.doc.rows.length}
+              projectId={projectId}
+              onClose={() => apply({ type: 'SET_SELECTION', shotIndex: null })}
+              onUploadImage={(url) =>
+                apply({ type: 'SET_ROW_IMAGE', shotIndex: state.selection as number, url })
+              }
+              onPickProjectClip={(url, durationSeconds) =>
+                apply({
+                  type: 'SET_ROW_VIDEO',
+                  shotIndex: state.selection as number,
+                  url,
+                  durationSeconds,
+                })
+              }
+              onGenerateClip={() => {
+                void handleGenerateClip(state.selection as number);
+              }}
+              clipStatus={state.rowVideoClips[state.selection]?.status}
+              brollModelId={userBrollModelId}
+              onUpdateScript={(text) =>
+                apply({
+                  type: 'SET_ROW_SCRIPT',
+                  shotIndex: state.selection as number,
+                  text,
+                })
+              }
+              onUpdateRow={(patch) => updateRow(state.selection as number, patch)}
+              overlayState={state.rowOverlays[state.selection]}
+              isRethinkingOverlay={rethinkingRows.has(state.selection)}
+              rethinkExhausted={(rethinkAttempts[state.selection] ?? 0) >= RETHINK_MAX_ATTEMPTS}
+              editHistoryDepth={
+                state.doc.rows[state.selection]?.overlay_edit_history?.length ?? 0
+              }
+              onOpenOverlayPosition={() => setOverlayPositionRow(state.selection)}
+              onOpenOverlayEdit={() => setOverlayEditRow(state.selection)}
+              onRethinkOverlay={() => {
+                void rethinkOverlayPlacement(state.selection as number);
+              }}
+              onUndoOverlayEdit={() => undoOverlayEdit(state.selection as number)}
+              onShowOverlayContextMenu={(x, y) =>
+                setOverlayContextMenu({ rowIndex: state.selection as number, x, y })
+              }
+            />
+          ) : undefined,
+        audio: (
+          <InspectorAudioTab
+            voiceoverUrl={state.voiceoverUrl}
+            alignmentReady={Boolean(state.voiceoverAlignment)}
+            musicUrl={state.musicUrl}
+            onRegenVO={() => setShowVoRegen(true)}
+          />
+        ),
+        captions: (
+          <InspectorCaptionsTab
+            captions={state.captions}
+            playheadMs={state.playheadMs}
+            onSeek={(ms) => apply({ type: 'SET_PLAYHEAD', ms })}
+            onRegen={() => { void handleRegenerateCaptions(); }}
+            regenDisabled={regenCaptionsRunning || !state.voiceoverUrl}
+            regenLabel={regenCaptionsLabel}
+          />
+        ),
+      }}
+    />
+  );
 
   const timelineSlot = (
     <div className="h-full flex flex-col p-2 gap-2 editor-scroll" style={{ overflow: 'auto' }}>
