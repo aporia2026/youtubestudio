@@ -13,10 +13,10 @@ import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { DraftsBanner } from '@/components/ui/DraftsBanner';
 import { getThumbnailHistory, getThumbnailHistoryCached, saveThumbnailEntry, updateThumbnailEntry, deleteThumbnailEntry, clearThumbnailHistory, type ThumbnailHistoryEntry } from '@/lib/history';
-import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
+import { saveDraft, deleteDraft, setActiveDraftId, getActiveDraft, type WorkflowDraft, type ThumbnailsDraftState } from '@/lib/drafts';
 import { downloadHref } from '@/lib/download-file';
-import { TopicCardGridPanel, type FormatGenerationResult } from '@/components/thumbnails/TopicCardGridPanel';
-import { NLevelsPanel, type NLevelsGenerationResult } from '@/components/thumbnails/NLevelsPanel';
+import { TopicCardGridPanel, type FormatGenerationResult, type TopicCardGridDraftState } from '@/components/thumbnails/TopicCardGridPanel';
+import { NLevelsPanel, type NLevelsGenerationResult, type NLevelsDraftState } from '@/components/thumbnails/NLevelsPanel';
 
 interface TextOverlaySettings {
   enabled: boolean;
@@ -148,6 +148,36 @@ function ScoreRing({ score }: { score: number }) {
   );
 }
 
+/**
+ * Tiny status pill next to the New Session button. Shows the user that
+ * their work is being saved as they type (and lets them know when the
+ * page was restored from a draft on load).
+ */
+function DraftSaveStatus({ status, lastSavedAt }: { status: 'idle' | 'restored' | 'saving' | 'saved'; lastSavedAt: number | null }) {
+  if (status === 'idle') return null;
+  const label =
+    status === 'restored' ? 'Draft restored' :
+    status === 'saving' ? 'Saving…' :
+    lastSavedAt ? `Saved ${formatSavedAgo(lastSavedAt)}` : 'Saved';
+  const color =
+    status === 'restored' ? 'var(--accent-purple-bright)' :
+    status === 'saving' ? 'var(--accent-yellow)' :
+    'var(--text-muted)';
+  return (
+    <span className="text-[11px]" style={{ color }} title={lastSavedAt ? `Last saved at ${new Date(lastSavedAt).toLocaleString()}` : undefined}>
+      {label}
+    </span>
+  );
+}
+
+function formatSavedAgo(ts: number): string {
+  const diff = Date.now() - ts;
+  if (diff < 5_000) return 'just now';
+  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`;
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  return new Date(ts).toLocaleTimeString();
+}
+
 function MiniBar({ label, value }: { label: string; value: number }) {
   const color = value < 50 ? '#ef4444' : value < 70 ? '#eab308' : '#22c55e';
   return (
@@ -189,6 +219,39 @@ function ThumbnailsPage() {
   const [historyItems, setHistoryItems] = useState<ThumbnailHistoryEntry[]>(() => getThumbnailHistoryCached());
   useEffect(() => { getThumbnailHistory().then(setHistoryItems).catch(() => {}); }, []);
   const [draftId, setDraftId] = useState<string | null>(() => getActiveDraft()?.id || null);
+
+  // ─── Draft auto-save plumbing ─────────────────────────────────────────────
+  //
+  // Captures the page's editable state — including the panels' in-progress
+  // pre-render snapshots — into the workflow draft so a refresh restores
+  // everything from form fields to the editable level/card list. Rendered
+  // thumbnails stay in history; they are not duplicated into the draft.
+  //
+  // Panels report their internal state via callbacks below; we keep the
+  // latest snapshot in state and the auto-save effect picks it up.
+  const [nLevelsDraftSnapshot, setNLevelsDraftSnapshot] = useState<NLevelsDraftState | null>(null);
+  const [topicCardGridDraftSnapshot, setTopicCardGridDraftSnapshot] = useState<TopicCardGridDraftState | null>(null);
+  // Draft hydration payload for each panel. Set ONCE during the page's
+  // initial hydration (from getActiveDraft) and never replaced — preventing
+  // re-hydration loops as the user edits. Panels read it on mount.
+  const [hydratedNLevelsState, setHydratedNLevelsState] = useState<NLevelsDraftState | null>(null);
+  const [hydratedTopicCardGridState, setHydratedTopicCardGridState] = useState<TopicCardGridDraftState | null>(null);
+  // Session epoch. Incremented on New Session so the format panels remount
+  // and lose every piece of panel-internal state (count, level list, cards,
+  // palette, etc.) in one go. Without this, the page resets its own state
+  // but the panels keep their last-edited values until the next refresh.
+  const [sessionEpoch, setSessionEpoch] = useState(0);
+  // Save status indicator. 'restored' is the initial state on hydration;
+  // it fades to 'saved' after 2s. 'saving' shows during the debounce
+  // window, then transitions to 'saved' once the write lands.
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'restored' | 'saving' | 'saved'>('idle');
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  // Tracks whether the auto-save effect has fired its first save. We skip
+  // the very first tick after mount so a draft hydration doesn't immediately
+  // re-write the same data.
+  const autoSaveSkipFirstRef = useRef(true);
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
   // Track which history entry the current on-screen concepts belong to, so image
   // generations (which happen after the concept-save) can be patched back onto
   // the same entry instead of creating a new one or being lost on navigation.
@@ -315,7 +378,199 @@ function ThumbnailsPage() {
         if (data.description) setDescription(curr => curr || data.description);
       }
     } catch {}
+
+    // Hydrate from the active workflow draft. Restores top-level fields
+    // (title/niche/script/modelId) plus the page-specific snapshot
+    // (description, format, reference image, image model, text overlay,
+    // picked labels, and the per-format panel-internal state). The panels
+    // pick up their own snapshots via the `restoredDraftState` props below.
+    try {
+      const active = getActiveDraft();
+      if (active) {
+        if (active.topic) setTitle(curr => curr || active.topic!);
+        if (active.niche) setNiche(curr => curr || active.niche!);
+        if (active.script) setScript(curr => curr || active.script!);
+        if (active.modelId) setModelId(active.modelId);
+        const t = active.thumbnailsState;
+        if (t) {
+          if (t.description) setDescription(curr => curr || t.description!);
+          if (typeof t.showScript === 'boolean') setShowScript(t.showScript);
+          if (t.imageModel) setImageModel(t.imageModel);
+          if (t.format) setFormat(t.format);
+          if (typeof t.imageGenEnabled === 'boolean') setImageGenEnabled(t.imageGenEnabled);
+          if (typeof t.showImageSection === 'boolean') setShowImageSection(t.showImageSection);
+          if (t.referenceImageUrl) setReferenceImageUrl(t.referenceImageUrl);
+          if (t.refPreviewUrl) setRefPreviewUrl(t.refPreviewUrl);
+          if (t.textOverlay && typeof t.textOverlay === 'object') {
+            // Trust the shape — both the saver and the localStorage hydration
+            // path validate at write/read boundaries.
+            setTextOverlay(t.textOverlay as TextOverlaySettings);
+          }
+          if (Array.isArray(t.pickedLabels)) setPickedLabels(t.pickedLabels);
+          if (t.nLevels && typeof t.nLevels === 'object') {
+            setHydratedNLevelsState(t.nLevels as NLevelsDraftState);
+          }
+          if (t.topicCardGrid && typeof t.topicCardGrid === 'object') {
+            setHydratedTopicCardGridState(t.topicCardGrid as TopicCardGridDraftState);
+          }
+        }
+        setSaveStatus('restored');
+        const fadeTimer = setTimeout(() => setSaveStatus('saved'), 2000);
+        console.info('[thumbnails draft] hydrated', {
+          draft_id: active.id,
+          has_thumbnails_state: !!active.thumbnailsState,
+          format: active.thumbnailsState?.format,
+          has_n_levels_snapshot: !!active.thumbnailsState?.nLevels,
+          has_topic_card_grid_snapshot: !!active.thumbnailsState?.topicCardGrid,
+        });
+        return () => clearTimeout(fadeTimer);
+      }
+    } catch (err) {
+      console.warn('[thumbnails draft] hydration failed', { detail: err instanceof Error ? err.message : String(err) });
+    }
   }, []);
+
+  // Debounced auto-save. Snapshots the page + panel state into the workflow
+  // draft 500ms after the last edit. Skips the first tick after mount so a
+  // hydration restore doesn't loop back into a writeback. Skips writes when
+  // the page is genuinely empty (no title, niche, script, etc.) so users
+  // who just landed on /thumbnails don't create ghost drafts.
+  useEffect(() => {
+    if (autoSaveSkipFirstRef.current) {
+      autoSaveSkipFirstRef.current = false;
+      return;
+    }
+    // Don't write empty drafts. Anything user-typed or panel-generated counts
+    // as "has content" — including the panels' editable level / card lists.
+    const hasContent =
+      !!title.trim() ||
+      !!niche.trim() ||
+      !!script.trim() ||
+      !!description.trim() ||
+      !!referenceImageUrl.trim() ||
+      !!nLevelsResult ||
+      !!formatResult ||
+      !!result ||
+      (!!nLevelsDraftSnapshot && (nLevelsDraftSnapshot.levels?.length ?? 0) > 0) ||
+      (!!topicCardGridDraftSnapshot && (topicCardGridDraftSnapshot.cards?.length ?? 0) > 0) ||
+      textOverlay.enabled ||
+      pickedLabels.length > 0;
+    if (!hasContent) return;
+
+    setSaveStatus('saving');
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      try {
+        const snapshot: ThumbnailsDraftState = {
+          description: description || undefined,
+          showScript,
+          imageModel,
+          format,
+          imageGenEnabled,
+          showImageSection,
+          referenceImageUrl: referenceImageUrl || undefined,
+          refPreviewUrl: refPreviewUrl || undefined,
+          textOverlay,
+          pickedLabels: pickedLabels.length > 0 ? pickedLabels : undefined,
+          nLevels: nLevelsDraftSnapshot || undefined,
+          topicCardGrid: topicCardGridDraftSnapshot || undefined,
+        };
+        const draft = saveDraft({
+          id: draftId || undefined,
+          title: title || niche || 'Untitled',
+          niche: niche || '',
+          step: 'thumbnails',
+          topic: title || undefined,
+          modelId,
+          script: script || undefined,
+          thumbnailsState: snapshot,
+        });
+        if (!draftId) setDraftId(draft.id);
+        setSaveStatus('saved');
+        setLastSavedAt(Date.now());
+        console.info('[thumbnails draft] saved', {
+          draft_id: draft.id,
+          has_script: !!script.trim(),
+          has_reference: !!referenceImageUrl.trim(),
+          format,
+          n_levels_count: nLevelsDraftSnapshot?.levels?.length ?? 0,
+          topic_card_grid_count: topicCardGridDraftSnapshot?.cards?.length ?? 0,
+        });
+      } catch (err) {
+        setSaveStatus('idle');
+        console.warn('[thumbnails draft] save failed', { detail: err instanceof Error ? err.message : String(err) });
+      }
+    }, 500);
+
+    return () => {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    };
+  }, [
+    title, niche, script, description, modelId, imageModel, format,
+    imageGenEnabled, showImageSection, showScript, referenceImageUrl,
+    refPreviewUrl, textOverlay, pickedLabels, nLevelsDraftSnapshot,
+    topicCardGridDraftSnapshot, nLevelsResult, formatResult, result, draftId,
+  ]);
+
+  /**
+   * Start a new session: clear every editable field on the page, drop the
+   * active workflow draft, and reset both panel snapshots. Generated
+   * thumbnails stay in history (a separate store). Confirms before
+   * destroying any in-progress work so a stray click can't wipe out ten
+   * minutes of script writing.
+   */
+  function startNewSession() {
+    const dirty =
+      !!title.trim() ||
+      !!niche.trim() ||
+      !!script.trim() ||
+      !!description.trim() ||
+      !!referenceImageUrl.trim() ||
+      !!nLevelsResult ||
+      !!formatResult ||
+      !!result ||
+      (!!nLevelsDraftSnapshot && (nLevelsDraftSnapshot.levels?.length ?? 0) > 0) ||
+      (!!topicCardGridDraftSnapshot && (topicCardGridDraftSnapshot.cards?.length ?? 0) > 0);
+    if (
+      dirty &&
+      typeof window !== 'undefined' &&
+      !confirm('Start a new session? This clears the current draft. Generated thumbnails stay in your history.')
+    ) {
+      return;
+    }
+    console.info('[thumbnails new-session]', { was_dirty: dirty, prev_draft_id: draftId });
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveSkipFirstRef.current = true;
+    if (draftId) deleteDraft(draftId);
+    setActiveDraftId(null);
+    setDraftId(null);
+    setTitle('');
+    setDescription('');
+    setScript('');
+    setShowScript(false);
+    setResult(null);
+    setFormat('free-form');
+    setFormatResult(null);
+    setNLevelsResult(null);
+    setReferenceImageUrl('');
+    setRefPreviewUrl('');
+    setImageGenEnabled(false);
+    setShowImageSection(false);
+    setGeneratedImages({});
+    setPickedLabels([]);
+    setHistoryEntryId(null);
+    setSavedFormatImageUrl(null);
+    setSavedNLevelsImageUrl(null);
+    setNLevelsDraftSnapshot(null);
+    setTopicCardGridDraftSnapshot(null);
+    setHydratedNLevelsState(null);
+    setHydratedTopicCardGridState(null);
+    setTextOverlay(DEFAULT_TEXT_OVERLAY);
+    setSaveStatus('idle');
+    setLastSavedAt(null);
+    setSessionEpoch((e) => e + 1); // force panels to remount with fresh defaults
+    toast.success('New session started.');
+  }
 
   // Schedule-link preload: title + niche from the item, description seeded
   // from any prior YouTube description, and the active script (if any) so the
@@ -633,10 +888,36 @@ function ThumbnailsPage() {
   }, [nLevelsResult, savedNLevelsImageUrl, title, niche, modelId, script, description, scheduleItem, scheduleItemId]);
 
   function resumeDraft(draft: WorkflowDraft) {
+    // Make the resumed draft the active one so the auto-save effect writes
+    // back to it rather than orphaning the snapshot under a different id.
+    setActiveDraftId(draft.id);
+    setDraftId(draft.id);
+    autoSaveSkipFirstRef.current = true; // skip immediate writeback after hydration
     if (draft.topic) setTitle(draft.topic);
     if (draft.niche) setNiche(draft.niche);
     if (draft.modelId) setModelId(draft.modelId);
-    setDraftId(draft.id);
+    if (draft.script) setScript(draft.script);
+    const t = draft.thumbnailsState;
+    if (t) {
+      if (t.description) setDescription(t.description);
+      if (typeof t.showScript === 'boolean') setShowScript(t.showScript);
+      if (t.imageModel) setImageModel(t.imageModel);
+      if (t.format) setFormat(t.format);
+      if (typeof t.imageGenEnabled === 'boolean') setImageGenEnabled(t.imageGenEnabled);
+      if (typeof t.showImageSection === 'boolean') setShowImageSection(t.showImageSection);
+      if (t.referenceImageUrl) setReferenceImageUrl(t.referenceImageUrl);
+      if (t.refPreviewUrl) setRefPreviewUrl(t.refPreviewUrl);
+      if (t.textOverlay && typeof t.textOverlay === 'object') {
+        setTextOverlay(t.textOverlay as TextOverlaySettings);
+      }
+      if (Array.isArray(t.pickedLabels)) setPickedLabels(t.pickedLabels);
+      // Replace the panels' hydration payloads so each panel re-hydrates
+      // on its next render. Reset their refs implicitly via the new value.
+      setHydratedNLevelsState((t.nLevels && typeof t.nLevels === 'object') ? (t.nLevels as NLevelsDraftState) : null);
+      setHydratedTopicCardGridState((t.topicCardGrid && typeof t.topicCardGrid === 'object') ? (t.topicCardGrid as TopicCardGridDraftState) : null);
+    }
+    setSaveStatus('restored');
+    setTimeout(() => setSaveStatus('saved'), 2000);
     toast.success('Draft resumed');
   }
 
@@ -741,17 +1022,36 @@ function ThumbnailsPage() {
       {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Thumbnail Studio" />}
       {/* Header */}
       <div className="mb-8">
-        <div className="flex items-center gap-3 mb-2">
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center"
-            style={{ background: 'linear-gradient(135deg, rgba(236,72,153,0.3), rgba(124,58,237,0.2))', border: '1px solid rgba(236,72,153,0.3)' }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="rgba(236,72,153,0.9)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" />
-            </svg>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-3 mb-2">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center"
+                style={{ background: 'linear-gradient(135deg, rgba(236,72,153,0.3), rgba(124,58,237,0.2))', border: '1px solid rgba(236,72,153,0.3)' }}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="rgba(236,72,153,0.9)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" />
+                </svg>
+              </div>
+              <span className="badge badge-pink">AI Thumbnails</span>
+            </div>
+            <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>Thumbnail Concept Generator</h1>
+            <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Generate click-optimized thumbnail concepts with CTR prediction scoring</p>
           </div>
-          <span className="badge badge-pink">AI Thumbnails</span>
+          <div className="flex items-center gap-3 shrink-0">
+            <DraftSaveStatus status={saveStatus} lastSavedAt={lastSavedAt} />
+            <button
+              onClick={startNewSession}
+              className="text-xs px-3 py-1.5 rounded transition-all"
+              style={{
+                background: 'var(--bg-card)',
+                color: 'var(--text-secondary)',
+                border: '1px solid var(--border)',
+              }}
+              title="Clear the current draft and start fresh. Generated thumbnails stay in history."
+            >
+              + New session
+            </button>
+          </div>
         </div>
-        <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>Thumbnail Concept Generator</h1>
-        <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Generate click-optimized thumbnail concepts with CTR prediction scoring</p>
       </div>
 
       <DraftsBanner currentStep="thumbnails" onResume={resumeDraft} />
@@ -1147,6 +1447,7 @@ function ThumbnailsPage() {
         <div className="flex-1 min-w-0">
           {format === 'topic-card-grid' && (
             <TopicCardGridPanel
+              key={`tcg-${sessionEpoch}`}
               title={title}
               niche={niche}
               script={script}
@@ -1156,10 +1457,13 @@ function ThumbnailsPage() {
               onResultChange={setFormatResult}
               restoredResult={formatResult}
               pickedLabels={pickedLabels}
+              onDraftStateChange={setTopicCardGridDraftSnapshot}
+              restoredDraftState={hydratedTopicCardGridState}
             />
           )}
           {format === 'n-levels' && (
             <NLevelsPanel
+              key={`nl-${sessionEpoch}`}
               title={title}
               niche={niche}
               script={script}
@@ -1169,6 +1473,8 @@ function ThumbnailsPage() {
               onResultChange={setNLevelsResult}
               restoredResult={nLevelsResult}
               pickedLabels={pickedLabels}
+              onDraftStateChange={setNLevelsDraftSnapshot}
+              restoredDraftState={hydratedNLevelsState}
             />
           )}
           {format === 'free-form' && (

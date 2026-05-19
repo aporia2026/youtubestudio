@@ -12,7 +12,7 @@
  * shared pipeline contract (this file follows it).
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
 import type { ThumbnailRegion } from '@/remotion/types';
@@ -30,6 +30,27 @@ export interface FormatLevel {
    *  locked when the user adds a color via the "+ color" button; LLM-
    *  suggested colors come in unlocked. */
   accent_color_locked?: boolean;
+}
+
+/**
+ * Snapshot of the panel's in-progress (pre-render) state. Saved into the
+ * workflow draft so refreshing mid-edit returns the user to the editable
+ * level list they were reviewing rather than starting over. The rendered
+ * thumbnail itself lives in history, not the draft.
+ */
+export interface NLevelsDraftState {
+  count: number;
+  showBottomTitle: boolean;
+  showLevelLabels: boolean;
+  titleTopic: string;
+  titleTagline: string;
+  taglineEnabled: boolean;
+  formatMode: 'review' | 'pre-fill' | 'one-shot';
+  prefilledLabels: string;
+  imageModelId: string;
+  levels: FormatLevel[] | null;
+  refinedTopic: string;
+  notesForImageModel?: string;
 }
 
 export interface NLevelsGenerationResult {
@@ -85,6 +106,15 @@ interface Props {
    *  When the count matches the level count, the next Step 1 run uses
    *  these as pre-fill labels verbatim. Empty = picker unused. */
   pickedLabels?: string[];
+  /** Called whenever the panel's serializable in-progress state changes.
+   *  The page funnels this into the workflow draft so a refresh
+   *  mid-review restores the editable level list. */
+  onDraftStateChange?: (state: NLevelsDraftState) => void;
+  /** One-shot hydration payload from the workflow draft. When provided,
+   *  the panel restores its in-progress state from this snapshot on
+   *  mount. Distinct from `restoredResult`, which restores a rendered
+   *  history entry. */
+  restoredDraftState?: NLevelsDraftState | null;
 }
 
 export function NLevelsPanel({
@@ -97,6 +127,8 @@ export function NLevelsPanel({
   onResultChange,
   restoredResult,
   pickedLabels = [],
+  onDraftStateChange,
+  restoredDraftState,
 }: Props) {
   // Level count
   const [count, setCount] = useState(7);
@@ -157,6 +189,64 @@ export function NLevelsPanel({
     setRefinedTopic(restoredResult.titleTopic);
     setResult(restoredResult);
   }, [restoredResult]);
+
+  // Hydrate the in-progress (pre-render) state from the workflow draft.
+  // Re-runs whenever the parent supplies a new non-null snapshot
+  // reference. The parent only changes the reference on explicit
+  // hydration triggers (mount, resumeDraft) — never on the panel's own
+  // writeback — so this can't loop. Distinct from the `restoredResult`
+  // path above: that brings back a fully-rendered history entry; this
+  // restores mid-review work so a refresh doesn't blow away an edited
+  // level list.
+  const lastHydratedRef = useRef<NLevelsDraftState | null>(null);
+  useEffect(() => {
+    if (!restoredDraftState) return;
+    if (lastHydratedRef.current === restoredDraftState) return;
+    lastHydratedRef.current = restoredDraftState;
+    setCount(restoredDraftState.count);
+    setShowBottomTitle(restoredDraftState.showBottomTitle);
+    setShowLevelLabels(restoredDraftState.showLevelLabels);
+    setTitleTopic(restoredDraftState.titleTopic);
+    setTitleTagline(restoredDraftState.titleTagline);
+    setTaglineEnabled(restoredDraftState.taglineEnabled);
+    setFormatMode(restoredDraftState.formatMode);
+    setPrefilledLabels(restoredDraftState.prefilledLabels);
+    setImageModelId(restoredDraftState.imageModelId);
+    setLevels(restoredDraftState.levels);
+    setRefinedTopic(restoredDraftState.refinedTopic);
+    setNotesForImageModel(restoredDraftState.notesForImageModel);
+    console.info('[n-levels panel draft] hydrated', {
+      level_count: restoredDraftState.levels?.length ?? 0,
+      has_refined_topic: !!restoredDraftState.refinedTopic,
+      format_mode: restoredDraftState.formatMode,
+    });
+  }, [restoredDraftState]);
+
+  // Report serializable in-progress state to the parent on every change
+  // so the page can fold it into the workflow draft and survive a
+  // refresh. Cheap: just a synchronous callback with primitive values
+  // (plus a level-list reference). The parent debounces before writing.
+  useEffect(() => {
+    if (!onDraftStateChange) return;
+    onDraftStateChange({
+      count,
+      showBottomTitle,
+      showLevelLabels,
+      titleTopic,
+      titleTagline,
+      taglineEnabled,
+      formatMode,
+      prefilledLabels,
+      imageModelId,
+      levels,
+      refinedTopic,
+      notesForImageModel,
+    });
+  }, [
+    count, showBottomTitle, showLevelLabels, titleTopic, titleTagline,
+    taglineEnabled, formatMode, prefilledLabels, imageModelId, levels,
+    refinedTopic, notesForImageModel, onDraftStateChange,
+  ]);
 
   // Region overlay preference
   const [regionOverlayOn, setRegionOverlayOn] = useState(true);

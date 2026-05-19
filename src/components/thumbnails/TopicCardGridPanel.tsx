@@ -15,7 +15,7 @@
  * grid size, format mode, the card list editor, the result + regions.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
 import type { ThumbnailRegion } from '@/remotion/types';
@@ -48,6 +48,25 @@ export interface FormatGenerationResult {
   referenceImageUrl?: string;
   outputWidth: number;
   outputHeight: number;
+}
+
+/**
+ * Snapshot of the panel's in-progress (pre-render) state. Saved into the
+ * workflow draft so refreshing mid-edit returns the user to the editable
+ * card list they were reviewing rather than starting over. The rendered
+ * thumbnail itself lives in history, not the draft.
+ */
+export interface TopicCardGridDraftState {
+  gridMode: 'preset' | 'custom';
+  presetIdx: number;
+  customRows: number;
+  customCols: number;
+  formatMode: 'review' | 'pre-fill' | 'one-shot';
+  prefilledLabels: string;
+  imageModelId: string;
+  cards: FormatCard[] | null;
+  palette: FormatPalette | null;
+  notesForImageModel?: string;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -99,6 +118,15 @@ interface Props {
    *  LLM's free-form label generation entirely. Empty array = picker
    *  unused, normal flow. */
   pickedLabels?: string[];
+  /** Called whenever the panel's serializable in-progress state changes.
+   *  The page funnels this into the workflow draft so a refresh
+   *  mid-review restores the editable card list. */
+  onDraftStateChange?: (state: TopicCardGridDraftState) => void;
+  /** One-shot hydration payload from the workflow draft. When provided,
+   *  the panel restores its in-progress state from this snapshot on
+   *  mount. Distinct from `restoredResult`, which restores a rendered
+   *  history entry. */
+  restoredDraftState?: TopicCardGridDraftState | null;
 }
 
 export function TopicCardGridPanel({
@@ -111,6 +139,8 @@ export function TopicCardGridPanel({
   onResultChange,
   restoredResult,
   pickedLabels = [],
+  onDraftStateChange,
+  restoredDraftState,
 }: Props) {
   // Grid configuration
   const [gridMode, setGridMode] = useState<'preset' | 'custom'>('preset');
@@ -176,6 +206,59 @@ export function TopicCardGridPanel({
     setPalette(restoredResult.palette);
     setResult(restoredResult);
   }, [restoredResult]);
+
+  // Hydrate the in-progress (pre-render) state from the workflow draft.
+  // Re-runs whenever the parent supplies a new non-null snapshot
+  // reference. The parent only changes the reference on explicit
+  // hydration triggers (mount, resumeDraft) — never on the panel's own
+  // writeback — so this can't loop. Distinct from the `restoredResult`
+  // path above: that brings back a fully-rendered history entry; this
+  // restores mid-review work so a refresh doesn't blow away an edited
+  // card list.
+  const lastHydratedRef = useRef<TopicCardGridDraftState | null>(null);
+  useEffect(() => {
+    if (!restoredDraftState) return;
+    if (lastHydratedRef.current === restoredDraftState) return;
+    lastHydratedRef.current = restoredDraftState;
+    setGridMode(restoredDraftState.gridMode);
+    setPresetIdx(restoredDraftState.presetIdx);
+    setCustomRows(restoredDraftState.customRows);
+    setCustomCols(restoredDraftState.customCols);
+    setFormatMode(restoredDraftState.formatMode);
+    setPrefilledLabels(restoredDraftState.prefilledLabels);
+    setImageModelId(restoredDraftState.imageModelId);
+    setCards(restoredDraftState.cards);
+    setPalette(restoredDraftState.palette);
+    setNotesForImageModel(restoredDraftState.notesForImageModel);
+    console.info('[topic-card-grid panel draft] hydrated', {
+      card_count: restoredDraftState.cards?.length ?? 0,
+      grid_mode: restoredDraftState.gridMode,
+      format_mode: restoredDraftState.formatMode,
+    });
+  }, [restoredDraftState]);
+
+  // Report serializable in-progress state to the parent on every change
+  // so the page can fold it into the workflow draft and survive a
+  // refresh. The parent debounces before writing.
+  useEffect(() => {
+    if (!onDraftStateChange) return;
+    onDraftStateChange({
+      gridMode,
+      presetIdx,
+      customRows,
+      customCols,
+      formatMode,
+      prefilledLabels,
+      imageModelId,
+      cards,
+      palette,
+      notesForImageModel,
+    });
+  }, [
+    gridMode, presetIdx, customRows, customCols, formatMode,
+    prefilledLabels, imageModelId, cards, palette, notesForImageModel,
+    onDraftStateChange,
+  ]);
 
   // Region overlay preference — persists across sessions per the plan.
   const [regionOverlayOn, setRegionOverlayOn] = useState(true);

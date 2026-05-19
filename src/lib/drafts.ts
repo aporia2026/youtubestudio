@@ -54,6 +54,37 @@ export interface WorkflowDraft {
   seriesId?: string;
   seriesTitle?: string;
   partNumber?: number;
+
+  // Full /thumbnails page snapshot. Lets a refresh restore not just
+  // title/niche/script but also the chosen format, reference image,
+  // image-model picks, text overlay settings, and the mid-flight
+  // panel-internal level/card lists. Opaque from this module's view —
+  // the page owns the shape and validates on read so we avoid a
+  // circular import from format-specific types.
+  thumbnailsState?: ThumbnailsDraftState;
+}
+
+/**
+ * Snapshot of everything on the /thumbnails page that is NOT already
+ * covered by the top-level WorkflowDraft fields (title, niche, script,
+ * modelId). Per-format mid-flight state lives under typed buckets;
+ * those bucket payloads are typed as `unknown` here because the format
+ * panels own the strict shapes and validate on hydrate — keeping the
+ * drafts module free of cross-cutting imports.
+ */
+export interface ThumbnailsDraftState {
+  description?: string;
+  showScript?: boolean;
+  imageModel?: string;
+  format?: 'free-form' | 'topic-card-grid' | 'n-levels';
+  imageGenEnabled?: boolean;
+  showImageSection?: boolean;
+  referenceImageUrl?: string;
+  refPreviewUrl?: string;
+  textOverlay?: unknown;
+  pickedLabels?: string[];
+  nLevels?: unknown;
+  topicCardGrid?: unknown;
 }
 
 const DRAFTS_KEY = 'workflow_drafts';
