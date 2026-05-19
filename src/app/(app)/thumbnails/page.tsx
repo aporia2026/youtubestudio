@@ -49,10 +49,12 @@ const IMAGE_MODELS = [
   { value: 'flux2-flex-t2i', label: 'Flux2 Flex (Text-to-Image)' },
   { value: 'nano-banana', label: 'NanoBanana (Text-to-Image)' },
   { value: 'gpt-image-2-t2i', label: 'GPT Image 2 (Text-to-Image)' },
+  { value: 'gpt-image-2-openai-t2i', label: 'GPT Image 2 via OpenAI (Text-to-Image, faster)' },
   { value: 'grok-imagine-i2i', label: 'Grok Imagine (Image-to-Image)' },
   { value: 'flux2-pro-i2i', label: 'Flux2 Pro (Image-to-Image)' },
   { value: 'flux2-flex-i2i', label: 'Flux2 Flex (Image-to-Image)' },
   { value: 'gpt-image-2-i2i', label: 'GPT Image 2 (Image-to-Image)' },
+  { value: 'gpt-image-2-openai-i2i', label: 'GPT Image 2 via OpenAI (Image-to-Image, faster)' },
 ];
 
 /**

@@ -65,7 +65,8 @@ const GRID_PRESETS: { label: string; rows: number; cols: number }[] = [
 ];
 
 const IMAGE_MODELS = [
-  { value: 'gpt-image-2-i2i', label: 'GPT Image 2 (recommended)' },
+  { value: 'gpt-image-2-i2i', label: 'GPT Image 2 via Kie (recommended)' },
+  { value: 'gpt-image-2-openai-i2i', label: 'GPT Image 2 via OpenAI (faster, emergency)' },
   { value: 'grok-imagine-i2i', label: 'Grok Imagine (image-to-image)' },
   { value: 'flux2-pro-i2i', label: 'Flux2 Pro (image-to-image)' },
   { value: 'flux2-flex-i2i', label: 'Flux2 Flex (image-to-image)' },
@@ -496,7 +497,12 @@ export function TopicCardGridPanel({
                 <option key={m.value} value={m.value}>{m.label}</option>
               ))}
             </select>
-            {imageModelId !== 'gpt-image-2-i2i' && (
+            {imageModelId === 'gpt-image-2-openai-i2i' && (
+              <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                OpenAI direct — synchronous, ~20–60s, no polling timeouts. Quality is medium (≈$0.04/image). Same GPT Image 2 model as the Kie path, different route.
+              </p>
+            )}
+            {imageModelId !== 'gpt-image-2-i2i' && imageModelId !== 'gpt-image-2-openai-i2i' && (
               <p className="text-[10px] mt-1" style={{ color: 'var(--accent-yellow)' }}>
                 This format is calibrated for GPT Image 2. Other models will produce a different style and likely mangle the per-card typography.
               </p>

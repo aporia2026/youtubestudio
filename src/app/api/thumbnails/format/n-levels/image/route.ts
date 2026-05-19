@@ -3,6 +3,8 @@ import { randomUUID } from 'crypto';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
 import { createKieTask, pollKieResult } from '@/lib/kie-poll';
+import { generateImageOpenAI } from '@/lib/openai-images';
+import { uploadToBucket, getImagesBucket, getImagesDownloadUrl } from '@/lib/r2';
 import {
   nLevelsImagePrompt,
   validateLevelList,
@@ -24,11 +26,17 @@ export const maxDuration = 300;
 
 const MAX_LEVEL_COUNT = 20;
 
-const IMAGE_MODEL_MAP: Record<string, { model: string; refKey: 'input_urls' | 'image_urls' }> = {
-  'gpt-image-2-i2i': { model: 'gpt-image-2-image-to-image', refKey: 'input_urls' },
-  'grok-imagine-i2i': { model: 'grok-imagine/image-to-image', refKey: 'image_urls' },
-  'flux2-pro-i2i': { model: 'flux-2/pro-image-to-image', refKey: 'image_urls' },
-  'flux2-flex-i2i': { model: 'flux-2/flex-image-to-image', refKey: 'image_urls' },
+type ImageModelConfig =
+  | { provider: 'kie'; model: string; refKey: 'input_urls' | 'image_urls' }
+  | { provider: 'openai'; mode: 'i2i' | 't2i' };
+
+const IMAGE_MODEL_MAP: Record<string, ImageModelConfig> = {
+  'gpt-image-2-i2i': { provider: 'kie', model: 'gpt-image-2-image-to-image', refKey: 'input_urls' },
+  'grok-imagine-i2i': { provider: 'kie', model: 'grok-imagine/image-to-image', refKey: 'image_urls' },
+  'flux2-pro-i2i': { provider: 'kie', model: 'flux-2/pro-image-to-image', refKey: 'image_urls' },
+  'flux2-flex-i2i': { provider: 'kie', model: 'flux-2/flex-image-to-image', refKey: 'image_urls' },
+  'gpt-image-2-openai-i2i': { provider: 'openai', mode: 'i2i' },
+  'gpt-image-2-openai-t2i': { provider: 'openai', mode: 't2i' },
 };
 
 const DEFAULT_IMAGE_MODEL = 'gpt-image-2-i2i';
@@ -142,6 +150,7 @@ export async function POST(req: NextRequest) {
 
     logger.info('[thumb-format-n-levels image] start', {
       imageModelId,
+      provider: config.provider,
       count,
       levels_count: levels.length,
       prompt_chars: prompt.length,
@@ -149,23 +158,73 @@ export async function POST(req: NextRequest) {
       ref_host: safeRefUrl.hostname,
     });
 
-    const input: Record<string, unknown> = {
-      prompt,
-      aspect_ratio: '16:9',
-      resolution: '1K',
-    };
-    if (!config.model.startsWith('gpt-image-2')) {
-      input.nsfw_checker = true;
-    }
-    input[config.refKey] = [referenceImageUrl];
+    let imageUrl: string;
+    let taskId: string | undefined;
 
-    const apiKey = requireKieKey();
-    const taskId = await createKieTask(apiKey, config.model, input);
-    const imageUrl = await pollKieResult(taskId, apiKey);
+    if (config.provider === 'kie') {
+      const input: Record<string, unknown> = {
+        prompt,
+        aspect_ratio: '16:9',
+        resolution: '1K',
+      };
+      if (!config.model.startsWith('gpt-image-2')) {
+        input.nsfw_checker = true;
+      }
+      input[config.refKey] = [referenceImageUrl];
+
+      const apiKey = requireKieKey();
+      taskId = await createKieTask(apiKey, config.model, input);
+      imageUrl = await pollKieResult(taskId, apiKey);
+    } else {
+      // OpenAI direct path — sync /v1/images/edits or /v1/images/generations.
+      // Same shape as the topic-card-grid image endpoint's OpenAI branch.
+      let referenceBytes: Buffer | undefined;
+      let referenceMime: string | undefined;
+      if (config.mode === 'i2i') {
+        const refRes = await fetch(safeRefUrl);
+        if (!refRes.ok) {
+          throw new Error(`Failed to fetch reference image for OpenAI edit (HTTP ${refRes.status}).`);
+        }
+        const arrayBuf = await refRes.arrayBuffer();
+        if (arrayBuf.byteLength > 8 * 1024 * 1024) {
+          throw new Error('Reference image exceeds 8 MB cap for the OpenAI edit path.');
+        }
+        referenceBytes = Buffer.from(arrayBuf);
+        const ct = refRes.headers.get('content-type') || 'image/png';
+        referenceMime = ct.includes('png')
+          ? 'image/png'
+          : ct.includes('webp')
+            ? 'image/webp'
+            : ct.includes('gif')
+              ? 'image/gif'
+              : 'image/jpeg';
+      }
+
+      const result = await generateImageOpenAI({
+        prompt,
+        size: '1536x1024',
+        quality: 'medium',
+        referenceImage: referenceBytes && referenceMime
+          ? { bytes: referenceBytes, mimeType: referenceMime, filename: 'reference.png' }
+          : undefined,
+      });
+
+      const bytes = Buffer.from(result.base64, 'base64');
+      const r2Key = `thumbnails/format-n-levels-openai/${randomUUID()}.png`;
+      await uploadToBucket(getImagesBucket(), r2Key, bytes, 'image/png');
+      imageUrl = await getImagesDownloadUrl(r2Key);
+
+      logger.info('[thumb-format-n-levels image] openai direct done', {
+        bytes: bytes.byteLength,
+        r2_key: r2Key,
+        revised_prompt_chars: result.revisedPrompt?.length ?? 0,
+      });
+    }
 
     logger.info('[thumb-format-n-levels image] done', {
       duration_ms: Date.now() - startedAt,
       task_id: taskId,
+      provider: config.provider,
       image_url_host: (() => {
         try { return new URL(imageUrl).hostname; } catch { return 'unknown'; }
       })(),
@@ -173,7 +232,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       imageUrl,
-      taskId,
+      taskId: taskId ?? null,
       regions,
       layout: {
         width: layout.width,

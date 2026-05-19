@@ -6,6 +6,8 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
 import { createKieTask, pollKieResult } from '@/lib/kie-poll';
 import { getAppUrl } from '@/lib/email';
+import { generateImageOpenAI, isOpenAIDirectImageModel } from '@/lib/openai-images';
+import { uploadToBucket, getImagesBucket, getImagesDownloadUrl } from '@/lib/r2';
 import {
   topicCardGridImagePrompt,
   validateCardList,
@@ -66,11 +68,30 @@ const MAX_GRID_DIM = 50;
  * i2i variants, since the reference image is mandatory for the format's
  * typography lock.
  */
-const IMAGE_MODEL_MAP: Record<string, { model: string; refKey: 'input_urls' | 'image_urls' }> = {
-  'gpt-image-2-i2i': { model: 'gpt-image-2-image-to-image', refKey: 'input_urls' },
-  'grok-imagine-i2i': { model: 'grok-imagine/image-to-image', refKey: 'image_urls' },
-  'flux2-pro-i2i': { model: 'flux-2/pro-image-to-image', refKey: 'image_urls' },
-  'flux2-flex-i2i': { model: 'flux-2/flex-image-to-image', refKey: 'image_urls' },
+/**
+ * Image-generation routing map. Two providers:
+ *  - `kie`: async task on Kie.ai (createKieTask + pollKieResult). The
+ *    reference image flows as a URL.
+ *  - `openai`: sync OpenAI direct call to /v1/images/edits (i2i) or
+ *    /v1/images/generations (t2i). The reference image flows as raw bytes
+ *    via multipart upload; the resulting image bytes are uploaded to R2 to
+ *    produce a permanent URL on parity with the Kie path.
+ *
+ * `openai-direct` was added 2026-05-19 as an emergency fast-path because
+ * Kie's gpt-image-2 i2i task occasionally exceeds the function timeout.
+ * OpenAI direct returns synchronously in 20-60s.
+ */
+type ImageModelConfig =
+  | { provider: 'kie'; model: string; refKey: 'input_urls' | 'image_urls' }
+  | { provider: 'openai'; mode: 'i2i' | 't2i' };
+
+const IMAGE_MODEL_MAP: Record<string, ImageModelConfig> = {
+  'gpt-image-2-i2i': { provider: 'kie', model: 'gpt-image-2-image-to-image', refKey: 'input_urls' },
+  'grok-imagine-i2i': { provider: 'kie', model: 'grok-imagine/image-to-image', refKey: 'image_urls' },
+  'flux2-pro-i2i': { provider: 'kie', model: 'flux-2/pro-image-to-image', refKey: 'image_urls' },
+  'flux2-flex-i2i': { provider: 'kie', model: 'flux-2/flex-image-to-image', refKey: 'image_urls' },
+  'gpt-image-2-openai-i2i': { provider: 'openai', mode: 'i2i' },
+  'gpt-image-2-openai-t2i': { provider: 'openai', mode: 't2i' },
 };
 
 const DEFAULT_IMAGE_MODEL = 'gpt-image-2-i2i';
@@ -204,6 +225,7 @@ export async function POST(req: NextRequest) {
 
     logger.info('[thumb-format-grid image] start', {
       imageModelId,
+      provider: config.provider,
       gridRows,
       gridCols,
       cards_count: cards.length,
@@ -213,27 +235,82 @@ export async function POST(req: NextRequest) {
       ref_host: safeRefUrl.hostname,
     });
 
-    // Build Kie input. Match the existing /api/thumbnails/image patterns:
-    // gpt-image-2 uses `input_urls`, every other i2i model uses `image_urls`.
-    // nsfw_checker is on for everything except gpt-image-2 (which 422's on it
-    // per Kie's market spec).
-    const input: Record<string, unknown> = {
-      prompt,
-      aspect_ratio: '16:9',
-      resolution: '1K',
-    };
-    if (!config.model.startsWith('gpt-image-2')) {
-      input.nsfw_checker = true;
-    }
-    input[config.refKey] = [referenceImageUrl];
+    let imageUrl: string;
+    let taskId: string | undefined;
 
-    const apiKey = requireKieKey();
-    const taskId = await createKieTask(apiKey, config.model, input);
-    const imageUrl = await pollKieResult(taskId, apiKey);
+    if (config.provider === 'kie') {
+      // Build Kie input. Match the existing /api/thumbnails/image patterns:
+      // gpt-image-2 uses `input_urls`, every other i2i model uses `image_urls`.
+      // nsfw_checker is on for everything except gpt-image-2 (which 422's on
+      // it per Kie's market spec).
+      const input: Record<string, unknown> = {
+        prompt,
+        aspect_ratio: '16:9',
+        resolution: '1K',
+      };
+      if (!config.model.startsWith('gpt-image-2')) {
+        input.nsfw_checker = true;
+      }
+      input[config.refKey] = [referenceImageUrl];
+
+      const apiKey = requireKieKey();
+      taskId = await createKieTask(apiKey, config.model, input);
+      imageUrl = await pollKieResult(taskId, apiKey);
+    } else {
+      // OpenAI direct path. Fetch the reference image bytes (Kie passed a
+      // URL, OpenAI's edits endpoint expects a multipart file upload), call
+      // /v1/images/edits synchronously, then upload the returned PNG bytes
+      // to R2 so the rest of the app sees a permanent URL just like the
+      // Kie path. This is the emergency fast-path — no polling, returns in
+      // 20-60s typically.
+      let referenceBytes: Buffer | undefined;
+      let referenceMime: string | undefined;
+      if (config.mode === 'i2i') {
+        const refRes = await fetch(safeRefUrl);
+        if (!refRes.ok) {
+          throw new Error(`Failed to fetch reference image for OpenAI edit (HTTP ${refRes.status}).`);
+        }
+        const arrayBuf = await refRes.arrayBuffer();
+        if (arrayBuf.byteLength > 8 * 1024 * 1024) {
+          throw new Error('Reference image exceeds 8 MB cap for the OpenAI edit path.');
+        }
+        referenceBytes = Buffer.from(arrayBuf);
+        const ct = refRes.headers.get('content-type') || 'image/png';
+        referenceMime = ct.includes('png')
+          ? 'image/png'
+          : ct.includes('webp')
+            ? 'image/webp'
+            : ct.includes('gif')
+              ? 'image/gif'
+              : 'image/jpeg';
+      }
+
+      const result = await generateImageOpenAI({
+        prompt,
+        size: '1536x1024', // 16:9 landscape preset; matches our 1280×720 layout aspect
+        quality: 'medium',
+        referenceImage: referenceBytes && referenceMime
+          ? { bytes: referenceBytes, mimeType: referenceMime, filename: 'reference.png' }
+          : undefined,
+      });
+
+      // Upload to R2 so the URL is permanent (parity with the Kie path).
+      const bytes = Buffer.from(result.base64, 'base64');
+      const r2Key = `thumbnails/format-grid-openai/${randomUUID()}.png`;
+      await uploadToBucket(getImagesBucket(), r2Key, bytes, 'image/png');
+      imageUrl = await getImagesDownloadUrl(r2Key);
+
+      logger.info('[thumb-format-grid image] openai direct done', {
+        bytes: bytes.byteLength,
+        r2_key: r2Key,
+        revised_prompt_chars: result.revisedPrompt?.length ?? 0,
+      });
+    }
 
     logger.info('[thumb-format-grid image] done', {
       duration_ms: Date.now() - startedAt,
       task_id: taskId,
+      provider: config.provider,
       image_url_host: (() => {
         try { return new URL(imageUrl).hostname; } catch { return 'unknown'; }
       })(),
@@ -241,7 +318,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       imageUrl,
-      taskId,
+      taskId: taskId ?? null,
       regions,
       layout: {
         width: layout.width,

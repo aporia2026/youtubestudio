@@ -1,27 +1,43 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { randomUUID } from 'crypto';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { domainErrorResponse } from '@/lib/route-helpers';
 import { createKieTask, pollKieResult } from '@/lib/kie-poll';
+import { generateImageOpenAI } from '@/lib/openai-images';
+import { uploadToBucket, getImagesBucket, getImagesDownloadUrl } from '@/lib/r2';
 
 export const maxDuration = 300;
 
 /**
- * Kie.ai image generation model configurations.
+ * Image generation model configurations.
  *
- * Each entry maps our internal id → Kie's `model` string + the kind of input.
- * GPT Image 2 uses `input_urls` instead of `image_urls` for its image-to-image
- * variant — handled in the request builder below.
+ * Two provider lanes:
+ *  - `kie`: async task on Kie.ai (createKieTask + pollKieResult). The
+ *    reference image flows as a URL when image-to-image.
+ *  - `openai`: sync OpenAI direct call to /v1/images/edits (i2i) or
+ *    /v1/images/generations (t2i). Reference flows as raw bytes via
+ *    multipart upload; resulting PNG is mirrored to R2 for a permanent
+ *    URL so the response shape matches the Kie path.
+ *
+ * GPT Image 2 on Kie uses `input_urls` for i2i; everything else on Kie
+ * uses `image_urls`. The provider tag below selects the code path.
  */
-const MODEL_MAP: Record<string, { model: string; type: 'text-to-image' | 'image-to-image' }> = {
-  'grok-imagine-t2i': { model: 'grok-imagine/text-to-image', type: 'text-to-image' },
-  'flux2-pro-t2i': { model: 'flux-2/pro-text-to-image', type: 'text-to-image' },
-  'flux2-flex-t2i': { model: 'flux-2/flex-text-to-image', type: 'text-to-image' },
-  'nano-banana': { model: 'google/nano-banana', type: 'text-to-image' },
-  'gpt-image-2-t2i': { model: 'gpt-image-2-text-to-image', type: 'text-to-image' },
-  'grok-imagine-i2i': { model: 'grok-imagine/image-to-image', type: 'image-to-image' },
-  'flux2-pro-i2i': { model: 'flux-2/pro-image-to-image', type: 'image-to-image' },
-  'flux2-flex-i2i': { model: 'flux-2/flex-image-to-image', type: 'image-to-image' },
-  'gpt-image-2-i2i': { model: 'gpt-image-2-image-to-image', type: 'image-to-image' },
+type ModelConfig =
+  | { provider: 'kie'; model: string; type: 'text-to-image' | 'image-to-image' }
+  | { provider: 'openai'; type: 'text-to-image' | 'image-to-image' };
+
+const MODEL_MAP: Record<string, ModelConfig> = {
+  'grok-imagine-t2i': { provider: 'kie', model: 'grok-imagine/text-to-image', type: 'text-to-image' },
+  'flux2-pro-t2i': { provider: 'kie', model: 'flux-2/pro-text-to-image', type: 'text-to-image' },
+  'flux2-flex-t2i': { provider: 'kie', model: 'flux-2/flex-text-to-image', type: 'text-to-image' },
+  'nano-banana': { provider: 'kie', model: 'google/nano-banana', type: 'text-to-image' },
+  'gpt-image-2-t2i': { provider: 'kie', model: 'gpt-image-2-text-to-image', type: 'text-to-image' },
+  'grok-imagine-i2i': { provider: 'kie', model: 'grok-imagine/image-to-image', type: 'image-to-image' },
+  'flux2-pro-i2i': { provider: 'kie', model: 'flux-2/pro-image-to-image', type: 'image-to-image' },
+  'flux2-flex-i2i': { provider: 'kie', model: 'flux-2/flex-image-to-image', type: 'image-to-image' },
+  'gpt-image-2-i2i': { provider: 'kie', model: 'gpt-image-2-image-to-image', type: 'image-to-image' },
+  'gpt-image-2-openai-t2i': { provider: 'openai', type: 'text-to-image' },
+  'gpt-image-2-openai-i2i': { provider: 'openai', type: 'image-to-image' },
 };
 
 function requireKieKey(): string {
@@ -75,6 +91,44 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    if (config.provider === 'openai') {
+      // Sync OpenAI direct path. For i2i, fetch the reference bytes; for
+      // t2i, no reference needed. Upload the returned PNG to R2 so we
+      // return a permanent URL (matching the Kie response shape).
+      let referenceImage: { bytes: Buffer; mimeType: string; filename: string } | undefined;
+      if (config.type === 'image-to-image' && referenceImageUrl) {
+        const refRes = await fetch(referenceImageUrl);
+        if (!refRes.ok) {
+          throw new Error(`Failed to fetch reference image (HTTP ${refRes.status}).`);
+        }
+        const arrayBuf = await refRes.arrayBuffer();
+        if (arrayBuf.byteLength > 8 * 1024 * 1024) {
+          throw new Error('Reference image exceeds 8 MB cap for the OpenAI edit path.');
+        }
+        const ct = refRes.headers.get('content-type') || 'image/png';
+        const mimeType = ct.includes('png')
+          ? 'image/png'
+          : ct.includes('webp')
+            ? 'image/webp'
+            : ct.includes('gif')
+              ? 'image/gif'
+              : 'image/jpeg';
+        referenceImage = { bytes: Buffer.from(arrayBuf), mimeType, filename: 'reference.png' };
+      }
+      const result = await generateImageOpenAI({
+        prompt,
+        size: '1536x1024',
+        quality: 'medium',
+        referenceImage,
+      });
+      const bytes = Buffer.from(result.base64, 'base64');
+      const r2Key = `thumbnails/freeform-openai/${randomUUID()}.png`;
+      await uploadToBucket(getImagesBucket(), r2Key, bytes, 'image/png');
+      const imageUrl = await getImagesDownloadUrl(r2Key);
+      return NextResponse.json({ imageUrl, taskId: null });
+    }
+
+    // Kie.ai path (default).
     const apiKey = requireKieKey();
 
     // Build request body. GPT Image 2 doesn't document an nsfw_checker
