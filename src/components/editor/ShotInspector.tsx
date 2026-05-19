@@ -17,6 +17,7 @@
  */
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Loader2, RefreshCw, Sparkles, Undo2 } from 'lucide-react';
 import type { ProductionDoc, RowOverlayRenderState } from '@/remotion/utils';
 import type { VideoShot } from '@/remotion/types';
 
@@ -505,7 +506,7 @@ export function ShotInspector({
               type="button"
               onClick={onGenerateClip}
               disabled={clipStatus === 'generating'}
-              className="w-full text-xs px-3 py-2 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
+              className="w-full flex items-center justify-center gap-2 text-xs px-3 py-2 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
               style={{
                 borderColor: 'var(--accent-purple-bright, #a78bfa)',
                 color:
@@ -519,11 +520,22 @@ export function ShotInspector({
                   : 'Generate a fresh B-roll animation for this shot using the workspace default model.'
               }
             >
-              {clipStatus === 'generating'
-                ? '⏳ Generating animation…'
-                : clipStatus === 'error'
-                  ? '🔁 Retry animation'
-                  : '✨ Generate animation'}
+              {clipStatus === 'generating' ? (
+                <>
+                  <Loader2 size={14} strokeWidth={2} className="animate-spin" />
+                  <span>Generating animation…</span>
+                </>
+              ) : clipStatus === 'error' ? (
+                <>
+                  <RefreshCw size={14} strokeWidth={2} />
+                  <span>Retry animation</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles size={14} strokeWidth={2} />
+                  <span>Generate animation</span>
+                </>
+              )}
             </button>
             {brollModelId && (
               <div className="text-[10px]" style={{ color: 'var(--fg-muted)' }}>
@@ -948,7 +960,10 @@ export function ShotInspector({
                             : `Undo the most recent AI edit (${undoDepth} stored — click again to step back)`
                         }
                       >
-                        {undoDepth > 1 ? `↶ Undo (${undoDepth})` : '↶ Undo'}
+                        <span className="inline-flex items-center gap-1">
+                          <Undo2 size={11} strokeWidth={2} />
+                          <span>Undo{undoDepth > 1 ? ` (${undoDepth})` : ''}</span>
+                        </span>
                       </button>
                     )}
                   </div>

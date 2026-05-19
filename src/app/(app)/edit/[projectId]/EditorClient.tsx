@@ -1607,13 +1607,13 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               onClose={() => setOverlayContextMenu(null)}
               items={[
                 {
-                  label: '✎ Edit image',
+                  label: 'Edit image',
                   onClick: () => setOverlayEditRow(i),
                   disabled: overlayState?.status !== 'done',
                   title: 'Open the AI image-edit dialog',
                 },
                 {
-                  label: '↻ Rethink placement',
+                  label: 'Rethink placement',
                   onClick: () => {
                     void rethinkOverlayPlacement(i);
                   },
@@ -1624,7 +1624,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                   title: 'Ask the AI for a new size + position',
                 },
                 {
-                  label: '🔁 Replace overlay (re-search)',
+                  label: 'Replace overlay (re-search)',
                   onClick: () => {
                     void replaceOverlayForRow(i);
                   },
@@ -1633,7 +1633,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                     'Re-run Brave search + RMBG with the same stock terms (replaces the current overlay)',
                 },
                 {
-                  label: '↶ Undo last edit',
+                  label: 'Undo last edit',
                   onClick: () => undoOverlayEdit(i),
                   disabled: !canUndo,
                   separatorAbove: true,
@@ -1642,7 +1642,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                     : 'No edits to undo yet',
                 },
                 {
-                  label: '↺ Reset to AI placement',
+                  label: 'Reset to AI placement',
                   onClick: () => {
                     console.info('[ui overlay-position] reset (editor context menu)', {
                       rowIndex: i,
@@ -1665,7 +1665,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                   title: 'Clear manual position / size / stretch and fall back to the AI pick',
                 },
                 {
-                  label: '✕ Remove overlay',
+                  label: 'Remove overlay',
                   onClick: () => {
                     const ok = window.confirm(
                       'Remove the overlay entirely?\n\nThis clears the stock terms, the fetched image, AI placement, edits, and undo history for this row. The row\'s scene image stays. You can re-add by typing new stock terms.',

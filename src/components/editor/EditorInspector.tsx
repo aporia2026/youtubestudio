@@ -29,6 +29,7 @@
 
 import { useEffect, useState } from 'react';
 import { MoreVertical } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
 
 export type InspectorTabId = 'shot' | 'audio' | 'captions';
 
@@ -167,17 +168,29 @@ export function EditorInspector({
         )}
       </div>
 
-      {/* Active tab body — scrollable region. */}
+      {/* Active tab body — scrollable region. A small framer-motion
+          fade on tab change makes the inspector feel responsive
+          without distracting on rapid toggles. */}
       <div className="flex-1 editor-scroll" style={{ overflow: 'auto', minHeight: 0 }}>
-        {slots[activeTab] ?? (
-          <div className="p-4 text-xs text-center" style={{ color: 'var(--fg-muted)' }}>
-            {activeTab === 'shot'
-              ? 'Select a shot on the timeline to inspect or edit it.'
-              : activeTab === 'audio'
-                ? 'Click the audio lane on the timeline to inspect the voiceover.'
-                : 'Click a caption pill on the timeline to inspect or edit its text.'}
-          </div>
-        )}
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={activeTab}
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.12, ease: 'easeOut' }}
+          >
+            {slots[activeTab] ?? (
+              <div className="p-4 text-xs text-center" style={{ color: 'var(--fg-muted)' }}>
+                {activeTab === 'shot'
+                  ? 'Select a shot on the timeline to inspect or edit it.'
+                  : activeTab === 'audio'
+                    ? 'Click the audio lane on the timeline to inspect the voiceover.'
+                    : 'Click a caption pill on the timeline to inspect or edit its text.'}
+              </div>
+            )}
+          </motion.div>
+        </AnimatePresence>
       </div>
     </div>
   );
