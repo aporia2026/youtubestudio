@@ -198,20 +198,53 @@ function rescaleByChapters(
     const chapter = chapters[group.chapterIdx];
     if (group.scenes.length === 0) continue;
 
-    const firstScene = group.scenes[0];
-    const lastScene = group.scenes[group.scenes.length - 1];
-    const claimedSpan = Math.max(0.001, lastScene.end - firstScene.start);
     const targetSpan = Math.max(0, chapter.end - chapter.start);
 
-    if (Math.abs(claimedSpan - targetSpan) <= SCENE_DURATION_TOLERANCE_SECONDS) {
+    // Per-scene check: this group needs rescaling if ANY scene in it
+    // has negative duration or overflows the chapter's end. The earlier
+    // version of this check used `lastScene.end - firstScene.start` as
+    // the claimed span, which missed cases where the first-and-last
+    // endpoints coincidentally lined up with the chapter while
+    // intermediate scenes overflowed (seen in the Casey v1.5.0
+    // third-run: scenes 19-29 spanned chapter 4 exactly at the
+    // endpoints but every scene in between overflowed by tens or
+    // hundreds of seconds).
+    const needsRescale = group.scenes.some(
+      (s) =>
+        s.end < s.start || s.end > chapter.end + SCENE_DURATION_TOLERANCE_SECONDS,
+    );
+
+    if (!needsRescale) {
       outScenes.push(...group.scenes);
+      continue;
+    }
+
+    // Use the SUM of positive durations as the claimed span so each
+    // scene's relative weight in the rescale reflects its own claimed
+    // duration, not just the spread of the first-to-last endpoints.
+    const positiveDurations = group.scenes.map((s) => Math.max(0, s.end - s.start));
+    const claimedSpan = positiveDurations.reduce((acc, d) => acc + d, 0);
+
+    if (claimedSpan < 0.001) {
+      // Every claimed duration was non-positive — distribute scenes
+      // uniformly across the chapter as a last-resort fallback.
+      const slice = targetSpan / group.scenes.length;
+      const rescaled = group.scenes.map((scene, i) => ({
+        ...scene,
+        start: round1(chapter.start + i * slice),
+        end: round1(i === group.scenes.length - 1 ? chapter.end : chapter.start + (i + 1) * slice),
+      }));
+      outScenes.push(...rescaled);
+      warnings.push(
+        `chapter[${group.chapterIdx}] scenes rescaled (uniform): ${group.scenes.length} scenes had no positive durations; distributed uniformly across ${targetSpan.toFixed(0)}s chapter`,
+      );
       continue;
     }
 
     const scale = targetSpan / claimedSpan;
     let cursor = chapter.start;
     const rescaled = group.scenes.map((scene, i) => {
-      const claimedDuration = Math.max(0, scene.end - scene.start);
+      const claimedDuration = positiveDurations[i];
       const newStart = cursor;
       cursor += claimedDuration * scale;
       const newEnd = i === group.scenes.length - 1 ? chapter.end : cursor;
@@ -220,7 +253,7 @@ function rescaleByChapters(
     outScenes.push(...rescaled);
 
     warnings.push(
-      `chapter[${group.chapterIdx}] scenes rescaled: ${group.scenes.length} scenes originally spanning ${claimedSpan.toFixed(1)}s compressed/expanded to fit ${targetSpan.toFixed(0)}s chapter (×${scale.toFixed(3)})`,
+      `chapter[${group.chapterIdx}] scenes rescaled: ${group.scenes.length} scenes' positive durations summed to ${claimedSpan.toFixed(1)}s compressed/expanded to fit ${targetSpan.toFixed(0)}s chapter (×${scale.toFixed(3)})`,
     );
   }
 

@@ -377,6 +377,48 @@ describe('rescaleScenesToChapters — pure helper', () => {
     expect(out.warnings.some((w) => w.includes('chapter[4] scenes rescaled') && w.includes('2 scenes'))).toBe(true);
   });
 
+  it('rescales when intermediate scenes overflow even though first/last endpoints align with the chapter (Casey v1.5.0 third-run regression)', () => {
+    // Mirrors the actual third v1.5.0 Casey output: chapter 4
+    // (240-277) has scenes 19-29 whose first.start = 240 and last.end
+    // = 277 (matching the chapter at the endpoints) BUT every
+    // intermediate scene overflows by tens/hundreds of seconds, and
+    // the final scene has start > end. The earlier check used
+    // lastScene.end - firstScene.start as the span and missed this.
+    const input = buildVideo({
+      duration: 277,
+      scenes: [
+        scene(0, 22, 'p'), // chapter 1: clean
+        scene(22, 103, 'p'), // chapter 2: clean
+        scene(103, 149, 'p'), // chapter 3: clean
+        scene(149, 240, 'p'), // chapter 4: clean
+        // Chapter 5 (240-277) — scenes' first.start matches 240,
+        // last.end matches 277, but intermediates overflow:
+        scene(240, 305, 'p'),
+        scene(305, 427, 'p'),
+        scene(427, 277, 'p'), // negative duration; end coincides with chapter.end
+      ],
+      packs: [pack('p', 0)],
+      chapters: [
+        { start: 0, end: 22, title: 'A' },
+        { start: 22, end: 103, title: 'B' },
+        { start: 103, end: 149, title: 'C' },
+        { start: 149, end: 240, title: 'D' },
+        { start: 240, end: 277, title: 'E' },
+      ],
+    });
+    const out = rescaleScenesToChapters(input, 277);
+    // Chapter 5's three scenes should have been rescaled into the
+    // 37s chapter range.
+    expect(out.warnings.some((w) => w.includes('chapter[4] scenes rescaled'))).toBe(true);
+    // All scenes now have non-negative duration.
+    for (const s of out.scenes) {
+      expect(s.end).toBeGreaterThanOrEqual(s.start);
+      expect(s.end).toBeLessThanOrEqual(277 + 0.1);
+    }
+    // Contiguity holds, last scene ends at chapter end (= duration).
+    expect(out.scenes[out.scenes.length - 1].end).toBe(277);
+  });
+
   it('snaps the last rescaled scene exactly to chapter.end to preserve contiguity under float drift', () => {
     const input = buildVideo({
       duration: 100,
