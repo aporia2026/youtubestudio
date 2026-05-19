@@ -30,10 +30,17 @@ import type { ThumbnailRegion } from '@/remotion/types';
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface NLevel {
-  /** 1-based position in the slice sequence (left to right). */
+  /** Number rendered as "LEVEL N" at the top of the slice. Typically the
+   *  1-based position in the sequence but can be any positive integer —
+   *  e.g. a 2-slice grid labelled `[1, 7]` ("level 1 and level 7") with
+   *  the middle steps elided. Order of slices on the canvas follows the
+   *  array order, NOT the numeric value. */
   level: number;
-  /** Short label shown under the LEVEL number. 1–4 words ideally. */
-  label: string;
+  /** Short label shown under the LEVEL number. 1–4 words ideally.
+   *  OPTIONAL — when empty, the slice renders only the "LEVEL N" heading
+   *  with no subtitle (matches the most common pattern in successful
+   *  "N LEVELS OF" thumbnails on YouTube). */
+  label?: string;
   /** Concrete description of the most recognisable depiction of this level's
    *  subject. Real logos, real screens, real characters preferred over
    *  abstract icons. */
@@ -164,12 +171,27 @@ export type ValidationResult =
  * tightened prompt citing the specific offending level, then surface to the
  * user.
  */
+/**
+ * Validate a level list.
+ *
+ * `expectedCount` is a soft hint: if non-null, the validator returns an
+ * error when `levels.length !== expectedCount`. Step 1 (LLM card list)
+ * uses this to enforce the count the user asked for. Step 2 (image
+ * render) passes `null` because the user may have deleted slices in the
+ * review step — what matters is just that there's at least one slice
+ * and all surviving slices are well-formed.
+ *
+ * Labels are OPTIONAL — empty labels render as "LEVEL N" alone.
+ */
 export function validateLevelList(
   levels: NLevel[],
-  expectedCount: number,
+  expectedCount: number | null,
 ): ValidationResult {
   if (!Array.isArray(levels)) return { ok: false, reason: 'levels is not an array' };
-  if (levels.length !== expectedCount) {
+  if (levels.length === 0) {
+    return { ok: false, reason: 'At least one level is required.' };
+  }
+  if (expectedCount !== null && levels.length !== expectedCount) {
     return {
       ok: false,
       reason: `Expected exactly ${expectedCount} levels but got ${levels.length}.`,
@@ -182,10 +204,14 @@ export function validateLevelList(
     }
     const label = (l.label || '').toString().trim();
     const concept = (l.illustration_concept || '').toString().trim();
-    if (!label) return { ok: false, reason: `Level ${i + 1} has no label.`, offending_level_index: i };
+    // Label is optional. When present we validate the length cap; when
+    // empty the slice renders as "LEVEL N" with no subtitle.
     if (!concept) return { ok: false, reason: `Level ${i + 1} has no illustration_concept.`, offending_level_index: i };
     if (label.length > 60) {
       return { ok: false, reason: `Level ${i + 1} label is too long (${label.length} chars; max 60).`, offending_level_index: i };
+    }
+    if (!Number.isFinite(l.level) || l.level < 1 || l.level > 99) {
+      return { ok: false, reason: `Level ${i + 1} has an invalid level number (must be 1-99, got ${l.level}).`, offending_level_index: i };
     }
     for (const banned of ILLUSTRATION_CONCEPT_BANLIST) {
       if (banned.match.test(concept)) {
@@ -373,10 +399,16 @@ export function nLevelsImagePrompt(input: ImagePromptInput): string {
 
   const levelLines = levels
     .map((l) => {
-      const label = sanitizeForPrompt(l.label, 60);
+      const label = sanitizeForPrompt(l.label ?? '', 60);
       const concept = sanitizeForPrompt(l.illustration_concept, 250);
       const accent = l.accent_color ? ` (accent hint: ${sanitizeForPrompt(l.accent_color, 16)})` : '';
-      return `LEVEL ${l.level} — "${label}": ${concept}${accent}`;
+      // Render with the slice's exact `level` number (user may have
+      // assigned non-sequential numbers like [1, 7]). If the label is
+      // empty, render only the LEVEL heading — no subtitle.
+      const heading = label
+        ? `LEVEL ${l.level} — "${label}"`
+        : `LEVEL ${l.level} (NO SUBTITLE — render only the LEVEL ${l.level} heading at top of the slice, no second line of text)`;
+      return `${heading}: ${concept}${accent}`;
     })
     .join('\n');
 
@@ -388,10 +420,10 @@ ${showBottomTitle ? `- The canvas is split into TWO horizontal regions, stacked 
   • BOTTOM 30% — the title bar: a single large grunge/distressed title strip across the full width.` : `- ${count} VERTICAL slices side by side, edge-to-edge with thin dividers (no large gutters). The slices fill the ENTIRE canvas top to bottom — there is NO bottom title bar in this thumbnail.`}
 
 SLICES REGION (strict):
-- ${count} vertical slices arranged left to right.
+- ${count} vertical slices arranged left to right, in the exact order listed below.
 - Each slice contains, from top to bottom:
-  • A bold "LEVEL N" heading (where N is the slice's 1-based number). Numbers visually prominent (large bold sans-serif). White or near-white on the slice's background.
-  • Directly below: the slice's short label in bold ALL-CAPS sans-serif (same colour as the LEVEL heading or a fitting contrast). 1–2 lines max.
+  • A bold "LEVEL N" heading. N is the slice's level NUMBER (taken verbatim from the list below — numbers do NOT have to be 1, 2, 3 sequentially; the user may have picked e.g. [1, 7] to skip middle steps. Render whatever number is given). Numbers visually prominent (large bold sans-serif). White or near-white on the slice's background.
+  • DIRECTLY BELOW: the slice's short label in bold ALL-CAPS sans-serif (same colour as the LEVEL heading or a fitting contrast). 1–2 lines max. SOME SLICES HAVE NO LABEL — for those, render ONLY the LEVEL N heading at the top of the slice and leave the rest blank for the illustration. Don't invent a substitute label.
   • Filling the rest of the slice height: the illustration — depicting the level's subject as recognisably as possible.
 - Each slice has its OWN background and colour treatment that fits its content. A "passive reconnaissance" slice might be cool green; an "exfiltration" slice deep red. Visual progression across slices is a feature.
 - Real brand logos, real software screens, real product photos, real characters, real news photos — whatever depicts each level's subject most recognisably. This is fair use under YouTube's policy.

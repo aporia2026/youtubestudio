@@ -174,8 +174,11 @@ export function NLevelsPanel({
     count >= 2 &&
     (formatMode !== 'pre-fill' || prefilledLabelsList.length === count);
 
-  const levelListMismatch = levels && levels.length !== count;
-  const canRenderImage = !!levels && !levelListMismatch && levels.every((l) => l.label.trim() && l.illustration_concept.trim());
+  // The image step accepts any non-empty levels list — the user may have
+  // deleted slices in the review step to render a subset (e.g. "level 1
+  // and level 7" only). Labels are optional. The only hard requirement
+  // is that every surviving slice has an illustration_concept.
+  const canRenderImage = !!levels && levels.length >= 1 && levels.every((l) => l.illustration_concept.trim());
 
   // ─── Actions ──────────────────────────────────────────────────────────────
 
@@ -331,8 +334,31 @@ export function NLevelsPanel({
       if (j < 0 || j >= prev.length) return prev;
       const next = [...prev];
       [next[idx], next[j]] = [next[j], next[idx]];
-      return next.map((l, i) => ({ ...l, level: i + 1 }));
+      // Level numbers TRAVEL with the slice content — no auto-renumber.
+      // Users can have non-sequential numbers like [1, 7] for "level 1
+      // and level 7" thumbnails; reorder must preserve their numbering.
+      return next;
     });
+  }
+
+  /** Delete a slice. Surviving slices keep their level numbers — so if
+   *  you drop levels 2-6 from a 7-slice run, the remaining slices stay
+   *  labelled "LEVEL 1" and "LEVEL 7" rather than collapsing to 1, 2. */
+  function deleteLevel(idx: number) {
+    setLevels((prev) => {
+      if (!prev) return prev;
+      if (prev.length <= 1) {
+        toast.error('At least one level is required.');
+        return prev;
+      }
+      return prev.filter((_, i) => i !== idx);
+    });
+  }
+
+  /** Re-sequence remaining slices as 1, 2, 3, ... — convenience for users
+   *  who want to reset to a clean ascending sequence after editing. */
+  function renumberLevels() {
+    setLevels((prev) => prev?.map((l, i) => ({ ...l, level: i + 1 })) ?? null);
   }
 
   function clearList() {
@@ -597,13 +623,15 @@ export function NLevelsPanel({
           <LevelTableState
             levels={levels}
             totalCount={count}
+            showBottomTitle={showBottomTitle}
             refinedTopic={refinedTopic}
             onTopicEdit={setRefinedTopic}
-            mismatch={levelListMismatch ?? false}
             canRender={canRenderImage}
             busy={busyStep === 'image'}
             onUpdate={updateLevel}
             onMove={moveLevel}
+            onDelete={deleteLevel}
+            onRenumber={renumberLevels}
             onRender={() => runStep2(levels, refinedTopic, taglineEnabled ? titleTagline : '')}
             onRegenerate={() => { setLevels(null); runStep1(); }}
           />
@@ -629,48 +657,72 @@ export function NLevelsPanel({
 interface LevelTableProps {
   levels: FormatLevel[];
   totalCount: number;
+  showBottomTitle: boolean;
   refinedTopic: string;
   onTopicEdit: (next: string) => void;
-  mismatch: boolean;
   canRender: boolean;
   busy: boolean;
   onUpdate: (idx: number, patch: Partial<FormatLevel>) => void;
   onMove: (idx: number, dir: -1 | 1) => void;
+  onDelete: (idx: number) => void;
+  onRenumber: () => void;
   onRender: () => void;
   onRegenerate: () => void;
 }
 
 function LevelTableState(props: LevelTableProps) {
-  const { levels, totalCount, refinedTopic, onTopicEdit, mismatch, canRender, busy } = props;
+  const { levels, totalCount, showBottomTitle, refinedTopic, onTopicEdit, canRender, busy } = props;
+  // Detect non-sequential numbering so the user can see at a glance whether
+  // their custom numbering deviates from the default 1,2,3,... — useful
+  // when intentionally rendering "level 1 and level 7" style.
+  const isNonSequential = levels.some((l, i) => l.level !== i + 1);
   return (
     <div className="glass p-5 space-y-3" style={{ borderColor: 'rgba(124,58,237,0.2)' }}>
       <div className="flex items-center justify-between">
         <h3 className="font-bold text-base" style={{ color: 'var(--text-primary)' }}>
           Review levels
         </h3>
-        <span
-          className="text-xs px-2 py-0.5 rounded"
-          style={{
-            background: mismatch ? 'rgba(239,68,68,0.15)' : 'rgba(34,197,94,0.15)',
-            color: mismatch ? '#ef4444' : '#22c55e',
-          }}
-        >
-          {levels.length} / {totalCount} levels
-        </span>
+        <div className="flex items-center gap-2">
+          {isNonSequential && (
+            <button
+              onClick={props.onRenumber}
+              className="text-[10px] px-2 py-0.5 rounded"
+              style={{ background: 'var(--bg-card)', color: 'var(--text-muted)', border: '1px dashed var(--border)' }}
+              title="Re-sequence remaining slices as 1, 2, 3, ..."
+            >
+              Renumber 1..N
+            </button>
+          )}
+          <span
+            className="text-xs px-2 py-0.5 rounded"
+            style={{
+              background: 'rgba(34,197,94,0.15)',
+              color: '#22c55e',
+            }}
+          >
+            {levels.length}{levels.length !== totalCount ? ` / ${totalCount} (custom)` : ''} levels
+          </span>
+        </div>
       </div>
 
-      {/* Refined topic editor */}
-      <div>
-        <label className="block text-[10px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>
-          Title topic (model refined; you can edit)
-        </label>
-        <input
-          className="input-field w-full text-sm"
-          value={refinedTopic}
-          onChange={(e) => onTopicEdit(e.target.value)}
-          maxLength={60}
-        />
-      </div>
+      {/* Refined topic editor — only shown when the bottom title bar is on. */}
+      {showBottomTitle && (
+        <div>
+          <label className="block text-[10px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>
+            Title topic (model refined; you can edit)
+          </label>
+          <input
+            className="input-field w-full text-sm"
+            value={refinedTopic}
+            onChange={(e) => onTopicEdit(e.target.value)}
+            maxLength={60}
+          />
+        </div>
+      )}
+
+      <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+        Tip: clear a label to render just &quot;LEVEL N&quot; without a subtitle. Edit the level number to pick non-sequential numbering (e.g. show only level 1 and level 7 by deleting the middle slices).
+      </p>
 
       <div className="space-y-2 max-h-[60vh] overflow-y-auto">
         {levels.map((level, i) => (
@@ -680,13 +732,28 @@ function LevelTableState(props: LevelTableProps) {
             style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
           >
             <div className="flex items-center gap-2">
-              <span className="text-xs font-mono w-8 text-right" style={{ color: 'var(--text-muted)' }}>
-                L{level.level}
-              </span>
+              {/* Editable LEVEL number. Default is 1..N; user can override
+                  to any 1-99 for non-sequential numbering. */}
+              <div className="flex items-center gap-1">
+                <span className="text-[9px] font-medium" style={{ color: 'var(--text-muted)' }}>L</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={99}
+                  value={level.level}
+                  onChange={(e) => {
+                    const n = Math.max(1, Math.min(99, Number(e.target.value) || 1));
+                    props.onUpdate(i, { level: n });
+                  }}
+                  className="input-field text-xs font-mono"
+                  style={{ width: 48, textAlign: 'center' }}
+                  title="LEVEL number rendered on this slice (1-99). Numbers don't need to be sequential."
+                />
+              </div>
               <input
                 className="input-field flex-1 text-xs font-medium uppercase"
-                placeholder="LEVEL LABEL"
-                value={level.label}
+                placeholder="LABEL (optional — leave empty for LEVEL N only)"
+                value={level.label ?? ''}
                 onChange={(e) => props.onUpdate(i, { label: e.target.value })}
                 maxLength={60}
               />
@@ -724,7 +791,7 @@ function LevelTableState(props: LevelTableProps) {
                 disabled={i === 0}
                 className="text-xs px-1.5 py-0.5 rounded"
                 style={{ background: 'var(--bg-card)', color: i === 0 ? 'var(--text-muted)' : 'var(--text-secondary)', border: '1px solid var(--border)', opacity: i === 0 ? 0.4 : 1 }}
-                title="Move up (earlier level)"
+                title="Move left (numbers travel with the slice)"
               >
                 ↑
               </button>
@@ -733,9 +800,18 @@ function LevelTableState(props: LevelTableProps) {
                 disabled={i === levels.length - 1}
                 className="text-xs px-1.5 py-0.5 rounded"
                 style={{ background: 'var(--bg-card)', color: i === levels.length - 1 ? 'var(--text-muted)' : 'var(--text-secondary)', border: '1px solid var(--border)', opacity: i === levels.length - 1 ? 0.4 : 1 }}
-                title="Move down (later level)"
+                title="Move right (numbers travel with the slice)"
               >
                 ↓
+              </button>
+              <button
+                onClick={() => props.onDelete(i)}
+                disabled={levels.length <= 1}
+                className="text-xs px-1.5 py-0.5 rounded"
+                style={{ background: 'var(--bg-card)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)', opacity: levels.length <= 1 ? 0.4 : 1 }}
+                title="Delete this slice (remaining slices keep their level numbers)"
+              >
+                ✕
               </button>
             </div>
             <input
@@ -748,15 +824,6 @@ function LevelTableState(props: LevelTableProps) {
           </div>
         ))}
       </div>
-
-      {mismatch && (
-        <div
-          className="text-xs px-3 py-2 rounded-lg"
-          style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444' }}
-        >
-          Level count ({levels.length}) does not match ({totalCount}). Adjust the count selector or regenerate.
-        </div>
-      )}
 
       <div className="flex gap-2">
         <button

@@ -116,11 +116,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Re-validate level list server-side.
-    const validation = validateLevelList(levels, count);
+    // Re-validate level list server-side. Pass null for expectedCount —
+    // the user may have deleted slices in the review step (e.g. dropped
+    // levels 2-6 from a 7-level run to render only "LEVEL 1" and
+    // "LEVEL 7"). The image step just needs at least one well-formed
+    // slice and uses levels.length as the actual slice count.
+    const validation = validateLevelList(levels, null);
     if (!validation.ok) {
       return NextResponse.json({ error: `Level list validation failed: ${validation.reason}` }, { status: 400 });
     }
+    const renderedCount = levels.length;
 
     let safeRefUrl: URL;
     try {
@@ -133,11 +138,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Deterministic region math BEFORE the image call.
+    // Deterministic region math BEFORE the image call. Use the ACTUAL
+    // count of surviving slices (renderedCount) — not the user's original
+    // requested `count`, which may differ if slices were deleted.
     const outputWidth = Number.isInteger(body.outputWidth) ? Number(body.outputWidth) : DEFAULT_CANVAS.width;
     const outputHeight = Number.isInteger(body.outputHeight) ? Number(body.outputHeight) : DEFAULT_CANVAS.height;
-    const layout = makeDefaultLayout(count, outputWidth, outputHeight, showBottomTitle);
-    const labels = levels.map((l) => l.label);
+    const layout = makeDefaultLayout(renderedCount, outputWidth, outputHeight, showBottomTitle);
+    // Region labels for production-doc — label may be empty (the slice
+    // is rendered with just LEVEL N then), so fall back to that string.
+    const labels = levels.map((l) => l.label?.trim() || `Level ${l.level}`);
     const regions: ThumbnailRegion[] = computeRegions(layout, labels, () => randomUUID());
     logger.info('[thumb-format-n-levels image] regions computed', {
       regions_count: regions.length,
@@ -148,7 +157,7 @@ export async function POST(req: NextRequest) {
 
     const prompt = nLevelsImagePrompt({
       levels,
-      count,
+      count: renderedCount,
       titleTopic: showBottomTitle ? titleTopic : undefined,
       titleTagline: showBottomTitle ? titleTagline : undefined,
       showBottomTitle,
