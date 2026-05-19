@@ -48,10 +48,11 @@ export interface LevelListResult {
   levels: NLevel[];
   /** The topic that goes into the "[N] LEVELS OF [TOPIC]" bottom title.
    *  The LLM may refine the user's topic to fit the format's typography
-   *  (caps, brevity); the user-provided version is preserved separately. */
+   *  (caps, brevity); the user-provided version is preserved separately.
+   *  May be empty when the bottom title bar is disabled. */
   title_topic: string;
   /** Defaults to "EXPLAINED"; users can omit or change. Tagged below the
-   *  topic in a red rectangle. */
+   *  topic in a red rectangle. Ignored when the bottom title bar is off. */
   title_tagline: string;
   /** Optional free-form note from the LLM that we forward to the image
    *  prompt (e.g. "use a progressive cool-to-warm palette across slices").
@@ -91,12 +92,17 @@ export function makeDefaultLayout(
   count: number,
   width: number = DEFAULT_CANVAS.width,
   height: number = DEFAULT_CANVAS.height,
+  showBottomTitle: boolean = false,
 ): NLevelsLayout {
   return {
     width,
     height,
     count,
-    bottomBandHeight: Math.round(height * DEFAULT_TITLE_BAND_FRACTION),
+    // When the bottom title bar is disabled, slices fill the whole canvas
+    // (the dominant pattern in the most successful "N LEVELS OF" thumbnails
+    // on YouTube — see the user's references). Title bar stays available as
+    // an opt-in for the grunge-title style.
+    bottomBandHeight: showBottomTitle ? Math.round(height * DEFAULT_TITLE_BAND_FRACTION) : 0,
     gutter: 0,
     outerMargin: 0,
   };
@@ -224,10 +230,16 @@ export interface LlmPromptInput {
   description?: string;
   count: number;
   /** The topic that goes in the bottom title bar (e.g. "CYBER SECURITY
-   *  BREACHES"). The LLM may refine for typography. */
-  titleTopic: string;
+   *  BREACHES"). The LLM may refine for typography. Optional — when the
+   *  bottom title bar is disabled the LLM doesn't produce a refined topic
+   *  and the image step skips the title bar entirely. */
+  titleTopic?: string;
   /** Defaults to "EXPLAINED"; users can pass "" to hide. */
   titleTagline?: string;
+  /** Whether the rendered thumbnail will include the grunge bottom title
+   *  bar. Defaults false — most successful "N LEVELS OF" thumbnails on
+   *  YouTube run without a bottom title bar at all. */
+  showBottomTitle?: boolean;
   /** Pre-filled labels for "Pre-fill" mode. If present, the LLM only fills
    *  in `illustration_concept` per provided label and keeps the labels
    *  verbatim. */
@@ -242,7 +254,9 @@ export interface LlmPromptInput {
 export function nLevelsLlmPrompt(input: LlmPromptInput): { system: string; user: string } {
   const { title, niche, script, description, count, titleTopic, titleTagline, prefilledLabels } = input;
   const usingPrefilled = !!prefilledLabels && prefilledLabels.length === count;
+  const showBottomTitle = !!input.showBottomTitle;
   const tagline = titleTagline === undefined ? 'EXPLAINED' : titleTagline;
+  const safeTitleTopic = (titleTopic ?? '').trim();
 
   const system = `You are designing a YouTube thumbnail in the "N Levels Explained" format. The thumbnail shows N vertical slices side-by-side across the top of the canvas, and a large grunge/distressed title bar across the bottom. Each slice represents one step in a progressive narrative — a level of depth, escalation, or expertise.
 
@@ -278,14 +292,16 @@ PROGRESSION: the N levels should form a coherent sequence. Order them so they te
 
 The label below each "LEVEL n" is short (1–4 words, ALL CAPS).
 
-The bottom title is fixed structure:
+${showBottomTitle ? `The bottom title is fixed structure:
 - Line 1: "${count} LEVELS OF" (white grunge)
 - Line 2: "[TOPIC]" (yellow grunge, larger, where TOPIC = the topic you refine for this video)${tagline ? `
 - Line 3: "[${tagline}]" (red, smaller, in a red-tinted box)` : ''}
 
-For the topic, the user provided: "${titleTopic}". You may refine it for typography (caps, brevity, punch) — keep it 2-5 words, ALL CAPS, sounds like a YouTube title block.
+For the topic, the user provided: "${safeTitleTopic}". You may refine it for typography (caps, brevity, punch) — keep it 2-5 words, ALL CAPS, sounds like a YouTube title block.
 
-A reference image is attached to this message. Match its STRUCTURE precisely (slice layout, level number + label typography, bottom grunge title typography). Do NOT inherit its specific palette or per-slice content.
+` : `There is NO bottom title bar in this thumbnail — the slices fill the whole canvas. You don't need to refine a "title_topic"; just emit an empty string for it.
+
+`}A reference image is attached to this message. Match its STRUCTURE precisely (slice layout, level number + label typography${showBottomTitle ? ', bottom grunge title typography' : ', no bottom title bar'}). Do NOT inherit its specific palette or per-slice content.
 
 Return JSON only — no prose, no markdown fences. Schema:
 
@@ -293,8 +309,8 @@ Return JSON only — no prose, no markdown fences. Schema:
   "levels": [
     { "level": 1, "label": "<short ALL CAPS>", "illustration_concept": "<concrete description of the most recognisable depiction of this level's subject>", "accent_color": "<hex if a specific accent matters, otherwise omit>" }
   ],
-  "title_topic": "<refined ALL CAPS topic, 2-5 words>",
-  "title_tagline": ${tagline ? `"${tagline}"` : '""'},
+  "title_topic": ${showBottomTitle ? '"<refined ALL CAPS topic, 2-5 words>"' : '""'},
+  "title_tagline": ${showBottomTitle && tagline ? `"${tagline}"` : '""'},
   "notes_for_image_model": "<one short sentence of overall style guidance, optional>"
 }
 
@@ -304,8 +320,12 @@ The levels array MUST contain EXACTLY ${count} entries, in narrative order.`;
   userParts.push(`**Video Title:** ${title}`);
   userParts.push(`**Niche:** ${niche}`);
   userParts.push(`**Levels:** ${count} (you produce exactly ${count} entries, in narrative order)`);
-  userParts.push(`**Title topic (suggested):** ${titleTopic}`);
-  if (tagline) userParts.push(`**Title tagline:** ${tagline}`);
+  if (showBottomTitle) {
+    userParts.push(`**Title topic (suggested):** ${safeTitleTopic}`);
+    if (tagline) userParts.push(`**Title tagline:** ${tagline}`);
+  } else {
+    userParts.push(`**Bottom title bar:** disabled — slices fill the canvas, no master title text.`);
+  }
   if (description) userParts.push(`**Video Description:** ${description.slice(0, 500)}`);
   if (script) userParts.push(`**Script (canonical source for level labels — extract the user's exact terminology, in narrative order):** ${script.slice(0, 12000)}`);
   if (usingPrefilled) {
@@ -326,8 +346,13 @@ The levels array MUST contain EXACTLY ${count} entries, in narrative order.`;
 export interface ImagePromptInput {
   levels: NLevel[];
   count: number;
-  titleTopic: string;
+  /** When `showBottomTitle` is true, this is the topic that appears in the
+   *  grunge bottom title bar. When false, the field is ignored. */
+  titleTopic?: string;
   titleTagline?: string;
+  /** Whether the rendered thumbnail includes the grunge bottom title bar.
+   *  Defaults false. When false, slices fill the whole canvas. */
+  showBottomTitle?: boolean;
   notesForImageModel?: string;
 }
 
@@ -340,9 +365,10 @@ export interface ImagePromptInput {
  */
 export function nLevelsImagePrompt(input: ImagePromptInput): string {
   const { levels, count, titleTopic, titleTagline, notesForImageModel } = input;
+  const showBottomTitle = !!input.showBottomTitle;
   const tagline = titleTagline === undefined ? 'EXPLAINED' : titleTagline;
   const safeNotes = notesForImageModel ? sanitizeForPrompt(notesForImageModel, 300) : '';
-  const safeTopic = sanitizeForPrompt(titleTopic, 60);
+  const safeTopic = sanitizeForPrompt(titleTopic ?? '', 60);
   const safeTagline = sanitizeForPrompt(tagline, 30);
 
   const levelLines = levels
@@ -357,9 +383,9 @@ export function nLevelsImagePrompt(input: ImagePromptInput): string {
   return `Create a YouTube thumbnail in the "N Levels Explained" format, 16:9.
 
 LAYOUT (strict):
-- The canvas is split into TWO horizontal regions, stacked top to bottom:
+${showBottomTitle ? `- The canvas is split into TWO horizontal regions, stacked top to bottom:
   • TOP 70% — the slices region: ${count} VERTICAL slices side by side, edge-to-edge with thin dividers (no large gutters). Each slice fills its full height.
-  • BOTTOM 30% — the title bar: a single large grunge/distressed title strip across the full width.
+  • BOTTOM 30% — the title bar: a single large grunge/distressed title strip across the full width.` : `- ${count} VERTICAL slices side by side, edge-to-edge with thin dividers (no large gutters). The slices fill the ENTIRE canvas top to bottom — there is NO bottom title bar in this thumbnail.`}
 
 SLICES REGION (strict):
 - ${count} vertical slices arranged left to right.
@@ -399,13 +425,15 @@ SCRIPT FIDELITY — LABELS MUST MATCH WHAT THE USER WROTE:
 - DO NOT split a single stage the script lists into two levels.
 - If the script lists FEWER stages than the requested level count, pick the additional levels from the most natural adjacent stages the script implies.
 
-TITLE BAR (strict, fixed structure):
+${showBottomTitle ? `TITLE BAR (strict, fixed structure):
 - Pure black background across the full canvas width, filling the bottom 30%.
 - Three centred lines of grunge/distressed typography stacked vertically:
   • Line 1: "${count} LEVELS OF" — bold sans-serif, WHITE, slightly distressed.
   • Line 2: "${safeTopic}" — bold sans-serif, YELLOW grunge texture, larger than line 1 (the visual focal point of the title bar).${safeTagline ? `
   • Line 3: "[${safeTagline}]" — bold sans-serif, RED text on a darker red-tinted rectangle, smaller than line 2.` : ''}
-- Typography matches the attached reference image's title-bar treatment (grunge, distressed edges, bold display weight).
+- Typography matches the attached reference image's title-bar treatment (grunge, distressed edges, bold display weight).` : `NO BOTTOM TITLE BAR:
+- The canvas does NOT contain a bottom title bar. The slices fill the entire canvas top-to-bottom.
+- Do NOT add a "N LEVELS OF [TOPIC]" caption, a tagline tag, or any other master title text anywhere on the thumbnail. The LEVEL N / label inside each slice is the only text on the canvas.`}
 
 LEVELS (render exactly these ${count} slices, left to right):
 
@@ -414,9 +442,11 @@ ${levelLines}
 ABSOLUTE REQUIREMENTS — DO NOT VIOLATE:
 - The slices region MUST contain EXACTLY ${count} slices. Not one more, not one fewer.
 - One focal subject per slice — no multi-subject collages within a single slice.
-- The bottom 30% MUST be the title bar with the three centred grunge lines above (lines 1 and 2 always; line 3 only if a tagline was provided).
-- Do NOT add a master title above the slices or anywhere else outside the bottom title bar.
-- Match the LAYOUT (vertical slices + bottom title bar) and the TYPOGRAPHY of the attached reference image precisely. Do NOT inherit the reference's specific palette or per-slice content — those are dictated by THIS level list and topic.
+${showBottomTitle
+  ? `- The bottom 30% MUST be the title bar with the three centred grunge lines above (lines 1 and 2 always; line 3 only if a tagline was provided).
+- Do NOT add a master title above the slices or anywhere else outside the bottom title bar.`
+  : `- There is NO bottom title bar. Do NOT add a master title, grunge caption, or any text outside the LEVEL N headings + per-slice labels.`}
+- Match the LAYOUT (vertical slices${showBottomTitle ? ' + bottom title bar' : ''}) and the TYPOGRAPHY of the attached reference image precisely. Do NOT inherit the reference's specific palette or per-slice content — those are dictated by THIS level list${showBottomTitle ? ' and topic' : ''}.
 
 ${safeNotes ? `STYLE NOTE: ${safeNotes}` : ''}`.trim();
 }

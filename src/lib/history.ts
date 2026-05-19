@@ -199,7 +199,12 @@ export interface NLevelsHistoryPayload {
     illustration_concept: string;
     accent_color?: string;
   }>;
-  /** The refined topic that went into the bottom title bar. */
+  /** Whether this generation included the grunge bottom title bar. Old
+   *  entries (pre-toggle) leave this undefined and restore treats them as
+   *  `true` for backwards compat. */
+  showBottomTitle?: boolean;
+  /** The refined topic that went into the bottom title bar. Empty when
+   *  `showBottomTitle` is false. */
   titleTopic: string;
   /** Defaults to "EXPLAINED" or whatever the user chose; empty string = no tag. */
   titleTagline: string;

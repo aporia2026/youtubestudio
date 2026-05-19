@@ -31,6 +31,10 @@ export interface NLevelsGenerationResult {
   regions: ThumbnailRegion[];
   levels: FormatLevel[];
   count: number;
+  /** Whether this generation included the grunge bottom title bar.
+   *  When false, the slices fill the whole canvas and titleTopic /
+   *  titleTagline are unused (kept on the type for shape stability). */
+  showBottomTitle: boolean;
   titleTopic: string;
   titleTagline: string;
   mode: 'review' | 'pre-fill' | 'one-shot';
@@ -85,6 +89,11 @@ export function NLevelsPanel({
 }: Props) {
   // Level count
   const [count, setCount] = useState(7);
+  // Bottom title bar — defaults OFF because the most successful "N Levels
+  // of" thumbnails on YouTube run without one (just slices filling the
+  // canvas). When the user wants the grunge-title style, they flip this
+  // on and the topic / tagline fields appear.
+  const [showBottomTitle, setShowBottomTitle] = useState(false);
   const [titleTopic, setTitleTopic] = useState('');
   const [titleTagline, setTitleTagline] = useState('EXPLAINED');
   const [taglineEnabled, setTaglineEnabled] = useState(true);
@@ -120,6 +129,7 @@ export function NLevelsPanel({
   useEffect(() => {
     if (!restoredResult) return;
     setCount(restoredResult.count);
+    setShowBottomTitle(restoredResult.showBottomTitle);
     setTitleTopic(restoredResult.titleTopic);
     setTitleTagline(restoredResult.titleTagline);
     setTaglineEnabled(restoredResult.titleTagline.length > 0);
@@ -159,7 +169,7 @@ export function NLevelsPanel({
   const canGenerateList =
     !!title.trim() &&
     !!niche.trim() &&
-    !!titleTopic.trim() &&
+    (!showBottomTitle || !!titleTopic.trim()) &&
     !!referenceImageUrl.trim() &&
     count >= 2 &&
     (formatMode !== 'pre-fill' || prefilledLabelsList.length === count);
@@ -172,13 +182,13 @@ export function NLevelsPanel({
   async function runStep1() {
     if (!canGenerateList) {
       if (!referenceImageUrl.trim()) {
-        toast.error('Upload a reference image first — it locks the title typography for this format.');
-      } else if (!titleTopic.trim()) {
-        toast.error('Enter a title topic (the words after "[N] LEVELS OF") before generating.');
+        toast.error('Upload a reference image first — it locks the layout for this format.');
+      } else if (showBottomTitle && !titleTopic.trim()) {
+        toast.error('Enter a title topic (the words after "[N] LEVELS OF") or turn off the bottom title bar.');
       } else if (formatMode === 'pre-fill' && prefilledLabelsList.length !== count) {
         toast.error(`Pre-fill mode needs exactly ${count} labels (one per line). You have ${prefilledLabelsList.length}.`);
       } else {
-        toast.error('Title, niche, topic, and a reference image are required.');
+        toast.error('Title, niche, and a reference image are required.');
       }
       return;
     }
@@ -205,8 +215,9 @@ export function NLevelsPanel({
           script: script.trim() || undefined,
           description: description.trim() || undefined,
           count,
-          titleTopic: titleTopic.trim(),
-          titleTagline: taglineEnabled ? titleTagline.trim() : '',
+          showBottomTitle,
+          titleTopic: showBottomTitle ? titleTopic.trim() : '',
+          titleTagline: showBottomTitle && taglineEnabled ? titleTagline.trim() : '',
           mode: effectiveMode,
           prefilledLabels: effectivePrefill,
           referenceImageUrl: referenceImageUrl.trim(),
@@ -235,8 +246,8 @@ export function NLevelsPanel({
 
   async function runStep2(
     levelsToUse: FormatLevel[] | null = levels,
-    topicToUse: string = refinedTopic || titleTopic,
-    taglineToUse: string = taglineEnabled ? titleTagline : '',
+    topicToUse: string = showBottomTitle ? (refinedTopic || titleTopic) : '',
+    taglineToUse: string = showBottomTitle && taglineEnabled ? titleTagline : '',
     notesToUse: string | undefined = notesForImageModel,
   ) {
     if (!levelsToUse) {
@@ -260,6 +271,7 @@ export function NLevelsPanel({
           imageModelId,
           levels: levelsToUse,
           count,
+          showBottomTitle,
           titleTopic: topicToUse,
           titleTagline: taglineToUse,
           notesForImageModel: notesToUse,
@@ -284,6 +296,7 @@ export function NLevelsPanel({
         regions: data.regions,
         levels: levelsToUse,
         count,
+        showBottomTitle,
         titleTopic: topicToUse,
         titleTagline: taglineToUse,
         mode: formatMode,
@@ -373,44 +386,67 @@ export function NLevelsPanel({
             )}
           </div>
 
-          {/* Title topic */}
-          <div>
-            <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
-              Title topic <span style={{ color: 'var(--text-muted)' }}>(the bit after &quot;{count} LEVELS OF&quot;)</span>
-            </label>
-            <input
-              className="input-field w-full text-sm"
-              placeholder="CYBER SECURITY BREACHES"
-              value={titleTopic}
-              onChange={(e) => setTitleTopic(e.target.value)}
-              maxLength={60}
-            />
-            <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-              Bottom bar will read &quot;{count} LEVELS OF {titleTopic || '...'}{taglineEnabled && titleTagline ? ` [${titleTagline}]` : ''}&quot;.
-            </p>
-          </div>
-
-          {/* Tagline */}
+          {/* Bottom title bar — off by default (matches the most successful
+              N LEVELS thumbnails on YouTube which just have slices). When
+              on, the topic + tagline fields appear and the rendered image
+              gets the grunge "N LEVELS OF [TOPIC] [EXPLAINED]" bar. */}
           <div>
             <label className="flex items-center gap-2 cursor-pointer text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
               <input
                 type="checkbox"
-                checked={taglineEnabled}
-                onChange={(e) => setTaglineEnabled(e.target.checked)}
+                checked={showBottomTitle}
+                onChange={(e) => setShowBottomTitle(e.target.checked)}
                 style={{ accentColor: 'var(--accent-pink)' }}
               />
-              Tagline (red box below the topic)
+              Show bottom title bar (grunge &quot;N LEVELS OF [TOPIC]&quot; strip)
             </label>
-            {taglineEnabled && (
-              <input
-                className="input-field w-full text-xs mt-2"
-                placeholder="EXPLAINED"
-                value={titleTagline}
-                onChange={(e) => setTitleTagline(e.target.value)}
-                maxLength={30}
-              />
-            )}
+            <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              Most successful N Levels thumbnails on YouTube run without one — slices fill the whole canvas. Turn this on for the grunge-title variant.
+            </p>
           </div>
+
+          {showBottomTitle && (
+            <>
+              {/* Title topic */}
+              <div>
+                <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                  Title topic <span style={{ color: 'var(--text-muted)' }}>(the bit after &quot;{count} LEVELS OF&quot;)</span>
+                </label>
+                <input
+                  className="input-field w-full text-sm"
+                  placeholder="CYBER SECURITY BREACHES"
+                  value={titleTopic}
+                  onChange={(e) => setTitleTopic(e.target.value)}
+                  maxLength={60}
+                />
+                <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  Bottom bar will read &quot;{count} LEVELS OF {titleTopic || '...'}{taglineEnabled && titleTagline ? ` [${titleTagline}]` : ''}&quot;.
+                </p>
+              </div>
+
+              {/* Tagline */}
+              <div>
+                <label className="flex items-center gap-2 cursor-pointer text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                  <input
+                    type="checkbox"
+                    checked={taglineEnabled}
+                    onChange={(e) => setTaglineEnabled(e.target.checked)}
+                    style={{ accentColor: 'var(--accent-pink)' }}
+                  />
+                  Tagline (red box below the topic)
+                </label>
+                {taglineEnabled && (
+                  <input
+                    className="input-field w-full text-xs mt-2"
+                    placeholder="EXPLAINED"
+                    value={titleTagline}
+                    onChange={(e) => setTitleTagline(e.target.value)}
+                    maxLength={30}
+                  />
+                )}
+              </div>
+            </>
+          )}
 
           {/* Image model */}
           <div>
@@ -819,7 +855,7 @@ function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditList, onR
         )}
       </div>
       <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-        {result.outputWidth}×{result.outputHeight} · {result.regions.length} slice region{result.regions.length === 1 ? '' : 's'} ready for production-doc · Title: &quot;{result.count} LEVELS OF {result.titleTopic}{result.titleTagline ? ` [${result.titleTagline}]` : ''}&quot;
+        {result.outputWidth}×{result.outputHeight} · {result.regions.length} slice region{result.regions.length === 1 ? '' : 's'} ready for production-doc{result.showBottomTitle ? ` · Title: "${result.count} LEVELS OF ${result.titleTopic}${result.titleTagline ? ` [${result.titleTagline}]` : ''}"` : ' · no bottom title bar'}
       </p>
 
       <div className="flex gap-2 flex-wrap">

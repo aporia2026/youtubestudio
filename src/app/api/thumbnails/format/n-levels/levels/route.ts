@@ -91,6 +91,10 @@ interface ReqBody {
   count?: number;
   titleTopic?: string;
   titleTagline?: string;
+  /** Whether the rendered thumbnail will include the grunge bottom title
+   *  bar. Defaults false (matches the dominant pattern in successful
+   *  "N LEVELS OF" thumbnails on YouTube). */
+  showBottomTitle?: boolean;
   mode?: 'review' | 'pre-fill' | 'one-shot';
   prefilledLabels?: string[];
   referenceImageUrl?: string;
@@ -118,6 +122,7 @@ export async function POST(req: NextRequest) {
     const title = (body.title || '').trim();
     const niche = (body.niche || '').trim();
     const count = Number(body.count);
+    const showBottomTitle = body.showBottomTitle === true;
     const titleTopic = (body.titleTopic || '').trim();
     const titleTagline = body.titleTagline === undefined ? 'EXPLAINED' : String(body.titleTagline);
     const mode = body.mode === 'pre-fill' || body.mode === 'one-shot' ? body.mode : 'review';
@@ -125,7 +130,11 @@ export async function POST(req: NextRequest) {
     if (!modelId) return NextResponse.json({ error: 'modelId is required' }, { status: 400 });
     if (!title) return NextResponse.json({ error: 'title is required' }, { status: 400 });
     if (!niche) return NextResponse.json({ error: 'niche is required' }, { status: 400 });
-    if (!titleTopic) return NextResponse.json({ error: 'titleTopic is required (the topic that goes in the bottom title bar)' }, { status: 400 });
+    if (showBottomTitle && !titleTopic) {
+      return NextResponse.json({
+        error: 'titleTopic is required when the bottom title bar is enabled (the topic that goes in the title strip).',
+      }, { status: 400 });
+    }
     if (!Number.isInteger(count) || count < 2 || count > MAX_LEVEL_COUNT) {
       return NextResponse.json(
         { error: `count must be an integer between 2 and ${MAX_LEVEL_COUNT}` },
@@ -232,8 +241,9 @@ export async function POST(req: NextRequest) {
       script: body.script,
       description: body.description,
       count,
-      titleTopic,
-      titleTagline,
+      titleTopic: showBottomTitle ? titleTopic : undefined,
+      titleTagline: showBottomTitle ? titleTagline : undefined,
+      showBottomTitle,
       prefilledLabels: mode === 'pre-fill' ? prefilledLabels : undefined,
     };
     const { system, user } = nLevelsLlmPrompt(promptInput);

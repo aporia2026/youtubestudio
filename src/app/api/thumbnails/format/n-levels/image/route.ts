@@ -47,6 +47,9 @@ interface ReqBody {
   count?: number;
   titleTopic?: string;
   titleTagline?: string;
+  /** Whether the rendered thumbnail will include the grunge bottom title
+   *  bar. Defaults false. */
+  showBottomTitle?: boolean;
   notesForImageModel?: string;
   referenceImageUrl?: string;
   outputWidth?: number;
@@ -80,6 +83,7 @@ export async function POST(req: NextRequest) {
     const imageModelId = (body.imageModelId || DEFAULT_IMAGE_MODEL).trim();
     const count = Number(body.count);
     const levels = body.levels;
+    const showBottomTitle = body.showBottomTitle === true;
     const titleTopic = (body.titleTopic || '').trim();
     const titleTagline = body.titleTagline === undefined ? 'EXPLAINED' : String(body.titleTagline);
     const referenceImageUrl = (body.referenceImageUrl || '').trim();
@@ -90,8 +94,10 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
     }
-    if (!titleTopic) {
-      return NextResponse.json({ error: 'titleTopic is required' }, { status: 400 });
+    if (showBottomTitle && !titleTopic) {
+      return NextResponse.json({
+        error: 'titleTopic is required when the bottom title bar is enabled.',
+      }, { status: 400 });
     }
     if (!levels || !Array.isArray(levels)) {
       return NextResponse.json({ error: 'levels array is required' }, { status: 400 });
@@ -130,7 +136,7 @@ export async function POST(req: NextRequest) {
     // Deterministic region math BEFORE the image call.
     const outputWidth = Number.isInteger(body.outputWidth) ? Number(body.outputWidth) : DEFAULT_CANVAS.width;
     const outputHeight = Number.isInteger(body.outputHeight) ? Number(body.outputHeight) : DEFAULT_CANVAS.height;
-    const layout = makeDefaultLayout(count, outputWidth, outputHeight);
+    const layout = makeDefaultLayout(count, outputWidth, outputHeight, showBottomTitle);
     const labels = levels.map((l) => l.label);
     const regions: ThumbnailRegion[] = computeRegions(layout, labels, () => randomUUID());
     logger.info('[thumb-format-n-levels image] regions computed', {
@@ -143,8 +149,9 @@ export async function POST(req: NextRequest) {
     const prompt = nLevelsImagePrompt({
       levels,
       count,
-      titleTopic,
-      titleTagline,
+      titleTopic: showBottomTitle ? titleTopic : undefined,
+      titleTagline: showBottomTitle ? titleTagline : undefined,
+      showBottomTitle,
       notesForImageModel: body.notesForImageModel,
     });
 
