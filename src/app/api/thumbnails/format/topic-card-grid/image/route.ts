@@ -255,7 +255,29 @@ export async function POST(req: NextRequest) {
 
       const apiKey = requireKieKey();
       taskId = await createKieTask(apiKey, config.model, input);
-      imageUrl = await pollKieResult(taskId, apiKey);
+      const kieImageUrl = await pollKieResult(taskId, apiKey);
+
+      // Persist the result bytes to R2. Kie's hosted resultUrls expire
+      // after hours/days AND live on a host that the download-proxy
+      // allowlist does not cover, so storing the raw Kie URL leads to
+      // dead Download buttons + thumbnails that vanish from history.
+      // Mirror the OpenAI branch: fetch the bytes, upload to R2, return
+      // the R2 download URL as the canonical imageUrl.
+      const kieRes = await fetch(kieImageUrl);
+      if (!kieRes.ok) {
+        throw new Error(`Failed to fetch Kie result image (HTTP ${kieRes.status}).`);
+      }
+      const kieArrayBuf = await kieRes.arrayBuffer();
+      const kieBytes = Buffer.from(kieArrayBuf);
+      const kieR2Key = `thumbnails/format-grid-kie/${randomUUID()}.png`;
+      await uploadToBucket(getImagesBucket(), kieR2Key, kieBytes, 'image/png');
+      imageUrl = await getImagesDownloadUrl(kieR2Key);
+
+      logger.info('[thumb-format-grid image] kie persisted to r2', {
+        kie_host: (() => { try { return new URL(kieImageUrl).hostname; } catch { return 'unknown'; } })(),
+        bytes: kieBytes.byteLength,
+        r2_key: kieR2Key,
+      });
     } else {
       // OpenAI direct path. Fetch the reference image bytes (Kie passed a
       // URL, OpenAI's edits endpoint expects a multipart file upload), call
@@ -307,7 +329,8 @@ export async function POST(req: NextRequest) {
           : undefined,
       });
 
-      // Upload to R2 so the URL is permanent (parity with the Kie path).
+      // Upload to R2 for a permanent URL the download-proxy allowlist
+      // covers and that history entries can still serve weeks later.
       const bytes = Buffer.from(result.base64, 'base64');
       const r2Key = `thumbnails/format-grid-openai/${randomUUID()}.png`;
       await uploadToBucket(getImagesBucket(), r2Key, bytes, 'image/png');

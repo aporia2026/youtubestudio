@@ -217,7 +217,29 @@ export async function POST(req: NextRequest) {
 
       const apiKey = requireKieKey();
       taskId = await createKieTask(apiKey, config.model, input);
-      imageUrl = await pollKieResult(taskId, apiKey);
+      const kieImageUrl = await pollKieResult(taskId, apiKey);
+
+      // Persist the result bytes to R2. Kie's hosted resultUrls expire
+      // after hours/days AND live on a host the download-proxy
+      // allowlist does not cover, so storing the raw Kie URL leads to
+      // dead Download buttons + thumbnails that vanish from history.
+      // Mirror the OpenAI branch: fetch the bytes, upload to R2, return
+      // the R2 download URL as the canonical imageUrl.
+      const kieRes = await fetch(kieImageUrl);
+      if (!kieRes.ok) {
+        throw new Error(`Failed to fetch Kie result image (HTTP ${kieRes.status}).`);
+      }
+      const kieArrayBuf = await kieRes.arrayBuffer();
+      const kieBytes = Buffer.from(kieArrayBuf);
+      const kieR2Key = `thumbnails/format-n-levels-kie/${randomUUID()}.png`;
+      await uploadToBucket(getImagesBucket(), kieR2Key, kieBytes, 'image/png');
+      imageUrl = await getImagesDownloadUrl(kieR2Key);
+
+      logger.info('[thumb-format-n-levels image] kie persisted to r2', {
+        kie_host: (() => { try { return new URL(kieImageUrl).hostname; } catch { return 'unknown'; } })(),
+        bytes: kieBytes.byteLength,
+        r2_key: kieR2Key,
+      });
     } else {
       // OpenAI direct path — sync /v1/images/edits or /v1/images/generations.
       // Same shape as the topic-card-grid image endpoint's OpenAI branch.
