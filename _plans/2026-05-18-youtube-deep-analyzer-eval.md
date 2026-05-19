@@ -470,3 +470,21 @@ Eleven commits across the eval + follow-ups:
 | `0c7586b` | fix(analyzer): per-chapter rescale uses sum-of-positive-durations |
 
 **Net: from "ships but with multiple silent failure modes" to "ships, prints its own diagnostics, recovers from format errors, normalizes broken scene timings against trustworthy chapter anchors, falls back to global proportional scaling when even chapters are unreliable, and emits arithmetic-consistent output every time." 52 analyzer tests green.** Parent plan is closed.
+
+### Both rescale paths verified in prod (2026-05-19)
+
+A second Casey re-run (analysis id `578a9d8a-e9d7-4c55-9098-aeee8e5dcd97`, same commit `0c7586b`) produced the OTHER failure mode and exercised the OTHER rescale path:
+
+- This time Gemini emitted broken chapters (chapter 4 ends at 327s, chapter 5 ends at 437s, both overflowing `duration_seconds=277`).
+- `chaptersFormCleanTimeline` rejected them as anchors.
+- `globalRescale` fallback fired: summed all 17 scenes' positive durations (437s), scaled by 277/437 = 0.634, produced a clean contiguous timeline ending exactly at 277.
+- Four warnings on the banner — 1 rescale notice + 3 specific chapter-overflow defects explaining why chapters couldn't anchor.
+
+So we now have prod evidence for both rescale paths:
+
+| Run | Chapter state | Path taken | Outcome |
+|---|---|---|---|
+| `1df9f075-…` | clean | chapter-aware rescale | 3 per-chapter rescale warnings, scenes within their chapter bounds |
+| `578a9d8a-…` | broken (2 chapters overflow) | global proportional fallback | 1 rescale warning + 3 chapter-validity warnings, scenes scaled to fit duration |
+
+Both paths produce clean, arithmetic-consistent scene timings. The diagnostic trail is honest in both cases — the operator can read the warnings and understand exactly which kind of Gemini hallucination occurred and how the server recovered.
