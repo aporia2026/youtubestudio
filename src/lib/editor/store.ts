@@ -156,6 +156,18 @@ export type EditorCommand =
    *  Inverse stores the prior flag state so undo restores the
    *  exact previous configuration. */
   | { type: 'SET_FLAGS'; flags: Partial<ProjectPayloadFlags> }
+  /** Set / clear the per-row B-roll clip render state. Used by the
+   *  editor's inspector when the user kicks off a clip generation,
+   *  and by the EditorClient's poller as the clip progresses
+   *  generating → ready. `transient` skips the undo stack so the
+   *  intermediate 'generating' state doesn't make Cmd+Z bounce
+   *  through every poll tick. */
+  | {
+      type: 'SET_ROW_VIDEO_CLIP';
+      rowIndex: number;
+      clip: RowVideoClipState | null;
+      transient?: boolean;
+    }
   // MERGE_ADJACENT_SHOTS exists only as the inverse of SPLIT_SHOT.
   // Users never dispatch it directly; the reducer emits it when
   // building an undo entry.
@@ -299,6 +311,7 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'ACCEPT_OVERLAY_EDIT':
     case 'REVERT_OVERLAY_EDIT_TO':
     case 'SET_FLAGS':
+    case 'SET_ROW_VIDEO_CLIP':
       return true;
     default:
       return false;
@@ -915,6 +928,38 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           doc: { ...state.doc, rows: nextRows },
           isDirty: true,
         },
+        inverse,
+      };
+    }
+
+    case 'SET_ROW_VIDEO_CLIP': {
+      const { rowIndex, clip, transient } = cmd;
+      if (rowIndex < 0 || rowIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const prev = state.rowVideoClips[rowIndex] ?? null;
+      // No-op short-circuit on a deep-enough equality check. Polling
+      // tick that re-reports the same status with the same url would
+      // otherwise stamp a redundant entry on every fire.
+      const isSame =
+        (prev === null && clip === null) ||
+        (prev !== null &&
+          clip !== null &&
+          prev.status === clip.status &&
+          prev.videoUrl === clip.videoUrl &&
+          prev.durationSeconds === clip.durationSeconds);
+      if (isSame) return { next: state, inverse: null };
+
+      const nextClips = { ...state.rowVideoClips };
+      if (clip === null) delete nextClips[rowIndex];
+      else nextClips[rowIndex] = clip;
+
+      const inverse: EditorCommand | null = transient
+        ? null
+        : { type: 'SET_ROW_VIDEO_CLIP', rowIndex, clip: prev, transient: false };
+
+      return {
+        next: { ...state, rowVideoClips: nextClips, isDirty: !transient ? true : state.isDirty },
         inverse,
       };
     }

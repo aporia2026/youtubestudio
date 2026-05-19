@@ -50,6 +50,20 @@ interface ShotInspectorProps {
    *  library. The caller dispatches SET_ROW_VIDEO. Pass `null` for
    *  videoUrl to clear an existing pick. */
   onPickProjectClip?: (videoUrl: string | null, durationSeconds: number | null) => void;
+  /** Called when the user clicks "Generate animation" — kicks off a
+   *  fresh B-roll clip generation for this row using the workspace's
+   *  default model. The caller manages the polling lifecycle and
+   *  pushes status updates into the editor's `rowVideoClips` state
+   *  via SET_ROW_VIDEO_CLIP. */
+  onGenerateClip?: () => void;
+  /** Live B-roll clip status for this row. Drives the "Generate"
+   *  button's label / disabled state — `generating` collapses it
+   *  into a busy spinner; `ready` hides it (clip is already there). */
+  clipStatus?: string;
+  /** Workspace's currently-resolved B-roll model id. Surfaced as a
+   *  small caption next to the generate button so the user knows
+   *  what they're about to spend on. */
+  brollModelId?: string;
   /** Called when the user edits the row's voiceover script (inline
    *  textarea OR via the AI rephrase button). Dispatches
    *  SET_ROW_SCRIPT. */
@@ -103,6 +117,9 @@ export function ShotInspector({
   onClose,
   onUploadImage,
   onPickProjectClip,
+  onGenerateClip,
+  clipStatus,
+  brollModelId,
   onUpdateScript,
   onUpdateRow,
   overlayState,
@@ -464,6 +481,61 @@ export function ShotInspector({
             {regenState.kind === 'error' && (
               <div className="text-[10px]" style={{ color: '#f87171' }}>
                 {regenState.message}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Generate animation — kicks off a fresh B-roll clip
+            generation for this row using the workspace default
+            model. The poll loop in EditorClient streams status
+            updates into `clipStatus`; while generating, the button
+            collapses to a busy state. Hidden when a clip is already
+            attached and `ready` — the user can use Pick from
+            project below to swap it. */}
+        {onGenerateClip && clipStatus !== 'ready' && (
+          <div
+            className="p-3 border-b space-y-2"
+            style={{ borderColor: 'var(--card-border)' }}
+          >
+            <div className="text-[11px] font-semibold" style={{ color: 'var(--fg)' }}>
+              Animate this shot
+            </div>
+            <button
+              type="button"
+              onClick={onGenerateClip}
+              disabled={clipStatus === 'generating'}
+              className="w-full text-xs px-3 py-2 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
+              style={{
+                borderColor: 'var(--accent-purple-bright, #a78bfa)',
+                color:
+                  clipStatus === 'generating'
+                    ? 'var(--fg-muted)'
+                    : 'var(--accent-purple-bright, #a78bfa)',
+              }}
+              title={
+                clipStatus === 'generating'
+                  ? 'Clip is generating — this can take 1-3 minutes depending on the model.'
+                  : 'Generate a fresh B-roll animation for this shot using the workspace default model.'
+              }
+            >
+              {clipStatus === 'generating'
+                ? '⏳ Generating animation…'
+                : clipStatus === 'error'
+                  ? '🔁 Retry animation'
+                  : '✨ Generate animation'}
+            </button>
+            {brollModelId && (
+              <div className="text-[10px]" style={{ color: 'var(--fg-muted)' }}>
+                Model: {brollModelId}.
+                {' '}
+                <Link
+                  href="/settings"
+                  className="underline"
+                  style={{ color: 'var(--fg-muted)' }}
+                >
+                  Change default
+                </Link>
               </div>
             )}
           </div>

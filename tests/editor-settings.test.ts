@@ -42,10 +42,6 @@ class MockLocalStorage {
   }
 }
 
-declare global {
-  var localStorage: MockLocalStorage | undefined;
-}
-
 beforeEach(() => {
   // happy-dom / jsdom may or may not be the active test env; the
   // module reads `window.localStorage` so we attach to `globalThis`

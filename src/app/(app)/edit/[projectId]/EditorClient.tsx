@@ -51,6 +51,12 @@ import {
   getShowThumbnails,
   getShowShortcutHints,
 } from '@/lib/editor/settings';
+import {
+  kickoffBrollGeneration,
+  readBrollLsMap,
+  writeBrollLsMap,
+} from '@/components/production-doc/BrollCell';
+import { brollRowSignatureInput, DEFAULT_BROLL_MODEL_ID, findBrollModel, pickModelForScene } from '@/lib/broll-types';
 import { VoiceoverDriftReport } from '@/components/editor/VoiceoverDriftReport';
 import { TextOverlayManager } from '@/components/editor/TextOverlayManager';
 import { VoiceoverRegenModal } from '@/components/editor/VoiceoverRegenModal';
@@ -268,6 +274,180 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // before either setRethinkingRows lands) from firing duplicate
   // rethink requests.
   const rethinkInFlightRef = useRef<Set<number>>(new Set());
+
+  // ─── B-roll generator port (Phase 4c) ──────────────────────────
+  //
+  // The editor inspector can now kick off a B-roll clip generation
+  // directly, instead of forcing the user to bounce back to
+  // /production-doc. We:
+  //   • fetch the workspace's default broll model on mount;
+  //   • on click, dispatch SET_ROW_VIDEO_CLIP({status:'generating'}, transient)
+  //     and call kickoffBrollGeneration with the row's prompts;
+  //   • a poll effect watches every row in 'generating' state and
+  //     polls /api/broll/{id} every 5s until ready / failed.
+  //
+  // The clip-id-per-row mapping is stored in BrollCell's existing
+  // localStorage map (`readBrollLsMap` / `writeBrollLsMap`) so the
+  // poll knows which id to query. Same key space as production-doc,
+  // so a clip kicked off in either surface can be polled from the
+  // other.
+  const [userBrollModelId, setUserBrollModelId] = useState<string>(DEFAULT_BROLL_MODEL_ID);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/user/settings/broll-default', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = (await res.json()) as { modelId?: string };
+        if (cancelled || !data.modelId) return;
+        if (findBrollModel(data.modelId)) setUserBrollModelId(data.modelId);
+      } catch {
+        /* fall back to library default */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Synchronous in-flight set so two rapid clicks don't double-kick
+  // a generation. Mirrors the rethink pattern above.
+  const broolKickoffInFlightRef = useRef<Set<number>>(new Set());
+
+  const setRowVideoClip = useCallback(
+    (rowIndex: number, clip: { status: string; videoUrl?: string; durationSeconds?: number } | null, transient = false) => {
+      apply({ type: 'SET_ROW_VIDEO_CLIP', rowIndex, clip, transient });
+    },
+    [apply],
+  );
+
+  const handleGenerateClip = useCallback(
+    async (rowIndex: number) => {
+      if (broolKickoffInFlightRef.current.has(rowIndex)) return;
+      const row = state.doc.rows[rowIndex];
+      if (!row) return;
+
+      const visualDescription = (row.visual_description ?? '').trim();
+      if (!visualDescription) {
+        alert(
+          'No visual description for this row yet — fill in the inspector field above first so the model knows what to generate.',
+        );
+        return;
+      }
+
+      const sceneSeconds = (state.doc.rows[rowIndex] ? 5 : 5); // editor doesn't track per-shot scene seconds yet; pickModelForScene reads the workspace default to pick the tier
+      const tier = pickModelForScene(userBrollModelId, sceneSeconds);
+      console.info('[editor broll] kickoff', {
+        rowIndex,
+        userModelId: userBrollModelId,
+        pickedModelId: tier.modelId,
+      });
+
+      broolKickoffInFlightRef.current.add(rowIndex);
+      setRowVideoClip(rowIndex, { status: 'generating' }, true);
+
+      try {
+        const stub = await kickoffBrollGeneration({
+          projectId: null,
+          scriptId: null,
+          productionDocId: projectId,
+          rowIndex,
+          rowSignature: brollRowSignatureInput({
+            timecode: row.timecode,
+            visual_description: row.visual_description,
+          }),
+          visualDescription,
+          aiImagePrompt: row.ai_image_prompt || undefined,
+          stillImageUrl: state.rowImages[rowIndex] || undefined,
+          modelId: tier.modelId,
+        });
+        // Record the clip id in the same localStorage map BrollCell
+        // uses so the poll loop knows which id to query and so the
+        // production-doc page sees the same clip on next load.
+        const map = readBrollLsMap();
+        map[brollRowSignatureInput({
+          timecode: row.timecode,
+          visual_description: row.visual_description,
+        })] = stub.id;
+        writeBrollLsMap(map);
+        console.info('[editor broll] kickoff committed', { rowIndex, clipId: stub.id });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn('[editor broll] kickoff failed', { rowIndex, detail: msg });
+        alert(`Couldn't kick off animation: ${msg}`);
+        setRowVideoClip(rowIndex, null, true);
+      } finally {
+        broolKickoffInFlightRef.current.delete(rowIndex);
+      }
+    },
+    [state.doc.rows, state.rowImages, userBrollModelId, projectId, setRowVideoClip],
+  );
+
+  // Poll loop for in-flight clips. Walks state.rowVideoClips on each
+  // tick, fetches /api/broll/{id} for any row whose status is
+  // 'generating', and dispatches SET_ROW_VIDEO_CLIP on each status
+  // change. The 'ready' transition lands as a non-transient command
+  // so it goes on the undo stack (cleanly Cmd+Z'd if the user
+  // changes their mind).
+  useEffect(() => {
+    const generatingRows: Array<{ rowIndex: number; clipId: string }> = [];
+    const map = readBrollLsMap();
+    Object.entries(state.rowVideoClips).forEach(([k, v]) => {
+      if (!v || v.status !== 'generating') return;
+      const rowIndex = Number(k);
+      const row = state.doc.rows[rowIndex];
+      if (!row) return;
+      const sig = brollRowSignatureInput({
+        timecode: row.timecode,
+        visual_description: row.visual_description,
+      });
+      const clipId = map[sig];
+      if (clipId) generatingRows.push({ rowIndex, clipId });
+    });
+
+    if (generatingRows.length === 0) return;
+
+    let cancelled = false;
+    const tick = async () => {
+      for (const { rowIndex, clipId } of generatingRows) {
+        if (cancelled) return;
+        try {
+          const res = await fetch(`/api/broll/${encodeURIComponent(clipId)}`, {
+            cache: 'no-store',
+          });
+          if (!res.ok) continue;
+          const data = (await res.json()) as {
+            status?: string;
+            video_url?: string | null;
+            duration_seconds?: number | null;
+          };
+          if (cancelled) return;
+          const status = typeof data.status === 'string' ? data.status : 'generating';
+          if (status === 'generating' || status === 'pending') continue;
+          // Terminal state — commit it through the non-transient
+          // path so Cmd+Z reverses cleanly to the prior state.
+          console.info('[editor broll] poll terminal', { rowIndex, clipId, status });
+          setRowVideoClip(rowIndex, {
+            status,
+            videoUrl: data.video_url ?? undefined,
+            durationSeconds: data.duration_seconds ?? undefined,
+          }, false);
+        } catch (err) {
+          console.warn('[editor broll] poll failed', {
+            rowIndex,
+            clipId,
+            detail: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    };
+    const handle = setInterval(() => { void tick(); }, 5000);
+    void tick(); // immediate first read
+    return () => {
+      cancelled = true;
+      clearInterval(handle);
+    };
+  }, [state.rowVideoClips, state.doc.rows, setRowVideoClip]);
 
   /** Thin adapter so the ported handlers below read like their
    *  production-doc counterparts. Routes through PATCH_ROW so the
@@ -1190,6 +1370,11 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                 durationSeconds,
               })
             }
+            onGenerateClip={() => {
+              void handleGenerateClip(state.selection as number);
+            }}
+            clipStatus={state.rowVideoClips[state.selection]?.status}
+            brollModelId={userBrollModelId}
             onUpdateScript={(text) =>
               apply({
                 type: 'SET_ROW_SCRIPT',
