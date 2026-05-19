@@ -49,6 +49,20 @@ const bridgeButtonStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
+/**
+ * Sibling of `bridgeButtonStyle` for buttons that require a saved
+ * preset to be useful but haven't gotten one yet. Rendered as a
+ * still-clickable Link (the user can still open the bare consumer
+ * page) but visually muted so the operator reads it as "this would
+ * be richer if you saved a style first."
+ */
+const bridgeButtonStyleDisabled: React.CSSProperties = {
+  ...bridgeButtonStyle,
+  background: 'transparent',
+  color: 'var(--text-muted)',
+  border: '1px dashed var(--border-bright)',
+};
+
 export interface AnalysisSnapshot {
   id: string;
   videoId: string;
@@ -74,6 +88,12 @@ const POLL_INTERVAL_MS = 5_000;
 
 export function AnalyzeResultClient({ initial }: Props): React.ReactElement {
   const [snap, setSnap] = useState<AnalysisSnapshot>(initial);
+  // Tracks which packs the operator has saved as presets this session.
+  // Keyed by pack id → { saved preset row id, human name }. Drives the
+  // bridge-row deep-links that need a preset id (production-doc / script /
+  // thumbnail). Per StylePackCard's `onSaved` callback, this map grows as
+  // the operator saves more packs without leaving the page.
+  const [savedPresets, setSavedPresets] = useState<Record<string, { id: string; name: string }>>({});
   const [tab, setTab] = useState<TabKey>('style-packs');
   const [retrying, setRetrying] = useState(false);
   const elapsedRef = useRef<number>(Date.now() - new Date(initial.createdAt).getTime());
@@ -336,44 +356,94 @@ export function AnalyzeResultClient({ initial }: Props): React.ReactElement {
     <main style={{ padding: '32px 24px', maxWidth: 1080, margin: '0 auto' }}>
       {header}
 
-      <nav
-        aria-label="Use this analysis as input"
-        style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: 8,
-          marginBottom: 20,
-          padding: '10px 14px',
-          background: 'rgba(124, 58, 237, 0.05)',
-          border: '1px solid rgba(124, 58, 237, 0.20)',
-          borderRadius: 8,
-          alignItems: 'center',
-        }}
-      >
-        <span style={{ fontSize: 12, color: 'var(--text-tertiary)', marginRight: 4 }}>
-          Use this analysis as input:
-        </span>
-        <Link
-          href={`/ideas?from=analyzer&analysisId=${encodeURIComponent(snap.id)}`}
-          prefetch={false}
-          style={bridgeButtonStyle}
-          title="Open the idea generator with this analysis's strategic report + chapter outline as referenceContext"
-        >
-          Generate ideas
-        </Link>
-        <Link
-          href={`/seo?from=analyzer&analysisId=${encodeURIComponent(snap.id)}`}
-          prefetch={false}
-          style={bridgeButtonStyle}
-          title="Open the SEO optimizer with this analysis's hook + transcript as additionalContext"
-        >
-          SEO-optimize a title
-        </Link>
-        <span style={{ flex: 1 }} />
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-          More bridges (production doc, script, thumbnails) ship from each style pack&apos;s Save-as-preset flow.
-        </span>
-      </nav>
+      {(() => {
+        const firstSavedPresetId = Object.values(savedPresets)[0]?.id;
+        const channelHint = snap.channelTitle ?? null;
+        return (
+          <nav
+            aria-label="Use this analysis as input"
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 8,
+              marginBottom: 20,
+              padding: '10px 14px',
+              background: 'rgba(124, 58, 237, 0.05)',
+              border: '1px solid rgba(124, 58, 237, 0.20)',
+              borderRadius: 8,
+              alignItems: 'center',
+            }}
+          >
+            <span style={{ fontSize: 12, color: 'var(--text-tertiary)', marginRight: 4 }}>
+              Use this analysis as input:
+            </span>
+            <Link
+              href={`/ideas?from=analyzer&analysisId=${encodeURIComponent(snap.id)}`}
+              prefetch={false}
+              style={bridgeButtonStyle}
+              title="Open the idea generator with this analysis's strategic report + chapter outline as referenceContext"
+            >
+              Generate ideas
+            </Link>
+            <Link
+              href={`/seo?from=analyzer&analysisId=${encodeURIComponent(snap.id)}`}
+              prefetch={false}
+              style={bridgeButtonStyle}
+              title="Open the SEO optimizer with this analysis's hook + transcript as additionalContext"
+            >
+              SEO-optimize
+            </Link>
+            <Link
+              href={firstSavedPresetId
+                ? `/production-doc?stylePreset=${encodeURIComponent(firstSavedPresetId)}`
+                : '/production-doc'}
+              prefetch={false}
+              style={firstSavedPresetId ? bridgeButtonStyle : bridgeButtonStyleDisabled}
+              title={firstSavedPresetId
+                ? `Open the production doc generator with the saved style "${Object.values(savedPresets)[0]?.name}" preselected`
+                : 'Save a style pack as a preset first (button on each pack card) — then this opens production doc with that preset preselected'}
+            >
+              Use style in production doc
+            </Link>
+            <Link
+              href={firstSavedPresetId
+                ? `/generator?stylePreset=${encodeURIComponent(firstSavedPresetId)}`
+                : '/generator'}
+              prefetch={false}
+              style={firstSavedPresetId ? bridgeButtonStyle : bridgeButtonStyleDisabled}
+              title={firstSavedPresetId
+                ? `Open the script generator with the saved style "${Object.values(savedPresets)[0]?.name}" preselected`
+                : 'Save a style pack as a preset first — then this opens the script generator with that preset preselected'}
+            >
+              Write script in this style
+            </Link>
+            <Link
+              href={channelHint
+                ? `/competitors?channelHint=${encodeURIComponent(channelHint)}`
+                : '/competitors'}
+              prefetch={false}
+              style={bridgeButtonStyle}
+              title={channelHint
+                ? `Open the competitor tracker with "${channelHint}" prefilled as a search hint`
+                : 'Open the competitor tracker'}
+            >
+              Track channel
+            </Link>
+            <Link
+              href={channelHint
+                ? `/insights/niches?channelHint=${encodeURIComponent(channelHint)}`
+                : '/insights/niches'}
+              prefetch={false}
+              style={bridgeButtonStyle}
+              title={channelHint
+                ? `Open the niche finder with "${channelHint}" prefilled as a channel hint`
+                : 'Open the niche finder'}
+            >
+              Find niches
+            </Link>
+          </nav>
+        );
+      })()}
 
       {result.warnings && result.warnings.length > 0 && (
         <div
@@ -446,7 +516,14 @@ export function AnalyzeResultClient({ initial }: Props): React.ReactElement {
       {tab === 'style-packs' ? (
         <div style={{ display: 'grid', gap: 16 }}>
           {result.style_packs.map((pack) => (
-            <StylePackCard key={pack.id} pack={pack} sourceVideo={{ videoId: snap.videoId, title: snap.videoTitle, channel: snap.channelTitle }} />
+            <StylePackCard
+              key={pack.id}
+              pack={pack}
+              sourceVideo={{ videoId: snap.videoId, title: snap.videoTitle, channel: snap.channelTitle }}
+              onSaved={(presetId, presetName) => {
+                setSavedPresets((prev) => ({ ...prev, [pack.id]: { id: presetId, name: presetName } }));
+              }}
+            />
           ))}
           {result.scenes.length > 0 && (
             <section

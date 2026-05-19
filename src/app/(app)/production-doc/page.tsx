@@ -2209,6 +2209,27 @@ function ProductionDocPage() {
     void loadStyles();
   }, [loadStyles]);
 
+  // Analyzer-bridge URL prefill (Phase 3 of _plans/2026-05-19-analyzer-
+  // as-input-source.md). When the operator deep-links from
+  // /analyze/[id]'s "Use style in production doc" button, the URL
+  // carries ?stylePreset=<id>. Apply once after styles load — if the
+  // id isn't in the available-styles list, the existing reconciliation
+  // effect just below this one falls it back to the first built-in,
+  // matching the behavior for a deleted saved style.
+  const [stylePresetUrlApplied, setStylePresetUrlApplied] = useState(false);
+  useEffect(() => {
+    if (stylePresetUrlApplied) return;
+    if (!stylesLoaded) return;
+    const fromUrl = search.get('stylePreset');
+    if (!fromUrl) return;
+    setStylePreset(fromUrl);
+    setStylePresetUrlApplied(true);
+    const match = availableStyles.find((s) => s.id === fromUrl);
+    if (match) {
+      toast.message(`Loaded style "${match.label}" from the analyzer`);
+    }
+  }, [search, stylesLoaded, availableStyles, stylePresetUrlApplied]);
+
   // If the currently-selected style id disappears (e.g. user deleted the
   // saved style they had picked), fall back to the first built-in so the
   // picker doesn't end up with no active selection.

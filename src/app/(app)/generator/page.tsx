@@ -122,6 +122,14 @@ function GeneratorPage() {
   const [duration, setDuration] = useState(7);
   const [tone, setTone] = useState(TONES[0]);
   const [style, setStyle] = useState(STYLES[0]);
+  // Style preset (built-in slug or workspace-saved UUID). Optional —
+  // when set, /api/generate/script resolves it via resolveStyle and
+  // injects the preset's mixing_rules into the prompt as a STYLE
+  // PRESET block. Wired primarily by the analyzer-bridge URL prefill
+  // below (?stylePreset=) but also exposed as a small indicator next
+  // to the generate button so the operator can see it's active.
+  const [stylePreset, setStylePreset] = useState<string | null>(null);
+  const [stylePresetLabel, setStylePresetLabel] = useState<string | null>(null);
   const [audience, setAudience] = useState('');
   const [context, setContext] = useState('');
   const [templateId, setTemplateId] = useState<string | null>(null);
@@ -215,6 +223,39 @@ function GeneratorPage() {
     if (typeof window === 'undefined') return;
     localStorage.setItem('series:token-budget', String(seriesTokenBudget));
   }, [seriesTokenBudget]);
+
+  // Analyzer-bridge URL prefill (Phase 3 of _plans/2026-05-19-analyzer-
+  // as-input-source.md). When the operator deep-links from
+  // /analyze/[id]'s "Generate script in this style" button the URL
+  // carries ?stylePreset=<id>. Fetches the style list to resolve the
+  // human label for display in the indicator chip near the Generate
+  // button; the id itself is sent in the POST body where the script
+  // route resolves it again server-side (cheap and idempotent).
+  const [stylePresetUrlApplied, setStylePresetUrlApplied] = useState(false);
+  useEffect(() => {
+    if (stylePresetUrlApplied) return;
+    const fromUrl = search.get('stylePreset');
+    if (!fromUrl) return;
+    setStylePresetUrlApplied(true);
+    setStylePreset(fromUrl);
+    (async () => {
+      try {
+        const res = await fetch('/api/production-doc/styles');
+        if (!res.ok) return;
+        const data = (await res.json()) as { styles?: Array<{ id: string; label: string }> };
+        const match = data.styles?.find((s) => s.id === fromUrl);
+        if (match) {
+          setStylePresetLabel(match.label);
+          toast.message(`Loaded style "${match.label}" from the analyzer`);
+        } else {
+          setStylePresetLabel(fromUrl);
+          toast.warning(`Style preset "${fromUrl}" not found in your library`);
+        }
+      } catch {
+        setStylePresetLabel(fromUrl);
+      }
+    })();
+  }, [search, stylePresetUrlApplied]);
 
   function resumeDraft(draft: WorkflowDraft, options?: { silent?: boolean }) {
     // Abort any in-progress generation
@@ -711,7 +752,7 @@ function GeneratorPage() {
       const res = await fetch('/api/generate/script', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ modelId, topic, niche, duration, tone, style, audience, context: mergedContext, referenceContext: refContext || undefined, previousScripts, seriesContext: seriesContext || undefined, constraints }),
+        body: JSON.stringify({ modelId, topic, niche, duration, tone, style, audience, context: mergedContext, referenceContext: refContext || undefined, previousScripts, seriesContext: seriesContext || undefined, constraints, stylePreset: stylePreset || undefined }),
         signal: abortRef.current.signal,
       });
 

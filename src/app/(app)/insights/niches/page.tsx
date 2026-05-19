@@ -15,7 +15,7 @@
  * within the 7-day TTL).
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { slugifyNiche } from '@/lib/niche-finder/slug';
 import type { DiscoveryResultItem } from '@/lib/niche-finder/discoveries-db';
 import type { OutlierVideo } from '@/lib/niche-finder/outliers';
@@ -290,10 +290,27 @@ function InterestsTab({ locale }: { locale: NicheFinderLocale }): React.ReactEle
 // ─── Tab: channel ───────────────────────────────────────────────────────────
 
 function ChannelTab({ locale }: { locale: NicheFinderLocale }): React.ReactElement {
+  const search = useSearchParams();
   const [url, setUrl] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<DiscoveryResultItem[] | null>(null);
+
+  // Analyzer-bridge URL prefill (Phase 3 of _plans/2026-05-19-analyzer-
+  // as-input-source.md). When the operator deep-links from
+  // /analyze/[id]'s "Find niches for this channel" button the URL
+  // carries ?channelHint=<channelTitle>. Prefill the channel input as
+  // a seed — the discover-from-channel route accepts URLs, @handles,
+  // or channel ids, so the operator may still need to swap the title
+  // for a URL before submitting.
+  const [hintApplied, setHintApplied] = useState(false);
+  useEffect(() => {
+    if (hintApplied) return;
+    const hint = search.get('channelHint');
+    if (!hint) return;
+    setHintApplied(true);
+    setUrl((curr) => curr || hint);
+  }, [search, hintApplied]);
 
   const onSubmit = useCallback(
     async (e: React.FormEvent) => {

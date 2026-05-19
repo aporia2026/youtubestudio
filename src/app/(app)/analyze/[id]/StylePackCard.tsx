@@ -26,9 +26,15 @@ interface Props {
     title: string | null;
     channel: string | null;
   };
+  /** Optional callback fired when this pack is saved as a preset.
+   *  Parent uses it to track {packId: savedPresetId} so the bridge
+   *  row at the top of the analyzer page can deep-link into
+   *  production-doc / script gen / thumbnail gen with the resolved
+   *  preset id. Phase 3 of _plans/2026-05-19-analyzer-as-input-source.md. */
+  onSaved?: (savedPresetId: string, savedName: string) => void;
 }
 
-export function StylePackCard({ pack, sourceVideo }: Props): React.ReactElement {
+export function StylePackCard({ pack, sourceVideo, onSaved }: Props): React.ReactElement {
   const [editing, setEditing] = useState(false);
   const defaultName = buildDefaultPresetName(pack, sourceVideo);
   const defaultDescription = buildDefaultDescription(pack, sourceVideo);
@@ -67,9 +73,13 @@ export function StylePackCard({ pack, sourceVideo }: Props): React.ReactElement 
         toast.error(data.error || `Save failed (${res.status})`);
         return;
       }
-      setSavedAs(data.style?.name ?? name.trim());
+      const savedName = data.style?.name ?? name.trim();
+      setSavedAs(savedName);
       setEditing(false);
-      toast.success(`Saved "${data.style?.name ?? name.trim()}" as a style preset`);
+      toast.success(`Saved "${savedName}" as a style preset`);
+      if (data.style?.id && onSaved) {
+        onSaved(data.style.id, savedName);
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Save failed');
     } finally {

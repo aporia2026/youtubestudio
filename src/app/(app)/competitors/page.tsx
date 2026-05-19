@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
@@ -175,11 +176,28 @@ function Spinner({ size = 16 }: { size?: number }) {
 /* ───── Page ───── */
 
 export default function CompetitorsPage() {
+  const search = useSearchParams();
   const [view, setView] = useState<'overview' | 'detail'>('overview');
   const [competitors, setCompetitors] = useState<Competitor[]>([]);
   const [loading, setLoading] = useState(true);
   const [channelUrl, setChannelUrl] = useState('');
   const [adding, setAdding] = useState(false);
+
+  // Analyzer-bridge URL prefill (Phase 3 of _plans/2026-05-19-analyzer-
+  // as-input-source.md). When the operator deep-links from /analyze/[id]'s
+  // "Track channel as competitor" button the URL carries
+  // ?channelHint=<channelTitle>. Prefill the channel-url input with it
+  // as a search seed — the operator still confirms by clicking Add, so
+  // we don't auto-track on a hint that may be ambiguous.
+  const [channelHintApplied, setChannelHintApplied] = useState(false);
+  useEffect(() => {
+    if (channelHintApplied) return;
+    const hint = search.get('channelHint');
+    if (!hint) return;
+    setChannelHintApplied(true);
+    setChannelUrl((curr) => curr || hint);
+    toast.message(`Prefilled channel "${hint}" from the analyzer — edit to a URL or @handle and click Add.`);
+  }, [search, channelHintApplied]);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detailComp, setDetailComp] = useState<Competitor | null>(null);
