@@ -266,23 +266,36 @@ export async function POST(req: NextRequest) {
       let referenceBytes: Buffer | undefined;
       let referenceMime: string | undefined;
       if (config.mode === 'i2i') {
-        const refRes = await fetch(safeRefUrl);
-        if (!refRes.ok) {
-          throw new Error(`Failed to fetch reference image for OpenAI edit (HTTP ${refRes.status}).`);
+        if (usedBundledDefault) {
+          // The reference is the curated PNG that ships in /public. Read
+          // it from disk directly — HTTP-fetching our own preview URL
+          // hits Vercel's Deployment Protection (401) because server-to-
+          // server requests don't carry the protection-bypass cookie, and
+          // it's a pointless round-trip even when public.
+          const buf = await fs.readFile(BUNDLED_REFERENCE_PATH);
+          referenceBytes = buf;
+          referenceMime = 'image/png';
+        } else {
+          // User-supplied reference URL — HTTP fetch with the existing
+          // SSRF-guarded `safeRefUrl`.
+          const refRes = await fetch(safeRefUrl);
+          if (!refRes.ok) {
+            throw new Error(`Failed to fetch reference image for OpenAI edit (HTTP ${refRes.status}).`);
+          }
+          const arrayBuf = await refRes.arrayBuffer();
+          if (arrayBuf.byteLength > 8 * 1024 * 1024) {
+            throw new Error('Reference image exceeds 8 MB cap for the OpenAI edit path.');
+          }
+          referenceBytes = Buffer.from(arrayBuf);
+          const ct = refRes.headers.get('content-type') || 'image/png';
+          referenceMime = ct.includes('png')
+            ? 'image/png'
+            : ct.includes('webp')
+              ? 'image/webp'
+              : ct.includes('gif')
+                ? 'image/gif'
+                : 'image/jpeg';
         }
-        const arrayBuf = await refRes.arrayBuffer();
-        if (arrayBuf.byteLength > 8 * 1024 * 1024) {
-          throw new Error('Reference image exceeds 8 MB cap for the OpenAI edit path.');
-        }
-        referenceBytes = Buffer.from(arrayBuf);
-        const ct = refRes.headers.get('content-type') || 'image/png';
-        referenceMime = ct.includes('png')
-          ? 'image/png'
-          : ct.includes('webp')
-            ? 'image/webp'
-            : ct.includes('gif')
-              ? 'image/gif'
-              : 'image/jpeg';
       }
 
       const result = await generateImageOpenAI({
