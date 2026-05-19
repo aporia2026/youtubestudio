@@ -161,6 +161,7 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
           rowImages?: unknown;
           voiceoverUrl?: unknown;
           captions?: unknown;
+          rowOverlays?: unknown;
         };
         if (p.doc && typeof p.doc === 'object') {
           dispatch({
@@ -171,6 +172,10 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
             captions:
               p.captions && typeof p.captions === 'object'
                 ? (p.captions as EditorState['captions'])
+                : undefined,
+            rowOverlays:
+              p.rowOverlays && typeof p.rowOverlays === 'object'
+                ? (p.rowOverlays as EditorState['rowOverlays'])
                 : undefined,
             version: data.version,
           });

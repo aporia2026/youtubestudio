@@ -33,6 +33,7 @@ import {
   productionDocToVideoConfig,
   type ProductionDoc,
   type RowImageState,
+  type RowOverlayRenderState,
 } from '@/remotion/utils';
 import {
   EDITOR_MIN_SHOT_MS,
@@ -66,6 +67,13 @@ interface HistoryPayload {
   /** Captions bundle from the transcription pipeline. Cached on the
    *  payload so reloads pick them up without re-running OpenAI. */
   captions?: import('@/lib/editor/captions').CaptionsBundle;
+  /** Per-row auto-fetched overlay state — sparse, keyed by row index.
+   *  Set by the production-doc page when an overlay was successfully
+   *  sourced + RMBG'd. Without this in the payload, the editor's
+   *  preview won't composite any overlay (the renderer keys on
+   *  `rowOverlays`, not on the row's `overlay_*` fields, for the
+   *  live URL). See `_plans/2026-05-18-overlay-system-overhaul.md`. */
+  rowOverlays?: Record<number, RowOverlayRenderState>;
 }
 
 function isPlainObject(x: unknown): x is Record<string, unknown> {
@@ -87,7 +95,14 @@ function parsePayload(payload: unknown): HistoryPayload | null {
   const captions = isPlainObject(payload.captions)
     ? (payload.captions as unknown as HistoryPayload['captions'])
     : undefined;
-  return { doc, rowImages, title, voiceoverUrl, captions };
+  // rowOverlays — persisted by production-doc when an overlay was
+  // sourced + RMBG'd. Keys are stringified row indexes in JSONB; the
+  // renderer wants numeric. Cast through Record<number, …> is safe
+  // since JS object property access coerces either way.
+  const rowOverlays = isPlainObject(payload.rowOverlays)
+    ? (payload.rowOverlays as unknown as Record<number, RowOverlayRenderState>)
+    : undefined;
+  return { doc, rowImages, title, voiceoverUrl, captions, rowOverlays };
 }
 
 function relativeTimeShort(thenMs: number, nowMs: number): string {
@@ -162,6 +177,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       rowImages,
       voiceoverUrl: parsed?.voiceoverUrl,
       captions: parsed?.captions,
+      rowOverlays: parsed?.rowOverlays,
       version,
     }),
     projectId,
@@ -222,8 +238,11 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     return productionDocToVideoConfig(state.doc, rowImageArr, {
       voiceoverUrl: state.voiceoverUrl,
       captions: state.captions?.segments,
+      // Without this the renderer's overlay branch sees `overlayState`
+      // as undefined and skips compositing every overlay on the doc.
+      rowOverlays: state.rowOverlays,
     });
-  }, [doc, state.doc, state.rowImages, state.voiceoverUrl, state.captions]);
+  }, [doc, state.doc, state.rowImages, state.voiceoverUrl, state.captions, state.rowOverlays]);
 
   const inputProps = useMemo(() => (videoConfig ? { config: videoConfig } : null), [videoConfig]);
 

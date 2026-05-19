@@ -35,7 +35,7 @@
  * dispatches `RESET_FROM_SERVER` with the server's current payload
  * and version, dropping the user's unsaved edits.
  */
-import type { ProductionDoc } from '@/remotion/utils';
+import type { ProductionDoc, RowOverlayRenderState } from '@/remotion/utils';
 import type { TextOverlay } from '@/remotion/types';
 import type { CaptionsBundle } from './captions';
 import { stampEditedAt } from './edited-at';
@@ -66,6 +66,14 @@ export interface EditorState {
    *  segments from here; reload-from-server refreshes after a
    *  regenerate. */
   captions: CaptionsBundle | undefined;
+  /** Per-row overlay state — sparse, keyed by row index. Read from
+   *  the saved payload on mount and round-tripped on every save so
+   *  the renderer keeps compositing the same overlays the production-
+   *  doc page set up. The renderer keys on this map (not on the
+   *  row's `overlay_*` fields) for the live URL — without it loaded
+   *  here, the editor's preview wouldn't show any overlays. See
+   *  `_plans/2026-05-18-overlay-system-overhaul.md`. */
+  rowOverlays: Record<number, RowOverlayRenderState>;
   version: number;
   /** True from the moment an editing command runs until the save
    *  endpoint acknowledges. Drives the toolbar's "Saved · Saving · …"
@@ -107,6 +115,7 @@ export type EditorCommand =
       rowImages: Record<number, string>;
       voiceoverUrl?: string;
       captions?: CaptionsBundle;
+      rowOverlays?: Record<number, RowOverlayRenderState>;
       version: number;
     }
   | { type: 'UNDO' }
@@ -322,6 +331,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           rowImages: cmd.rowImages,
           voiceoverUrl: cmd.voiceoverUrl,
           captions: cmd.captions,
+          rowOverlays: cmd.rowOverlays ?? {},
           version: cmd.version,
           isDirty: false,
           undoStack: [],
@@ -1102,6 +1112,7 @@ export function initialEditorState(args: {
   rowImages: Record<number, string>;
   voiceoverUrl?: string;
   captions?: CaptionsBundle;
+  rowOverlays?: Record<number, RowOverlayRenderState>;
   version: number;
 }): EditorState {
   return {
@@ -1109,6 +1120,7 @@ export function initialEditorState(args: {
     rowImages: args.rowImages,
     voiceoverUrl: args.voiceoverUrl,
     captions: args.captions,
+    rowOverlays: args.rowOverlays ?? {},
     version: args.version,
     isDirty: false,
     selection: null,
@@ -1126,11 +1138,17 @@ export function persistableFromState(state: EditorState): {
   rowImages: Record<number, string>;
   voiceoverUrl?: string;
   captions?: CaptionsBundle;
+  rowOverlays?: Record<number, RowOverlayRenderState>;
 } {
   return {
     doc: state.doc,
     rowImages: state.rowImages,
     voiceoverUrl: state.voiceoverUrl,
     captions: state.captions,
+    // Persist rowOverlays back so the production-doc page picks up any
+    // overlay edits the user makes inside the editor next time they
+    // open the doc there. Omit when empty to keep payloads small for
+    // rows that never had an overlay.
+    rowOverlays: Object.keys(state.rowOverlays).length > 0 ? state.rowOverlays : undefined,
   };
 }
