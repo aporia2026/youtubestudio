@@ -49,6 +49,13 @@ import { StatusBar } from '@/components/editor/StatusBar';
 import { EditorChrome } from '@/components/editor/EditorChrome';
 import { EditorHeader } from '@/components/editor/EditorHeader';
 import { TransportBar, type PlaybackRate } from '@/components/editor/TransportBar';
+import { EditorLeftRail } from '@/components/editor/EditorLeftRail';
+import { ShotsTab } from '@/components/editor/leftrail/ShotsTab';
+import { MediaTab } from '@/components/editor/leftrail/MediaTab';
+import { AudioTab } from '@/components/editor/leftrail/AudioTab';
+import { CaptionsTab } from '@/components/editor/leftrail/CaptionsTab';
+import { AIToolsTab } from '@/components/editor/leftrail/AIToolsTab';
+import { SettingsTab } from '@/components/editor/leftrail/SettingsTab';
 import {
   getDefaultZoomLevel,
   getShowThumbnails,
@@ -1078,190 +1085,93 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     />
   );
 
-  // Holding area for AI tools + flag toggles until Phase 3's left
-  // rail tabs ship. These buttons are the same handlers as before;
-  // only their housing changed. Phase 3 replaces with proper tab
-  // components.
-  const __toolsHolder = (
-    <div className="h-full editor-scroll" style={{ overflow: 'auto', padding: '8px' }}>
-      <div className="text-[10px] uppercase tracking-wider mb-2 px-1" style={{ color: 'var(--fg-muted)' }}>
-        Tools (phase 3 places these in tabs)
-      </div>
-      <div className="flex flex-col items-stretch gap-1">
+  // Caption regen helpers — reused by both the inspector's AI tools
+  // tab and (in Phase 4) the inspector's Captions tab.
+  const regenCaptionsRunning = captionsRegenState.kind === 'running';
+  const regenCaptionsLabel = regenCaptionsRunning
+    ? 'Captioning…'
+    : state.captions
+      ? 'Regen captions'
+      : 'Generate captions';
 
-          <button
-            type="button"
-            onClick={() => setShowDriftReport(true)}
-            className="text-xs px-2.5 py-1.5 rounded border transition-colors hover:bg-white/5"
-            style={{ borderColor: 'var(--card-border)' }}
-            title="Show voiceover drift report — narration vs shot durations"
-          >
-            Drift report
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setShowOverlayManager(true)}
-            className="text-xs px-2.5 py-1.5 rounded border transition-colors hover:bg-white/5"
-            style={{ borderColor: 'var(--card-border)' }}
-            title="Add or edit doc-level text overlays"
-          >
-            Overlays
-            {state.doc.text_overlays && state.doc.text_overlays.length > 0 && (
-              <span className="ml-1 tabular-nums" style={{ color: 'var(--accent-purple-bright, #a78bfa)' }}>
-                ({state.doc.text_overlays.length})
-              </span>
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => { void handleRegenerateCaptions(); }}
-            disabled={captionsRegenState.kind === 'running' || !state.voiceoverUrl}
-            className="text-xs px-2.5 py-1.5 rounded border transition-colors hover:bg-white/5 disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{ borderColor: 'var(--card-border)' }}
-            title={
-              state.voiceoverUrl
-                ? 'Generate captions from the voiceover via gpt-4o-mini-transcribe'
-                : 'Assign a voiceover first'
-            }
-          >
-            {captionsRegenState.kind === 'running'
-              ? 'Captioning…'
-              : state.captions
-                ? 'Regen captions'
-                : 'Generate captions'}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setShowVoRegen(true)}
-            className="text-xs px-2.5 py-1.5 rounded border transition-colors hover:bg-white/5"
-            style={{ borderColor: 'var(--card-border)' }}
-            title="Regenerate the voiceover from the current scripts via ElevenLabs"
-          >
-            Regen VO
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setShowRegenFromScript(true)}
-            className="text-xs px-2.5 py-1.5 rounded border transition-colors hover:bg-white/5"
-            style={{ borderColor: 'var(--card-border)' }}
-            title="Edit the full script and regenerate the doc (preserves your manual edits via edited_at)"
-          >
-            Regen doc
-          </button>
-
-          <button
-            type="button"
-            onClick={handleSplit}
-            disabled={!splitTarget?.validSplit}
-            className="text-xs px-2.5 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/5"
-            style={{ borderColor: 'var(--card-border)' }}
-            title={
-              splitTarget?.validSplit
-                ? `Split shot ${splitTarget.shotIndex + 1} at playhead (B)`
-                : 'Move the playhead inside a shot to split it (B)'
-            }
-          >
-            ✂ Split at playhead
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleDelete('ripple')}
-            disabled={state.selection === null || state.doc.rows.length <= 1}
-            className="text-xs px-2.5 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/5"
-            style={{ borderColor: 'var(--card-border)' }}
-            title={
-              state.selection === null
-                ? 'Select a shot to delete it (Delete)'
-                : `Delete shot ${state.selection + 1} (Delete; Shift+Delete to keep the slot)`
-            }
-          >
-            ✕ Delete
-          </button>
-
-          <button
-            type="button"
-            onClick={handleToggleMute}
-            disabled={state.selection === null}
-            className="text-xs px-2.5 py-1.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/5"
-            style={{
-              borderColor: 'var(--card-border)',
-              color:
-                state.selection !== null && state.doc.rows[state.selection]?.muted
-                  ? '#f87171'
-                  : undefined,
-            }}
-            title={
-              state.selection === null
-                ? 'Select a shot to mute / unmute it (M)'
-                : state.doc.rows[state.selection]?.muted
-                  ? `Unmute shot ${state.selection + 1} (M)`
-                  : `Mute shot ${state.selection + 1} (M)`
-            }
-          >
-            {state.selection !== null && state.doc.rows[state.selection]?.muted
-              ? 'Unmute'
-              : 'Mute'}
-          </button>
-
-          {/* Doc-level flag toggles — Phase 3b of the parity
-              refactor. Two compact pill-buttons next to mute. Each
-              flip dispatches SET_FLAGS so undo / redo / autosave all
-              pick it up. */}
-          <button
-            type="button"
-            onClick={() =>
-              apply({ type: 'SET_FLAGS', flags: { animateScenes: !state.flags.animateScenes } })
-            }
-            className="text-xs px-2.5 py-1.5 rounded border transition-colors hover:bg-white/5"
-            style={{
-              borderColor: 'var(--card-border)',
-              color: state.flags.animateScenes ? 'var(--accent-purple-bright, #a78bfa)' : undefined,
-            }}
-            title={
-              state.flags.animateScenes
-                ? 'Animations on — B-roll clips play in their shots'
-                : 'Animations off — every shot renders as a still + Ken Burns'
-            }
-          >
-            {state.flags.animateScenes ? '🎬 Animate' : '🎬 Stills'}
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              apply({
-                type: 'SET_FLAGS',
-                flags: { suppressLowerThirds: !state.flags.suppressLowerThirds },
+  // Phase 3 leftRail — six tabs. Tab bodies compose existing
+  // handlers so undo/redo/autosave behavior is identical to the
+  // old toolbar. Selection-dependent tools (Split / Delete / Mute)
+  // moved to the inspector / keyboard shortcuts; the left rail is
+  // for global project actions.
+  const leftRailSlot = (
+    <EditorLeftRail
+      slots={{
+        shots: (
+          <ShotsTab
+            rows={state.doc.rows}
+            rowImages={state.rowImages}
+            selection={state.selection}
+            onSelect={(shotIndex) => apply({ type: 'SET_SELECTION', shotIndex })}
+          />
+        ),
+        media: (
+          <MediaTab
+            shotCount={state.doc.rows.length}
+            imageCount={Object.values(state.rowImages).filter(Boolean).length}
+            clipCount={Object.values(state.rowVideoClips).filter((c) => c?.status === 'ready').length}
+            hasVoiceover={Boolean(state.voiceoverUrl)}
+            voiceoverUrl={state.voiceoverUrl}
+            hasMusic={Boolean(state.musicUrl)}
+            musicUrl={state.musicUrl}
+            hasCaptions={Boolean(state.captions)}
+            captionSegmentCount={state.captions?.segments.length ?? 0}
+          />
+        ),
+        audio: (
+          <AudioTab
+            voiceoverUrl={state.voiceoverUrl}
+            alignmentReady={Boolean(state.voiceoverAlignment)}
+            musicUrl={state.musicUrl}
+            onRegenVO={() => setShowVoRegen(true)}
+          />
+        ),
+        captions: (
+          <CaptionsTab
+            captions={state.captions}
+            onRegen={() => { void handleRegenerateCaptions(); }}
+            regenDisabled={regenCaptionsRunning || !state.voiceoverUrl}
+            regenLabel={regenCaptionsLabel}
+          />
+        ),
+        ai: (
+          <AIToolsTab
+            onDriftReport={() => setShowDriftReport(true)}
+            onOverlays={() => setShowOverlayManager(true)}
+            overlayCount={state.doc.text_overlays?.length ?? 0}
+            onRegenCaptions={() => { void handleRegenerateCaptions(); }}
+            regenCaptionsDisabled={regenCaptionsRunning || !state.voiceoverUrl}
+            regenCaptionsLabel={regenCaptionsLabel}
+            onRegenVO={() => setShowVoRegen(true)}
+            onRegenDoc={() => setShowRegenFromScript(true)}
+          />
+        ),
+        settings: (
+          <SettingsTab
+            flags={state.flags}
+            onSetFlags={(patch) => apply({ type: 'SET_FLAGS', flags: patch })}
+            // The doc-level `overlays_disabled` field needs a new
+            // PATCH_DOC command on the store to mutate safely; for
+            // Phase 3 it's read-only here (still toggleable from the
+            // production-doc page). A follow-up adds PATCH_DOC and
+            // wires this through.
+            overlaysDisabledOnDoc={state.doc.overlays_disabled === true}
+            onToggleOverlaysDisabledOnDoc={() =>
+              console.info('[editor leftrail settings] overlays-disabled toggle requested', {
+                current: state.doc.overlays_disabled === true,
+                note: 'PATCH_DOC command pending; flip from /production-doc for now',
               })
             }
-            className="text-xs px-2.5 py-1.5 rounded border transition-colors hover:bg-white/5"
-            style={{
-              borderColor: 'var(--card-border)',
-              color: state.flags.suppressLowerThirds
-                ? 'var(--accent-purple-bright, #a78bfa)'
-                : undefined,
-            }}
-            title={
-              state.flags.suppressLowerThirds
-                ? 'Lower-thirds hidden across all shots'
-                : 'Lower-thirds visible — toggle to hide on-screen-text overlays'
-            }
-          >
-            {state.flags.suppressLowerThirds ? '⤓ Lower-3rd off' : '⤓ Lower-3rd on'}
-          </button>
-
-      </div>
-    </div>
+          />
+        ),
+      }}
+    />
   );
-
-  // Phase 2 wires the AI tools holder into the leftRail slot. Phase 3
-  // replaces this with proper tabbed components (Shots / Media /
-  // Audio / Captions / AI Tools / Settings).
-  const leftRailSlot = __toolsHolder;
 
   const zoomStrip = (
     <div className="flex items-center justify-end gap-2 text-xs px-2" style={{ color: 'var(--fg-muted)' }}>
