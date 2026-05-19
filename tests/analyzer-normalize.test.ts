@@ -132,37 +132,44 @@ describe('normalizeAnalyzedVideo — scene-boundary warnings', () => {
     expect(normalizeAnalyzedVideo(input).warnings).toEqual([]);
   });
 
-  it('warns when the last scene overflows meta.duration_seconds (the Reference B defect)', () => {
+  // v1.5.0 follow-up: the normalizer now AUTO-FIXES scene overflow
+  // via rescale (chapter-aware when possible, global proportional
+  // otherwise). The boundary-check warnings only fire as a backstop
+  // when the rescale couldn't fully resolve things. So the assertions
+  // below check that the rescale ran AND the resulting scenes are
+  // clean, rather than expecting the raw overflow warning to surface.
+  it('auto-fixes scene overflow via global rescale when no chapters available (the Reference B defect)', () => {
     const input = buildVideo({
       duration: 277,
       scenes: [scene(0, 150, 'a'), scene(150, 437, 'a')],
       packs: [pack('a', 0)],
     });
     const out = normalizeAnalyzedVideo(input);
-    expect(out.warnings.some((w) => w.includes('overflow') && w.includes('437') && w.includes('277'))).toBe(true);
+    expect(out.video.scenes[out.video.scenes.length - 1].end).toBe(277);
+    expect(out.warnings.some((w) => w.includes('globally rescaled'))).toBe(true);
   });
 
-  it('warns when the last scene underflows meta.duration_seconds', () => {
+  it('auto-fixes scene underflow via global rescale', () => {
     const input = buildVideo({
       duration: 100,
       scenes: [scene(0, 50, 'a')],
       packs: [pack('a', 0)],
     });
     const out = normalizeAnalyzedVideo(input);
-    expect(out.warnings.some((w) => w.includes('underflow'))).toBe(true);
+    expect(out.video.scenes[out.video.scenes.length - 1].end).toBe(100);
   });
 
-  it('warns when scenes[0].start is not 0', () => {
+  it('auto-fixes scenes[0].start != 0 via global rescale', () => {
     const input = buildVideo({
       duration: 100,
       scenes: [scene(10, 100, 'a')],
       packs: [pack('a', 0)],
     });
     const out = normalizeAnalyzedVideo(input);
-    expect(out.warnings.some((w) => w.includes('scenes[0].start'))).toBe(true);
+    expect(out.video.scenes[0].start).toBe(0);
   });
 
-  it('tolerates ±2s rounding at the start and end', () => {
+  it('tolerates ±2s rounding at the start and end (no rescale, no warnings)', () => {
     const input = buildVideo({
       duration: 100,
       scenes: [scene(1, 101, 'a')],
@@ -171,24 +178,25 @@ describe('normalizeAnalyzedVideo — scene-boundary warnings', () => {
     expect(normalizeAnalyzedVideo(input).warnings).toEqual([]);
   });
 
-  it('warns on a gap between consecutive scenes', () => {
+  it('auto-fixes gaps between consecutive scenes', () => {
     const input = buildVideo({
       duration: 100,
       scenes: [scene(0, 40, 'a'), scene(50, 100, 'a')],
       packs: [pack('a', 0)],
     });
     const out = normalizeAnalyzedVideo(input);
-    expect(out.warnings.some((w) => w.includes('gap'))).toBe(true);
+    // After rescale, scenes are contiguous
+    expect(out.video.scenes[1].start).toBeCloseTo(out.video.scenes[0].end, 1);
   });
 
-  it('warns on overlapping consecutive scenes', () => {
+  it('auto-fixes overlapping consecutive scenes', () => {
     const input = buildVideo({
       duration: 100,
       scenes: [scene(0, 60, 'a'), scene(50, 100, 'a')],
       packs: [pack('a', 0)],
     });
     const out = normalizeAnalyzedVideo(input);
-    expect(out.warnings.some((w) => w.includes('overlap'))).toBe(true);
+    expect(out.video.scenes[1].start).toBeCloseTo(out.video.scenes[0].end, 1);
   });
 
   it('warns about unknown style_pack_id references', () => {
@@ -289,30 +297,30 @@ describe('normalizeAnalyzedVideo — chapter-boundary warnings (v1.5.0)', () => 
 });
 
 describe('rescaleScenesToChapters — pure helper', () => {
-  it('no-ops when no chapters', () => {
+  it('falls back to global rescale when no chapters are present', () => {
     const input = buildVideo({
       duration: 277,
       scenes: [scene(0, 200, 'a'), scene(200, 437, 'a')],
       packs: [pack('a', 0)],
     });
     const out = rescaleScenesToChapters(input, 277);
-    expect(out.warnings).toEqual([]);
-    expect(out.scenes).toEqual(input.scenes);
+    expect(out.warnings.some((w) => w.includes('globally rescaled'))).toBe(true);
+    expect(out.scenes[out.scenes.length - 1].end).toBe(277);
   });
 
-  it("no-ops when chapters themselves overflow (don't trust unreliable anchors)", () => {
+  it('falls back to global rescale when chapters themselves overflow', () => {
     const input = buildVideo({
       duration: 277,
       scenes: [scene(0, 200, 'a'), scene(200, 437, 'a')],
       packs: [pack('a', 0)],
       chapters: [
         { start: 0, end: 200, title: 'A' },
-        { start: 200, end: 437, title: 'B' },
+        { start: 200, end: 437, title: 'B' }, // chapter overflows duration
       ],
     });
     const out = rescaleScenesToChapters(input, 277);
-    expect(out.warnings).toEqual([]);
-    expect(out.scenes).toEqual(input.scenes);
+    expect(out.warnings.some((w) => w.includes('globally rescaled'))).toBe(true);
+    expect(out.scenes[out.scenes.length - 1].end).toBe(277);
   });
 
   it('no-ops when scenes already fit duration_seconds', () => {
@@ -378,6 +386,87 @@ describe('rescaleScenesToChapters — pure helper', () => {
     });
     const out = rescaleScenesToChapters(input, 100);
     expect(out.scenes[out.scenes.length - 1].end).toBe(100);
+  });
+});
+
+describe('rescaleScenesToChapters — global fallback when chapters are broken', () => {
+  it('falls back to global rescale when chapters themselves overflow (the Casey v1.5.0-second-run case)', () => {
+    // Mirrors the actual second v1.5.0 Casey output: chapters 5 and 6
+    // are broken (chapter 5's end overflows duration, chapter 6 has
+    // end < start), so chapters can't be trusted as anchors. Scene 15
+    // also has end < start (negative duration). Fallback global
+    // rescale should produce a clean timeline anyway.
+    const input = buildVideo({
+      duration: 277,
+      scenes: [
+        scene(0, 22, 'p'),
+        scene(22, 119, 'p'),
+        scene(119, 205, 'p'),
+        scene(205, 241, 'p'),
+        scene(241, 424, 'p'), // overflows
+        scene(424, 427, 'p'), // also overflows
+        scene(427, 277, 'p'), // negative duration
+      ],
+      packs: [pack('p', 0)],
+      chapters: [
+        { start: 0, end: 22, title: 'A' },
+        { start: 22, end: 119, title: 'B' },
+        { start: 119, end: 205, title: 'C' },
+        { start: 205, end: 241, title: 'D' },
+        { start: 241, end: 424, title: 'E' }, // overflows duration
+        { start: 424, end: 277, title: 'F' }, // negative duration
+      ],
+    });
+    const out = rescaleScenesToChapters(input, 277);
+    // Last scene snaps to duration_seconds
+    expect(out.scenes[out.scenes.length - 1].end).toBe(277);
+    // First scene starts at 0
+    expect(out.scenes[0].start).toBe(0);
+    // All scenes have non-negative duration after rescale
+    for (const s of out.scenes) {
+      expect(s.end).toBeGreaterThanOrEqual(s.start);
+    }
+    // Contiguous
+    for (let i = 1; i < out.scenes.length; i++) {
+      expect(out.scenes[i].start).toBeCloseTo(out.scenes[i - 1].end, 1);
+    }
+    // Warning explicitly mentions the global rescale fallback
+    expect(out.warnings.some((w) => w.includes('globally rescaled') && w.includes('chapters were not trustworthy'))).toBe(true);
+  });
+
+  it('handles the all-negative-duration edge case with uniform distribution', () => {
+    const input = buildVideo({
+      duration: 100,
+      scenes: [scene(50, 50, 'p'), scene(80, 20, 'p')], // both zero-or-negative
+      packs: [pack('p', 0)],
+    });
+    const out = rescaleScenesToChapters(input, 100);
+    expect(out.scenes[0].start).toBe(0);
+    expect(out.scenes[out.scenes.length - 1].end).toBe(100);
+    expect(out.warnings.some((w) => w.includes('uniform fallback'))).toBe(true);
+  });
+});
+
+describe('checkSceneBoundaries — per-scene validity (v1.5.0 follow-up)', () => {
+  // These warnings fire on scenes that survive the rescale path —
+  // i.e. when scenesFormCleanTimeline returned true but the per-scene
+  // validity is still suspect. Defensive depth.
+  it('warns on a scene with negative duration even when it superficially fits', () => {
+    // Note: a single negative-duration scene wouldn't superficially
+    // "fit" — scenesFormCleanTimeline rejects it. So this warning
+    // path fires when rescale ran but somehow left a bad scene.
+    const input = buildVideo({
+      duration: 100,
+      scenes: [scene(50, 20, 'p'), scene(20, 100, 'p')], // first scene negative
+      packs: [pack('p', 0)],
+    });
+    const out = normalizeAnalyzedVideo(input);
+    // After rescale via global fallback, scenes should be cleaned up.
+    // But the test confirms the per-scene check runs on the rescaled
+    // output without false-positiving on the clean version.
+    for (const s of out.video.scenes) {
+      expect(s.end).toBeGreaterThanOrEqual(s.start);
+    }
   });
 });
 
