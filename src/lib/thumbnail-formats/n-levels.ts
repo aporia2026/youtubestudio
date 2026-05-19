@@ -379,6 +379,10 @@ export interface ImagePromptInput {
   /** Whether the rendered thumbnail includes the grunge bottom title bar.
    *  Defaults false. When false, slices fill the whole canvas. */
   showBottomTitle?: boolean;
+  /** Whether per-slice labels render under each LEVEL N heading. Defaults
+   *  true. When false, every slice renders as just "LEVEL N" regardless
+   *  of any label text in the levels array. */
+  showLevelLabels?: boolean;
   notesForImageModel?: string;
 }
 
@@ -392,6 +396,9 @@ export interface ImagePromptInput {
 export function nLevelsImagePrompt(input: ImagePromptInput): string {
   const { levels, count, titleTopic, titleTagline, notesForImageModel } = input;
   const showBottomTitle = !!input.showBottomTitle;
+  // Default true so callers that don't pass the flag get the historical
+  // labels-on behaviour. Pass `false` to render only LEVEL N headings.
+  const showLevelLabels = input.showLevelLabels !== false;
   const tagline = titleTagline === undefined ? 'EXPLAINED' : titleTagline;
   const safeNotes = notesForImageModel ? sanitizeForPrompt(notesForImageModel, 300) : '';
   const safeTopic = sanitizeForPrompt(titleTopic ?? '', 60);
@@ -403,11 +410,17 @@ export function nLevelsImagePrompt(input: ImagePromptInput): string {
       const concept = sanitizeForPrompt(l.illustration_concept, 250);
       const accent = l.accent_color ? ` (accent hint: ${sanitizeForPrompt(l.accent_color, 16)})` : '';
       // Render with the slice's exact `level` number (user may have
-      // assigned non-sequential numbers like [1, 7]). If the label is
-      // empty, render only the LEVEL heading — no subtitle.
-      const heading = label
-        ? `LEVEL ${l.level} — "${label}"`
-        : `LEVEL ${l.level} (NO SUBTITLE — render only the LEVEL ${l.level} heading at top of the slice, no second line of text)`;
+      // assigned non-sequential numbers like [1, 7]). Heading depends on
+      // the global showLevelLabels toggle AND the per-slice label data.
+      let heading: string;
+      if (!showLevelLabels) {
+        // Global override: NO labels on any slice. Render only LEVEL N.
+        heading = `LEVEL ${l.level} (NO SUBTITLE — render only the LEVEL ${l.level} heading at top of the slice, no second line of text)`;
+      } else if (label) {
+        heading = `LEVEL ${l.level} — "${label}"`;
+      } else {
+        heading = `LEVEL ${l.level} (NO SUBTITLE — render only the LEVEL ${l.level} heading at top of the slice, no second line of text)`;
+      }
       return `${heading}: ${concept}${accent}`;
     })
     .join('\n');

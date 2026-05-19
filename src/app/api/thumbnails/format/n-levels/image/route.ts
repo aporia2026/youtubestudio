@@ -50,6 +50,10 @@ interface ReqBody {
   /** Whether the rendered thumbnail will include the grunge bottom title
    *  bar. Defaults false. */
   showBottomTitle?: boolean;
+  /** Whether per-slice labels render under each LEVEL N. Defaults true.
+   *  When false, every slice renders as just "LEVEL N" regardless of any
+   *  label text in the levels list. */
+  showLevelLabels?: boolean;
   notesForImageModel?: string;
   referenceImageUrl?: string;
   outputWidth?: number;
@@ -84,6 +88,9 @@ export async function POST(req: NextRequest) {
     const count = Number(body.count);
     const levels = body.levels;
     const showBottomTitle = body.showBottomTitle === true;
+    // Default true: backwards-compatible with old clients that don't send
+    // the field. Explicitly false strips labels globally at render time.
+    const showLevelLabels = body.showLevelLabels !== false;
     const titleTopic = (body.titleTopic || '').trim();
     const titleTagline = body.titleTagline === undefined ? 'EXPLAINED' : String(body.titleTagline);
     const referenceImageUrl = (body.referenceImageUrl || '').trim();
@@ -161,6 +168,7 @@ export async function POST(req: NextRequest) {
       titleTopic: showBottomTitle ? titleTopic : undefined,
       titleTagline: showBottomTitle ? titleTagline : undefined,
       showBottomTitle,
+      showLevelLabels,
       notesForImageModel: body.notesForImageModel,
     });
 

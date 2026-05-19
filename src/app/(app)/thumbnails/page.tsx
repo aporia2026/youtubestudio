@@ -610,6 +610,7 @@ function ThumbnailsPage() {
           accent_color: l.accent_color,
         })),
         showBottomTitle: nLevelsResult.showBottomTitle,
+        showLevelLabels: nLevelsResult.showLevelLabels,
         titleTopic: nLevelsResult.titleTopic,
         titleTagline: nLevelsResult.titleTagline,
         imageUrl: nLevelsResult.imageUrl,
@@ -1480,6 +1481,7 @@ function ThumbnailsPage() {
               // Entries created before the toggle existed didn't store
               // this flag; old behaviour was always-on, so default to true.
               showBottomTitle: fp.showBottomTitle ?? true,
+              showLevelLabels: fp.showLevelLabels ?? true,
               titleTopic: fp.titleTopic,
               titleTagline: fp.titleTagline,
               mode: fp.mode,

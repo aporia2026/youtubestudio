@@ -203,6 +203,10 @@ export interface NLevelsHistoryPayload {
    *  entries (pre-toggle) leave this undefined and restore treats them as
    *  `true` for backwards compat. */
   showBottomTitle?: boolean;
+  /** Whether per-slice labels rendered under each LEVEL N heading. Old
+   *  entries leave this undefined; restore treats undefined as `true`
+   *  (matches the pre-toggle behaviour). */
+  showLevelLabels?: boolean;
   /** The refined topic that went into the bottom title bar. Empty when
    *  `showBottomTitle` is false. */
   titleTopic: string;

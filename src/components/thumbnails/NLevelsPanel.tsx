@@ -35,6 +35,11 @@ export interface NLevelsGenerationResult {
    *  When false, the slices fill the whole canvas and titleTopic /
    *  titleTagline are unused (kept on the type for shape stability). */
   showBottomTitle: boolean;
+  /** Whether per-slice labels under each LEVEL N were rendered. When
+   *  false, every slice renders as just "LEVEL N" regardless of any
+   *  label text in the data. Per-slice labels are still preserved on the
+   *  record so the user can flip the toggle back on without losing data. */
+  showLevelLabels: boolean;
   titleTopic: string;
   titleTagline: string;
   mode: 'review' | 'pre-fill' | 'one-shot';
@@ -94,6 +99,12 @@ export function NLevelsPanel({
   // canvas). When the user wants the grunge-title style, they flip this
   // on and the topic / tagline fields appear.
   const [showBottomTitle, setShowBottomTitle] = useState(false);
+  // Global toggle for per-slice labels (e.g. "PASSIVE RECONNAISSANCE"
+  // under "LEVEL 1"). Default ON. Flip OFF for the bare "LEVEL 1, LEVEL 2,
+  // ..." style where each slice is just its number + the illustration.
+  // Per-slice label data is preserved when the toggle is off — flipping
+  // it back on restores the labels without re-running Step 1.
+  const [showLevelLabels, setShowLevelLabels] = useState(true);
   const [titleTopic, setTitleTopic] = useState('');
   const [titleTagline, setTitleTagline] = useState('EXPLAINED');
   const [taglineEnabled, setTaglineEnabled] = useState(true);
@@ -130,6 +141,7 @@ export function NLevelsPanel({
     if (!restoredResult) return;
     setCount(restoredResult.count);
     setShowBottomTitle(restoredResult.showBottomTitle);
+    setShowLevelLabels(restoredResult.showLevelLabels);
     setTitleTopic(restoredResult.titleTopic);
     setTitleTagline(restoredResult.titleTagline);
     setTaglineEnabled(restoredResult.titleTagline.length > 0);
@@ -275,6 +287,7 @@ export function NLevelsPanel({
           levels: levelsToUse,
           count,
           showBottomTitle,
+          showLevelLabels,
           titleTopic: topicToUse,
           titleTagline: taglineToUse,
           notesForImageModel: notesToUse,
@@ -300,6 +313,7 @@ export function NLevelsPanel({
         levels: levelsToUse,
         count,
         showBottomTitle,
+        showLevelLabels,
         titleTopic: topicToUse,
         titleTagline: taglineToUse,
         mode: formatMode,
@@ -428,6 +442,25 @@ export function NLevelsPanel({
             </label>
             <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
               Most successful N Levels thumbnails on YouTube run without one — slices fill the whole canvas. Turn this on for the grunge-title variant.
+            </p>
+          </div>
+
+          {/* Global toggle: render labels (PASSIVE RECONNAISSANCE, etc.)
+              under each LEVEL N heading or just render LEVEL N alone.
+              Default ON; flip OFF for the bare "LEVEL 1, LEVEL 2, ..."
+              style. Per-slice label data is preserved either way. */}
+          <div>
+            <label className="flex items-center gap-2 cursor-pointer text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+              <input
+                type="checkbox"
+                checked={showLevelLabels}
+                onChange={(e) => setShowLevelLabels(e.target.checked)}
+                style={{ accentColor: 'var(--accent-pink)' }}
+              />
+              Show labels under each LEVEL N
+            </label>
+            <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              Off = bare &quot;LEVEL 1, LEVEL 2, …&quot; with no subtitle. Your per-slice label text is preserved either way; toggle it back on any time.
             </p>
           </div>
 
