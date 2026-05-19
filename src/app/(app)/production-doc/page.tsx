@@ -2712,6 +2712,11 @@ function ProductionDocPage() {
   const RETHINK_MAX_ATTEMPTS = 5;
   const [rethinkAttempts, setRethinkAttempts] = useState<Record<number, number>>({});
   const [rethinkingRows, setRethinkingRows] = useState<Set<number>>(() => new Set());
+  // Synchronous in-flight set. The UI's disabled state lags one render
+  // behind a setState; two rapid clicks both pass the React-state
+  // guard before the disable lands. The ref check is set synchronously
+  // BEFORE any await, so a second click in the same tick short-circuits.
+  const rethinkInFlightRef = useRef<Set<number>>(new Set());
 
   // Phase 5 — overlay AI-edit dialog. Single-row at a time (matches
   // overlayPositionRow's pattern). Mounted from the position editor's
@@ -4424,6 +4429,17 @@ function ProductionDocPage() {
    * track "how often did the user need to rethink before accepting?"
    */
   async function rethinkOverlayPlacement(rowIndex: number): Promise<void> {
+    // Synchronous in-flight guard — returns immediately if a request
+    // is already running for this row. setRethinkingRows below would
+    // also gate the button via React state, but state batching means
+    // two rapid clicks can both pass the React check before the disable
+    // takes effect. The ref check runs in the same synchronous tick.
+    if (rethinkInFlightRef.current.has(rowIndex)) {
+      console.warn('[ui overlay-rethink] already in flight — ignoring duplicate click', {
+        rowIndex,
+      });
+      return;
+    }
     const overlayState = rowOverlays[rowIndex];
     if (overlayState?.status !== 'done' || !overlayState.url) {
       console.warn('[ui overlay-rethink] no overlay to rethink', { rowIndex, status: overlayState?.status });
@@ -4483,6 +4499,7 @@ function ProductionDocPage() {
       previousSize: previousDecision.sizePct,
     });
 
+    rethinkInFlightRef.current.add(rowIndex);
     setRethinkingRows((prev) => {
       const next = new Set(prev);
       next.add(rowIndex);
@@ -4573,6 +4590,7 @@ function ProductionDocPage() {
       });
       alert('Rethink failed — see console for details.');
     } finally {
+      rethinkInFlightRef.current.delete(rowIndex);
       setRethinkingRows((prev) => {
         const next = new Set(prev);
         next.delete(rowIndex);
@@ -7661,12 +7679,12 @@ function ProductionDocPage() {
           <OverlayEditDialog
             overlayUrl={rowOverlays[overlayEditRow]!.url!}
             termsLabel={doc.rows[overlayEditRow]!.overlay_stock_terms || ''}
-            onAccept={(newOverlayUrl, mode) => {
-              // Push the about-to-be-replaced URL onto the row's edit
-              // history so Undo can roll it back. Cap at 3 entries —
-              // anything beyond gets shifted off the front (oldest is
-              // dropped first).
-              const replacedUrl = rowOverlays[overlayEditRow]?.url;
+            onAccept={(newOverlayUrl, mode, replacedUrl) => {
+              // `replacedUrl` is the URL the user OPENED the dialog
+              // with — snapshot at mount, race-free vs a concurrent
+              // Replace from the context menu. Push it onto the row's
+              // edit history so Undo restores what the user actually
+              // saw + edited. Cap at 3 — oldest shifts off the front.
               const prevHistory = doc?.rows[overlayEditRow]?.overlay_edit_history ?? [];
               const nextHistory = replacedUrl
                 ? [...prevHistory, replacedUrl].slice(-OVERLAY_EDIT_HISTORY_CAP)

@@ -17,6 +17,7 @@ import {
 import { gateRmbgOutput } from '@/lib/overlay-rmbg-gate';
 import { tiebreakRmbg } from '@/lib/overlay-rmbg-tiebreaker';
 import { removeBackground } from '@/lib/overlay-rmbg';
+import { checkSafePublicUrl } from '@/lib/url-safety';
 
 /**
  * POST /api/overlay/fetch
@@ -286,30 +287,52 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   }
 
   // Helpers shared by both modes (placement-only and normal). Centralising
-  // the HTTPS-only validation here means a malicious caller can't bypass
-  // SSRF protection by switching modes.
-  function validateHttpsUrl(raw: unknown, fieldName: string): string | NextResponse | undefined {
+  // the SSRF check here means a malicious caller can't bypass it by
+  // switching modes. `checkSafePublicUrl` blocks private IPs, link-local
+  // addresses, AWS/GCP metadata hosts, and `.internal` / `.local`
+  // suffixes — strictly tighter than the old protocol-only check.
+  function validateOverlayUrl(
+    raw: unknown,
+    fieldName: string,
+    opts?: { allowedHosts?: ReadonlySet<string> },
+  ): string | NextResponse | undefined {
     if (raw === undefined || raw === null || raw === '') return undefined;
     if (typeof raw !== 'string') {
       return NextResponse.json({ error: `${fieldName} must be a string` }, { status: 400 });
     }
     const trimmed = raw.trim();
     if (!trimmed) return undefined;
-    try {
-      const parsed = new URL(trimmed);
-      if (parsed.protocol !== 'https:') {
-        return NextResponse.json({ error: `${fieldName} must be HTTPS` }, { status: 400 });
-      }
-      return parsed.toString();
-    } catch {
-      return NextResponse.json({ error: `${fieldName} is not a valid URL` }, { status: 400 });
+    const r = checkSafePublicUrl(trimmed, {
+      allowedProtocols: ['https:'],
+      allowedHosts: opts?.allowedHosts,
+    });
+    if (!r.ok) {
+      return NextResponse.json({ error: `${fieldName}: ${r.error}` }, { status: 400 });
     }
+    return r.url.toString();
   }
 
-  // Validate scene URL — must be HTTPS (no file://, no private hosts —
-  // SSRF protection. The vision LLM fetches this URL server-side, so a
-  // malicious caller could probe internal infra without this guard.
-  const sceneCheck = validateHttpsUrl(body.sceneImageUrl, 'sceneImageUrl');
+  /** R2 public host derived from R2_IMAGES_PUBLIC_URL. Used to pin
+   *  `existingOverlayUrl` to overlays we actually produced — without
+   *  this, a caller could pass any HTTPS URL and the route would echo
+   *  it back as the row's overlay state (confused-deputy attack: poisons
+   *  the row with content the server never validated or hosted). */
+  const r2PublicHost = (() => {
+    const raw = process.env.R2_IMAGES_PUBLIC_URL;
+    if (!raw) return null;
+    try {
+      return new URL(raw).hostname.toLowerCase();
+    } catch {
+      return null;
+    }
+  })();
+  const r2AllowedHosts = r2PublicHost ? new Set([r2PublicHost]) : undefined;
+
+  // Validate scene URL — must be HTTPS AND not point at any private /
+  // metadata host (SSRF). The vision LLM fetches this URL server-side,
+  // so a malicious caller could otherwise probe internal infra via
+  // the Kie gateway.
+  const sceneCheck = validateOverlayUrl(body.sceneImageUrl, 'sceneImageUrl');
   if (sceneCheck instanceof NextResponse) return sceneCheck;
   const sceneImageUrl: string | undefined = sceneCheck;
 
@@ -343,7 +366,16 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         { status: 400 },
       );
     }
-    const existingCheck = validateHttpsUrl(body.existingOverlayUrl, 'existingOverlayUrl');
+    // `existingOverlayUrl` MUST be on our R2 host (when configured).
+    // This blocks a confused-deputy attack where a caller passes any
+    // public HTTPS URL, gets it echoed back as `overlayUrl`, and
+    // poisons their own row's overlay state with content we don't
+    // own. If R2_IMAGES_PUBLIC_URL is unset (local dev), we fall
+    // back to the SSRF check without host allow-list — production
+    // deploys should always have this env var set.
+    const existingCheck = validateOverlayUrl(body.existingOverlayUrl, 'existingOverlayUrl', {
+      allowedHosts: r2AllowedHosts,
+    });
     if (existingCheck instanceof NextResponse) return existingCheck;
     if (!existingCheck) {
       return NextResponse.json(

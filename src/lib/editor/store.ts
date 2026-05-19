@@ -621,21 +621,44 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         return { next: state, inverse: null };
       }
       const row = state.doc.rows[rowIndex];
-      // Build inverse before mutating: capture the OLD value at every
-      // key the patch touches. `undefined` (key absent) round-trips
-      // correctly because the inverse patch sets it back to undefined,
-      // which merges as deletion under the spread below.
       const patchKeys = Object.keys(patch) as Array<keyof typeof row>;
       if (patchKeys.length === 0) {
         return { next: state, inverse: null };
       }
+      // Build the next row by walking entries — a patch value of
+      // `undefined` DELETES the key (rather than leaving it present
+      // with `undefined`, which is what a naive `{...row, ...patch}`
+      // would produce). The distinction matters for JSONB save
+      // payload size, `in` operator semantics, and React reconciliation
+      // of optional fields. The inverse captures the OLD value (which
+      // may itself be undefined if the key was absent) — applying the
+      // inverse re-deletes the key, so the round-trip is symmetric.
+      // We also short-circuit when every patch value already equals
+      // the row's current value (true no-op): saves a redundant undo
+      // entry and a needless auto-save.
+      let anyChange = false;
       const inversePatch: Partial<typeof row> = {};
+      const nextRow: typeof row = { ...row };
       for (const key of patchKeys) {
-        // Type cast — `inversePatch[key]` is typed to allow only the
-        // corresponding row field's type; TS can't narrow that here.
-        (inversePatch as Record<string, unknown>)[key as string] = row[key];
+        const oldValue = row[key];
+        const newValue = patch[key];
+        if (oldValue === newValue) continue;
+        anyChange = true;
+        (inversePatch as Record<string, unknown>)[key as string] = oldValue;
+        // Convert through `unknown` first because TS doesn't believe
+        // ProductionRow conforms to Record<string, unknown> (it has
+        // no string index signature). The runtime behaviour is the
+        // same — JS objects are bag-of-keys regardless of the type.
+        const mutable = nextRow as unknown as Record<string, unknown>;
+        if (newValue === undefined) {
+          delete mutable[key as string];
+        } else {
+          mutable[key as string] = newValue;
+        }
       }
-      const nextRow = { ...row, ...patch };
+      if (!anyChange) {
+        return { next: state, inverse: null };
+      }
       const nextRows = state.doc.rows.slice();
       nextRows[rowIndex] = nextRow;
       const inverse: EditorCommand = {

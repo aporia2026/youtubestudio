@@ -458,10 +458,34 @@ export function OverlayPositionEditor({
 
       // Anchor at the opposite side: when the left edge moves, x compensates
       // so the right edge stays put. Same for top.
-      const finalHPct =
+      //
+      // CRITICAL: the anchor math must use the BOX's current rendered
+      // height — `startHPct` (which is `startStretchedHPct ?? natural`)
+      // when starting stretched, or `startHPctNatural` when starting in
+      // natural-aspect mode. The previous version mixed `startHPct`
+      // (could be stretched) with `finalHPct` (always natural when
+      // aspect-locked), producing a visible jump if the user pressed
+      // Shift, free-stretched, released Shift, and then dragged a top
+      // handle. Compute the anchor as "where was the box's top BEFORE,
+      // and where is it NOW" — both derived from the SAME mode-aware
+      // height source.
+      const startHPctAtBoxStart = startHPct; // the box's height when drag began
+      const finalHPctAtBoxEnd =
         newStretchedH !== null ? newStretchedH : widthPctToHeightPct(newSize, rs.startAspect);
-      const newXPct = movesL ? rs.startXPct + (rs.startSizePct - newSize) : rs.startXPct;
-      const newYPct = movesT ? rs.startYPct + (startHPct - finalHPct) : rs.startYPct;
+      let newXPct = movesL ? rs.startXPct + (rs.startSizePct - newSize) : rs.startXPct;
+      let newYPct = movesT
+        ? rs.startYPct + (startHPctAtBoxStart - finalHPctAtBoxEnd)
+        : rs.startYPct;
+
+      // Clamp the resulting top-left so the box can't fly fully off-
+      // screen via a runaway handle drag. Mirrors the reposition
+      // gesture's clamps so corner+edge resize feels consistent.
+      const minX = -newSize * 0.1;
+      const minY = -finalHPctAtBoxEnd * 0.1;
+      const maxX = 100 - newSize * 0.9;
+      const maxY = 100 - finalHPctAtBoxEnd * 0.9;
+      newXPct = Math.max(minX, Math.min(maxX, newXPct));
+      newYPct = Math.max(minY, Math.min(maxY, newYPct));
 
       setSize(newSize);
       setStretchedHeightPctState(newStretchedH);

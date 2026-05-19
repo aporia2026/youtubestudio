@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AbsoluteFill,
   continueRender,
@@ -135,12 +135,45 @@ export const RealImageOverlay: React.FC<Props> = ({ shot, frameWidth: frameWidth
   const [aspect, setAspect] = useState<number | null>(null);
   const [errored, setErrored] = useState(false);
   const overlayUrl = overlay?.url;
-  // delayRender handle is only created when there's actually a URL to load —
-  // a null handle for "no overlay" rows means the renderer never waits on an
-  // image that will never arrive.
-  const [loadHandle] = useState<number | null>(() =>
+
+  // Track which URL the current `loadHandle` was acquired for. When the
+  // URL changes (e.g., after the user accepts an AI edit and the row's
+  // overlay URL swaps), we release the old handle and acquire a new
+  // one so the renderer waits for the NEW image to load before
+  // capturing the next frame. Without this re-acquisition, the
+  // useState initialiser fires only once and a subsequent URL change
+  // would leave delayRender stale → frames could be captured with the
+  // OLD aspect briefly visible during the swap.
+  const loadHandleRef = useRef<number | null>(null);
+  const loadHandleUrlRef = useRef<string | undefined>(undefined);
+  // Initial acquisition. useState init runs once; we only acquire here
+  // for the very first render. Subsequent URL changes go through the
+  // useEffect below.
+  const [initialHandle] = useState<number | null>(() =>
     overlayUrl ? delayRender('overlay-image-load') : null,
   );
+  if (loadHandleRef.current === null && loadHandleUrlRef.current === undefined && overlayUrl) {
+    loadHandleRef.current = initialHandle;
+    loadHandleUrlRef.current = overlayUrl;
+  }
+
+  useEffect(() => {
+    // URL changed AFTER mount. Release any pending old handle (it
+    // would otherwise wait forever for an Img that already unmounted)
+    // and acquire a fresh one. Reset the aspect + errored state so the
+    // new image's onLoad / onError actually fires the state update.
+    if (loadHandleUrlRef.current === overlayUrl) return;
+    if (loadHandleRef.current !== null) {
+      continueRender(loadHandleRef.current);
+      loadHandleRef.current = null;
+    }
+    if (overlayUrl) {
+      loadHandleRef.current = delayRender('overlay-image-load');
+      setAspect(null);
+      setErrored(false);
+    }
+    loadHandleUrlRef.current = overlayUrl;
+  }, [overlayUrl]);
 
   const onImgLoad = useCallback(
     (e: React.SyntheticEvent<HTMLImageElement>) => {
@@ -154,10 +187,19 @@ export const RealImageOverlay: React.FC<Props> = ({ shot, frameWidth: frameWidth
           naturalHeight: img.naturalHeight,
           aspect: Number(ratio.toFixed(3)),
         });
+      } else {
+        console.warn('[overlay render] image loaded with zero dimensions — falling back to 1:1', {
+          url: overlayUrl,
+          naturalWidth: img.naturalWidth,
+          naturalHeight: img.naturalHeight,
+        });
       }
-      if (loadHandle !== null) continueRender(loadHandle);
+      if (loadHandleRef.current !== null) {
+        continueRender(loadHandleRef.current);
+        loadHandleRef.current = null;
+      }
     },
-    [loadHandle, overlayUrl],
+    [overlayUrl],
   );
 
   const onImgError = useCallback(() => {
@@ -165,8 +207,11 @@ export const RealImageOverlay: React.FC<Props> = ({ shot, frameWidth: frameWidth
       url: overlayUrl,
     });
     setErrored(true);
-    if (loadHandle !== null) continueRender(loadHandle);
-  }, [loadHandle, overlayUrl]);
+    if (loadHandleRef.current !== null) {
+      continueRender(loadHandleRef.current);
+      loadHandleRef.current = null;
+    }
+  }, [overlayUrl]);
 
   // Render nothing if there's no overlay or the image failed. After errored
   // is set, the delay handle has already been released in onImgError, so the

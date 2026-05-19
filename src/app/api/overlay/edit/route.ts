@@ -142,10 +142,33 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     return NextResponse.json({ error: 'Prompt too long (max 2000 chars)' }, { status: 400 });
   }
 
-  // SSRF guard on both URLs. Kie's gateway fetches from their infra,
-  // but we still fail fast on private-network URLs so we don't bill
-  // for a doomed task.
-  const overlayCheck = checkSafePublicUrl(overlayUrl, { allowedProtocols: ['https:'] });
+  // R2 public host derived from R2_IMAGES_PUBLIC_URL — used to pin
+  // BOTH `overlayUrl` and `mask.url` to assets we actually host.
+  // Without this pin a caller could pass any public HTTPS URL: we'd
+  // ship it to Kie, pay for the edit, and mirror the result into the
+  // caller's workspace bucket — a free GPT-4o-image call paid for by
+  // us ($0.034–$0.133/edit). For mask URLs specifically, an attacker-
+  // controlled mask doesn't match the overlay's dimensions and the
+  // edit fails — but only AFTER we've billed for it.
+  const r2PublicHost = (() => {
+    const raw = process.env.R2_IMAGES_PUBLIC_URL;
+    if (!raw) return null;
+    try {
+      return new URL(raw).hostname.toLowerCase();
+    } catch {
+      return null;
+    }
+  })();
+  const r2AllowedHosts = r2PublicHost ? new Set([r2PublicHost]) : undefined;
+
+  // SSRF + host-pin guard on overlayUrl. When R2_IMAGES_PUBLIC_URL is
+  // set (always in prod), only overlays we serve can be edited. Falls
+  // back to the bare SSRF check in local dev where the env var may
+  // be unset — that's acceptable since dev infra isn't a target.
+  const overlayCheck = checkSafePublicUrl(overlayUrl, {
+    allowedProtocols: ['https:'],
+    allowedHosts: r2AllowedHosts,
+  });
   if (!overlayCheck.ok) {
     return NextResponse.json({ error: `overlayUrl: ${overlayCheck.error}` }, { status: 400 });
   }
@@ -156,7 +179,10 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     if (!body.mask?.url) {
       return NextResponse.json({ error: 'mask.url required for brush mode' }, { status: 400 });
     }
-    const maskCheck = checkSafePublicUrl(body.mask.url, { allowedProtocols: ['https:'] });
+    const maskCheck = checkSafePublicUrl(body.mask.url, {
+      allowedProtocols: ['https:'],
+      allowedHosts: r2AllowedHosts,
+    });
     if (!maskCheck.ok) {
       return NextResponse.json({ error: `mask URL: ${maskCheck.error}` }, { status: 400 });
     }
@@ -228,9 +254,28 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     //   3. Upload to R2.
     let finalUrl = resultUrl;
     let rmbgKept: boolean | undefined;
+    // SSRF guard — Kie's response is trusted but if their CDN ever
+    // emits an internal hostname (compromised gateway, misconfigured
+    // proxy), we'd otherwise fetch it server-side. Defense in depth.
+    // When the URL fails the check we skip the R2 mirror entirely and
+    // return the unmodified Kie URL — the client still gets a result,
+    // we just don't bounce bytes through our infra. This shouldn't
+    // happen in practice; the warn log surfaces it if it does.
+    const resultUrlSafe = checkSafePublicUrl(resultUrl, { allowedProtocols: ['https:'] });
+    if (!resultUrlSafe.ok) {
+      logger.warn('[overlay edit] Kie returned unsafe URL — skipping R2 mirror', {
+        url: resultUrl,
+        error: resultUrlSafe.error,
+      });
+    }
     try {
-      const imgRes = await fetch(resultUrl);
-      if (!imgRes.ok) {
+      // Skip the fetch entirely when the URL failed our SSRF check —
+      // the client receives the unmodified Kie URL above. `imgRes`
+      // being null below short-circuits the mirror + RMBG block.
+      const imgRes = resultUrlSafe.ok ? await fetch(resultUrl) : null;
+      if (!imgRes) {
+        // Already logged the unsafe-URL warn above — nothing more to do.
+      } else if (!imgRes.ok) {
         logger.warn('[overlay edit] result fetch non-OK — falling back to Kie URL', {
           status: imgRes.status,
         });

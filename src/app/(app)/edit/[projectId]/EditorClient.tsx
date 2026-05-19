@@ -223,6 +223,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         throw new Error(data.error || `Caption regen failed: HTTP ${res.status}`);
       }
       // Server bumped version. Reload to merge new captions + version.
+      closeAllOverlayModals();
       await reloadFromServer();
       setCaptionsRegenState({ kind: 'idle' });
     } catch (err) {
@@ -239,6 +240,34 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // mutations through the editor store's `PATCH_ROW` and
   // `SET_ROW_OVERLAY` commands. The auto-save + undo stack pick up
   // every overlay change for free.
+
+  /** Fire-and-forget telemetry probe — mirrors production-doc's
+   *  recordEditorTelemetry so the per-model drag-rate dashboard sees
+   *  the same events whether the user is on /production-doc or
+   *  /edit/[projectId]. Never blocks; never throws into the UI. */
+  async function recordOverlayTelemetry(
+    event:
+      | 'overlay_drag'
+      | 'overlay_resize'
+      | 'overlay_accept'
+      | 'overlay_reset'
+      | 'overlay_rethink',
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      console.info('[editor telemetry] post', { event, projectId });
+      await fetch('/api/editor-telemetry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event, project_id: projectId, payload }),
+      });
+    } catch (err) {
+      console.warn('[editor telemetry] post failed', {
+        event,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
   const [overlayPositionRow, setOverlayPositionRow] = useState<number | null>(null);
   const [overlayEditRow, setOverlayEditRow] = useState<number | null>(null);
   const [overlayContextMenu, setOverlayContextMenu] = useState<{
@@ -246,10 +275,26 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     x: number;
     y: number;
   } | null>(null);
+
+  /** Close every overlay modal (position editor, edit dialog, context
+   *  menu) and clear the rethink in-flight set. Called before any
+   *  RESET_FROM_SERVER dispatch because those modals hold a rowIndex
+   *  that may not point at the same row after the reload — keeping
+   *  them mounted causes stale-state flicker or out-of-bounds reads. */
+  const closeAllOverlayModals = useCallback(() => {
+    setOverlayPositionRow(null);
+    setOverlayEditRow(null);
+    setOverlayContextMenu(null);
+  }, []);
   const RETHINK_MAX_ATTEMPTS = 5;
   const OVERLAY_EDIT_HISTORY_CAP = 3;
   const [rethinkAttempts, setRethinkAttempts] = useState<Record<number, number>>({});
   const [rethinkingRows, setRethinkingRows] = useState<Set<number>>(() => new Set());
+  // Synchronous in-flight guard — matches production-doc's pattern.
+  // Prevents two rapid clicks (both passing the React-state check
+  // before either setRethinkingRows lands) from firing duplicate
+  // rethink requests.
+  const rethinkInFlightRef = useRef<Set<number>>(new Set());
 
   /** Thin adapter so the ported handlers below read like their
    *  production-doc counterparts. Routes through PATCH_ROW so the
@@ -273,6 +318,15 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
    *  with the editor's state shape. */
   const rethinkOverlayPlacement = useCallback(
     async (rowIndex: number): Promise<void> => {
+      // Synchronous in-flight guard. See production-doc's twin for
+      // the reasoning — defense against state-batching letting two
+      // rapid clicks both pass the React-state gate.
+      if (rethinkInFlightRef.current.has(rowIndex)) {
+        console.warn('[ui overlay-rethink] already in flight — ignoring duplicate click', {
+          rowIndex,
+        });
+        return;
+      }
       const overlayState = state.rowOverlays[rowIndex];
       if (overlayState?.status !== 'done' || !overlayState.url) {
         console.warn('[ui overlay-rethink] no overlay to rethink', {
@@ -333,6 +387,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         previousZone: previousDecision.zone,
         previousSize: previousDecision.sizePct,
       });
+      rethinkInFlightRef.current.add(rowIndex);
       setRethinkingRows((prev) => {
         const next = new Set(prev);
         next.add(rowIndex);
@@ -363,8 +418,22 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           error?: string;
           reason?: string;
         };
-        if (!res.ok || !data.placement) {
-          alert(`Rethink failed: ${data.error || data.reason || `HTTP ${res.status}`}`);
+        // Mirror production-doc's two-branch error handling so the user
+        // sees a useful message instead of "Rethink failed: undefined"
+        // when the route returns 200 with `placement: null`.
+        if (!res.ok) {
+          alert(`Rethink failed: ${data.error || `HTTP ${res.status}`}`);
+          console.warn('[ui overlay-rethink] non-OK', { rowIndex, status: res.status, body: data });
+          return;
+        }
+        if (!data.placement) {
+          alert(
+            "AI couldn't produce a new placement — the previous pick stays. Try again or drag manually.",
+          );
+          console.warn('[ui overlay-rethink] no placement returned', {
+            rowIndex,
+            reason: data.reason,
+          });
           return;
         }
         const p = data.placement;
@@ -390,6 +459,19 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           overlay_placement_model: p.model,
         });
         setRethinkAttempts((prev) => ({ ...prev, [rowIndex]: attempts + 1 }));
+        // Telemetry parity with production-doc — before/after delta so
+        // the per-model drag-rate dashboard sees editor activity too.
+        void recordOverlayTelemetry('overlay_rethink', {
+          row_index: rowIndex,
+          placement_model: p.model,
+          attempt: attempts + 1,
+          prev_zone: previousDecision.zone ?? null,
+          new_zone: p.zone ?? null,
+          prev_size_pct: previousDecision.sizePct,
+          new_size_pct: Number(p.sizePct.toFixed(2)),
+          prev_mode: previousDecision.mode,
+          new_mode: p.mode,
+        });
       } catch (err) {
         console.warn('[ui overlay-rethink] threw', {
           rowIndex,
@@ -397,6 +479,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         });
         alert('Rethink failed — see console for details.');
       } finally {
+        rethinkInFlightRef.current.delete(rowIndex);
         setRethinkingRows((prev) => {
           const next = new Set(prev);
           next.delete(rowIndex);
@@ -436,12 +519,12 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
   /** Phase 5 — accept callback for OverlayEditDialog. Pushes the
    *  replaced URL onto the row's edit-history stack (cap 3) and
-   *  swaps in the new URL. */
+   *  swaps in the new URL. `replacedUrl` is the dialog's snapshot —
+   *  race-free vs a concurrent Replace via context menu. */
   const handleOverlayEditAccept = useCallback(
-    (newOverlayUrl: string, mode: 'smart' | 'brush') => {
+    (newOverlayUrl: string, mode: 'smart' | 'brush', replacedUrl: string) => {
       const rowIndex = overlayEditRow;
       if (rowIndex === null) return;
-      const replacedUrl = state.rowOverlays[rowIndex]?.url;
       const prevHistory = state.doc.rows[rowIndex]?.overlay_edit_history ?? [];
       const nextHistory = replacedUrl
         ? [...prevHistory, replacedUrl].slice(-OVERLAY_EDIT_HISTORY_CAP)
@@ -936,7 +1019,12 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       </div>
 
       {saveStatus.kind === 'conflict' && (
-        <ConflictBanner onReload={() => { void reloadFromServer(); }} />
+        <ConflictBanner
+          onReload={() => {
+            closeAllOverlayModals();
+            void reloadFromServer();
+          }}
+        />
       )}
 
       {showDriftReport && (
@@ -969,6 +1057,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           onClose={() => setShowVoRegen(false)}
           onSuccess={async () => {
             setShowVoRegen(false);
+            closeAllOverlayModals();
             await reloadFromServer();
           }}
         />
@@ -981,6 +1070,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           onClose={() => setShowRegenFromScript(false)}
           onSuccess={async () => {
             setShowRegenFromScript(false);
+            closeAllOverlayModals();
             await reloadFromServer();
           }}
         />
@@ -1126,6 +1216,46 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                 size,
                 stretchedH,
               });
+              // Telemetry parity with production-doc — `overlay_drag`
+              // when position changed; `overlay_resize` when size or
+              // stretch changed. Both can fire in the same save.
+              const prevRow = state.doc.rows[overlayPositionRow];
+              const prevPos = prevRow?.overlay_position;
+              const prevSize = prevRow?.overlay_size_pct;
+              const prevStretchedH = prevRow?.overlay_stretched_height_pct;
+              const placementModel = prevRow?.overlay_placement_model ?? 'doc-gen-blind';
+              const positionChanged =
+                !prevPos || prevPos.x_pct !== pos.x_pct || prevPos.y_pct !== pos.y_pct;
+              const sizeChanged = prevSize !== size;
+              const stretchChanged = (prevStretchedH ?? null) !== (stretchedH ?? null);
+              if (positionChanged) {
+                const dx = prevPos ? pos.x_pct - prevPos.x_pct : 0;
+                const dy = prevPos ? pos.y_pct - prevPos.y_pct : 0;
+                const dragDistancePct = Math.sqrt(dx * dx + dy * dy);
+                void recordOverlayTelemetry('overlay_drag', {
+                  row_index: overlayPositionRow,
+                  placement_model: placementModel,
+                  prev_x_pct: prevPos?.x_pct ?? null,
+                  prev_y_pct: prevPos?.y_pct ?? null,
+                  prev_size_pct: prevSize ?? null,
+                  new_x_pct: Number(pos.x_pct.toFixed(2)),
+                  new_y_pct: Number(pos.y_pct.toFixed(2)),
+                  new_size_pct: Number(size.toFixed(2)),
+                  drag_distance_pct: Number(dragDistancePct.toFixed(2)),
+                });
+              }
+              if (sizeChanged || stretchChanged) {
+                void recordOverlayTelemetry('overlay_resize', {
+                  row_index: overlayPositionRow,
+                  placement_model: placementModel,
+                  prev_size_pct: prevSize ?? null,
+                  new_size_pct: Number(size.toFixed(2)),
+                  prev_stretched_height_pct: prevStretchedH ?? null,
+                  new_stretched_height_pct:
+                    stretchedH !== null ? Number(stretchedH.toFixed(2)) : null,
+                  free_aspect_used: stretchedH !== null,
+                });
+              }
               updateRow(overlayPositionRow, {
                 overlay_position: pos,
                 overlay_size_pct: size,
@@ -1135,6 +1265,12 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             onReset={() => {
               console.info('[ui overlay-position] reset (editor)', {
                 rowIndex: overlayPositionRow,
+              });
+              const placementModel =
+                state.doc.rows[overlayPositionRow]?.overlay_placement_model ?? 'doc-gen-blind';
+              void recordOverlayTelemetry('overlay_reset', {
+                row_index: overlayPositionRow,
+                placement_model: placementModel,
               });
               updateRow(overlayPositionRow, {
                 overlay_position: undefined,
@@ -1210,6 +1346,10 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                   onClick: () => {
                     console.info('[ui overlay-position] reset (editor context menu)', {
                       rowIndex: i,
+                    });
+                    void recordOverlayTelemetry('overlay_reset', {
+                      row_index: i,
+                      placement_model: row.overlay_placement_model ?? 'doc-gen-blind',
                     });
                     updateRow(i, {
                       overlay_position: undefined,

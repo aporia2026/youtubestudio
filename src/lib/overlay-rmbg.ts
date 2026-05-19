@@ -14,6 +14,7 @@
  * need to poll. Bria typically completes in 1-2 s.
  */
 import { logger } from './logger';
+import { assertSafePublicUrl } from './url-safety';
 
 const REPLICATE_RMBG_URL =
   'https://api.replicate.com/v1/models/bria/remove-background/predictions';
@@ -78,6 +79,18 @@ export async function removeBackground(input: RmbgInput): Promise<Buffer> {
   }
   const outputUrl = Array.isArray(data.output) ? data.output[0] : data.output;
   if (!outputUrl) throw new Error('Replicate RMBG returned no output URL');
+  // SSRF guard on Replicate's response — we trust Replicate's infra,
+  // but a tampered model fork could return an internal URL (AWS IMDS,
+  // 192.168.x.x, .internal). `assertSafePublicUrl` blocks those.
+  // String-only check (not DNS-pinned) is fine here because the
+  // domain set Replicate emits is stable.
+  try {
+    assertSafePublicUrl(outputUrl, { allowedProtocols: ['https:'] });
+  } catch (err) {
+    throw new Error(
+      `Replicate RMBG returned an unsafe URL: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
   const fetched = await fetch(outputUrl);
   if (!fetched.ok) throw new Error(`Failed to fetch RMBG output (${fetched.status})`);
   return Buffer.from(await fetched.arrayBuffer());

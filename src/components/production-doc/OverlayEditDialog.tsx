@@ -38,14 +38,22 @@ import { createPortal } from 'react-dom';
 import { MaskBrushEditor } from './MaskBrushEditor';
 
 interface OverlayEditDialogProps {
-  /** Current overlay URL — used as the source for any edit. */
+  /** Current overlay URL — used as the source for any edit. The
+   *  dialog snapshots this value at mount; subsequent prop changes
+   *  to the SAME mounted dialog (e.g. a parallel Replace updating
+   *  the row's overlay state) DO NOT affect the in-flight edit's
+   *  source, and the `replacedUrl` passed to `onAccept` is always
+   *  the URL the user opened the dialog with. */
   overlayUrl: string;
   /** Terms label shown in the header so the user knows which overlay
    *  they're editing if several rows are open across the doc. */
   termsLabel: string;
   /** Called when the user clicks Accept on a pending edit result.
-   *  The parent persists the new URL to the row. */
-  onAccept: (newOverlayUrl: string, mode: 'smart' | 'brush') => void;
+   *  `replacedUrl` is the snapshot of `overlayUrl` at dialog mount,
+   *  passed back so the parent can push the CORRECT old URL onto the
+   *  edit-history stack — even if a concurrent Replace mutated the
+   *  row's overlay slot between dialog mount and accept. */
+  onAccept: (newOverlayUrl: string, mode: 'smart' | 'brush', replacedUrl: string) => void;
   onClose: () => void;
 }
 
@@ -72,6 +80,16 @@ export function OverlayEditDialog({
    *  edit on top of the model cost. */
   const [autoRmbg, setAutoRmbg] = useState(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  /** Snapshot of the overlay URL the user opened the dialog with.
+   *  Stays stable for the dialog's lifetime even if the row's overlay
+   *  state mutates underneath (e.g., concurrent Replace from the
+   *  context menu). All in-flight edits source from this snapshot,
+   *  and `replacedUrl` reported back to the parent on Accept reflects
+   *  this value — so the parent's edit-history push uses the URL the
+   *  user actually saw + edited, not whatever live state is now. */
+  const sourceUrlRef = useRef(overlayUrl);
+  const sourceUrl = sourceUrlRef.current;
 
   // Lock page scroll while the dialog is open — same pattern as the
   // position editor + transition dialog so this feels like part of
@@ -113,7 +131,7 @@ export function OverlayEditDialog({
     setError(null);
     setIsWorking(true);
     console.info('[overlay edit] smart edit submit', {
-      overlayUrl,
+      overlayUrl: sourceUrl,
       promptLength: promptTrimmed.length,
     });
     try {
@@ -122,7 +140,7 @@ export function OverlayEditDialog({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           mode: 'smart',
-          overlayUrl,
+          overlayUrl: sourceUrl,
           prompt: promptTrimmed,
           rerunRmbg: autoRmbg,
         }),
@@ -143,7 +161,7 @@ export function OverlayEditDialog({
     } finally {
       setIsWorking(false);
     }
-  }, [overlayUrl, smartPrompt, autoRmbg]);
+  }, [sourceUrl, smartPrompt, autoRmbg]);
 
   const applyBrushEdit = useCallback(
     async (args: { maskUrl: string; prompt: string; quality: 'low' | 'medium' | 'high' }) => {
@@ -151,7 +169,7 @@ export function OverlayEditDialog({
       setError(null);
       setIsWorking(true);
       console.info('[overlay edit] brush edit submit', {
-        overlayUrl,
+        overlayUrl: sourceUrl,
         maskUrl: args.maskUrl,
         quality: args.quality,
         promptLength: args.prompt.length,
@@ -162,7 +180,7 @@ export function OverlayEditDialog({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             mode: 'brush',
-            overlayUrl,
+            overlayUrl: sourceUrl,
             prompt: args.prompt,
             mask: { url: args.maskUrl, quality: args.quality },
             rerunRmbg: autoRmbg,
@@ -185,15 +203,19 @@ export function OverlayEditDialog({
         setIsWorking(false);
       }
     },
-    [overlayUrl, autoRmbg],
+    [sourceUrl, autoRmbg],
   );
 
   const acceptPending = useCallback(() => {
     if (!pendingResultUrl || !pendingMode) return;
-    console.info('[overlay edit] accept', { newUrl: pendingResultUrl, mode: pendingMode });
-    onAccept(pendingResultUrl, pendingMode);
+    console.info('[overlay edit] accept', {
+      newUrl: pendingResultUrl,
+      mode: pendingMode,
+      replacedUrl: sourceUrl,
+    });
+    onAccept(pendingResultUrl, pendingMode, sourceUrl);
     onClose();
-  }, [pendingResultUrl, pendingMode, onAccept, onClose]);
+  }, [pendingResultUrl, pendingMode, onAccept, onClose, sourceUrl]);
 
   const discardPending = useCallback(() => {
     console.info('[overlay edit] discard pending result');
@@ -260,7 +282,7 @@ export function OverlayEditDialog({
                   </div>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
-                    src={overlayUrl}
+                    src={sourceUrl}
                     alt="overlay before edit"
                     style={{ width: '100%', height: 240, objectFit: 'contain', background: checkerBg, borderRadius: 6 }}
                   />
@@ -332,7 +354,7 @@ export function OverlayEditDialog({
               <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={overlayUrl}
+                  src={sourceUrl}
                   alt="overlay source"
                   style={{ width: 120, height: 120, objectFit: 'contain', background: checkerBg, borderRadius: 6, flexShrink: 0 }}
                 />
@@ -539,7 +561,7 @@ export function OverlayEditDialog({
           itself by calling its own onCancel before onApply resolves. */}
       {brushOpen && (
         <MaskBrushEditor
-          sourceImageUrl={overlayUrl}
+          sourceImageUrl={sourceUrl}
           onCancel={() => setBrushOpen(false)}
           onApply={(args) => applyBrushEdit(args)}
         />
