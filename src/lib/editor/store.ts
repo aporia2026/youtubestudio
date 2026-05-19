@@ -184,6 +184,26 @@ export type EditorCommand =
       row: ProductionDoc['rows'][number];
       rowImageUrl: string | null;
       mode: 'insert' | 'replace';
+    }
+  /** General-purpose partial-merge of any row fields. Used by the
+   *  overlay-port commit B for placement / size / stretched-height /
+   *  edit-history mutations because those fields don't each warrant
+   *  a first-class command. Inverse captures the OLD values of the
+   *  patched keys so undo restores them exactly. Use sparingly — for
+   *  fields the editor already has dedicated commands for, prefer
+   *  those (they carry richer semantics / better inverses). */
+  | {
+      type: 'PATCH_ROW';
+      rowIndex: number;
+      patch: Partial<ProductionDoc['rows'][number]>;
+    }
+  /** Set or clear the per-row overlay render state (the URL + status
+   *  the renderer reads to composite an overlay). Passing `null`
+   *  clears the slot entirely. Inverse restores the previous state. */
+  | {
+      type: 'SET_ROW_OVERLAY';
+      rowIndex: number;
+      overlay: RowOverlayRenderState | null;
     };
 
 /** Discriminator: editing commands push to the undo stack; non-
@@ -206,6 +226,8 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'ADD_TEXT_OVERLAY':
     case 'UPDATE_TEXT_OVERLAY':
     case 'DELETE_TEXT_OVERLAY':
+    case 'PATCH_ROW':
+    case 'SET_ROW_OVERLAY':
       return true;
     default:
       return false;
@@ -587,6 +609,81 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         next: {
           ...state,
           doc: { ...state.doc, text_overlays: nextOverlays },
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'PATCH_ROW': {
+      const { rowIndex, patch } = cmd;
+      if (rowIndex < 0 || rowIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const row = state.doc.rows[rowIndex];
+      // Build inverse before mutating: capture the OLD value at every
+      // key the patch touches. `undefined` (key absent) round-trips
+      // correctly because the inverse patch sets it back to undefined,
+      // which merges as deletion under the spread below.
+      const patchKeys = Object.keys(patch) as Array<keyof typeof row>;
+      if (patchKeys.length === 0) {
+        return { next: state, inverse: null };
+      }
+      const inversePatch: Partial<typeof row> = {};
+      for (const key of patchKeys) {
+        // Type cast — `inversePatch[key]` is typed to allow only the
+        // corresponding row field's type; TS can't narrow that here.
+        (inversePatch as Record<string, unknown>)[key as string] = row[key];
+      }
+      const nextRow = { ...row, ...patch };
+      const nextRows = state.doc.rows.slice();
+      nextRows[rowIndex] = nextRow;
+      const inverse: EditorCommand = {
+        type: 'PATCH_ROW',
+        rowIndex,
+        patch: inversePatch,
+      };
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'SET_ROW_OVERLAY': {
+      const { rowIndex, overlay } = cmd;
+      const prev = state.rowOverlays[rowIndex] ?? null;
+      // No-op when the slot's content is unchanged (same reference
+      // OR structurally equal). The shallow-equality check below
+      // catches the common "same URL + same status" case so a save
+      // doesn't fire for what's effectively a re-render.
+      if (
+        prev === overlay ||
+        (prev !== null &&
+          overlay !== null &&
+          prev.url === overlay.url &&
+          prev.status === overlay.status)
+      ) {
+        return { next: state, inverse: null };
+      }
+      const nextOverlays = { ...state.rowOverlays };
+      if (overlay === null) {
+        delete nextOverlays[rowIndex];
+      } else {
+        nextOverlays[rowIndex] = overlay;
+      }
+      const inverse: EditorCommand = {
+        type: 'SET_ROW_OVERLAY',
+        rowIndex,
+        overlay: prev,
+      };
+      return {
+        next: {
+          ...state,
+          rowOverlays: nextOverlays,
           isDirty: true,
         },
         inverse,

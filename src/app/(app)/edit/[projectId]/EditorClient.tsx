@@ -47,6 +47,13 @@ import { VoiceoverDriftReport } from '@/components/editor/VoiceoverDriftReport';
 import { TextOverlayManager } from '@/components/editor/TextOverlayManager';
 import { VoiceoverRegenModal } from '@/components/editor/VoiceoverRegenModal';
 import { RegenerateFromScriptModal } from '@/components/editor/RegenerateFromScriptModal';
+// Phase 5.2 overlay-port (commit B): the position editor, the AI edit
+// dialog, and the right-click context menu are shared with the
+// production-doc page. Mounting them here means every overlay control
+// works identically across both editing surfaces.
+import { OverlayPositionEditor } from '@/components/production-doc/OverlayPositionEditor';
+import { OverlayEditDialog } from '@/components/production-doc/OverlayEditDialog';
+import { OverlayContextMenu } from '@/components/production-doc/OverlayContextMenu';
 
 interface EditorClientProps {
   projectId: string;
@@ -225,6 +232,321 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     }
   }, [flushSave, projectId, reloadFromServer, state.voiceoverUrl]);
 
+
+  // ─── Phase 5.2 overlay-port (commit B) ───────────────────────────
+  //
+  // Overlay state + handlers mirror production-doc/page.tsx but route
+  // mutations through the editor store's `PATCH_ROW` and
+  // `SET_ROW_OVERLAY` commands. The auto-save + undo stack pick up
+  // every overlay change for free.
+  const [overlayPositionRow, setOverlayPositionRow] = useState<number | null>(null);
+  const [overlayEditRow, setOverlayEditRow] = useState<number | null>(null);
+  const [overlayContextMenu, setOverlayContextMenu] = useState<{
+    rowIndex: number;
+    x: number;
+    y: number;
+  } | null>(null);
+  const RETHINK_MAX_ATTEMPTS = 5;
+  const OVERLAY_EDIT_HISTORY_CAP = 3;
+  const [rethinkAttempts, setRethinkAttempts] = useState<Record<number, number>>({});
+  const [rethinkingRows, setRethinkingRows] = useState<Set<number>>(() => new Set());
+
+  /** Thin adapter so the ported handlers below read like their
+   *  production-doc counterparts. Routes through PATCH_ROW so the
+   *  edit lands on the undo stack + auto-save fires. */
+  const updateRow = useCallback(
+    (rowIndex: number, patch: Partial<ProductionDoc['rows'][number]>) => {
+      apply({ type: 'PATCH_ROW', rowIndex, patch });
+    },
+    [apply],
+  );
+  /** Set / clear the per-row overlay render state. Same auto-save +
+   *  undo guarantees as updateRow. */
+  const setRowOverlay = useCallback(
+    (rowIndex: number, overlay: RowOverlayRenderState | null) => {
+      apply({ type: 'SET_ROW_OVERLAY', rowIndex, overlay });
+    },
+    [apply],
+  );
+
+  /** Phase 3 — Rethink. Mirrors production-doc's rethinkOverlayPlacement
+   *  with the editor's state shape. */
+  const rethinkOverlayPlacement = useCallback(
+    async (rowIndex: number): Promise<void> => {
+      const overlayState = state.rowOverlays[rowIndex];
+      if (overlayState?.status !== 'done' || !overlayState.url) {
+        console.warn('[ui overlay-rethink] no overlay to rethink', {
+          rowIndex,
+          status: overlayState?.status,
+        });
+        return;
+      }
+      const attempts = rethinkAttempts[rowIndex] ?? 0;
+      if (attempts >= RETHINK_MAX_ATTEMPTS) {
+        alert(
+          `AI rethink limit reached for this overlay (${RETHINK_MAX_ATTEMPTS}/session). Reload the page to reset.`,
+        );
+        return;
+      }
+      const row = state.doc.rows[rowIndex];
+      if (!row) return;
+      const sceneImageUrl = state.rowImages[rowIndex];
+      if (!sceneImageUrl) {
+        alert(
+          'Generate the row image first — the AI needs to see the scene before it can rethink the overlay placement.',
+        );
+        return;
+      }
+      const saliencyMap = row.image_saliency;
+      const saliencyCells = saliencyMap
+        ? Array.from({ length: saliencyMap.cols * saliencyMap.rows }, (_, idx) => ({
+            row: Math.floor(idx / saliencyMap.cols),
+            col: idx % saliencyMap.cols,
+            score: saliencyMap.busyness[idx] ?? 0,
+          }))
+        : undefined;
+      const prevMode: 'zone' | 'custom' =
+        row.overlay_position &&
+        typeof row.overlay_position.x_pct === 'number' &&
+        typeof row.overlay_position.y_pct === 'number'
+          ? 'custom'
+          : 'zone';
+      const previousDecision = {
+        sizePct:
+          typeof row.overlay_size_pct === 'number'
+            ? row.overlay_size_pct
+            : row.overlay_size === 'small'
+              ? 12
+              : row.overlay_size === 'large'
+                ? 25
+                : 18,
+        mode: prevMode,
+        zone: row.overlay_zone_resolved ?? row.overlay_zone,
+        customXPct: row.overlay_position?.x_pct,
+        customYPct: row.overlay_position?.y_pct,
+        reason: row.overlay_placement_reason ?? '',
+      };
+      console.info('[ui overlay-rethink] request', {
+        rowIndex,
+        attempt: attempts + 1,
+        previousMode: prevMode,
+        previousZone: previousDecision.zone,
+        previousSize: previousDecision.sizePct,
+      });
+      setRethinkingRows((prev) => {
+        const next = new Set(prev);
+        next.add(rowIndex);
+        return next;
+      });
+      try {
+        const res = await fetch('/api/overlay/fetch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'placement-only',
+            existingOverlayUrl: overlayState.url,
+            sceneImageUrl,
+            saliencyCells,
+            previousDecision,
+          }),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          placement?: {
+            model: string;
+            sizePct: number;
+            mode: 'zone' | 'custom';
+            zone?: ProductionDoc['rows'][number]['overlay_zone'];
+            customXPct?: number;
+            customYPct?: number;
+            reason: string;
+          };
+          error?: string;
+          reason?: string;
+        };
+        if (!res.ok || !data.placement) {
+          alert(`Rethink failed: ${data.error || data.reason || `HTTP ${res.status}`}`);
+          return;
+        }
+        const p = data.placement;
+        console.info('[ui overlay-rethink] applied', {
+          rowIndex,
+          attempt: attempts + 1,
+          model: p.model,
+          sizePct: p.sizePct,
+          mode: p.mode,
+          zone: p.zone,
+          reason: p.reason,
+        });
+        updateRow(rowIndex, {
+          overlay_size_pct: p.sizePct,
+          overlay_position:
+            p.mode === 'custom' &&
+            typeof p.customXPct === 'number' &&
+            typeof p.customYPct === 'number'
+              ? { x_pct: p.customXPct, y_pct: p.customYPct }
+              : undefined,
+          ...(p.mode === 'zone' && p.zone ? { overlay_zone: p.zone } : {}),
+          overlay_placement_reason: p.reason || undefined,
+          overlay_placement_model: p.model,
+        });
+        setRethinkAttempts((prev) => ({ ...prev, [rowIndex]: attempts + 1 }));
+      } catch (err) {
+        console.warn('[ui overlay-rethink] threw', {
+          rowIndex,
+          detail: err instanceof Error ? err.message : String(err),
+        });
+        alert('Rethink failed — see console for details.');
+      } finally {
+        setRethinkingRows((prev) => {
+          const next = new Set(prev);
+          next.delete(rowIndex);
+          return next;
+        });
+      }
+    },
+    [state.rowOverlays, state.doc.rows, state.rowImages, rethinkAttempts, updateRow],
+  );
+
+  /** Phase 5.1 — Undo last AI edit. Pops the row's
+   *  overlay_edit_history stack and swaps the previous URL back in. */
+  const undoOverlayEdit = useCallback(
+    (rowIndex: number) => {
+      const row = state.doc.rows[rowIndex];
+      const history = row?.overlay_edit_history;
+      if (!row || !history || history.length === 0) {
+        console.warn('[ui overlay-edit] undo skipped — no history', { rowIndex });
+        return;
+      }
+      const previousUrl = history[history.length - 1]!;
+      const nextHistory = history.slice(0, -1);
+      console.info('[ui overlay-edit] undo', {
+        rowIndex,
+        restoredUrl: previousUrl,
+        remainingHistory: nextHistory.length,
+      });
+      updateRow(rowIndex, { overlay_edit_history: nextHistory });
+      setRowOverlay(rowIndex, {
+        ...(state.rowOverlays[rowIndex] ?? { status: 'done' }),
+        status: 'done',
+        url: previousUrl,
+      });
+    },
+    [state.doc.rows, state.rowOverlays, updateRow, setRowOverlay],
+  );
+
+  /** Phase 5 — accept callback for OverlayEditDialog. Pushes the
+   *  replaced URL onto the row's edit-history stack (cap 3) and
+   *  swaps in the new URL. */
+  const handleOverlayEditAccept = useCallback(
+    (newOverlayUrl: string, mode: 'smart' | 'brush') => {
+      const rowIndex = overlayEditRow;
+      if (rowIndex === null) return;
+      const replacedUrl = state.rowOverlays[rowIndex]?.url;
+      const prevHistory = state.doc.rows[rowIndex]?.overlay_edit_history ?? [];
+      const nextHistory = replacedUrl
+        ? [...prevHistory, replacedUrl].slice(-OVERLAY_EDIT_HISTORY_CAP)
+        : prevHistory;
+      console.info('[ui overlay-edit] accepted', {
+        rowIndex,
+        mode,
+        newOverlayUrl,
+        replacedUrl,
+        historyDepthAfter: nextHistory.length,
+      });
+      updateRow(rowIndex, { overlay_edit_history: nextHistory });
+      setRowOverlay(rowIndex, {
+        ...(state.rowOverlays[rowIndex] ?? { status: 'done' }),
+        status: 'done',
+        url: newOverlayUrl,
+      });
+    },
+    [overlayEditRow, state.rowOverlays, state.doc.rows, updateRow, setRowOverlay],
+  );
+
+  /** Phase 5.2 — Replace overlay (re-search). Mirrors production-doc's
+   *  fetchOverlayForRow but only handles the response path; the editor
+   *  doesn't initiate fetches from scratch (overlays arrive pre-fetched
+   *  via the saved payload). */
+  const replaceOverlayForRow = useCallback(
+    async (rowIndex: number) => {
+      const row = state.doc.rows[rowIndex];
+      const terms = row?.overlay_stock_terms?.trim();
+      if (!terms) {
+        console.warn('[ui overlay-replace] skipped — no stock terms', { rowIndex });
+        return;
+      }
+      setRowOverlay(rowIndex, { status: 'loading' });
+      try {
+        const sceneImageUrl = state.rowImages[rowIndex];
+        const saliencyMap = row.image_saliency;
+        const saliencyCells = saliencyMap
+          ? Array.from({ length: saliencyMap.cols * saliencyMap.rows }, (_, idx) => ({
+              row: Math.floor(idx / saliencyMap.cols),
+              col: idx % saliencyMap.cols,
+              score: saliencyMap.busyness[idx] ?? 0,
+            }))
+          : undefined;
+        const res = await fetch('/api/overlay/fetch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ overlayStockTerms: terms, sceneImageUrl, saliencyCells }),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          overlayUrl?: string | null;
+          sourceUrl?: string;
+          reason?: string;
+          error?: string;
+          placement?: {
+            model: string;
+            sizePct: number;
+            mode: 'zone' | 'custom';
+            zone?: ProductionDoc['rows'][number]['overlay_zone'];
+            customXPct?: number;
+            customYPct?: number;
+            reason: string;
+          };
+          rmbgKept?: boolean;
+        };
+        if (!res.ok) {
+          setRowOverlay(rowIndex, {
+            status: 'error',
+            url: undefined,
+          });
+          return;
+        }
+        if (data.overlayUrl) {
+          setRowOverlay(rowIndex, { status: 'done', url: data.overlayUrl });
+          const p = data.placement;
+          if (p) {
+            updateRow(rowIndex, {
+              overlay_size_pct: p.sizePct,
+              overlay_position:
+                p.mode === 'custom' &&
+                typeof p.customXPct === 'number' &&
+                typeof p.customYPct === 'number'
+                  ? { x_pct: p.customXPct, y_pct: p.customYPct }
+                  : undefined,
+              ...(p.mode === 'zone' && p.zone ? { overlay_zone: p.zone } : {}),
+              overlay_placement_reason: p.reason || undefined,
+              overlay_placement_model: p.model,
+              overlay_rmbg_kept: typeof data.rmbgKept === 'boolean' ? data.rmbgKept : undefined,
+            });
+          } else if (typeof data.rmbgKept === 'boolean') {
+            updateRow(rowIndex, { overlay_rmbg_kept: data.rmbgKept });
+          }
+        } else {
+          setRowOverlay(rowIndex, { status: 'skipped' });
+        }
+      } catch (err) {
+        console.warn('[ui overlay-replace] threw', {
+          rowIndex,
+          detail: err instanceof Error ? err.message : String(err),
+        });
+        setRowOverlay(rowIndex, { status: 'error' });
+      }
+    },
+    [state.doc.rows, state.rowImages, setRowOverlay, updateRow],
+  );
 
   // Derive the VideoConfig the player will render. Memoized so the
   // Remotion player's inputProps reference is stable across renders
@@ -715,6 +1037,21 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                 text,
               })
             }
+            overlayState={state.rowOverlays[state.selection]}
+            isRethinkingOverlay={rethinkingRows.has(state.selection)}
+            rethinkExhausted={(rethinkAttempts[state.selection] ?? 0) >= RETHINK_MAX_ATTEMPTS}
+            editHistoryDepth={
+              state.doc.rows[state.selection]?.overlay_edit_history?.length ?? 0
+            }
+            onOpenOverlayPosition={() => setOverlayPositionRow(state.selection)}
+            onOpenOverlayEdit={() => setOverlayEditRow(state.selection)}
+            onRethinkOverlay={() => {
+              void rethinkOverlayPlacement(state.selection as number);
+            }}
+            onUndoOverlayEdit={() => undoOverlayEdit(state.selection as number)}
+            onShowOverlayContextMenu={(x, y) =>
+              setOverlayContextMenu({ rowIndex: state.selection as number, x, y })
+            }
           />
         )}
       </div>
@@ -754,6 +1091,171 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         <strong style={{ color: 'var(--fg)' }}>Mute</strong> select + M.{' '}
         Cmd / Ctrl+Z undoes anything.
       </div>
+
+      {/* Phase 5.2 overlay-port — three modal surfaces mount here so
+          every overlay action in the editor reuses the same UI the
+          production-doc page uses. Each is gated by its own state
+          slot so only one shows at a time. */}
+      {overlayPositionRow !== null &&
+        state.doc.rows[overlayPositionRow] &&
+        state.rowOverlays[overlayPositionRow]?.status === 'done' &&
+        state.rowOverlays[overlayPositionRow]?.url && (
+          <OverlayPositionEditor
+            stillImageUrl={state.rowImages[overlayPositionRow]}
+            overlayUrl={state.rowOverlays[overlayPositionRow]!.url!}
+            position={state.doc.rows[overlayPositionRow]!.overlay_position}
+            sizePct={state.doc.rows[overlayPositionRow]!.overlay_size_pct}
+            stretchedHeightPct={
+              state.doc.rows[overlayPositionRow]!.overlay_stretched_height_pct
+            }
+            termsLabel={state.doc.rows[overlayPositionRow]!.overlay_stock_terms || ''}
+            placementReason={state.doc.rows[overlayPositionRow]!.overlay_placement_reason}
+            placementModel={state.doc.rows[overlayPositionRow]!.overlay_placement_model}
+            onRethink={() => {
+              void rethinkOverlayPlacement(overlayPositionRow);
+            }}
+            isRethinking={rethinkingRows.has(overlayPositionRow)}
+            rethinkExhausted={
+              (rethinkAttempts[overlayPositionRow] ?? 0) >= RETHINK_MAX_ATTEMPTS
+            }
+            onEditImage={() => setOverlayEditRow(overlayPositionRow)}
+            onSave={(pos, size, stretchedH) => {
+              console.info('[ui overlay-position] saved (editor)', {
+                rowIndex: overlayPositionRow,
+                pos,
+                size,
+                stretchedH,
+              });
+              updateRow(overlayPositionRow, {
+                overlay_position: pos,
+                overlay_size_pct: size,
+                overlay_stretched_height_pct: stretchedH ?? undefined,
+              });
+            }}
+            onReset={() => {
+              console.info('[ui overlay-position] reset (editor)', {
+                rowIndex: overlayPositionRow,
+              });
+              updateRow(overlayPositionRow, {
+                overlay_position: undefined,
+                overlay_size_pct: undefined,
+                overlay_stretched_height_pct: undefined,
+              });
+            }}
+            onClose={() => setOverlayPositionRow(null)}
+          />
+        )}
+
+      {overlayEditRow !== null &&
+        state.rowOverlays[overlayEditRow]?.status === 'done' &&
+        state.rowOverlays[overlayEditRow]?.url && (
+          <OverlayEditDialog
+            overlayUrl={state.rowOverlays[overlayEditRow]!.url!}
+            termsLabel={state.doc.rows[overlayEditRow]?.overlay_stock_terms || ''}
+            onAccept={handleOverlayEditAccept}
+            onClose={() => setOverlayEditRow(null)}
+          />
+        )}
+
+      {overlayContextMenu &&
+        state.doc.rows[overlayContextMenu.rowIndex] &&
+        (() => {
+          const i = overlayContextMenu.rowIndex;
+          const row = state.doc.rows[i]!;
+          const overlayState = state.rowOverlays[i];
+          const canUndo = (row.overlay_edit_history?.length ?? 0) > 0;
+          return (
+            <OverlayContextMenu
+              x={overlayContextMenu.x}
+              y={overlayContextMenu.y}
+              onClose={() => setOverlayContextMenu(null)}
+              items={[
+                {
+                  label: '✎ Edit image',
+                  onClick: () => setOverlayEditRow(i),
+                  disabled: overlayState?.status !== 'done',
+                  title: 'Open the AI image-edit dialog',
+                },
+                {
+                  label: '↻ Rethink placement',
+                  onClick: () => {
+                    void rethinkOverlayPlacement(i);
+                  },
+                  disabled:
+                    overlayState?.status !== 'done' ||
+                    rethinkingRows.has(i) ||
+                    (rethinkAttempts[i] ?? 0) >= RETHINK_MAX_ATTEMPTS,
+                  title: 'Ask the AI for a new size + position',
+                },
+                {
+                  label: '🔁 Replace overlay (re-search)',
+                  onClick: () => {
+                    void replaceOverlayForRow(i);
+                  },
+                  disabled: !row.overlay_stock_terms?.trim(),
+                  title:
+                    'Re-run Brave search + RMBG with the same stock terms (replaces the current overlay)',
+                },
+                {
+                  label: '↶ Undo last edit',
+                  onClick: () => undoOverlayEdit(i),
+                  disabled: !canUndo,
+                  separatorAbove: true,
+                  title: canUndo
+                    ? 'Restore the overlay from before the most recent AI edit'
+                    : 'No edits to undo yet',
+                },
+                {
+                  label: '↺ Reset to AI placement',
+                  onClick: () => {
+                    console.info('[ui overlay-position] reset (editor context menu)', {
+                      rowIndex: i,
+                    });
+                    updateRow(i, {
+                      overlay_position: undefined,
+                      overlay_size_pct: undefined,
+                      overlay_stretched_height_pct: undefined,
+                    });
+                  },
+                  disabled:
+                    !row.overlay_position &&
+                    row.overlay_size_pct === undefined &&
+                    row.overlay_stretched_height_pct === undefined,
+                  separatorAbove: true,
+                  title: 'Clear manual position / size / stretch and fall back to the AI pick',
+                },
+                {
+                  label: '✕ Remove overlay',
+                  onClick: () => {
+                    const ok = window.confirm(
+                      'Remove the overlay entirely?\n\nThis clears the stock terms, the fetched image, AI placement, edits, and undo history for this row. The row\'s scene image stays. You can re-add by typing new stock terms.',
+                    );
+                    if (!ok) return;
+                    console.info('[ui overlay] removed (editor context menu)', { rowIndex: i });
+                    setRowOverlay(i, null);
+                    updateRow(i, {
+                      overlay_stock_terms: undefined,
+                      overlay_zone: undefined,
+                      overlay_size: undefined,
+                      overlay_zone_resolved: undefined,
+                      overlay_size_resolved: undefined,
+                      overlay_position: undefined,
+                      overlay_size_pct: undefined,
+                      overlay_stretched_height_pct: undefined,
+                      overlay_placement_reason: undefined,
+                      overlay_placement_model: undefined,
+                      overlay_rmbg_kept: undefined,
+                      overlay_edit_history: undefined,
+                    });
+                  },
+                  destructive: true,
+                  title:
+                    'Clear all overlay state on this row (stock terms, image, placement, history)',
+                },
+              ]}
+            />
+          );
+        })()}
     </div>
   );
 }

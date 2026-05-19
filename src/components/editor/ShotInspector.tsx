@@ -17,7 +17,7 @@
  */
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ProductionDoc } from '@/remotion/utils';
+import type { ProductionDoc, RowOverlayRenderState } from '@/remotion/utils';
 import type { VideoShot } from '@/remotion/types';
 
 /** A clip from /api/broll. Trimmed to the fields the picker needs. */
@@ -54,6 +54,31 @@ interface ShotInspectorProps {
    *  textarea OR via the AI rephrase button). Dispatches
    *  SET_ROW_SCRIPT. */
   onUpdateScript?: (text: string) => void;
+  // ─── Phase 5.2 overlay-port — props for the overlay control surface ──
+  /** The row's current overlay state (URL + status). When absent or
+   *  not `done`, the overlay section in the inspector hides its
+   *  action buttons (nothing to position / edit / rethink yet). */
+  overlayState?: RowOverlayRenderState;
+  /** True while a rethink request is in flight for this row — the
+   *  Rethink button collapses to a busy state. */
+  isRethinkingOverlay?: boolean;
+  /** True when this row has burned its session rethink budget — the
+   *  Rethink button greys out with a "reload to reset" tooltip. */
+  rethinkExhausted?: boolean;
+  /** Number of prior overlay URLs on the row's `overlay_edit_history`
+   *  stack. 0 hides Undo; ≥2 surfaces the count badge. */
+  editHistoryDepth?: number;
+  /** Open the position editor (drag-and-drop + 8 resize handles). */
+  onOpenOverlayPosition?: () => void;
+  /** Open the AI image-edit dialog (Smart edit / Brush mask). */
+  onOpenOverlayEdit?: () => void;
+  /** Re-run vision placement on the current overlay. */
+  onRethinkOverlay?: () => void;
+  /** Pop the row's edit-history stack — undo the most recent AI edit. */
+  onUndoOverlayEdit?: () => void;
+  /** Open the right-click context menu at the cursor coords. The
+   *  parent renders OverlayContextMenu at the given (x, y). */
+  onShowOverlayContextMenu?: (x: number, y: number) => void;
 }
 
 function fmt(ms: number | undefined): string {
@@ -74,7 +99,18 @@ export function ShotInspector({
   onUploadImage,
   onPickProjectClip,
   onUpdateScript,
+  overlayState,
+  isRethinkingOverlay,
+  rethinkExhausted,
+  editHistoryDepth,
+  onOpenOverlayPosition,
+  onOpenOverlayEdit,
+  onRethinkOverlay,
+  onUndoOverlayEdit,
+  onShowOverlayContextMenu,
 }: ShotInspectorProps): React.ReactElement {
+  const undoDepth = editHistoryDepth ?? 0;
+  const overlayReady = overlayState?.status === 'done' && Boolean(overlayState.url);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadState, setUploadState] = useState<
     | { kind: 'idle' }
@@ -625,6 +661,177 @@ export function ShotInspector({
               <div className="tabular-nums" style={{ color: 'var(--fg-muted)' }}>
                 Head: {fmt(row.trim_start_ms)} · Tail: {fmt(row.trim_end_ms)}
               </div>
+            </div>
+          )}
+
+          {/* Phase 5.2 overlay-port — controls for the per-row image
+              overlay. Visible when the row's doc-gen pass produced
+              overlay stock terms. The action buttons require the
+              overlay to be `done` (URL ready). Right-click on the
+              section header opens the full context menu. */}
+          {row.overlay_stock_terms?.trim() && (
+            <div
+              onContextMenu={
+                onShowOverlayContextMenu && overlayReady
+                  ? (e) => {
+                      e.preventDefault();
+                      onShowOverlayContextMenu(e.clientX, e.clientY);
+                    }
+                  : undefined
+              }
+              className="p-3 rounded border space-y-2"
+              style={{ borderColor: 'var(--card-border)' }}
+            >
+              <div className="flex items-center gap-2">
+                <span className="font-medium" style={{ color: '#fbbf24' }}>
+                  ✦ Overlay
+                </span>
+                <span
+                  className="text-[10px] truncate"
+                  style={{ color: 'var(--fg-muted)', maxWidth: 220 }}
+                  title={row.overlay_stock_terms}
+                >
+                  {row.overlay_stock_terms}
+                </span>
+              </div>
+              {overlayState?.status === 'loading' && (
+                <div className="text-[11px]" style={{ color: 'var(--fg-muted)' }}>
+                  fetching…
+                </div>
+              )}
+              {overlayState?.status === 'skipped' && (
+                <div className="text-[11px]" style={{ color: '#f87171' }}>
+                  ⚠ No usable image found
+                </div>
+              )}
+              {overlayState?.status === 'error' && (
+                <div className="text-[11px]" style={{ color: '#f87171' }}>
+                  ⚠ Fetch failed
+                </div>
+              )}
+              {overlayReady && overlayState?.url && (
+                <>
+                  <div className="flex items-center gap-2">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={overlayState.url}
+                      alt={row.overlay_stock_terms}
+                      style={{
+                        maxWidth: 60,
+                        maxHeight: 40,
+                        objectFit: 'contain',
+                        background:
+                          'repeating-conic-gradient(rgba(255,255,255,0.06) 0% 25%, transparent 0% 50%) 50% / 8px 8px',
+                        borderRadius: 3,
+                      }}
+                    />
+                    {row.overlay_placement_reason && (
+                      <span
+                        className="text-[10px] italic"
+                        style={{ color: 'var(--fg-muted)', lineHeight: 1.4 }}
+                        title={
+                          row.overlay_placement_model
+                            ? `Placement by ${row.overlay_placement_model}`
+                            : undefined
+                        }
+                      >
+                        <span style={{ color: '#a78bfa' }}>AI: </span>
+                        {row.overlay_placement_reason}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {onOpenOverlayPosition && (
+                      <button
+                        type="button"
+                        onClick={onOpenOverlayPosition}
+                        className="text-[11px] px-2 py-1 rounded"
+                        style={{
+                          background: row.overlay_position
+                            ? 'rgba(168,85,247,0.16)'
+                            : 'rgba(255,255,255,0.04)',
+                          color: row.overlay_position ? '#c084fc' : 'var(--fg-muted)',
+                          border: `1px solid ${row.overlay_position ? 'rgba(168,85,247,0.35)' : 'rgba(255,255,255,0.10)'}`,
+                          cursor: 'pointer',
+                        }}
+                        title={
+                          row.overlay_position
+                            ? 'Open the drag-and-drop editor — position is currently manual'
+                            : 'Open the drag-and-drop editor + 8 resize handles'
+                        }
+                      >
+                        {row.overlay_position ? '✋ Position (manual)' : '✋ Position…'}
+                      </button>
+                    )}
+                    {onRethinkOverlay && (
+                      <button
+                        type="button"
+                        onClick={onRethinkOverlay}
+                        disabled={isRethinkingOverlay || rethinkExhausted}
+                        className="text-[11px] px-2 py-1 rounded"
+                        style={{
+                          background: rethinkExhausted
+                            ? 'rgba(255,255,255,0.02)'
+                            : 'rgba(99,102,241,0.14)',
+                          color: rethinkExhausted ? 'rgba(255,255,255,0.30)' : '#a5b4fc',
+                          border: `1px solid ${rethinkExhausted ? 'rgba(255,255,255,0.06)' : 'rgba(99,102,241,0.32)'}`,
+                          cursor:
+                            isRethinkingOverlay || rethinkExhausted ? 'not-allowed' : 'pointer',
+                          opacity: isRethinkingOverlay ? 0.7 : 1,
+                        }}
+                        title={
+                          rethinkExhausted
+                            ? 'Rethink limit reached this session — reload to reset'
+                            : isRethinkingOverlay
+                              ? 'Asking the AI for a new placement…'
+                              : 'Ask the AI to rethink size + position'
+                        }
+                      >
+                        {isRethinkingOverlay ? '↻ …' : '↻ Rethink'}
+                      </button>
+                    )}
+                    {onOpenOverlayEdit && (
+                      <button
+                        type="button"
+                        onClick={onOpenOverlayEdit}
+                        className="text-[11px] px-2 py-1 rounded"
+                        style={{
+                          background: 'rgba(168,85,247,0.14)',
+                          color: '#c084fc',
+                          border: '1px solid rgba(168,85,247,0.30)',
+                          cursor: 'pointer',
+                        }}
+                        title="Edit this overlay image with AI (Smart edit or Brush mask)"
+                      >
+                        ✎ Edit
+                      </button>
+                    )}
+                    {onUndoOverlayEdit && undoDepth > 0 && (
+                      <button
+                        type="button"
+                        onClick={onUndoOverlayEdit}
+                        className="text-[11px] px-2 py-1 rounded"
+                        style={{
+                          background: 'rgba(255,255,255,0.04)',
+                          color: 'var(--fg-muted)',
+                          border: '1px solid rgba(255,255,255,0.10)',
+                          cursor: 'pointer',
+                        }}
+                        title={
+                          undoDepth === 1
+                            ? 'Undo the most recent AI edit'
+                            : `Undo the most recent AI edit (${undoDepth} stored — click again to step back)`
+                        }
+                      >
+                        {undoDepth > 1 ? `↶ Undo (${undoDepth})` : '↶ Undo'}
+                      </button>
+                    )}
+                  </div>
+                  <div className="text-[10px]" style={{ color: 'var(--fg-muted)' }}>
+                    Right-click for more actions (Replace / Reset / Remove).
+                  </div>
+                </>
+              )}
             </div>
           )}
 
