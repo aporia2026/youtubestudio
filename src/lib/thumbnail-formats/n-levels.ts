@@ -307,7 +307,7 @@ The levels array MUST contain EXACTLY ${count} entries, in narrative order.`;
   userParts.push(`**Title topic (suggested):** ${titleTopic}`);
   if (tagline) userParts.push(`**Title tagline:** ${tagline}`);
   if (description) userParts.push(`**Video Description:** ${description.slice(0, 500)}`);
-  if (script) userParts.push(`**Script Excerpt (for context):** ${script.slice(0, 4000)}`);
+  if (script) userParts.push(`**Script (canonical source for level labels — extract the user's exact terminology, in narrative order):** ${script.slice(0, 12000)}`);
   if (usingPrefilled) {
     userParts.push(
       `**Pre-filled labels — use these verbatim, in this order, do not invent new ones:**\n${prefilledLabels!
@@ -380,6 +380,15 @@ VISUAL DOMINANCE — TEXT INSIDE EACH SLICE MUST BE MINIMAL:
 - DO NOT compose multi-element labelled diagrams within a slice.
 - DO NOT pad the slice with ASCII art, fake code, or made-up screen text just to fill space.
 When in doubt: TIGHTER FRAMING with NO supplementary text. The LEVEL heading + label already identify the slice.
+
+SCRIPT FIDELITY — LABELS MUST MATCH WHAT THE USER WROTE:
+- When a script is provided, the script is the canonical source of level content. Read it carefully.
+- If the script names specific level/stage/step phrases (e.g. "Passive Reconnaissance", "Active Probing", "The Foothold"), use those EXACT phrases as level labels — character for character (UPPERCASED) — instead of paraphrasing.
+- Order the levels exactly as the script presents them.
+- DO NOT invent levels the script does not mention.
+- DO NOT collapse two distinct stages the script lists separately into a single level.
+- DO NOT split a single stage the script lists into two levels.
+- If the script lists FEWER stages than the requested level count, pick the additional levels from the most natural adjacent stages the script implies.
 
 TITLE BAR (strict, fixed structure):
 - Pure black background across the full canvas width, filling the bottom 30%.

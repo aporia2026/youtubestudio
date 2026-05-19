@@ -290,6 +290,16 @@ VISUAL DOMINANCE — TEXT MUST BE MINIMAL:
 
 When in doubt: pick a TIGHTER FRAMING with NO supplementary text. The label below the card is where words go.
 
+SCRIPT FIDELITY — TITLES MUST MATCH WHAT THE USER WROTE:
+- When a script is provided, the script is the canonical source of card content. Read it carefully.
+- If the script names specific items, features, events, or things (e.g. "Real-Time Scanning", "Ransomware Protection", "Vulnerability Scanner"), use those EXACT phrases as card labels — character for character — instead of paraphrasing them.
+- Pick cards in the order they appear in the script unless that order is clearly arbitrary.
+- DO NOT invent topics the script does not mention.
+- DO NOT collapse two distinct things the script lists separately into a single card.
+- DO NOT split a single thing the script lists into two cards.
+- If the script lists MORE items than the grid has cells, prioritise the most prominent / most-emphasised ones in the script (typically the first N or the ones with the most detail).
+- If the script lists FEWER items than the grid has cells, pick the additional items from the most natural adjacent concepts the script implies — but mark this clearly with a slight stylistic variation if possible.
+
 The label below each card is short (1–4 words). It identifies the card; it isn't repeated inside the illustration.
 
 A reference image is attached to this message. Match its STRUCTURE precisely (grid layout, gutters, borders, the hand-drawn-feeling label font). Do NOT inherit its specific palette or per-card content — your cards should fit the user's topic, not the reference's topic.
@@ -317,7 +327,7 @@ The cards array MUST contain EXACTLY ${total} entries. The global_palette is opt
   userParts.push(`**Niche:** ${niche}`);
   userParts.push(`**Grid:** ${gridRows} rows × ${gridCols} columns = ${total} cards.`);
   if (description) userParts.push(`**Video Description:** ${description.slice(0, 500)}`);
-  if (script) userParts.push(`**Script Excerpt (for context):** ${script.slice(0, 4000)}`);
+  if (script) userParts.push(`**Script (canonical source for card labels — extract the user's exact terminology):** ${script.slice(0, 12000)}`);
   if (usingPrefilled) {
     userParts.push(
       `**Pre-filled labels — use these verbatim, in this order, do not invent new ones:**\n${prefilledLabels!

@@ -514,6 +514,11 @@ export function TopicCardGridPanel({
               {formatMode === 'pre-fill' && 'You type the labels below; the LLM only fills in icon concepts.'}
               {formatMode === 'one-shot' && 'Generate card list and image back-to-back without a review step.'}
             </p>
+            {formatMode === 'review' && script.trim() && (
+              <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                Tip: if the LLM picks titles that paraphrase your script, switch to <strong>Pre-fill cards</strong> and type the exact labels — the model will only fill in icon concepts and leave your wording intact.
+              </p>
+            )}
           </div>
 
           {formatMode === 'pre-fill' && (

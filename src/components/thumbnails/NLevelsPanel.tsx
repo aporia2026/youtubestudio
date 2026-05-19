@@ -447,6 +447,11 @@ export function NLevelsPanel({
               {formatMode === 'pre-fill' && 'You type the labels below; the LLM only fills in illustrations.'}
               {formatMode === 'one-shot' && 'Generate level list and image back-to-back without a review step.'}
             </p>
+            {formatMode === 'review' && script.trim() && (
+              <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                Tip: if the LLM picks labels that paraphrase your script, switch to <strong>Pre-fill labels</strong> and type the exact stage names — the model will only fill in illustrations and leave your wording intact.
+              </p>
+            )}
           </div>
 
           {formatMode === 'pre-fill' && (
