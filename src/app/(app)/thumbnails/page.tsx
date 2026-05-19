@@ -202,6 +202,13 @@ function ThumbnailsPage() {
   const [format, setFormat] = useState<'free-form' | 'topic-card-grid' | 'n-levels'>('free-form');
   const [formatResult, setFormatResult] = useState<FormatGenerationResult | null>(null);
   const [nLevelsResult, setNLevelsResult] = useState<NLevelsGenerationResult | null>(null);
+  // Titles the user "picked" from the script textarea (select text → click
+  // "Add as title"). When the picked count matches the grid/level count,
+  // the format panels treat these as pre-fill labels — exact text, no LLM
+  // paraphrasing. Lives at the page level because the script textarea is
+  // here while the format panels live to the right.
+  const [pickedLabels, setPickedLabels] = useState<string[]>([]);
+  const scriptRef = useRef<HTMLTextAreaElement>(null);
   // Tracks which format result has already been persisted to history so a
   // re-render or schedule-saver tick doesn't duplicate-save the same image.
   const [savedFormatImageUrl, setSavedFormatImageUrl] = useState<string | null>(null);
@@ -809,7 +816,108 @@ function ThumbnailsPage() {
                 Script (optional)
               </button>
               {showScript && (
-                <textarea className="input-field w-full mt-2" rows={4} placeholder="Paste your script to improve concept relevance..." value={script} onChange={e => setScript(e.target.value)} />
+                <textarea ref={scriptRef} className="input-field w-full mt-2" rows={4} placeholder="Paste your script to improve concept relevance..." value={script} onChange={e => setScript(e.target.value)} />
+              )}
+              {/* Title picker — only meaningful for the grid / n-levels formats.
+                  Select text in the script above and click "Add as title" to
+                  pull the exact wording into the card list. When the picked
+                  count matches the grid/level count, the run uses Pre-fill
+                  mode automatically — guarantees zero label paraphrasing. */}
+              {showScript && (format === 'topic-card-grid' || format === 'n-levels') && (
+                <div className="mt-3 p-2 rounded-lg" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-[11px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                      Pick titles from script
+                    </label>
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      {pickedLabels.length} picked
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1 mb-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const ta = scriptRef.current;
+                        if (!ta) return;
+                        const start = ta.selectionStart;
+                        const end = ta.selectionEnd;
+                        if (start === end) {
+                          toast.error('Select some text in the script first.');
+                          return;
+                        }
+                        // Normalise: collapse whitespace, strip control chars,
+                        // clip to 60 (matches the server-side label cap).
+                        const raw = script.slice(start, end);
+                        const normalized = raw.replace(/\s+/g, ' ').trim().slice(0, 60);
+                        if (!normalized) {
+                          toast.error('Selection is empty after trimming.');
+                          return;
+                        }
+                        setPickedLabels((prev) => [...prev, normalized]);
+                      }}
+                      className="text-[10px] px-2 py-1 rounded"
+                      style={{ background: 'rgba(124,58,237,0.2)', border: '1px solid rgba(124,58,237,0.4)', color: 'var(--accent-purple-bright)' }}
+                    >
+                      + Add selection as title
+                    </button>
+                    {pickedLabels.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setPickedLabels([])}
+                        className="text-[10px] px-2 py-1 rounded"
+                        style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
+                      >
+                        Clear all
+                      </button>
+                    )}
+                  </div>
+                  {pickedLabels.length > 0 && (
+                    <div className="flex flex-col gap-1">
+                      {pickedLabels.map((label, i) => (
+                        <div key={i} className="flex items-center gap-1.5 px-1.5 py-1 rounded" style={{ background: 'var(--bg-card)' }}>
+                          <span className="text-[10px] font-mono w-4 text-right" style={{ color: 'var(--text-muted)' }}>{i + 1}</span>
+                          <span className="text-[11px] flex-1 truncate" style={{ color: 'var(--text-secondary)' }}>{label}</span>
+                          <button
+                            type="button"
+                            onClick={() => setPickedLabels((prev) => {
+                              if (i === 0) return prev;
+                              const next = [...prev];
+                              [next[i - 1], next[i]] = [next[i], next[i - 1]];
+                              return next;
+                            })}
+                            disabled={i === 0}
+                            className="text-[10px] px-1 rounded"
+                            style={{ background: 'var(--bg-secondary)', color: i === 0 ? 'var(--text-muted)' : 'var(--text-secondary)', opacity: i === 0 ? 0.4 : 1 }}
+                            title="Move up"
+                          >↑</button>
+                          <button
+                            type="button"
+                            onClick={() => setPickedLabels((prev) => {
+                              if (i === prev.length - 1) return prev;
+                              const next = [...prev];
+                              [next[i], next[i + 1]] = [next[i + 1], next[i]];
+                              return next;
+                            })}
+                            disabled={i === pickedLabels.length - 1}
+                            className="text-[10px] px-1 rounded"
+                            style={{ background: 'var(--bg-secondary)', color: i === pickedLabels.length - 1 ? 'var(--text-muted)' : 'var(--text-secondary)', opacity: i === pickedLabels.length - 1 ? 0.4 : 1 }}
+                            title="Move down"
+                          >↓</button>
+                          <button
+                            type="button"
+                            onClick={() => setPickedLabels((prev) => prev.filter((_, j) => j !== i))}
+                            className="text-[10px] px-1 rounded"
+                            style={{ background: 'var(--bg-secondary)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}
+                            title="Remove"
+                          >×</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-[9px] mt-1.5" style={{ color: 'var(--text-muted)' }}>
+                    When the picked count matches your grid/level count, the run uses Pre-fill mode automatically — labels are taken from this list verbatim.
+                  </p>
+                </div>
               )}
             </div>
 
@@ -1037,6 +1145,7 @@ function ThumbnailsPage() {
               referenceImageUrl={referenceImageUrl}
               onResultChange={setFormatResult}
               restoredResult={formatResult}
+              pickedLabels={pickedLabels}
             />
           )}
           {format === 'n-levels' && (
@@ -1049,6 +1158,7 @@ function ThumbnailsPage() {
               referenceImageUrl={referenceImageUrl}
               onResultChange={setNLevelsResult}
               restoredResult={nLevelsResult}
+              pickedLabels={pickedLabels}
             />
           )}
           {format === 'free-form' && (

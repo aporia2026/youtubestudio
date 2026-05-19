@@ -92,6 +92,12 @@ interface Props {
    *  state and displays the restored image. Lets the parent re-open a past
    *  Topic Card Grid generation. */
   restoredResult?: FormatGenerationResult | null;
+  /** Titles the user "picked" from the script textarea via the page-level
+   *  selection-to-title picker. When the count matches the grid count, the
+   *  next Step 1 run will use these as pre-fill labels — bypassing the
+   *  LLM's free-form label generation entirely. Empty array = picker
+   *  unused, normal flow. */
+  pickedLabels?: string[];
 }
 
 export function TopicCardGridPanel({
@@ -103,6 +109,7 @@ export function TopicCardGridPanel({
   referenceImageUrl,
   onResultChange,
   restoredResult,
+  pickedLabels = [],
 }: Props) {
   // Grid configuration
   const [gridMode, setGridMode] = useState<'preset' | 'custom'>('preset');
@@ -225,7 +232,19 @@ export function TopicCardGridPanel({
       }
       return;
     }
-    console.info('[thumbnails format-grid cards] requesting', { gridRows, gridCols, modelId, mode: formatMode });
+    // Picked labels take precedence when the count matches the grid count.
+    // The user is signalling "use these exact words". We route the request
+    // as pre-fill with these as the canonical labels, regardless of the
+    // formatMode chip the user has selected.
+    const usePicked = pickedLabels.length === totalCards;
+    const effectiveMode = usePicked ? 'pre-fill' : formatMode;
+    const effectivePrefill = usePicked
+      ? pickedLabels
+      : (formatMode === 'pre-fill' ? prefilledLabelsList : undefined);
+
+    console.info('[thumbnails format-grid cards] requesting', {
+      gridRows, gridCols, modelId, mode: effectiveMode, usingPickedLabels: usePicked,
+    });
     setBusyStep('cards');
     try {
       const res = await fetch('/api/thumbnails/format/topic-card-grid/cards', {
@@ -239,8 +258,8 @@ export function TopicCardGridPanel({
           description: description.trim() || undefined,
           gridRows,
           gridCols,
-          mode: formatMode,
-          prefilledLabels: formatMode === 'pre-fill' ? prefilledLabelsList : undefined,
+          mode: effectiveMode,
+          prefilledLabels: effectivePrefill,
           referenceImageUrl: referenceImageUrl.trim(),
         }),
       });

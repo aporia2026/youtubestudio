@@ -65,6 +65,10 @@ interface Props {
   referenceImageUrl: string;
   onResultChange: (result: NLevelsGenerationResult | null) => void;
   restoredResult?: NLevelsGenerationResult | null;
+  /** Titles the user picked from the script textarea (page-level picker).
+   *  When the count matches the level count, the next Step 1 run uses
+   *  these as pre-fill labels verbatim. Empty = picker unused. */
+  pickedLabels?: string[];
 }
 
 export function NLevelsPanel({
@@ -76,6 +80,7 @@ export function NLevelsPanel({
   referenceImageUrl,
   onResultChange,
   restoredResult,
+  pickedLabels = [],
 }: Props) {
   // Level count
   const [count, setCount] = useState(7);
@@ -176,7 +181,17 @@ export function NLevelsPanel({
       }
       return;
     }
-    console.info('[thumbnails format-n-levels list] requesting', { count, modelId, mode: formatMode });
+    // Picked labels override the formatMode chip when their count matches
+    // the level count — guarantees zero label paraphrasing.
+    const usePicked = pickedLabels.length === count;
+    const effectiveMode = usePicked ? 'pre-fill' : formatMode;
+    const effectivePrefill = usePicked
+      ? pickedLabels
+      : (formatMode === 'pre-fill' ? prefilledLabelsList : undefined);
+
+    console.info('[thumbnails format-n-levels list] requesting', {
+      count, modelId, mode: effectiveMode, usingPickedLabels: usePicked,
+    });
     setBusyStep('list');
     try {
       const res = await fetch('/api/thumbnails/format/n-levels/levels', {
@@ -191,8 +206,8 @@ export function NLevelsPanel({
           count,
           titleTopic: titleTopic.trim(),
           titleTagline: taglineEnabled ? titleTagline.trim() : '',
-          mode: formatMode,
-          prefilledLabels: formatMode === 'pre-fill' ? prefilledLabelsList : undefined,
+          mode: effectiveMode,
+          prefilledLabels: effectivePrefill,
           referenceImageUrl: referenceImageUrl.trim(),
         }),
       });
