@@ -23,6 +23,7 @@ import { toast } from 'sonner';
 import type { ThumbnailRegion, ThumbnailTransitionConfig, VideoThumbnail } from '@/remotion/types';
 import { ThumbnailRegionEditor } from './ThumbnailRegionEditor';
 import { TransitionDialog } from './TransitionDialog';
+import { RegionJsonImportDialog } from './RegionJsonImportDialog';
 
 const ACCEPTED_TYPES = 'image/jpeg,image/png,image/webp';
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
@@ -52,6 +53,11 @@ export function SectionThumbnailCard({ value, onChange }: SectionThumbnailCardPr
   const [dragOver, setDragOver] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const [defaultTransitionOpen, setDefaultTransitionOpen] = useState(false);
+  // Phase D of plan 2026-05-20 — paste-JSON entry point on the card.
+  // Lives next to "Mark / Edit regions" so creators who exported their
+  // regions from the Thumbnails page can bring them in without first
+  // opening the region editor.
+  const [jsonImportOpen, setJsonImportOpen] = useState(false);
 
   const handleSaveRegions = useCallback((regions: ThumbnailRegion[]) => {
     if (!value) return;
@@ -276,6 +282,21 @@ export function SectionThumbnailCard({ value, onChange }: SectionThumbnailCardPr
                 {value.defaultTransition ? '⚙ Default transition' : '⚙ Default transition…'}
               </button>
               <button
+                onClick={() => setJsonImportOpen(true)}
+                title="Paste regions JSON copied from the Thumbnails page (Topic Card Grid / N Levels)."
+                style={{
+                  fontSize: 12,
+                  padding: '6px 12px',
+                  borderRadius: 6,
+                  background: 'transparent',
+                  color: 'var(--text-muted)',
+                  border: '1px solid rgba(255,255,255,0.20)',
+                  cursor: 'pointer',
+                }}
+              >
+                📋 Paste JSON
+              </button>
+              <button
                 onClick={() => setEditorOpen(true)}
                 style={{
                   fontSize: 12,
@@ -354,6 +375,16 @@ export function SectionThumbnailCard({ value, onChange }: SectionThumbnailCardPr
           onSave={handleSaveDefaultTransition}
           onReset={handleResetDefaultTransition}
           onClose={() => setDefaultTransitionOpen(false)}
+        />
+      )}
+
+      {jsonImportOpen && value && (
+        <RegionJsonImportDialog
+          imageWidth={value.width}
+          imageHeight={value.height}
+          existingRegionCount={value.regions.length}
+          onImport={(imported) => onChange({ ...value, regions: imported })}
+          onClose={() => setJsonImportOpen(false)}
         />
       )}
     </div>
