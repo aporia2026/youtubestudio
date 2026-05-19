@@ -788,7 +788,12 @@ function ThumbnailsPage() {
               )}
             </div>
 
-            <ModelSelector value={modelId} onChange={setModelId} label="AI Model" />
+            <ModelSelector
+              value={modelId}
+              onChange={setModelId}
+              label="AI Model"
+              allowedIds={CONCEPT_VISION_MODELS}
+            />
 
             <div>
               <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>Niche</label>

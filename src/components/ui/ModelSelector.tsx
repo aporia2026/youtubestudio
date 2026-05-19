@@ -34,9 +34,21 @@ interface ModelSelectorProps {
   value: string;
   onChange: (modelId: string) => void;
   label?: string;
+  /** Optional allowlist that scopes the picker to specific models. Used by
+   *  feature pages where only a subset of the catalog is relevant — e.g.
+   *  the thumbnails page only ships vision-capable models since every
+   *  request attaches a reference image. When omitted, all AI_MODELS are
+   *  available. */
+  allowedIds?: ReadonlySet<string>;
 }
 
-export function ModelSelector({ value, onChange, label = 'AI Model' }: ModelSelectorProps) {
+export function ModelSelector({ value, onChange, label = 'AI Model', allowedIds }: ModelSelectorProps) {
+  // The list the picker actually operates on. Computed once per render —
+  // small enough that the cost is trivial.
+  const models = useMemo(
+    () => (allowedIds ? AI_MODELS.filter((m) => allowedIds.has(m.id)) : AI_MODELS),
+    [allowedIds],
+  );
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>('all');
@@ -45,7 +57,19 @@ export function ModelSelector({ value, onChange, label = 'AI Model' }: ModelSele
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const selected = AI_MODELS.find(m => m.id === value) || AI_MODELS[0];
+  const selected = models.find(m => m.id === value) || models[0] || AI_MODELS[0];
+
+  // If the parent's `value` falls outside the allowlist (e.g. the user's
+  // workspace default was for a feature that doesn't apply here, or the
+  // allowlist tightened in a release), auto-correct to the first allowed
+  // model. Prevents a silent mismatch between what the dropdown displays
+  // and the modelId the parent actually sends to the API.
+  useEffect(() => {
+    if (!allowedIds) return;
+    if (!value || !allowedIds.has(value)) {
+      if (models[0] && models[0].id !== value) onChange(models[0].id);
+    }
+  }, [allowedIds, value, models, onChange]);
 
   const queryActive = search.trim().length > 0;
 
@@ -53,13 +77,13 @@ export function ModelSelector({ value, onChange, label = 'AI Model' }: ModelSele
   // — used to populate the count badges on each provider tab).
   const providerCounts = useMemo(() => {
     const counts: Record<AIProvider, number> = { anthropic: 0, openai: 0, google: 0, kie: 0, perplexity: 0 };
-    for (const m of AI_MODELS) {
+    for (const m of models) {
       if (tierFilter.size > 0 && !tierFilter.has(m.tier)) continue;
       if (queryActive && rankModel(search, m) === 0) continue;
       counts[m.provider]++;
     }
     return counts;
-  }, [search, tierFilter, queryActive]);
+  }, [models, search, tierFilter, queryActive]);
 
   // Filtered + grouped list to render. When a query is active we sort by
   // rank descending so the best match is at the top — provider grouping is
@@ -68,7 +92,7 @@ export function ModelSelector({ value, onChange, label = 'AI Model' }: ModelSele
   // grouped view feels predictable.
   const grouped = useMemo(() => {
     const scored: Array<{ model: AIModel; rank: number }> = [];
-    for (const m of AI_MODELS) {
+    for (const m of models) {
       if (providerFilter !== 'all' && m.provider !== providerFilter) continue;
       if (tierFilter.size > 0 && !tierFilter.has(m.tier)) continue;
       const rank = rankModel(search, m);
@@ -76,14 +100,14 @@ export function ModelSelector({ value, onChange, label = 'AI Model' }: ModelSele
       scored.push({ model: m, rank });
     }
     if (queryActive) {
-      // Stable sort by rank desc — ties keep the AI_MODELS order.
+      // Stable sort by rank desc — ties keep the source order.
       scored.sort((a, b) => b.rank - a.rank);
     }
     const flat = scored.map((s) => s.model);
     const byProvider: Record<AIProvider, AIModel[]> = { anthropic: [], openai: [], google: [], kie: [], perplexity: [] };
     for (const m of flat) byProvider[m.provider].push(m);
     return { byProvider, flat };
-  }, [search, providerFilter, tierFilter, queryActive]);
+  }, [models, search, providerFilter, tierFilter, queryActive]);
 
   // Reset state on open
   useEffect(() => {
@@ -215,7 +239,7 @@ export function ModelSelector({ value, onChange, label = 'AI Model' }: ModelSele
                     ref={searchRef}
                     value={search}
                     onChange={e => setSearch(e.target.value)}
-                    placeholder={`Search ${AI_MODELS.length} models…`}
+                    placeholder={`Search ${models.length} models…`}
                     className="w-full pl-9 pr-3 py-2 rounded-lg text-sm"
                     style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
                     onKeyDown={e => {
@@ -347,7 +371,7 @@ export function ModelSelector({ value, onChange, label = 'AI Model' }: ModelSele
                 <span><kbd style={kbStyle}>↑</kbd><kbd style={kbStyle}>↓</kbd> navigate</span>
                 <span><kbd style={kbStyle}>↵</kbd> select</span>
                 <span><kbd style={kbStyle}>Esc</kbd> close</span>
-                <span className="ml-auto">{grouped.flat.length} of {AI_MODELS.length}</span>
+                <span className="ml-auto">{grouped.flat.length} of {models.length}</span>
               </div>
             </motion.div>
           </>
