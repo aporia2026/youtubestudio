@@ -26,7 +26,7 @@
  * route decides where to surface the warnings.
  */
 
-import type { AnalyzedVideo } from './types';
+import type { AnalyzedScene, AnalyzedVideo } from './types';
 
 export interface NormalizedAnalysis {
   video: AnalyzedVideo;
@@ -37,28 +37,138 @@ const SCENE_DURATION_TOLERANCE_SECONDS = 2;
 const SCENE_OVERLAP_TOLERANCE_SECONDS = 0.5;
 
 /**
- * Recomputes derived per-pack runtime fields from the scene list and
- * collects consistency warnings about scene boundaries. Does not
- * mutate Gemini's source-of-truth fields (scene boundaries, pack
- * identities, anything operator-visible besides the derived
- * occupies_seconds).
+ * Recomputes derived per-pack runtime fields from the scene list,
+ * applies chapter-aware scene rescaling when scene boundaries overflow
+ * `meta.duration_seconds`, and collects consistency warnings about
+ * anything still inconsistent after the rescale.
+ *
+ * The rescale step is the v1.5.0 fix for the long-standing scene-
+ * overflow defect: Gemini reliably hallucinates scene end-times on
+ * longer montages (Casey's "Make It Count" runs claim 437s of scenes
+ * for a 277s video) but reliably honors the chapter-boundary rule
+ * (chapters DO end at duration_seconds). When chapters are trustworthy
+ * we use them as anchors to proportionally compress scenes that
+ * overflow their chapter — the relative scene durations within a
+ * chapter are preserved, only the absolute scale changes. Lossy but
+ * deterministic; the warning trail records which chapters were
+ * rescaled and by how much.
+ *
+ * Chapter rescale skips when chapters are themselves out of bounds
+ * (don't trust an unreliable anchor) or absent.
  */
 export function normalizeAnalyzedVideo(input: AnalyzedVideo): NormalizedAnalysis {
   const warnings: string[] = [];
   const duration = input.meta.duration_seconds;
 
-  warnings.push(...checkSceneBoundaries(input, duration));
-  warnings.push(...checkChapterBoundaries(input, duration));
-  warnings.push(...checkUnknownScenePackIds(input));
+  // Apply chapter-aware scaling first so the subsequent boundary
+  // checks see the corrected scene list.
+  const { scenes: rescaledScenes, warnings: rescaleWarnings } = rescaleScenesToChapters(input, duration);
+  const rescaled: AnalyzedVideo = { ...input, scenes: rescaledScenes };
+  warnings.push(...rescaleWarnings);
 
-  const occupiesByPack = sumSceneDurationsByPack(input);
-  const style_packs = input.style_packs.map((pack) => {
+  warnings.push(...checkSceneBoundaries(rescaled, duration));
+  warnings.push(...checkChapterBoundaries(rescaled, duration));
+  warnings.push(...checkUnknownScenePackIds(rescaled));
+
+  const occupiesByPack = sumSceneDurationsByPack(rescaled);
+  const style_packs = rescaled.style_packs.map((pack) => {
     const summed = occupiesByPack.get(pack.id) ?? 0;
     return summed === pack.occupies_seconds ? pack : { ...pack, occupies_seconds: summed };
   });
 
-  const video: AnalyzedVideo = { ...input, style_packs };
+  const video: AnalyzedVideo = { ...rescaled, style_packs };
   return { video, warnings };
+}
+
+/**
+ * If chapters are trustworthy (last chapter ends at duration_seconds
+ * within tolerance) and scenes overflow into wrong-time space, scale
+ * each chapter's scenes proportionally to fit within its bounds. Pure
+ * over the input — returns a new scenes array and any per-chapter
+ * rescale notices. When there are no chapters, or chapters themselves
+ * overflow, or scenes already fit, returns the input unchanged.
+ */
+export function rescaleScenesToChapters(
+  input: AnalyzedVideo,
+  duration: number,
+): { scenes: AnalyzedScene[]; warnings: string[] } {
+  const chapters = input.transcript.chapters;
+  const scenes = input.scenes;
+  if (chapters.length === 0 || scenes.length === 0) return { scenes, warnings: [] };
+
+  // Don't rescale against unreliable chapter anchors.
+  const lastChapterEnd = chapters[chapters.length - 1].end;
+  if (Math.abs(lastChapterEnd - duration) > SCENE_DURATION_TOLERANCE_SECONDS) {
+    return { scenes, warnings: [] };
+  }
+  // No-op when scenes already fit — common when Gemini behaves.
+  const lastSceneEnd = scenes[scenes.length - 1].end;
+  if (Math.abs(lastSceneEnd - duration) <= SCENE_DURATION_TOLERANCE_SECONDS) {
+    return { scenes, warnings: [] };
+  }
+
+  // Group scenes by chapter via scene.start. Because scenes claim to
+  // be contiguous (scene[i].start === scene[i-1].end), walking them
+  // in order and assigning to the first chapter whose end exceeds
+  // scene.start is unambiguous in claimed-time space.
+  const groups: Array<{ chapterIdx: number; scenes: AnalyzedScene[] }> = chapters.map((_c, i) => ({
+    chapterIdx: i,
+    scenes: [],
+  }));
+  let sceneIdx = 0;
+  for (let cIdx = 0; cIdx < chapters.length; cIdx++) {
+    const chapter = chapters[cIdx];
+    while (sceneIdx < scenes.length) {
+      const s = scenes[sceneIdx];
+      // A scene is in this chapter if it starts before the chapter
+      // ends, OR if this is the last chapter (sweep up any remainder).
+      const isLastChapter = cIdx === chapters.length - 1;
+      if (!isLastChapter && s.start >= chapter.end) break;
+      groups[cIdx].scenes.push(s);
+      sceneIdx++;
+    }
+  }
+
+  const warnings: string[] = [];
+  const outScenes: AnalyzedScene[] = [];
+  for (const group of groups) {
+    const chapter = chapters[group.chapterIdx];
+    if (group.scenes.length === 0) continue;
+
+    const firstScene = group.scenes[0];
+    const lastScene = group.scenes[group.scenes.length - 1];
+    const claimedSpan = Math.max(0.001, lastScene.end - firstScene.start);
+    const targetSpan = Math.max(0, chapter.end - chapter.start);
+
+    // If this chapter's scenes already fit, leave them untouched.
+    if (Math.abs(claimedSpan - targetSpan) <= SCENE_DURATION_TOLERANCE_SECONDS) {
+      outScenes.push(...group.scenes);
+      continue;
+    }
+
+    const scale = targetSpan / claimedSpan;
+    let cursor = chapter.start;
+    const rescaled = group.scenes.map((scene, i) => {
+      const claimedDuration = Math.max(0, scene.end - scene.start);
+      const newStart = cursor;
+      cursor += claimedDuration * scale;
+      // Snap the very last scene of the chapter exactly to chapter.end
+      // so the contiguity invariant holds even with float drift.
+      const newEnd = i === group.scenes.length - 1 ? chapter.end : cursor;
+      return { ...scene, start: round1(newStart), end: round1(newEnd) };
+    });
+    outScenes.push(...rescaled);
+
+    warnings.push(
+      `chapter[${group.chapterIdx}] scenes rescaled: ${group.scenes.length} scenes originally spanning ${claimedSpan.toFixed(1)}s compressed/expanded to fit ${targetSpan.toFixed(0)}s chapter (×${scale.toFixed(3)})`,
+    );
+  }
+
+  return { scenes: outScenes, warnings };
+}
+
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
 }
 
 function checkSceneBoundaries(video: AnalyzedVideo, duration: number): string[] {
