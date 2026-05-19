@@ -55,6 +55,8 @@ import { InspectorAudioTab } from '@/components/editor/inspector/InspectorAudioT
 import { InspectorCaptionsTab } from '@/components/editor/inspector/InspectorCaptionsTab';
 import { TimelineV2 } from '@/components/editor/timeline-v2/TimelineV2';
 import { SectionThumbnailModal } from '@/components/editor/SectionThumbnailModal';
+import { MaskBrushEditor } from '@/components/production-doc/MaskBrushEditor';
+import type { ImageSaliencyMap } from '@/remotion/utils';
 import { ShotsTab } from '@/components/editor/leftrail/ShotsTab';
 import { MediaTab } from '@/components/editor/leftrail/MediaTab';
 import { AudioTab } from '@/components/editor/leftrail/AudioTab';
@@ -153,6 +155,13 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // Batch B — section thumbnail modal. Opens from the AI Tools tab
   // OR from the per-shot inspector's "Edit thumbnail / regions" link.
   const [showSectionThumbnail, setShowSectionThumbnail] = useState(false);
+  // Batch C — per-shot AI image edit. The row whose still is being
+  // edited via the mask-brush flow; `null` means the dialog is closed.
+  // The dialog mounts MaskBrushEditor; on apply we call the same
+  // /api/generate/production-doc/image/edit endpoint production-doc
+  // uses and dispatch SET_ROW_IMAGE with the new URL.
+  const [imageEditRow, setImageEditRow] = useState<number | null>(null);
+  const [imageEditApplying, setImageEditApplying] = useState(false);
 
   // Timeline zoom. Lives in the client because zoom is a viewing
   // preference, not part of the doc. The user's preferred default
@@ -1366,6 +1375,11 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               }
               docThumbnail={state.doc.thumbnail}
               onOpenSectionThumbnail={() => setShowSectionThumbnail(true)}
+              docSectionTitleLayoutDefault={state.doc.section_title_layout_default}
+              docPillarboxColorDefault={state.doc.pillarbox_color_default}
+              docSceneZoomDefault={state.doc.scene_zoom_default}
+              docSceneFadeDefault={state.doc.scene_fade_enabled}
+              onOpenImageEdit={() => setImageEditRow(state.selection)}
             />
           ) : undefined,
         audio: (
@@ -1525,6 +1539,66 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           }}
           onClose={() => setShowSectionThumbnail(false)}
         />
+      )}
+
+      {/* Batch C — per-shot mask-brush image edit. Wraps the same
+          MaskBrushEditor production-doc uses, calls the same
+          /api/generate/production-doc/image/edit endpoint. */}
+      {imageEditRow !== null && state.rowImages[imageEditRow] && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.85)' }}
+          onClick={() => !imageEditApplying && setImageEditRow(null)}
+        >
+          <div
+            className="editor-panel max-w-5xl w-full max-h-[95vh] overflow-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <MaskBrushEditor
+              sourceImageUrl={state.rowImages[imageEditRow]!}
+              defaultQuality="medium"
+              onCancel={() => setImageEditRow(null)}
+              onApply={async ({ maskUrl, prompt, quality }) => {
+                if (imageEditApplying) return;
+                const rowIndex = imageEditRow;
+                setImageEditApplying(true);
+                console.info('[editor image-edit] apply', { rowIndex, quality });
+                try {
+                  const res = await fetch('/api/generate/production-doc/image/edit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      originalImageUrl: state.rowImages[rowIndex],
+                      prompt,
+                      model: 'gpt-4o-image-edit',
+                      mask: { url: maskUrl, quality },
+                    }),
+                  });
+                  const data = (await res.json().catch(() => ({}))) as {
+                    imageUrl?: string;
+                    saliency?: ImageSaliencyMap;
+                    error?: string;
+                  };
+                  if (!res.ok || !data.imageUrl) {
+                    alert(`Image edit failed: ${data.error || `HTTP ${res.status}`}`);
+                    console.warn('[editor image-edit] failed', { rowIndex, status: res.status });
+                    return;
+                  }
+                  apply({ type: 'SET_ROW_IMAGE', shotIndex: rowIndex, url: data.imageUrl });
+                  if (data.saliency) {
+                    updateRow(rowIndex, { image_saliency: data.saliency });
+                  }
+                  console.info('[editor image-edit] success', { rowIndex });
+                  setImageEditRow(null);
+                } catch (err) {
+                  alert(`Image edit failed: ${err instanceof Error ? err.message : String(err)}`);
+                } finally {
+                  setImageEditApplying(false);
+                }
+              }}
+            />
+          </div>
+        </div>
       )}
 
       {/* Phase 5.2 overlay-port — three modal surfaces mount here so

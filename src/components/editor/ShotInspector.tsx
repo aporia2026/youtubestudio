@@ -20,6 +20,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, RefreshCw, Sparkles, Undo2 } from 'lucide-react';
 import type { ProductionDoc, RowOverlayRenderState } from '@/remotion/utils';
 import type { VideoShot, VideoThumbnail } from '@/remotion/types';
+import { ShotLayoutControls } from '@/components/editor/inspector/ShotLayoutControls';
 
 /** A clip from /api/broll. Trimmed to the fields the picker needs. */
 interface ProjectClip {
@@ -99,6 +100,16 @@ interface ShotInspectorProps {
   /** Open the right-click context menu at the cursor coords. The
    *  parent renders OverlayContextMenu at the given (x, y). */
   onShowOverlayContextMenu?: (x: number, y: number) => void;
+  // ─── Batch C: per-shot polish ──────────────────────────────────
+  /** Doc-level fallbacks for the layout controls so the "inherits"
+   *  hint shows the right effective value. */
+  docSectionTitleLayoutDefault?: 'overlay' | 'letterbox';
+  docPillarboxColorDefault?: string;
+  docSceneZoomDefault?: number;
+  docSceneFadeDefault?: boolean;
+  /** Open the mask-brush image edit dialog for this shot. The parent
+   *  mounts MaskBrushEditor + calls the image-edit endpoint. */
+  onOpenImageEdit?: () => void;
   // ─── Batch B: section thumbnail region zoom ───────────────────────
   /** The doc's composite section thumbnail (if any). When present and
    *  it has regions, the inspector renders a "Zoom into region" picker
@@ -144,6 +155,11 @@ export function ShotInspector({
   onShowOverlayContextMenu,
   docThumbnail,
   onOpenSectionThumbnail,
+  docSectionTitleLayoutDefault,
+  docPillarboxColorDefault,
+  docSceneZoomDefault,
+  docSceneFadeDefault,
+  onOpenImageEdit,
 }: ShotInspectorProps): React.ReactElement {
   const undoDepth = editHistoryDepth ?? 0;
   const overlayReady = overlayState?.status === 'done' && Boolean(overlayState.url);
@@ -479,18 +495,34 @@ export function ShotInspector({
                 existing /api/generate/production-doc/image route so
                 pricing + rate-limit + R2 mirroring behave identically
                 to a Production-Doc-page regenerate. */}
-            <button
-              type="button"
-              onClick={handleRegenerate}
-              disabled={regenState.kind === 'generating'}
-              className="w-full text-xs px-3 py-1.5 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
-              style={{ borderColor: 'var(--card-border)' }}
-              title="Re-run the image generator on this row's current prompt"
-            >
-              {regenState.kind === 'generating'
-                ? 'Regenerating…'
-                : 'Regenerate from prompt'}
-            </button>
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={handleRegenerate}
+                disabled={regenState.kind === 'generating'}
+                className="flex-1 text-xs px-3 py-1.5 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
+                style={{ borderColor: 'var(--card-border)' }}
+                title="Re-run the image generator on this row's current prompt"
+              >
+                {regenState.kind === 'generating'
+                  ? 'Regenerating…'
+                  : 'Regenerate'}
+              </button>
+              {/* Batch C — open the mask-brush AI edit dialog with this
+                  row's current still. The parent owns the modal mount
+                  + the API call (same endpoint production-doc uses). */}
+              {onOpenImageEdit && thumbnailUrl && (
+                <button
+                  type="button"
+                  onClick={onOpenImageEdit}
+                  className="text-xs px-3 py-1.5 rounded border transition-colors hover:bg-white/5"
+                  style={{ borderColor: 'var(--card-border)' }}
+                  title="Paint a mask and ask the AI to alter that region"
+                >
+                  Edit image
+                </button>
+              )}
+            </div>
             {regenState.kind === 'error' && (
               <div className="text-[10px]" style={{ color: '#f87171' }}>
                 {regenState.message}
@@ -845,6 +877,20 @@ export function ShotInspector({
                 </div>
               )}
             </div>
+          )}
+
+          {/* Batch C — per-shot layout accordion. Section-title layout,
+              pillarbox color, scene zoom, scene fade. Collapsed by
+              default so the inspector stays readable; expand to fine-tune. */}
+          {onUpdateRow && (
+            <ShotLayoutControls
+              row={row}
+              docSectionTitleLayoutDefault={docSectionTitleLayoutDefault}
+              docPillarboxColorDefault={docPillarboxColorDefault}
+              docSceneZoomDefault={docSceneZoomDefault}
+              docSceneFadeDefault={docSceneFadeDefault}
+              onUpdate={onUpdateRow}
+            />
           )}
 
           {(typeof row.trim_start_ms === 'number' || typeof row.trim_end_ms === 'number') && (
