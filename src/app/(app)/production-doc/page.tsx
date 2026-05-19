@@ -267,6 +267,15 @@ interface ProductionRow {
    *  doc-level `scene_fade_enabled`; `true` forces a fade; `false` forces
    *  a hard cut. See `_plans/2026-05-17-scene-transition-controls.md`. */
   scene_fade?: boolean;
+  /** Camera padding for the thumbnail-zoom framing on this row, as a
+   *  percent of the region's longest edge added on each side. Higher
+   *  pulls the camera back so the marked region sits with breathing
+   *  room. Range `[0, 50]`. Falls back to
+   *  `ProductionDoc.region_zoom_padding_default_pct`, then to the
+   *  built-in default (15). Only meaningful when `thumbnail_zoom_to`
+   *  is set. See
+   *  `_plans/2026-05-20-render-config-drop-zoom-padding-region-import.md`. */
+  region_zoom_padding_pct?: number;
 }
 
 interface ProductionDoc {
@@ -291,6 +300,10 @@ interface ProductionDoc {
    *  override. Mirrors the `pillarbox_color_default` pattern. Undefined ⇒
    *  100 (no zoom). Sensible range: 50–200. */
   scene_zoom_default?: number;
+  /** Doc-level fallback for `ProductionRow.region_zoom_padding_pct`. Per-row
+   *  overrides win. Range `[0, 50]`. Undefined ⇒ built-in default (15). See
+   *  `_plans/2026-05-20-render-config-drop-zoom-padding-region-import.md`. */
+  region_zoom_padding_default_pct?: number;
   /** Per-doc override of the workspace's minimum scene duration (ms).
    *  Forwarded into `productionDocToVideoConfig`. Editable inline in the
    *  doc header. See `_plans/2026-05-17-scene-min-duration-and-tail-buffer.md`. */
@@ -2224,6 +2237,31 @@ function ProductionDocPage() {
       return nextDoc;
     });
   }, [historyEntryId]);
+
+  /**
+   * Promote a per-row region-zoom padding to the doc-level default
+   * (`region_zoom_padding_default_pct`). Mirrors `applySceneZoomToAll`.
+   * Per-row overrides are NOT cleared — they continue to win until the
+   * user explicitly drags the per-row slider back onto the new default.
+   * Clamped to [0, 50] to stay inside the math's safe range. See
+   * `_plans/2026-05-20-render-config-drop-zoom-padding-region-import.md`.
+   */
+  const applyRegionZoomPaddingToAll = useCallback(
+    (paddingPct: number) => {
+      const clamped = Math.max(0, Math.min(50, Math.round(paddingPct)));
+      setDoc(prev => {
+        if (!prev) return prev;
+        const nextDoc = { ...prev, region_zoom_padding_default_pct: clamped };
+        if (historyEntryId) {
+          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+        }
+        return nextDoc;
+      });
+      console.info('[ui region-zoom-padding apply-to-all]', { paddingPct: clamped });
+      toast.success(`Set ${clamped}% as the doc-default region padding.`);
+    },
+    [historyEntryId],
+  );
 
   // — Image generation (declared before effects that reference it)
   const [rowImages, setRowImages] = useState<RowImageState[]>([]);
@@ -6768,6 +6806,8 @@ function ProductionDocPage() {
                             pillarboxColorDefault={doc.pillarbox_color_default}
                             sceneZoom={row.scene_zoom}
                             sceneZoomDefault={doc.scene_zoom_default}
+                            regionZoomPaddingPct={row.region_zoom_padding_pct}
+                            regionZoomPaddingDefaultPct={doc.region_zoom_padding_default_pct}
                             transition={row.thumbnail_transition}
                             defaultTransition={doc.thumbnail?.defaultTransition}
                             sceneFade={row.scene_fade}
@@ -6786,6 +6826,8 @@ function ProductionDocPage() {
                             onChangeSceneZoom={(z) => updateRow(i, { scene_zoom: z })}
                             onApplySceneZoomToAll={applySceneZoomToAll}
                             onClearSceneZoomOverrides={clearSceneZoomOverrides}
+                            onChangeRegionZoomPadding={(p) => updateRow(i, { region_zoom_padding_pct: p })}
+                            onApplyRegionZoomPaddingToAll={applyRegionZoomPaddingToAll}
                             visualType={row.visual_type}
                             titleCardSourceText={(row.on_screen_text || row.script_text || '').trim()}
                             onApplyTitleCardAsSectionTitle={() => applyTitleCardAsSectionTitle(i)}
@@ -7029,6 +7071,8 @@ function ProductionDocPage() {
                             pillarboxColorDefault={doc.pillarbox_color_default}
                             sceneZoom={row.scene_zoom}
                             sceneZoomDefault={doc.scene_zoom_default}
+                            regionZoomPaddingPct={row.region_zoom_padding_pct}
+                            regionZoomPaddingDefaultPct={doc.region_zoom_padding_default_pct}
                             transition={row.thumbnail_transition}
                             defaultTransition={doc.thumbnail?.defaultTransition}
                             sceneFade={row.scene_fade}
@@ -7047,6 +7091,8 @@ function ProductionDocPage() {
                             onChangeSceneZoom={(z) => updateRow(i, { scene_zoom: z })}
                             onApplySceneZoomToAll={applySceneZoomToAll}
                             onClearSceneZoomOverrides={clearSceneZoomOverrides}
+                            onChangeRegionZoomPadding={(p) => updateRow(i, { region_zoom_padding_pct: p })}
+                            onApplyRegionZoomPaddingToAll={applyRegionZoomPaddingToAll}
                             visualType={row.visual_type}
                             titleCardSourceText={(row.on_screen_text || row.script_text || '').trim()}
                             onApplyTitleCardAsSectionTitle={() => applyTitleCardAsSectionTitle(i)}

@@ -306,6 +306,7 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
         previousRegion={previousRegion}
         transition={transition}
         fadeEnabled={zoomFadeEnabled}
+        paddingPct={shot.regionZoomPaddingPct}
       />
     );
   }
