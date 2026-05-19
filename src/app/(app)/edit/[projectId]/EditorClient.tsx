@@ -46,6 +46,11 @@ import { useEditorStore } from '@/lib/editor/use-editor-store';
 import { Timeline } from '@/components/editor/Timeline';
 import { ShotInspector } from '@/components/editor/ShotInspector';
 import { StatusBar } from '@/components/editor/StatusBar';
+import {
+  getDefaultZoomLevel,
+  getShowThumbnails,
+  getShowShortcutHints,
+} from '@/lib/editor/settings';
 import { VoiceoverDriftReport } from '@/components/editor/VoiceoverDriftReport';
 import { TextOverlayManager } from '@/components/editor/TextOverlayManager';
 import { VoiceoverRegenModal } from '@/components/editor/VoiceoverRegenModal';
@@ -126,9 +131,11 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   const [showRegenFromScript, setShowRegenFromScript] = useState(false);
 
   // Timeline zoom. Lives in the client because zoom is a viewing
-  // preference, not part of the doc; we deliberately don't persist
-  // it across reloads in v1.
-  const [zoomLevel, setZoomLevel] = useState(ZOOM_DEFAULT_LEVEL);
+  // preference, not part of the doc. The user's preferred default
+  // comes from localStorage via `getDefaultZoomLevel()` (Phase 4b
+  // settings audit); falls back to `ZOOM_DEFAULT_LEVEL` when the
+  // setting is unset.
+  const [zoomLevel, setZoomLevel] = useState<number>(() => getDefaultZoomLevel());
   const pixelsPerSecond = useMemo(() => zoomLevelToPxPerSecond(zoomLevel), [zoomLevel]);
   const handleZoomDelta = useCallback((delta: number) => {
     setZoomLevel((prev) =>
@@ -1212,7 +1219,10 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
       <Timeline
         config={videoConfig}
-        rowImages={state.rowImages}
+        // Pass an empty map when the user has thumbnails switched off
+        // in settings — the Timeline falls back to colored blocks per
+        // shot instead of pulling images. Cheaper on slow machines.
+        rowImages={getShowThumbnails() ? state.rowImages : {}}
         selection={state.selection}
         playheadMs={state.playheadMs}
         rowTrims={rowTrims}
@@ -1243,6 +1253,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             : null
         }
         saveStatusLabel={statusBarSaveLabel(saveStatus, state.isDirty)}
+        showShortcutHints={getShowShortcutHints()}
         readiness={{
           shotCount: state.doc.rows.length,
           imageCount: Object.values(state.rowImages).filter(Boolean).length,

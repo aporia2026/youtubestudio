@@ -5,6 +5,7 @@ import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { ModelDefaultsPanel } from '@/components/settings/ModelDefaultsPanel';
 import { TemplatesPanel } from '@/components/settings/TemplatesPanel';
+import { EditorPrefsPanel } from '@/components/settings/EditorPrefsPanel';
 
 interface Niche {
   id: string;
@@ -23,7 +24,7 @@ export default function SettingsPage() {
   const [newNicheDesc, setNewNicheDesc] = useState('');
   const [newNicheKeywords, setNewNicheKeywords] = useState('');
   const [addingNiche, setAddingNiche] = useState(false);
-  const [activeSection, setActiveSection] = useState<'niches' | 'api' | 'models' | 'templates' | 'notifications' | 'integrations' | 'about'>('niches');
+  const [activeSection, setActiveSection] = useState<'niches' | 'api' | 'models' | 'templates' | 'editor' | 'notifications' | 'integrations' | 'about'>('niches');
   const [keyStatus, setKeyStatus] = useState<KeyStatus>({});
   const [keyStatusLoading, setKeyStatusLoading] = useState(true);
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
@@ -241,6 +242,7 @@ export default function SettingsPage() {
     { id: 'api' as const, label: '🔑 API Keys' },
     { id: 'models' as const, label: '🤖 Model Defaults' },
     { id: 'templates' as const, label: '📋 Templates' },
+    { id: 'editor' as const, label: '🎬 Editor' },
     { id: 'notifications' as const, label: '📧 Notifications' },
     { id: 'integrations' as const, label: '🔌 Integrations & Usage' },
     { id: 'about' as const, label: 'ℹ️ About' },
@@ -588,6 +590,7 @@ export default function SettingsPage() {
           )}
 
           {activeSection === 'models' && <ModelDefaultsPanel />}
+          {activeSection === 'editor' && <EditorPrefsPanel />}
 
           {activeSection === 'notifications' && (
             <div className="space-y-4">

@@ -48,6 +48,11 @@ interface StatusBarProps {
   selectionScriptPreview: string | null;
   saveStatusLabel: string;
   readiness: ReadinessCounts;
+  /** Whether to render the `?` keyboard-shortcut button. Falls back
+   *  to `true` when omitted so the existing call sites don't change
+   *  behavior. Wired from `editor.statusBar.showShortcutHints` in
+   *  `src/lib/editor/settings.ts`. */
+  showShortcutHints?: boolean;
 }
 
 function fmtClock(ms: number): string {
@@ -70,6 +75,7 @@ export function StatusBar({
   selectionScriptPreview,
   saveStatusLabel,
   readiness,
+  showShortcutHints = true,
 }: StatusBarProps) {
   const [showShortcuts, setShowShortcuts] = useState(false);
 
@@ -152,17 +158,21 @@ export function StatusBar({
       </span>
 
       {/* Keyboard shortcuts surfaced behind a `?` so they're
-          discoverable without taking permanent real estate. */}
-      <button
-        type="button"
-        onClick={() => setShowShortcuts((v) => !v)}
-        aria-label="Toggle keyboard shortcuts"
-        title="Keyboard shortcuts"
-        className="shrink-0 w-5 h-5 rounded-full border text-[10px] font-semibold cursor-pointer transition-colors hover:bg-white/5"
-        style={{ borderColor: 'var(--card-border)', color: 'var(--fg)' }}
-      >
-        ?
-      </button>
+          discoverable without taking permanent real estate. Gated by
+          the `editor.statusBar.showShortcutHints` setting so a power
+          user who doesn't want the `?` can opt out. */}
+      {showShortcutHints && (
+        <button
+          type="button"
+          onClick={() => setShowShortcuts((v) => !v)}
+          aria-label="Toggle keyboard shortcuts"
+          title="Keyboard shortcuts"
+          className="shrink-0 w-5 h-5 rounded-full border text-[10px] font-semibold cursor-pointer transition-colors hover:bg-white/5"
+          style={{ borderColor: 'var(--card-border)', color: 'var(--fg)' }}
+        >
+          ?
+        </button>
+      )}
 
       {showShortcuts && (
         <div
