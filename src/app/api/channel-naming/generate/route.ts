@@ -182,9 +182,13 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       ? `${user}\n\n(Note: ${referenceImages.length} reference images provided; the first is attached for visual tone, the rest follow the same aesthetic.)`
       : user;
 
-    // Each candidate now carries ~12 fields including 2-sentence reasoning.
-    // Rough budget: ~200 tokens × N candidates + system overhead.
-    const tokenBudget = Math.min(16000, 1500 + clampedCount * 250);
+    // Each candidate now carries ~17 fields including a 2-sentence reasoning.
+    // With a competitor seed (ref image + ref videos + rich freeText) the
+    // prompt asks the model to ground 2/3 of candidates in those cues, which
+    // pushes per-candidate output to ~300-400 tokens. The old 250/candidate
+    // budget truncated the JSON mid-array on those paths and the parser
+    // would fail with "Failed to parse candidates".
+    const tokenBudget = Math.min(16000, 2500 + clampedCount * 450);
     const raw = await generateText({
       modelId,
       prompt: augmentedPrompt,
@@ -197,6 +201,16 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
 
     let parsed: unknown;
     try { parsed = parseLlmJson(raw); } catch {
+      logger.error('[channel-naming parse] failed to parse model JSON', {
+        modelId,
+        tokenBudget,
+        requestedCount: clampedCount,
+        rawLength: raw.length,
+        rawTail: raw.slice(-200),
+        hasImage: !!firstImage,
+        refVideosUsed: refVideoData.length,
+        seededFromCompetitor: !!sourceCompetitorId,
+      });
       return NextResponse.json({ error: 'Failed to parse candidates', raw: raw.slice(0, 500) }, { status: 500 });
     }
 
