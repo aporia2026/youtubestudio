@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { AI_MODELS, AIModel, AIProvider, formatModelPricing } from '@/lib/ai-models';
+import { rankModel, highlight, tokens } from '@/lib/model-search';
 
 const PROVIDER_COLORS: Record<AIProvider, string> = {
   anthropic: '#7c3aed',
@@ -46,32 +47,43 @@ export function ModelSelector({ value, onChange, label = 'AI Model' }: ModelSele
 
   const selected = AI_MODELS.find(m => m.id === value) || AI_MODELS[0];
 
+  const queryActive = search.trim().length > 0;
+
   // Per-provider counts (after tier+search filter, but BEFORE provider filter
   // — used to populate the count badges on each provider tab).
   const providerCounts = useMemo(() => {
-    const q = search.trim().toLowerCase();
     const counts: Record<AIProvider, number> = { anthropic: 0, openai: 0, google: 0, kie: 0, perplexity: 0 };
     for (const m of AI_MODELS) {
       if (tierFilter.size > 0 && !tierFilter.has(m.tier)) continue;
-      if (q && !`${m.name} ${m.id} ${m.description}`.toLowerCase().includes(q)) continue;
+      if (queryActive && rankModel(search, m) === 0) continue;
       counts[m.provider]++;
     }
     return counts;
-  }, [search, tierFilter]);
+  }, [search, tierFilter, queryActive]);
 
-  // Filtered + grouped list to render.
+  // Filtered + grouped list to render. When a query is active we sort by
+  // rank descending so the best match is at the top — provider grouping is
+  // dropped in that mode (the cross-provider best match is what the user
+  // is asking for). With no query, we keep stable AI_MODELS order so the
+  // grouped view feels predictable.
   const grouped = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const filtered = AI_MODELS.filter(m => {
-      if (providerFilter !== 'all' && m.provider !== providerFilter) return false;
-      if (tierFilter.size > 0 && !tierFilter.has(m.tier)) return false;
-      if (q && !`${m.name} ${m.id} ${m.description}`.toLowerCase().includes(q)) return false;
-      return true;
-    });
+    const scored: Array<{ model: AIModel; rank: number }> = [];
+    for (const m of AI_MODELS) {
+      if (providerFilter !== 'all' && m.provider !== providerFilter) continue;
+      if (tierFilter.size > 0 && !tierFilter.has(m.tier)) continue;
+      const rank = rankModel(search, m);
+      if (rank === 0) continue;
+      scored.push({ model: m, rank });
+    }
+    if (queryActive) {
+      // Stable sort by rank desc — ties keep the AI_MODELS order.
+      scored.sort((a, b) => b.rank - a.rank);
+    }
+    const flat = scored.map((s) => s.model);
     const byProvider: Record<AIProvider, AIModel[]> = { anthropic: [], openai: [], google: [], kie: [], perplexity: [] };
-    for (const m of filtered) byProvider[m.provider].push(m);
-    return { byProvider, flat: filtered };
-  }, [search, providerFilter, tierFilter]);
+    for (const m of flat) byProvider[m.provider].push(m);
+    return { byProvider, flat };
+  }, [search, providerFilter, tierFilter, queryActive]);
 
   // Reset state on open
   useEffect(() => {
@@ -272,9 +284,9 @@ export function ModelSelector({ value, onChange, label = 'AI Model' }: ModelSele
                   <div className="px-4 py-12 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
                     No models match your filters.
                   </div>
-                ) : providerFilter === 'all' ? (
-                  // Grouped view (when no provider is filtered): one section per
-                  // provider with a sticky header.
+                ) : providerFilter === 'all' && !queryActive ? (
+                  // Grouped view (no query, no provider filter): one section
+                  // per provider with a sticky header.
                   providerOrder.map(p => {
                     const list = grouped.byProvider[p];
                     if (!list || list.length === 0) return null;
@@ -297,6 +309,7 @@ export function ModelSelector({ value, onChange, label = 'AI Model' }: ModelSele
                               isSelected={model.id === value}
                               isKeyboardFocused={flatIdx === keyboardIndex}
                               kbIndex={flatIdx}
+                              query={search}
                               onPick={() => { onChange(model.id); setOpen(false); }}
                               onHover={() => setKeyboardIndex(flatIdx)}
                             />
@@ -306,7 +319,10 @@ export function ModelSelector({ value, onChange, label = 'AI Model' }: ModelSele
                     );
                   })
                 ) : (
-                  // Single-provider view: flat list, no sticky headers needed.
+                  // Flat list — either a single provider is selected OR a
+                  // query is active (in which case rank order beats provider
+                  // grouping). Provider colour dot inside each row carries
+                  // the provider signal.
                   grouped.flat.map(model => {
                     flatIdx++;
                     return (
@@ -316,8 +332,10 @@ export function ModelSelector({ value, onChange, label = 'AI Model' }: ModelSele
                         isSelected={model.id === value}
                         isKeyboardFocused={flatIdx === keyboardIndex}
                         kbIndex={flatIdx}
+                        query={search}
                         onPick={() => { onChange(model.id); setOpen(false); }}
                         onHover={() => setKeyboardIndex(flatIdx)}
+                        showProviderDot={queryActive && providerFilter === 'all'}
                       />
                     );
                   })
@@ -382,7 +400,7 @@ function FilterChip({
 }
 
 function ModelRow({
-  model, isSelected, isKeyboardFocused, kbIndex, onPick, onHover,
+  model, isSelected, isKeyboardFocused, kbIndex, onPick, onHover, query = '', showProviderDot = false,
 }: {
   model: AIModel;
   isSelected: boolean;
@@ -390,6 +408,8 @@ function ModelRow({
   kbIndex: number;
   onPick: () => void;
   onHover: () => void;
+  query?: string;
+  showProviderDot?: boolean;
 }) {
   const tier = TIER_LABELS[model.tier];
   const bg = isSelected
@@ -409,14 +429,19 @@ function ModelRow({
         color: isSelected ? 'var(--text-primary)' : 'var(--text-secondary)',
       }}
     >
+      {showProviderDot && (
+        <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: PROVIDER_COLORS[model.provider] }} />
+      )}
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium flex items-center gap-2 flex-wrap">
-          <span className="truncate">{model.name}</span>
+          <span className="truncate"><HighlightedText text={model.name} query={query} /></span>
           {model.webSearch && (
             <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0" style={{ background: 'rgba(6,182,212,0.15)', color: '#06b6d4' }}>🌐 search</span>
           )}
         </div>
-        <div className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>{model.description}</div>
+        <div className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>
+          <HighlightedText text={model.description} query={query} />
+        </div>
         <div className="text-[11px] mt-0.5 truncate" style={{ color: 'var(--text-muted)' }}>
           {formatModelPricing(model)}
           {model.pricingNote ? ` · ${model.pricingNote}` : ''}
@@ -434,5 +459,21 @@ function ModelRow({
         )}
       </div>
     </button>
+  );
+}
+
+/** Bolds the matched substrings of a model's text against the active
+ *  query. No-op when the query is empty. */
+function HighlightedText({ text, query }: { text: string; query: string }) {
+  if (!tokens(query).length) return <>{text}</>;
+  const parts = highlight(query, text);
+  return (
+    <>
+      {parts.map((p, i) =>
+        p.match
+          ? <strong key={i} style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{p.text}</strong>
+          : <span key={i}>{p.text}</span>
+      )}
+    </>
   );
 }
