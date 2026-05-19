@@ -381,6 +381,15 @@ VISUAL DOMINANCE — TEXT INSIDE EACH SLICE MUST BE MINIMAL:
 - DO NOT pad the slice with ASCII art, fake code, or made-up screen text just to fill space.
 When in doubt: TIGHTER FRAMING with NO supplementary text. The LEVEL heading + label already identify the slice.
 
+CATEGORY vs. SPECIFIC RULE (most common failure mode):
+- For SPECIFIC NAMED entities, use their canonical visual identity.
+- For ABSTRACT CATEGORIES (process stages, attack types, security concepts), STRONGLY PREFER one bold iconic symbol per slice over a detail-faithful UI/dialog mockup. A LITTLE text is fine when iconic (a one-word stamp); what's NOT OK is multi-line body copy, rows of fake detection entries, multi-field UI mocks. Iconic, not example.
+
+CATEGORY vs. SPECIFIC RULE (most common failure mode):
+- For SPECIFIC NAMED entities (real brands, real software, real characters, real events): use their canonical visual identity (logo, famous screen, character render).
+- For ABSTRACT CATEGORIES or stages of a process ("Passive Reconnaissance", "Active Probing", "Data Exfiltration", "Cover Tracks", etc.): STRONGLY PREFER one bold iconic symbol over a detail-faithful UI/dialog/scanner-table mockup. Categories don't have a canonical visual, so a realistic mockup degenerates into a text-heavy panel unreadable at thumbnail size.
+  A LITTLE text is fine when it's iconic (a one-word stamp, a wordmark). What's NOT OK on a category slice: multi-line dialog body copy, rows of fake detection entries, multi-field email mocks, installer wizards with body paragraphs and multiple buttons. Iconic, not example.
+
 SCRIPT FIDELITY — LABELS MUST MATCH WHAT THE USER WROTE:
 - When a script is provided, the script is the canonical source of level content. Read it carefully.
 - If the script names specific level/stage/step phrases (e.g. "Passive Reconnaissance", "Active Probing", "The Foothold"), use those EXACT phrases as level labels — character for character (UPPERCASED) — instead of paraphrasing.

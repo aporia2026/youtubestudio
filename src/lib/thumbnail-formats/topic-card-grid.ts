@@ -290,6 +290,36 @@ VISUAL DOMINANCE — TEXT MUST BE MINIMAL:
 
 When in doubt: pick a TIGHTER FRAMING with NO supplementary text. The label below the card is where words go.
 
+SPECIFIC NAMED ENTITY vs. ABSTRACT CATEGORY — TWO VERY DIFFERENT TREATMENTS:
+
+The "real recognisable visual" rule applies ONLY to SPECIFIC NAMED entities (e.g. "Sony Pictures", "WannaCry", "Microsoft Exchange", "Bonzi Buddy", "Stuxnet", "Cambridge Analytica"). These have a canonical visual identity — a logo, a famous screen, a known character — so the real visual works perfectly at thumbnail size.
+
+ABSTRACT CATEGORIES are different. Examples of category-style labels:
+- "Fake Virus Warnings", "Phishing Emails", "Fake Online Scanners",
+  "Malicious Ads", "Bundled Software", "SEO Poisoning",
+  "Ransomware Protection", "Password Manager", "Web Protection",
+  "Real-Time Scanning", "Tech Support Scams", "Data Breach".
+
+Categories have NO canonical visual identity. The risk: if you render a detail-faithful "realistic example" of one (a fake virus warning dialog, a phishing email client, a scanner UI table with rows of detections, an installer wizard with multiple buttons), the card packs in small text — unreadable at YouTube mobile thumbnail size — and the viewer just sees "generic computer thing".
+
+For category labels: STRONGLY PREFER a single iconic symbol over a detail-faithful UI mockup. Examples of the iconic approach:
+- "Fake Virus Warnings" → a giant red exclamation shield, OR a virus-cartoon-bug bursting out of a window. (Not a faithful browser dialog with multi-line text + countdown timer + progress bar.)
+- "Phishing Emails" → a fishing hook piercing an envelope. (Not a faithful email client UI.)
+- "Bundled Software" → a wrapped gift box with a small skull peeking out. (Not a setup wizard with installer text + checkboxes + buttons.)
+- "Fake Online Scanners" → a magnifying glass over a skull or virus icon. (Not a scanner results table with row after row of fake detection entries.)
+- "Malicious Ads" → a stop-sign banner with a skull. (Not a faithful McAfee-style ad with body copy + CTA button.)
+- "Password Manager" → a single padlock with a key. (Not a password manager UI mock.)
+- "Ransomware Protection" → a shield deflecting a skull. (Not a ransom screen.)
+- "Data Breach" → a broken padlock with binary spilling out. (Not a database screenshot.)
+
+A LITTLE text is fine when it's iconic — a single short phrase or a recognisable wordmark (e.g. one short "VIRUS!" header on a warning card, a one-word "Phishing" stamp). The hard rule is "visuals dominate, text supplements" — NOT "zero text categorically". What's NOT OK:
+- Multi-line dialog body copy.
+- Rows of fake detection results / file names / timestamps / progress percentages.
+- Email subject lines + sender + body + attachment all in one card.
+- Installer dialog with multiple buttons and explanatory paragraphs.
+
+Rule of thumb when writing the icon_concept: if you find yourself describing a multi-element UI mockup ("a window showing X with Y button and Z list"), STOP and rewrite as a single iconic symbol. If you genuinely want a UI/dialog element, keep it to ONE bold iconic phrase or wordmark, no body copy, no list, no table.
+
 SCRIPT FIDELITY — TITLES MUST MATCH WHAT THE USER WROTE:
 - When a script is provided, the script is the canonical source of card content. Read it carefully.
 - If the script names specific items, features, events, or things (e.g. "Real-Time Scanning", "Ransomware Protection", "Vulnerability Scanner"), use those EXACT phrases as card labels — character for character — instead of paraphrasing them.
@@ -405,6 +435,11 @@ VISUAL DOMINANCE — TEXT INSIDE ILLUSTRATIONS MUST BE MINIMAL:
 - DO NOT compose multi-element diagrams with labels for each box.
 - DO NOT pad the illustration with ASCII art, fake code, or screen text just to fill space.
 When in doubt: TIGHTER FRAMING with NO supplementary text. The label band BELOW the card carries the words.
+
+CATEGORY vs. SPECIFIC RULE (important — most common failure mode):
+- For SPECIFIC NAMED entities (real brands, real software, real characters, real events): use their canonical visual identity (logo, famous screen, character render).
+- For ABSTRACT CATEGORIES of attack / feature / concept ("fake virus warnings", "phishing emails", "fake scanners", "bundled software", "ransomware protection", "password manager", "data breach", etc.): STRONGLY PREFER one bold iconic symbol over a detail-faithful UI / dialog / inbox / wizard / scanner-table mockup. Categories don't have a canonical visual, so a realistic mockup degenerates into a text-heavy panel unreadable at thumbnail size.
+  A LITTLE text is fine when it's iconic (a one-word stamp like "VIRUS!", a wordmark). What's NOT OK on a category card: multi-line dialog body copy, rows of fake detection entries, multi-field email mocks, installer wizards with body paragraphs and multiple buttons. Iconic, not example.
 
 LABEL STRIP RULES (strict):
 - Pure white background.
