@@ -156,6 +156,11 @@ export type EditorCommand =
    *  Inverse stores the prior flag state so undo restores the
    *  exact previous configuration. */
   | { type: 'SET_FLAGS'; flags: Partial<ProjectPayloadFlags> }
+  /** Edit one caption segment's text. Used by the captions-lane
+   *  inline editor (double-click a pill). Inverse stores the prior
+   *  text so undo restores it. No-op when the new text matches the
+   *  prior text. */
+  | { type: 'UPDATE_CAPTION_SEGMENT'; segmentIndex: number; text: string }
   /** Set / clear the per-row B-roll clip render state. Used by the
    *  editor's inspector when the user kicks off a clip generation,
    *  and by the EditorClient's poller as the clip progresses
@@ -312,6 +317,7 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'REVERT_OVERLAY_EDIT_TO':
     case 'SET_FLAGS':
     case 'SET_ROW_VIDEO_CLIP':
+    case 'UPDATE_CAPTION_SEGMENT':
       return true;
     default:
       return false;
@@ -960,6 +966,32 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
 
       return {
         next: { ...state, rowVideoClips: nextClips, isDirty: !transient ? true : state.isDirty },
+        inverse,
+      };
+    }
+
+    case 'UPDATE_CAPTION_SEGMENT': {
+      const { segmentIndex, text } = cmd;
+      if (!state.captions || segmentIndex < 0 || segmentIndex >= state.captions.segments.length) {
+        return { next: state, inverse: null };
+      }
+      const prevSegment = state.captions.segments[segmentIndex];
+      if (prevSegment.text === text) {
+        return { next: state, inverse: null };
+      }
+      const nextSegments = state.captions.segments.slice();
+      nextSegments[segmentIndex] = { ...prevSegment, text };
+      const nextCaptions: CaptionsBundle = {
+        ...state.captions,
+        segments: nextSegments,
+      };
+      const inverse: EditorCommand = {
+        type: 'UPDATE_CAPTION_SEGMENT',
+        segmentIndex,
+        text: prevSegment.text,
+      };
+      return {
+        next: { ...state, captions: nextCaptions, isDirty: true },
         inverse,
       };
     }

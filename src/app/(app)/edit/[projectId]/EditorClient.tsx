@@ -53,6 +53,7 @@ import { EditorLeftRail } from '@/components/editor/EditorLeftRail';
 import { EditorInspector, type InspectorTabId } from '@/components/editor/EditorInspector';
 import { InspectorAudioTab } from '@/components/editor/inspector/InspectorAudioTab';
 import { InspectorCaptionsTab } from '@/components/editor/inspector/InspectorCaptionsTab';
+import { TimelineV2 } from '@/components/editor/timeline-v2/TimelineV2';
 import { ShotsTab } from '@/components/editor/leftrail/ShotsTab';
 import { MediaTab } from '@/components/editor/leftrail/MediaTab';
 import { AudioTab } from '@/components/editor/leftrail/AudioTab';
@@ -1368,53 +1369,51 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     />
   );
 
+  // Phase 5 timeline — multi-lane shell with video / audio / captions
+  // / overlays tracks sharing one playhead. The video lane reuses the
+  // existing Timeline component verbatim so the tile drag-resize /
+  // drag-reorder / trim behaviour comes along untouched.
   const timelineSlot = (
-    <div className="h-full flex flex-col p-2 gap-2 editor-scroll" style={{ overflow: 'auto' }}>
-      {zoomStrip}
-      <Timeline
-        config={videoConfig}
-        rowImages={getShowThumbnails() ? state.rowImages : {}}
-        selection={state.selection}
-        playheadMs={state.playheadMs}
-        rowTrims={rowTrims}
-        pixelsPerSecond={pixelsPerSecond}
-        onSelect={(shotIndex) => apply({ type: 'SET_SELECTION', shotIndex })}
-        onResize={(shotIndex, durationMs) =>
-          apply({ type: 'RESIZE_SHOT', shotIndex, durationMs })
-        }
-        onReorder={(fromIndex, toIndex) =>
-          apply({ type: 'REORDER_SHOTS', fromIndex, toIndex })
-        }
-        onTrim={(shotIndex, values) =>
-          apply({ type: 'TRIM_SHOT', shotIndex, ...values })
-        }
-        rowTransitions={rowTransitions}
-        onToggleTransition={(shotIndex, transition) =>
-          apply({ type: 'SET_TRANSITION_IN', shotIndex, transition })
-        }
-      />
-      <StatusBar
-        playheadMs={state.playheadMs}
-        totalDurationMs={videoConfig.shots.reduce((acc, s) => acc + s.durationMs, 0)}
-        selection={state.selection}
-        selectionScriptPreview={
-          state.selection !== null
-            ? (state.doc.rows[state.selection]?.script_text ?? null)
-            : null
-        }
-        saveStatusLabel={statusBarSaveLabel(saveStatus, state.isDirty)}
-        showShortcutHints={getShowShortcutHints()}
-        readiness={{
-          shotCount: state.doc.rows.length,
-          imageCount: Object.values(state.rowImages).filter(Boolean).length,
-          clipCount: Object.values(state.rowVideoClips).filter((c) => c && c.status === 'ready').length,
-          overlayPlannedCount: state.doc.rows.filter((r) => Boolean(r.overlay_stock_terms?.trim())).length,
-          overlayReadyCount: Object.values(state.rowOverlays).filter((o) => o?.status === 'done').length,
-          hasVoiceover: Boolean(state.voiceoverUrl),
-          hasCaptions: Boolean(state.captions),
-        }}
-      />
-    </div>
+    <TimelineV2
+      config={videoConfig}
+      doc={state.doc}
+      rowImages={getShowThumbnails() ? state.rowImages : {}}
+      rowStartTimesMs={shotStartTimesMs}
+      rowOverlays={state.rowOverlays}
+      captions={state.captions}
+      voiceoverUrl={state.voiceoverUrl}
+      selection={state.selection}
+      playheadMs={state.playheadMs}
+      totalDurationMs={totalDurationMs}
+      pixelsPerSecond={pixelsPerSecond}
+      rowTrims={rowTrims}
+      rowTransitions={rowTransitions}
+      onSelect={(shotIndex) => apply({ type: 'SET_SELECTION', shotIndex })}
+      onSeek={(ms) => apply({ type: 'SET_PLAYHEAD', ms })}
+      onResize={(shotIndex, durationMs) =>
+        apply({ type: 'RESIZE_SHOT', shotIndex, durationMs })
+      }
+      onReorder={(fromIndex, toIndex) =>
+        apply({ type: 'REORDER_SHOTS', fromIndex, toIndex })
+      }
+      onTrim={(shotIndex, values) =>
+        apply({ type: 'TRIM_SHOT', shotIndex, ...values })
+      }
+      onToggleTransition={(shotIndex, transition) =>
+        apply({ type: 'SET_TRANSITION_IN', shotIndex, transition })
+      }
+      onUpdateCaption={(segmentIndex, text) =>
+        apply({ type: 'UPDATE_CAPTION_SEGMENT', segmentIndex, text })
+      }
+      onOpenOverlayPosition={(shotIndex) => {
+        apply({ type: 'SET_SELECTION', shotIndex });
+        setOverlayPositionRow(shotIndex);
+      }}
+      zoomLevel={zoomLevel}
+      zoomMin={ZOOM_MIN_LEVEL}
+      zoomMax={ZOOM_MAX_LEVEL}
+      onZoomChange={setZoomLevel}
+    />
   );
 
   return (
