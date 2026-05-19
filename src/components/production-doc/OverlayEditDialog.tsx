@@ -91,6 +91,21 @@ export function OverlayEditDialog({
   const sourceUrlRef = useRef(overlayUrl);
   const sourceUrl = sourceUrlRef.current;
 
+  /** AbortController for the in-flight /api/overlay/edit call. The
+   *  dialog blocks closing while pending, but a parent unmount (route
+   *  change, user navigates away) would otherwise leave the fetch
+   *  running + the resolved-state setters firing on an unmounted
+   *  component (React warning). Cleanup aborts the pending request. */
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    return () => {
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
+    };
+  }, []);
+
   // Lock page scroll while the dialog is open — same pattern as the
   // position editor + transition dialog so this feels like part of
   // the same modal family.
@@ -134,6 +149,11 @@ export function OverlayEditDialog({
       overlayUrl: sourceUrl,
       promptLength: promptTrimmed.length,
     });
+    // Replace any prior controller (no concurrent requests via Apply
+    // because the button disables on isWorking, but defensive).
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
       const res = await fetch('/api/overlay/edit', {
         method: 'POST',
@@ -144,6 +164,7 @@ export function OverlayEditDialog({
           prompt: promptTrimmed,
           rerunRmbg: autoRmbg,
         }),
+        signal: controller.signal,
       });
       const data = (await res.json().catch(() => ({}))) as {
         overlayUrl?: string;
@@ -157,8 +178,14 @@ export function OverlayEditDialog({
       setPendingMode('smart');
       console.info('[overlay edit] smart edit result', { newUrl: data.overlayUrl });
     } catch (err) {
+      // AbortError = parent unmounted us, don't show an alert.
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.info('[overlay edit] smart edit aborted (dialog unmounted)');
+        return;
+      }
       setError(err instanceof Error ? err.message : 'Edit request failed');
     } finally {
+      if (abortRef.current === controller) abortRef.current = null;
       setIsWorking(false);
     }
   }, [sourceUrl, smartPrompt, autoRmbg]);
@@ -174,6 +201,9 @@ export function OverlayEditDialog({
         quality: args.quality,
         promptLength: args.prompt.length,
       });
+      if (abortRef.current) abortRef.current.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
       try {
         const res = await fetch('/api/overlay/edit', {
           method: 'POST',
@@ -185,6 +215,7 @@ export function OverlayEditDialog({
             mask: { url: args.maskUrl, quality: args.quality },
             rerunRmbg: autoRmbg,
           }),
+          signal: controller.signal,
         });
         const data = (await res.json().catch(() => ({}))) as {
           overlayUrl?: string;
@@ -198,8 +229,13 @@ export function OverlayEditDialog({
         setPendingMode('brush');
         console.info('[overlay edit] brush edit result', { newUrl: data.overlayUrl });
       } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') {
+          console.info('[overlay edit] brush edit aborted (dialog unmounted)');
+          return;
+        }
         setError(err instanceof Error ? err.message : 'Edit request failed');
       } finally {
+        if (abortRef.current === controller) abortRef.current = null;
         setIsWorking(false);
       }
     },

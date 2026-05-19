@@ -199,11 +199,45 @@ export type EditorCommand =
     }
   /** Set or clear the per-row overlay render state (the URL + status
    *  the renderer reads to composite an overlay). Passing `null`
-   *  clears the slot entirely. Inverse restores the previous state. */
+   *  clears the slot entirely. Inverse restores the previous state.
+   *
+   *  `transient: true` marks the change as ephemeral UI state (e.g.,
+   *  `{ status: 'loading' }` during a fetch). The reducer applies the
+   *  change + marks dirty so save still picks it up, but NO inverse
+   *  is pushed to the undo stack — Cmd+Z then skips over transient
+   *  status transitions and reverses only the user's actual intent
+   *  (the final `{ status: 'done', url }`). */
   | {
       type: 'SET_ROW_OVERLAY';
       rowIndex: number;
       overlay: RowOverlayRenderState | null;
+      transient?: boolean;
+    }
+  /** Composite command: accept an AI edit. Atomically updates the
+   *  row's edit-history stack AND the live overlay URL. The inverse
+   *  is a single REVERT_OVERLAY_EDIT_TO that restores both fields,
+   *  so Cmd+Z reverses the entire edit in one click — instead of
+   *  the two-or-three-Cmd+Z dance the previous PATCH_ROW +
+   *  SET_ROW_OVERLAY pair required. Production-doc continues to use
+   *  raw setState; only the editor routes through this. */
+  | {
+      type: 'ACCEPT_OVERLAY_EDIT';
+      rowIndex: number;
+      newUrl: string;
+      replacedUrl: string;
+      mode: 'smart' | 'brush';
+    }
+  /** Composite inverse for ACCEPT_OVERLAY_EDIT. Snapshot of a row's
+   *  overlay URL + edit-history at a known prior state. Forward
+   *  action restores that snapshot. The ↶ Undo button dispatches
+   *  this directly with the second-to-last history entry; Cmd+Z
+   *  dispatches it via the undo stack as the inverse of a prior
+   *  ACCEPT_OVERLAY_EDIT. */
+  | {
+      type: 'REVERT_OVERLAY_EDIT_TO';
+      rowIndex: number;
+      restoredUrl: string;
+      restoredHistory: string[];
     };
 
 /** Discriminator: editing commands push to the undo stack; non-
@@ -228,6 +262,8 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'DELETE_TEXT_OVERLAY':
     case 'PATCH_ROW':
     case 'SET_ROW_OVERLAY':
+    case 'ACCEPT_OVERLAY_EDIT':
+    case 'REVERT_OVERLAY_EDIT_TO':
       return true;
     default:
       return false;
@@ -677,7 +713,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
     }
 
     case 'SET_ROW_OVERLAY': {
-      const { rowIndex, overlay } = cmd;
+      const { rowIndex, overlay, transient } = cmd;
       const prev = state.rowOverlays[rowIndex] ?? null;
       // No-op when the slot's content is unchanged (same reference
       // OR structurally equal). The shallow-equality check below
@@ -698,14 +734,103 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       } else {
         nextOverlays[rowIndex] = overlay;
       }
+      // Transient changes mark dirty (so save fires) but don't push
+      // to undo stack. Used for ephemeral status transitions like
+      // `loading` → `done`, where the loading state isn't a user
+      // intent the undo should revert to.
+      const inverse: EditorCommand | null = transient
+        ? null
+        : {
+            type: 'SET_ROW_OVERLAY',
+            rowIndex,
+            overlay: prev,
+          };
+      return {
+        next: {
+          ...state,
+          rowOverlays: nextOverlays,
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'ACCEPT_OVERLAY_EDIT': {
+      const { rowIndex, newUrl, replacedUrl } = cmd;
+      if (rowIndex < 0 || rowIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const row = state.doc.rows[rowIndex];
+      const prevHistory = row.overlay_edit_history ?? [];
+      const prevOverlay = state.rowOverlays[rowIndex] ?? null;
+      const prevUrl = prevOverlay?.url ?? '';
+      // Capacity guard — matches the parents' OVERLAY_EDIT_HISTORY_CAP.
+      // Couldn't import it (cyclic), so keep in sync by hand.
+      const HISTORY_CAP = 3;
+      const nextHistory = [...prevHistory, replacedUrl].slice(-HISTORY_CAP);
+      const nextRow = { ...row, overlay_edit_history: nextHistory };
+      const nextRows = state.doc.rows.slice();
+      nextRows[rowIndex] = nextRow;
+      const nextOverlays = {
+        ...state.rowOverlays,
+        [rowIndex]: { ...(prevOverlay ?? {}), status: 'done', url: newUrl },
+      };
+      // Inverse: snapshot the FULL prior history (not just length-1)
+      // because the cap may have dropped an entry — we need to
+      // restore the exact prior array.
       const inverse: EditorCommand = {
-        type: 'SET_ROW_OVERLAY',
+        type: 'REVERT_OVERLAY_EDIT_TO',
         rowIndex,
-        overlay: prev,
+        restoredUrl: prevUrl,
+        restoredHistory: prevHistory,
       };
       return {
         next: {
           ...state,
+          doc: { ...state.doc, rows: nextRows },
+          rowOverlays: nextOverlays,
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'REVERT_OVERLAY_EDIT_TO': {
+      const { rowIndex, restoredUrl, restoredHistory } = cmd;
+      if (rowIndex < 0 || rowIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const row = state.doc.rows[rowIndex];
+      const prevHistory = row.overlay_edit_history ?? [];
+      const prevOverlay = state.rowOverlays[rowIndex] ?? null;
+      const prevUrl = prevOverlay?.url ?? '';
+      // Inverse-of-inverse: another REVERT_OVERLAY_EDIT_TO with the
+      // current state captured. So Cmd+Z reverses a revert (= redo).
+      const inverse: EditorCommand = {
+        type: 'REVERT_OVERLAY_EDIT_TO',
+        rowIndex,
+        restoredUrl: prevUrl,
+        restoredHistory: prevHistory,
+      };
+      const nextRow = { ...row, overlay_edit_history: restoredHistory };
+      const nextRows = state.doc.rows.slice();
+      nextRows[rowIndex] = nextRow;
+      // If restoredUrl is empty (e.g., very first edit had no prior URL),
+      // clear the overlay slot rather than setting status:done with ''.
+      const nextOverlays = { ...state.rowOverlays };
+      if (restoredUrl) {
+        nextOverlays[rowIndex] = {
+          ...(prevOverlay ?? {}),
+          status: 'done',
+          url: restoredUrl,
+        };
+      } else {
+        delete nextOverlays[rowIndex];
+      }
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
           rowOverlays: nextOverlays,
           isDirty: true,
         },

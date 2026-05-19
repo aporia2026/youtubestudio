@@ -243,9 +243,18 @@ async function downloadImage(url: string): Promise<{ bytes: Buffer; contentType:
 }
 
 export const POST = apiRoute.authed(async (session, req: NextRequest) => {
-  const { limited } = checkRateLimit(`overlay-fetch:${getClientIP(req)}`, 30, 60_000);
-  if (limited) {
-    return NextResponse.json({ error: 'Rate limited' }, { status: 429 });
+  // Two rate-limit dimensions: per-IP catches single misbehaving
+  // clients; per-workspace catches distributed abuse (botnet / NAT)
+  // that would otherwise sidestep the IP cap. Both must pass —
+  // either's failure returns 429. Limits sized for ~3-overlay-doc/hr
+  // sustained, ~doc/min burst on the workspace.
+  const ipLimit = checkRateLimit(`overlay-fetch:${getClientIP(req)}`, 30, 60_000);
+  if (ipLimit.limited) {
+    return NextResponse.json({ error: 'Rate limited (per-IP)' }, { status: 429 });
+  }
+  const wsLimit = checkRateLimit(`overlay-fetch:ws:${session.ws}`, 60, 60_000);
+  if (wsLimit.limited) {
+    return NextResponse.json({ error: 'Rate limited (per-workspace)' }, { status: 429 });
   }
 
   let body: {
@@ -337,7 +346,13 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   const sceneImageUrl: string | undefined = sceneCheck;
 
   // Saliency cells — accept the same shape the row carries; cap the
-  // count to keep the prompt bounded.
+  // count to keep the prompt bounded. Clamp each field to its valid
+  // range: row 0-15 (the GRID_ROWS const in image-saliency caps at
+  // 4 today, but we leave headroom for future bumps), col 0-15
+  // (same logic), score 0-1 (normalised busyness). Out-of-range
+  // values would otherwise embed as e.g. `row 999, col 42: 1e30` in
+  // the LLM prompt, wasting tokens AND breaking the model's
+  // assumption that the grid is sane.
   const saliencyCells: SaliencyCell[] | undefined = Array.isArray(body.saliencyCells)
     ? body.saliencyCells
         .filter(
@@ -346,8 +361,16 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
             typeof c === 'object' &&
             typeof (c as SaliencyCell).row === 'number' &&
             typeof (c as SaliencyCell).col === 'number' &&
-            typeof (c as SaliencyCell).score === 'number',
+            typeof (c as SaliencyCell).score === 'number' &&
+            Number.isFinite((c as SaliencyCell).row) &&
+            Number.isFinite((c as SaliencyCell).col) &&
+            Number.isFinite((c as SaliencyCell).score),
         )
+        .map((c) => ({
+          row: Math.max(0, Math.min(15, Math.round(c.row))),
+          col: Math.max(0, Math.min(15, Math.round(c.col))),
+          score: Math.max(0, Math.min(1, c.score)),
+        }))
         .slice(0, 32)
     : undefined;
 

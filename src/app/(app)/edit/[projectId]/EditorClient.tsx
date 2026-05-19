@@ -306,10 +306,13 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     [apply],
   );
   /** Set / clear the per-row overlay render state. Same auto-save +
-   *  undo guarantees as updateRow. */
+   *  undo guarantees as updateRow. `transient: true` marks the change
+   *  as ephemeral UI state (e.g. `loading`) so it skips the undo
+   *  stack — used by replaceOverlayForRow's intermediate states so
+   *  Cmd+Z only reverses the final committed change. */
   const setRowOverlay = useCallback(
-    (rowIndex: number, overlay: RowOverlayRenderState | null) => {
-      apply({ type: 'SET_ROW_OVERLAY', rowIndex, overlay });
+    (rowIndex: number, overlay: RowOverlayRenderState | null, transient?: boolean) => {
+      apply({ type: 'SET_ROW_OVERLAY', rowIndex, overlay, transient });
     },
     [apply],
   );
@@ -490,8 +493,11 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     [state.rowOverlays, state.doc.rows, state.rowImages, rethinkAttempts, updateRow],
   );
 
-  /** Phase 5.1 — Undo last AI edit. Pops the row's
-   *  overlay_edit_history stack and swaps the previous URL back in. */
+  /** Phase 5.1 — Undo last AI edit. Dispatches a single
+   *  REVERT_OVERLAY_EDIT_TO command (composite) that restores both
+   *  the overlay URL AND the edit-history stack atomically. The
+   *  inverse is another REVERT_OVERLAY_EDIT_TO with the CURRENT
+   *  state, so Cmd+Z then re-applies the undone edit cleanly. */
   const undoOverlayEdit = useCallback(
     (rowIndex: number) => {
       const row = state.doc.rows[rowIndex];
@@ -507,43 +513,42 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         restoredUrl: previousUrl,
         remainingHistory: nextHistory.length,
       });
-      updateRow(rowIndex, { overlay_edit_history: nextHistory });
-      setRowOverlay(rowIndex, {
-        ...(state.rowOverlays[rowIndex] ?? { status: 'done' }),
-        status: 'done',
-        url: previousUrl,
+      apply({
+        type: 'REVERT_OVERLAY_EDIT_TO',
+        rowIndex,
+        restoredUrl: previousUrl,
+        restoredHistory: nextHistory,
       });
     },
-    [state.doc.rows, state.rowOverlays, updateRow, setRowOverlay],
+    [state.doc.rows, apply],
   );
 
-  /** Phase 5 — accept callback for OverlayEditDialog. Pushes the
-   *  replaced URL onto the row's edit-history stack (cap 3) and
-   *  swaps in the new URL. `replacedUrl` is the dialog's snapshot —
-   *  race-free vs a concurrent Replace via context menu. */
+  /** Phase 5 — accept callback for OverlayEditDialog. Dispatches a
+   *  composite ACCEPT_OVERLAY_EDIT command so the URL swap + history
+   *  push land as a SINGLE undo entry. Without the composite, Cmd+Z
+   *  would have to be pressed multiple times to fully revert one
+   *  edit (PATCH_ROW + SET_ROW_OVERLAY were separate inverses).
+   *  `replacedUrl` is the dialog's snapshot — race-free vs a
+   *  concurrent Replace via the context menu. */
   const handleOverlayEditAccept = useCallback(
     (newOverlayUrl: string, mode: 'smart' | 'brush', replacedUrl: string) => {
       const rowIndex = overlayEditRow;
       if (rowIndex === null) return;
-      const prevHistory = state.doc.rows[rowIndex]?.overlay_edit_history ?? [];
-      const nextHistory = replacedUrl
-        ? [...prevHistory, replacedUrl].slice(-OVERLAY_EDIT_HISTORY_CAP)
-        : prevHistory;
       console.info('[ui overlay-edit] accepted', {
         rowIndex,
         mode,
         newOverlayUrl,
         replacedUrl,
-        historyDepthAfter: nextHistory.length,
       });
-      updateRow(rowIndex, { overlay_edit_history: nextHistory });
-      setRowOverlay(rowIndex, {
-        ...(state.rowOverlays[rowIndex] ?? { status: 'done' }),
-        status: 'done',
-        url: newOverlayUrl,
+      apply({
+        type: 'ACCEPT_OVERLAY_EDIT',
+        rowIndex,
+        newUrl: newOverlayUrl,
+        replacedUrl,
+        mode,
       });
     },
-    [overlayEditRow, state.rowOverlays, state.doc.rows, updateRow, setRowOverlay],
+    [overlayEditRow, apply],
   );
 
   /** Phase 5.2 — Replace overlay (re-search). Mirrors production-doc's
@@ -558,7 +563,10 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         console.warn('[ui overlay-replace] skipped — no stock terms', { rowIndex });
         return;
       }
-      setRowOverlay(rowIndex, { status: 'loading' });
+      // Loading state is transient UI — skip the undo stack so a
+      // user's Cmd+Z after the Replace completes reverses only the
+      // final result, not the intermediate loading status.
+      setRowOverlay(rowIndex, { status: 'loading' }, true);
       try {
         const sceneImageUrl = state.rowImages[rowIndex];
         const saliencyMap = row.image_saliency;

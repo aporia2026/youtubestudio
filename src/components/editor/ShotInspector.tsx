@@ -727,16 +727,20 @@ export function ShotInspector({
                     />
                     {row.overlay_placement_reason && (
                       <span
-                        className="text-[10px] italic"
+                        className="text-[10px]"
                         style={{ color: 'var(--fg-muted)', lineHeight: 1.4 }}
+                        // The full rationale already shows in the
+                        // position editor's header (the authoritative
+                        // surface for placement context). Surface the
+                        // model id here as a quiet inline tooltip
+                        // instead of duplicating the prose.
                         title={
                           row.overlay_placement_model
-                            ? `Placement by ${row.overlay_placement_model}`
-                            : undefined
+                            ? `AI placement (${row.overlay_placement_model}) — open ✋ Position to see the rationale`
+                            : `AI placement — open ✋ Position to see the rationale`
                         }
                       >
-                        <span style={{ color: '#a78bfa' }}>AI: </span>
-                        {row.overlay_placement_reason}
+                        <span style={{ color: '#a78bfa' }}>ⓘ AI placed</span>
                       </span>
                     )}
                   </div>

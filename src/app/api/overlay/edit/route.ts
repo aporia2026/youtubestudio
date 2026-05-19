@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { randomBytes } from 'crypto';
 import sharp from 'sharp';
 import { apiRoute } from '@/lib/route-helpers';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
@@ -117,8 +118,19 @@ async function probeAspect(url: string): Promise<{ aspect: number; width: number
 }
 
 export const POST = apiRoute.authed(async (session, req: NextRequest) => {
-  const { limited } = checkRateLimit(`overlay-edit:${getClientIP(req)}`, 20, 60_000);
-  if (limited) return NextResponse.json({ error: 'Rate limited' }, { status: 429 });
+  // Two rate-limit dimensions: per-IP catches single misbehaving
+  // clients; per-workspace catches distributed abuse (botnet / NAT)
+  // that would otherwise sidestep the IP cap. Both must pass.
+  // Edit calls hit $0.034–$0.133 each on GPT-image-1.5 high, so the
+  // ws cap is tighter than fetch (which only hits $0.018–$0.058).
+  const ipLimit = checkRateLimit(`overlay-edit:${getClientIP(req)}`, 20, 60_000);
+  if (ipLimit.limited) {
+    return NextResponse.json({ error: 'Rate limited (per-IP)' }, { status: 429 });
+  }
+  const wsLimit = checkRateLimit(`overlay-edit:ws:${session.ws}`, 30, 60_000);
+  if (wsLimit.limited) {
+    return NextResponse.json({ error: 'Rate limited (per-workspace)' }, { status: 429 });
+  }
 
   let body: EditRequestBody;
   try {
@@ -331,7 +343,11 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         }
 
         const ext = outputContentType.includes('png') ? 'png' : 'jpg';
-        const randomSuffix = Math.random().toString(36).slice(2, 10);
+        // Use crypto.randomBytes for the cache-bust suffix — matches
+        // the SHA-256 pattern used by the rest of the codebase's R2
+        // key generation, and gives a much larger collision-free
+        // namespace than Math.random's predictable 36^8.
+        const randomSuffix = randomBytes(8).toString('hex');
         const bucket = getImagesBucket();
         const r2Key = `overlays/edit-${session.ws}-${Date.now()}-${randomSuffix}.${ext}`;
         await uploadToBucket(bucket, r2Key, buffer, outputContentType);

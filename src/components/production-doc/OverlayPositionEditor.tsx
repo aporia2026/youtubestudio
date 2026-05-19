@@ -138,7 +138,15 @@ const HANDLE_CURSORS: Record<ResizeHandle, string> = {
 
 /** localStorage key for the one-time free-stretch warning. Persists per
  *  device, not per workspace — good enough for v1; cross-device dismissal
- *  can be a Settings entry later. */
+ *  can be a Settings entry later.
+ *
+ *  NOTE: this key is SHARED across every surface that mounts this
+ *  component — production-doc/page.tsx AND the new shot-graph editor
+ *  at /edit/[projectId]. Dismissing the toast on either surface
+ *  silently dismisses it on the other. Intentional (one-time
+ *  onboarding hint per device, not per surface), but worth knowing —
+ *  a teammate using both pages from the same browser profile may
+ *  see the warning only once, not once-per-surface. */
 const STRETCH_WARNING_LS_KEY = 'overlay_free_stretch_warning_dismissed';
 
 export function OverlayPositionEditor({
