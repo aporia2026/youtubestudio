@@ -300,7 +300,7 @@ export async function POST(req: NextRequest) {
 
       const result = await generateImageOpenAI({
         prompt,
-        size: '1536x1024', // 16:9 landscape preset; matches our 1280×720 layout aspect
+        size: '2048x1152', // true 16:9 — the only OpenAI size that matches YouTube's thumbnail aspect
         quality: 'medium',
         referenceImage: referenceBytes && referenceMime
           ? { bytes: referenceBytes, mimeType: referenceMime, filename: 'reference.png' }

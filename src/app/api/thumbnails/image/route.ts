@@ -117,7 +117,7 @@ export async function POST(req: NextRequest) {
       }
       const result = await generateImageOpenAI({
         prompt,
-        size: '1536x1024',
+        size: '2048x1152', // true 16:9 — only OpenAI size matching YouTube thumbnail aspect
         quality: 'medium',
         referenceImage,
       });

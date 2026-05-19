@@ -25,7 +25,16 @@
 import type { Buffer } from 'node:buffer';
 
 export type OpenAIImageQuality = 'low' | 'medium' | 'high' | 'auto';
-export type OpenAIImageSize = '1024x1024' | '1536x1024' | '1024x1536' | 'auto';
+
+/**
+ * Supported output sizes. Note `2048x1152` is the only TRUE 16:9 option for
+ * YouTube thumbnails — the SDK's strict size union only includes 3:2
+ * (1536x1024) and 2:3 (1024x1536) landscape/portrait variants, but OpenAI's
+ * docs explicitly list 2048x1152 as a popular resolution (constraints: max
+ * edge 3840px, multiples of 16, ratio ≤ 3:1, total pixels ≤ 8.3M — all
+ * satisfied). We cast to bypass the strict SDK union at the call site.
+ */
+export type OpenAIImageSize = '1024x1024' | '1536x1024' | '1024x1536' | '2048x1152' | 'auto';
 
 export interface OpenAIImageOptions {
   prompt: string;
@@ -77,8 +86,18 @@ export async function generateImageOpenAI(opts: OpenAIImageOptions): Promise<Ope
   const { default: OpenAI } = await import('openai');
   const client = new OpenAI({ apiKey });
 
-  const size: OpenAIImageSize = opts.size ?? '1536x1024';
+  // Default to true 16:9 (2048x1152) for YouTube thumbnails. See the
+  // OpenAIImageSize comment for why this needs the SDK-type cast below.
+  const size: OpenAIImageSize = opts.size ?? '2048x1152';
   const quality: OpenAIImageQuality = opts.quality ?? 'medium';
+  // The OpenAI SDK's `size` union is strictly the dall-e + gpt-image sizes
+  // it knows about (1024x1024, 1024x1536, 1536x1024, 1792x1024, etc.). The
+  // gpt-image-2 API itself accepts the larger sizes documented at
+  // developers.openai.com (including 2048x1152, our 16:9 choice). We cast
+  // to one of the union members so the call typechecks; the runtime value
+  // is whatever the caller asked for. If a future API change rejects the
+  // larger sizes the user sees a clean OpenAI 400 error.
+  const sizeForSdk = size as '1536x1024';
 
   // Note on `response_format`: OpenAI removed this parameter for the
   // gpt-image-* family — passing it now returns `400 Unknown parameter:
@@ -102,7 +121,7 @@ export async function generateImageOpenAI(opts: OpenAIImageOptions): Promise<Ope
       model: 'gpt-image-2',
       image: fileLike,
       prompt: opts.prompt,
-      size,
+      size: sizeForSdk,
       quality,
       n: 1,
     });
@@ -121,7 +140,7 @@ export async function generateImageOpenAI(opts: OpenAIImageOptions): Promise<Ope
   const response = await client.images.generate({
     model: 'gpt-image-2',
     prompt: opts.prompt,
-    size,
+    size: sizeForSdk,
     quality,
     n: 1,
   });
