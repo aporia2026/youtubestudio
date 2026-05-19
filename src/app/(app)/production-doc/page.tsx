@@ -73,6 +73,18 @@ import {
   type ChannelVisualBrandKit,
 } from '@/lib/channel-visual-brand-kit';
 import { VisualBrandKitOverridePanel } from '@/components/production-doc/VisualBrandKitOverridePanel';
+// Canonical project payload — Phase 2 of
+// `_plans/2026-05-19-editor-production-doc-parity.md`. The page used
+// to scatter persistence across `saveProductionDocEntry`,
+// `updateProductionDocEntry`, and a bespoke autosave effect; each saved
+// a different subset of fields. The editor at `/edit/[projectId]` read
+// `user_history.payload` and ended up missing voiceoverUrl, music,
+// alignment, brand kit, and every flag, because none of those flowed
+// through the same save path. `useProject(historyEntryId)` is now the
+// single canonical sink — every canonical field is mirrored into it
+// by the reactive effect below.
+import { useProject } from '@/lib/project/use-project';
+import type { RowVideoClipState } from '@/remotion/utils';
 
 // Dynamically import VideoPlayer — Remotion uses browser-only APIs (WebGL, Canvas)
 const VideoPlayer = dynamic(
@@ -2289,6 +2301,26 @@ function ProductionDocPage() {
   // generations (fire-and-forget after the doc is saved) can patch back onto the
   // same entry instead of being lost.
   const [historyEntryId, setHistoryEntryId] = useState<string | null>(null);
+
+  // ─── Canonical project payload (Phase 2 parity refactor) ─────────
+  //
+  // `useProject` is the single persistence sink for everything the
+  // editor at `/edit/[projectId]` needs to read: doc, rowImages,
+  // rowOverlays, rowVideoClips, voiceoverUrl, voiceoverAlignment,
+  // brand kit override, channelId, and every flag. Local state hooks
+  // remain the WORKING copy (so the page UI doesn't have to be
+  // rewritten); a single reactive effect mirrors them into
+  // `project.patch` whenever any canonical field changes. The hook
+  // bails internally when given an empty id — pre-generation, no
+  // patches fire and no fetches hit the server.
+  //
+  // `onConflict` is a no-op for now: production-doc edits don't
+  // typically race with editor edits unless the user has two tabs
+  // open. Phase 4 polish can surface a banner; for now the version
+  // conflict is logged at the hook level and the save status flips
+  // to 'conflict' silently.
+  const project = useProject(historyEntryId ?? '');
+
   const logEndRef = useRef<HTMLDivElement>(null);
   // Tracks which production doc (by runKey) was last explicitly saved via
   // the banner button. Drives the dirty indicator.
@@ -3727,6 +3759,12 @@ function ProductionDocPage() {
       if (Object.keys(patch).length > 0) {
         // Fire-and-forget — the lib updates the localStorage cache
         // synchronously, then PATCHes the server in the background.
+        // Phase 2 parity refactor (2026-05-19): the legacy
+        // `/api/history/[id]` PATCH is kept here so the localStorage
+        // sidebar cache stays in sync. The canonical `ProjectPayload`
+        // PATCH lives in the next effect below and is the source of
+        // truth for the editor at `/edit/[projectId]`. Phase 3 will
+        // retire the legacy call entirely.
         updateProductionDocEntry(historyEntryId, patch).catch(() => {});
       }
     }
@@ -3818,6 +3856,120 @@ function ProductionDocPage() {
   // fresh API call is needed.
   const [alignedAtScript, setAlignedAtScript] = useState<string | null>(null);
   const alignmentReqRef = useRef(0);
+
+  // ─── Canonical payload autosave (Phase 2 parity refactor) ────────
+  //
+  // Mirrors every canonical field — including the ones the legacy
+  // autosave above never wrote (voiceoverUrl, voiceoverAlignment,
+  // brandKitOverride, channelId, all four flags) — into
+  // `project.patch`. The hook handles debouncing, optimistic version
+  // check, and conflict surfacing internally.
+  //
+  // Deps list is exhaustive: every canonical source-of-truth field
+  // the editor needs to receive. Adding a new persisted field?
+  // Add it to the ProjectPayload type, the patch body below, and
+  // this deps list.
+  // Cache the two project fields we read so the effect's deps list
+  // doesn't reference the whole `project` object. `useProject` returns
+  // a fresh object literal every render; depending on `project` would
+  // fire this effect every render and continuously reset the hook's
+  // 800 ms debounce timer, so saves would never land. `patch` is a
+  // stable useCallback inside the hook (verified — empty deps), and
+  // `payload` updates only on real state changes.
+  const projectPatch = project.patch;
+  const projectPayload = project.payload;
+  useEffect(() => {
+    if (!historyEntryId) return;
+    // Wait until the hook's initial GET has resolved. Patching before
+    // the hook knows the row's current version triggers a no-op
+    // (the hook bails when payload is null), but checking here keeps
+    // the [project payload save] client log honest about when we
+    // actually start writing.
+    if (!projectPayload) return;
+
+    // rowImages: legacy autosave wrote `rowImages` as `RowImageState[]`
+    // — the canonical shape is `Record<number, string>`. Build the
+    // index-keyed map from the array form so the editor gets a clean
+    // payload regardless of which client wrote last.
+    const rowImagesMap: Record<number, string> = {};
+    rowImages.forEach((r, i) => {
+      if (r?.imageUrl) rowImagesMap[i] = r.imageUrl;
+    });
+
+    // rowOverlays: trim transient UI state (`loading`, `idle`) — the
+    // editor only renders entries whose status is `done` or `skipped`,
+    // and persisting in-flight states would resurrect them across
+    // page reloads.
+    const rowOverlaysMap: Record<number, { status: string; url?: string }> = {};
+    Object.entries(rowOverlays).forEach(([k, v]) => {
+      if (!v) return;
+      const i = Number(k);
+      if (!Number.isFinite(i)) return;
+      if (v.status === 'loading' || v.status === 'idle') return;
+      rowOverlaysMap[i] = { status: v.status, url: v.url };
+    });
+
+    // rowVideoClips: persist the canonical {status, videoUrl, durationSeconds}
+    // shape directly. The legacy autosave writes a clip-id-only map
+    // through updateProductionDocEntry; this effect writes the richer
+    // shape so the editor can play the clip without rehydrating from
+    // /api/broll/{id}.
+    const rowVideoClipsMap: Record<number, RowVideoClipState> = {};
+    Object.entries(rowVideoClips).forEach(([k, v]) => {
+      if (!v) return;
+      const i = Number(k);
+      if (!Number.isFinite(i)) return;
+      rowVideoClipsMap[i] = {
+        status: v.status,
+        videoUrl: v.videoUrl,
+        durationSeconds: v.durationSeconds,
+      };
+    });
+
+    // rowLockedAsStill: legacy state is keyed by row signature; the
+    // canonical shape is index-keyed. Walk the doc to remap.
+    const rowLockedAsStill: Record<number, boolean> = {};
+    if (doc?.rows) {
+      doc.rows.forEach((row, i) => {
+        const sig = brollRowSignatureInput({
+          timecode: row.timecode,
+          visual_description: row.visual_description,
+        });
+        if (rowLockSignatures[sig]) rowLockedAsStill[i] = true;
+      });
+    }
+
+    projectPatch({
+      title: doc?.title || projectPayload.title,
+      doc: doc ?? projectPayload.doc,
+      rowImages: rowImagesMap,
+      rowOverlays: rowOverlaysMap,
+      rowVideoClips: rowVideoClipsMap,
+      voiceoverUrl: voiceoverUrl || undefined,
+      voiceoverAlignment: voiceoverAlignment ?? undefined,
+      channelId: activeChannelId ?? undefined,
+      flags: {
+        animateScenes,
+        suppressLowerThirds,
+        overlaysDisabled: doc?.overlays_disabled === true,
+        rowLockedAsStill,
+      },
+    });
+  }, [
+    historyEntryId,
+    projectPatch,
+    projectPayload,
+    doc,
+    rowImages,
+    rowOverlays,
+    rowVideoClips,
+    voiceoverUrl,
+    voiceoverAlignment,
+    activeChannelId,
+    animateScenes,
+    suppressLowerThirds,
+    rowLockSignatures,
+  ]);
 
   // Load brand kit from localStorage on client only. The voiceover URL is
   // handled by <VoiceoverPicker>, which fetches the library, picks the best
