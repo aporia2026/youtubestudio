@@ -81,8 +81,17 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
   // failures of polish. Solution: compute playbackRate = clipSec/sceneSec
   // and let Remotion stretch / compress the clip to fit. Clamp the
   // result so extreme mismatches degrade gracefully instead of producing
-  // visibly jittery (>2×) or smeared (<0.5×) output. See plan
+  // visibly jittery (>2×) or smeared output. See plan
   // `_plans/2026-05-17-clip-duration-fit.md`.
+  //
+  // 2026-05-20: lowered PLAYBACK_RATE_MIN from 0.5 → 0.25 after rendered
+  // QA on an 8-min video found 47 freeze-tail segments totalling 7.7%
+  // of the duration — clips running out before scenes ended because
+  // 0.5× couldn't stretch a 5s clip across a 14s scene. 0.25× lets a
+  // 5s clip fill a 20s scene. The trade is more visible slow-motion in
+  // extreme mismatches; slow-mo still beats a stuck last frame because
+  // "stuff is happening on screen" reads as alive while a held frame
+  // reads as broken.
   const sceneSeconds = durationInFrames / fps;
   // Fallback to 10s when the clip's duration didn't make it through
   // (legacy rows pre-duration plumbing, or DB hydration returning null).
@@ -100,7 +109,7 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
   const trimStartSec = (shot.trimStartMs ?? 0) / 1000;
   const trimEndSec = (shot.trimEndMs ?? 0) / 1000;
   const effectiveClipSeconds = Math.max(0.1, clipSeconds - trimStartSec - trimEndSec);
-  const PLAYBACK_RATE_MIN = 0.5;
+  const PLAYBACK_RATE_MIN = 0.25;
   const PLAYBACK_RATE_MAX = 2.0;
   const rawPlaybackRate = sceneSeconds > 0 ? effectiveClipSeconds / sceneSeconds : 1;
   const playbackRate = Math.max(PLAYBACK_RATE_MIN, Math.min(PLAYBACK_RATE_MAX, rawPlaybackRate));
