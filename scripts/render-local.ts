@@ -80,6 +80,49 @@ async function main() {
   const shotCount = (config as { shots: unknown[] }).shots.length;
   process.stdout.write(`Config has ${shotCount} shots.\n`);
 
+  // ─── Absolutize relative URLs ───────────────────────────────────────────
+  //
+  // The production-doc page captures window.__lastRenderConfig AFTER the
+  // proxy-URL rewrite, so per-shot videoUrls look like
+  // `/api/broll/<id>/video` and voiceoverUrl like
+  // `/api/voiceovers/<uuid>/audio`. Remotion can't fetch a relative path
+  // — it has no origin to resolve against. Rewrite to localhost so the
+  // local dev server (which YOU need to have running on port 3000)
+  // serves the proxy and voiceover audio.
+  //
+  // Override the origin via LOCAL_RENDER_BASE_URL env var if your dev
+  // server lives elsewhere.
+  const baseUrl = process.env.LOCAL_RENDER_BASE_URL ?? 'http://localhost:3000';
+  function absolutize(url: string | undefined): string | undefined {
+    if (!url) return url;
+    if (url.startsWith('/')) return baseUrl.replace(/\/$/, '') + url;
+    return url;
+  }
+  type Shot = { videoUrl?: string; imageUrl?: string };
+  type Cfg = { voiceoverUrl?: string; musicUrl?: string; shots: Shot[] };
+  const cfg = config as Cfg;
+  let rewriteCount = 0;
+  if (cfg.voiceoverUrl?.startsWith('/')) {
+    cfg.voiceoverUrl = absolutize(cfg.voiceoverUrl);
+    rewriteCount++;
+  }
+  if (cfg.musicUrl?.startsWith('/')) {
+    cfg.musicUrl = absolutize(cfg.musicUrl);
+    rewriteCount++;
+  }
+  for (const shot of cfg.shots) {
+    if (shot.videoUrl?.startsWith('/')) {
+      shot.videoUrl = absolutize(shot.videoUrl);
+      rewriteCount++;
+    }
+    if (shot.imageUrl?.startsWith('/')) {
+      shot.imageUrl = absolutize(shot.imageUrl);
+      rewriteCount++;
+    }
+  }
+  process.stdout.write(`Absolutized ${rewriteCount} relative URLs against ${baseUrl}.\n`);
+  process.stdout.write(`Make sure 'npm run dev' is running on that origin BEFORE continuing.\n`);
+
   // ─── Bundle ──────────────────────────────────────────────────────────────
   process.stdout.write(`Bundling Remotion composition…\n`);
   const rootEntry = path.join(process.cwd(), 'src', 'remotion', 'Root.tsx');
