@@ -187,6 +187,7 @@ export function StatusBar({
           >
             <h3 className="text-base font-semibold mb-3">Keyboard shortcuts</h3>
             <dl className="space-y-1.5">
+              <Shortcut k="Space" desc="Play / pause preview" />
               <Shortcut k="B" desc="Split shot at playhead" />
               <Shortcut k="Delete" desc="Ripple-delete selected shot" />
               <Shortcut k="Shift + Delete" desc="Blank-delete (keeps the slot)" />

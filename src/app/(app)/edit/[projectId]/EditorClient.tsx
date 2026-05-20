@@ -1192,11 +1192,15 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   }, [apply, state.doc.rows, state.selection]);
 
   // Keyboard shortcuts:
+  //   Space      → play / pause (standard NLE binding)
   //   B          → split at playhead (CapCut / FCP blade)
   //   Delete     → ripple-delete selected shot
   //   Shift+Del  → blank-delete selected shot (keeps the slot)
+  //   M          → mute / unmute selected shot
+  //   + / =      → zoom timeline in
+  //   - / _      → zoom timeline out
   // All shortcuts are ignored when focus is in a text input so
-  // typing in a future inline editor doesn't trigger them.
+  // typing in an inline editor doesn't trigger them.
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       const target = e.target as HTMLElement | null;
@@ -1206,6 +1210,23 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       // (Cmd/Ctrl+Z, Cmd/Ctrl+S already bound at the store layer).
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const key = e.key.toLowerCase();
+      // Spacebar → play / pause. Standard NLE binding. `e.key` is
+      // ' ' for the space character; checking both keeps the
+      // handler robust against quirky keyboards.
+      if (key === ' ' || e.key === ' ' || e.code === 'Space') {
+        e.preventDefault();
+        const player = playerRef.current;
+        if (player) {
+          if (player.isPlaying()) {
+            player.pause();
+            console.info('[editor transport] pause', { source: 'keyboard', playheadMs: state.playheadMs });
+          } else {
+            player.play();
+            console.info('[editor transport] play', { source: 'keyboard', playheadMs: state.playheadMs });
+          }
+        }
+        return;
+      }
       if (key === 'b') {
         e.preventDefault();
         handleSplit();
@@ -1235,7 +1256,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [handleDelete, handleSplit, handleToggleMute, handleZoomDelta]);
+  }, [handleDelete, handleSplit, handleToggleMute, handleZoomDelta, state.playheadMs]);
 
   // Subscribe to frame updates so the playhead reflects the live
   // play position. Throttled at the ms-rounded level so React only
