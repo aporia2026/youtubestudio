@@ -19,8 +19,9 @@ import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, RefreshCw, Sparkles, Undo2 } from 'lucide-react';
 import type { ProductionDoc, RowOverlayRenderState } from '@/remotion/utils';
-import type { VideoShot, VideoThumbnail } from '@/remotion/types';
+import type { ThumbnailTransitionConfig, VideoShot, VideoThumbnail } from '@/remotion/types';
 import { ShotLayoutControls } from '@/components/editor/inspector/ShotLayoutControls';
+import { TransitionDialog } from '@/components/production-doc/TransitionDialog';
 
 /** A clip from /api/broll. Trimmed to the fields the picker needs. */
 interface ProjectClip {
@@ -175,6 +176,12 @@ export function ShotInspector({
     | { kind: 'generating' }
     | { kind: 'error'; message: string }
   >({ kind: 'idle' });
+
+  // TransitionDialog open/close. Self-contained — the dialog owns its
+  // working copy; we only listen for `onSave` + `onReset` and dispatch
+  // through `onUpdateRow`. Only meaningful when this shot has a
+  // `thumbnail_zoom_to` region set.
+  const [transitionDialogOpen, setTransitionDialogOpen] = useState(false);
 
   const handleRegenerate = useCallback(async () => {
     if (!onUploadImage) return;
@@ -847,28 +854,53 @@ export function ShotInspector({
                 )}
               </div>
               {docThumbnail && docThumbnail.regions.length > 0 ? (
-                <select
-                  value={row.thumbnail_zoom_to ?? ''}
-                  onChange={(e) =>
-                    onUpdateRow({
-                      thumbnail_zoom_to: e.target.value || undefined,
-                    })
-                  }
-                  className="w-full text-xs rounded border px-2 py-1.5"
-                  style={{
-                    borderColor: 'var(--card-border)',
-                    background: 'var(--bg)',
-                    color: 'var(--fg)',
-                  }}
-                  aria-label="Zoom into region for this shot"
-                >
-                  <option value="">— Show full thumbnail —</option>
-                  {docThumbnail.regions.map((reg) => (
-                    <option key={reg.id} value={reg.id}>
-                      {reg.label || reg.id}
-                    </option>
-                  ))}
-                </select>
+                <>
+                  <select
+                    value={row.thumbnail_zoom_to ?? ''}
+                    onChange={(e) =>
+                      onUpdateRow({
+                        thumbnail_zoom_to: e.target.value || undefined,
+                      })
+                    }
+                    className="w-full text-xs rounded border px-2 py-1.5"
+                    style={{
+                      borderColor: 'var(--card-border)',
+                      background: 'var(--bg)',
+                      color: 'var(--fg)',
+                    }}
+                    aria-label="Zoom into region for this shot"
+                  >
+                    <option value="">— Show full thumbnail —</option>
+                    {docThumbnail.regions.map((reg) => (
+                      <option key={reg.id} value={reg.id}>
+                        {reg.label || reg.id}
+                      </option>
+                    ))}
+                  </select>
+                  {/* Per-shot transition customization (Batch C follow-up).
+                      Only meaningful once a region is chosen — without
+                      one there's nothing for the transition to act on. */}
+                  {row.thumbnail_zoom_to && (
+                    <div className="flex items-center justify-between mt-1">
+                      <div className="text-[10px]" style={{ color: 'var(--fg-muted)' }}>
+                        Transition:{' '}
+                        <span style={{ color: row.thumbnail_transition ? 'var(--editor-accent, #a78bfa)' : 'var(--fg-muted)' }}>
+                          {row.thumbnail_transition
+                            ? `${row.thumbnail_transition.kind}${row.thumbnail_transition.kind !== 'none' ? ` · ${row.thumbnail_transition.easing ?? 'spring-smooth'}` : ''}`
+                            : `default (${docThumbnail.defaultTransition?.kind ?? 'hard-cut'})`}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setTransitionDialogOpen(true)}
+                        className="text-[10px] underline"
+                        style={{ color: 'var(--editor-accent, #a78bfa)' }}
+                      >
+                        Customize…
+                      </button>
+                    </div>
+                  )}
+                </>
               ) : (
                 <div className="text-[10px]" style={{ color: 'var(--fg-muted)' }}>
                   {docThumbnail
@@ -1109,6 +1141,35 @@ export function ShotInspector({
         </Link>
         . All edits here round-trip through the same save endpoint.
       </footer>
+
+      {/* TransitionDialog (Batch C follow-up). Self-contained portal —
+          renders into document.body so the inspector's overflow:auto
+          doesn't clip it. Open only when the shot has a region zoom
+          target; closed on save / reset / Escape. */}
+      {transitionDialogOpen && onUpdateRow && (
+        <TransitionDialog
+          title={`Zoom transition · shot ${shotIndex + 1}`}
+          description={`Customize how the camera enters region "${
+            docThumbnail?.regions.find((r) => r.id === row.thumbnail_zoom_to)?.label ||
+            row.thumbnail_zoom_to ||
+            ''
+          }". Resetting falls back to the doc-level default.`}
+          current={row.thumbnail_transition}
+          fallback={docThumbnail?.defaultTransition}
+          resetLabel="Reset to doc default"
+          onSave={(t: ThumbnailTransitionConfig) => {
+            console.info('[editor transition] save', { shotIndex, kind: t.kind });
+            onUpdateRow({ thumbnail_transition: t });
+            setTransitionDialogOpen(false);
+          }}
+          onReset={() => {
+            console.info('[editor transition] reset', { shotIndex });
+            onUpdateRow({ thumbnail_transition: undefined });
+            setTransitionDialogOpen(false);
+          }}
+          onClose={() => setTransitionDialogOpen(false)}
+        />
+      )}
     </aside>
   );
 }
