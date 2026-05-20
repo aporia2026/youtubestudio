@@ -4,6 +4,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useRouter } from 'next/navigation';
 
+import {
+  TOP_NAV,
+  HUBS,
+  BOTTOM_NAV,
+  type NavItem,
+} from './nav-catalog';
+import { readRecentPages } from './use-recent-pages';
+
 interface PageEntry {
   label: string;
   href: string;
@@ -12,60 +20,98 @@ interface PageEntry {
   keywords?: string[];
 }
 
-const PAGES: PageEntry[] = [
-  // Plan
-  { label: 'Dashboard', href: '/dashboard', group: 'Plan', hint: 'Overview' },
-  { label: 'Projects', href: '/projects', group: 'Plan' },
-  { label: 'Schedule', href: '/schedule', group: 'Plan', hint: 'List · Calendar · Spreadsheet · Kanban' },
-  { label: 'New Project', href: '/projects/new', group: 'Plan', hint: 'Create' },
-
-  // Create
-  { label: 'Auto-pipeline', href: '/pipeline', group: 'Create', hint: 'Idea → script → QA → narration → docs', keywords: ['batch', 'auto', 'pipeline', 'one click', 'automation'] },
-  { label: 'Pipeline presets', href: '/pipeline/presets', group: 'Create', hint: 'Manage auto-pipeline templates', keywords: ['preset', 'template', 'rules'] },
-  { label: 'Thumbnail templates', href: '/pipeline/thumbnail-templates', group: 'Create', hint: 'Reusable thumbnail configs', keywords: ['thumbnail', 'template'] },
-  { label: 'Idea Generator', href: '/ideas', group: 'Create', keywords: ['brainstorm'] },
-  { label: 'Script Generator', href: '/generator', group: 'Create', keywords: ['write'] },
-  { label: 'QA Engine', href: '/qa', group: 'Create', hint: 'Quality check' },
-  { label: 'Production Doc', href: '/production-doc', group: 'Create', hint: 'Shot breakdown' },
-  { label: 'Voiceover', href: '/voiceover', group: 'Create', keywords: ['tts', 'audio', 'elevenlabs'] },
-  { label: 'Video Studio', href: '/video-studio', group: 'Create', keywords: ['render', 'remotion'] },
-  { label: 'Thumbnails', href: '/thumbnails', group: 'Create' },
-
-  // Collaborate
-  { label: 'Reviews', href: '/reviews', group: 'Collaborate', hint: 'Video review with comments' },
-  { label: 'Team', href: '/team', group: 'Collaborate', hint: 'All collaborators' },
-  { label: 'Editors', href: '/team?role=editor', group: 'Collaborate', hint: 'Filter by role' },
-  { label: 'Narrators', href: '/team?role=narrator', group: 'Collaborate', hint: 'Filter by role' },
-  { label: 'Reviewers', href: '/team?role=reviewer', group: 'Collaborate', hint: 'Filter by role' },
-  { label: 'Clients', href: '/team?role=client', group: 'Collaborate', hint: 'Filter by role' },
-
-  // Grow
-  { label: 'SEO Optimizer', href: '/seo', group: 'Grow', keywords: ['title', 'description', 'tags'] },
-  { label: 'Channel', href: '/channel', group: 'Grow', keywords: ['youtube'] },
-  { label: 'Channel Naming', href: '/channel-naming', group: 'Grow', hint: 'Brand name generator' },
-  { label: 'Competitors', href: '/competitors', group: 'Grow', keywords: ['research'] },
-
-  // Settings
-  { label: 'Settings', href: '/settings', group: 'Settings', keywords: ['api keys', 'config', 'preferences'] },
+// Palette-only deep links — sub-pages and pre-filtered views that aren't
+// worth a sidebar slot but should be reachable via Cmd+K.
+const PALETTE_EXTRAS: PageEntry[] = [
+  { label: 'New Project',         href: '/projects/new',                 group: 'Workspace', hint: 'Create' },
+  { label: 'Pipeline presets',    href: '/pipeline/presets',             group: 'Create',    hint: 'Manage auto-pipeline templates', keywords: ['preset', 'template', 'rules'] },
+  { label: 'Thumbnail templates', href: '/pipeline/thumbnail-templates', group: 'Create',    hint: 'Reusable thumbnail configs',     keywords: ['thumbnail', 'template'] },
+  { label: 'Channel Naming',      href: '/channel-naming',               group: 'Grow',      hint: 'Brand name generator' },
+  { label: 'Editors',             href: '/team?role=editor',             group: 'Collaborate', hint: 'Filter by role' },
+  { label: 'Narrators',           href: '/team?role=narrator',           group: 'Collaborate', hint: 'Filter by role' },
+  { label: 'Reviewers',           href: '/team?role=reviewer',           group: 'Collaborate', hint: 'Filter by role' },
+  { label: 'Clients',             href: '/team?role=client',             group: 'Collaborate', hint: 'Filter by role' },
 ];
+
+function toPageEntry(item: NavItem, group: string): PageEntry {
+  return {
+    label: item.label,
+    href: item.href,
+    group,
+    hint: item.hint,
+    keywords: item.keywords,
+  };
+}
+
+// Single source of truth: derive the palette index from the same catalog
+// the sidebar renders. Adding a tool to the catalog automatically makes
+// it findable in ⌘K — no second list to maintain.
+const PAGES: PageEntry[] = [
+  ...TOP_NAV.map(i => toPageEntry(i, 'Workspace')),
+  // Hub landing pages — searchable so ⌘K + "create" jumps to the hub.
+  ...HUBS.map(hub => ({
+    label: `${hub.label} hub`,
+    href: hub.href,
+    group: 'Hubs',
+    hint: hub.description,
+    keywords: ['hub', hub.label.toLowerCase()],
+  })),
+  ...HUBS.flatMap(hub => hub.items.map(i => toPageEntry(i, hub.label))),
+  ...BOTTOM_NAV.map(i => toPageEntry(i, 'Settings')),
+  ...PALETTE_EXTRAS,
+];
+
+const PAGES_BY_HREF: Map<string, PageEntry> = new Map(PAGES.map(p => [p.href, p]));
+
+// Don't trigger the `/` shortcut when the user is typing — they almost
+// certainly want a literal slash in their field, not a palette toggle.
+function isTypingInElement(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if (target.isContentEditable) return true;
+  return false;
+}
 
 export function GlobalCommandPalette() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const [idx, setIdx] = useState(0);
+  const [recent, setRecent] = useState<PageEntry[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Open via Cmd/Ctrl+K, custom event, or Escape to close
+  // Open via Cmd/Ctrl+K, `/`, custom event. Escape to close handled below.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const isCmdK = (e.key === 'k' || e.key === 'K') && (e.metaKey || e.ctrlKey);
       if (isCmdK) {
         e.preventDefault();
-        setOpen(o => !o);
+        setOpen(o => {
+          const next = !o;
+          if (next) console.info('[palette]', 'open', { source: 'cmdk' });
+          return next;
+        });
+        return;
+      }
+
+      // `/` opens — but only when the user isn't typing somewhere, so it
+      // never hijacks a search box, comment field, or contenteditable.
+      // No toggle: pressing `/` again with palette already open should
+      // type into the search input, not close.
+      if (e.key === '/' && !isTypingInElement(e.target)) {
+        e.preventDefault();
+        setOpen(o => {
+          if (!o) console.info('[palette]', 'open', { source: 'slash' });
+          return true;
+        });
+        return;
       }
     }
-    function onOpen() { setOpen(true); }
+    function onOpen() {
+      console.info('[palette]', 'open', { source: 'click' });
+      setOpen(true);
+    }
     window.addEventListener('keydown', onKey);
     window.addEventListener('open-command-palette', onOpen);
     return () => {
@@ -75,18 +121,31 @@ export function GlobalCommandPalette() {
   }, []);
 
   useEffect(() => {
-    if (open) {
-      setQ('');
-      setIdx(0);
-      setTimeout(() => inputRef.current?.focus(), 50);
+    if (!open) return;
+    setQ('');
+    setIdx(0);
+    // Re-read recent on every open so it reflects whatever the user has
+    // visited since the last time the palette was open.
+    const items: PageEntry[] = [];
+    for (const entry of readRecentPages()) {
+      const page = PAGES_BY_HREF.get(entry.href);
+      if (page) items.push(page);
     }
+    setRecent(items);
+    setTimeout(() => inputRef.current?.focus(), 50);
   }, [open]);
 
   useEffect(() => { setIdx(0); }, [q]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    if (!needle) return PAGES.slice(0, 24);
+    if (!needle) {
+      // Empty query: show recent first (deduplicated against the rest)
+      // followed by the catalog, capped at a sane height.
+      const recentHrefs = new Set(recent.map(p => p.href));
+      const rest = PAGES.filter(p => !recentHrefs.has(p.href));
+      return [...recent, ...rest].slice(0, 24);
+    }
     const tokens = needle.split(/\s+/);
     const scored = PAGES
       .map(p => {
@@ -103,9 +162,25 @@ export function GlobalCommandPalette() {
       .slice(0, 30)
       .map(x => x.p);
     return scored;
-  }, [q]);
+  }, [q, recent]);
+
+  // Recent count drives the visual divider between "Recent" and
+  // "All pages" sections. Set to 0 when the user has typed something —
+  // search results aren't grouped.
+  const recentCount = q.trim() ? 0 : Math.min(recent.length, filtered.length);
+
+  // No-match diagnostic — fires once the user has actually typed something.
+  // Helps surface searches that didn't land so we can backfill keywords.
+  useEffect(() => {
+    const needle = q.trim();
+    if (needle && filtered.length === 0) {
+      console.info('[palette]', 'no-match', { q: needle });
+    }
+  }, [q, filtered.length]);
 
   function go(entry: PageEntry) {
+    const rank = filtered.indexOf(entry);
+    console.info('[palette]', 'select', { q: q.trim(), href: entry.href, rank, group: entry.group });
     router.push(entry.href);
     setOpen(false);
   }
@@ -163,28 +238,31 @@ export function GlobalCommandPalette() {
               </div>
             )}
             {filtered.map((p, i) => (
-              <button
-                key={p.href}
-                onClick={() => go(p)}
-                onMouseEnter={() => setIdx(i)}
-                className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm transition-colors"
-                style={{
-                  background: i === idx ? 'rgba(124,58,237,0.15)' : 'transparent',
-                  color: 'var(--text-primary)',
-                }}
-              >
-                <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded shrink-0"
-                  style={{ background: 'var(--bg-tertiary)', color: 'var(--text-muted)' }}>
-                  {p.group}
-                </span>
-                <span className="flex-1 truncate font-medium">{p.label}</span>
-                {p.hint && <span className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>{p.hint}</span>}
-                {i === idx && (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: '#a78bfa' }}>
-                    <line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" />
-                  </svg>
-                )}
-              </button>
+              <div key={p.href}>
+                {recentCount > 0 && i === 0 && <SectionLabel>Recent</SectionLabel>}
+                {recentCount > 0 && i === recentCount && <SectionLabel>All pages</SectionLabel>}
+                <button
+                  onClick={() => go(p)}
+                  onMouseEnter={() => setIdx(i)}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm transition-colors"
+                  style={{
+                    background: i === idx ? 'rgba(124,58,237,0.15)' : 'transparent',
+                    color: 'var(--text-primary)',
+                  }}
+                >
+                  <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded shrink-0"
+                    style={{ background: 'var(--bg-tertiary)', color: 'var(--text-muted)' }}>
+                    {p.group}
+                  </span>
+                  <span className="flex-1 truncate font-medium">{p.label}</span>
+                  {p.hint && <span className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>{p.hint}</span>}
+                  {i === idx && (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: '#a78bfa' }}>
+                      <line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" />
+                    </svg>
+                  )}
+                </button>
+              </div>
             ))}
           </div>
 
@@ -192,10 +270,21 @@ export function GlobalCommandPalette() {
           <div className="px-3 py-2 text-[10px] flex items-center justify-between"
             style={{ borderTop: '1px solid var(--border)', color: 'var(--text-muted)' }}>
             <span>↑↓ Navigate · ↵ Open</span>
-            <span>⌘K to toggle</span>
+            <span>⌘K or / to toggle</span>
           </div>
         </motion.div>
       </motion.div>
     </AnimatePresence>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-widest font-bold"
+      style={{ color: 'var(--text-muted)' }}
+    >
+      {children}
+    </div>
   );
 }

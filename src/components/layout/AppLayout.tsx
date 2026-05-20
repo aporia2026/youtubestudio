@@ -6,6 +6,8 @@ import { Sidebar } from './Sidebar';
 import { GlobalCommandPalette } from './GlobalCommandPalette';
 import { AppTopBar, type AppTopBarUser } from './AppTopBar';
 import type { ChannelOption } from './ChannelSwitcher';
+import { FavoritesProvider } from './use-favorites';
+import { useRecentPagesTracker } from './use-recent-pages';
 
 export function AppLayout({
   children,
@@ -19,6 +21,7 @@ export function AppLayout({
   activeChannelId: string | null;
 }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  useRecentPagesTracker();
 
   // Embed mode: hide the sidebar / top bar / command palette so the page
   // can be iframed by /team-hub (and any future surface) without the
@@ -51,29 +54,33 @@ export function AppLayout({
 
   if (embed) {
     return (
-      <main className="h-screen overflow-y-auto" style={{ background: 'var(--bg-primary)' }}>
-        {children}
-      </main>
+      <FavoritesProvider>
+        <main className="h-screen overflow-y-auto" style={{ background: 'var(--bg-primary)' }}>
+          {children}
+        </main>
+      </FavoritesProvider>
     );
   }
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onToggle={() => setSidebarCollapsed(p => !p)}
-      />
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <AppTopBar
-          user={user}
-          channels={channels}
-          activeChannelId={activeChannelId}
+    <FavoritesProvider>
+      <div className="flex h-screen overflow-hidden">
+        <Sidebar
+          collapsed={sidebarCollapsed}
+          onToggle={() => setSidebarCollapsed(p => !p)}
         />
-        <main className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-primary)' }}>
-          {children}
-        </main>
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <AppTopBar
+            user={user}
+            channels={channels}
+            activeChannelId={activeChannelId}
+          />
+          <main className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-primary)' }}>
+            {children}
+          </main>
+        </div>
+        <GlobalCommandPalette />
       </div>
-      <GlobalCommandPalette />
-    </div>
+    </FavoritesProvider>
   );
 }

@@ -5,453 +5,27 @@ import { usePathname, useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useEffect, useState } from 'react';
 
-interface NavItem {
-  label: string;
-  href: string;
-  icon: React.ReactNode;
-  /** Optional unread-count source — when set, renders a red pill badge
-   *  next to the label fed by the matching hook below. */
-  badge?: 'messages-unread' | 'comments-unread';
-}
-
-interface NavSection {
-  label: string;
-  items: NavItem[];
-}
-
-// Per-section header tint. Each section gets a brand-aligned color so the
-// nav reads as a coherent map of the product's modes rather than identical
-// grey labels.
-//
-// Mental-model split:
-//   Create     — making the video (production funnel, in workflow order)
-//   Grow       — performance, audience, experiments, competitor intel
-//   Collaborate — internal team work
-//   Automate   — meta / operational tools that act across the others
-//
-// Webhooks + AI spend are intentionally NOT in the sidebar — they're
-// rare-touch surfaces that live on /settings as cards (routes still
-// work for deep links).
-const SECTION_COLORS: Record<string, string> = {
-  Create: '#a78bfa',      // brand purple — generative work
-  Grow: '#22c55e',        // green — analytics / growth
-  Collaborate: '#06b6d4', // cyan — communication / sharing
-  Automate: '#f59e0b',    // amber — meta / operational
-};
-
-// Always-visible top items
-const PINNED_TOP: NavItem[] = [
-  {
-    label: 'Dashboard',
-    href: '/dashboard',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
-        <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
-      </svg>
-    ),
-  },
-  {
-    label: 'Projects',
-    href: '/projects',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-      </svg>
-    ),
-  },
-  {
-    label: 'Schedule',
-    href: '/schedule',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <rect x="3" y="4" width="18" height="18" rx="2" />
-        <line x1="16" y1="2" x2="16" y2="6" />
-        <line x1="8" y1="2" x2="8" y2="6" />
-        <line x1="3" y1="10" x2="21" y2="10" />
-      </svg>
-    ),
-  },
-  {
-    label: 'Messages',
-    href: '/messages',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-      </svg>
-    ),
-    badge: 'messages-unread',
-  },
-  {
-    // Comments inbox — every unresolved review/narration comment across
-    // the workspace, grouped by role then person. The red unread pill is
-    // the owner's "you have feedback waiting" signal even when they
-    // aren't on a project page that would surface the per-take badge.
-    // Icon: speech bubble with three dots (universal "comments" mark).
-    label: 'Inbox',
-    href: '/inbox',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
-        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-        <circle cx="8.5" cy="12" r="0.6" fill="currentColor" />
-        <circle cx="12"  cy="12" r="0.6" fill="currentColor" />
-        <circle cx="15.5" cy="12" r="0.6" fill="currentColor" />
-      </svg>
-    ),
-    badge: 'comments-unread',
-  },
-];
-
-const SECTIONS: NavSection[] = [
-  {
-    // CREATE — production funnel, ordered to match the actual workflow:
-    // pick an idea → script → review → plan visuals → record voice →
-    // assemble video (long-form OR shorts) → translate → finishing
-    // touches (thumbnails + SEO).
-    //
-    // Auto-pipeline sits at the TOP of Create as the "do it all in one
-    // click" entry — a lightning bolt icon distinguishes it from the
-    // atomic stage-tools that follow.
-    label: 'Create',
-    items: [
-      {
-        label: 'Auto-pipeline',
-        href: '/pipeline',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
-            <path d="M13 2 3 14h7l-1 8 11-14h-7l1-6z" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Ideas',
-        href: '/ideas',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M9 18h6" /><path d="M10 22h4" />
-            <path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Script Generator',
-        href: '/generator',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" />
-          </svg>
-        ),
-      },
-      {
-        label: 'QA Engine',
-        href: '/qa',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
-            <path d="M11 8v3l2 2" />
-          </svg>
-        ),
-      },
-      {
-        // Critics is a script-stage gate (panel reviews the script
-        // before recording), not an analytics tool — belongs here.
-        label: 'Critics (live)',
-        href: '/critics',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M12 3v3" />
-            <path d="M5 9h14" />
-            <path d="M5 9 3 19h7l-2-10" />
-            <path d="M19 9l2 10h-7l2-10" />
-            <path d="M9 21h6" />
-            <path d="M12 6v15" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Production Doc',
-        href: '/production-doc',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-            <polyline points="14 2 14 8 20 8" />
-            <line x1="16" y1="13" x2="8" y2="13" />
-            <line x1="16" y1="17" x2="8" y2="17" />
-            <polyline points="10 9 9 9 8 9" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Voiceover',
-        href: '/voiceover',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Video Studio',
-        href: '/video-studio',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18" />
-            <line x1="7" y1="2" x2="7" y2="22" /><line x1="17" y1="2" x2="17" y2="22" />
-            <line x1="2" y1="12" x2="22" y2="12" /><line x1="2" y1="7" x2="7" y2="7" />
-            <line x1="2" y1="17" x2="7" y2="17" /><line x1="17" y1="17" x2="22" y2="17" />
-            <line x1="17" y1="7" x2="22" y2="7" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Shorts',
-        href: '/shorts',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <rect x="6" y="2" width="12" height="20" rx="2" />
-            <path d="m10 9 5 3-5 3z" fill="currentColor" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Auto-dub',
-        href: '/dub',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M5 8h14" /><path d="M5 12h9" /><path d="M5 16h6" />
-            <circle cx="18" cy="18" r="3" />
-            <path d="m17 17 2 2" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Thumbnails',
-        href: '/thumbnails',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
-          </svg>
-        ),
-      },
-      {
-        label: 'SEO Optimizer',
-        href: '/seo',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" /><line x1="4" y1="22" x2="4" y2="15" />
-          </svg>
-        ),
-      },
-    ],
-  },
-  {
-    // GROW — performance + audience + experiments + competition.
-    // Everything that looks at data after publish OR forecasts what
-    // will happen on publish.
-    label: 'Grow',
-    items: [
-      {
-        label: 'Channel',
-        href: '/channel',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M22.54 6.42a2.78 2.78 0 0 0-1.95-1.96C18.88 4 12 4 12 4s-6.88 0-8.59.46a2.78 2.78 0 0 0-1.95 1.96A29 29 0 0 0 1 12a29 29 0 0 0 .46 5.58A2.78 2.78 0 0 0 3.41 19.54C5.12 20 12 20 12 20s6.88 0 8.59-.46a2.78 2.78 0 0 0 1.95-1.96A29 29 0 0 0 23 12a29 29 0 0 0-.46-5.58z" />
-            <polygon points="9.75 15.02 15.5 12 9.75 8.98 9.75 15.02" />
-          </svg>
-        ),
-      },
-      {
-        label: 'A/B tests',
-        href: '/ab-tests',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M3 3v18h18" />
-            <path d="M7 14l4-4 4 4 5-7" />
-            <circle cx="11" cy="10" r="1" fill="currentColor" />
-            <circle cx="15" cy="14" r="1" fill="currentColor" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Retention predictor',
-        href: '/retention',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M3 3v18h18" />
-            <path d="M3 17 8 12 12 14 17 8 21 11" />
-            <circle cx="8" cy="12" r="1.5" fill="currentColor" />
-            <circle cx="12" cy="14" r="1.5" fill="currentColor" />
-            <circle cx="17" cy="8" r="1.5" fill="currentColor" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Fix the dip',
-        href: '/fix-the-dip',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M3 3v18h18" />
-            <path d="M3 17 7 13 11 16 14 9 17 14 21 6" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Cannibalization',
-        href: '/cannibalization',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="8" cy="9" r="4" />
-            <circle cx="16" cy="15" r="4" />
-            <path d="M11 11.5l2 2" strokeLinecap="round" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Comments',
-        href: '/comments',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-            <path d="M8 10h.01M12 10h.01M16 10h.01" strokeLinecap="round" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Competitors',
-        href: '/competitors',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Competitor signals',
-        href: '/competitors/dashboard',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M3 12 7 8l4 6 4-9 6 11" />
-            <path d="M3 21h18" strokeOpacity="0.4" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Niche finder',
-        href: '/insights/niches',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="11" cy="11" r="7" />
-            <line x1="21" y1="21" x2="16.65" y2="16.65" strokeLinecap="round" />
-            <circle cx="11" cy="11" r="2.5" fill="currentColor" strokeWidth="0" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Video analyzer',
-        href: '/analyze',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M23 7l-7 5 7 5V7z" strokeLinejoin="round" />
-            <rect x="1" y="5" width="15" height="14" rx="2" />
-            <circle cx="6.5" cy="12" r="1.2" fill="currentColor" strokeWidth="0" />
-            <circle cx="10.5" cy="12" r="1.2" fill="currentColor" strokeWidth="0" />
-          </svg>
-        ),
-      },
-    ],
-  },
-  {
-    label: 'Collaborate',
-    items: [
-      {
-        label: 'Reviews',
-        href: '/reviews',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-            <path d="M8 10h8" /><path d="M8 14h4" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Team Hub',
-        href: '/team-hub',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <rect x="3" y="3" width="7" height="7" rx="1.5" />
-            <rect x="14" y="3" width="7" height="7" rx="1.5" />
-            <rect x="3" y="14" width="7" height="7" rx="1.5" />
-            <rect x="14" y="14" width="7" height="7" rx="1.5" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Team',
-        href: '/team',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M12 2a5 5 0 0 1 5 5v1a5 5 0 0 1-10 0V7a5 5 0 0 1 5-5z" />
-            <path d="M20 21v-2a4 4 0 0 0-3-3.87" /><path d="M4 21v-2a4 4 0 0 1 3-3.87" />
-            <circle cx="12" cy="7" r="4" />
-            <path d="M2 21a10 10 0 0 1 20 0" />
-          </svg>
-        ),
-      },
-    ],
-  },
-  {
-    // AUTOMATE — meta/operational tools that act ACROSS the other
-    // sections. Workflows fires actions on events, Ask Studio
-    // queries any data anywhere.
-    label: 'Automate',
-    items: [
-      {
-        label: 'Workflows',
-        href: '/workflows',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="6" cy="6" r="2.5" />
-            <circle cx="18" cy="6" r="2.5" />
-            <circle cx="6" cy="18" r="2.5" />
-            <circle cx="18" cy="18" r="2.5" />
-            <path d="M8.5 6h7M8.5 18h7M6 8.5v7M18 8.5v7" />
-          </svg>
-        ),
-      },
-      {
-        label: 'Ask Studio',
-        href: '/ask-studio',
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-            <path d="M12 8v4M12 16h.01" strokeLinecap="round" />
-          </svg>
-        ),
-      },
-    ],
-  },
-];
-
-const PINNED_BOTTOM: NavItem[] = [
-  {
-    label: 'Settings',
-    href: '/settings',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <circle cx="12" cy="12" r="3" />
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-      </svg>
-    ),
-  },
-];
+import {
+  TOP_NAV,
+  HUBS,
+  BOTTOM_NAV,
+  isPinnable,
+  type NavItem,
+  type NavHub,
+} from './nav-catalog';
+import { useFavorites } from './use-favorites';
+import { SidebarFavorites } from './SidebarFavorites';
 
 interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
 }
 
-const STORAGE_KEY = 'sidebar_sections_v1';
+// Bumped to v2 with the Favorites + collapsed-by-default redesign. The
+// jump invalidates the prior key so every existing user lands on the new
+// clean defaults instead of carrying their old "everything expanded"
+// state forward. Their next manual expansion still persists.
+const STORAGE_KEY = 'sidebar_sections_v2';
 
 function isActive(pathname: string, href: string) {
   if (href === '/dashboard') return pathname === '/dashboard' || pathname === '/';
@@ -465,9 +39,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
   // Section expansion state — persisted in localStorage. Default: section
   // containing the current page is expanded, others are collapsed.
-  const [openSections, setOpenSections] = useState<Record<string, boolean>>(() => {
+  const [openHubs, setOpenHubs] = useState<Record<string, boolean>>(() => {
     const init: Record<string, boolean> = {};
-    for (const s of SECTIONS) init[s.label] = true; // default open until hydration
+    for (const h of HUBS) init[h.label] = false; // closed until hydration
     return init;
   });
   const [hydrated, setHydrated] = useState(false);
@@ -480,25 +54,30 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     } catch {}
 
     const next: Record<string, boolean> = {};
-    for (const s of SECTIONS) {
-      const sectionMatchesPath = s.items.some(it => isActive(pathname, it.href));
-      next[s.label] = saved?.[s.label] ?? sectionMatchesPath;
-      // Always force-open the section containing the active page
-      if (sectionMatchesPath) next[s.label] = true;
+    for (const h of HUBS) {
+      const hubMatchesPath = h.items.some(it => isActive(pathname, it.href));
+      next[h.label] = saved?.[h.label] ?? hubMatchesPath;
+      // Always force-open the hub containing the active page
+      if (hubMatchesPath) next[h.label] = true;
     }
-    setOpenSections(next);
+    setOpenHubs(next);
     setHydrated(true);
     // We deliberately only re-run when pathname changes
-     
+
   }, [pathname]);
 
-  function toggleSection(label: string) {
-    setOpenSections(prev => {
+  function toggleHub(label: string) {
+    setOpenHubs(prev => {
       const next = { ...prev, [label]: !prev[label] };
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch {}
+      console.info('[nav hub]', next[label] ? 'open' : 'close', { hub: label });
       return next;
     });
   }
+
+  // Favorites — localStorage-backed list of pinned hrefs. The hook
+  // handles persistence; this component just reads and toggles.
+  const favorites = useFavorites();
 
   async function handleLogout() {
     setLoggingOut(true);
@@ -506,18 +85,23 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     router.push('/login');
   }
 
-  function renderItem(item: NavItem, indent: boolean = false) {
+  function renderItem(item: NavItem, opts: { indent?: boolean; muted?: boolean } = {}) {
+    const { indent = false, muted = false } = opts;
     const active = isActive(pathname, item.href);
+    const baseColor = muted ? 'var(--text-muted)' : 'var(--text-secondary)';
+    const pinnable = isPinnable(item.href);
+    const pinned = pinnable && favorites.isPinned(item.href);
     return (
       <Link key={item.href} href={item.href}>
         <motion.div
           whileHover={{ x: 2 }}
-          className="flex items-center gap-3 px-3 py-2 rounded-lg transition-all relative cursor-pointer"
+          className="group flex items-center gap-3 px-3 py-2 rounded-lg transition-all relative cursor-pointer"
           style={{
             background: active ? 'rgba(124,58,237,0.15)' : 'transparent',
-            color: active ? 'var(--accent-purple-bright)' : 'var(--text-secondary)',
+            color: active ? 'var(--accent-purple-bright)' : baseColor,
             border: active ? '1px solid rgba(124,58,237,0.25)' : '1px solid transparent',
             paddingLeft: indent && !collapsed ? 16 : 12,
+            opacity: muted && !active ? 0.75 : 1,
           }}
         >
           {active && (
@@ -529,7 +113,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           )}
           <span className="shrink-0 relative">
             {item.icon}
-            {/* Mini-pill on the icon when collapsed — only render path
+            {/* Mini-pill on the icon when collapsed — only the render path
                 that needs to surface a count without the label. */}
             {item.badge === 'messages-unread' && collapsed && (
               <MessagesUnreadDot />
@@ -545,7 +129,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.1 }}
-                className="text-sm font-medium whitespace-nowrap overflow-hidden flex items-center gap-2"
+                className="text-sm font-medium whitespace-nowrap overflow-hidden flex-1 min-w-0 flex items-center gap-2"
               >
                 {item.label}
                 {item.badge === 'messages-unread' && <MessagesUnreadBadge />}
@@ -553,8 +137,112 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               </motion.span>
             )}
           </AnimatePresence>
+          {/* Pin / unpin button — only for hub items, only when sidebar
+              is expanded, only on hover. Filled star = already pinned
+              (click to unpin); outlined = not pinned (click to pin). */}
+          {pinnable && !collapsed && (
+            <button
+              type="button"
+              onClick={e => {
+                e.preventDefault();
+                e.stopPropagation();
+                favorites.togglePin(item.href);
+              }}
+              aria-label={pinned ? `Unpin ${item.label}` : `Pin ${item.label}`}
+              title={pinned ? 'Unpin from Favorites' : 'Pin to Favorites'}
+              className="shrink-0 p-1 rounded transition-opacity hover:bg-white/10 opacity-0 group-hover:opacity-100"
+              style={{ color: pinned ? '#f0c660' : 'var(--text-muted)' }}
+            >
+              {pinned ? (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                </svg>
+              ) : (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                </svg>
+              )}
+            </button>
+          )}
         </motion.div>
       </Link>
+    );
+  }
+
+  function renderHub(hub: NavHub) {
+    const isOpen = openHubs[hub.label] ?? false;
+    // When sidebar is collapsed: show only the hub's PRIMARY items as
+    // icons. Secondary items hide entirely — they remain reachable from
+    // Cmd+K and from the hub page. This is the deliberate
+    // deprioritization the redesign exists to deliver.
+    //
+    // Exception: if the active route is a secondary item, surface it
+    // anyway so the user can see where they are.
+    if (collapsed) {
+      return (
+        <div key={hub.label} className="pt-2">
+          {hub.items
+            .filter(it => (it.tier ?? 'primary') === 'primary' || isActive(pathname, it.href))
+            .map(item => renderItem(item))}
+        </div>
+      );
+    }
+    const hubActive = isActive(pathname, hub.href);
+    return (
+      <div key={hub.label} className="pt-3">
+        {/* Header row: label is a Link to the hub landing page; chevron is
+            a separate toggle that expands the items inline. Two clear
+            affordances so a lazy user gets what they expect: click the
+            name → go to the hub; click the arrow → see what's inside. */}
+        <div
+          className="flex items-stretch rounded transition-colors"
+          style={{
+            background: hubActive ? `${hub.color}1A` : 'transparent',
+          }}
+        >
+          <Link
+            href={hub.href}
+            className="flex-1 flex items-center px-3 py-1.5 text-[11px] uppercase tracking-widest font-bold cursor-pointer rounded-l hover:bg-white/5"
+            style={{ color: hub.color }}
+          >
+            {hub.label}
+          </Link>
+          <button
+            onClick={() => toggleHub(hub.label)}
+            aria-label={isOpen ? `Collapse ${hub.label}` : `Expand ${hub.label}`}
+            className="px-2.5 flex items-center cursor-pointer rounded-r hover:bg-white/10 transition-colors"
+            style={{ color: hub.color }}
+          >
+            <motion.svg
+              width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"
+              animate={{ rotate: isOpen ? 0 : -90 }}
+              transition={{ duration: 0.15 }}
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </motion.svg>
+          </button>
+        </div>
+        <AnimatePresence initial={false}>
+          {isOpen && hydrated && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.18 }}
+              className="overflow-hidden"
+            >
+              <div className="space-y-0.5 mt-1">
+                {hub.items.map(item =>
+                  renderItem(item, {
+                    indent: true,
+                    muted: (item.tier ?? 'primary') === 'secondary',
+                  })
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
     );
   }
 
@@ -623,58 +311,18 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
       {/* Nav */}
       <nav className="flex-1 py-2 px-2 space-y-0.5 overflow-y-auto">
-        {/* Pinned top */}
-        {PINNED_TOP.map(item => renderItem(item))}
+        {/* Top */}
+        {TOP_NAV.map(item => renderItem(item))}
 
-        {/* Sections */}
-        {SECTIONS.map(section => {
-          const isOpen = openSections[section.label] ?? true;
-          // When collapsed, always show all items (no section headers)
-          if (collapsed) {
-            return (
-              <div key={section.label} className="pt-2">
-                {section.items.map(item => renderItem(item))}
-              </div>
-            );
-          }
-          return (
-            <div key={section.label} className="pt-3">
-              <button
-                onClick={() => toggleSection(section.label)}
-                className="w-full flex items-center justify-between px-3 py-1.5 text-[11px] uppercase tracking-widest font-bold transition-colors cursor-pointer rounded hover:bg-white/5"
-                style={{ color: SECTION_COLORS[section.label] || '#a8a8d0' }}
-              >
-                <span>{section.label}</span>
-                <motion.svg
-                  width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"
-                  animate={{ rotate: isOpen ? 0 : -90 }}
-                  transition={{ duration: 0.15 }}
-                >
-                  <polyline points="6 9 12 15 18 9" />
-                </motion.svg>
-              </button>
-              <AnimatePresence initial={false}>
-                {isOpen && hydrated && (
-                  <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.18 }}
-                    className="overflow-hidden"
-                  >
-                    <div className="space-y-0.5 mt-1">
-                      {section.items.map(item => renderItem(item, true))}
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-          );
-        })}
+        {/* Favorites */}
+        <SidebarFavorites collapsed={collapsed} favorites={favorites} />
 
-        {/* Pinned bottom */}
+        {/* Hubs */}
+        {HUBS.map(hub => renderHub(hub))}
+
+        {/* Bottom */}
         <div className="pt-3">
-          {PINNED_BOTTOM.map(item => renderItem(item))}
+          {BOTTOM_NAV.map(item => renderItem(item))}
         </div>
       </nav>
 
