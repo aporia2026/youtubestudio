@@ -319,13 +319,26 @@ export async function POST(req: NextRequest) {
     const probeResults = await Promise.all(
       sample.map(async (url) => {
         try {
-          const res = await fetch(url, { method: 'HEAD' });
+          // GET with Range: 0-0, not HEAD. S3 SigV4 presigns include the
+          // HTTP method in the canonical request, so a URL signed for
+          // GetObject returns 403 to HEAD — even when the URL is
+          // perfectly valid for the real download. Range: bytes=0-0
+          // gets us 1 byte (206 Partial Content), enough to verify the
+          // URL works without transferring the whole video. The
+          // response body is read and discarded so the socket closes.
+          const res = await fetch(url, {
+            method: 'GET',
+            headers: { Range: 'bytes=0-0' },
+          });
+          // Drain the body to release the socket. 1 byte at most.
+          try { await res.arrayBuffer(); } catch { /* drain best-effort */ }
           return {
             host: new URL(url).host,
             status: res.status,
-            ok: res.ok,
+            ok: res.ok || res.status === 206,
             contentType: res.headers.get('content-type'),
             contentLength: res.headers.get('content-length'),
+            contentRange: res.headers.get('content-range'),
             acceptRanges: res.headers.get('accept-ranges'),
           };
         } catch (err) {
