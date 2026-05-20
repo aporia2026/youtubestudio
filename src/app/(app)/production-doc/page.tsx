@@ -3417,6 +3417,14 @@ function ProductionDocPage() {
   // `payload` updates only on real state changes.
   const projectPatch = project.patch;
   const projectPayload = project.payload;
+  // 2026-05-20: keep projectPayload OUT of the mirroring effect's
+  // dep array (otherwise calling projectPatch inside the effect
+  // changes payload identity, which re-fires the effect, which
+  // calls projectPatch again — Maximum update depth exceeded). Read
+  // fallback values through a ref instead so the effect responds
+  // ONLY to real UI state changes.
+  const projectPayloadRef = useRef(projectPayload);
+  projectPayloadRef.current = projectPayload;
   useEffect(() => {
     if (!historyEntryId) return;
     // Wait until the hook's initial GET has resolved. Patching before
@@ -3424,7 +3432,8 @@ function ProductionDocPage() {
     // (the hook bails when payload is null), but checking here keeps
     // the [project payload save] client log honest about when we
     // actually start writing.
-    if (!projectPayload) return;
+    const currentPayload = projectPayloadRef.current;
+    if (!currentPayload) return;
 
     // rowImages: legacy autosave wrote `rowImages` as `RowImageState[]`
     // — the canonical shape is `Record<number, string>`. Build the
@@ -3488,8 +3497,8 @@ function ProductionDocPage() {
     const linkedScheduleItemId = scheduleItemId || scheduleItem?.id || undefined;
 
     projectPatch({
-      title: doc?.title || projectPayload.title,
-      doc: doc ?? projectPayload.doc,
+      title: doc?.title || currentPayload.title,
+      doc: doc ?? currentPayload.doc,
       rowImages: rowImagesMap,
       rowOverlays: rowOverlaysMap,
       rowVideoClips: rowVideoClipsMap,
@@ -3505,10 +3514,13 @@ function ProductionDocPage() {
         rowLockedAsStill,
       },
     });
+    // projectPayload deliberately NOT in the deps — read via
+    // projectPayloadRef above. Including it would close the
+    // setState → re-render → effect → setState loop that produced
+    // "Maximum update depth exceeded" earlier today. 2026-05-20.
   }, [
     historyEntryId,
     projectPatch,
-    projectPayload,
     doc,
     rowImages,
     rowOverlays,
