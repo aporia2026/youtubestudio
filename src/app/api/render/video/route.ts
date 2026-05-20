@@ -129,10 +129,18 @@ function absolutizeMediaUrls(config: VideoConfig, origin: string): VideoConfig {
     if (url.startsWith('/')) return new URL(url, origin).toString();
     return url;
   }
+  // 2026-05-20: also absolutize per-shot videoUrls. The same-origin
+  // broll proxy emits `/api/broll/<id>/video` (relative), and Remotion's
+  // renderer runs inside the Vercel function — it needs the absolute
+  // URL to fetch back through Vercel's edge. Pre-2026-05-20 broll URLs
+  // were absolute R2 presigned URLs and skipped this branch harmlessly.
   return {
     ...config,
     voiceoverUrl: toAbsolute(config.voiceoverUrl),
     musicUrl: toAbsolute(config.musicUrl),
+    shots: config.shots.map((shot) =>
+      shot.videoUrl ? { ...shot, videoUrl: toAbsolute(shot.videoUrl) } : shot,
+    ),
   };
 }
 

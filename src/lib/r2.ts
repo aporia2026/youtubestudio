@@ -153,6 +153,46 @@ export async function deleteR2Object(key: string): Promise<void> {
   return deleteFromBucket(getReviewBucket(), key);
 }
 
+/**
+ * Stream bytes from the review bucket. Mirrors
+ * `streamFromNarrationBucket` so the same-origin broll-video proxy can
+ * pipe R2 bytes through `/api/broll/[id]/video` without re-uploading or
+ * caching them locally. Used by the proxy route to give Remotion's
+ * `<OffthreadVideo>` a clean same-origin URL (no presigned query
+ * params) — Remotion's URL cache key handling silently mangles the
+ * X-Amz-* parameters and produces empty frames otherwise. See
+ * `_plans/2026-05-20-render-config-drop-zoom-padding-region-import.md`
+ * (subsequent debugging session).
+ */
+export async function streamFromReviewBucket(
+  key: string,
+  range?: string | null,
+): Promise<{
+  body: ReadableStream<Uint8Array> | null;
+  contentType: string | null;
+  contentLength: number | null;
+  contentRange: string | null;
+  acceptRanges: string | null;
+  status: 200 | 206;
+}> {
+  const client = getR2Client();
+  const command = new GetObjectCommand({
+    Bucket: getReviewBucket(),
+    Key: key,
+    Range: range || undefined,
+  });
+  const res = await client.send(command);
+  const body = (res.Body as unknown as ReadableStream<Uint8Array>) ?? null;
+  return {
+    body,
+    contentType: res.ContentType ?? null,
+    contentLength: typeof res.ContentLength === 'number' ? res.ContentLength : null,
+    contentRange: res.ContentRange ?? null,
+    acceptRanges: res.AcceptRanges ?? 'bytes',
+    status: range && res.ContentRange ? 206 : 200,
+  };
+}
+
 /** Build a consistent R2 key for review videos. */
 export function buildR2Key(projectId: string, versionNumber: number, fileName: string): string {
   const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');

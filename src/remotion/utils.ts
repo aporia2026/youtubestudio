@@ -431,6 +431,15 @@ export interface RowVideoClipState {
    *  10s clip in a 7s scene doesn't freeze and a 10s clip in a 15s scene doesn't
    *  stop mid-narration. See `_plans/2026-05-17-clip-duration-fit.md`. */
   durationSeconds?: number;
+  /** Broll clip UUID. When set, the renderer URL is rewritten to the
+   *  same-origin proxy `/api/broll/<brollClipId>/video` instead of the
+   *  raw R2 presigned URL. Remotion's `<OffthreadVideo>` silently
+   *  produces empty frames on URLs with many query parameters (the
+   *  X-Amz-* presign params), so routing through a clean proxy URL
+   *  with no query string is the workaround. The original `videoUrl`
+   *  remains the source of truth for the in-browser preview player
+   *  (where the presigned URL works fine). 2026-05-20. */
+  brollClipId?: string;
 }
 
 /** Per-row auto-fetched overlay state passed into the renderer. Only rows
@@ -595,11 +604,25 @@ export function productionDocToVideoConfig(
       typeof row.video_url_override === 'string' && row.video_url_override
         ? row.video_url_override
         : undefined;
-    const videoUrl =
-      overrideVideoUrl ??
-      (clipState && clipState.status === 'ready' && clipState.videoUrl
-        ? clipState.videoUrl
-        : undefined);
+    // Resolve the videoUrl. Two cases:
+    //   1. Editor override (`video_url_override`) — used verbatim.
+    //   2. Auto-generated broll clip — prefer the same-origin proxy
+    //      `/api/broll/<id>/video` when we have the clip UUID, so the
+    //      server-side renderer hits a clean URL without R2 presign
+    //      query params. The presigned URL silently breaks Remotion's
+    //      OffthreadVideo URL cache key handling (frames render empty),
+    //      but the bytes themselves are reachable — proxying through
+    //      our app keeps the clean cache key. Falls back to the raw
+    //      videoUrl when the clip id isn't known (legacy state, very
+    //      old localStorage entries). 2026-05-20.
+    let videoUrl: string | undefined;
+    if (overrideVideoUrl) {
+      videoUrl = overrideVideoUrl;
+    } else if (clipState && clipState.status === 'ready' && clipState.videoUrl) {
+      videoUrl = clipState.brollClipId
+        ? `/api/broll/${encodeURIComponent(clipState.brollClipId)}/video`
+        : clipState.videoUrl;
+    }
     // Pass clip duration through so BRollScene can compute the
     // playback rate that fits the clip to the scene. Only meaningful
     // when videoUrl is set; otherwise undefined and the still path

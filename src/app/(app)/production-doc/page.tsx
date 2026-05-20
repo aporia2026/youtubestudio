@@ -2359,9 +2359,9 @@ function ProductionDocPage() {
   //   owns its own clip lifecycle and reports up via `onClipChange`; we keep
   //   the parent-level map only for the renderer wiring. Sparse — entries
   //   exist only for rows the user has generated a clip on.
-  const [rowVideoClips, setRowVideoClips] = useState<Record<number, { status: string; videoUrl?: string; durationSeconds?: number } | null>>({});
+  const [rowVideoClips, setRowVideoClips] = useState<Record<number, { status: string; videoUrl?: string; durationSeconds?: number; brollClipId?: string } | null>>({});
   const handleBrollClipChange = useCallback(
-    (rowIndex: number, clip: { status: BrollStatus; video_url: string | null; duration_seconds?: number | null } | null) => {
+    (rowIndex: number, clip: { id?: string; status: BrollStatus; video_url: string | null; duration_seconds?: number | null } | null) => {
       setRowVideoClips((prev) => {
         if (!clip) {
           if (!(rowIndex in prev)) return prev;
@@ -2375,16 +2375,26 @@ function ProductionDocPage() {
         // clip's a transient stub (no model yet) or a legacy row that
         // pre-dates `broll_clips.duration_seconds`. See plan
         // `_plans/2026-05-17-clip-duration-fit.md`.
+        //
+        // brollClipId carries the source clip UUID so the renderer can
+        // rewrite its videoUrl to the same-origin proxy
+        // `/api/broll/<id>/video` — Remotion's OffthreadVideo silently
+        // produces empty frames on the R2 presigned URLs (X-Amz-* query
+        // params break the URL cache key), but the same bytes work
+        // fine when streamed through a clean same-origin URL.
+        // 2026-05-20.
         const nextEntry = {
           status: clip.status,
           videoUrl: clip.video_url ?? undefined,
           durationSeconds: clip.duration_seconds ?? undefined,
+          brollClipId: clip.id,
         };
         if (
           existing &&
           existing.status === nextEntry.status &&
           existing.videoUrl === nextEntry.videoUrl &&
-          existing.durationSeconds === nextEntry.durationSeconds
+          existing.durationSeconds === nextEntry.durationSeconds &&
+          existing.brollClipId === nextEntry.brollClipId
         ) {
           return prev;
         }
@@ -4989,6 +4999,7 @@ function ProductionDocPage() {
         };
         if (data.clip && data.clip.status === 'ready' && data.clip.video_url) {
           handleBrollClipChange(m.rowIndex, {
+            id: data.clip.id,
             status: data.clip.status,
             video_url: data.clip.video_url,
             duration_seconds: data.clip.duration_seconds,
@@ -5164,6 +5175,7 @@ function ProductionDocPage() {
 
           // Bridge to parent state — drives the renderer.
           handleBrollClipChange(idx, {
+            id: clip.id,
             status: clip.status,
             video_url: clip.video_url,
             duration_seconds: clip.duration_seconds,
@@ -6665,7 +6677,7 @@ function ProductionDocPage() {
                                 onClipChange={(clip) =>
                                   handleBrollClipChange(
                                     i,
-                                    clip ? { status: clip.status, video_url: clip.video_url, duration_seconds: clip.duration_seconds } : null,
+                                    clip ? { id: clip.id, status: clip.status, video_url: clip.video_url, duration_seconds: clip.duration_seconds } : null,
                                   )
                                 }
                               />
@@ -7038,7 +7050,7 @@ function ProductionDocPage() {
                                 onClipChange={(clip) =>
                                   handleBrollClipChange(
                                     i,
-                                    clip ? { status: clip.status, video_url: clip.video_url, duration_seconds: clip.duration_seconds } : null,
+                                    clip ? { id: clip.id, status: clip.status, video_url: clip.video_url, duration_seconds: clip.duration_seconds } : null,
                                   )
                                 }
                               />
