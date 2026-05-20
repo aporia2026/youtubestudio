@@ -181,8 +181,11 @@ export type EditorCommand =
   /** Swap the project's voiceover URL. Used by the editor's
    *  voiceover picker (auto-match + manual select). Inverse stores
    *  the prior URL so undo restores it. Pass `null` / empty string
-   *  to clear. No-op when the new URL matches the prior URL. */
-  | { type: 'SET_VOICEOVER_URL'; url: string | null }
+   *  to clear. No-op when the new URL matches the prior URL.
+   *  `restoreAlignment` is set only by the inverse path so Cmd+Z can
+   *  put the previously-cached word-level timings back in place
+   *  alongside the URL; forward callers leave it undefined. */
+  | { type: 'SET_VOICEOVER_URL'; url: string | null; restoreAlignment?: ForcedAlignmentResponse }
   /** Doc-level patch — used for fields that live on `state.doc`
    *  itself (thumbnail, overlays_disabled, scene_fade_enabled,
    *  min_scene_ms, etc.) rather than per-row. Inverse stores the
@@ -494,6 +497,15 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           undoStack: [],
           redoStack: [],
           selection: null,
+          // Snap the playhead to the start. The pre-reset position
+          // may be past the end of the new (possibly shorter) doc;
+          // clamping there would be confusing. Snap to 0 — the user
+          // can scrub back where they were.
+          playheadMs: 0,
+          // Clear the local "saved 4s ago" clock. The server-fetched
+          // state is fresh; the prior lastSavedAt referred to a
+          // different version of the doc.
+          lastSavedAt: null,
         },
         inverse: null,
       };
@@ -1059,12 +1071,23 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       // was computed against the prior MP3). The user can regen
       // alignment if they want it back; silently clearing it stops
       // the renderer from applying stale word-level timings.
-      const inverse: EditorCommand = { type: 'SET_VOICEOVER_URL', url: prev ?? null };
+      // The inverse carries the prior alignment so Cmd+Z restores
+      // BOTH the URL and the alignment that went with it — otherwise
+      // an undo would leave the prior URL with no word-level timings,
+      // silently degrading scene-timing realignment.
+      const inverse: EditorCommand = {
+        type: 'SET_VOICEOVER_URL',
+        url: prev ?? null,
+        restoreAlignment: state.voiceoverAlignment,
+      };
       return {
         next: {
           ...state,
           voiceoverUrl: next,
-          voiceoverAlignment: undefined,
+          // Forward dispatch clears alignment (it's stale vs. the new
+          // MP3). Inverse paths carry `restoreAlignment` to put the
+          // prior alignment back when Cmd+Z walks the URL backwards.
+          voiceoverAlignment: cmd.restoreAlignment,
           isDirty: true,
         },
         inverse,

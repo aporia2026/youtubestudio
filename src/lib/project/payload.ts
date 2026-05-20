@@ -354,9 +354,55 @@ export function migratePayload(raw: unknown): MigrateResult {
     dropped.push('voiceoverAlignment');
   }
 
-  // captions — opaque CaptionsBundle. Shape-check segments array.
+  // captions — CaptionsBundle. Defense-in-depth: validate every
+  // segment's start/end as finite non-negative numbers and text as a
+  // string. Without this, an authenticated client could PATCH segments
+  // with NaN / negative / string timings that propagate to the
+  // renderer and crash the active-caption scan (rule 13).
   if (isPlainObject(raw.captions) && Array.isArray(raw.captions.segments)) {
-    out.captions = raw.captions as unknown as CaptionsBundle;
+    const rawSegments = raw.captions.segments;
+    const cleanSegments: Array<{ start: number; end: number; text: string }> = [];
+    let droppedAny = false;
+    for (const seg of rawSegments) {
+      if (!isPlainObject(seg)) {
+        droppedAny = true;
+        continue;
+      }
+      const start = seg.start;
+      const end = seg.end;
+      const text = seg.text;
+      if (
+        typeof start !== 'number' ||
+        typeof end !== 'number' ||
+        !Number.isFinite(start) ||
+        !Number.isFinite(end) ||
+        start < 0 ||
+        end < start ||
+        typeof text !== 'string'
+      ) {
+        droppedAny = true;
+        continue;
+      }
+      cleanSegments.push({ start, end, text });
+    }
+    const hash = raw.captions.voiceoverUrlHash;
+    const modelId = raw.captions.modelId;
+    const generatedAt = raw.captions.generatedAt;
+    if (
+      typeof hash === 'string' &&
+      typeof modelId === 'string' &&
+      typeof generatedAt === 'string'
+    ) {
+      out.captions = {
+        voiceoverUrlHash: hash,
+        modelId,
+        generatedAt,
+        segments: cleanSegments,
+      };
+      if (droppedAny) dropped.push('captions.segments[partial]');
+    } else {
+      dropped.push('captions');
+    }
   } else if (raw.captions !== undefined) {
     dropped.push('captions');
   }

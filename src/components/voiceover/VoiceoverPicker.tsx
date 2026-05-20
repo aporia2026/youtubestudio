@@ -246,18 +246,36 @@ export function VoiceoverPicker({
     });
   }
 
+  /** Stop any in-flight preview before closing the popover. Without
+   *  this, clicking an item to select (or "Clear") closes the dropdown
+   *  but leaves the preview audio playing in the background — the user
+   *  can no longer reach the stop button because it lives inside the
+   *  now-hidden popover. */
+  function stopPreview() {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    if (playingIdRef.current !== null) {
+      playingIdRef.current = null;
+      setPlayingId(null);
+    }
+  }
+
   function selectItem(item: VoiceoverItem) {
     userTouchedRef.current = true;
     console.info(`[${logNamespace}] manual select`, {
       source: item.source,
       narratorName: item.voiceName,
     });
+    stopPreview();
     onChange(item.audioUrl, 'manual');
     setOpen(false);
   }
 
   function clearSelection() {
     userTouchedRef.current = true;
+    stopPreview();
     onChange('', 'clear');
     setOpen(false);
   }

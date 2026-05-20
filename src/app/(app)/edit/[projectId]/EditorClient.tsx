@@ -758,27 +758,52 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // change. The 'ready' transition lands as a non-transient command
   // so it goes on the undo stack (cleanly Cmd+Z'd if the user
   // changes their mind).
-  useEffect(() => {
-    const generatingRows: Array<{ rowIndex: number; clipId: string }> = [];
+  //
+  // Effect dep narrowing: we memoize a stable "which rows to poll"
+  // signature so the loop ONLY restarts when (a) the set of generating
+  // rows changes or (b) a polled row's broll signature (timecode +
+  // visual_description) changes. Depending on `state.doc.rows` would
+  // restart the interval on every script_text keystroke — wasteful and
+  // it fires an extra immediate tick each time.
+  const brollPollTargets = useMemo(() => {
     const map = readBrollLsMap();
-    Object.entries(state.rowVideoClips).forEach(([k, v]) => {
-      if (!v || v.status !== 'generating') return;
+    const out: Array<{ rowIndex: number; clipId: string }> = [];
+    for (const [k, v] of Object.entries(state.rowVideoClips)) {
+      if (!v || v.status !== 'generating') continue;
       const rowIndex = Number(k);
       const row = state.doc.rows[rowIndex];
-      if (!row) return;
+      if (!row) continue;
       const sig = brollRowSignatureInput({
         timecode: row.timecode,
         visual_description: row.visual_description,
       });
       const clipId = map[sig];
-      if (clipId) generatingRows.push({ rowIndex, clipId });
-    });
+      if (clipId) out.push({ rowIndex, clipId });
+    }
+    return out;
+    // Dep on the per-row signature inputs only, not the full doc.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    state.rowVideoClips,
+    // Stable JSON key of the polled rows' signature fields. Changes
+    // only when a generating row's timecode or visual_description
+    // changes — not when script_text or any other field does.
+    JSON.stringify(
+      Object.entries(state.rowVideoClips)
+        .filter(([, v]) => v?.status === 'generating')
+        .map(([k]) => {
+          const r = state.doc.rows[Number(k)];
+          return r ? [k, r.timecode, r.visual_description] : [k, null, null];
+        }),
+    ),
+  ]);
 
-    if (generatingRows.length === 0) return;
+  useEffect(() => {
+    if (brollPollTargets.length === 0) return;
 
     let cancelled = false;
     const tick = async () => {
-      for (const { rowIndex, clipId } of generatingRows) {
+      for (const { rowIndex, clipId } of brollPollTargets) {
         if (cancelled) return;
         try {
           const res = await fetch(`/api/broll/${encodeURIComponent(clipId)}`, {
@@ -816,7 +841,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       cancelled = true;
       clearInterval(handle);
     };
-  }, [state.rowVideoClips, state.doc.rows, setRowVideoClip]);
+  }, [brollPollTargets, setRowVideoClip]);
 
   /** Thin adapter so the ported handlers below read like their
    *  production-doc counterparts. Routes through PATCH_ROW so the
@@ -1388,6 +1413,22 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     };
   }, [videoConfig, apply]);
 
+  // Memoize the cumulative shot start times so the TransportBar's
+  // skip-prev / skip-next can land on the nearest boundary without
+  // recomputing on every keystroke. Hoisted above the empty-payload
+  // early return so hook order stays stable across reload-from-server
+  // transitions (empty doc → populated doc would otherwise change the
+  // number of hooks the component runs and break React's call order).
+  const shotStartTimesMs = useMemo(() => rowStartTimesMs(state.doc), [state.doc]);
+
+  // Pre-compute the save-status label + color for the header pill so
+  // the in-place SaveStatusBadge doesn't have to reach into the
+  // store from inside the JSX. Hoisted for the same hook-order reason.
+  const totalDurationMs = useMemo(
+    () => videoConfig?.shots.reduce((acc, s) => acc + s.durationMs, 0) ?? 0,
+    [videoConfig],
+  );
+
   if (!doc || doc.rows.length === 0 || !inputProps || !videoConfig) {
     console.warn('[editor client] payload missing rows', {
       projectId,
@@ -1415,19 +1456,6 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // Overlays / Regen captions / Regen VO / Regen doc / Split / Delete
   // / Mute / Animate / Lower-3rd) temporarily live in the leftRail
   // slot until Phase 3 builds the real tabbed left rail.
-
-  // Memoize the cumulative shot start times so the TransportBar's
-  // skip-prev / skip-next can land on the nearest boundary without
-  // recomputing on every keystroke.
-  const shotStartTimesMs = useMemo(() => rowStartTimesMs(state.doc), [state.doc]);
-
-  // Pre-compute the save-status label + color for the header pill so
-  // the in-place SaveStatusBadge doesn't have to reach into the
-  // store from inside the JSX.
-  const totalDurationMs = useMemo(
-    () => videoConfig?.shots.reduce((acc, s) => acc + s.durationMs, 0) ?? 0,
-    [videoConfig],
-  );
   const saveStatusLabel = statusBarSaveLabel(saveStatus, state.isDirty);
   const saveStatusColor = (() => {
     if (saveStatus.kind === 'conflict') return '#fca5a5';
