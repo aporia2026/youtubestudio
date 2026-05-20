@@ -5396,9 +5396,20 @@ function ProductionDocPage() {
           const statusRes = await fetch(`/api/render/video?renderId=${data.renderId}`);
           const statusData = await statusRes.json() as {
             status: string; progress: number; downloadUrl?: string | null; error?: string;
+            probeResults?: unknown | null;
           };
 
           setRenderProgress(statusData.progress ?? 0);
+
+          // 2026-05-20: surface the server-side videoUrl probe results
+          // ONCE per render so the creator can see whether the Vercel
+          // server can actually reach the per-shot R2 URLs. Stashed on
+          // window so it's also accessible from DevTools across polls.
+          if (statusData.probeResults && !(window as unknown as { __renderProbeSeen?: string }).__renderProbeSeen?.startsWith(data.renderId!)) {
+            (window as unknown as { __renderProbeSeen?: string }).__renderProbeSeen = data.renderId!;
+            (window as unknown as { __lastRenderProbe?: unknown }).__lastRenderProbe = statusData.probeResults;
+            console.warn('[render] videoUrl probe (from server)', statusData.probeResults);
+          }
 
           if (statusData.status === 'done') {
             if (renderPollRef.current) clearInterval(renderPollRef.current);

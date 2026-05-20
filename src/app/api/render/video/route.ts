@@ -102,6 +102,12 @@ async function ensureTable() {
   // — see `buildRenderDownloadFilename` in `r2.ts`. Nullable: legacy rows
   // and scratch-mode renders without a title fall back to the renderId.
   await sql`ALTER TABLE render_jobs ADD COLUMN IF NOT EXISTS title           TEXT`;
+  // 2026-05-20: videoUrl HEAD-probe results, stashed for the GET status
+  // endpoint so creators can read them in the browser without digging
+  // through Vercel function logs. JSONB so we can query `->`/`->>` if
+  // a recurring failure pattern emerges. Nullable: pre-probe rows and
+  // renders with zero videoUrls leave it null.
+  await sql`ALTER TABLE render_jobs ADD COLUMN IF NOT EXISTS probe_results JSONB`;
 }
 
 // ─── Absolutize same-origin URLs before sending to a remote renderer ─────────
@@ -307,6 +313,7 @@ export async function POST(req: NextRequest) {
         .filter((u): u is string => typeof u === 'string' && u.length > 0),
     ),
   );
+  let probePayload: unknown = { totalUniqueVideoUrls: uniqueVideoUrls.length };
   if (uniqueVideoUrls.length > 0) {
     const sample = uniqueVideoUrls.slice(0, 3);
     const probeResults = await Promise.all(
@@ -333,12 +340,12 @@ export async function POST(req: NextRequest) {
         }
       }),
     );
-    logger.info('[render] videoUrl probe', {
-      renderId,
+    probePayload = {
       totalUniqueVideoUrls: uniqueVideoUrls.length,
       probedCount: sample.length,
       results: probeResults,
-    });
+    };
+    logger.info('[render] videoUrl probe', { renderId, ...probePayload as Record<string, unknown> });
   } else {
     logger.info('[render] videoUrl probe', {
       renderId,
@@ -346,6 +353,15 @@ export async function POST(req: NextRequest) {
       note: 'no videoUrls in config — render will use stills + Ken Burns only',
     });
   }
+  // Persist the probe so the creator can pull it from the GET status
+  // endpoint in their browser instead of digging through Vercel logs.
+  // Non-blocking — diagnostics never fail the render itself.
+  await updateJob(renderId, { probe_results: probePayload }).catch((err) => {
+    logger.warn('[render] probe persist failed', {
+      renderId,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  });
 
   if (backend === 'lambda') {
     try {
@@ -386,6 +402,7 @@ export async function GET(req: NextRequest) {
     lambda_render_id: string | null; lambda_bucket: string | null;
     estimated_cost: number | null;
     title: string | null;
+    probe_results: unknown | null;
   };
 
   try {
@@ -480,6 +497,12 @@ export async function GET(req: NextRequest) {
       startedAt: job.started_at,
       elapsedMs: Date.now() - job.started_at,
       estimatedCost: job.estimated_cost,
+      // 2026-05-20: videoUrl HEAD-probe results. Lets the creator see
+      // in their browser whether the Vercel server can reach the
+      // per-shot video URLs (R2 presigned) without digging through
+      // Vercel function logs. Null on pre-probe rows or zero-video
+      // renders.
+      probeResults: job.probe_results,
     });
   } catch (err) {
     logger.error('[render] DB read failed', { detail: err instanceof Error ? err.message : String(err) });
@@ -492,6 +515,7 @@ export async function GET(req: NextRequest) {
 async function updateJob(renderId: string, fields: {
   status?: string; progress?: number; output_url?: string; error?: string; finished_at?: number;
   lambda_render_id?: string; lambda_bucket?: string; estimated_cost?: number;
+  probe_results?: unknown;
 }) {
   // Use fully parameterized queries — no string interpolation of user-controlled values.
   const sets: string[] = [];
@@ -505,6 +529,7 @@ async function updateJob(renderId: string, fields: {
   if (fields.lambda_render_id !== undefined) { sets.push(`lambda_render_id = $${p++}`); values.push(fields.lambda_render_id); }
   if (fields.lambda_bucket    !== undefined) { sets.push(`lambda_bucket = $${p++}`);    values.push(fields.lambda_bucket); }
   if (fields.estimated_cost   !== undefined) { sets.push(`estimated_cost = $${p++}`);   values.push(fields.estimated_cost); }
+  if (fields.probe_results    !== undefined) { sets.push(`probe_results = $${p++}::jsonb`); values.push(JSON.stringify(fields.probe_results)); }
   if (sets.length === 0) return;
   values.push(renderId);
   await sql.query(`UPDATE render_jobs SET ${sets.join(', ')} WHERE id = $${p}`, values);
