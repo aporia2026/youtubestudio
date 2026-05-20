@@ -59,6 +59,7 @@ import { MaskBrushEditor } from '@/components/production-doc/MaskBrushEditor';
 import type { ImageSaliencyMap } from '@/remotion/utils';
 import { ProjectSwitcher } from '@/components/editor/ProjectSwitcher';
 import { EditorEmptyState } from '@/components/editor/EditorEmptyState';
+import { RenderModal, type RenderState } from '@/components/editor/RenderModal';
 import { ShotsTab } from '@/components/editor/leftrail/ShotsTab';
 import { MediaTab } from '@/components/editor/leftrail/MediaTab';
 import { AudioTab } from '@/components/editor/leftrail/AudioTab';
@@ -164,6 +165,23 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // uses and dispatch SET_ROW_IMAGE with the new URL.
   const [imageEditRow, setImageEditRow] = useState<number | null>(null);
   const [imageEditApplying, setImageEditApplying] = useState(false);
+
+  // ─── Batch E: render-to-MP4 ─────────────────────────────────────
+  //
+  // Same Lambda pipeline production-doc uses. The render runs server-
+  // side; the editor only owns the kickoff + polling + UI state.
+  // `null` means no render in flight or surfaced; otherwise the
+  // RenderModal renders the appropriate body.
+  const [renderState, setRenderState] = useState<RenderState | null>(null);
+  const renderPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    // Clean up the polling interval if the component unmounts mid-
+    // render. The server-side job keeps running; we just stop
+    // listening.
+    return () => {
+      if (renderPollRef.current) clearInterval(renderPollRef.current);
+    };
+  }, []);
 
   // Timeline zoom. Lives in the client because zoom is a viewing
   // preference, not part of the doc. The user's preferred default
@@ -416,6 +434,156 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     },
     [state.doc.rows, state.rowImages, userBrollModelId, projectId, setRowVideoClip],
   );
+
+  // ─── Batch E: render-to-MP4 kickoff ─────────────────────────────
+  const executeRender = useCallback(async () => {
+    if (state.doc.rows.length === 0) return;
+    // Flush any unsaved edits before kicking off — the server reads
+    // the SAME config we hand it, but the user expects "what I see"
+    // to be what gets rendered, including the last keystroke.
+    await flushSave();
+
+    // Rebuild the config with `useBrollProxy: true` so the server-
+    // side Remotion renderer can stream B-roll bytes through our
+    // proxy (R2 presign URLs don't always survive a Lambda fetch).
+    // Falls back to the same builder the preview uses; only the
+    // proxy flag differs.
+    const rowImageArr = state.doc.rows.map((_, i) => {
+      const url = state.rowImages[i];
+      return url ? { status: 'ready', imageUrl: url } : null;
+    });
+    const rowVideoClipArr = state.doc.rows.map((_, i) => {
+      const clip = state.rowVideoClips[i];
+      if (!clip) return null;
+      return {
+        status: clip.status,
+        videoUrl: clip.videoUrl,
+        durationSeconds: clip.durationSeconds,
+      };
+    });
+    const rowLockedArr = state.doc.rows.map((_, i) =>
+      Boolean(state.flags.rowLockedAsStill[i]),
+    );
+    const renderConfig = productionDocToVideoConfig(state.doc, rowImageArr, {
+      voiceoverUrl: state.voiceoverUrl,
+      captions: state.captions?.segments,
+      rowOverlays: state.rowOverlays,
+      rowVideoClips: rowVideoClipArr,
+      rowLockedAsStill: rowLockedArr,
+      animateScenes: state.flags.animateScenes,
+      suppressLowerThirds: state.flags.suppressLowerThirds,
+      musicUrl: state.musicUrl,
+      brand: state.brandKitOverride,
+      alignment: state.voiceoverAlignment,
+      // CRITICAL for server-side render: stream B-roll through the
+      // app's proxy so the Lambda fetch has CORS-clean, presign-
+      // stable URLs.
+      useBrollProxy: true,
+    });
+
+    setRenderState({ status: 'rendering', progress: 0, renderId: null });
+    console.info('[editor render] start', {
+      rowCount: renderConfig.shots.length,
+      hasVoiceover: Boolean(renderConfig.voiceoverUrl),
+      title: state.doc.title || null,
+    });
+
+    const body: Record<string, unknown> = {
+      config: renderConfig,
+      title: state.doc.title || null,
+    };
+    // Pass the alignment hint when the cache is warm AND the URL is
+    // a proxy path the server-side route accepts. Falsy voiceoverUrl
+    // and ElevenLabs-direct Blob URLs make the server fall back to
+    // estimated timing — same as production-doc's render flow.
+    const VOICEOVER_PROXY_RE = /^\/api\/voiceovers\/[0-9a-f-]{36}\/audio$/i;
+    if (state.voiceoverAlignment && state.voiceoverUrl && VOICEOVER_PROXY_RE.test(state.voiceoverUrl)) {
+      body.voiceoverAlignment = {
+        audioPath: state.voiceoverUrl,
+        rowScripts: state.doc.rows.map((r) => r.script_text),
+      };
+    }
+
+    let renderId: string | null = null;
+    try {
+      const res = await fetch('/api/render/video', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        renderId?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.renderId) {
+        const message = data.error || `Failed to start render: HTTP ${res.status}`;
+        console.warn('[editor render] kickoff failed', { message });
+        setRenderState({ status: 'error', message });
+        return;
+      }
+      renderId = data.renderId;
+      console.info('[editor render] kicked off', { renderId });
+      setRenderState({ status: 'rendering', progress: 0, renderId });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn('[editor render] kickoff threw', { detail: message });
+      setRenderState({ status: 'error', message });
+      return;
+    }
+
+    // Poll every 2s — same cadence production-doc uses.
+    if (renderPollRef.current) clearInterval(renderPollRef.current);
+    renderPollRef.current = setInterval(async () => {
+      try {
+        const statusRes = await fetch(`/api/render/video?renderId=${renderId}`);
+        const statusData = (await statusRes.json().catch(() => ({}))) as {
+          status?: string;
+          progress?: number;
+          downloadUrl?: string | null;
+          error?: string;
+        };
+        if (statusData.status === 'done') {
+          if (renderPollRef.current) clearInterval(renderPollRef.current);
+          console.info('[editor render] done', { renderId, hasUrl: Boolean(statusData.downloadUrl) });
+          setRenderState({
+            status: 'done',
+            downloadUrl: statusData.downloadUrl ?? null,
+            renderId,
+          });
+          return;
+        }
+        if (statusData.status === 'error') {
+          if (renderPollRef.current) clearInterval(renderPollRef.current);
+          console.warn('[editor render] failed', { renderId, error: statusData.error });
+          setRenderState({
+            status: 'error',
+            message: statusData.error || 'Render failed (no error message returned)',
+          });
+          return;
+        }
+        // Still rendering — bump progress.
+        setRenderState((prev) =>
+          prev && prev.status === 'rendering'
+            ? { ...prev, progress: statusData.progress ?? prev.progress }
+            : prev,
+        );
+      } catch {
+        // Transient poll error — let the next tick try again.
+      }
+    }, 2000);
+  }, [
+    flushSave,
+    state.doc,
+    state.rowImages,
+    state.rowVideoClips,
+    state.rowOverlays,
+    state.flags,
+    state.voiceoverUrl,
+    state.voiceoverAlignment,
+    state.captions,
+    state.musicUrl,
+    state.brandKitOverride,
+  ]);
 
   // ─── Batch D: Animate-all batch ─────────────────────────────────
   //
@@ -1170,6 +1338,8 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           }}
         />
       }
+      onRender={() => { void executeRender(); }}
+      isRendering={renderState?.status === 'rendering'}
     />
   );
 
@@ -1626,6 +1796,25 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             closeAllOverlayModals();
             await reloadFromServer();
           }}
+        />
+      )}
+
+      {renderState && (
+        <RenderModal
+          state={renderState}
+          onClose={() => {
+            // Dismiss only — the server-side job keeps running if it
+            // was mid-flight. The poll loop still ticks; if it later
+            // resolves to done/error we surface the modal again on
+            // next state set.
+            if (renderState.status === 'rendering') {
+              console.info('[editor render] modal dismissed mid-flight', {
+                renderId: renderState.renderId,
+              });
+            }
+            setRenderState(null);
+          }}
+          onRetry={() => { void executeRender(); }}
         />
       )}
 

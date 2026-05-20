@@ -18,6 +18,7 @@
 import Link from 'next/link';
 import {
   ArrowLeft,
+  Clapperboard,
   Download,
   HelpCircle,
   Redo2,
@@ -46,6 +47,11 @@ interface EditorHeaderProps {
    *  Lives at the left of the action cluster so the natural reading
    *  order is: title → switch project → action verbs. */
   switcherSlot?: React.ReactNode;
+  /** Kick off a server-side render to MP4. Same Lambda pipeline
+   *  production-doc uses. Disabled while a render is in flight to
+   *  prevent double-kickoffs. */
+  onRender?: () => void;
+  isRendering?: boolean;
 }
 
 export function EditorHeader({
@@ -64,6 +70,8 @@ export function EditorHeader({
   exportHref,
   onHelp,
   switcherSlot,
+  onRender,
+  isRendering = false,
 }: EditorHeaderProps): React.ReactElement {
   return (
     <div className="flex items-center justify-between h-full px-3 gap-3">
@@ -128,6 +136,23 @@ export function EditorHeader({
           <SaveIcon size={14} strokeWidth={2} />
           <span>Save</span>
         </button>
+
+        {onRender && (
+          <button
+            type="button"
+            onClick={onRender}
+            disabled={isRendering}
+            className="editor-btn editor-btn-primary"
+            title={
+              isRendering
+                ? 'Render in flight — see the dialog or close it and let it finish'
+                : 'Render this project to an MP4 via Lambda'
+            }
+          >
+            <Clapperboard size={14} strokeWidth={2} />
+            <span>{isRendering ? 'Rendering…' : 'Render MP4'}</span>
+          </button>
+        )}
 
         <a
           href={exportHref}
