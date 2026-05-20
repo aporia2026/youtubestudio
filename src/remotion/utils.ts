@@ -505,6 +505,15 @@ export interface ProductionDocToVideoConfigOptions {
    *  captions the user saw in the editor's preview. Phase 4 of the
    *  shot-graph editor plan. */
   captions?: Array<{ start: number; end: number; text: string }>;
+  /** When `true`, emit `/api/broll/<brollClipId>/video` for ready clips
+   *  instead of the raw R2 presigned `videoUrl`. The server-side
+   *  Remotion renderer needs the proxy URL — its `<OffthreadVideo>`
+   *  silently produces empty frames on URLs with many X-Amz-* query
+   *  parameters. The in-browser preview Player works fine with the
+   *  direct R2 URL and shouldn't pay the Vercel-bandwidth tax for every
+   *  scrub. Default `false` (direct URL); the render route opts in.
+   *  See route `/api/broll/[id]/video/route.ts`. 2026-05-20. */
+  useBrollProxy?: boolean;
 }
 
 export function productionDocToVideoConfig(
@@ -606,20 +615,20 @@ export function productionDocToVideoConfig(
         : undefined;
     // Resolve the videoUrl. Two cases:
     //   1. Editor override (`video_url_override`) — used verbatim.
-    //   2. Auto-generated broll clip — prefer the same-origin proxy
-    //      `/api/broll/<id>/video` when we have the clip UUID, so the
-    //      server-side renderer hits a clean URL without R2 presign
-    //      query params. The presigned URL silently breaks Remotion's
-    //      OffthreadVideo URL cache key handling (frames render empty),
-    //      but the bytes themselves are reachable — proxying through
-    //      our app keeps the clean cache key. Falls back to the raw
-    //      videoUrl when the clip id isn't known (legacy state, very
-    //      old localStorage entries). 2026-05-20.
+    //   2. Auto-generated broll clip — use the same-origin proxy
+    //      `/api/broll/<id>/video` ONLY when `opts.useBrollProxy === true`
+    //      (the server-side render route). The in-browser preview Player
+    //      uses the raw R2 URL so we don't pay Vercel bandwidth for
+    //      every preview scrub. The presigned URL silently breaks
+    //      Remotion's OffthreadVideo URL cache key handling on the
+    //      server, so the render route opts in to the proxy. Falls back
+    //      to the raw videoUrl when the clip id isn't known (legacy
+    //      state). 2026-05-20.
     let videoUrl: string | undefined;
     if (overrideVideoUrl) {
       videoUrl = overrideVideoUrl;
     } else if (clipState && clipState.status === 'ready' && clipState.videoUrl) {
-      videoUrl = clipState.brollClipId
+      videoUrl = opts.useBrollProxy && clipState.brollClipId
         ? `/api/broll/${encodeURIComponent(clipState.brollClipId)}/video`
         : clipState.videoUrl;
     }

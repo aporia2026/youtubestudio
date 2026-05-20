@@ -5319,6 +5319,12 @@ function ProductionDocPage() {
       animateScenes,
       rowOverlays: liveRowOverlays,
       suppressLowerThirds,
+      // Server-side Remotion renderer needs the proxy URL (clean URL
+      // with no R2 presign query string) — see the proxy route at
+      // `/api/broll/[id]/video`. In-browser preview keeps using the
+      // direct R2 URL via VideoPlayerMemo (which omits this flag) to
+      // avoid funneling preview scrub bytes through Vercel.
+      useBrollProxy: true,
     });
     // One-shot diagnostic so a post-mortem can see exactly what the
     // server received. Lists per-row presence of imageUrl + videoUrl so
