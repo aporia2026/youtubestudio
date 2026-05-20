@@ -26,11 +26,42 @@ const KEY_DEFAULT_ZOOM = 'editor.timeline.defaultZoomLevel';
 const KEY_SHOW_THUMBNAILS = 'editor.timeline.showThumbnails';
 const KEY_SHOW_SHORTCUT_HINTS = 'editor.statusBar.showShortcutHints';
 const KEY_AUTO_REGEN_CAPTIONS = 'editor.autoRegenCaptions.onVoiceoverChange';
+// Phase 4b follow-up — five additional keys promised by the real-NLE
+// plan but never wired. Owner asked for them on 2026-05-20.
+const KEY_LEFT_RAIL_DEFAULT_TAB = 'editor.layout.leftRailDefaultTab';
+const KEY_LANE_HEIGHT_VIDEO = 'editor.timeline.laneHeights.video';
+const KEY_LANE_HEIGHT_AUDIO = 'editor.timeline.laneHeights.audio';
+const KEY_DEFAULT_PLAYBACK_RATE = 'editor.transport.defaultPlaybackRate';
+const KEY_PREVIEW_FIT_MODE = 'editor.preview.fitMode';
 
 const DEFAULT_ZOOM_LEVEL = 5;
 const DEFAULT_SHOW_THUMBNAILS = true;
 const DEFAULT_SHOW_SHORTCUT_HINTS = true;
 const DEFAULT_AUTO_REGEN_CAPTIONS = false;
+const DEFAULT_LEFT_RAIL_TAB: LeftRailTab = 'shots';
+const DEFAULT_LANE_HEIGHT_VIDEO = 64;
+const DEFAULT_LANE_HEIGHT_AUDIO = 56;
+const DEFAULT_PLAYBACK_RATE: PlaybackRateValue = 1;
+const DEFAULT_PREVIEW_FIT_MODE: PreviewFitMode = 'contain';
+
+// ─── Enumerated value types ─────────────────────────────────────
+
+/** Mirrors the six tabs in `EditorLeftRail`. Kept here (instead of
+ *  importing from the component) so the settings module stays a
+ *  pure-data dependency the components consume — not the other way
+ *  around. If the tab list ever changes, the enum below must too. */
+export type LeftRailTab = 'shots' | 'media' | 'audio' | 'captions' | 'ai' | 'settings';
+const LEFT_RAIL_TABS: readonly LeftRailTab[] = ['shots', 'media', 'audio', 'captions', 'ai', 'settings'];
+
+/** Mirrors the transport-bar dropdown. */
+export type PlaybackRateValue = 0.5 | 1 | 1.5 | 2;
+const PLAYBACK_RATES: readonly PlaybackRateValue[] = [0.5, 1, 1.5, 2];
+
+/** Mirrors the CSS `object-fit` values the preview uses. `contain`
+ *  letterboxes the frame; `fill` stretches it (no letterbox, may
+ *  distort). */
+export type PreviewFitMode = 'contain' | 'fill';
+const PREVIEW_FIT_MODES: readonly PreviewFitMode[] = ['contain', 'fill'];
 
 function safeRead(key: string): string | null {
   if (typeof window === 'undefined') return null;
@@ -101,6 +132,81 @@ export function setAutoRegenCaptions(on: boolean): void {
   safeWrite(KEY_AUTO_REGEN_CAPTIONS, on ? '1' : '0');
 }
 
+// ─── Left-rail default tab ───────────────────────────────────────
+
+export function getLeftRailDefaultTab(): LeftRailTab {
+  const raw = safeRead(KEY_LEFT_RAIL_DEFAULT_TAB);
+  if (raw === null) return DEFAULT_LEFT_RAIL_TAB;
+  if (LEFT_RAIL_TABS.includes(raw as LeftRailTab)) return raw as LeftRailTab;
+  return DEFAULT_LEFT_RAIL_TAB;
+}
+
+export function setLeftRailDefaultTab(tab: LeftRailTab): void {
+  if (!LEFT_RAIL_TABS.includes(tab)) return;
+  safeWrite(KEY_LEFT_RAIL_DEFAULT_TAB, tab);
+}
+
+// ─── Timeline lane heights (px) ──────────────────────────────────
+
+/** Clamp to a sane range so a malformed value can't blow up the
+ *  timeline layout. Mirrors the timeline's CSS expectations:
+ *  ≥ 32 px to keep tile content readable, ≤ 128 px to keep four
+ *  lanes from blowing past the chrome's timeline region height. */
+function clampLane(n: number, fallback: number): number {
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(32, Math.min(128, Math.round(n)));
+}
+
+export function getVideoLaneHeight(): number {
+  const raw = safeRead(KEY_LANE_HEIGHT_VIDEO);
+  if (raw === null) return DEFAULT_LANE_HEIGHT_VIDEO;
+  return clampLane(Number.parseInt(raw, 10), DEFAULT_LANE_HEIGHT_VIDEO);
+}
+
+export function setVideoLaneHeight(px: number): void {
+  safeWrite(KEY_LANE_HEIGHT_VIDEO, String(clampLane(px, DEFAULT_LANE_HEIGHT_VIDEO)));
+}
+
+export function getAudioLaneHeight(): number {
+  const raw = safeRead(KEY_LANE_HEIGHT_AUDIO);
+  if (raw === null) return DEFAULT_LANE_HEIGHT_AUDIO;
+  return clampLane(Number.parseInt(raw, 10), DEFAULT_LANE_HEIGHT_AUDIO);
+}
+
+export function setAudioLaneHeight(px: number): void {
+  safeWrite(KEY_LANE_HEIGHT_AUDIO, String(clampLane(px, DEFAULT_LANE_HEIGHT_AUDIO)));
+}
+
+// ─── Default playback rate ───────────────────────────────────────
+
+export function getDefaultPlaybackRate(): PlaybackRateValue {
+  const raw = safeRead(KEY_DEFAULT_PLAYBACK_RATE);
+  if (raw === null) return DEFAULT_PLAYBACK_RATE;
+  const n = Number.parseFloat(raw);
+  if (!Number.isFinite(n)) return DEFAULT_PLAYBACK_RATE;
+  if (PLAYBACK_RATES.includes(n as PlaybackRateValue)) return n as PlaybackRateValue;
+  return DEFAULT_PLAYBACK_RATE;
+}
+
+export function setDefaultPlaybackRate(rate: PlaybackRateValue): void {
+  if (!PLAYBACK_RATES.includes(rate)) return;
+  safeWrite(KEY_DEFAULT_PLAYBACK_RATE, String(rate));
+}
+
+// ─── Preview fit mode ────────────────────────────────────────────
+
+export function getPreviewFitMode(): PreviewFitMode {
+  const raw = safeRead(KEY_PREVIEW_FIT_MODE);
+  if (raw === null) return DEFAULT_PREVIEW_FIT_MODE;
+  if (PREVIEW_FIT_MODES.includes(raw as PreviewFitMode)) return raw as PreviewFitMode;
+  return DEFAULT_PREVIEW_FIT_MODE;
+}
+
+export function setPreviewFitMode(mode: PreviewFitMode): void {
+  if (!PREVIEW_FIT_MODES.includes(mode)) return;
+  safeWrite(KEY_PREVIEW_FIT_MODE, mode);
+}
+
 // ─── Test-only export ─────────────────────────────────────────────
 
 export const __testing = {
@@ -108,8 +214,21 @@ export const __testing = {
   KEY_SHOW_THUMBNAILS,
   KEY_SHOW_SHORTCUT_HINTS,
   KEY_AUTO_REGEN_CAPTIONS,
+  KEY_LEFT_RAIL_DEFAULT_TAB,
+  KEY_LANE_HEIGHT_VIDEO,
+  KEY_LANE_HEIGHT_AUDIO,
+  KEY_DEFAULT_PLAYBACK_RATE,
+  KEY_PREVIEW_FIT_MODE,
   DEFAULT_ZOOM_LEVEL,
   DEFAULT_SHOW_THUMBNAILS,
   DEFAULT_SHOW_SHORTCUT_HINTS,
   DEFAULT_AUTO_REGEN_CAPTIONS,
+  DEFAULT_LEFT_RAIL_TAB,
+  DEFAULT_LANE_HEIGHT_VIDEO,
+  DEFAULT_LANE_HEIGHT_AUDIO,
+  DEFAULT_PLAYBACK_RATE,
+  DEFAULT_PREVIEW_FIT_MODE,
+  LEFT_RAIL_TABS,
+  PLAYBACK_RATES,
+  PREVIEW_FIT_MODES,
 };

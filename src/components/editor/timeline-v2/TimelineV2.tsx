@@ -37,9 +37,11 @@ import { ZoomIn, ZoomOut } from 'lucide-react';
 /** Per-lane heights — defaults match the plan's 48 px tracks. The
  *  audio lane is slightly taller so the waveform has room to breathe;
  *  captions / overlays are shorter because their content is markers,
- *  not images. Configurable via the Phase 6 settings audit. */
-const VIDEO_LANE_HEIGHT = 64;
-const AUDIO_LANE_HEIGHT = 56;
+ *  not images. Defaults below; per-device overrides flow in via
+ *  `videoLaneHeight` / `audioLaneHeight` props (see
+ *  `editor.timeline.laneHeights.*` in src/lib/editor/settings.ts). */
+const VIDEO_LANE_HEIGHT_DEFAULT = 64;
+const AUDIO_LANE_HEIGHT_DEFAULT = 56;
 const CAPTIONS_LANE_HEIGHT = 32;
 const OVERLAYS_LANE_HEIGHT = 28;
 
@@ -81,6 +83,11 @@ interface TimelineV2Props {
   zoomMin: number;
   zoomMax: number;
   onZoomChange: (level: number) => void;
+  // Per-device lane-height overrides from settings. Optional so
+  // existing callers don't have to update; falls back to the
+  // canonical defaults when omitted.
+  videoLaneHeight?: number;
+  audioLaneHeight?: number;
 }
 
 export function TimelineV2({
@@ -109,6 +116,8 @@ export function TimelineV2({
   zoomMin,
   zoomMax,
   onZoomChange,
+  videoLaneHeight = VIDEO_LANE_HEIGHT_DEFAULT,
+  audioLaneHeight = AUDIO_LANE_HEIGHT_DEFAULT,
 }: TimelineV2Props): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -196,8 +205,8 @@ export function TimelineV2({
           style={{ width: LANE_HEADER_WIDTH, borderRight: '1px solid var(--editor-edge)' }}
         >
           <LaneLabel height={22} label="" />
-          <LaneLabel height={VIDEO_LANE_HEIGHT} label="Video" tint="purple" />
-          <LaneLabel height={AUDIO_LANE_HEIGHT} label="Audio" tint="cyan" />
+          <LaneLabel height={videoLaneHeight} label="Video" tint="purple" />
+          <LaneLabel height={audioLaneHeight} label="Audio" tint="cyan" />
           <LaneLabel height={CAPTIONS_LANE_HEIGHT} label="Captions" tint="amber" />
           <LaneLabel height={OVERLAYS_LANE_HEIGHT} label="Overlays" tint="green" />
         </div>
@@ -225,7 +234,7 @@ export function TimelineV2({
                   brings its drag-resize / drag-reorder / trim
                   behaviour for free. The wrapper here just sizes
                   the row; Timeline owns the internal layout. */}
-              <div style={{ height: VIDEO_LANE_HEIGHT, minWidth: totalWidthPx }}>
+              <div style={{ height: videoLaneHeight, minWidth: totalWidthPx }}>
                 <Timeline
                   config={config}
                   rowImages={rowImages}
@@ -245,7 +254,7 @@ export function TimelineV2({
                 voiceoverUrl={voiceoverUrl}
                 totalDurationMs={totalDurationMs}
                 pixelsPerSecond={pixelsPerSecond}
-                height={AUDIO_LANE_HEIGHT}
+                height={audioLaneHeight}
                 onSeek={onSeek}
               />
               <CaptionsLane

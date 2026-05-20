@@ -70,6 +70,11 @@ import {
   getDefaultZoomLevel,
   getShowThumbnails,
   getShowShortcutHints,
+  getLeftRailDefaultTab,
+  getVideoLaneHeight,
+  getAudioLaneHeight,
+  getDefaultPlaybackRate,
+  getPreviewFitMode,
 } from '@/lib/editor/settings';
 import {
   kickoffBrollGeneration,
@@ -190,8 +195,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // setting is unset.
   const [zoomLevel, setZoomLevel] = useState<number>(() => getDefaultZoomLevel());
   // Transport playback rate — passed as a prop to `<Player>` (the ref
-  // doesn't expose a setter). Local-only viewing preference.
-  const [playbackRate, setPlaybackRate] = useState<PlaybackRate>(1);
+  // doesn't expose a setter). Local-only viewing preference. Default
+  // comes from the per-device setting (1× unless the user changed it).
+  const [playbackRate, setPlaybackRate] = useState<PlaybackRate>(() => getDefaultPlaybackRate());
   const pixelsPerSecond = useMemo(() => zoomLevelToPxPerSecond(zoomLevel), [zoomLevel]);
   const handleZoomDelta = useCallback((delta: number) => {
     setZoomLevel((prev) =>
@@ -1380,6 +1386,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // for global project actions.
   const leftRailSlot = (
     <EditorLeftRail
+      initialTab={getLeftRailDefaultTab()}
       slots={{
         shots: (
           <ShotsTab
@@ -1524,7 +1531,10 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           fps={videoConfig.fps}
           playbackRate={playbackRate}
           controls={false}
-          style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+          // Fit mode comes from the per-device setting. `contain`
+          // (default) letterboxes the frame to preserve aspect ratio;
+          // `fill` stretches to the preview rectangle (may distort).
+          style={{ width: '100%', height: '100%', objectFit: getPreviewFitMode() }}
           acknowledgeRemotionLicense
         />
         {/* Captions are rendered INSIDE the Remotion composition
@@ -1751,6 +1761,8 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       zoomMin={ZOOM_MIN_LEVEL}
       zoomMax={ZOOM_MAX_LEVEL}
       onZoomChange={setZoomLevel}
+      videoLaneHeight={getVideoLaneHeight()}
+      audioLaneHeight={getAudioLaneHeight()}
     />
   );
 
