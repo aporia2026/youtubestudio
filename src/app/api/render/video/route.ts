@@ -290,6 +290,63 @@ export async function POST(req: NextRequest) {
   // shows up in the same trace as the render that proceeded without it.
   logger.info('[render] alignment outcome', { renderId, ...alignmentTelemetry });
 
+  // 2026-05-20: pre-flight probe for the per-shot videoUrls. Tests up to 3
+  // unique videoUrls with a HEAD request from the Vercel function itself,
+  // logging status + first response header per URL. When Remotion's
+  // server-side OffthreadVideo fails to fetch a video (any reason —
+  // CORS, presigned-URL clock skew, R2 outage, content-type mismatch),
+  // BRollScene falls back silently to the still image path and the
+  // creator sees a stills-only MP4 even though the config carried real
+  // videoUrls. Without this probe the failure is invisible. Cheap: ~3
+  // HEAD requests, total under a second, no body transfer. Errors caught
+  // — never blocks the render itself, only annotates the log.
+  const uniqueVideoUrls = Array.from(
+    new Set(
+      effectiveConfig.shots
+        .map((s) => s.videoUrl)
+        .filter((u): u is string => typeof u === 'string' && u.length > 0),
+    ),
+  );
+  if (uniqueVideoUrls.length > 0) {
+    const sample = uniqueVideoUrls.slice(0, 3);
+    const probeResults = await Promise.all(
+      sample.map(async (url) => {
+        try {
+          const res = await fetch(url, { method: 'HEAD' });
+          return {
+            host: new URL(url).host,
+            status: res.status,
+            ok: res.ok,
+            contentType: res.headers.get('content-type'),
+            contentLength: res.headers.get('content-length'),
+            acceptRanges: res.headers.get('accept-ranges'),
+          };
+        } catch (err) {
+          return {
+            host: (() => {
+              try { return new URL(url).host; } catch { return 'unparseable'; }
+            })(),
+            status: 'fetch-threw',
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+      }),
+    );
+    logger.info('[render] videoUrl probe', {
+      renderId,
+      totalUniqueVideoUrls: uniqueVideoUrls.length,
+      probedCount: sample.length,
+      results: probeResults,
+    });
+  } else {
+    logger.info('[render] videoUrl probe', {
+      renderId,
+      totalUniqueVideoUrls: 0,
+      note: 'no videoUrls in config — render will use stills + Ken Burns only',
+    });
+  }
+
   if (backend === 'lambda') {
     try {
       await startLambdaRender(renderId, effectiveConfig);
