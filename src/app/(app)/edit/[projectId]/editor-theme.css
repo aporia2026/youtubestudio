@@ -219,6 +219,33 @@
   overflow: hidden;
 }
 
+/* Loading skeleton — 1.4s shimmer sweep on a linear gradient. The
+   gradient is laid out three "tiles" wide so the highlight band can
+   animate from off-screen-left to off-screen-right without exposing
+   a hard edge. Respects prefers-reduced-motion (no sweep, just a
+   muted block). */
+.editor-skeleton {
+  background:
+    linear-gradient(
+      90deg,
+      var(--editor-panel-hover) 0%,
+      var(--editor-edge-strong) 50%,
+      var(--editor-panel-hover) 100%
+    );
+  background-size: 200% 100%;
+  animation: editor-skeleton-shimmer 1.4s linear infinite;
+}
+@keyframes editor-skeleton-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .editor-skeleton {
+    animation: none;
+    background: var(--editor-panel-hover);
+  }
+}
+
 /* Scrollbar tuning inside editor panels — narrower + cooler
    to match the chrome. Falls back to the OS default on browsers
    that don't support `::-webkit-scrollbar`. */

@@ -20,6 +20,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import WaveSurfer from 'wavesurfer.js';
+import { Skeleton } from '@/components/editor/Skeleton';
 
 interface AudioLaneProps {
   voiceoverUrl?: string;
@@ -39,6 +40,12 @@ export function AudioLane({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const wavesurferRef = useRef<WaveSurfer | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Shimmer state — true between mount and wavesurfer's `ready` event
+  // (typically 200ms–2s depending on MP3 size + connection). Flips
+  // back to true whenever the source URL changes so a swapped VO
+  // shows the skeleton again instead of revealing the previous
+  // waveform underneath.
+  const [waveformLoading, setWaveformLoading] = useState(true);
 
   const widthPx = useMemo(
     () => Math.max(100, Math.round((totalDurationMs / 1000) * pixelsPerSecond)),
@@ -48,6 +55,7 @@ export function AudioLane({
   useEffect(() => {
     if (!containerRef.current || !voiceoverUrl) return;
     setError(null);
+    setWaveformLoading(true);
 
     const ws = WaveSurfer.create({
       container: containerRef.current,
@@ -75,11 +83,13 @@ export function AudioLane({
         sourceUrl: voiceoverUrl.split('?')[0],
         durationMs: Math.round((ws.getDuration() ?? 0) * 1000),
       });
+      setWaveformLoading(false);
     });
     ws.on('error', (e) => {
       const detail = e instanceof Error ? e.message : String(e);
       console.warn('[editor waveform] error', { detail });
       setError(detail);
+      setWaveformLoading(false);
     });
 
     wavesurferRef.current = ws;
@@ -129,6 +139,20 @@ export function AudioLane({
       title={error ? `Waveform error: ${error}` : 'Click to seek'}
     >
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      {waveformLoading && !error && (
+        <div
+          aria-hidden
+          className="absolute pointer-events-none"
+          style={{
+            top: Math.max(2, Math.floor(height * 0.1)),
+            left: 8,
+            right: 8,
+            height: Math.max(8, height - Math.floor(height * 0.2)),
+          }}
+        >
+          <Skeleton width="100%" height="100%" radius={3} />
+        </div>
+      )}
       {error && (
         <div
           className="absolute inset-0 flex items-center justify-center text-[10px] px-3"

@@ -25,6 +25,7 @@ import {
   getProductionDocHistoryCached,
   type ProductionDocHistoryEntry,
 } from '@/lib/history';
+import { Skeleton } from '@/components/editor/Skeleton';
 
 interface ProjectSwitcherProps {
   /** The currently-loaded project's user_history.id. Highlighted in
@@ -178,8 +179,16 @@ export function ProjectSwitcher({
           {/* History list */}
           <div className="editor-scroll" style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
             {loading && items.length === 0 && (
-              <div className="text-[10px] p-3 text-center" style={{ color: 'var(--fg-muted)' }}>
-                Loading projects…
+              <div className="flex flex-col gap-1 p-2">
+                {[0, 1, 2, 3].map((i) => (
+                  <div key={i} className="flex items-start gap-2.5 p-1.5">
+                    <Skeleton width={14} height={14} radius={3} style={{ marginTop: 2 }} />
+                    <div className="flex-1 space-y-1">
+                      <Skeleton height={11} width="65%" />
+                      <Skeleton height={9} width="45%" />
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
             {!loading && items.length === 0 && (

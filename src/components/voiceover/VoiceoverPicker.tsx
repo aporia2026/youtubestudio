@@ -35,6 +35,7 @@ import {
   sourceLabel,
   type VoiceoverItem,
 } from '@/lib/voiceovers/picker-types';
+import { Skeleton } from '@/components/editor/Skeleton';
 
 export interface VoiceoverPickerProps {
   /** Current URL (controlled — keeps Remotion player API untouched). */
@@ -367,7 +368,24 @@ export function VoiceoverPicker({
               padding: 4,
             }}
           >
-            {items.length === 0 ? (
+            {!loaded ? (
+              /* Skeleton rows while ElevenLabs history + library
+                 fetches are in flight. Three rows match the typical
+                 result density; each is sized like a real
+                 voiceover entry (play button placeholder + title +
+                 subtitle). */
+              <div className="flex flex-col gap-1.5 px-2 py-2">
+                {[0, 1, 2].map((i) => (
+                  <div key={i} className="flex items-start gap-2 px-1 py-1.5">
+                    <Skeleton width={26} height={26} radius={13} />
+                    <div className="flex-1 space-y-1.5">
+                      <Skeleton height={11} width="60%" />
+                      <Skeleton height={9} width="40%" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : items.length === 0 ? (
               <div className="text-xs px-3 py-4 text-center" style={{ color: 'var(--text-muted)' }}>
                 No voiceovers yet. Record one in{' '}
                 <strong style={{ color: 'var(--text-secondary)' }}>Voiceover Studio</strong> or
