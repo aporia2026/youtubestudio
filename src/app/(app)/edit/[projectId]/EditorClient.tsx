@@ -67,6 +67,7 @@ import { CaptionsTab } from '@/components/editor/leftrail/CaptionsTab';
 import { AIToolsTab } from '@/components/editor/leftrail/AIToolsTab';
 import { SettingsTab } from '@/components/editor/leftrail/SettingsTab';
 import {
+  getAutoRegenCaptions,
   getDefaultZoomLevel,
   getShowThumbnails,
   getShowShortcutHints,
@@ -269,6 +270,49 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       setCaptionsRegenState({ kind: 'error', message });
     }
   }, [flushSave, projectId, reloadFromServer, state.voiceoverUrl]);
+
+  // Auto-regen captions on voiceover-URL change.
+  //
+  // Gated by the `editor.autoRegenCaptions.onVoiceoverChange` setting
+  // (Phase 4b key, default off). The user enabling the setting expects:
+  // change VO → auto-regen, NOT "merely opening the editor → auto-regen".
+  // To honor that intent we track the previous URL in a ref and:
+  //   • Seed the ref on first run without firing — the initial load
+  //     payload's voiceoverUrl is "what was already there".
+  //   • Fire only on TRANSITIONS (prev → new) where both differ AND
+  //     the setting is on AND a regen isn't already in flight.
+  //   • Skip the transition `undefined → URL` when there's no caption
+  //     bundle yet (initial assignment shouldn't trigger when there's
+  //     nothing to regen).
+  const lastSeenVoiceoverUrlRef = useRef<string | undefined>(undefined);
+  const autoRegenSeededRef = useRef(false);
+  useEffect(() => {
+    const prev = lastSeenVoiceoverUrlRef.current;
+    const curr = state.voiceoverUrl;
+    if (!autoRegenSeededRef.current) {
+      // First run — seed the ref to the current value so the next
+      // ACTUAL change is the one we react to.
+      autoRegenSeededRef.current = true;
+      lastSeenVoiceoverUrlRef.current = curr;
+      return;
+    }
+    if (prev === curr) return;
+    lastSeenVoiceoverUrlRef.current = curr;
+
+    if (!curr) return; // VO was cleared — nothing to regen against
+    if (!getAutoRegenCaptions()) return; // setting off
+    if (captionsRegenState.kind === 'running') return; // already in flight
+    // The first time a project gets a voiceover, there's also no
+    // existing caption bundle. Auto-regen makes sense in that case
+    // — the user *just* changed the VO; transcribing it is the
+    // natural next step. We don't gate on `state.captions` here.
+
+    console.info('[editor captions] auto-regen triggered', {
+      prevUrl: prev || '(none)',
+      newUrl: curr,
+    });
+    void handleRegenerateCaptions();
+  }, [state.voiceoverUrl, captionsRegenState.kind, handleRegenerateCaptions]);
 
 
   // ─── Phase 5.2 overlay-port (commit B) ───────────────────────────
