@@ -5311,19 +5311,49 @@ function ProductionDocPage() {
     // One-shot diagnostic so a post-mortem can see exactly what the
     // server received. Lists per-row presence of imageUrl + videoUrl so
     // the "rendered MP4 had no animations" mystery is debuggable.
-    console.info('[render config built]', {
-      shotCount: config.shots.length,
-      suppressLowerThirds: config.suppressLowerThirds,
-      sceneFadeEnabled: config.sceneFadeEnabled,
-      animateScenes,
-      rows: config.shots.map((s, i) => ({
-        i,
-        hasImage: Boolean(s.imageUrl),
-        hasVideo: Boolean(s.videoUrl),
-        sceneType: s.sceneType,
-        hasOst: Boolean(s.onScreenText),
-      })),
+    //
+    // Uses console.warn (yellow) so it stands out against the green
+    // ambient `[render-timing] config built` noise during normal
+    // typing. Stashes the full config on `window.__lastRenderConfig`
+    // so a creator can paste the line below into DevTools and copy
+    // the JSON without expanding chevrons:
+    //   `copy(JSON.stringify(window.__lastRenderConfig, null, 2))`
+    const rowsSummary = config.shots.map((s, i) => ({
+      i,
+      hasImage: Boolean(s.imageUrl),
+      hasVideo: Boolean(s.videoUrl),
+      sceneType: s.sceneType,
+      hasOst: Boolean(s.onScreenText),
+      hasSectionTitle: Boolean(s.sectionTitle),
+      sceneFade: s.sceneFade,
+      transitionIn: s.transitionInId,
+    }));
+    const counts = {
+      rows: rowsSummary.length,
+      withImage: rowsSummary.filter(r => r.hasImage).length,
+      withVideo: rowsSummary.filter(r => r.hasVideo).length,
+      withOst: rowsSummary.filter(r => r.hasOst).length,
+      withSectionTitle: rowsSummary.filter(r => r.hasSectionTitle).length,
+      sceneTypes: rowsSummary.reduce<Record<string, number>>((acc, r) => {
+        acc[r.sceneType] = (acc[r.sceneType] ?? 0) + 1;
+        return acc;
+      }, {}),
+    };
+    console.warn('[render config built] ⬇ Click to expand. Top-level flags + per-row video presence.', {
+      counts,
+      flags: {
+        voiceoverUrlPresent: Boolean(config.voiceoverUrl),
+        animateScenes,
+        suppressLowerThirds: config.suppressLowerThirds,
+        sceneFadeEnabled: config.sceneFadeEnabled,
+        stripeHeightFraction: config.thumbnail?.stripeHeightFraction,
+      },
+      rowsWithoutVideo: rowsSummary.filter(r => !r.hasVideo).map(r => r.i),
+      rows: rowsSummary,
     });
+    if (typeof window !== 'undefined') {
+      (window as unknown as { __lastRenderConfig?: unknown }).__lastRenderConfig = config;
+    }
     setRenderStatus('rendering');
     setRenderProgress(0);
     setRenderDownloadUrl(null);

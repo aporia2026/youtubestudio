@@ -742,12 +742,23 @@ export function productionDocToVideoConfig(
       // later) while `scene_fade` is a boolean toggle. We resolve to
       // `sceneFade` here so the renderer's existing fade logic
       // doesn't need to change.
+      //
+      // Doc-level OFF overrides everything. When the user explicitly
+      // toggles `Scene fade between shots` OFF
+      // (`doc.scene_fade_enabled === false`), force `sceneFade=false`
+      // on every shot — regardless of per-row `transition_in` or
+      // `scene_fade`. Without this override, editor-stamped
+      // `transition_in: 'cross-fade'` values silently shadow the doc
+      // toggle, which made creators report "fades still appear even
+      // though I turned them off." 2026-05-20.
       sceneFade:
-        row.transition_in === 'cross-fade'
-          ? true
-          : row.transition_in === null
-            ? false
-            : row.scene_fade,
+        doc.scene_fade_enabled === false
+          ? false
+          : row.transition_in === 'cross-fade'
+            ? true
+            : row.transition_in === null
+              ? false
+              : row.scene_fade,
       videoDurationSeconds,
       overlay,
       // Shot-graph editor fields. The renderer reads these when
