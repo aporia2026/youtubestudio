@@ -117,6 +117,17 @@ export function isPathPublic(pathname: string): boolean {
   if (/^\/api\/voiceovers\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/audio$/i.test(pathname)) {
     return true;
   }
+  // B-roll video proxy: `/api/broll/<uuid>/video`. Same posture as the
+  // voiceover audio proxy above — the random UUID is the access token,
+  // and server-side renderers (Remotion local + Lambda) fetch this URL
+  // without a session cookie. Without this exemption, every render
+  // 401s in ~5ms and OffthreadVideo's helper proxy hangs for 28s
+  // waiting for bytes that never come. Sibling routes under
+  // `/api/broll/` (e.g. POST `/api/broll`, `/api/broll/<id>` metadata)
+  // stay gated — only the `<uuid>/video` GET shape matches.
+  if (/^\/api\/broll\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/video$/i.test(pathname)) {
+    return true;
+  }
   if (pathname.startsWith('/_next') || pathname.startsWith('/favicon')) return true;
   return false;
 }

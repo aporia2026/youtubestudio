@@ -61,6 +61,19 @@ describe('proxy.isPathPublic', () => {
     expect(isPathPublic('/api/voiceovers/8c4f2a1e-9b3d-4f7c-a5e2-1d6b8e4c9f0a/audio/extra')).toBe(false);
   });
 
+  it('lets the broll video proxy through but NOT its sibling routes', () => {
+    // <uuid>/video shape — UUID is the access token, server-side
+    // renderers fetch this URL without a session cookie. Mirror posture
+    // of the voiceover audio proxy above.
+    expect(isPathPublic('/api/broll/31fa0aec-7522-4b2e-9f11-5601b856f6ba/video')).toBe(true);
+    // Sibling routes stay gated.
+    expect(isPathPublic('/api/broll')).toBe(false);
+    expect(isPathPublic('/api/broll/31fa0aec-7522-4b2e-9f11-5601b856f6ba')).toBe(false);
+    // Look-alikes that aren't actually `<uuid>/video` don't pass.
+    expect(isPathPublic('/api/broll/not-a-uuid/video')).toBe(false);
+    expect(isPathPublic('/api/broll/31fa0aec-7522-4b2e-9f11-5601b856f6ba/video/extra')).toBe(false);
+  });
+
   it('lets static asset paths through', () => {
     expect(isPathPublic('/_next/static/foo.js')).toBe(true);
     expect(isPathPublic('/favicon.ico')).toBe(true);
