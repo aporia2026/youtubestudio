@@ -164,7 +164,26 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
             // voiceover to pop/dip at scene boundaries as the browser
             // allocates decoder resources for the newly-mounted video.
             pauseWhenBuffering
-            onError={() => setVideoError(true)}
+            onError={(e) => {
+              // 2026-05-20: log the actual decode/fetch error before
+              // falling back to the still-image path. Renders that
+              // came back stills-only despite valid videoUrls in the
+              // config left no trace of WHY OffthreadVideo gave up;
+              // this captures the message and surfaces it in the
+              // Vercel function log for the render invocation.
+              const detail =
+                typeof e === 'object' && e !== null && 'message' in e
+                  ? String((e as { message: unknown }).message)
+                  : String(e);
+              console.error('[broll OffthreadVideo error]', {
+                shotIndex,
+                durationInFrames,
+                hasImageFallback: Boolean(shot.imageUrl),
+                videoUrlHead: shot.videoUrl?.slice(0, 120),
+                detail,
+              });
+              setVideoError(true);
+            }}
             style={{
               width: '100%',
               height: '100%',

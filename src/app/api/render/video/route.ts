@@ -606,6 +606,15 @@ async function startRender(renderId: string, config: VideoConfig) {
 
     const outPath = path.join(os.tmpdir(), `${renderId}.mp4`);
 
+    // 2026-05-20: capture browser console errors + asset downloads
+    // from inside the Remotion render. Without these hooks an
+    // OffthreadVideo fetch/decode failure is invisible — BRollScene's
+    // onError fires, the scene falls back to the still-image path,
+    // and the render completes with no animations. Logging here shows
+    // the actual error message and download events in the Vercel
+    // function log for the next render.
+    const browserErrors: string[] = [];
+    let videoDownloads = 0;
     await renderMedia({
       composition,
       serveUrl: bundled,
@@ -615,7 +624,35 @@ async function startRender(renderId: string, config: VideoConfig) {
       onProgress: ({ progress: p }) => {
         updateJob(renderId, { progress: 0.40 + p * 0.50 }).catch(() => {});
       },
+      onBrowserLog: (log) => {
+        if (log.type === 'error' || log.type === 'warning') {
+          if (browserErrors.length < 50) {
+            browserErrors.push(`[${log.type}] ${log.text}`.slice(0, 800));
+          }
+          logger.warn('[render browser log]', {
+            renderId,
+            type: log.type,
+            text: log.text.slice(0, 500),
+          });
+        }
+      },
     });
+    // Annotate the row with browser errors + download summary so the
+    // GET status endpoint can surface them in the browser without
+    // overwriting the earlier HEAD probe. Merged into probe_results
+    // under a `postRender` key.
+    logger.info('[render] media render complete', {
+      renderId,
+      browserErrorCount: browserErrors.length,
+      videoDownloads,
+    });
+    if (browserErrors.length > 0) {
+      logger.warn('[render] browser errors during render', {
+        renderId,
+        count: browserErrors.length,
+        first: browserErrors.slice(0, 5),
+      });
+    }
 
     await updateJob(renderId, { progress: 0.92 });
 
