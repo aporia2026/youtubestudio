@@ -39,6 +39,7 @@ import type { ProductionDoc, RowOverlayRenderState, RowVideoClipState } from '@/
 import type { BrandKit, TextOverlay } from '@/remotion/types';
 import type { ForcedAlignmentResponse } from '@/lib/elevenlabs';
 import type { ProjectPayloadFlags } from '@/lib/project/payload';
+import type { ChannelVisualBrandKit } from '@/lib/channel-visual-brand-kit';
 import type { CaptionsBundle } from './captions';
 import { stampEditedAt } from './edited-at';
 
@@ -85,8 +86,14 @@ export interface EditorState {
    *  doesn't change it yet. */
   musicUrl: string | undefined;
   /** Per-doc visual brand kit override (pass-through; falls back to
-   *  the channel kit and DEFAULT_BRAND_KIT in the renderer). */
+   *  the channel kit and DEFAULT_BRAND_KIT in the renderer). Legacy
+   *  shape; `visualKitOverride` below carries the new canonical
+   *  `ChannelVisualBrandKit` for the full editable panel. */
   brandKitOverride: Partial<BrandKit> | undefined;
+  /** Per-doc override of the channel's visual brand kit. Editable
+   *  via the editor's BrandKitModal; the renderer resolves to the
+   *  flat BrandKit via `resolveBrandKitForRender(channelKit, override)`. */
+  visualKitOverride: ChannelVisualBrandKit | undefined;
   /** Workspace's pinned channel for this project (pass-through). */
   channelId: string | undefined;
   /** Word-level alignment from ElevenLabs (pass-through; the editor's
@@ -153,6 +160,7 @@ export type EditorCommand =
       flags?: ProjectPayloadFlags;
       linkedProjectId?: string;
       linkedScheduleItemId?: string;
+      visualKitOverride?: ChannelVisualBrandKit;
       version: number;
     }
   | { type: 'UNDO' }
@@ -181,6 +189,11 @@ export type EditorCommand =
    *  prior shallow-merge of the patched keys so undo restores them
    *  one at a time. Batch B of parity-batches. */
   | { type: 'PATCH_DOC'; patch: Partial<ProductionDoc> }
+  /** Swap the project's `visualKitOverride`. Editable from the
+   *  editor's BrandKitModal (Batch — 2026-05-20 brand-kit panel
+   *  port). Inverse stores the prior value so undo restores it.
+   *  Pass `undefined` to clear. */
+  | { type: 'SET_VISUAL_KIT_OVERRIDE'; override: ChannelVisualBrandKit | undefined }
   /** Set / clear the per-row B-roll clip render state. Used by the
    *  editor's inspector when the user kicks off a clip generation,
    *  and by the EditorClient's poller as the clip progresses
@@ -340,6 +353,7 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'UPDATE_CAPTION_SEGMENT':
     case 'SET_VOICEOVER_URL':
     case 'PATCH_DOC':
+    case 'SET_VISUAL_KIT_OVERRIDE':
       return true;
     default:
       return false;
@@ -474,6 +488,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           flags: cmd.flags ?? state.flags,
           linkedProjectId: cmd.linkedProjectId,
           linkedScheduleItemId: cmd.linkedScheduleItemId,
+          visualKitOverride: cmd.visualKitOverride,
           version: cmd.version,
           isDirty: false,
           undoStack: [],
@@ -991,6 +1006,21 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       return {
         next: { ...state, rowVideoClips: nextClips, isDirty: !transient ? true : state.isDirty },
         inverse,
+      };
+    }
+
+    case 'SET_VISUAL_KIT_OVERRIDE': {
+      const prev = state.visualKitOverride;
+      const next = cmd.override;
+      // Cheap equality check — JSON stringify both sides. The kit is
+      // small (≤ 9 fields, all primitives) so this is fine and avoids
+      // a "set to identical object" no-op landing on the undo stack.
+      if (JSON.stringify(prev) === JSON.stringify(next)) {
+        return { next: state, inverse: null };
+      }
+      return {
+        next: { ...state, visualKitOverride: next, isDirty: true },
+        inverse: { type: 'SET_VISUAL_KIT_OVERRIDE', override: prev },
       };
     }
 
@@ -1594,6 +1624,7 @@ export function initialEditorState(args: {
   flags?: ProjectPayloadFlags;
   linkedProjectId?: string;
   linkedScheduleItemId?: string;
+  visualKitOverride?: ChannelVisualBrandKit;
   version: number;
 }): EditorState {
   return {
@@ -1615,6 +1646,7 @@ export function initialEditorState(args: {
     },
     linkedProjectId: args.linkedProjectId,
     linkedScheduleItemId: args.linkedScheduleItemId,
+    visualKitOverride: args.visualKitOverride,
     version: args.version,
     isDirty: false,
     selection: null,
@@ -1641,6 +1673,7 @@ export function persistableFromState(state: EditorState): {
   flags: ProjectPayloadFlags;
   linkedProjectId?: string;
   linkedScheduleItemId?: string;
+  visualKitOverride?: ChannelVisualBrandKit;
 } {
   return {
     doc: state.doc,
@@ -1649,6 +1682,7 @@ export function persistableFromState(state: EditorState): {
     captions: state.captions,
     linkedProjectId: state.linkedProjectId,
     linkedScheduleItemId: state.linkedScheduleItemId,
+    visualKitOverride: state.visualKitOverride,
     // Persist rowOverlays back so the production-doc page picks up any
     // overlay edits the user makes inside the editor next time they
     // open the doc there. Omit when empty to keep payloads small for

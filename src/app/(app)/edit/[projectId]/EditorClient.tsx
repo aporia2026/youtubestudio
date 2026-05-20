@@ -57,9 +57,14 @@ import { TimelineV2 } from '@/components/editor/timeline-v2/TimelineV2';
 import { SectionThumbnailModal } from '@/components/editor/SectionThumbnailModal';
 import { MaskBrushEditor } from '@/components/production-doc/MaskBrushEditor';
 import type { ImageSaliencyMap } from '@/remotion/utils';
+import {
+  type ChannelVisualBrandKit,
+  resolveBrandKitForRender,
+} from '@/lib/channel-visual-brand-kit';
 import { ProjectSwitcher } from '@/components/editor/ProjectSwitcher';
 import { EditorEmptyState } from '@/components/editor/EditorEmptyState';
 import { RenderModal, type RenderState } from '@/components/editor/RenderModal';
+import { BrandKitModal } from '@/components/editor/BrandKitModal';
 import { ShotsTab } from '@/components/editor/leftrail/ShotsTab';
 import { MediaTab } from '@/components/editor/leftrail/MediaTab';
 import { AudioTab } from '@/components/editor/leftrail/AudioTab';
@@ -171,6 +176,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // uses and dispatch SET_ROW_IMAGE with the new URL.
   const [imageEditRow, setImageEditRow] = useState<number | null>(null);
   const [imageEditApplying, setImageEditApplying] = useState(false);
+  // BrandKitModal open/close. Triggered from the inspector kebab
+  // and from the AI Tools tab's brand-kit summary row.
+  const [showBrandKit, setShowBrandKit] = useState(false);
 
   // ─── Batch E: render-to-MP4 ─────────────────────────────────────
   //
@@ -179,6 +187,11 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // `null` means no render in flight or surfaced; otherwise the
   // RenderModal renders the appropriate body.
   const [renderState, setRenderState] = useState<RenderState | null>(null);
+  // Channel visual brand kit — server-side default that the per-doc
+  // visualKitOverride layers on top of. Fetched once on mount (or
+  // when the channelId on the payload changes); the BrandKitModal
+  // uses it as the "channel default" placeholder text.
+  const [channelVisualKit, setChannelVisualKit] = useState<ChannelVisualBrandKit | null>(null);
   const renderPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     // Clean up the polling interval if the component unmounts mid-
@@ -218,6 +231,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       rowVideoClips: payload.rowVideoClips,
       musicUrl: payload.musicUrl,
       brandKitOverride: payload.brandKitOverride,
+      visualKitOverride: payload.visualKitOverride,
       channelId: payload.channelId,
       voiceoverAlignment: payload.voiceoverAlignment,
       flags: payload.flags,
@@ -228,6 +242,51 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     projectId,
   );
   const { state, apply, flushSave, reloadFromServer, saveStatus, canUndo, canRedo } = store;
+
+  // Resolve the brand the renderer should use. Three layers, later
+  // overrides earlier:
+  //   DEFAULT_BRAND_KIT ◀ channelVisualKit ◀ visualKitOverride
+  // When visualKitOverride is unset, fall back to the legacy
+  // brandKitOverride field (Partial<BrandKit>) for old payloads.
+  // Memoized so the videoConfig + executeRender both read a stable
+  // reference and rebuild only when an input layer changes.
+  const resolvedRenderBrand = useMemo(() => {
+    if (state.visualKitOverride) {
+      return resolveBrandKitForRender(channelVisualKit, state.visualKitOverride);
+    }
+    return state.brandKitOverride;
+  }, [state.visualKitOverride, state.brandKitOverride, channelVisualKit]);
+
+  // Channel-kit fetch effect. Active channel id comes from the
+  // canonical payload (production-doc mirrors it via the autosave);
+  // falls back to /api/user/settings/active-channel when not on the
+  // payload (older projects).
+  useEffect(() => {
+    let cancelled = false;
+    async function loadChannelKit() {
+      try {
+        let channelId = state.channelId;
+        if (!channelId) {
+          const acRes = await fetch('/api/user/settings/active-channel');
+          if (!acRes.ok) return;
+          const ac = (await acRes.json()) as { active_channel_id: string | null };
+          if (cancelled || !ac.active_channel_id) return;
+          channelId = ac.active_channel_id;
+        }
+        const kitRes = await fetch(`/api/channels/${channelId}/visual-brand-kit`);
+        if (!kitRes.ok) return;
+        const data = (await kitRes.json()) as { visualBrandKit: ChannelVisualBrandKit | null };
+        if (cancelled) return;
+        setChannelVisualKit(data.visualBrandKit ?? null);
+      } catch {
+        /* network failure — kit stays null, override-only path applies */
+      }
+    }
+    void loadChannelKit();
+    return () => {
+      cancelled = true;
+    };
+  }, [state.channelId]);
 
   // ─── Caption regeneration ─────────────────────────────────────
   // Server-side updates payload.captions + bumps version; we
@@ -523,7 +582,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       animateScenes: state.flags.animateScenes,
       suppressLowerThirds: state.flags.suppressLowerThirds,
       musicUrl: state.musicUrl,
-      brand: state.brandKitOverride,
+      brand: resolvedRenderBrand,
       alignment: state.voiceoverAlignment,
       // CRITICAL for server-side render: stream B-roll through the
       // app's proxy so the Lambda fetch has CORS-clean, presign-
@@ -632,7 +691,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     state.voiceoverAlignment,
     state.captions,
     state.musicUrl,
-    state.brandKitOverride,
+    resolvedRenderBrand,
   ]);
 
   // ─── Batch D: Animate-all batch ─────────────────────────────────
@@ -1142,7 +1201,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       animateScenes: state.flags.animateScenes,
       suppressLowerThirds: state.flags.suppressLowerThirds,
       musicUrl: state.musicUrl,
-      brand: state.brandKitOverride,
+      brand: resolvedRenderBrand,
       alignment: state.voiceoverAlignment,
     });
   }, [
@@ -1155,7 +1214,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     state.rowVideoClips,
     state.flags,
     state.musicUrl,
-    state.brandKitOverride,
+    resolvedRenderBrand,
     state.voiceoverAlignment,
   ]);
 
@@ -1497,8 +1556,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             animateAllProgress={animateAllProgress}
             brollModelId={userBrollModelId}
             onAnimateAll={() => { void handleAnimateAll(); }}
-            brandKitChannelName={null}
-            hasBrandKitOverride={Boolean(state.brandKitOverride)}
+            brandKitChannelName={channelVisualKit?.channelName ?? null}
+            hasBrandKitOverride={Boolean(state.visualKitOverride || state.brandKitOverride)}
+            onOpenBrandKit={() => setShowBrandKit(true)}
           />
         ),
         settings: (
@@ -1663,6 +1723,17 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             <span>Lower-thirds</span>
             <span style={{ color: !state.flags.suppressLowerThirds ? 'var(--editor-accent)' : 'var(--fg-muted)' }}>
               {state.flags.suppressLowerThirds ? 'Hidden' : 'Visible'}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowBrandKit(true)}
+            className="editor-btn w-full justify-between"
+            title="Edit per-doc fonts, colors, logo, channel name"
+          >
+            <span>Brand kit…</span>
+            <span style={{ color: state.visualKitOverride ? 'var(--editor-accent)' : 'var(--fg-muted)' }}>
+              {state.visualKitOverride ? 'Override' : 'Default'}
             </span>
           </button>
           <p className="text-[10px] pt-1" style={{ color: 'var(--fg-muted)' }}>
@@ -1892,6 +1963,28 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             setRenderState(null);
           }}
           onRetry={() => { void executeRender(); }}
+        />
+      )}
+
+      {showBrandKit && (
+        <BrandKitModal
+          channelId={state.channelId ?? null}
+          channelKit={channelVisualKit}
+          override={state.visualKitOverride ?? { v: 1 }}
+          onChange={(next) => {
+            // Strip the v + empty-override case so we never persist a
+            // "no actual override" marker. The autosave on production-
+            // doc does the same trimming.
+            const keys = Object.keys(next).filter(
+              (k) => k !== 'v' && (next as unknown as Record<string, unknown>)[k] !== undefined,
+            );
+            const toSet = keys.length > 0 ? next : undefined;
+            console.info('[editor brand-kit] change', {
+              overriddenFields: keys,
+            });
+            apply({ type: 'SET_VISUAL_KIT_OVERRIDE', override: toSet });
+          }}
+          onClose={() => setShowBrandKit(false)}
         />
       )}
 

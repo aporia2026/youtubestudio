@@ -170,6 +170,7 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
           flags?: unknown;
           linkedProjectId?: unknown;
           linkedScheduleItemId?: unknown;
+          visualKitOverride?: unknown;
         };
         if (p.doc && typeof p.doc === 'object') {
           dispatch({
@@ -206,6 +207,10 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
             linkedProjectId: typeof p.linkedProjectId === 'string' ? p.linkedProjectId : undefined,
             linkedScheduleItemId:
               typeof p.linkedScheduleItemId === 'string' ? p.linkedScheduleItemId : undefined,
+            visualKitOverride:
+              p.visualKitOverride && typeof p.visualKitOverride === 'object'
+                ? (p.visualKitOverride as EditorState['visualKitOverride'])
+                : undefined,
             version: data.version,
           });
           setSaveStatus({ kind: 'idle' });

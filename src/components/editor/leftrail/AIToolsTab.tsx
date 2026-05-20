@@ -53,10 +53,12 @@ interface AIToolsTabProps {
   /** Workspace default broll model id for the inline caption. */
   brollModelId: string;
   onAnimateAll: () => void;
-  /** Brand kit channel name to display in the read-only summary row.
+  /** Brand kit channel name to display in the row.
    *  Null when no channel is pinned — the row reads "Default kit". */
   brandKitChannelName: string | null;
   hasBrandKitOverride: boolean;
+  /** Open the BrandKitModal. Now clickable instead of read-only. */
+  onOpenBrandKit: () => void;
 }
 
 export function AIToolsTab({
@@ -78,6 +80,7 @@ export function AIToolsTab({
   onAnimateAll,
   brandKitChannelName,
   hasBrandKitOverride,
+  onOpenBrandKit,
 }: AIToolsTabProps): React.ReactElement {
   const animateAllSubtitle = animateAllProgress
     ? `Generating ${animateAllProgress.done}/${animateAllProgress.total}…`
@@ -145,36 +148,26 @@ export function AIToolsTab({
         onClick={onRegenDoc}
       />
 
-      {/* Brand kit — read-only summary. Editing the channel kit + per-
-          doc override happens on /production-doc; this row tells the
-          user which kit is active so they can verify before render. */}
-      <div
-        className="rounded-md p-2 flex items-start gap-2.5"
-        style={{ background: 'var(--editor-panel)', border: '1px solid var(--editor-edge)' }}
-      >
-        <div className="shrink-0 mt-0.5" style={{ color: 'var(--fg-muted)' }}>
-          <Sparkles size={14} strokeWidth={2} />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-medium" style={{ color: 'var(--fg)' }}>
-            Brand kit
-          </div>
-          <div className="text-[10px]" style={{ color: 'var(--fg-muted)' }}>
-            {brandKitChannelName
-              ? `Channel: ${brandKitChannelName}${hasBrandKitOverride ? ' · with per-doc overrides' : ''}`
-              : hasBrandKitOverride
-                ? 'Per-doc override active (no channel pinned)'
-                : 'Default kit'}
-          </div>
-          <a
-            href="/production-doc"
-            className="text-[10px] underline mt-1 inline-block"
-            style={{ color: 'var(--editor-accent, #a78bfa)' }}
-          >
-            Edit on Production Doc →
-          </a>
-        </div>
-      </div>
+      {/* Brand kit — clickable. Opens the BrandKitModal so the user
+          can edit per-doc fonts / colors / logo / channel name
+          without leaving the editor. The channel kit itself
+          (defaults) still lives on the channel settings page; this
+          surface is for the per-doc override. */}
+      <ToolRow
+        icon={Sparkles}
+        label="Brand kit"
+        subtitle={
+          brandKitChannelName
+            ? `Channel: ${brandKitChannelName}${
+                hasBrandKitOverride ? ' · with per-doc overrides' : ''
+              }`
+            : hasBrandKitOverride
+              ? 'Per-doc override active (no channel pinned)'
+              : 'Default kit'
+        }
+        onClick={onOpenBrandKit}
+        accent={hasBrandKitOverride ? 'primary' : undefined}
+      />
     </div>
   );
 }

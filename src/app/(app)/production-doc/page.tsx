@@ -3496,6 +3496,15 @@ function ProductionDocPage() {
     const linkedProjectId = projectIdParam || scheduleItem?.project_id || undefined;
     const linkedScheduleItemId = scheduleItemId || scheduleItem?.id || undefined;
 
+    // Only persist visualKitOverride when the user has actually
+    // customized something; the default state is `{ v: 1 }` with no
+    // override fields set, and writing that as the canonical
+    // override would confuse the editor's "is overridden?" checks.
+    const visualKitOverrideKeys = Object.keys(visualKitOverride).filter(
+      (k) => k !== 'v' && (visualKitOverride as unknown as Record<string, unknown>)[k] !== undefined,
+    );
+    const visualKitOverrideToSave = visualKitOverrideKeys.length > 0 ? visualKitOverride : undefined;
+
     projectPatch({
       title: doc?.title || currentPayload.title,
       doc: doc ?? currentPayload.doc,
@@ -3507,6 +3516,7 @@ function ProductionDocPage() {
       channelId: activeChannelId ?? undefined,
       linkedProjectId,
       linkedScheduleItemId,
+      visualKitOverride: visualKitOverrideToSave,
       flags: {
         animateScenes,
         suppressLowerThirds,
@@ -3534,6 +3544,7 @@ function ProductionDocPage() {
     projectIdParam,
     scheduleItemId,
     scheduleItem,
+    visualKitOverride,
   ]);
 
   // Load brand kit from localStorage on client only. The voiceover URL is

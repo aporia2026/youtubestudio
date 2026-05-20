@@ -29,6 +29,7 @@ import type {
 import type { CaptionsBundle } from '@/lib/editor/captions';
 import type { BrandKit } from '@/remotion/types';
 import type { ForcedAlignmentResponse } from '@/lib/elevenlabs';
+import type { ChannelVisualBrandKit } from '@/lib/channel-visual-brand-kit';
 
 // ─── Versioning ──────────────────────────────────────────────────────
 
@@ -80,8 +81,24 @@ export interface ProjectPayload {
   musicUrl?: string;
 
   /** Per-doc visual brand kit override. Falls back to the channel
-   *  kit (looked up via `channelId`), then `DEFAULT_BRAND_KIT`. */
+   *  kit (looked up via `channelId`), then `DEFAULT_BRAND_KIT`.
+   *
+   *  LEGACY shape — kept for backwards compatibility. Production-doc
+   *  + the editor's full-brand-kit panel use the new `visualKitOverride`
+   *  field below which carries the persisted `ChannelVisualBrandKit`
+   *  shape (versioned, font names as registry keys). The renderer
+   *  prefers `visualKitOverride` when present, resolving through
+   *  `resolveBrandKitForRender(channelKit, visualKitOverride)`. Old
+   *  payloads with only `brandKitOverride` keep working — the renderer
+   *  passes them straight through as `brand`. */
   brandKitOverride?: Partial<BrandKit>;
+  /** Per-doc override of the channel's visual brand kit (fonts /
+   *  colors / logo / channel name). Persisted as the canonical
+   *  versioned shape so the editor's editable panel + production-doc
+   *  share the same data; the renderer resolves to the flat
+   *  `BrandKit` via `resolveBrandKitForRender(channelKit, override)`.
+   *  Batch (2026-05-20) full brand-kit panel port. */
+  visualKitOverride?: ChannelVisualBrandKit;
   /** Workspace's pinned channel for this project. Used by the
    *  renderer to fetch the channel-level brand kit. */
   channelId?: string;
@@ -364,6 +381,17 @@ export function migratePayload(raw: unknown): MigrateResult {
   // ProductionDocHistoryEntry before this refactor. Bridge it.
   if (!out.brandKitOverride && isPlainObject(raw.visualBrandKitOverride)) {
     out.brandKitOverride = raw.visualBrandKitOverride as Partial<BrandKit>;
+  }
+
+  // visualKitOverride — the canonical ChannelVisualBrandKit shape.
+  // Validated lazily here: if it's a plain object we keep it; the
+  // server-side renderer + the editor's panel both re-parse via
+  // `parseVisualBrandKit` which silently drops malformed fields.
+  // No need to duplicate that validation at the payload layer.
+  if (isPlainObject(raw.visualKitOverride)) {
+    out.visualKitOverride = raw.visualKitOverride as unknown as ChannelVisualBrandKit;
+  } else if (raw.visualKitOverride !== undefined) {
+    dropped.push('visualKitOverride');
   }
 
   // channelId
