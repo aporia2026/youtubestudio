@@ -41,10 +41,17 @@ export const IMAGE_MODELS: ImageModelSpec[] = [
   },
   {
     value: 'hidream-i1-local',
-    label: 'HiDream-I1 — Local (free)',
+    label: 'HiDream-I1 — Local (needs 24 GB VRAM)',
     provider: 'comfyui-local',
     localWorkflowId: 'hidream-i1-dev-t2i',
-    hint: 'Local — premium 28 steps. MIT (commercial OK).',
+    // Workflow is correct as of 2026-05-22 (Q4_K_M UNet +
+    // Q5_K_M GGUF t5xxl — the earlier fp8 t5 erred out with
+    // "Mixing scaled FP8 with GGUF is not supported"). But the
+    // 4 text encoders + 10.7 GB UNet + sampling activations exceed
+    // 16 GB; verified hang at KSampler on RTX 5070 Ti (15 min, zero
+    // node progress). Kept in the picker so 24+ GB users can pick it;
+    // labelled so 16 GB users know to choose Qwen-Image / Flux schnell.
+    hint: 'Premium 28 steps, MIT. Verified to NEED 24+ GB VRAM — hangs on 16 GB cards.',
   },
   {
     value: 'qwen-image-local',

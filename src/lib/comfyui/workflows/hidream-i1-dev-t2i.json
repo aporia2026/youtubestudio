@@ -10,7 +10,7 @@
     "inputs": {
       "clip_name1": "clip_l_hidream.safetensors",
       "clip_name2": "clip_g_hidream.safetensors",
-      "clip_name3": "t5xxl_fp8_e4m3fn_scaled.safetensors",
+      "clip_name3": "t5-v1_1-xxl-encoder-Q5_K_M.gguf",
       "clip_name4": "Meta-Llama-3.1-8B-Instruct.Q5_K_M.gguf"
     }
   },
