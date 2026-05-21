@@ -12,6 +12,7 @@ import { ScheduleLinkProvider, ScheduleSaverRegistration } from '@/components/ui
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { IMAGE_MODELS, DEFAULT_IMAGE_MODEL, getImageModelSpec } from '@/lib/image-models';
+import { useLocalStudioEnabled } from '@/lib/local-studio-enabled';
 import {
   saveProductionDocEntry,
   getProductionDocHistory,
@@ -1642,6 +1643,9 @@ export default function ProductionDocPageWrapper() {
 
 function ProductionDocPage() {
   const search = useSearchParams();
+  // Whether the local ComfyUI stack is wired up in this env (controls
+  // visibility of the "Local (free)" image-model entries below).
+  const localStudioEnabled = useLocalStudioEnabled();
   const scheduleItemId = getScheduleLinkId(search);
   // Direct project handoff (e.g. from the project detail page's "Send to
   // Production Doc" button). Mirrors the schedule-item path but pulls the
@@ -5908,12 +5912,14 @@ function ProductionDocPage() {
             onChange={e => setImageModel(e.target.value)}
             className="input-field w-full text-sm"
           >
-            {IMAGE_MODELS.map(m => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-                {m.hint ? ` — ${m.hint}` : ''}
-              </option>
-            ))}
+            {IMAGE_MODELS
+              .filter(m => localStudioEnabled || m.provider !== 'comfyui-local')
+              .map(m => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                  {m.hint ? ` — ${m.hint}` : ''}
+                </option>
+              ))}
           </select>
         </div>
 

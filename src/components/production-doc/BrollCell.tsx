@@ -49,6 +49,7 @@ import {
   type BrollModelId,
   type BrollModelKind,
 } from '@/lib/broll-types';
+import { useLocalStudioEnabled } from '@/lib/local-studio-enabled';
 
 const BROLL_POLL_INTERVAL_MS = 6000;
 
@@ -1106,7 +1107,19 @@ function ModelPicker({
   onMakeDefault: (id: BrollModelId) => void | Promise<void>;
   onClose: () => void;
 }) {
-  const grouped = useMemo(() => groupModelsByKindAndFamily(BROLL_MODELS), []);
+  // Filter out comfyui-local entries when LOCAL_STUDIO isn't enabled
+  // in this environment. Otherwise prod users see "Local (free)"
+  // entries that 503 on click. `useLocalStudioEnabled` polls
+  // /api/local-studio/status once at mount and caches the answer.
+  const localStudioEnabled = useLocalStudioEnabled();
+  const grouped = useMemo(
+    () => groupModelsByKindAndFamily(
+      localStudioEnabled
+        ? BROLL_MODELS
+        : BROLL_MODELS.filter(m => m.provider !== 'comfyui-local'),
+    ),
+    [localStudioEnabled],
+  );
   return (
     <div
       className="absolute z-20 mt-6 rounded shadow-lg p-1 flex flex-col gap-1"
