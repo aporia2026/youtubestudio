@@ -677,7 +677,10 @@ export default function LocalStudioPage() {
         <div>
           <h1 className="text-2xl font-semibold">Local Studio</h1>
           <p className="mt-1 text-sm text-zinc-400">
-            Generate images locally via ComfyUI. No cloud, no cost.
+            Generate images locally via ComfyUI. No cloud, no cost.{' '}
+            <a href="/local-studio/compare" className="underline" style={{ color: '#a5b4fc' }}>
+              Compare models →
+            </a>
           </p>
         </div>
         <div className="flex items-center gap-2">
