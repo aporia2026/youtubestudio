@@ -6,9 +6,10 @@
  * /api/local-studio/upload-ref) plus a motion prompt.
  *
  * Synchronous like /generate — Wan 2.2 5B Q5 lands in ~3–5 min per
- * clip on RTX 5070 Ti. The route timeout (`maxDuration = 1500` = 25
- * min) is generous because the first-ever generation pays the JIT
- * compile + model load cost on top of the steady-state runtime.
+ * clip on RTX 5070 Ti. The route timeout (`maxDuration = 800` ≈ 13
+ * min) is the Vercel Pro ceiling; first-ever generation pays JIT
+ * compile + model load cost on top of steady-state runtime, so a
+ * cold run may still trip it — retry warms the cache.
  *
  * Gated by `LOCAL_STUDIO=1`.
  */
@@ -20,8 +21,9 @@ import { isKnownLocalVideoWorkflow } from '@/lib/comfyui/style-mapping';
 import { ComfyUILocalGenerator } from '@/lib/visual-generator/comfyui-local';
 
 // Wan clips can take 5–8 min on 16 GB VRAM with offload + first-time
-// JIT compile. 25 min ceiling leaves a safety margin.
-export const maxDuration = 1500;
+// JIT compile. 800 s is the Vercel Pro hard ceiling; cold-start runs
+// that breach this should retry once the workflow is JIT-cached.
+export const maxDuration = 800;
 
 interface ClipBody {
   prompt?: string;
