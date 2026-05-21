@@ -252,6 +252,9 @@ export interface ProductionRow {
   visual_description: string;
   stock_search_terms: string;
   ai_image_prompt: string;
+  /** Phase 7 — opt out of style-sheet chaining for this row. Generation-time
+   *  concern only; the renderer ignores this field. */
+  style_sheet_skip?: boolean;
   on_screen_text: string;
   /** How this row's `on_screen_text` is realised: `'bake'` puts the text
    *  inside the generated image; `'overlay'` keeps the image clean and
@@ -415,6 +418,16 @@ export interface ProductionDoc {
    *  output should set this to `'overlay'`. Undefined ⇒ renderer treats it
    *  as `'bake'` (back-compat with pre-Phase-5 docs). */
   on_screen_text_mode_default?: 'bake' | 'overlay' | 'none';
+  /** Phase 7 — style sheet bookkeeping. Carried on the doc but only used
+   *  at generation time (not at render time), so the Remotion mapper
+   *  ignores these fields. Mirrored here so the type stays compatible
+   *  with the page-level ProductionDoc shape. See
+   *  `_plans/2026-05-21-phase-7-style-sheet.md`. */
+  style_sheet_url?: string;
+  style_sheet_model?: 'flux-schnell-local' | 'qwen-image-local';
+  style_sheet_has_protagonist?: boolean;
+  style_sheet_prompt?: string;
+  style_sheet_description?: string;
   /** Doc-level fallback for the static scene zoom percentage. Per-row
    *  `scene_zoom` overrides this. Undefined ⇒ 100 (no zoom). */
   scene_zoom_default?: number;

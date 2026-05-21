@@ -45,6 +45,8 @@ import { OverlayContextMenu } from '@/components/production-doc/OverlayContextMe
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
 import { OstModeControl, type OstMode } from '@/components/production-doc/OstModeControl';
+import { StyleSheetPanel } from '@/components/production-doc/StyleSheetPanel';
+import { resolveSheetReference } from '@/lib/style-sheet';
 import { MissingClipsModal } from '@/components/production-doc/MissingClipsModal';
 import { MaskBrushEditor } from '@/components/production-doc/MaskBrushEditor';
 import {
@@ -204,6 +206,11 @@ interface ProductionRow {
    *  _plans/2026-05-17-section-title-letterbox-and-overlay-blending.md. */
   overlay_zone_resolved?: ProductionRow['overlay_zone'];
   overlay_size_resolved?: ProductionRow['overlay_size'];
+  /** Phase 7 — when `true`, this row generates without chaining to the
+   *  doc's style sheet (t2i instead of i2i). Use for cutaways, landscapes,
+   *  or any shot where the protagonist / palette of the rest of the video
+   *  shouldn't influence the composition. Undefined ⇒ chain (default). */
+  style_sheet_skip?: boolean;
   on_screen_text: string;
   /** How this row's `on_screen_text` is realised at production time.
    *   - `'bake'`   → text is added to the diffusion prompt and rendered
@@ -316,6 +323,23 @@ interface ProductionDoc {
    *  to `'overlay'` (clean text, no diffusion garbling). Undefined ⇒
    *  renderer treats it as `'bake'` (back-compat with pre-Phase-5 docs). */
   on_screen_text_mode_default?: 'bake' | 'overlay' | 'none';
+  /** Phase 7 — R2-hosted style sheet for cross-shot visual consistency.
+   *  Generated once per doc; every per-row image chains against it via
+   *  i2i at denoise 0.7 (local) or as a textual hint (cloud Kie). See
+   *  `_plans/2026-05-21-phase-7-style-sheet.md`. */
+  style_sheet_url?: string;
+  /** Which model produced the sheet — surfaced in the UI for re-roll
+   *  fidelity. Optional because pre-Phase-7 docs don't have one. */
+  style_sheet_model?: 'flux-schnell-local' | 'qwen-image-local';
+  /** When `true`, the sheet shows a recurring protagonist (2×2 grid of
+   *  poses + palette). When `false`, just a palette/style swatch. */
+  style_sheet_has_protagonist?: boolean;
+  /** Prompt used to generate the sheet — kept for re-roll + UI display. */
+  style_sheet_prompt?: string;
+  /** Short prose description of the sheet (palette + protagonist look).
+   *  Appended to cloud-Kie prompts as a continuity hint. Local i2i chain
+   *  uses the actual image; this is the cloud-only fallback. */
+  style_sheet_description?: string;
   /** Doc-level fallback for `ProductionRow.scene_zoom` when a row doesn't
    *  override. Mirrors the `pillarbox_color_default` pattern. Undefined ⇒
    *  100 (no zoom). Sensible range: 50–200. */
@@ -2702,6 +2726,131 @@ function ProductionDocPage() {
     { done: number; total: number } | null
   >(null);
 
+  // Phase 7 — style-sheet generation flag. Drives the StyleSheetPanel's
+  // loading state; the panel itself owns the description / protagonist
+  // inputs, this page owns the dispatch + persistence. See
+  // `_plans/2026-05-21-phase-7-style-sheet.md`.
+  const [generatingStyleSheet, setGeneratingStyleSheet] = React.useState(false);
+
+  const runGenerateStyleSheet = useCallback(
+    async (opts: {
+      hasProtagonist: boolean;
+      styleDescription: string;
+      protagonistDescription: string;
+    }) => {
+      if (!doc) return;
+      if (!opts.styleDescription.trim()) {
+        toast.error('Add a visual style description first.');
+        return;
+      }
+      setGeneratingStyleSheet(true);
+      console.info('[prodoc style-sheet] start', {
+        has_protagonist: opts.hasProtagonist,
+        style_preview: opts.styleDescription.slice(0, 80),
+      });
+      try {
+        const res = await fetch('/api/generate/style-sheet', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            stylePrompt: opts.styleDescription,
+            hasProtagonist: opts.hasProtagonist,
+            protagonistDescription: opts.protagonistDescription || undefined,
+            model: doc.style_sheet_model ?? 'flux-schnell-local',
+            docId: historyEntryId ?? undefined,
+          }),
+        });
+        const data = (await res.json()) as {
+          imageUrl?: string;
+          model?: string;
+          prompt?: string;
+          hasProtagonist?: boolean;
+          error?: string;
+        };
+        if (!res.ok || !data.imageUrl) {
+          throw new Error(data.error ?? `HTTP ${res.status}`);
+        }
+        setDoc((prev) => {
+          if (!prev) return prev;
+          const next = {
+            ...prev,
+            style_sheet_url: data.imageUrl,
+            style_sheet_model: (data.model ?? 'flux-schnell-local') as
+              | 'flux-schnell-local'
+              | 'qwen-image-local',
+            style_sheet_has_protagonist: opts.hasProtagonist,
+            style_sheet_prompt: data.prompt,
+            style_sheet_description: opts.styleDescription,
+          };
+          if (historyEntryId) {
+            updateProductionDocEntry(historyEntryId, { doc: next }).catch(() => {});
+          }
+          return next;
+        });
+        toast.success('Style sheet ready.');
+        console.info('[prodoc style-sheet] done', { model: data.model });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        console.error('[prodoc style-sheet] failed', { detail });
+        toast.error(`Style sheet failed: ${detail.slice(0, 120)}`);
+      } finally {
+        setGeneratingStyleSheet(false);
+      }
+    },
+    [doc, historyEntryId],
+  );
+
+  const clearStyleSheet = useCallback(() => {
+    setDoc((prev) => {
+      if (!prev) return prev;
+      const next = {
+        ...prev,
+        style_sheet_url: undefined,
+        style_sheet_model: undefined,
+        style_sheet_prompt: undefined,
+      };
+      if (historyEntryId) {
+        updateProductionDocEntry(historyEntryId, { doc: next }).catch(() => {});
+      }
+      return next;
+    });
+    toast.success('Style sheet cleared.');
+  }, [historyEntryId]);
+
+  const setStyleSheetHasProtagonist = useCallback(
+    (next: boolean) => {
+      setDoc((prev) => {
+        if (!prev) return prev;
+        const nextDoc = { ...prev, style_sheet_has_protagonist: next };
+        if (historyEntryId) {
+          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+        }
+        return nextDoc;
+      });
+    },
+    [historyEntryId],
+  );
+
+  const setStyleSheetDescription = useCallback(
+    (next: string) => {
+      setDoc((prev) => {
+        if (!prev) return prev;
+        const nextDoc = { ...prev, style_sheet_description: next };
+        if (historyEntryId) {
+          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+        }
+        return nextDoc;
+      });
+    },
+    [historyEntryId],
+  );
+
+  // Protagonist description lives in component-local state (it's a
+  // per-generation prompt input, not something we persist on the doc —
+  // the appearance ends up "in" the sheet image itself). Reset to empty
+  // when a new doc loads so the panel doesn't show stale text.
+  const [styleSheetProtagonistDraft, setStyleSheetProtagonistDraft] = React.useState('');
+
   const runGenerateAllStillsLocal = useCallback(async () => {
     if (!doc) return;
     const plan = doc.rows
@@ -2733,6 +2882,7 @@ function ProductionDocPage() {
       });
       const prompt = (item.row.ai_image_prompt ?? item.row.visual_description ?? '').trim();
       try {
+        const sheetRef = resolveSheetReference(item.row, doc);
         const res = await fetch('/api/generate/production-doc/image', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2743,6 +2893,8 @@ function ProductionDocPage() {
             onScreenTextMode: item.row.on_screen_text_mode ?? doc.on_screen_text_mode_default,
             sectionTitle: item.row.section_title,
             sectionTitleLayout: item.row.section_title_layout ?? doc.section_title_layout_default,
+            referenceImageUrl: sheetRef.referenceImageUrl,
+            styleSheetDescription: sheetRef.styleSheetDescription,
           }),
         });
         const data = (await res.json()) as { imageUrl?: string; error?: string };
@@ -2830,6 +2982,8 @@ function ProductionDocPage() {
     onScreenTextMode?: 'bake' | 'overlay' | 'none';
     sectionTitle?: string;
     sectionTitleLayout?: 'overlay' | 'letterbox';
+    referenceImageUrl?: string;
+    styleSheetDescription?: string;
     overlayStockTerms?: string;
     skipOverlay?: boolean;
   }>>(() => {
@@ -2842,6 +2996,8 @@ function ProductionDocPage() {
       onScreenTextMode?: 'bake' | 'overlay' | 'none';
       sectionTitle?: string;
       sectionTitleLayout?: 'overlay' | 'letterbox';
+      referenceImageUrl?: string;
+      styleSheetDescription?: string;
       overlayStockTerms?: string;
       skipOverlay?: boolean;
     }> = [];
@@ -2855,6 +3011,7 @@ function ProductionDocPage() {
       // skips the auto-fetch even when the doc allows. Undefined
       // falls back to the doc-level toggle.
       const skipOverlay = typeof row?.skip_overlay === 'boolean' ? row.skip_overlay : docDisabled;
+      const sheetRef = row ? resolveSheetReference(row, doc) : { referenceImageUrl: undefined, styleSheetDescription: undefined };
       out.push({
         rowIndex: i,
         prompt,
@@ -2862,6 +3019,8 @@ function ProductionDocPage() {
         onScreenTextMode: row?.on_screen_text_mode ?? doc.on_screen_text_mode_default,
         sectionTitle: row?.section_title,
         sectionTitleLayout: row?.section_title_layout ?? doc.section_title_layout_default,
+        referenceImageUrl: sheetRef.referenceImageUrl,
+        styleSheetDescription: sheetRef.styleSheetDescription,
         overlayStockTerms: row?.overlay_stock_terms,
         skipOverlay,
       });
@@ -2889,6 +3048,8 @@ function ProductionDocPage() {
     onScreenTextMode?: 'bake' | 'overlay' | 'none';
     sectionTitle?: string;
     sectionTitleLayout?: 'overlay' | 'letterbox';
+    referenceImageUrl?: string;
+    styleSheetDescription?: string;
     overlayStockTerms?: string;
     skipOverlay?: boolean;
   }>>(() => {
@@ -2901,6 +3062,8 @@ function ProductionDocPage() {
       onScreenTextMode?: 'bake' | 'overlay' | 'none';
       sectionTitle?: string;
       sectionTitleLayout?: 'overlay' | 'letterbox';
+      referenceImageUrl?: string;
+      styleSheetDescription?: string;
       overlayStockTerms?: string;
       skipOverlay?: boolean;
     }> = [];
@@ -2914,6 +3077,7 @@ function ProductionDocPage() {
       const prompt = row?.ai_image_prompt?.trim();
       if (!prompt) continue;
       const skipOverlay = typeof row?.skip_overlay === 'boolean' ? row.skip_overlay : docDisabled;
+      const sheetRef = row ? resolveSheetReference(row, doc) : { referenceImageUrl: undefined, styleSheetDescription: undefined };
       out.push({
         rowIndex: i,
         prompt,
@@ -2921,6 +3085,8 @@ function ProductionDocPage() {
         onScreenTextMode: row?.on_screen_text_mode ?? doc.on_screen_text_mode_default,
         sectionTitle: row?.section_title,
         sectionTitleLayout: row?.section_title_layout ?? doc.section_title_layout_default,
+        referenceImageUrl: sheetRef.referenceImageUrl,
+        styleSheetDescription: sheetRef.styleSheetDescription,
         overlayStockTerms: row?.overlay_stock_terms,
         skipOverlay,
       });
@@ -2961,6 +3127,8 @@ function ProductionDocPage() {
         onScreenTextMode: item.onScreenTextMode,
         sectionTitle: item.sectionTitle,
         sectionTitleLayout: item.sectionTitleLayout,
+        referenceImageUrl: item.referenceImageUrl,
+        styleSheetDescription: item.styleSheetDescription,
         overlayStockTerms: item.overlayStockTerms,
         skipOverlay: item.skipOverlay,
       });
@@ -2996,6 +3164,8 @@ function ProductionDocPage() {
         onScreenTextMode: item.onScreenTextMode,
         sectionTitle: item.sectionTitle,
         sectionTitleLayout: item.sectionTitleLayout,
+        referenceImageUrl: item.referenceImageUrl,
+        styleSheetDescription: item.styleSheetDescription,
         overlayStockTerms: item.overlayStockTerms,
         skipOverlay: item.skipOverlay,
       });
@@ -4185,6 +4355,12 @@ function ProductionDocPage() {
        *  'overlay' keeps full 1920×1080. See
        *  `_plans/2026-05-21-resolution-aware-generation.md`. */
       sectionTitleLayout?: 'overlay' | 'letterbox';
+      /** Phase 7 — when set, the local route fetches this URL and uploads
+       *  it to ComfyUI as the i2i reference; the cloud route appends the
+       *  `styleSheetDescription` to the prompt. Callers resolve via
+       *  `resolveSheetReference(row, doc)` from `src/lib/style-sheet.ts`. */
+      referenceImageUrl?: string;
+      styleSheetDescription?: string;
       overlayStockTerms?: string;
       /** True when the doc-level "Auto-generate overlays" toggle is OFF
        *  OR this row has `skip_overlay: true`. Suppresses the post-
@@ -4205,6 +4381,8 @@ function ProductionDocPage() {
     const onScreenTextMode = meta.onScreenTextMode;
     const sectionTitle = meta.sectionTitle?.trim() || undefined;
     const sectionTitleLayout = meta.sectionTitleLayout;
+    const referenceImageUrl = meta.referenceImageUrl?.trim() || undefined;
+    const styleSheetDescription = meta.styleSheetDescription?.trim() || undefined;
     const overlayTerms = meta.overlayStockTerms?.trim() || undefined;
     console.info('[prodoc image-gen] start', {
       rowIndex,
@@ -4212,6 +4390,7 @@ function ProductionDocPage() {
       onScreenTextMode: onScreenTextMode ?? null,
       hasSectionTitle: Boolean(sectionTitle),
       sectionTitleLayout: sectionTitleLayout ?? null,
+      chainedToSheet: Boolean(referenceImageUrl),
       hasOverlayTerms: Boolean(overlayTerms),
     });
     try {
@@ -4219,7 +4398,16 @@ function ProductionDocPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal,
-        body: JSON.stringify({ prompt, model: imageModel, onScreenText, onScreenTextMode, sectionTitle, sectionTitleLayout }),
+        body: JSON.stringify({
+          prompt,
+          model: imageModel,
+          onScreenText,
+          onScreenTextMode,
+          sectionTitle,
+          sectionTitleLayout,
+          referenceImageUrl,
+          styleSheetDescription,
+        }),
       });
       const data = await safeJson(res);
       if (!res.ok) throw new Error((data.error as string) || 'Failed');
@@ -4633,6 +4821,7 @@ function ProductionDocPage() {
           const skipOverlay = typeof row.skip_overlay === 'boolean'
             ? row.skip_overlay
             : (docOverlaysDisabled === true);
+          const sheetRef = doc ? resolveSheetReference(row, doc) : { referenceImageUrl: undefined, styleSheetDescription: undefined };
           await generateImageForRow(
             idx,
             row.ai_image_prompt,
@@ -4641,6 +4830,8 @@ function ProductionDocPage() {
               onScreenTextMode: row.on_screen_text_mode ?? doc?.on_screen_text_mode_default,
               sectionTitle: row.section_title,
               sectionTitleLayout: row.section_title_layout ?? doc?.section_title_layout_default,
+              referenceImageUrl: sheetRef.referenceImageUrl,
+              styleSheetDescription: sheetRef.styleSheetDescription,
               overlayStockTerms: row.overlay_stock_terms,
               skipOverlay,
             },
@@ -6879,11 +7070,14 @@ function ProductionDocPage() {
                             canGenerate={Boolean(row.ai_image_prompt?.trim())}
                             onRetry={() => {
                               if (row.ai_image_prompt?.trim()) {
+                                const sheetRef = doc ? resolveSheetReference(row, doc) : { referenceImageUrl: undefined, styleSheetDescription: undefined };
                                 generateImageForRow(i, row.ai_image_prompt, {
                                   onScreenText: row.on_screen_text,
                                   onScreenTextMode: row.on_screen_text_mode ?? doc?.on_screen_text_mode_default,
                                   sectionTitle: row.section_title,
                                   sectionTitleLayout: row.section_title_layout ?? doc?.section_title_layout_default,
+                                  referenceImageUrl: sheetRef.referenceImageUrl,
+                                  styleSheetDescription: sheetRef.styleSheetDescription,
                                   overlayStockTerms: row.overlay_stock_terms,
                                   skipOverlay: typeof row.skip_overlay === 'boolean'
                                     ? row.skip_overlay
@@ -7267,16 +7461,22 @@ function ProductionDocPage() {
                           <ImageCell
                             state={imgState}
                             canGenerate={Boolean(row.ai_image_prompt?.trim())}
-                            onRetry={() => row.ai_image_prompt?.trim() && generateImageForRow(i, row.ai_image_prompt, {
-                              onScreenText: row.on_screen_text,
-                              onScreenTextMode: row.on_screen_text_mode ?? doc?.on_screen_text_mode_default,
-                              sectionTitle: row.section_title,
-                              sectionTitleLayout: row.section_title_layout ?? doc?.section_title_layout_default,
-                              overlayStockTerms: row.overlay_stock_terms,
-                              skipOverlay: typeof row.skip_overlay === 'boolean'
-                                ? row.skip_overlay
-                                : doc?.overlays_disabled === true,
-                            })}
+                            onRetry={() => {
+                              if (!row.ai_image_prompt?.trim()) return;
+                              const sheetRef = doc ? resolveSheetReference(row, doc) : { referenceImageUrl: undefined, styleSheetDescription: undefined };
+                              return generateImageForRow(i, row.ai_image_prompt, {
+                                onScreenText: row.on_screen_text,
+                                onScreenTextMode: row.on_screen_text_mode ?? doc?.on_screen_text_mode_default,
+                                sectionTitle: row.section_title,
+                                sectionTitleLayout: row.section_title_layout ?? doc?.section_title_layout_default,
+                                referenceImageUrl: sheetRef.referenceImageUrl,
+                                styleSheetDescription: sheetRef.styleSheetDescription,
+                                overlayStockTerms: row.overlay_stock_terms,
+                                skipOverlay: typeof row.skip_overlay === 'boolean'
+                                  ? row.skip_overlay
+                                  : doc?.overlays_disabled === true,
+                              });
+                            }}
                             onUpload={(file) => { void uploadImageForRow(i, file); }}
                             onUrlImport={(url) => { void importImageUrlForRow(i, url); }}
                             onEdit={() => setEditPanelRow(i)}
@@ -7501,6 +7701,27 @@ function ProductionDocPage() {
                   override={visualKitOverride}
                   onChange={setVisualKitOverride}
                 />
+
+                {/* Phase 7 — per-doc style sheet for cross-shot visual consistency.
+                    Generated once; every per-row image chains against it via
+                    i2i at denoise 0.7 (local) or as a textual hint (cloud Kie).
+                    See `_plans/2026-05-21-phase-7-style-sheet.md`. */}
+                <div className="mt-2">
+                  <StyleSheetPanel
+                    sheetUrl={doc.style_sheet_url}
+                    hasProtagonist={doc.style_sheet_has_protagonist ?? true}
+                    styleDescription={doc.style_sheet_description ?? ''}
+                    protagonistDescription={styleSheetProtagonistDraft}
+                    sheetModel={doc.style_sheet_model}
+                    onGenerate={runGenerateStyleSheet}
+                    onChangeHasProtagonist={setStyleSheetHasProtagonist}
+                    onChangeStyleDescription={setStyleSheetDescription}
+                    onChangeProtagonistDescription={setStyleSheetProtagonistDraft}
+                    onClear={clearStyleSheet}
+                    generating={generatingStyleSheet}
+                    localStudioEnabled={localStudioEnabled}
+                  />
+                </div>
 
                 {/* Brand kit quick-config (legacy local tweak, sits on top of channel + override). */}
                 <VideoPreviewBrandBar

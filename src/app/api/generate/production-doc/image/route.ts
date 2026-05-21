@@ -10,6 +10,7 @@ import {
   uploadToBucket,
 } from '@/lib/r2';
 import { computeImageCanvas } from '@/lib/render-canvas';
+import { uploadUrlToComfyInput } from '@/lib/comfyui/upload';
 
 export const maxDuration = 300;
 
@@ -26,6 +27,14 @@ export async function POST(req: NextRequest) {
       onScreenTextMode?: 'bake' | 'overlay' | 'none';
       sectionTitle?: string;
       sectionTitleLayout?: 'overlay' | 'letterbox';
+      /** Phase 7: per-doc style-sheet URL. Triggers i2i chaining on the
+       *  local-ComfyUI path; appended as a textual description hint on
+       *  the cloud-Kie path via `styleSheetDescription`. */
+      referenceImageUrl?: string;
+      /** Phase 7: short prose description of the sheet. Used as a
+       *  prompt-augmentation hint on cloud-Kie generations (Kie models
+       *  don't accept arbitrary reference images for style chaining). */
+      styleSheetDescription?: string;
     };
     try {
       body = await req.json();
@@ -33,7 +42,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
     }
 
-    const { prompt, model, onScreenText, onScreenTextMode, sectionTitle, sectionTitleLayout } = body;
+    const { prompt, model, onScreenText, onScreenTextMode, sectionTitle, sectionTitleLayout, referenceImageUrl, styleSheetDescription } = body;
     if (!prompt?.trim()) {
       return NextResponse.json({ error: 'prompt is required' }, { status: 400 });
     }
@@ -104,7 +113,16 @@ export async function POST(req: NextRequest) {
       ? `\n\nText shown: "${escapedOst}".`
       : '';
 
-    const augmentedPrompt = `${safeTopDirective}${ostLeadingDirective}${prompt.trim()}${ostTrailingDirective}`;
+    // Phase 7: cloud-Kie chaining. Kie models can't accept a reference image
+    // for style conditioning, so we append the doc's textual sheet
+    // description to the prompt as a hint. Sanitised + capped before
+    // injection — same belt-and-braces as the OST sanitiser above.
+    const safeSheetDesc = (styleSheetDescription ?? '').trim().replace(/[\r\n]+/g, ' ').slice(0, 240);
+    const sheetDescDirective = safeSheetDesc
+      ? `\n\nMaintain visual continuity with the established style: ${safeSheetDesc}.`
+      : '';
+
+    const augmentedPrompt = `${safeTopDirective}${ostLeadingDirective}${prompt.trim()}${ostTrailingDirective}${sheetDescDirective}`;
 
     // Length cap applies to what we ACTUALLY send to Kie — the augmented
     // prompt — not the original. Raised to 2000 to leave room for the
@@ -153,6 +171,30 @@ export async function POST(req: NextRequest) {
           { status: 503 },
         );
       }
+      // Phase 7: when the caller passes a style-sheet URL, fetch it from
+      // R2 and upload to ComfyUI's input/ folder. The local generator
+      // auto-swaps to the i2i variant of the chosen workflow when
+      // `refImageFilename` is present (see
+      // `src/lib/visual-generator/comfyui-local.ts`). Denoise 0.7 ≈
+      // sweet-spot for "same style + character, fresh composition".
+      let refImageFilename: string | undefined;
+      const trimmedRefUrl = referenceImageUrl?.trim();
+      if (trimmedRefUrl) {
+        try {
+          refImageFilename = await uploadUrlToComfyInput(trimmedRefUrl, {
+            filenamePrefix: 'style-sheet-ref',
+          });
+        } catch (uploadErr) {
+          // Fail soft: chaining is a quality-of-life upgrade, not a hard
+          // requirement. Log + fall back to t2i so the user still gets
+          // an image rather than a 5xx.
+          logger.warn('[prodoc image-gen] style-sheet upload failed — falling back to t2i', {
+            url_preview: trimmedRefUrl.slice(0, 100),
+            detail: uploadErr instanceof Error ? uploadErr.message : String(uploadErr),
+          });
+        }
+      }
+
       logger.info('[prodoc image-gen] canvas resolved', {
         model: spec.value,
         width: canvas.width,
@@ -163,11 +205,14 @@ export async function POST(req: NextRequest) {
         layout: hasSectionStripe ? normalizedLayout : 'none',
         ost_mode: normalizedOstMode,
         ost_baked: shouldBakeOst,
+        chained_to_sheet: Boolean(refImageFilename),
       });
       const result = await generator.generateImage(augmentedPrompt, {
         workflowId: spec.localWorkflowId,
         width: canvas.width,
         height: canvas.height,
+        refImageFilename,
+        denoise: refImageFilename ? 0.7 : undefined,
       });
       // Compute saliency directly from ComfyUI's bytes (skip the proxy
       // round-trip — we're already server-side).

@@ -22,6 +22,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { sql } from '@vercel/postgres';
 import { ComfyUIClient, type ComfyOutputImage } from '@/lib/comfyui/client';
+import { uploadUrlToComfyInput } from '@/lib/comfyui/upload';
 import { fillWorkflow, randomSeed, type PlaceholderMap } from '@/lib/comfyui/workflow-fill';
 import { logger } from '@/lib/logger';
 import {
@@ -102,7 +103,9 @@ export async function startLocalBrollGeneration(
   // Pull the row's still down and re-upload into ComfyUI's input/
   // folder so LoadImage can read it by filename. The Kie path doesn't
   // need this because Kie fetches the still URL itself.
-  const refFilename = await fetchToComfyInput(args.stillImageUrl);
+  const refFilename = await uploadUrlToComfyInput(args.stillImageUrl, {
+    filenamePrefix: 'broll-still',
+  });
 
   const durationSeconds = Math.max(2, Math.min(8, args.durationSeconds ?? 2));
   // Wan native fps is 16. Length = frame count quantised to (4k+1).
@@ -274,41 +277,3 @@ async function advanceToFailed(clipId: string, errorMessage: string): Promise<Br
   return rows[0] ?? null;
 }
 
-/**
- * Fetch a still-image URL and upload it into ComfyUI's `input/`
- * folder so the LoadImage node can reference it by filename.
- * Returns the filename ComfyUI assigned.
- *
- * Hits ComfyUI's `/upload/image` endpoint directly because we're
- * already on the server side — no need to round-trip through our
- * own /api/local-studio/upload-ref proxy.
- */
-async function fetchToComfyInput(url: string): Promise<string> {
-  if (!/^https?:\/\//i.test(url)) {
-    throw new Error('stillImageUrl must be an http(s) URL');
-  }
-  const imgRes = await fetch(url);
-  if (!imgRes.ok) {
-    throw new Error(`Failed to fetch still image (${imgRes.status})`);
-  }
-  const contentType = imgRes.headers.get('content-type') ?? 'image/png';
-  const ext = contentType.includes('jpeg') ? 'jpg' : contentType.includes('webp') ? 'webp' : 'png';
-  const buf = Buffer.from(await imgRes.arrayBuffer());
-
-  const fd = new FormData();
-  fd.set('image', new Blob([buf], { type: contentType }), `broll-still-${Date.now()}.${ext}`);
-  fd.set('overwrite', '0');
-  fd.set('type', 'input');
-  const uploadRes = await fetch('http://127.0.0.1:8188/upload/image', {
-    method: 'POST',
-    body: fd,
-  });
-  if (!uploadRes.ok) {
-    throw new Error(`ComfyUI upload failed (${uploadRes.status})`);
-  }
-  const json = (await uploadRes.json()) as { name?: string };
-  if (!json.name) {
-    throw new Error('ComfyUI upload response missing filename');
-  }
-  return json.name;
-}
