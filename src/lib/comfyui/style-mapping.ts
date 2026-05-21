@@ -35,7 +35,15 @@ export type LocalImageWorkflowId =
   | 'hidream-i1-dev-t2i'
   | 'hidream-i1-dev-i2i'
   | 'qwen-image-t2i'
-  | 'qwen-image-i2i';
+  | 'qwen-image-i2i'
+  // Qwen-Image-Edit-2509 multi-ref (up to 3). Separate from the
+  // single-ref Qwen-Image i2i above because it uses a different
+  // diffusion checkpoint AND a different conditioning shape
+  // (TextEncodeQwenImageEditPlus, not VAE-encode-as-latent). No t2i
+  // counterpart — the model is purpose-built for editing/multi-ref.
+  // The dispatcher routes the local-qwen-edit-2509-i2i model entry
+  // directly to this workflow id (no t2i→i2i swap via i2iVariantOf).
+  | 'qwen-image-edit-2509-i2i';
 
 /** Map a t2i workflow id to its i2i counterpart. Returns the input id
  *  unchanged if it's already an i2i variant or doesn't have one. */

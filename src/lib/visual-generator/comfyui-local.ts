@@ -46,6 +46,7 @@ const WORKFLOW_TEMPLATES: Readonly<Record<LocalImageWorkflowId, string>> = Objec
   'hidream-i1-dev-i2i': readFileSync(join(WORKFLOWS_DIR, 'hidream-i1-dev-i2i.json'), 'utf8'),
   'qwen-image-t2i': readFileSync(join(WORKFLOWS_DIR, 'qwen-image-t2i.json'), 'utf8'),
   'qwen-image-i2i': readFileSync(join(WORKFLOWS_DIR, 'qwen-image-i2i.json'), 'utf8'),
+  'qwen-image-edit-2509-i2i': readFileSync(join(WORKFLOWS_DIR, 'qwen-image-edit-2509-i2i.json'), 'utf8'),
 } as Record<LocalImageWorkflowId, string>);
 
 /** Video workflow templates — keyed by `LocalVideoWorkflowId`. Loaded
@@ -120,10 +121,32 @@ export class ComfyUILocalGenerator implements VisualGenerator {
       SEED: seed,
     };
 
-    // i2i workflows take two extra placeholders. Sweet-spot denoise
-    // for "same composition, new prompt": 0.85. Clamp to (0, 1) — 0
-    // would echo the reference, 1 would ignore it (use t2i instead).
-    if (options.refImageFilename) {
+    // Multi-ref pathway (Qwen-Image-Edit-2509) — cross-attention
+    // conditioning via TextEncodeQwenImageEditPlus. Always populates
+    // 3 ref slots; if the caller supplied <3, duplicate position-0
+    // anchor into the remaining slots so all LoadImage nodes have a
+    // real file. Denoise is baked into the workflow JSON (1.0) so we
+    // intentionally skip the DENOISE placeholder here.
+    if (workflowId === 'qwen-image-edit-2509-i2i') {
+      const refs: readonly string[] = options.refImageFilenames
+        ?? (options.refImageFilename ? [options.refImageFilename] : []);
+      if (refs.length === 0) {
+        throw new Error('qwen-image-edit-2509-i2i requires at least one reference image');
+      }
+      // Symmetric fallback: when fewer than 3 refs are supplied, all
+      // unused slots fall back to the position-0 anchor (the
+      // strongest by convention) rather than the last-supplied
+      // ref. Matches the doc comment "duplicates position-0 into
+      // unused slots" and gives uniform over-anchoring rather than
+      // an asymmetric mix.
+      values.REF_IMAGE_1 = refs[0];
+      values.REF_IMAGE_2 = refs[1] ?? refs[0];
+      values.REF_IMAGE_3 = refs[2] ?? refs[0];
+    } else if (options.refImageFilename) {
+      // Single-ref legacy pathway (Qwen-Image i2i, Flux Redux, etc.) —
+      // VAE-encode-as-latent. Sweet-spot denoise for "same composition,
+      // new prompt": 0.85. Clamp to (0, 1) — 0 echoes the reference,
+      // 1 ignores it (use t2i instead).
       values.REF_IMAGE = options.refImageFilename;
       const requestedDenoise = options.denoise ?? 0.85;
       values.DENOISE = Math.min(0.99, Math.max(0.05, requestedDenoise));

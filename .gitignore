@@ -46,3 +46,10 @@ next-env.d.ts
 
 # eval-driver output (per-run analyzer dumps; reproducible via npm run eval:deep-analyzer)
 /_plans/eval-runs/
+
+# v2 style-spike outputs (contain 7-day-presigned R2 URLs for refs +
+# 40+ generated images; reproducible via npm scripts; never commit)
+/_plans/2026-05-21-phase-0-spike-results/
+
+# v2 style-refs sweeper transient logs (if added later)
+/_plans/sweep-runs/

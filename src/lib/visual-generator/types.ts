@@ -43,12 +43,23 @@ export interface GenerateImageOptions extends CommonGenOptions {
    *  input/ folder via the upload-ref endpoint). When set, the backend
    *  swaps the t2i workflow for its i2i counterpart and uses this image
    *  as the starting latent. Composition follows the reference; content
-   *  follows the prompt. */
+   *  follows the prompt. Single-ref pathway (legacy Qwen-Image,
+   *  Flux Redux, etc.). */
   refImageFilename?: string;
+  /** Multi-ref pathway — Qwen-Image-Edit-2509 accepts up to 3 refs via
+   *  cross-attention conditioning (TextEncodeQwenImageEditPlus) rather
+   *  than VAE-encode-as-latent. Position 0 is the strongest anchor;
+   *  the generator duplicates position-0 into unused slots when the
+   *  array is shorter than the workflow expects. When both fields are
+   *  set, this array wins. */
+  refImageFilenames?: readonly string[];
   /** Denoising strength when `refImageFilename` is set. 1.0 = ignore
    *  the reference (full t2i). 0.0 = output the reference unchanged.
    *  Sweet spot for "same composition, new prompt" is ~0.75–0.90.
-   *  Ignored when there is no reference image. */
+   *  Ignored when there is no reference image, and ignored entirely
+   *  for the Qwen-Image-Edit-2509 workflow (which bakes denoise=1.0
+   *  into the JSON because its image conditioning goes through the
+   *  text encoder, not the latent). */
   denoise?: number;
 }
 

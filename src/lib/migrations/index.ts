@@ -79,6 +79,9 @@ import migration0076 from './0076_competitor_naming_bridge';
 import migration0077 from './0077_saved_channel_names_workspace_scope';
 import migration0078 from './0078_create_editor_telemetry';
 import migration0079 from './0079_user_history_version_column';
+import migration0080 from './0080_extend_production_doc_styles_with_refs';
+import migration0081 from './0081_style_constraints_and_indexes';
+import migration0082 from './0082_style_ref_content_validation';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -165,6 +168,9 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0077,
   migration0078,
   migration0079,
+  migration0080,
+  migration0081,
+  migration0082,
 ]);
 
 /**

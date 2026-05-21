@@ -1,7 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
-import { buildKieImageInput, getImageModelSpec, DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from '@/lib/image-models';
+import {
+  buildKieImageInput,
+  getImageModelSpec,
+  DEFAULT_IMAGE_MODEL,
+  IMAGE_MODELS,
+} from '@/lib/image-models';
+import {
+  DEFAULT_CLOUD_I2I_MODEL,
+  getI2IModelSpec,
+} from '@/lib/image-models-i2i';
 import { computeImageSaliency } from '@/lib/image-saliency';
 import { createKieTask, pollKieResult } from '@/lib/kie-poll';
 import {
@@ -11,14 +20,27 @@ import {
 } from '@/lib/r2';
 import { computeImageCanvas } from '@/lib/render-canvas';
 import { uploadUrlToComfyInput } from '@/lib/comfyui/upload';
+import { checkSafePublicUrl } from '@/lib/url-safety';
+import { apiRoute } from '@/lib/route-helpers';
+import { resolveStyle } from '@/lib/production-doc-styles';
+import { loadStyleReferences, markReferenceRejected } from '@/lib/production-doc-styles-refs';
+import { generateImageWithRefs, ReferenceRejectedError } from '@/lib/image-gen-i2i';
 
 export const maxDuration = 300;
 
-export async function POST(req: NextRequest) {
+export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   try {
-    // Separate rate limit key from thumbnails; higher ceiling for bulk generation
-    const { limited } = checkRateLimit(`prodoc-img:${getClientIP(req)}`, 30, 60_000);
-    if (limited) return NextResponse.json({ error: 'Rate limited' }, { status: 429 });
+    // Two-layer rate limit. The IP limit blocks one machine going
+    // wild. The per-user limit blocks one account from running up
+    // spend behind rotating proxies — at ~$0.05/i2i call, 30/min/IP
+    // alone permits $90/hour of authenticated cost-bomb attack.
+    // 30/min per session.uid is the same ceiling but keyed to the
+    // identity that actually pays, so proxy rotation doesn't bypass.
+    // Rule 8 (cost discipline) applied as defense-in-depth.
+    const ipLimit = checkRateLimit(`prodoc-img:${getClientIP(req)}`, 30, 60_000);
+    if (ipLimit.limited) return NextResponse.json({ error: 'Rate limited (IP)' }, { status: 429 });
+    const userLimit = checkRateLimit(`prodoc-img-uid:${session.uid}`, 30, 60_000);
+    if (userLimit.limited) return NextResponse.json({ error: 'Rate limited (account) — slow down on image generation' }, { status: 429 });
 
     let body: {
       prompt?: string;
@@ -35,6 +57,19 @@ export async function POST(req: NextRequest) {
        *  prompt-augmentation hint on cloud-Kie generations (Kie models
        *  don't accept arbitrary reference images for style chaining). */
       styleSheetDescription?: string;
+      /** v2 (2026-05-21): style id whose refs + preferred_cloud_model
+       *  should govern this generation. When set AND the style has
+       *  unrejected refs, the route routes the call through the i2i
+       *  dispatcher instead of the legacy T2I path. When set but the
+       *  style has no usable refs, falls through to T2I unchanged
+       *  (the style's ai_image_suffix is already baked into `prompt`
+       *  by the prompt-builder upstream). */
+      styleId?: string;
+      /** v2: explicit exclude list for the "Regenerate without
+       *  rejected refs" affordance. Refs in this list are dropped from
+       *  the dispatched call even if their `rejected_by_provider` flag
+       *  isn't set yet. */
+      excludeRefIds?: string[];
     };
     try {
       body = await req.json();
@@ -42,7 +77,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
     }
 
-    const { prompt, model, onScreenText, onScreenTextMode, sectionTitle, sectionTitleLayout, referenceImageUrl, styleSheetDescription } = body;
+    const { prompt, model, onScreenText, onScreenTextMode, sectionTitle, sectionTitleLayout, referenceImageUrl, styleSheetDescription, styleId, excludeRefIds } = body;
     if (!prompt?.trim()) {
       return NextResponse.json({ error: 'prompt is required' }, { status: 400 });
     }
@@ -131,6 +166,158 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Prompt too long — maximum 2000 characters' }, { status: 400 });
     }
 
+    // ─── v2 ref-bearing i2i dispatch (Phase 4 of the May 21 plan) ────
+    //
+    // When the caller passes `styleId`, resolve the style and load its
+    // current refs. If at least one usable (non-rejected, not in
+    // excludeRefIds) ref exists, route the call through the i2i
+    // dispatcher instead of the legacy T2I path. The style's
+    // `preferred_cloud_model` chooses which Kie i2i variant runs —
+    // defaulting to NanoBanana Pro (Phase 0 cloud spike winner).
+    //
+    // When styleId is set but the style has no usable refs (deleted,
+    // all rejected, all excluded), we fall through to the existing
+    // T2I flow — the style's `ai_image_suffix` is already in
+    // `augmentedPrompt` because the prompt-builder upstream appends
+    // it during prompt composition.
+    //
+    // When styleId is not set, this whole block is a no-op and the
+    // legacy T2I path runs as before.
+    const trimmedStyleId = styleId?.trim();
+    if (trimmedStyleId) {
+      const style = await resolveStyle(trimmedStyleId, session.ws, session.uid);
+      if (style && style.origin === 'saved') {
+        const refs = await loadStyleReferences(style.id, {
+          excludeRejected: true,
+          // Block refs that failed the post-upload MIME sniff
+          // (migration 0082). Refs whose validation hasn't completed
+          // yet are also excluded — the editor calls /validate
+          // immediately after PUT but there's a small gap during
+          // which a generation against a fresh ref would be blocked.
+          excludeUnvalidated: true,
+          excludeIds: excludeRefIds ?? [],
+          workspaceId: session.ws,
+        });
+        if (refs.length > 0) {
+          const i2iModel = style.preferred_cloud_model ?? DEFAULT_CLOUD_I2I_MODEL;
+          const i2iSpec = getI2IModelSpec(i2iModel);
+          logger.info('[prodoc image-gen i2i submit]', {
+            style_id: style.id,
+            style_version: style.version,
+            model: i2iModel,
+            provider: i2iSpec?.provider ?? 'unknown',
+            refs_loaded: refs.length,
+            prompt_slice: augmentedPrompt.slice(0, 80),
+          });
+
+          // ─── Unified i2i dispatch (cloud + local via the shared helper) ──
+          //
+          // `generateImageWithRefs` branches on `spec.provider`:
+          //   - `kie` → cloud i2i (NanoBanana/GPT-Image-2/Flux-2-Pro)
+          //   - `comfyui-local` → local Qwen via `generateImageWithRefsLocal`
+          //
+          // Both paths re-host the result to R2 internally so the
+          // returned URL is durable. The helper throws plain Errors for
+          // local-infra problems (LOCAL_STUDIO=1 missing, ComfyUI
+          // unreachable) which the catch below maps back to 503 with
+          // the same code shape the inline implementation used to
+          // return — preserving the editor's error-handling contract.
+          try {
+            const result = await generateImageWithRefs(i2iModel, augmentedPrompt, refs, {
+              r2KeyPrefix: i2iSpec?.provider === 'comfyui-local'
+                ? 'prodoc-images-i2i-local'
+                : 'prodoc-images-i2i',
+              // Local-only; cloud ignores. Honours the section-title
+              // letterbox so the still lands pixel-clean inside the
+              // Remotion composition that displays it.
+              width: canvas.width,
+              height: canvas.height,
+            });
+            // Saliency mirrors the T2I path: fetch the result bytes
+            // and pass to computeImageSaliency. Failure is non-
+            // blocking; the overlay placement resolver falls back to
+            // the LLM-planned zone when saliency is null.
+            let imageBuffer: Buffer | null = null;
+            try {
+              const imgRes = await fetch(result.imageUrl);
+              if (imgRes.ok) {
+                imageBuffer = Buffer.from(await imgRes.arrayBuffer());
+              }
+            } catch (saliencyFetchErr) {
+              logger.warn('[prodoc image-gen i2i saliency fetch failed]', {
+                detail: saliencyFetchErr instanceof Error ? saliencyFetchErr.message : String(saliencyFetchErr),
+              });
+            }
+            const saliency = imageBuffer ? await computeImageSaliency(imageBuffer) : null;
+            return NextResponse.json({
+              imageUrl: result.imageUrl,
+              saliency,
+              modelUsed: result.modelUsed,
+              styleVersion: style.version,
+              refsSent: result.refsSent,
+              durationMs: result.durationMs,
+            });
+          } catch (err) {
+            if (err instanceof ReferenceRejectedError) {
+              // Mark the offending refs server-side so future
+              // generations under this style skip them by default.
+              // Best-effort — marking failure doesn't shadow the
+              // refusal surface to the client.
+              for (const refId of err.rejectedRefIds) {
+                await markReferenceRejected(refId, style.id, err.reason, err.provider).catch(() => {
+                  logger.warn('[prodoc image-gen i2i mark-rejected failed]', {
+                    style_id: style.id,
+                    ref_id: refId,
+                  });
+                });
+              }
+              logger.info('[prodoc image-gen ref-rejected]', {
+                style_id: style.id,
+                ref_ids: err.rejectedRefIds,
+                provider: err.provider,
+              });
+              return NextResponse.json(
+                {
+                  error: err.message,
+                  code: 'REFERENCE_REJECTED',
+                  rejectedRefIds: err.rejectedRefIds,
+                  suggestRegenerate: true,
+                },
+                { status: 409 },
+              );
+            }
+            // Local-infra failures bubble up from
+            // `generateImageWithRefsLocal` as plain Errors with
+            // specific message prefixes. Promote them to 503 with the
+            // editor-actionable codes the dialog already knows how to
+            // surface (rule 16 — give the user a clear next step).
+            if (err instanceof Error) {
+              if (err.message.includes('LOCAL_STUDIO=1')) {
+                return NextResponse.json(
+                  { error: err.message, code: 'LOCAL_STUDIO_DISABLED' },
+                  { status: 503 },
+                );
+              }
+              if (err.message.includes('ComfyUI not reachable')) {
+                return NextResponse.json(
+                  { error: err.message, code: 'COMFYUI_UNREACHABLE' },
+                  { status: 503 },
+                );
+              }
+            }
+            // Non-rejection / non-local-infra failures fall through to
+            // the outer catch so they're logged + returned consistently
+            // with the rest of this route.
+            throw err;
+          }
+        }
+        // No usable refs → fall through to T2I. (The style's
+        // ai_image_suffix is already in augmentedPrompt from the
+        // upstream prompt-builder, so the legacy path produces a
+        // style-flavoured T2I result without further changes.)
+      }
+    }
+
     const modelValue = model?.trim() || DEFAULT_IMAGE_MODEL;
     const spec = getImageModelSpec(modelValue);
     if (!spec) {
@@ -180,18 +367,34 @@ export async function POST(req: NextRequest) {
       let refImageFilename: string | undefined;
       const trimmedRefUrl = referenceImageUrl?.trim();
       if (trimmedRefUrl) {
-        try {
-          refImageFilename = await uploadUrlToComfyInput(trimmedRefUrl, {
-            filenamePrefix: 'style-sheet-ref',
-          });
-        } catch (uploadErr) {
-          // Fail soft: chaining is a quality-of-life upgrade, not a hard
-          // requirement. Log + fall back to t2i so the user still gets
-          // an image rather than a 5xx.
-          logger.warn('[prodoc image-gen] style-sheet upload failed — falling back to t2i', {
+        // SSRF guard — `referenceImageUrl` is caller-supplied (Phase 7
+        // style-sheet chaining), and the local path fetches it
+        // server-side. Block private / internal / metadata hosts via
+        // the project's url-safety helper. Without this, an
+        // authenticated user can use this endpoint to make the
+        // ComfyUI box (and the Next.js server) reach cloud metadata
+        // services or RFC1918 ranges. Fail soft to legacy T2I so a
+        // misformatted URL doesn't 5xx the whole row.
+        const urlSafety = checkSafePublicUrl(trimmedRefUrl);
+        if (!urlSafety.ok) {
+          logger.warn('[prodoc image-gen] referenceImageUrl rejected by SSRF guard', {
+            reason: urlSafety.error,
             url_preview: trimmedRefUrl.slice(0, 100),
-            detail: uploadErr instanceof Error ? uploadErr.message : String(uploadErr),
           });
+        } else {
+          try {
+            refImageFilename = await uploadUrlToComfyInput(trimmedRefUrl, {
+              filenamePrefix: 'style-sheet-ref',
+            });
+          } catch (uploadErr) {
+            // Fail soft: chaining is a quality-of-life upgrade, not a hard
+            // requirement. Log + fall back to t2i so the user still gets
+            // an image rather than a 5xx.
+            logger.warn('[prodoc image-gen] style-sheet upload failed — falling back to t2i', {
+              url_preview: trimmedRefUrl.slice(0, 100),
+              detail: uploadErr instanceof Error ? uploadErr.message : String(uploadErr),
+            });
+          }
         }
       }
 
@@ -311,4 +514,4 @@ export async function POST(req: NextRequest) {
       { status: 500 },
     );
   }
-}
+});

@@ -243,6 +243,51 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   );
   const { state, apply, flushSave, reloadFromServer, saveStatus, canUndo, canRedo } = store;
 
+  // v2 (2026-05-22) — resolve the active style's `preferred_cloud_model`
+  // so the ShotInspector regenerate button can show its per-image
+  // cost (rule 8). One small fetch on mount + whenever the doc's
+  // style_preset changes; results cached in state so the inspector
+  // gets the value as a plain prop without doing its own async work.
+  //
+  // Falls through (stays null) when:
+  //   - the doc has no style_preset (legacy docs)
+  //   - the style is a built-in (origin='built-in' has no preferred
+  //     cloud model — legacy T2I pricing varies by model)
+  //   - the styles fetch fails (best-effort; cost just doesn't surface)
+  const [activeStyleI2IModel, setActiveStyleI2IModel] = useState<string | null>(null);
+  useEffect(() => {
+    const stylePresetId = state.doc.style_preset;
+    if (!stylePresetId) {
+      setActiveStyleI2IModel(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/production-doc/styles');
+        if (!res.ok || cancelled) return;
+        const data = await res.json() as {
+          styles?: Array<{
+            id: string;
+            origin?: 'built-in' | 'saved';
+            preferred_cloud_model?: string;
+          }>;
+        };
+        const match = (data.styles ?? []).find(s => s.id === stylePresetId);
+        if (cancelled) return;
+        if (match && match.origin === 'saved' && match.preferred_cloud_model) {
+          setActiveStyleI2IModel(match.preferred_cloud_model);
+        } else {
+          setActiveStyleI2IModel(null);
+        }
+      } catch {
+        // Network/parse failures aren't fatal — cost hint just doesn't show.
+        if (!cancelled) setActiveStyleI2IModel(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [state.doc.style_preset]);
+
   // Resolve the brand the renderer should use. Three layers, later
   // overrides earlier:
   //   DEFAULT_BRAND_KIT ◀ channelVisualKit ◀ visualKitOverride
@@ -1779,6 +1824,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               thumbnailUrl={state.rowImages[state.selection] ?? null}
               totalShots={state.doc.rows.length}
               projectId={projectId}
+              // v2 (2026-05-22) — pass the doc's active style preset
+              // through so the inspector's regenerate button can route
+              // ref-bearing generations through the v2 i2i dispatcher
+              // (NanoBanana Pro cloud or Qwen-Image local). Undefined on
+              // legacy docs → regen falls back to plain T2I unchanged.
+              stylePreset={state.doc.style_preset}
+              // Resolved i2i model for cost-preview rendering near the
+              // Regenerate button. Null when the active style is a
+              // built-in, has no preferred model, or the fetch failed.
+              activeStyleI2IModel={activeStyleI2IModel}
               onClose={() => apply({ type: 'SET_SELECTION', shotIndex: null })}
               onUploadImage={(url) =>
                 apply({ type: 'SET_ROW_IMAGE', shotIndex: state.selection as number, url })

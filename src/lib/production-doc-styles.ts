@@ -40,6 +40,25 @@ export interface ResolvedStyle {
   allow_overlay_stock: boolean;
   /** "built-in" for hardcoded entries, "saved" for DB rows. */
   origin: 'built-in' | 'saved';
+  // --- v2 fields (migration 0080) — undefined for built-ins ---
+  /** Plain-English style descriptor written by the user in the editor.
+   *  Distinct from `ai_image_suffix` so legacy prompt-builder paths keep
+   *  working unchanged for built-ins. */
+  style_prompt?: string;
+  /** Per-style preferred cloud model id (`flux2-pro-i2i` etc). Dispatcher
+   *  reads this; falls back to workspace default when undefined. */
+  preferred_cloud_model?: string;
+  /** Bumps on every mutating edit. Pinned onto test renders and (future)
+   *  generated images so the system can tell which version of the style
+   *  produced which output. */
+  version?: number;
+  /** Soft signal — last time the user clicked "this is good" in the
+   *  editor. NOT a save-gate; the council rejected gate-on-approval as
+   *  theatre. */
+  approved_at?: string;
+  /** Owner-private visibility marker. NULL/undefined ⇒ workspace-wide
+   *  (legacy and shared styles); set ⇒ private to that collaborator. */
+  owner_id?: string;
 }
 
 /** Shape of a row in the `production_doc_styles` table. */
@@ -55,6 +74,13 @@ export interface SavedStyleRow {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  // --- v2 columns (migration 0080) ---
+  owner_id: string | null;
+  draft: boolean;
+  approved_at: string | null;
+  version: number;
+  style_prompt: string | null;
+  preferred_cloud_model: string | null;
 }
 
 /**
@@ -175,44 +201,187 @@ export function getBuiltInStyle(id: string): ResolvedStyle | null {
 }
 
 /**
- * Load every built-in + every saved style for the workspace, in a single
- * list ordered: built-ins first (in registry order), then saved styles
+ * Load every built-in + every saved style visible to the caller, in a
+ * single list: built-ins first (registry order), then saved styles
  * (most-recently-updated first).
+ *
+ * Visibility rules (v2, migration 0080):
+ *   - `draft = false` always — drafts are in-progress styles still in
+ *     the editor; they must not appear in pickers anywhere else.
+ *   - Workspace-wide styles (`owner_id IS NULL`) are always visible to
+ *     every workspace member.
+ *   - Owner-private styles (`owner_id IS NOT NULL`) are only visible to
+ *     the matching collaborator. Pass `ownerId = session.uid` to
+ *     include the current user's private styles; omit / pass null to
+ *     show workspace-wide only (back-compat with v1 callers).
  */
-export async function listAllStyles(workspaceId: string): Promise<ResolvedStyle[]> {
-  const { rows } = await sql<SavedStyleRow>`
-    SELECT id, workspace_id, name, description,
-           ai_image_suffix, mixing_rules, allow_overlay_stock,
-           based_on_built_in, created_by, created_at, updated_at
-    FROM production_doc_styles
-    WHERE workspace_id = ${workspaceId}
-    ORDER BY updated_at DESC
-  `;
+export async function listAllStyles(
+  workspaceId: string,
+  ownerId?: string | null,
+): Promise<ResolvedStyle[]> {
+  // Two-arg branch: when ownerId is supplied, the predicate becomes
+  // `(owner_id IS NULL OR owner_id = ownerId)`. When omitted, only
+  // workspace-wide styles (owner_id IS NULL) are returned. Splitting
+  // the queries keeps each predicate a static template literal — the
+  // `@vercel/postgres` `sql` tag composes badly with conditional
+  // sub-expressions, and the duplication is two lines.
+  const { rows } = ownerId
+    ? await sql<SavedStyleRow>`
+        SELECT id, workspace_id, name, description,
+               ai_image_suffix, mixing_rules, allow_overlay_stock,
+               based_on_built_in, created_by, created_at, updated_at,
+               owner_id, draft, approved_at, version,
+               style_prompt, preferred_cloud_model
+        FROM production_doc_styles
+        WHERE workspace_id = ${workspaceId}
+          AND draft = FALSE
+          AND (owner_id IS NULL OR owner_id = ${ownerId})
+        ORDER BY updated_at DESC
+      `
+    : await sql<SavedStyleRow>`
+        SELECT id, workspace_id, name, description,
+               ai_image_suffix, mixing_rules, allow_overlay_stock,
+               based_on_built_in, created_by, created_at, updated_at,
+               owner_id, draft, approved_at, version,
+               style_prompt, preferred_cloud_model
+        FROM production_doc_styles
+        WHERE workspace_id = ${workspaceId}
+          AND draft = FALSE
+          AND owner_id IS NULL
+        ORDER BY updated_at DESC
+      `;
   const saved: ResolvedStyle[] = rows.map(savedRowToResolved);
   return [...BUILT_IN_STYLES, ...saved];
 }
 
 /**
  * Resolve a style id (built-in or saved) into the full payload the
- * prompt builder expects. Returns null if the id matches neither —
+ * prompt builder expects. Returns null if the id matches neither, or
+ * if the saved style is invisible to this caller (different owner) —
  * the caller should treat that as "no style" rather than failing the
  * generation.
+ *
+ * Draft rows are NEVER returned by this function. The editor reads
+ * drafts via a dedicated path (`getDraftStyle`) — every other surface
+ * sees only saved styles.
  */
-export async function resolveStyle(id: string | null | undefined, workspaceId: string): Promise<ResolvedStyle | null> {
+export async function resolveStyle(
+  id: string | null | undefined,
+  workspaceId: string,
+  ownerId?: string | null,
+): Promise<ResolvedStyle | null> {
   if (!id) return null;
   const builtIn = BUILT_IN_BY_ID.get(id);
   if (builtIn) return builtIn;
 
-  // UUID-shaped — try the saved-styles table.
+  const { rows } = ownerId
+    ? await sql<SavedStyleRow>`
+        SELECT id, workspace_id, name, description,
+               ai_image_suffix, mixing_rules, allow_overlay_stock,
+               based_on_built_in, created_by, created_at, updated_at,
+               owner_id, draft, approved_at, version,
+               style_prompt, preferred_cloud_model
+        FROM production_doc_styles
+        WHERE id = ${id} AND workspace_id = ${workspaceId}
+          AND draft = FALSE
+          AND (owner_id IS NULL OR owner_id = ${ownerId})
+        LIMIT 1
+      `
+    : await sql<SavedStyleRow>`
+        SELECT id, workspace_id, name, description,
+               ai_image_suffix, mixing_rules, allow_overlay_stock,
+               based_on_built_in, created_by, created_at, updated_at,
+               owner_id, draft, approved_at, version,
+               style_prompt, preferred_cloud_model
+        FROM production_doc_styles
+        WHERE id = ${id} AND workspace_id = ${workspaceId}
+          AND draft = FALSE
+          AND owner_id IS NULL
+        LIMIT 1
+      `;
+  return rows[0] ? savedRowToResolved(rows[0]) : null;
+}
+
+/**
+ * Fetch a draft style for the editor — bypasses the `draft=false` filter
+ * `resolveStyle` enforces. Use this ONLY from the style editor UI; every
+ * other consumer should go through `resolveStyle`.
+ *
+ * Returns null if the row doesn't exist or the caller doesn't own it.
+ * Workspace-wide drafts are not a concept (drafts are always owned).
+ */
+export async function getDraftStyle(
+  id: string,
+  workspaceId: string,
+  ownerId: string,
+): Promise<ResolvedStyle | null> {
   const { rows } = await sql<SavedStyleRow>`
     SELECT id, workspace_id, name, description,
            ai_image_suffix, mixing_rules, allow_overlay_stock,
-           based_on_built_in, created_by, created_at, updated_at
+           based_on_built_in, created_by, created_at, updated_at,
+           owner_id, draft, approved_at, version,
+           style_prompt, preferred_cloud_model
     FROM production_doc_styles
-    WHERE id = ${id} AND workspace_id = ${workspaceId}
+    WHERE id = ${id} AND workspace_id = ${workspaceId} AND owner_id = ${ownerId}
     LIMIT 1
   `;
   return rows[0] ? savedRowToResolved(rows[0]) : null;
+}
+
+/**
+ * Guard for mutating endpoints (PATCH / DELETE / refs upload).
+ *
+ * A style is mutable by:
+ *   - its owner (`owner_id = userId`), OR
+ *   - any workspace member if it's workspace-wide (`owner_id IS NULL`)
+ *
+ * Returns the row when the guard passes; throws a tagged error
+ * otherwise so the API layer can map it to the right HTTP status
+ * (404 vs 403).
+ */
+export async function assertStyleOwnership(
+  styleId: string,
+  workspaceId: string,
+  userId: string,
+): Promise<SavedStyleRow> {
+  const { rows } = await sql<SavedStyleRow>`
+    SELECT id, workspace_id, name, description,
+           ai_image_suffix, mixing_rules, allow_overlay_stock,
+           based_on_built_in, created_by, created_at, updated_at,
+           owner_id, draft, approved_at, version,
+           style_prompt, preferred_cloud_model
+    FROM production_doc_styles
+    WHERE id = ${styleId} AND workspace_id = ${workspaceId}
+    LIMIT 1
+  `;
+  if (rows.length === 0) {
+    const err = new Error(`Style ${styleId} not found in workspace ${workspaceId}`);
+    (err as Error & { code?: string }).code = 'STYLE_NOT_FOUND';
+    throw err;
+  }
+  const row = rows[0];
+  // Draft + workspace-wide is forbidden state. Schema-side CHECK
+  // (migration 0081) makes it impossible, but defense-in-depth here
+  // makes the contract explicit and survives any future migration
+  // that relaxes the CHECK. Treats it as 404 (not 403) so the
+  // existence of a malformed row isn't leaked.
+  if (row.draft && row.owner_id === null) {
+    const err = new Error(`Style ${styleId} is in an invalid draft state`);
+    (err as Error & { code?: string }).code = 'STYLE_NOT_FOUND';
+    throw err;
+  }
+  // Owner-private: only the owner can mutate. Drafts are ALWAYS
+  // owner-private (enforced above), so the same check covers
+  // "another user can't grab my in-progress draft via PATCH"
+  // (which was the original IMPORTANT finding from QA).
+  // Workspace-wide (owner_id IS NULL): any workspace member can
+  // mutate, matching the legacy v1 behaviour for shared styles.
+  if (row.owner_id !== null && row.owner_id !== userId) {
+    const err = new Error(`Style ${styleId} is private to another user`);
+    (err as Error & { code?: string }).code = 'STYLE_FORBIDDEN';
+    throw err;
+  }
+  return row;
 }
 
 function savedRowToResolved(row: SavedStyleRow): ResolvedStyle {
@@ -224,5 +393,10 @@ function savedRowToResolved(row: SavedStyleRow): ResolvedStyle {
     mixing_rules: row.mixing_rules ?? undefined,
     allow_overlay_stock: row.allow_overlay_stock,
     origin: 'saved',
+    style_prompt: row.style_prompt ?? undefined,
+    preferred_cloud_model: row.preferred_cloud_model ?? undefined,
+    version: row.version,
+    approved_at: row.approved_at ?? undefined,
+    owner_id: row.owner_id ?? undefined,
   };
 }

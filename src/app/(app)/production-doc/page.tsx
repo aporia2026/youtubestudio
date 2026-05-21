@@ -12,6 +12,7 @@ import { ScheduleLinkProvider, ScheduleSaverRegistration } from '@/components/ui
 import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { IMAGE_MODELS, DEFAULT_IMAGE_MODEL, getImageModelSpec } from '@/lib/image-models';
+import { formatI2ICostHint } from '@/lib/image-models-i2i';
 import { useLocalStudioEnabled } from '@/lib/local-studio-enabled';
 import {
   saveProductionDocEntry,
@@ -368,6 +369,15 @@ interface ProductionDoc {
    *  behaviour). Seeded on first generation from the user's
    *  `overlaysDisabledPref` localStorage preference. */
   overlays_disabled?: boolean;
+  /** v2 (2026-05-22) — active style preset id for this doc. Kept in
+   *  sync with the page-level `stylePreset` state via a useEffect so
+   *  the value lands on the saved user_history payload. Downstream
+   *  surfaces (the shot-graph editor in particular) read it from the
+   *  doc rather than depending on the production-doc page's
+   *  localStorage. Mirrors the field on the remotion-side ProductionDoc
+   *  type (`src/remotion/utils.ts`); the two interfaces must stay in
+   *  sync. May be a built-in slug or a saved-style UUID. */
+  style_preset?: string;
 }
 
 interface RowImageState {
@@ -380,6 +390,14 @@ interface RowImageState {
    *  original prompt" button — uploads have no prompt to regenerate
    *  with, so ↻ is hidden for those rows and the edit pencil ✎ stays. */
   source?: 'generated' | 'upload' | 'url' | 'edit';
+  /** v2 (2026-05-22) — pin this row to the version of the active
+   *  style at generation time. When the user later edits the style
+   *  (ref swap, descriptor tweak, model change), `style.version` bumps
+   *  but this row's `styleVersion` stays — the data needed for a
+   *  future "this scene was generated against v2; current style is
+   *  v4 — regenerate?" affordance. Undefined for legacy rows / rows
+   *  whose style had no version (built-ins, uploaded images). */
+  styleVersion?: number;
 }
 
 
@@ -1843,6 +1861,17 @@ function ProductionDocPage() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
   const [doc, setDoc] = useState<ProductionDoc | null>(null);
+  // v2 (2026-05-22) — keep doc.style_preset in sync with the page-level
+  // `stylePreset` state. Persists on the user_history payload through
+  // the existing auto-save pipeline so downstream surfaces (the
+  // shot-graph editor in particular) can read the active style without
+  // depending on transient localStorage on the production-doc page.
+  // See `_plans/2026-05-21-user-defined-styles-with-reference-images.md`.
+  useEffect(() => {
+    if (!doc) return;
+    if (doc.style_preset === stylePreset) return;
+    setDoc((prev) => (prev ? { ...prev, style_preset: stylePreset } : prev));
+  }, [stylePreset, doc]);
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
   // Initial state from localStorage cache so the panel paints instantly;
@@ -4402,6 +4431,12 @@ function ProductionDocPage() {
        *  resolve doc-level vs row-level in their own scope (the comment
        *  on the function explains why we can't read `doc` here). */
       skipOverlay?: boolean;
+      /** v2 (2026-05-21): ids of ref images to drop from the dispatched
+       *  call. Set when the user clicks "Regenerate without rejected
+       *  refs" on the toast that fires after a 409 REFERENCE_REJECTED.
+       *  The route's i2i dispatcher loads style refs server-side and
+       *  excludes these ids before submitting to Kie / ComfyUI. */
+      excludeRefIds?: string[];
     } = {},
     signal?: AbortSignal,
   ): Promise<boolean> {
@@ -4447,16 +4482,85 @@ function ProductionDocPage() {
           // resolveStyle returns origin='built-in' and falls back to
           // the legacy T2I path unchanged.
           styleId: stylePreset || undefined,
+          // v2: drop these refs from the dispatched call. Set when the
+          // user clicks "Regenerate without rejected refs" after a 409.
+          excludeRefIds: meta.excludeRefIds,
         }),
       });
-      const data = await safeJson(res);
+      const data = await safeJson(res) as {
+        imageUrl?: string;
+        saliency?: ImageSaliencyMap | null;
+        modelUsed?: string;
+        styleVersion?: number;
+        refsSent?: number;
+        durationMs?: number;
+        error?: string;
+        code?: string;
+        rejectedRefIds?: string[];
+      };
+      // v2: provider-rejection handling. When Kie / ComfyUI refuses
+      // one or more refs, the route returns 409 with the offending
+      // ref ids and `suggestRegenerate: true`. The server has already
+      // marked the refs as rejected — show a toast with a one-click
+      // "Regenerate without rejected refs" action that re-fires this
+      // function with `excludeRefIds` set so the retry skips them.
+      if (res.status === 409 && (data as { code?: string }).code === 'REFERENCE_REJECTED') {
+        const rejectedIds = ((data as { rejectedRefIds?: string[] }).rejectedRefIds ?? []);
+        const accumulatedExcludes = [...(meta.excludeRefIds ?? []), ...rejectedIds];
+        // Terminal state: if the accumulated exclude list is now >= 8
+        // (the system cap on refs per style), regenerating again
+        // would dispatch with zero refs, silently fall back to
+        // text-to-image and lose the user's intent. Surface a
+        // clearer error and DON'T offer Regenerate.
+        const allRefsRejected = accumulatedExcludes.length >= 8;
+        const n = rejectedIds.length;
+        setRowImages(prev => {
+          const next = [...prev];
+          next[rowIndex] = {
+            status: 'error',
+            error: allRefsRejected
+              ? 'All reference images on this style were rejected by the provider. Edit the style to clear rejections or upload different refs before retrying.'
+              : `${n || 'One or more'} reference image${n === 1 ? '' : 's'} rejected by the provider — click Regenerate to retry without them.`,
+          };
+          return next;
+        });
+        toast.error(
+          allRefsRejected
+            ? 'All reference images rejected — edit the style before retrying.'
+            : `${n || 'One or more'} reference image${n === 1 ? ' was' : 's were'} rejected by the provider.`,
+          {
+            duration: 10000,
+            action: (allRefsRejected || rejectedIds.length === 0)
+              ? undefined
+              : {
+                  label: 'Regenerate',
+                  onClick: () => {
+                    void generateImageForRow(
+                      rowIndex,
+                      prompt,
+                      { ...meta, excludeRefIds: accumulatedExcludes },
+                      signal,
+                    );
+                  },
+                },
+          },
+        );
+        return false;
+      }
       if (!res.ok) throw new Error((data.error as string) || 'Failed');
       setRowImages(prev => {
         const next = [...prev];
-        next[rowIndex] = { status: 'done', imageUrl: data.imageUrl as string, source: 'generated' };
+        next[rowIndex] = {
+          status: 'done',
+          imageUrl: data.imageUrl as string,
+          source: 'generated',
+          // Pin to the style version that produced this image so
+          // future edits to the style can detect drift on this row.
+          styleVersion: data.styleVersion,
+        };
         return next;
       });
-      const saliency = data.saliency as ImageSaliencyMap | null | undefined;
+      const saliency = data.saliency;
       if (saliency) applySaliencyToRow(rowIndex, saliency);
       // Fire-and-forget the overlay fetch in parallel with the next row's
       // image gen. Only triggers when the LLM planned an overlay for this
@@ -6133,6 +6237,24 @@ function ProductionDocPage() {
                 );
               })}
             </div>
+            {/* v2 (2026-05-22) — cost preview for the active style.
+                Rule 8: paid actions show their cost up-front. Reads
+                from the i2i registry, falls through silently when
+                the style has no preferred model (built-ins, refless
+                saved styles). Inline + small so it doesn't crowd the
+                picker on first impression. */}
+            {(() => {
+              const activeStyle = availableStyles.find(s => s.id === stylePreset);
+              const activeModel = activeStyle?.preferred_cloud_model;
+              if (!activeModel) return null;
+              const costStr = formatI2ICostHint(activeModel);
+              if (!costStr) return null;
+              return (
+                <div className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>
+                  Per generated image: <strong>{costStr}</strong>
+                </div>
+              );
+            })()}
           </div>
 
           {/* Creative brief */}
@@ -7949,7 +8071,18 @@ function ProductionDocPage() {
           setNiche(entry.niche);
           setTopic(entry.topic);
           if (entry.modelId) setModelId(entry.modelId);
-          if (entry.stylePreset) setStylePreset(entry.stylePreset);
+          // v2 (2026-05-22) — prefer the doc-persisted `style_preset`
+          // over the legacy entry-level `stylePreset` when both are
+          // present. Older entries only carry the entry-level field;
+          // v2 entries also carry it on the doc payload itself so the
+          // shot-graph editor can read it without duplicating the
+          // entry shape. Picking doc first keeps the active style in
+          // sync with what the editor will see when the user clicks
+          // through. See `_plans/2026-05-21-user-defined-styles-with-reference-images.md`.
+          const restoredStylePreset =
+            (entry.doc as { style_preset?: string } | undefined)?.style_preset
+            ?? entry.stylePreset;
+          if (restoredStylePreset) setStylePreset(restoredStylePreset);
           if (entry.script) setScript(entry.script);
           if (entry.doc) {
             const restoredDoc = entry.doc as ProductionDoc;

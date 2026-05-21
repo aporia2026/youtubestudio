@@ -18,6 +18,8 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, RefreshCw, Sparkles, Undo2 } from 'lucide-react';
+import { toast } from 'sonner';
+import { formatI2ICostHint } from '@/lib/image-models-i2i';
 import type { ProductionDoc, RowOverlayRenderState } from '@/remotion/utils';
 import type { ThumbnailTransitionConfig, VideoShot, VideoThumbnail } from '@/remotion/types';
 import { ShotLayoutControls } from '@/components/editor/inspector/ShotLayoutControls';
@@ -45,6 +47,18 @@ interface ShotInspectorProps {
   /** The user_history.id this project is keyed by. Used to scope
    *  the broll_clips list to clips from this doc. */
   projectId: string;
+  /** v2 (2026-05-22) — the doc's active style preset id. Threaded
+   *  through so the regenerate-shot button can route ref-bearing
+   *  generations to the v2 i2i dispatcher. Undefined → regen falls
+   *  back to plain text-to-image. May be a built-in slug or a
+   *  saved-style UUID. */
+  stylePreset?: string;
+  /** v2 (2026-05-22) — the active style's preferred i2i model id,
+   *  resolved by the parent (EditorClient does one styles fetch on
+   *  mount and finds the match). Used here purely for the cost-preview
+   *  label next to the Regenerate button (rule 8). Null when the
+   *  active style is a built-in or has no preferred model. */
+  activeStyleI2IModel?: string | null;
   onClose: () => void;
   /** Called with the new R2 URL after a successful upload. The
    *  caller dispatches SET_ROW_IMAGE. */
@@ -137,6 +151,8 @@ export function ShotInspector({
   thumbnailUrl,
   totalShots,
   projectId,
+  stylePreset,
+  activeStyleI2IModel,
   onClose,
   onUploadImage,
   onPickProjectClip,
@@ -183,7 +199,14 @@ export function ShotInspector({
   // `thumbnail_zoom_to` region set.
   const [transitionDialogOpen, setTransitionDialogOpen] = useState(false);
 
-  const handleRegenerate = useCallback(async () => {
+  // Recursive — call site re-invokes itself with accumulated
+  // `excludeRefIds` after a 409 REFERENCE_REJECTED, mirroring the
+  // production-doc page's regenerate flow. The server's already
+  // flagged the offending refs as rejected; passing them in
+  // `excludeRefIds` just makes the retry deterministic in case the
+  // user clicks the toast Regenerate button before the flag write
+  // commits.
+  const handleRegenerate = useCallback(async (excludeRefIds: readonly string[] = []) => {
     if (!onUploadImage) return;
     const prompt = row.ai_image_prompt?.trim() || row.visual_description?.trim();
     if (!prompt) {
@@ -202,13 +225,70 @@ export function ShotInspector({
           prompt,
           onScreenText: row.on_screen_text ?? '',
           sectionTitle: row.section_title ?? '',
+          // v2 (2026-05-22) — when the doc has a style preset pinned,
+          // route the regenerate through the v2 i2i dispatcher so the
+          // refs (if any) flow into the new image. Built-in slugs
+          // resolve to origin='built-in' inside the route and fall
+          // back to legacy T2I unchanged.
+          styleId: stylePreset || undefined,
+          excludeRefIds: excludeRefIds.length > 0 ? excludeRefIds : undefined,
         }),
       });
-      if (!res.ok) {
-        const data = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(data.error || `Generate failed: HTTP ${res.status}`);
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        code?: string;
+        imageUrl?: string;
+        rejectedRefIds?: string[];
+      };
+      // v2 — provider rejected one or more refs. Same UX as the
+      // production-doc page: surface a toast with a one-click
+      // Regenerate action that re-fires this function with the
+      // rejected ids excluded. Server has already flagged them.
+      //
+      // Two safety gates:
+      // (a) terminal state when all refs are rejected — keep offering
+      //     "Regenerate" would just trigger another doomed call that
+      //     falls back to T2I or errors;
+      // (b) max-attempts cap so a misbehaving server can't loop the
+      //     user through paid retries via rage-clicks. After ~$0.15
+      //     of wasted spend (3 cloud i2i attempts) we stop offering
+      //     the action.
+      if (res.status === 409 && data?.code === 'REFERENCE_REJECTED') {
+        const rejectedIds = data.rejectedRefIds ?? [];
+        const accumulated = [...excludeRefIds, ...rejectedIds];
+        const allRefsRejected = accumulated.length >= 8;
+        const maxAttemptsHit = excludeRefIds.length >= 8; // already 8 prior excludes = 3rd+ click
+        const n = rejectedIds.length;
+        const offerRegenerate = !allRefsRejected && !maxAttemptsHit && rejectedIds.length > 0;
+        const message = allRefsRejected
+          ? 'All reference images rejected — edit the style and clear rejections before retrying.'
+          : maxAttemptsHit
+            ? 'Too many retries. Edit the style before trying again.'
+            : `${n || 'One or more'} reference image${n === 1 ? '' : 's'} rejected by the provider — click Regenerate to retry without them.`;
+        setRegenState({ kind: 'error', message });
+        toast.error(
+          allRefsRejected
+            ? 'All reference images rejected.'
+            : maxAttemptsHit
+              ? 'Stopped retrying after multiple rejections.'
+              : `${n || 'One or more'} reference image${n === 1 ? ' was' : 's were'} rejected by the provider.`,
+          {
+            duration: 10000,
+            action: offerRegenerate
+              ? {
+                  label: 'Regenerate',
+                  onClick: () => {
+                    void handleRegenerate(accumulated);
+                  },
+                }
+              : undefined,
+          },
+        );
+        return;
       }
-      const data = (await res.json()) as { imageUrl?: string };
+      if (!res.ok) {
+        throw new Error(data?.error || `Generate failed: HTTP ${res.status}`);
+      }
       if (typeof data.imageUrl !== 'string') {
         throw new Error('Server response missing imageUrl');
       }
@@ -223,7 +303,7 @@ export function ShotInspector({
       console.warn('[editor inspector] regenerate failed', { detail: message });
       setRegenState({ kind: 'error', message });
     }
-  }, [onUploadImage, row.ai_image_prompt, row.visual_description, row.on_screen_text, row.section_title, shotIndex]);
+  }, [onUploadImage, row.ai_image_prompt, row.visual_description, row.on_screen_text, row.section_title, shotIndex, stylePreset]);
 
   // Inline-edit + Rephrase state for the voiceover script field.
   // The textarea is a controlled mirror of `row.script_text`; we
@@ -505,7 +585,7 @@ export function ShotInspector({
             <div className="flex gap-1.5">
               <button
                 type="button"
-                onClick={handleRegenerate}
+                onClick={() => void handleRegenerate()}
                 disabled={regenState.kind === 'generating'}
                 className="flex-1 text-xs px-3 py-1.5 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
                 style={{ borderColor: 'var(--card-border)' }}
@@ -514,6 +594,23 @@ export function ShotInspector({
                 {regenState.kind === 'generating'
                   ? 'Regenerating…'
                   : 'Regenerate'}
+                {/* v2 (2026-05-22) — inline cost hint when the active
+                    style pins an i2i model (rule 8: cost preview before
+                    paid actions). Local models show "free", cloud show
+                    "~$0.05". Hidden when no i2i model is pinned. */}
+                {(() => {
+                  if (!activeStyleI2IModel) return null;
+                  const hint = formatI2ICostHint(activeStyleI2IModel);
+                  if (!hint) return null;
+                  return (
+                    <span
+                      className="ml-1.5 text-[10px] opacity-70"
+                      style={{ fontVariantNumeric: 'tabular-nums' }}
+                    >
+                      ({hint})
+                    </span>
+                  );
+                })()}
               </button>
               {/* Batch C — open the mask-brush AI edit dialog with this
                   row's current still. The parent owns the modal mount

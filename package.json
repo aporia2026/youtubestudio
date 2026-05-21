@@ -16,6 +16,7 @@
     "set-password": "tsx --env-file-if-exists=.env.local scripts/set-password.ts",
     "diagnose-login": "tsx --env-file-if-exists=.env.local scripts/diagnose-login.ts",
     "db:status": "tsx --env-file-if-exists=.env.local scripts/migrate.ts status",
+    "sweep:r2": "tsx --env-file-if-exists=.env.local scripts/sweep-orphan-style-refs.ts",
     "deploy:remotion": "tsx --env-file-if-exists=.env.local scripts/deploy-remotion-site.ts",
     "render:local": "tsx --env-file-if-exists=.env.local scripts/render-local.ts",
     "smoke:lambda": "tsx --env-file-if-exists=.env.local scripts/lambda-smoke.ts",

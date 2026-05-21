@@ -428,6 +428,15 @@ export interface ProductionDoc {
   style_sheet_has_protagonist?: boolean;
   style_sheet_prompt?: string;
   style_sheet_description?: string;
+  /** v2 (2026-05-22): the doc's active style-preset id. Persisted on
+   *  the doc itself so downstream surfaces (the shot-graph editor's
+   *  regenerate button, future analyses, etc.) can reliably read the
+   *  user's choice without depending on transient localStorage state.
+   *  May be a built-in slug ('doodle_explainer', 'cinematic') or a
+   *  saved-style UUID. Undefined on legacy docs — callers fall back to
+   *  the user's `default_style_preset` setting or to the built-in
+   *  default. See `_plans/2026-05-21-user-defined-styles-with-reference-images.md`. */
+  style_preset?: string;
   /** Doc-level fallback for the static scene zoom percentage. Per-row
    *  `scene_zoom` overrides this. Undefined ⇒ 100 (no zoom). */
   scene_zoom_default?: number;
