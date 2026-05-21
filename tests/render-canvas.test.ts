@@ -94,4 +94,15 @@ describe('computeImageCanvas', () => {
     const out = computeImageCanvas({ frameWidth: 1080, frameHeight: 1920 });
     expect(out).toEqual({ width: 1080, height: 1920, letterboxed: false, stripeHeightPx: 0 });
   });
+
+  it('does not produce NaN when grid is pathologically zero', () => {
+    // Defensive: TS prevents this at the typed API surface, but the
+    // snap-to-grid helper is plain numbers internally — verify we
+    // don't return NaN if a caller bypasses the type system.
+    const out = computeImageCanvas({ grid: 0 as unknown as 8 });
+    expect(Number.isFinite(out.width)).toBe(true);
+    expect(Number.isFinite(out.height)).toBe(true);
+    expect(out.width).toBeGreaterThan(0);
+    expect(out.height).toBeGreaterThan(0);
+  });
 });

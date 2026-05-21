@@ -25,17 +25,17 @@ interface SectionTitleStripeProps {
   heightFraction?: number;
 }
 
-const MIN_FRACTION = 0.06;
-const MAX_FRACTION = 0.22;
-const DEFAULT_FRACTION = 0.13;
-
-/** Resolve a stripe-height fraction to its clamped value. Exported so the
- *  composition can compute the same stripe pixel height it'll render and
- *  use it as the top offset for the scene container below. */
-export function clampSectionStripeFraction(v: number | undefined): number {
-  if (typeof v !== 'number' || !Number.isFinite(v)) return DEFAULT_FRACTION;
-  return Math.max(MIN_FRACTION, Math.min(MAX_FRACTION, v));
-}
+// Stripe-geometry constants + clamp helper moved to a pure-TS module so
+// server-only libs can import the clamp without pulling React into the
+// bundle. Re-export here so any existing client-side caller that
+// imported `clampSectionStripeFraction` from this file keeps working.
+export {
+  clampSectionStripeFraction,
+  SECTION_STRIPE_MIN_FRACTION,
+  SECTION_STRIPE_MAX_FRACTION,
+  SECTION_STRIPE_DEFAULT_FRACTION,
+} from '../utils/section-stripe';
+import { clampSectionStripeFraction } from '../utils/section-stripe';
 
 export const SectionTitleStripe: React.FC<SectionTitleStripeProps> = ({
   text,

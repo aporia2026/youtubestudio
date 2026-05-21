@@ -17,7 +17,7 @@
  *
  * See `_plans/2026-05-21-resolution-aware-generation.md`.
  */
-import { clampSectionStripeFraction } from '@/remotion/components/SectionTitleStripe';
+import { clampSectionStripeFraction } from '@/remotion/utils/section-stripe';
 
 export interface CanvasInput {
   /** When non-empty, the row has a section-title stripe at render time. */
@@ -54,9 +54,16 @@ const DEFAULT_GRID = 8;
 /** Snap a raw pixel count to the nearest multiple of `grid`. Uses round-to-
  *  nearest to keep the canvas as close to the visible area as possible —
  *  the worst-case mismatch is `grid / 2` pixels, which Remotion's render
- *  absorbs invisibly via its `object-fit: cover` default. */
+ *  absorbs invisibly via its `object-fit: cover` default.
+ *
+ *  Defensive: a caller passing `grid <= 0` (TypeScript would prevent it
+ *  at the public API but the function takes a plain `number`) would
+ *  divide by zero and produce `NaN`. Clamp to 1 to stay numerically
+ *  safe; the worst result is a non-snapped output that the generator's
+ *  own snap-to-8 catches downstream. */
 function snapToGrid(raw: number, grid: number): number {
-  return Math.round(raw / grid) * grid;
+  const g = Math.max(1, grid);
+  return Math.round(raw / g) * g;
 }
 
 export function computeImageCanvas(input: CanvasInput = {}): CanvasResult {
