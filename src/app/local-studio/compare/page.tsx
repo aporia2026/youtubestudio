@@ -30,9 +30,9 @@ interface PromptDef {
 }
 
 interface ModelDef {
-  id: 'flux-schnell' | 'flux-dev' | 'qwen-image';
+  id: 'flux-schnell' | 'flux-dev' | 'qwen-image' | 'hidream-i1';
   label: string;
-  license: 'Apache 2.0' | 'Non-commercial' | 'Apache 2.0 (text encoder GGUF)';
+  license: 'Apache 2.0' | 'Non-commercial' | 'Apache 2.0 (text encoder GGUF)' | 'MIT';
   hint: string;
 }
 
@@ -51,30 +51,38 @@ interface ComparisonSet {
   pathPrefix: string;
   /** Reference image used during i2i chaining, when applicable. */
   referenceImage?: { src: string; label: string };
+  /** Models surfaced as columns for this set. Doodle includes HiDream
+   *  (verified working under i2i at denoise 0.7); unstyled doesn't —
+   *  HiDream's t2i path is verified to hang on 16 GB. */
+  models: ReadonlyArray<ModelDef>;
   prompts: ReadonlyArray<PromptDef>;
   timings: Readonly<Record<string, Record<string, CellTiming>>>;
 }
 
-const MODELS: ReadonlyArray<ModelDef> = [
-  {
-    id: 'flux-schnell',
-    label: 'Flux schnell',
-    license: 'Apache 2.0',
-    hint: 'Speed king — 4 steps. Fastest by far.',
-  },
-  {
-    id: 'flux-dev',
-    label: 'Flux dev',
-    license: 'Non-commercial',
-    hint: 'Premium look. NC license — unsafe for monetized YouTube.',
-  },
-  {
-    id: 'qwen-image',
-    label: 'Qwen-Image',
-    license: 'Apache 2.0 (text encoder GGUF)',
-    hint: 'Best at typography + prompt-following under i2i chaining. Slowest.',
-  },
-];
+const FLUX_SCHNELL: ModelDef = {
+  id: 'flux-schnell',
+  label: 'Flux schnell',
+  license: 'Apache 2.0',
+  hint: 'Speed king — 4 steps. Fastest by far.',
+};
+const FLUX_DEV: ModelDef = {
+  id: 'flux-dev',
+  label: 'Flux dev',
+  license: 'Non-commercial',
+  hint: 'Premium look. NC license — unsafe for monetized YouTube.',
+};
+const QWEN_IMAGE: ModelDef = {
+  id: 'qwen-image',
+  label: 'Qwen-Image',
+  license: 'Apache 2.0 (text encoder GGUF)',
+  hint: 'Best at typography + prompt-following under i2i chaining. Slowest.',
+};
+const HIDREAM_I1: ModelDef = {
+  id: 'hidream-i1',
+  label: 'HiDream-I1',
+  license: 'MIT',
+  hint: 'Premium 28 steps, MIT. i2i works on 16 GB (~75s warm); t2i still verified to hang.',
+};
 
 const DOODLE_SET: ComparisonSet = {
   id: 'doodle',
@@ -87,6 +95,7 @@ const DOODLE_SET: ComparisonSet = {
     src: '/style-refs/Doodle-explainer/stick-figure-magnifying-glass-phone.png',
     label: 'i2i reference (denoise 0.7)',
   },
+  models: [FLUX_SCHNELL, FLUX_DEV, QWEN_IMAGE, HIDREAM_I1],
   prompts: [
     {
       slug: 'p01-character-emotion',
@@ -113,26 +122,36 @@ const DOODLE_SET: ComparisonSet = {
         'A stick figure engineer in a hard hat watches industrial machines spin wildly out of control; a cartoon worm with a smug face slithers between them leaving sparkles; warning triangles everywhere; the lone engineer holds a tiny clipboard looking puzzled.',
     },
   ],
+  // HiDream timings landed in a separate smoke run on 2026-05-22 — all 4
+  // prompts completed cleanly (zero hangs), 65–85s warm. None marked cold
+  // because HiDream wasn't part of the first sweep's first-prompt
+  // chain-of-cold-loads; its first prompt here was warm-from-cache after
+  // the doodle sequence above. See
+  // `hiccup-analysis/compare_local_doodle_hidream.py`.
   timings: {
     'p01-character-emotion': {
       'flux-schnell': { seconds: 162, cold: true },
       'flux-dev':     { seconds: 222, cold: true },
       'qwen-image':   { seconds: 478, cold: true },
+      'hidream-i1':   { seconds: 80,  cold: false },
     },
     'p03-two-figures': {
       'flux-schnell': { seconds: 15,  cold: false },
       'flux-dev':     { seconds: 45,  cold: false },
       'qwen-image':   { seconds: 174, cold: false },
+      'hidream-i1':   { seconds: 70,  cold: false },
     },
     'p04-wide-chaos': {
       'flux-schnell': { seconds: 15,  cold: false },
       'flux-dev':     { seconds: 45,  cold: false },
       'qwen-image':   { seconds: 174, cold: false },
+      'hidream-i1':   { seconds: 65,  cold: false },
     },
     'p06-industrial': {
       'flux-schnell': { seconds: 15,  cold: false },
       'flux-dev':     { seconds: 45,  cold: false },
       'qwen-image':   { seconds: 174, cold: false },
+      'hidream-i1':   { seconds: 85,  cold: false },
     },
   },
 };
@@ -143,6 +162,10 @@ const UNSTYLED_SET: ComparisonSet = {
   description:
     't2i with no style suffix or reference. Useful for judging each model on its own terms before any chaining.',
   pathPrefix: '/model-comparison',
+  // HiDream omitted here — its t2i path is verified to hang at KSampler
+  // on 16 GB (see hiccup-analysis/hidream_q5_0004.log). The i2i path
+  // works fine on the same hardware; included in the doodle set above.
+  models: [FLUX_SCHNELL, FLUX_DEV, QWEN_IMAGE],
   prompts: [
     {
       slug: 'person-explainer',
@@ -284,7 +307,7 @@ export default function ModelComparePage() {
                 >
                   Prompt
                 </th>
-                {MODELS.map(m => (
+                {activeSet.models.map(m => (
                   <th
                     key={m.id}
                     scope="col"
@@ -314,7 +337,7 @@ export default function ModelComparePage() {
                       {p.prompt}
                     </div>
                   </th>
-                  {MODELS.map(m => {
+                  {activeSet.models.map(m => {
                     const timing = activeSet.timings[p.slug]?.[m.id];
                     const src = imagePath(activeSet, p.slug, m.id);
                     return (
@@ -357,20 +380,27 @@ export default function ModelComparePage() {
         <h3 className="text-sm font-semibold mb-2">Recommended default for batch generation</h3>
         <ul className="list-disc pl-5 text-sm space-y-1">
           <li>
-            <strong>For doodle / styled docs:</strong> Qwen-Image. At denoise 0.7 it actually follows the
-            scene prompt while keeping the doodle style; Flux schnell + Flux dev anchor too hard to the
-            reference image and barely respond to the prompt. The 9× speed penalty is the price of usable
-            output.
+            <strong>For doodle / styled docs:</strong> Qwen-Image stays the safest default — at denoise 0.7
+            it consistently follows the scene prompt (TEST button, alarm signals, prompt-specific details)
+            while keeping the doodle style. Flux schnell + Flux dev anchor too hard to the reference and
+            barely respond to the prompt.
+          </li>
+          <li>
+            <strong>HiDream-I1 is now a real option for styled docs.</strong> Earlier verdict was wrong —
+            i2i at denoise 0.7 works cleanly on 16 GB (~75s warm, faster than Qwen). Its outputs are more
+            sketched / hand-drawn than Qwen&apos;s — closer to the actual reference style, less digital.
+            Trade-off: less prompt-following than Qwen, garbles in-image text. Pick HiDream for pure
+            visual feel; pick Qwen when the prompt has specific scene elements that must land.
           </li>
           <li>
             <strong>For unstyled / fast iteration:</strong> Flux schnell. Quality is good enough for
-            most non-text scenes, and ~20 s warm vs 174 s warm matters at batch scale.
+            most non-text scenes, and ~20 s warm vs 174 s warm matters at batch scale. HiDream isn&apos;t
+            usable here — its t2i path still hangs at KSampler on 16 GB.
           </li>
           <li>
             <strong>Auto-override on baked-text rows:</strong> when{' '}
             <code>on_screen_text_mode === &apos;bake&apos;</code> AND the OST is non-empty, switch to
-            Qwen-Image regardless of the doc default. Flux schnell&apos;s text garbling is too unreliable
-            for in-image typography (see the BREAKING NEWS row in the Unstyled tab).
+            Qwen-Image regardless of the doc default. Flux schnell + HiDream both garble glyphs.
           </li>
           <li>
             <strong>Per-row override:</strong> the existing model picker in production-doc rows still wins
@@ -383,7 +413,8 @@ export default function ModelComparePage() {
         </ul>
         <p className="mt-3 text-xs" style={{ color: 'var(--text-muted, #9ca3af)' }}>
           Re-run the comparisons via{' '}
-          <code>python hiccup-analysis/compare_local_doodle_style.py</code> or{' '}
+          <code>python hiccup-analysis/compare_local_doodle_style.py</code>,{' '}
+          <code>python hiccup-analysis/compare_local_doodle_hidream.py</code>, or{' '}
           <code>python hiccup-analysis/compare_local_image_models.py</code>, then the new PNGs land
           under <code>public/model-comparison/...</code> automatically.
         </p>

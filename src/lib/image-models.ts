@@ -99,17 +99,21 @@ export const IMAGE_MODELS: ImageModelSpec[] = [
   },
   {
     value: 'hidream-i1-local',
-    label: 'HiDream-I1 — Local (needs 24 GB VRAM)',
+    label: 'HiDream-I1 — Local (i2i only on 16 GB)',
     provider: 'comfyui-local',
     localWorkflowId: 'hidream-i1-dev-t2i',
-    // Workflow is correct as of 2026-05-22 (Q4_K_M UNet +
-    // Q5_K_M GGUF t5xxl — the earlier fp8 t5 erred out with
-    // "Mixing scaled FP8 with GGUF is not supported"). But the
-    // 4 text encoders + 10.7 GB UNet + sampling activations exceed
-    // 16 GB; verified hang at KSampler on RTX 5070 Ti (15 min, zero
-    // node progress). Kept in the picker so 24+ GB users can pick it;
-    // labelled so 16 GB users know to choose Qwen-Image / Flux schnell.
-    hint: 'Premium 28 steps, MIT. Verified to NEED 24+ GB VRAM — hangs on 16 GB cards.',
+    // Workflow is correct as of 2026-05-22 (Q4_K_M UNet + Q5_K_M GGUF
+    // t5xxl — the earlier fp8 t5 erred out with "Mixing scaled FP8
+    // with GGUF is not supported"). Verified on RTX 5070 Ti 16 GB:
+    //   - t2i:  hangs at KSampler (901s timeout, zero node progress).
+    //   - i2i:  WORKS, ~75s warm per image at 1024×576, 28 steps.
+    // The i2i path likely passes because the VAE-encoded reference
+    // latent occupies the slot that t2i would use for a full noise
+    // tensor + activation cache during text encoding — the working
+    // set just barely fits when the reference is precomputed. Kept
+    // in the picker because the i2i path is real; labelled so users
+    // know t2i won't work for them on this hardware.
+    hint: 'Premium 28 steps, MIT. i2i works (~75s warm); t2i hangs on 16 GB.',
   },
   {
     value: 'qwen-image-local',
