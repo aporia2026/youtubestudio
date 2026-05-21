@@ -110,8 +110,17 @@ export interface VideoShot {
   title?: string;
   /** Subtitle or secondary text */
   subtitle?: string;
-  /** On-screen overlay text (lower third style) */
+  /** On-screen overlay text (lower third style). Only populated when the
+   *  source row's `on_screen_text_mode === 'overlay'` — for `'bake'` and
+   *  `'none'` rows the mapper omits this field so the LowerThird stays
+   *  off. See `_plans/2026-05-21-phase-5-text-mode-toggle.md`. */
   onScreenText?: string;
+  /** Per-shot override for the doc-level `suppressLowerThirds` flag. When
+   *  `true`, the LowerThird component never mounts for this shot — used by
+   *  Phase 5's `'bake'` / `'none'` rows whose underlying images already
+   *  carry (or deliberately omit) the text. Undefined falls back to
+   *  `VideoConfig.suppressLowerThirds`. */
+  suppressLowerThird?: boolean;
   /** The voiceover script text for this shot (used for captions) */
   scriptText?: string;
   /** Animation variant override — used to pick between multiple entrance styles */

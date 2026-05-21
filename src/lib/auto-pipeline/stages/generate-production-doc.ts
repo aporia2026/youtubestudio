@@ -138,6 +138,20 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
     };
   }
 
+  // Stamp the doc-level on-screen-text mode default to 'overlay' for new
+  // docs — Phase 5 default. Rows that didn't pick a per-row override fall
+  // back to this, which means generated images come out clean (no diffusion
+  // text garbling) and the LowerThird renders the legible text at composite
+  // time. Existing docs without this field still default to 'bake' via the
+  // renderer's fallback, preserving back-compat. See
+  // `_plans/2026-05-21-phase-5-text-mode-toggle.md`.
+  if (parsedDoc && typeof parsedDoc === 'object' && !Array.isArray(parsedDoc)) {
+    const docObj = parsedDoc as Record<string, unknown>;
+    if (docObj.on_screen_text_mode_default === undefined) {
+      docObj.on_screen_text_mode_default = 'overlay';
+    }
+  }
+
   // Persist the parsed doc onto the artefact row. v1 — no
   // dedicated production_doc_entries table.
   await persistArtefact({

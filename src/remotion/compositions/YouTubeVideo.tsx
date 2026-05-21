@@ -336,12 +336,12 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
     case 'icon-scene':
       return <IconScene {...props} />;
     case 'screen-mockup':
-      return <ScreenMockupScene {...props} suppressLowerThird={suppressLowerThirds} />;
+      return <ScreenMockupScene {...props} suppressLowerThird={shot.suppressLowerThird ?? suppressLowerThirds} />;
     case 'outro':
       return <OutroScene {...props} />;
     case 'b-roll':
     case 'split-scene':
     default:
-      return <BRollScene {...props} shotIndex={shotIndex} suppressLowerThird={suppressLowerThirds} />;
+      return <BRollScene {...props} shotIndex={shotIndex} suppressLowerThird={shot.suppressLowerThird ?? suppressLowerThirds} />;
   }
 };

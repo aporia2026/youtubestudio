@@ -105,6 +105,36 @@ export function clampSceneTiming(n: number, bounds: { min: number; max: number }
   return Math.min(bounds.max, Math.max(bounds.min, Math.round(n)));
 }
 
+// ─── On-screen-text mode resolution ────────────────────────────────────────────
+
+/** Result of resolving a row's OST rendering against the doc default.
+ *  - `overlayText` is set only when mode='overlay' AND the text is non-empty;
+ *    that's the value the renderer feeds into LowerThird.
+ *  - `suppressLowerThird` is `true` for `'bake'` and `'none'` so the renderer
+ *    skips the LowerThird mount (avoids double text in `'bake'`, no text in
+ *    `'none'`). See `_plans/2026-05-21-phase-5-text-mode-toggle.md`. */
+export interface OstRendering {
+  mode: 'bake' | 'overlay' | 'none';
+  overlayText: string | undefined;
+  suppressLowerThird: boolean;
+}
+
+/** Resolve OST rendering: row → doc-default → `'bake'` (back-compat for pre-
+ *  Phase-5 docs that never set the field). Pure — easy to unit-test. */
+export function resolveOstRendering(
+  rowMode: 'bake' | 'overlay' | 'none' | undefined,
+  docDefault: 'bake' | 'overlay' | 'none' | undefined,
+  rowText: string | undefined,
+): OstRendering {
+  const mode = rowMode ?? docDefault ?? 'bake';
+  const trimmed = (rowText || '').trim();
+  return {
+    mode,
+    overlayText: mode === 'overlay' && trimmed.length > 0 ? trimmed : undefined,
+    suppressLowerThird: mode !== 'overlay',
+  };
+}
+
 // ─── Shot Duration Calculation ─────────────────────────────────────────────────
 
 /** Result row from `calcShotIntervals`. */
@@ -223,6 +253,13 @@ export interface ProductionRow {
   stock_search_terms: string;
   ai_image_prompt: string;
   on_screen_text: string;
+  /** How this row's `on_screen_text` is realised: `'bake'` puts the text
+   *  inside the generated image; `'overlay'` keeps the image clean and
+   *  composites the text via LowerThird at render time; `'none'` shows
+   *  no text. Undefined ⇒ ProductionDoc.on_screen_text_mode_default,
+   *  then `'bake'` (back-compat). See
+   *  `_plans/2026-05-21-phase-5-text-mode-toggle.md`. */
+  on_screen_text_mode?: 'bake' | 'overlay' | 'none';
   notes: string;
   /** Planning fields for auto-sourced real-image overlays. See the
    *  `/api/overlay/fetch` route and the OverlayCell component. */
@@ -374,6 +411,10 @@ export interface ProductionDoc {
    *  `section_title_layout` overrides this. Defaults to 'letterbox' when
    *  both this AND the row are unset. */
   section_title_layout_default?: 'overlay' | 'letterbox';
+  /** Doc-level fallback for `ProductionRow.on_screen_text_mode`. Auto-pipeline
+   *  output should set this to `'overlay'`. Undefined ⇒ renderer treats it
+   *  as `'bake'` (back-compat with pre-Phase-5 docs). */
+  on_screen_text_mode_default?: 'bake' | 'overlay' | 'none';
   /** Doc-level fallback for the static scene zoom percentage. Per-row
    *  `scene_zoom` overrides this. Undefined ⇒ 100 (no zoom). */
   scene_zoom_default?: number;
@@ -726,6 +767,12 @@ export function productionDocToVideoConfig(
     const hasVisual = Boolean(imageUrl || videoUrl);
     const sceneType = hasVisual ? 'b-roll' : inferSceneType(row.visual_type);
 
+    // Resolve OST rendering (row → doc-default → 'bake'). 'overlay' is the
+    // only mode that mounts a Remotion LowerThird; 'bake' (text already in
+    // image pixels) and 'none' suppress it. See
+    // `_plans/2026-05-21-phase-5-text-mode-toggle.md`.
+    const ost = resolveOstRendering(row.on_screen_text_mode, doc.on_screen_text_mode_default, row.on_screen_text);
+
     return {
       startMs,
       durationMs,
@@ -733,7 +780,8 @@ export function productionDocToVideoConfig(
       imageUrl,
       videoUrl,
       title: row.on_screen_text || undefined,
-      onScreenText: row.on_screen_text || undefined,
+      onScreenText: ost.overlayText,
+      suppressLowerThird: ost.suppressLowerThird,
       scriptText: row.script_text ? stripProductionMarkers(row.script_text) || undefined : undefined,
       floatImage: true,
       // Per-row thumbnail-zoom data; consumed by the ThumbnailZoomScene

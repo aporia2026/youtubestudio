@@ -23,6 +23,7 @@ export async function POST(req: NextRequest) {
       prompt?: string;
       model?: string;
       onScreenText?: string;
+      onScreenTextMode?: 'bake' | 'overlay' | 'none';
       sectionTitle?: string;
       sectionTitleLayout?: 'overlay' | 'letterbox';
     };
@@ -32,7 +33,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
     }
 
-    const { prompt, model, onScreenText, sectionTitle, sectionTitleLayout } = body;
+    const { prompt, model, onScreenText, onScreenTextMode, sectionTitle, sectionTitleLayout } = body;
     if (!prompt?.trim()) {
       return NextResponse.json({ error: 'prompt is required' }, { status: 400 });
     }
@@ -42,6 +43,15 @@ export async function POST(req: NextRequest) {
       sectionTitleLayout === 'overlay' || sectionTitleLayout === 'letterbox'
         ? sectionTitleLayout
         : 'letterbox';
+    // OST mode controls whether we bake the text into the diffusion prompt
+    // (and thus into the image pixels) or leave it for Remotion's LowerThird
+    // to composite at render time. Default to 'bake' for back-compat with
+    // any caller that doesn't pass the field yet. See
+    // `_plans/2026-05-21-phase-5-text-mode-toggle.md`.
+    const normalizedOstMode: 'bake' | 'overlay' | 'none' =
+      onScreenTextMode === 'bake' || onScreenTextMode === 'overlay' || onScreenTextMode === 'none'
+        ? onScreenTextMode
+        : 'bake';
 
     // Compute the exact pixel canvas the still should target so it lands
     // pixel-clean inside the Remotion composition that displays it. See
@@ -74,17 +84,23 @@ export async function POST(req: NextRequest) {
     // words. The phrase is repeated, terse, at the end of the prompt
     // because image models weight late tokens heavily for "what must
     // appear in the image".
+    // When mode is 'overlay' or 'none', the LowerThird (or nothing) renders
+    // the text at composition time — we deliberately keep the underlying
+    // image clean of in-prompt text so the diffusion model can't garble it.
+    // Sanitisation still happens up-front so the same safeOnScreenText
+    // value is available for downstream logging if needed in future.
     const safeOnScreenText = (onScreenText ?? '').trim().replace(/[\r\n]+/g, ' ').slice(0, 120);
     const escapedOst = safeOnScreenText.replace(/"/g, '\\"');
+    const shouldBakeOst = normalizedOstMode === 'bake' && safeOnScreenText.length > 0;
     // OST sits below the stripe only when the stripe overlays the image.
     // Letterbox layout already crops the canvas so OST can land anywhere.
     const ostPosition = needsSafeTopBias
       ? 'in the lower portion of the frame'
       : 'within the scene';
-    const ostLeadingDirective = safeOnScreenText
+    const ostLeadingDirective = shouldBakeOst
       ? `Hand-lettered text "${escapedOst}" drawn large in bold marker style ${ostPosition}, in the illustration's own style.\n\n`
       : '';
-    const ostTrailingDirective = safeOnScreenText
+    const ostTrailingDirective = shouldBakeOst
       ? `\n\nText shown: "${escapedOst}".`
       : '';
 
@@ -145,6 +161,8 @@ export async function POST(req: NextRequest) {
         stripe_height_px: canvas.stripeHeightPx,
         section_title: Boolean(sectionTitle?.trim()),
         layout: hasSectionStripe ? normalizedLayout : 'none',
+        ost_mode: normalizedOstMode,
+        ost_baked: shouldBakeOst,
       });
       const result = await generator.generateImage(augmentedPrompt, {
         workflowId: spec.localWorkflowId,

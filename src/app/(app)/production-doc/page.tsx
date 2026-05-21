@@ -44,6 +44,7 @@ import { OverlayEditDialog } from '@/components/production-doc/OverlayEditDialog
 import { OverlayContextMenu } from '@/components/production-doc/OverlayContextMenu';
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
+import { OstModeControl, type OstMode } from '@/components/production-doc/OstModeControl';
 import { MissingClipsModal } from '@/components/production-doc/MissingClipsModal';
 import { MaskBrushEditor } from '@/components/production-doc/MaskBrushEditor';
 import {
@@ -204,6 +205,19 @@ interface ProductionRow {
   overlay_zone_resolved?: ProductionRow['overlay_zone'];
   overlay_size_resolved?: ProductionRow['overlay_size'];
   on_screen_text: string;
+  /** How this row's `on_screen_text` is realised at production time.
+   *   - `'bake'`   → text is added to the diffusion prompt and rendered
+   *                  inside the generated image (animates with i2v). The
+   *                  Remotion LowerThird is suppressed for the shot so
+   *                  the text doesn't double-render.
+   *   - `'overlay'`→ text is NOT sent to the diffusion prompt; the still
+   *                  generates clean and the LowerThird renders the text
+   *                  at composition time. Guaranteed legible, branded,
+   *                  no garbling — the default for new docs.
+   *   - `'none'`   → no text anywhere.
+   *  Undefined falls back to `ProductionDoc.on_screen_text_mode_default`,
+   *  then to `'bake'` (back-compat with docs created before this field). */
+  on_screen_text_mode?: 'bake' | 'overlay' | 'none';
   notes: string;
   /** Region id (from ProductionDoc.thumbnail.regions) this row's scene
    *  zooms into. When set, the row's scene becomes a thumbnail-zoom. */
@@ -297,6 +311,11 @@ interface ProductionDoc {
    *  row doesn't override. Mirrors the `pillarbox_color_default` pattern.
    *  Undefined ⇒ renderer treats it as 'letterbox'. */
   section_title_layout_default?: 'overlay' | 'letterbox';
+  /** Doc-level fallback for `ProductionRow.on_screen_text_mode` when a row
+   *  doesn't override. New docs from the auto-pipeline should default this
+   *  to `'overlay'` (clean text, no diffusion garbling). Undefined ⇒
+   *  renderer treats it as `'bake'` (back-compat with pre-Phase-5 docs). */
+  on_screen_text_mode_default?: 'bake' | 'overlay' | 'none';
   /** Doc-level fallback for `ProductionRow.scene_zoom` when a row doesn't
    *  override. Mirrors the `pillarbox_color_default` pattern. Undefined ⇒
    *  100 (no zoom). Sensible range: 50–200. */
@@ -2155,6 +2174,31 @@ function ProductionDocPage() {
     });
   }, [historyEntryId]);
 
+  // OST mode setters — mirror the stripe-layout pattern. Per-row override
+  // is set inline via `updateRow`; doc-level default + clear come from the
+  // right-click ("apply to all") affordance on the picker. See
+  // `_plans/2026-05-21-phase-5-text-mode-toggle.md`.
+  const applyOstModeToAll = useCallback(
+    (mode: 'overlay' | 'bake' | 'none') => {
+      setDoc(prev => {
+        if (!prev) return prev;
+        const beforeOverrides = prev.rows.filter(r => r.on_screen_text_mode).length;
+        const nextRows = beforeOverrides > 0
+          ? prev.rows.map(r =>
+              r.on_screen_text_mode ? { ...r, on_screen_text_mode: undefined } : r,
+            )
+          : prev.rows;
+        const nextDoc = { ...prev, rows: nextRows, on_screen_text_mode_default: mode };
+        if (historyEntryId) {
+          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+        }
+        return nextDoc;
+      });
+      toast.success(`Set ${mode} as the doc-default OST mode.`);
+    },
+    [historyEntryId],
+  );
+
   const applySceneZoomToAll = useCallback(
     (zoom: number) => {
       const clamped = Math.max(50, Math.min(200, Math.round(zoom)));
@@ -2696,6 +2740,7 @@ function ProductionDocPage() {
             prompt,
             model: 'flux-schnell-local',
             onScreenText: item.row.on_screen_text,
+            onScreenTextMode: item.row.on_screen_text_mode ?? doc.on_screen_text_mode_default,
             sectionTitle: item.row.section_title,
             sectionTitleLayout: item.row.section_title_layout ?? doc.section_title_layout_default,
           }),
@@ -2782,6 +2827,7 @@ function ProductionDocPage() {
     rowIndex: number;
     prompt: string;
     onScreenText?: string;
+    onScreenTextMode?: 'bake' | 'overlay' | 'none';
     sectionTitle?: string;
     sectionTitleLayout?: 'overlay' | 'letterbox';
     overlayStockTerms?: string;
@@ -2793,6 +2839,7 @@ function ProductionDocPage() {
       rowIndex: number;
       prompt: string;
       onScreenText?: string;
+      onScreenTextMode?: 'bake' | 'overlay' | 'none';
       sectionTitle?: string;
       sectionTitleLayout?: 'overlay' | 'letterbox';
       overlayStockTerms?: string;
@@ -2812,6 +2859,7 @@ function ProductionDocPage() {
         rowIndex: i,
         prompt,
         onScreenText: row?.on_screen_text,
+        onScreenTextMode: row?.on_screen_text_mode ?? doc.on_screen_text_mode_default,
         sectionTitle: row?.section_title,
         sectionTitleLayout: row?.section_title_layout ?? doc.section_title_layout_default,
         overlayStockTerms: row?.overlay_stock_terms,
@@ -2838,6 +2886,7 @@ function ProductionDocPage() {
     rowIndex: number;
     prompt: string;
     onScreenText?: string;
+    onScreenTextMode?: 'bake' | 'overlay' | 'none';
     sectionTitle?: string;
     sectionTitleLayout?: 'overlay' | 'letterbox';
     overlayStockTerms?: string;
@@ -2849,6 +2898,7 @@ function ProductionDocPage() {
       rowIndex: number;
       prompt: string;
       onScreenText?: string;
+      onScreenTextMode?: 'bake' | 'overlay' | 'none';
       sectionTitle?: string;
       sectionTitleLayout?: 'overlay' | 'letterbox';
       overlayStockTerms?: string;
@@ -2868,6 +2918,7 @@ function ProductionDocPage() {
         rowIndex: i,
         prompt,
         onScreenText: row?.on_screen_text,
+        onScreenTextMode: row?.on_screen_text_mode ?? doc.on_screen_text_mode_default,
         sectionTitle: row?.section_title,
         sectionTitleLayout: row?.section_title_layout ?? doc.section_title_layout_default,
         overlayStockTerms: row?.overlay_stock_terms,
@@ -2907,6 +2958,7 @@ function ProductionDocPage() {
       const item = failedImagePlan[n]!;
       await generateImageForRow(item.rowIndex, item.prompt, {
         onScreenText: item.onScreenText,
+        onScreenTextMode: item.onScreenTextMode,
         sectionTitle: item.sectionTitle,
         sectionTitleLayout: item.sectionTitleLayout,
         overlayStockTerms: item.overlayStockTerms,
@@ -2941,6 +2993,7 @@ function ProductionDocPage() {
       const item = emptyImagePlan[n]!;
       await generateImageForRow(item.rowIndex, item.prompt, {
         onScreenText: item.onScreenText,
+        onScreenTextMode: item.onScreenTextMode,
         sectionTitle: item.sectionTitle,
         sectionTitleLayout: item.sectionTitleLayout,
         overlayStockTerms: item.overlayStockTerms,
@@ -4119,6 +4172,12 @@ function ProductionDocPage() {
     prompt: string,
     meta: {
       onScreenText?: string;
+      /** Resolved OST mode (caller folds in doc-level default). When
+       *  `'bake'`, the route bakes OST into the diffusion prompt; when
+       *  `'overlay'` or `'none'`, the route generates the image clean
+       *  and the LowerThird (or nothing) renders the text at composition
+       *  time. See `_plans/2026-05-21-phase-5-text-mode-toggle.md`. */
+      onScreenTextMode?: 'bake' | 'overlay' | 'none';
       sectionTitle?: string;
       /** Resolved layout for the row's section-title stripe (caller must
        *  fold in the doc-level default before calling). Drives the image
@@ -4143,12 +4202,14 @@ function ProductionDocPage() {
       return next;
     });
     const onScreenText = meta.onScreenText?.trim() || undefined;
+    const onScreenTextMode = meta.onScreenTextMode;
     const sectionTitle = meta.sectionTitle?.trim() || undefined;
     const sectionTitleLayout = meta.sectionTitleLayout;
     const overlayTerms = meta.overlayStockTerms?.trim() || undefined;
     console.info('[prodoc image-gen] start', {
       rowIndex,
       hasOst: Boolean(onScreenText),
+      onScreenTextMode: onScreenTextMode ?? null,
       hasSectionTitle: Boolean(sectionTitle),
       sectionTitleLayout: sectionTitleLayout ?? null,
       hasOverlayTerms: Boolean(overlayTerms),
@@ -4158,7 +4219,7 @@ function ProductionDocPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal,
-        body: JSON.stringify({ prompt, model: imageModel, onScreenText, sectionTitle, sectionTitleLayout }),
+        body: JSON.stringify({ prompt, model: imageModel, onScreenText, onScreenTextMode, sectionTitle, sectionTitleLayout }),
       });
       const data = await safeJson(res);
       if (!res.ok) throw new Error((data.error as string) || 'Failed');
@@ -4577,6 +4638,7 @@ function ProductionDocPage() {
             row.ai_image_prompt,
             {
               onScreenText: row.on_screen_text,
+              onScreenTextMode: row.on_screen_text_mode ?? doc?.on_screen_text_mode_default,
               sectionTitle: row.section_title,
               sectionTitleLayout: row.section_title_layout ?? doc?.section_title_layout_default,
               overlayStockTerms: row.overlay_stock_terms,
@@ -6819,6 +6881,7 @@ function ProductionDocPage() {
                               if (row.ai_image_prompt?.trim()) {
                                 generateImageForRow(i, row.ai_image_prompt, {
                                   onScreenText: row.on_screen_text,
+                                  onScreenTextMode: row.on_screen_text_mode ?? doc?.on_screen_text_mode_default,
                                   sectionTitle: row.section_title,
                                   sectionTitleLayout: row.section_title_layout ?? doc?.section_title_layout_default,
                                   overlayStockTerms: row.overlay_stock_terms,
@@ -7007,12 +7070,23 @@ function ProductionDocPage() {
                             )}
                           </td>
                         )}
-                        {/* On-screen text */}
+                        {/* On-screen text + per-row OST mode picker.
+                            Mode picker mounts only when the row has text —
+                            otherwise there's nothing to bake or overlay
+                            and the controls would be confusing. */}
                         <td style={{ padding: '8px 12px', borderRight: '1px solid var(--border)' }}>
                           {row.on_screen_text ? (
-                            <span className="px-1.5 py-0.5 rounded text-xs font-medium" style={{ background: 'rgba(245,158,11,0.15)', color: '#fbbf24' }}>
-                              {row.on_screen_text}
-                            </span>
+                            <>
+                              <span className="px-1.5 py-0.5 rounded text-xs font-medium" style={{ background: 'rgba(245,158,11,0.15)', color: '#fbbf24' }}>
+                                {row.on_screen_text}
+                              </span>
+                              <OstModeControl
+                                value={row.on_screen_text_mode}
+                                docDefault={doc.on_screen_text_mode_default}
+                                onChange={(next: OstMode) => updateRow(i, { on_screen_text_mode: next })}
+                                onApplyToAll={applyOstModeToAll}
+                              />
+                            </>
                           ) : (
                             <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>—</span>
                           )}
@@ -7195,6 +7269,7 @@ function ProductionDocPage() {
                             canGenerate={Boolean(row.ai_image_prompt?.trim())}
                             onRetry={() => row.ai_image_prompt?.trim() && generateImageForRow(i, row.ai_image_prompt, {
                               onScreenText: row.on_screen_text,
+                              onScreenTextMode: row.on_screen_text_mode ?? doc?.on_screen_text_mode_default,
                               sectionTitle: row.section_title,
                               sectionTitleLayout: row.section_title_layout ?? doc?.section_title_layout_default,
                               overlayStockTerms: row.overlay_stock_terms,
@@ -7282,6 +7357,12 @@ function ProductionDocPage() {
                           <div>
                             <p className="text-xs font-semibold mb-0.5" style={{ color: 'var(--text-muted)' }}>On-Screen Text</p>
                             <p className="text-xs" style={{ color: '#fbbf24' }}>{row.on_screen_text}</p>
+                            <OstModeControl
+                              value={row.on_screen_text_mode}
+                              docDefault={doc.on_screen_text_mode_default}
+                              onChange={(next: OstMode) => updateRow(i, { on_screen_text_mode: next })}
+                              onApplyToAll={applyOstModeToAll}
+                            />
                           </div>
                         )}
                         {row.notes && (
