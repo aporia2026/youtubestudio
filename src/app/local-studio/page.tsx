@@ -93,6 +93,47 @@ interface ProgressEntry {
   updatedAt: number;
 }
 
+/** Persisted history entry (localStorage). Snapshot of one successful
+ *  generation so the user can scroll a gallery and re-load past prompts.
+ *  Cap of HISTORY_MAX prunes oldest at write time. */
+interface HistoryEntry {
+  url: string;
+  width: number;
+  height: number;
+  seed: number;
+  durationMs: number;
+  isClip: boolean;
+  prompt: string;
+  workflowId: string;
+  styleId: string | null;
+  styleLabel: string | null;
+  ts: number;
+}
+
+const HISTORY_LS_KEY = 'local_studio_history_v1';
+const HISTORY_MAX = 20;
+
+function readHistory(): HistoryEntry[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(HISTORY_LS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.slice(0, HISTORY_MAX) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeHistory(entries: HistoryEntry[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(HISTORY_LS_KEY, JSON.stringify(entries.slice(0, HISTORY_MAX)));
+  } catch {
+    /* storage full — silent drop */
+  }
+}
+
 const PRESET_SIZES: Array<{ label: string; width: number; height: number }> = [
   { label: '16:9 — 1280×720', width: 1280, height: 720 },
   { label: '16:9 — 1920×1080', width: 1920, height: 1080 },
@@ -131,6 +172,14 @@ export default function LocalStudioPage() {
   /** Force re-renders for the elapsed-time labels at 1 Hz so the
    *  numbers tick visually without us having to mutate queue state. */
   const [tick, setTick] = useState(0);
+  /** Persistent history of past generations, last 20, persisted in
+   *  localStorage. Click an entry to reload its prompt + model into the
+   *  form and show its image in the Result panel. */
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  // Hydrate history from localStorage once on mount.
+  useEffect(() => {
+    setHistory(readHistory());
+  }, []);
   /** Reference image state. `filename` is what /generate sends to the
    *  backend; `previewUrl` is what we render in the side panel. */
   const [refImage, setRefImage] = useState<{ filename: string; previewUrl: string } | null>(null);
@@ -249,6 +298,27 @@ export default function LocalStudioPage() {
         prompt: prompt.trim(),
         workflowId,
       });
+      // Prepend to history (newest first), persist to localStorage.
+      setHistory(prev => {
+        const next: HistoryEntry[] = [
+          {
+            url: json.result.url,
+            width: json.result.width,
+            height: json.result.height,
+            seed: json.result.seed,
+            durationMs: json.result.durationMs,
+            isClip: false,
+            prompt: prompt.trim(),
+            workflowId,
+            styleId: styleId || null,
+            styleLabel: json.style_label,
+            ts: Date.now(),
+          },
+          ...prev,
+        ].slice(0, HISTORY_MAX);
+        writeHistory(next);
+        return next;
+      });
       toast.success(`Generated in ${(json.result.durationMs / 1000).toFixed(1)}s`);
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
@@ -333,6 +403,26 @@ export default function LocalStudioPage() {
         isClip: true,
         prompt: prompt.trim(),
         workflowId: 'wan-2.2-i2v',
+      });
+      setHistory(prev => {
+        const next: HistoryEntry[] = [
+          {
+            url: json.result.url,
+            width: json.result.width,
+            height: json.result.height,
+            seed: json.result.seed,
+            durationMs: json.result.durationMs,
+            isClip: true,
+            prompt: prompt.trim(),
+            workflowId: 'wan-2.2-i2v',
+            styleId: styleId || null,
+            styleLabel: json.style_label,
+            ts: Date.now(),
+          },
+          ...prev,
+        ].slice(0, HISTORY_MAX);
+        writeHistory(next);
+        return next;
       });
       toast.success(`Clip generated in ${(json.result.durationMs / 1000).toFixed(0)}s`);
     } catch (err) {
@@ -522,6 +612,33 @@ export default function LocalStudioPage() {
     }, 0);
   }, [output, handleGenerate]);
 
+  /** Click a history thumbnail to restore that generation into the
+   *  Result panel + reload its inputs (prompt, model, style) into the
+   *  form for easy iteration. Does NOT trigger a new generation;
+   *  user clicks Re-roll or Generate to re-run. */
+  const handleHistoryClick = useCallback((entry: HistoryEntry) => {
+    setOutput({
+      url: entry.url,
+      width: entry.width,
+      height: entry.height,
+      seed: entry.seed,
+      durationMs: entry.durationMs,
+      styleLabel: entry.styleLabel,
+      isClip: entry.isClip,
+      prompt: entry.prompt,
+      workflowId: entry.workflowId,
+    });
+    setPrompt(entry.prompt);
+    setWorkflowId(entry.workflowId);
+    if (entry.styleId) setStyleId(entry.styleId);
+  }, []);
+
+  const handleClearHistory = useCallback(() => {
+    setHistory([]);
+    writeHistory([]);
+    toast('History cleared');
+  }, []);
+
   const handleStop = useCallback(async () => {
     // Two-pronged stop: abort the browser fetch + tell ComfyUI to
     // interrupt its current prompt. Either alone leaves a dangling
@@ -572,6 +689,8 @@ export default function LocalStudioPage() {
         onToggleLogs={() => setShowLogs(v => !v)}
         logs={logs}
       />
+
+      <HistoryStrip history={history} onClick={handleHistoryClick} onClear={handleClearHistory} />
 
       {status?.stylesSource === 'built-in-fallback' && (
         <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-2 text-xs text-amber-200">
@@ -1056,6 +1175,64 @@ function formatDuration(totalSec: number): string {
   const m = Math.floor(totalSec / 60);
   const s = Math.floor(totalSec % 60);
   return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+/** Horizontal strip of recent generation thumbnails. Hidden when
+ *  history is empty. Click a tile to load it back into the result
+ *  panel + restore inputs for fast iteration. */
+function HistoryStrip({
+  history,
+  onClick,
+  onClear,
+}: {
+  history: HistoryEntry[];
+  onClick: (entry: HistoryEntry) => void;
+  onClear: () => void;
+}) {
+  if (history.length === 0) return null;
+  return (
+    <section className="mt-4 rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+          Recent ({history.length})
+        </h2>
+        <button
+          type="button"
+          onClick={onClear}
+          className="rounded-full bg-zinc-800 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-400 transition hover:bg-zinc-700"
+        >
+          Clear
+        </button>
+      </div>
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {history.map((entry) => (
+          <button
+            key={`${entry.ts}-${entry.seed}`}
+            type="button"
+            onClick={() => onClick(entry)}
+            className="group relative shrink-0 overflow-hidden rounded-md border border-zinc-800 transition hover:border-zinc-500"
+            title={`${entry.prompt.slice(0, 100)}${entry.prompt.length > 100 ? '…' : ''}\nseed: ${entry.seed} · ${entry.styleLabel ?? 'no style'}`}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={entry.url}
+              alt=""
+              className="h-20 w-32 object-cover"
+              loading="lazy"
+            />
+            {entry.isClip && (
+              <span className="absolute right-1 top-1 rounded bg-purple-500/80 px-1 py-0.5 text-[9px] font-semibold uppercase text-white">
+                clip
+              </span>
+            )}
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/80 to-transparent px-1.5 py-1 text-[10px] text-zinc-200">
+              {entry.prompt.slice(0, 30)}{entry.prompt.length > 30 ? '…' : ''}
+            </div>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function StatusPill({ status }: { status: StatusResponse | null }) {
