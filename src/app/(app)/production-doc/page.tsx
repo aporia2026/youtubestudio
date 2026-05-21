@@ -2645,6 +2645,95 @@ function ProductionDocPage() {
     [stylePreset, userDefaultModelId, handleBrollClipChange, historyEntryId, computeRowSceneDurationMs],
   );
 
+  // ── "Generate stills (local)" batch ─────────────────────────────────
+  //
+  // Walks every row that hasn't got a still image yet and dispatches a
+  // local Flux schnell generation against /api/generate/production-doc/image.
+  // Sequential so ComfyUI (one prompt at a time) doesn't queue them all
+  // up at once and so the user sees smooth progress.
+  //
+  // Only enabled when LOCAL_STUDIO=1 — cloud users see the existing
+  // per-row image-gen path. Phase 6 v1 of _plans/2026-05-20-comfyui-local-broll.md.
+  const [generatingStills, setGeneratingStills] = React.useState<
+    { done: number; total: number } | null
+  >(null);
+
+  const runGenerateAllStillsLocal = useCallback(async () => {
+    if (!doc) return;
+    const plan = doc.rows
+      .map((row, i) => ({ row, i }))
+      .filter(({ i, row }) => {
+        if (rowImages[i]?.imageUrl) return false;
+        const prompt = (row.ai_image_prompt ?? row.visual_description ?? '').trim();
+        return prompt.length >= 20;
+      });
+    if (plan.length === 0) {
+      toast.info('Every row already has a still — nothing to do.');
+      return;
+    }
+    if (
+      !window.confirm(
+        `Generate ${plan.length} still${plan.length === 1 ? '' : 's'} with Flux schnell locally? ~8 s warm, free.`,
+      )
+    ) {
+      return;
+    }
+    setGeneratingStills({ done: 0, total: plan.length });
+    for (let n = 0; n < plan.length; n++) {
+      const item = plan[n]!;
+      setGeneratingStills({ done: n, total: plan.length });
+      setRowImages((prev) => {
+        const next = [...prev];
+        next[item.i] = { ...next[item.i], status: 'loading' };
+        return next;
+      });
+      const prompt = (item.row.ai_image_prompt ?? item.row.visual_description ?? '').trim();
+      try {
+        const res = await fetch('/api/generate/production-doc/image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt,
+            model: 'flux-schnell-local',
+            onScreenText: item.row.on_screen_text,
+            sectionTitle: item.row.section_title,
+          }),
+        });
+        const data = (await res.json()) as { imageUrl?: string; error?: string };
+        if (res.ok && data.imageUrl) {
+          setRowImages((prev) => {
+            const next = [...prev];
+            next[item.i] = { status: 'done', imageUrl: data.imageUrl!, source: 'generated' };
+            return next;
+          });
+        } else {
+          setRowImages((prev) => {
+            const next = [...prev];
+            next[item.i] = { status: 'error', error: data.error ?? `HTTP ${res.status}` };
+            return next;
+          });
+        }
+      } catch (err) {
+        setRowImages((prev) => {
+          const next = [...prev];
+          next[item.i] = { status: 'error', error: err instanceof Error ? err.message : 'Failed' };
+          return next;
+        });
+      }
+    }
+    setGeneratingStills(null);
+    toast.success(`Batch done: ${plan.length} row${plan.length === 1 ? '' : 's'}.`);
+  }, [doc, rowImages]);
+
+  const generateAllStillsPlanCount = React.useMemo(() => {
+    if (!doc) return 0;
+    return doc.rows.filter((row, i) => {
+      if (rowImages[i]?.imageUrl) return false;
+      const prompt = (row.ai_image_prompt ?? row.visual_description ?? '').trim();
+      return prompt.length >= 20;
+    }).length;
+  }, [doc, rowImages]);
+
   const runAnimateAll = useCallback(async () => {
     if (animatingAll || retryingVideos) return;
     if (animateAllPlan.length === 0) return;
@@ -6409,6 +6498,42 @@ function ProductionDocPage() {
                   : 'B-roll generation is hidden and the rendered video uses stills with Ken Burns motion (pre-animation behaviour).'}
               </span>
             </div>
+            {/* Generate-all-stills (local) — Phase 6 v1. Only renders
+                when LOCAL_STUDIO=1 is wired up in this env. Sits next
+                to Animate all because both are batch operations. */}
+            {localStudioEnabled && (
+              generatingStills ? (
+                <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  <div className="spinner" style={{ width: 14, height: 14 }} />
+                  Generating {generatingStills.done}/{generatingStills.total}…
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={runGenerateAllStillsLocal}
+                  disabled={generateAllStillsPlanCount === 0}
+                  className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+                  style={{
+                    background: generateAllStillsPlanCount === 0 ? 'rgba(120,120,120,0.10)' : 'rgba(16,185,129,0.18)',
+                    color: generateAllStillsPlanCount === 0 ? 'var(--text-muted)' : '#34d399',
+                    border: '1px solid ' + (generateAllStillsPlanCount === 0 ? 'transparent' : 'rgba(16,185,129,0.45)'),
+                    cursor: generateAllStillsPlanCount === 0 ? 'not-allowed' : 'pointer',
+                  }}
+                  title={
+                    generateAllStillsPlanCount === 0
+                      ? 'Every row already has a still or has no usable prompt.'
+                      : `Generate ${generateAllStillsPlanCount} still${generateAllStillsPlanCount === 1 ? '' : 's'} locally with Flux schnell (free).`
+                  }
+                >
+                  ⚡ Stills (local)
+                  {generateAllStillsPlanCount > 0 && (
+                    <span className="ml-1.5 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      {generateAllStillsPlanCount} row{generateAllStillsPlanCount === 1 ? '' : 's'} · free
+                    </span>
+                  )}
+                </button>
+              )
+            )}
             {animateScenes && (
               animatingAll ? (
                 <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
