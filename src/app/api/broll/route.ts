@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { apiRoute } from '@/lib/route-helpers';
 import { assertOwnsResource, ResourceNotInWorkspaceError } from '@/lib/workspace-scope';
 import { listBrollForWorkspace, startBrollGeneration } from '@/lib/broll';
+import { startLocalBrollGeneration } from '@/lib/local-broll';
 import {
   BROLL_MAX_PROMPT_CHARS,
   DEFAULT_BROLL_MODEL_ID,
@@ -145,6 +146,40 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       return NextResponse.json({ error: 'Resource not found in this workspace' }, { status: 404 });
     }
     throw err;
+  }
+
+  // Dispatch on provider: local Wan via ComfyUI vs. Kie cloud.
+  if (model.provider === 'comfyui-local') {
+    if (process.env.LOCAL_STUDIO !== '1') {
+      return NextResponse.json(
+        {
+          error:
+            'Local b-roll requires LOCAL_STUDIO=1. Start the dev server with `$env:LOCAL_STUDIO=1; npm run dev` and ensure ComfyUI is running on localhost:8188.',
+        },
+        { status: 503 },
+      );
+    }
+    try {
+      const result = await startLocalBrollGeneration({
+        workspaceId: session.ws,
+        projectId,
+        sourceScriptId: scriptId,
+        rowSignature,
+        rowIndex,
+        productionDocId,
+        visualDescription,
+        aiImagePrompt: aiImagePrompt || undefined,
+        styleHint,
+        modelId,
+        aspectRatio: aspectRatioRaw,
+        durationSeconds,
+        stillImageUrl,
+      });
+      return NextResponse.json({ ...result, model_id: modelId });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return NextResponse.json({ error: msg }, { status: 502 });
+    }
   }
 
   const apiKey = process.env.KIE_API_KEY;

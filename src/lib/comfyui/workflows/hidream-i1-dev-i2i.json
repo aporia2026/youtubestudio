@@ -1,0 +1,75 @@
+{
+  "1": {
+    "class_type": "UnetLoaderGGUF",
+    "inputs": { "unet_name": "hidream-i1-dev-Q4_K_M.gguf" }
+  },
+  "2": {
+    "class_type": "QuadrupleCLIPLoaderGGUF",
+    "inputs": {
+      "clip_name1": "clip_l_hidream.safetensors",
+      "clip_name2": "clip_g_hidream.safetensors",
+      "clip_name3": "t5xxl_fp8_e4m3fn_scaled.safetensors",
+      "clip_name4": "Meta-Llama-3.1-8B-Instruct.Q5_K_M.gguf"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": { "vae_name": "ae.safetensors" }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "inputs": { "text": "<<PROMPT>>", "clip": ["2", 0] }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "inputs": { "text": "", "clip": ["2", 0] }
+  },
+  "6": {
+    "class_type": "ModelSamplingSD3",
+    "inputs": { "shift": 3.0, "model": ["1", 0] }
+  },
+  "10": {
+    "class_type": "LoadImage",
+    "inputs": { "image": "<<REF_IMAGE>>" }
+  },
+  "11": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "image": ["10", 0],
+      "upscale_method": "bilinear",
+      "width": <<WIDTH>>,
+      "height": <<HEIGHT>>,
+      "crop": "center"
+    }
+  },
+  "12": {
+    "class_type": "VAEEncode",
+    "inputs": { "pixels": ["11", 0], "vae": ["3", 0] }
+  },
+  "8": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": <<SEED>>,
+      "steps": 28,
+      "cfg": 5.0,
+      "sampler_name": "lcm",
+      "scheduler": "normal",
+      "denoise": <<DENOISE>>,
+      "model": ["6", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["12", 0]
+    }
+  },
+  "9": {
+    "class_type": "VAEDecode",
+    "inputs": { "samples": ["8", 0], "vae": ["3", 0] }
+  },
+  "13": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "local-studio/hidream-i1-dev-i2i",
+      "images": ["9", 0]
+    }
+  }
+}

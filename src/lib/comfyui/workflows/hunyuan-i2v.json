@@ -1,0 +1,128 @@
+{
+  "1": {
+    "class_type": "UnetLoaderGGUF",
+    "inputs": {
+      "unet_name": "hunyuan-video-i2v-720p-Q4_K_M.gguf"
+    }
+  },
+  "2": {
+    "class_type": "DualCLIPLoader",
+    "inputs": {
+      "clip_name1": "clip_l.safetensors",
+      "clip_name2": "llava_llama3_fp8_scaled.safetensors",
+      "type": "hunyuan_video"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "hunyuan_video_vae_bf16.safetensors"
+    }
+  },
+  "4": {
+    "class_type": "CLIPVisionLoader",
+    "inputs": {
+      "clip_name": "llava_llama3_vision.safetensors"
+    }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "<<PROMPT>>",
+      "clip": ["2", 0]
+    }
+  },
+  "6": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "<<REF_IMAGE>>"
+    }
+  },
+  "7": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "image": ["6", 0],
+      "upscale_method": "bilinear",
+      "width": <<WIDTH>>,
+      "height": <<HEIGHT>>,
+      "crop": "center"
+    }
+  },
+  "8": {
+    "class_type": "CLIPVisionEncode",
+    "inputs": {
+      "clip_vision": ["4", 0],
+      "image": ["7", 0],
+      "crop": "center"
+    }
+  },
+  "9": {
+    "class_type": "HunyuanImageToVideo",
+    "inputs": {
+      "positive": ["5", 0],
+      "vae": ["3", 0],
+      "width": <<WIDTH>>,
+      "height": <<HEIGHT>>,
+      "length": <<LENGTH>>,
+      "batch_size": 1,
+      "guidance_type": "v1 (concat)",
+      "start_image": ["7", 0]
+    }
+  },
+  "10": {
+    "class_type": "BasicGuider",
+    "inputs": {
+      "model": ["1", 0],
+      "conditioning": ["9", 0]
+    }
+  },
+  "11": {
+    "class_type": "BasicScheduler",
+    "inputs": {
+      "model": ["1", 0],
+      "scheduler": "simple",
+      "steps": <<STEPS>>,
+      "denoise": 1.0
+    }
+  },
+  "12": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "euler"
+    }
+  },
+  "13": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": <<SEED>>
+    }
+  },
+  "14": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": ["13", 0],
+      "guider": ["10", 0],
+      "sampler": ["12", 0],
+      "sigmas": ["11", 0],
+      "latent_image": ["9", 1]
+    }
+  },
+  "15": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["14", 0],
+      "vae": ["3", 0]
+    }
+  },
+  "16": {
+    "class_type": "SaveAnimatedWEBP",
+    "inputs": {
+      "filename_prefix": "local-studio/hunyuan-i2v",
+      "fps": 24,
+      "lossless": false,
+      "quality": 90,
+      "method": "default",
+      "images": ["15", 0]
+    }
+  }
+}

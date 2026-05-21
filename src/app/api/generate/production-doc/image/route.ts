@@ -81,9 +81,77 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Dispatch on provider: local ComfyUI vs. Kie cloud.
+    //
+    // Local path: invoke the ComfyUI generator, get the proxy URL, then
+    // fetch bytes from the ComfyUI /view endpoint server-side (same
+    // origin so no CORS dance) to compute saliency. Skip the R2 mirror
+    // entirely — the proxy URL is local-only by contract.
+    if (spec.provider === 'comfyui-local') {
+      if (process.env.LOCAL_STUDIO !== '1') {
+        return NextResponse.json(
+          {
+            error:
+              'Local image generation requires LOCAL_STUDIO=1. Start the dev server with `$env:LOCAL_STUDIO=1; npm run dev` and ensure ComfyUI is running on localhost:8188.',
+          },
+          { status: 503 },
+        );
+      }
+      if (!spec.localWorkflowId) {
+        return NextResponse.json(
+          { error: `Local model '${spec.value}' has no localWorkflowId mapping` },
+          { status: 500 },
+        );
+      }
+      const { ComfyUILocalGenerator } = await import('@/lib/visual-generator/comfyui-local');
+      const { ComfyUIClient } = await import('@/lib/comfyui/client');
+      const generator = new ComfyUILocalGenerator();
+      if (!(await generator.isReachable())) {
+        return NextResponse.json(
+          { error: 'ComfyUI not reachable on localhost:8188 — start it and try again.' },
+          { status: 503 },
+        );
+      }
+      const result = await generator.generateImage(augmentedPrompt, {
+        workflowId: spec.localWorkflowId,
+        width: 1280,
+        height: 720,
+      });
+      // Compute saliency directly from ComfyUI's bytes (skip the proxy
+      // round-trip — we're already server-side).
+      let imageBuffer: Buffer | null = null;
+      try {
+        const m = result.url.match(
+          /\bfilename=([^&]+).*?subfolder=([^&]*).*?type=([^&]+)/,
+        );
+        if (m) {
+          const comfy = new ComfyUIClient();
+          const { bytes } = await comfy.fetchOutputBytes({
+            filename: decodeURIComponent(m[1]),
+            subfolder: decodeURIComponent(m[2]),
+            type: decodeURIComponent(m[3]) as 'output' | 'temp' | 'input',
+          });
+          imageBuffer = Buffer.from(bytes);
+        }
+      } catch (fetchErr) {
+        logger.warn('Local image saliency fetch failed', {
+          detail: fetchErr instanceof Error ? fetchErr.message : String(fetchErr),
+        });
+      }
+      const saliency = imageBuffer ? await computeImageSaliency(imageBuffer) : null;
+      return NextResponse.json({ imageUrl: result.url, saliency });
+    }
+
     const apiKey = process.env.KIE_API_KEY;
     if (!apiKey) {
       return NextResponse.json({ error: 'KIE_API_KEY is not configured' }, { status: 500 });
+    }
+
+    if (!spec.kieModel) {
+      return NextResponse.json(
+        { error: `Kie model '${spec.value}' missing kieModel mapping` },
+        { status: 500 },
+      );
     }
 
     const taskId = await createKieTask(apiKey, spec.kieModel, buildKieImageInput(spec.value, augmentedPrompt));

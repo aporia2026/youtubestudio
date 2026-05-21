@@ -217,7 +217,7 @@ describe('BROLL_MODELS registry', () => {
   it('every model is tagged with a family', () => {
     for (const m of BROLL_MODELS) {
       expect(m.family).toBeDefined();
-      expect(['kling', 'sora', 'veo', 'runway', 'grok', 'seedance']).toContain(m.family);
+      expect(['comfyui-local', 'kling', 'sora', 'veo', 'runway', 'grok', 'seedance']).toContain(m.family);
     }
   });
 

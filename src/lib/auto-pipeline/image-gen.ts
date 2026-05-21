@@ -95,6 +95,16 @@ export async function generateImageWithFallback(
       logger.warn('auto-pipeline image-gen: unknown model in chain, skipping', { model: modelValue });
       continue;
     }
+    // Local ComfyUI models can't run in the auto-pipeline (no
+    // LOCAL_STUDIO=1 + no ComfyUI in production cron). Skip them and
+    // fall through to the next cloud model in the chain.
+    if (spec.provider === 'comfyui-local' || !spec.kieModel) {
+      logger.warn('auto-pipeline image-gen: skipping non-Kie model', {
+        model: modelValue,
+        provider: spec.provider,
+      });
+      continue;
+    }
 
     const t0 = Date.now();
     try {

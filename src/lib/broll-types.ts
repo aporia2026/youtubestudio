@@ -64,16 +64,21 @@ export type BrollStatus = 'pending' | 'generating' | 'ready' | 'failed';
 export type BrollModelKind = 'text-to-video' | 'image-to-video';
 
 /** Provider/architecture family — used by the picker UI to group entries
- *  under subheadings (Kling, Sora, Veo, Runway, Grok, Seedance) so a 25+
- *  model list scans like a menu instead of a flat dump. New families
- *  are appended; the picker iterates `BROLL_FAMILY_ORDER` to render
- *  groups in a stable order. */
-export type BrollFamily = 'kling' | 'sora' | 'veo' | 'runway' | 'grok' | 'seedance';
+ *  under subheadings (Kling, Sora, Veo, Runway, Grok, Seedance, local)
+ *  so a 25+ model list scans like a menu instead of a flat dump. New
+ *  families are appended; the picker iterates `BROLL_FAMILY_ORDER` to
+ *  render groups in a stable order.
+ *
+ *  `comfyui-local` is the dev-mode family: clips generated locally via
+ *  ComfyUI on the user's PC, $0 per row, requires `LOCAL_STUDIO=1`. */
+export type BrollFamily = 'kling' | 'sora' | 'veo' | 'runway' | 'grok' | 'seedance' | 'comfyui-local';
 
 /** Display order for picker family subheadings. Picker UI iterates this
  *  array and renders one group per family, skipping families with no
- *  entries. */
+ *  entries. Local-ComfyUI lands at the top so it's the first thing the
+ *  user sees when LOCAL_STUDIO is enabled. */
 export const BROLL_FAMILY_ORDER: ReadonlyArray<BrollFamily> = [
+  'comfyui-local',
   'kling',
   'sora',
   'veo',
@@ -84,6 +89,7 @@ export const BROLL_FAMILY_ORDER: ReadonlyArray<BrollFamily> = [
 
 /** Human label per family — picker subheading text. */
 export const BROLL_FAMILY_LABEL: Readonly<Record<BrollFamily, string>> = Object.freeze({
+  'comfyui-local': 'Local (free)',
   kling: 'Kling',
   sora: 'Sora',
   veo: 'Google Veo',
@@ -109,7 +115,10 @@ export interface BrollModelDescriptor {
   label: string;
   kind: BrollModelKind;
   family: BrollFamily;
-  provider: 'kie';
+  /** Where the generation runs. `kie` = cloud, charged per clip. `comfyui-local`
+   *  = local ComfyUI, free but slower and gated by `LOCAL_STUDIO=1`. The
+   *  /api/broll route dispatches off this field. */
+  provider: 'kie' | 'comfyui-local';
   /** Display-only USD price quoted from the Kie pricing page. NEVER used
    *  to bill; just shown in the picker so the user sees cost-per-click. */
   priceUsdLabel: string;
@@ -493,7 +502,34 @@ function buildSeedance15Pro480pT2VBody(args: BuildBrollBodyArgs): Record<string,
 // Order = display order in the picker. The picker UI groups by `kind` —
 // image-to-video first (because it preserves the user's chosen visual style),
 // text-to-video below.
+/** ComfyUI local-Wan dispatch — never called by Kie wire layer (the
+ *  /api/broll route checks `provider === 'comfyui-local'` and routes
+ *  to the local orchestrator before reaching buildBody). Required by
+ *  the BrollModelDescriptor shape; left empty so a misrouted call
+ *  fails loudly rather than silently producing a malformed Kie body. */
+function buildLocalWanI2VBody(_args: BuildBrollBodyArgs): Record<string, unknown> {
+  throw new Error('Local Wan models do not use Kie wire format');
+}
+
 export const BROLL_MODELS: readonly BrollModelDescriptor[] = [
+  // ─── Local (ComfyUI on your PC, $0 per clip) ────────────────────────────
+  // Only shows in the picker when LOCAL_STUDIO is enabled (UI filter).
+  // Wan 2.2 5B is the only local i2v model that fits 16 GB VRAM
+  // cleanly — see _plans/2026-05-20-comfyui-local-broll.md Phase 3.
+  {
+    id: 'wan-2-2-local-i2v',
+    label: 'Wan 2.2 — Local (free)',
+    kind: 'image-to-video',
+    family: 'comfyui-local',
+    provider: 'comfyui-local',
+    priceUsdLabel: 'Free',
+    priceUsd: 0,
+    durationSeconds: 2,
+    supportedAspects: ['16:9'],
+    endpoint: 'createTask',
+    blurb: 'Local ComfyUI — ~3 min cold, ~90 s warm. Requires LOCAL_STUDIO=1.',
+    buildBody: buildLocalWanI2VBody,
+  },
   // ─── Image-to-video ─────────────────────────────────────────────────────
   {
     id: 'kling-v2-5-turbo-i2v-pro-10s',

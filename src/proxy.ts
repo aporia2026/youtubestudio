@@ -70,6 +70,13 @@ const PUBLIC_PATHS: readonly string[] = [
   // it carries, so this route grants no access the caller doesn't already
   // have.
   '/api/download-proxy',
+  // Local Studio — developer-only dev-mode feature gated by the
+  // `LOCAL_STUDIO=1` env flag. The routes themselves return 404 when
+  // the flag is unset, so Vercel prod is unaffected. In dev mode on
+  // the user's own PC there's no remote surface (ComfyUI is bound to
+  // 127.0.0.1), so skipping the session gate here is safe.
+  '/local-studio',
+  '/api/local-studio',
 ];
 
 /** Path prefixes that grant a token-portal exemption — anything matching any
