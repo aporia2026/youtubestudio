@@ -47,6 +47,7 @@ import { SectionRowControls } from '@/components/production-doc/SectionRowContro
 import { OstModeControl, type OstMode } from '@/components/production-doc/OstModeControl';
 import { StyleSheetPanel } from '@/components/production-doc/StyleSheetPanel';
 import { resolveSheetReference } from '@/lib/style-sheet';
+import { pickLocalStillModel, type LocalStillModel } from '@/lib/local-still-picker';
 import { MissingClipsModal } from '@/components/production-doc/MissingClipsModal';
 import { MaskBrushEditor } from '@/components/production-doc/MaskBrushEditor';
 import {
@@ -2853,8 +2854,16 @@ function ProductionDocPage() {
 
   const runGenerateAllStillsLocal = useCallback(async () => {
     if (!doc) return;
+    // Phase 6 v2 — pre-compute the per-row local still model so the
+    // confirm dialog can show the breakdown (e.g. "12 × Flux schnell + 3
+    // × Qwen-Image"). The picker resolves baked-text rows + styled docs
+    // to Qwen-Image and everything else to Flux schnell. See
+    // `_plans/2026-05-21-phase-6-v2-smart-local-still-batch.md`.
     const plan = doc.rows
-      .map((row, i) => ({ row, i }))
+      .map((row, i) => {
+        const picked = pickLocalStillModel({ row, doc });
+        return { row, i, model: picked.model, reason: picked.reason };
+      })
       .filter(({ i, row }) => {
         if (rowImages[i]?.imageUrl) return false;
         const prompt = (row.ai_image_prompt ?? row.visual_description ?? '').trim();
@@ -2864,9 +2873,23 @@ function ProductionDocPage() {
       toast.info('Every row already has a still — nothing to do.');
       return;
     }
+    const schnellCount = plan.filter((p) => p.model === 'flux-schnell-local').length;
+    const qwenCount = plan.filter((p) => p.model === 'qwen-image-local').length;
+    // Rough warm-time estimates from the May 21 comparison
+    // (`/local-studio/compare`): schnell ≈ 20s, qwen ≈ 174s. Cold load on
+    // the first run of each model is excluded — the user sees a separate
+    // "first one is slow" hint in the existing batch-progress UI.
+    const estimatedSec = schnellCount * 20 + qwenCount * 174;
+    const estimatedMin = Math.max(1, Math.round(estimatedSec / 60));
+    const breakdown = [
+      schnellCount > 0 ? `${schnellCount} × Flux schnell` : null,
+      qwenCount > 0 ? `${qwenCount} × Qwen-Image` : null,
+    ]
+      .filter(Boolean)
+      .join(', ');
     if (
       !window.confirm(
-        `Generate ${plan.length} still${plan.length === 1 ? '' : 's'} with Flux schnell locally? ~8 s warm, free.`,
+        `Generate ${plan.length} still${plan.length === 1 ? '' : 's'} locally? ${breakdown}. Estimated ~${estimatedMin} min, free.`,
       )
     ) {
       return;
@@ -2881,6 +2904,11 @@ function ProductionDocPage() {
         return next;
       });
       const prompt = (item.row.ai_image_prompt ?? item.row.visual_description ?? '').trim();
+      console.info('[prodoc batch-stills] picked-model', {
+        row_index: item.i,
+        picked: item.model satisfies LocalStillModel,
+        reason: item.reason,
+      });
       try {
         const sheetRef = resolveSheetReference(item.row, doc);
         const res = await fetch('/api/generate/production-doc/image', {
@@ -2888,13 +2916,18 @@ function ProductionDocPage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             prompt,
-            model: 'flux-schnell-local',
+            model: item.model,
             onScreenText: item.row.on_screen_text,
             onScreenTextMode: item.row.on_screen_text_mode ?? doc.on_screen_text_mode_default,
             sectionTitle: item.row.section_title,
             sectionTitleLayout: item.row.section_title_layout ?? doc.section_title_layout_default,
             referenceImageUrl: sheetRef.referenceImageUrl,
             styleSheetDescription: sheetRef.styleSheetDescription,
+            // Local-Flux bulk path — the route's local branch fires
+            // before the v2 i2i block, so styleId is currently a
+            // no-op here. Passed for completeness when local i2i
+            // arrives (v3 of the May 21 plan).
+            styleId: stylePreset || undefined,
           }),
         });
         const data = (await res.json()) as { imageUrl?: string; error?: string };
@@ -4407,6 +4440,13 @@ function ProductionDocPage() {
           sectionTitleLayout,
           referenceImageUrl,
           styleSheetDescription,
+          // v2 (2026-05-21): when the active style is a saved private
+          // style with attached refs, this routes the call through
+          // the i2i dispatcher (NanoBanana Pro by default). When it's
+          // a built-in like 'doodle_explainer', the route's
+          // resolveStyle returns origin='built-in' and falls back to
+          // the legacy T2I path unchanged.
+          styleId: stylePreset || undefined,
         }),
       });
       const data = await safeJson(res);
@@ -6793,7 +6833,7 @@ function ProductionDocPage() {
                   title={
                     generateAllStillsPlanCount === 0
                       ? 'Every row already has a still or has no usable prompt.'
-                      : `Generate ${generateAllStillsPlanCount} still${generateAllStillsPlanCount === 1 ? '' : 's'} locally with Flux schnell (free).`
+                      : `Generate ${generateAllStillsPlanCount} still${generateAllStillsPlanCount === 1 ? '' : 's'} locally. Each row picks Flux schnell or Qwen-Image automatically — baked-text rows and rows on styled docs use Qwen for quality; everything else uses Flux schnell for speed. Free either way.`
                   }
                 >
                   ⚡ Stills (local)
