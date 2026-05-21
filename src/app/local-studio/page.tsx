@@ -134,11 +134,19 @@ function writeHistory(entries: HistoryEntry[]): void {
   }
 }
 
+// Presets oriented around YouTube long-form (1920×1080) with section-title
+// stripe variants matched pixel-for-pixel to Remotion's letterbox geometry —
+// see `src/lib/render-canvas.ts` and
+// `_plans/2026-05-21-resolution-aware-generation.md`. Thumbnail / Shorts /
+// Square live below for the non-long-form cases.
 const PRESET_SIZES: Array<{ label: string; width: number; height: number }> = [
-  { label: '16:9 — 1280×720', width: 1280, height: 720 },
-  { label: '16:9 — 1920×1080', width: 1920, height: 1080 },
-  { label: '1:1 — 1024×1024', width: 1024, height: 1024 },
-  { label: '9:16 — 720×1280', width: 720, height: 1280 },
+  { label: 'YouTube 1920×1080 (no title row)', width: 1920, height: 1080 },
+  { label: 'YouTube + title row 1920×944 (default 13%)', width: 1920, height: 944 },
+  { label: 'YouTube + max title row 1920×840 (22%)', width: 1920, height: 840 },
+  { label: 'YouTube + min title row 1920×1016 (6%)', width: 1920, height: 1016 },
+  { label: 'Thumbnail 1920×1080', width: 1920, height: 1080 },
+  { label: 'Shorts 1080×1920', width: 1080, height: 1920 },
+  { label: 'Square 1080×1080', width: 1080, height: 1080 },
 ];
 
 export default function LocalStudioPage() {

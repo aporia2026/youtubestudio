@@ -2697,6 +2697,7 @@ function ProductionDocPage() {
             model: 'flux-schnell-local',
             onScreenText: item.row.on_screen_text,
             sectionTitle: item.row.section_title,
+            sectionTitleLayout: item.row.section_title_layout ?? doc.section_title_layout_default,
           }),
         });
         const data = (await res.json()) as { imageUrl?: string; error?: string };
@@ -2782,6 +2783,7 @@ function ProductionDocPage() {
     prompt: string;
     onScreenText?: string;
     sectionTitle?: string;
+    sectionTitleLayout?: 'overlay' | 'letterbox';
     overlayStockTerms?: string;
     skipOverlay?: boolean;
   }>>(() => {
@@ -2792,6 +2794,7 @@ function ProductionDocPage() {
       prompt: string;
       onScreenText?: string;
       sectionTitle?: string;
+      sectionTitleLayout?: 'overlay' | 'letterbox';
       overlayStockTerms?: string;
       skipOverlay?: boolean;
     }> = [];
@@ -2810,6 +2813,7 @@ function ProductionDocPage() {
         prompt,
         onScreenText: row?.on_screen_text,
         sectionTitle: row?.section_title,
+        sectionTitleLayout: row?.section_title_layout ?? doc.section_title_layout_default,
         overlayStockTerms: row?.overlay_stock_terms,
         skipOverlay,
       });
@@ -2835,6 +2839,7 @@ function ProductionDocPage() {
     prompt: string;
     onScreenText?: string;
     sectionTitle?: string;
+    sectionTitleLayout?: 'overlay' | 'letterbox';
     overlayStockTerms?: string;
     skipOverlay?: boolean;
   }>>(() => {
@@ -2845,6 +2850,7 @@ function ProductionDocPage() {
       prompt: string;
       onScreenText?: string;
       sectionTitle?: string;
+      sectionTitleLayout?: 'overlay' | 'letterbox';
       overlayStockTerms?: string;
       skipOverlay?: boolean;
     }> = [];
@@ -2863,6 +2869,7 @@ function ProductionDocPage() {
         prompt,
         onScreenText: row?.on_screen_text,
         sectionTitle: row?.section_title,
+        sectionTitleLayout: row?.section_title_layout ?? doc.section_title_layout_default,
         overlayStockTerms: row?.overlay_stock_terms,
         skipOverlay,
       });
@@ -2901,6 +2908,7 @@ function ProductionDocPage() {
       await generateImageForRow(item.rowIndex, item.prompt, {
         onScreenText: item.onScreenText,
         sectionTitle: item.sectionTitle,
+        sectionTitleLayout: item.sectionTitleLayout,
         overlayStockTerms: item.overlayStockTerms,
         skipOverlay: item.skipOverlay,
       });
@@ -2934,6 +2942,7 @@ function ProductionDocPage() {
       await generateImageForRow(item.rowIndex, item.prompt, {
         onScreenText: item.onScreenText,
         sectionTitle: item.sectionTitle,
+        sectionTitleLayout: item.sectionTitleLayout,
         overlayStockTerms: item.overlayStockTerms,
         skipOverlay: item.skipOverlay,
       });
@@ -4111,6 +4120,12 @@ function ProductionDocPage() {
     meta: {
       onScreenText?: string;
       sectionTitle?: string;
+      /** Resolved layout for the row's section-title stripe (caller must
+       *  fold in the doc-level default before calling). Drives the image
+       *  canvas: 'letterbox' shrinks height to fit below the stripe;
+       *  'overlay' keeps full 1920×1080. See
+       *  `_plans/2026-05-21-resolution-aware-generation.md`. */
+      sectionTitleLayout?: 'overlay' | 'letterbox';
       overlayStockTerms?: string;
       /** True when the doc-level "Auto-generate overlays" toggle is OFF
        *  OR this row has `skip_overlay: true`. Suppresses the post-
@@ -4129,11 +4144,13 @@ function ProductionDocPage() {
     });
     const onScreenText = meta.onScreenText?.trim() || undefined;
     const sectionTitle = meta.sectionTitle?.trim() || undefined;
+    const sectionTitleLayout = meta.sectionTitleLayout;
     const overlayTerms = meta.overlayStockTerms?.trim() || undefined;
     console.info('[prodoc image-gen] start', {
       rowIndex,
       hasOst: Boolean(onScreenText),
       hasSectionTitle: Boolean(sectionTitle),
+      sectionTitleLayout: sectionTitleLayout ?? null,
       hasOverlayTerms: Boolean(overlayTerms),
     });
     try {
@@ -4141,7 +4158,7 @@ function ProductionDocPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal,
-        body: JSON.stringify({ prompt, model: imageModel, onScreenText, sectionTitle }),
+        body: JSON.stringify({ prompt, model: imageModel, onScreenText, sectionTitle, sectionTitleLayout }),
       });
       const data = await safeJson(res);
       if (!res.ok) throw new Error((data.error as string) || 'Failed');
@@ -4561,6 +4578,7 @@ function ProductionDocPage() {
             {
               onScreenText: row.on_screen_text,
               sectionTitle: row.section_title,
+              sectionTitleLayout: row.section_title_layout ?? doc?.section_title_layout_default,
               overlayStockTerms: row.overlay_stock_terms,
               skipOverlay,
             },
@@ -6802,6 +6820,7 @@ function ProductionDocPage() {
                                 generateImageForRow(i, row.ai_image_prompt, {
                                   onScreenText: row.on_screen_text,
                                   sectionTitle: row.section_title,
+                                  sectionTitleLayout: row.section_title_layout ?? doc?.section_title_layout_default,
                                   overlayStockTerms: row.overlay_stock_terms,
                                   skipOverlay: typeof row.skip_overlay === 'boolean'
                                     ? row.skip_overlay
@@ -7177,6 +7196,7 @@ function ProductionDocPage() {
                             onRetry={() => row.ai_image_prompt?.trim() && generateImageForRow(i, row.ai_image_prompt, {
                               onScreenText: row.on_screen_text,
                               sectionTitle: row.section_title,
+                              sectionTitleLayout: row.section_title_layout ?? doc?.section_title_layout_default,
                               overlayStockTerms: row.overlay_stock_terms,
                               skipOverlay: typeof row.skip_overlay === 'boolean'
                                 ? row.skip_overlay

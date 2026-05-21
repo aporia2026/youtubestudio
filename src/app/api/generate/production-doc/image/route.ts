@@ -9,6 +9,7 @@ import {
   getImagesBucket,
   uploadToBucket,
 } from '@/lib/r2';
+import { computeImageCanvas } from '@/lib/render-canvas';
 
 export const maxDuration = 300;
 
@@ -18,27 +19,49 @@ export async function POST(req: NextRequest) {
     const { limited } = checkRateLimit(`prodoc-img:${getClientIP(req)}`, 30, 60_000);
     if (limited) return NextResponse.json({ error: 'Rate limited' }, { status: 429 });
 
-    let body: { prompt?: string; model?: string; onScreenText?: string; sectionTitle?: string };
+    let body: {
+      prompt?: string;
+      model?: string;
+      onScreenText?: string;
+      sectionTitle?: string;
+      sectionTitleLayout?: 'overlay' | 'letterbox';
+    };
     try {
       body = await req.json();
     } catch {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
     }
 
-    const { prompt, model, onScreenText, sectionTitle } = body;
+    const { prompt, model, onScreenText, sectionTitle, sectionTitleLayout } = body;
     if (!prompt?.trim()) {
       return NextResponse.json({ error: 'prompt is required' }, { status: 400 });
     }
+    // Parse layout against the literal union; anything else collapses to
+    // the production-doc render-time default of 'letterbox'.
+    const normalizedLayout: 'overlay' | 'letterbox' =
+      sectionTitleLayout === 'overlay' || sectionTitleLayout === 'letterbox'
+        ? sectionTitleLayout
+        : 'letterbox';
 
-    // Safe-top scene bias — when the row will have a section-title stripe
-    // overlay at render time, describe the composition so the top of the
-    // frame reads as empty space the stripe can sit on. Phrased as plain
-    // scene description, not imperative meta-instruction: directives like
+    // Compute the exact pixel canvas the still should target so it lands
+    // pixel-clean inside the Remotion composition that displays it. See
+    // _plans/2026-05-21-resolution-aware-generation.md.
+    const canvas = computeImageCanvas({
+      sectionTitle,
+      sectionTitleLayout: normalizedLayout,
+    });
+
+    // Safe-top scene bias — only useful when the stripe will overlay the
+    // image (covering its top). When the stripe is letterboxed, we now
+    // generate at the exact visible canvas, so biasing the prompt is
+    // redundant and only crowds the input. Phrased as plain scene
+    // description, not imperative meta-instruction: directives like
     // "LAYOUT CONSTRAINT — Leave the top 13% as negative space, do NOT
     // place faces…" get rendered verbatim into the image by diffusion
     // models, which can't distinguish rules-to-follow from text-to-draw.
     const hasSectionStripe = Boolean(sectionTitle?.trim());
-    const safeTopDirective = hasSectionStripe
+    const needsSafeTopBias = hasSectionStripe && normalizedLayout === 'overlay';
+    const safeTopDirective = needsSafeTopBias
       ? `Wide composition with an empty open sky or plain low-detail background across the upper portion of the frame. All characters, faces, objects, and key details sit in the lower portion.\n\n`
       : '';
 
@@ -53,7 +76,9 @@ export async function POST(req: NextRequest) {
     // appear in the image".
     const safeOnScreenText = (onScreenText ?? '').trim().replace(/[\r\n]+/g, ' ').slice(0, 120);
     const escapedOst = safeOnScreenText.replace(/"/g, '\\"');
-    const ostPosition = hasSectionStripe
+    // OST sits below the stripe only when the stripe overlays the image.
+    // Letterbox layout already crops the canvas so OST can land anywhere.
+    const ostPosition = needsSafeTopBias
       ? 'in the lower portion of the frame'
       : 'within the scene';
     const ostLeadingDirective = safeOnScreenText
@@ -112,10 +137,19 @@ export async function POST(req: NextRequest) {
           { status: 503 },
         );
       }
+      logger.info('[prodoc image-gen] canvas resolved', {
+        model: spec.value,
+        width: canvas.width,
+        height: canvas.height,
+        letterboxed: canvas.letterboxed,
+        stripe_height_px: canvas.stripeHeightPx,
+        section_title: Boolean(sectionTitle?.trim()),
+        layout: hasSectionStripe ? normalizedLayout : 'none',
+      });
       const result = await generator.generateImage(augmentedPrompt, {
         workflowId: spec.localWorkflowId,
-        width: 1280,
-        height: 720,
+        width: canvas.width,
+        height: canvas.height,
       });
       // Compute saliency directly from ComfyUI's bytes (skip the proxy
       // round-trip — we're already server-side).
