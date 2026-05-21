@@ -507,15 +507,15 @@ function buildSeedance15Pro480pT2VBody(args: BuildBrollBodyArgs): Record<string,
  *  to the local orchestrator before reaching buildBody). Required by
  *  the BrollModelDescriptor shape; left empty so a misrouted call
  *  fails loudly rather than silently producing a malformed Kie body. */
-function buildLocalWanI2VBody(_args: BuildBrollBodyArgs): Record<string, unknown> {
-  throw new Error('Local Wan models do not use Kie wire format');
+function buildLocalI2VBody(_args: BuildBrollBodyArgs): Record<string, unknown> {
+  throw new Error('Local i2v models do not use Kie wire format');
 }
 
 export const BROLL_MODELS: readonly BrollModelDescriptor[] = [
   // ─── Local (ComfyUI on your PC, $0 per clip) ────────────────────────────
   // Only shows in the picker when LOCAL_STUDIO is enabled (UI filter).
-  // Wan 2.2 5B is the only local i2v model that fits 16 GB VRAM
-  // cleanly — see _plans/2026-05-20-comfyui-local-broll.md Phase 3.
+  // Two local i2v paths verified on 16 GB VRAM — see
+  // `_plans/2026-05-20-comfyui-local-broll.md` Phase 3 + 8.1.
   {
     id: 'wan-2-2-local-i2v',
     label: 'Wan 2.2 — Local (free)',
@@ -527,8 +527,22 @@ export const BROLL_MODELS: readonly BrollModelDescriptor[] = [
     durationSeconds: 2,
     supportedAspects: ['16:9'],
     endpoint: 'createTask',
-    blurb: 'Local ComfyUI — ~3 min cold, ~90 s warm. Requires LOCAL_STUDIO=1.',
-    buildBody: buildLocalWanI2VBody,
+    blurb: 'Local ComfyUI Wan 2.2 — ~5 min cold, ~3 min warm. 704×416 @ 16 fps. Requires LOCAL_STUDIO=1.',
+    buildBody: buildLocalI2VBody,
+  },
+  {
+    id: 'hunyuan-local-i2v',
+    label: 'HunyuanVideo — Local (free)',
+    kind: 'image-to-video',
+    family: 'comfyui-local',
+    provider: 'comfyui-local',
+    priceUsdLabel: 'Free',
+    priceUsd: 0,
+    durationSeconds: 2,
+    supportedAspects: ['16:9'],
+    endpoint: 'createTask',
+    blurb: 'Local ComfyUI HunyuanVideo I2V — ~4 min cold, ~3 min warm. 480×272 @ 24 fps. WEBM for Remotion. Requires LOCAL_STUDIO=1.',
+    buildBody: buildLocalI2VBody,
   },
   // ─── Image-to-video ─────────────────────────────────────────────────────
   {

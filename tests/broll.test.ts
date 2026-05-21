@@ -163,8 +163,13 @@ describe('BROLL_MODELS registry', () => {
     }
   });
 
-  it('every model can build a valid Kie request body', () => {
+  it('every Kie model can build a valid Kie request body', () => {
     for (const m of BROLL_MODELS) {
+      // Local ComfyUI models dispatch through `startLocalBrollGeneration`
+      // and never produce a Kie wire body — their buildBody stub throws
+      // deliberately to surface routing bugs. Skip them here; they have
+      // their own integration coverage via `tests/local-broll.test.ts`.
+      if (m.provider === 'comfyui-local') continue;
       const body = m.buildBody({
         prompt: 'test prompt',
         aspectRatio: '16:9',
@@ -181,10 +186,13 @@ describe('BROLL_MODELS registry', () => {
     }
   });
 
-  it('image-to-video bodies carry the still image URL', () => {
+  it('image-to-video Kie bodies carry the still image URL', () => {
     const STILL = 'https://example.com/x.jpg';
     for (const m of BROLL_MODELS) {
       if (m.kind !== 'image-to-video') continue;
+      // Same skip rationale as the body-shape test above — local models
+      // don't use the Kie wire format.
+      if (m.provider === 'comfyui-local') continue;
       const body = m.buildBody({
         prompt: 'test',
         aspectRatio: '16:9',

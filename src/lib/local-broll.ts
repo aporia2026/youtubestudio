@@ -32,18 +32,69 @@ import {
 } from './broll-types';
 import { buildBrollPrompt, getBrollClip } from './broll';
 
-const WORKFLOW_PATH = join(
-  process.cwd(),
-  'src',
-  'lib',
-  'comfyui',
-  'workflows',
-  'wan-2.2-i2v-broll.json',
-);
+/** Per-model local clip dispatch table.
+ *
+ *  Each entry pairs a `BrollModel.id` (the public id surfaced in
+ *  `BROLL_MODELS` / row data) with the ComfyUI workflow + dimensions
+ *  + native frame rate it needs. Adding a third local i2v model later
+ *  is one line in this table + one new workflow JSON.
+ *
+ *  Dimensions are tuned to fit a single ComfyUI generation in 16 GB
+ *  VRAM at the model's grid requirement (Wan = 32, Hunyuan = 16).
+ *  Both produce a WEBM via SaveWEBM so Remotion's renderer can ingest
+ *  the clip directly (the original `hunyuan-i2v.json` saves WEBP for
+ *  the local-studio preview path; the `-broll` variant swaps that
+ *  for WEBM). See `_plans/2026-05-20-comfyui-local-broll.md`. */
+interface LocalClipModelConfig {
+  workflowFile: string;
+  width: number;
+  height: number;
+  /** Native fps the model is trained at. Determines the frames-per-
+   *  second of the saved clip and how `durationSeconds` maps to
+   *  `LENGTH` placeholder. */
+  fps: number;
+  /** Frame-count quantiser. Wan's KSampler tolerates any value; Hunyuan
+   *  expects (4k+1) latents. Both work fine for arbitrary integer
+   *  frame counts at the workflow level, but staying inside the
+   *  expected quantum keeps motion smoothest. */
+  frameQuantum: 1 | 4;
+  /** KSampler step count tuned for the model on 16 GB VRAM. */
+  steps: number;
+  /** Tag persisted to `broll_clips.generation_params.local_workflow`
+   *  so a future migration / debug query can tell which one produced
+   *  a given clip. */
+  workflowTag: string;
+}
 
-// Loaded once at module init. Tied to the Wan i2v workflow; if Phase 4
-// adds more local clip models we'd key this by model id.
-const WAN_BROLL_TEMPLATE = readFileSync(WORKFLOW_PATH, 'utf8');
+const LOCAL_CLIP_MODELS: Record<string, LocalClipModelConfig> = {
+  'wan-2-2-local-i2v': {
+    workflowFile: 'wan-2.2-i2v-broll.json',
+    width: 704,
+    height: 416,
+    fps: 16,
+    frameQuantum: 4,
+    steps: 20,
+    workflowTag: 'wan-2.2-i2v-broll',
+  },
+  'hunyuan-local-i2v': {
+    workflowFile: 'hunyuan-i2v-broll.json',
+    width: 480,
+    height: 272,
+    fps: 24,
+    frameQuantum: 1,
+    steps: 20,
+    workflowTag: 'hunyuan-i2v-broll',
+  },
+};
+
+/** Read every workflow template once at module init — saves a disk hit
+ *  per generation and lets us fail fast on missing files. */
+const LOCAL_CLIP_TEMPLATES: Record<string, string> = Object.fromEntries(
+  Object.entries(LOCAL_CLIP_MODELS).map(([id, cfg]) => [
+    id,
+    readFileSync(join(process.cwd(), 'src', 'lib', 'comfyui', 'workflows', cfg.workflowFile), 'utf8'),
+  ]),
+);
 
 export interface StartLocalBrollArgs {
   workspaceId: string;
@@ -72,13 +123,22 @@ export interface StartLocalBrollArgs {
 export async function startLocalBrollGeneration(
   args: StartLocalBrollArgs,
 ): Promise<{ id: string; prompt: string; status: BrollStatus; task_id: string }> {
+  const modelConfig = LOCAL_CLIP_MODELS[args.modelId];
+  const template = LOCAL_CLIP_TEMPLATES[args.modelId];
+  if (!modelConfig || !template) {
+    throw new Error(
+      `Unknown local clip model '${args.modelId}'. Known: ${Object.keys(LOCAL_CLIP_MODELS).join(', ')}`,
+    );
+  }
   if (!args.stillImageUrl) {
     throw new Error(
-      'Local Wan animates an existing still — generate the row\'s image first, then animate it.',
+      "Local i2v animates an existing still — generate the row's image first, then animate it.",
     );
   }
   if (args.aspectRatio !== '16:9') {
-    throw new Error('Local Wan only supports 16:9 in v1. Use a Kie model for other aspects.');
+    throw new Error(
+      `Local i2v only supports 16:9 in v1 (got ${args.aspectRatio}). Use a Kie model for other aspects.`,
+    );
   }
 
   const prompt = buildBrollPrompt({
@@ -96,7 +156,7 @@ export async function startLocalBrollGeneration(
   const client = new ComfyUIClient();
   if (!(await client.isReachable())) {
     throw new Error(
-      'ComfyUI is not reachable on localhost:8188. Start it (run_nvidia_gpu.bat) and try again.',
+      'ComfyUI is not reachable on localhost:8188. Start it (scripts/start-comfyui.ps1) and try again.',
     );
   }
 
@@ -108,13 +168,12 @@ export async function startLocalBrollGeneration(
   });
 
   const durationSeconds = Math.max(2, Math.min(8, args.durationSeconds ?? 2));
-  // Wan native fps is 16. Length = frame count quantised to (4k+1).
-  const rawFrames = Math.round(durationSeconds * 16);
-  const length = Math.round((rawFrames - 1) / 4) * 4 + 1;
-  // 16:9 dimensions tuned for 16 GB VRAM. Multiples of 32 required by Wan.
-  const width = 704;
-  const height = 416;
-  const steps = 20;
+  const rawFrames = Math.round(durationSeconds * modelConfig.fps);
+  // Quantise to the model's expected latent grid (Wan = 4k+1, Hunyuan = 1).
+  const length = modelConfig.frameQuantum === 4
+    ? Math.max(1, Math.round((rawFrames - 1) / 4) * 4 + 1)
+    : Math.max(1, rawFrames);
+  const { width, height, steps, workflowTag, fps } = modelConfig;
   const seed = randomSeed();
 
   const values: PlaceholderMap = {
@@ -126,15 +185,17 @@ export async function startLocalBrollGeneration(
     SEED: seed,
     REF_IMAGE: refFilename,
   };
-  const graph = fillWorkflow(WAN_BROLL_TEMPLATE, values);
+  const graph = fillWorkflow(template, values);
 
   logger.info('[local-broll submit]', {
     model_id: args.modelId,
+    workflow: workflowTag,
     workspace_id: args.workspaceId,
     row_index: args.rowIndex,
     width,
     height,
     length,
+    fps,
     steps,
     seed,
     ref_filename: refFilename,
@@ -145,16 +206,17 @@ export async function startLocalBrollGeneration(
 
   const generationParams = {
     aspect_ratio: args.aspectRatio,
-    duration_seconds: length / 16,
+    duration_seconds: length / fps,
     style_hint: args.styleHint || null,
     source_ai_image_prompt: args.aiImagePrompt || null,
     source_visual_description: args.visualDescription,
     still_image_url: args.stillImageUrl,
     model_kind: 'image-to-video' as const,
-    local_workflow: 'wan-2.2-i2v-broll',
+    local_workflow: workflowTag,
     local_width: width,
     local_height: height,
     local_length: length,
+    local_fps: fps,
     local_steps: steps,
     local_ref_filename: refFilename,
   };
@@ -176,7 +238,7 @@ export async function startLocalBrollGeneration(
       ${args.modelId},
       ${'comfyui-local'},
       ${args.aspectRatio},
-      ${length / 16},
+      ${length / fps},
       'generating',
       ${submit.prompt_id},
       ${JSON.stringify(generationParams)}::jsonb
