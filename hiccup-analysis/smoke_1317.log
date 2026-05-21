@@ -1,0 +1,29 @@
+=== Smoke test started at 13:17:04 ===
+
+--- flux-schnell ---
+  workflow=flux-schnell-t2i.json timeout=300s
+  submitted prompt_id=4fe70f95-6616-43a2-9257-31ee50ba8ba7
+  OK flux-schnell: 162s status=success
+
+--- flux-dev ---
+  workflow=flux-dev-t2i.json timeout=600s
+  submitted prompt_id=e654779d-ca10-4d12-91e9-24fa7000c437
+  OK flux-dev: 201s status=success
+
+--- wan-2.2-i2v ---
+  workflow=wan-2.2-i2v.json timeout=900s
+  submitted prompt_id=f2b84854-b34b-4c36-b418-77b71d1043b5
+  OK wan-2.2-i2v: 286s status=success
+
+--- hunyuan-i2v ---
+  workflow=hunyuan-i2v.json timeout=1200s
+  submitted prompt_id=890fea52-1f82-4448-a240-de2778fb8c5d
+  OK hunyuan-i2v: 262s status=success
+
+=== SUMMARY ===
+  OK  flux-schnell    162s  success
+  OK  flux-dev        201s  success
+  OK  wan-2.2-i2v     286s  success
+  OK  hunyuan-i2v     262s  success
+
+=== Finished at 13:32:17 — all_ok=True ===

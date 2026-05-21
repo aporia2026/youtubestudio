@@ -376,6 +376,23 @@ Each step is independently shippable and reversible. Per-doc toggles default OFF
 - **UI**: `/local-studio` page + per-row buttons on existing production-doc. SwarmUI optional as a power-user companion.
 - **Phase 1 already executable** with Flux on disk — start there.
 
+## Phase 4.5 — Model-swap stability (2026-05-20)
+
+The picker offers Flux schnell, Flux dev, Wan 2.2 I2V, and HunyuanVideo I2V back-to-back, so the ComfyUI process is constantly evicting one large model and loading another. ComfyUI's default smart-memory mode keeps the previous model's weights resident "in case the next prompt reuses them," which thrashed our workload: after a Wan generation the 10 GB Wan model lingered in VRAM, then Flux schnell tried to load on top of it and triggered a CPU offload spiral (3+ minutes for a single prompt).
+
+**Fix**: launch ComfyUI with `--disable-smart-memory --cache-classic` so each prompt fully evicts the previous model before loading the next. Full launch command lives in [scripts/start-comfyui.ps1](../scripts/start-comfyui.ps1).
+
+**Smoke verification** (2026-05-20, RTX 5070 Ti 16GB, after restart with new flags, sequential cold-to-cold runs):
+
+| model         | resolution    | steps | result | wall time |
+|---------------|---------------|-------|--------|-----------|
+| Flux schnell  | 1024x576      | 4     | OK     | 162s      |
+| Flux dev      | 1024x576      | 20    | OK     | 201s      |
+| Wan 2.2 I2V   | 704x416 / 33f | 20    | OK     | 286s      |
+| Hunyuan I2V   | 480x272 / 33f | 20    | OK     | 262s      |
+
+Reproducer: [hiccup-analysis/smoke_models.py](../hiccup-analysis/smoke_models.py). HiDream-I1 and Qwen-Image are still offered in the picker but remain hardware-bound on 16 GB VRAM (kept per user request, flagged as such in the UI).
+
 ## Sources
 
 - [HiDream-I1 ComfyUI native workflow + fp8 setup](https://comfyui-wiki.com/en/tutorial/advanced/image/hidream/i1-t2i)
