@@ -1,0 +1,19 @@
+=== Qwen-Image-Edit-2509 doodle smoke at 1280x720 ===
+Reference: stick-figure-magnifying-glass-phone.png
+Starting at 01:05:37
+Uploading reference ...
+  uploaded as: doodle-ref.png
+
+  p01-character-emotion  OK  170s -> p01-character-emotion__qwen-image-edit-2509.png
+
+  p03-two-figures        FAIL status=timeout elapsed=901s
+
+  p04-wide-chaos         OK   95s -> p04-wide-chaos__qwen-image-edit-2509.png
+
+  p06-industrial         OK  100s -> p06-industrial__qwen-image-edit-2509.png
+
+=== SUMMARY ===
+  OK   p01-character-emotion  170s  p01-character-emotion__qwen-image-edit-2509.png
+  FAIL p03-two-figures        901s  timeout
+  OK   p04-wide-chaos         95s  p04-wide-chaos__qwen-image-edit-2509.png
+  OK   p06-industrial         100s  p06-industrial__qwen-image-edit-2509.png

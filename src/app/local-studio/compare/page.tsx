@@ -30,7 +30,7 @@ interface PromptDef {
 }
 
 interface ModelDef {
-  id: 'flux-schnell' | 'flux-dev' | 'qwen-image' | 'hidream-i1';
+  id: 'flux-schnell' | 'flux-dev' | 'qwen-image' | 'hidream-i1' | 'qwen-image-edit-2509';
   label: string;
   license: 'Apache 2.0' | 'Non-commercial' | 'Apache 2.0 (text encoder GGUF)' | 'MIT';
   hint: string;
@@ -83,6 +83,12 @@ const HIDREAM_I1: ModelDef = {
   license: 'MIT',
   hint: 'Premium 28 steps, MIT. i2i works on 16 GB (~75s warm); t2i still verified to hang.',
 };
+const QWEN_IMAGE_EDIT_2509: ModelDef = {
+  id: 'qwen-image-edit-2509',
+  label: 'Qwen-Image-Edit-2509',
+  license: 'Apache 2.0 (text encoder GGUF)',
+  hint: 'Edit-specific Qwen variant. Best prompt-following of the bunch — composes new scenes from the ref. Q4_K_M GGUF, ~98s warm.',
+};
 
 const DOODLE_SET: ComparisonSet = {
   id: 'doodle',
@@ -95,7 +101,7 @@ const DOODLE_SET: ComparisonSet = {
     src: '/style-refs/Doodle-explainer/stick-figure-magnifying-glass-phone.png',
     label: 'i2i reference (denoise 0.7)',
   },
-  models: [FLUX_SCHNELL, FLUX_DEV, QWEN_IMAGE, HIDREAM_I1],
+  models: [FLUX_SCHNELL, FLUX_DEV, QWEN_IMAGE, HIDREAM_I1, QWEN_IMAGE_EDIT_2509],
   prompts: [
     {
       slug: 'p01-character-emotion',
@@ -128,30 +134,40 @@ const DOODLE_SET: ComparisonSet = {
   // chain-of-cold-loads; its first prompt here was warm-from-cache after
   // the doodle sequence above. See
   // `hiccup-analysis/compare_local_doodle_hidream.py`.
+  //
+  // Qwen-Image-Edit-2509 (Q4_K_M GGUF) added 2026-05-22 — 4/4 prompts
+  // completed (p03 needed a retry after one transient timeout). 170s
+  // cold load, 95–100s warm. Outputs at 1280×720 (close to the model's
+  // 1MP design point — at 1920×1080 the 13 GB UNet's working set is too
+  // tight on 16 GB). See `hiccup-analysis/compare_local_doodle_qwen_edit.py`.
   timings: {
     'p01-character-emotion': {
-      'flux-schnell': { seconds: 162, cold: true },
-      'flux-dev':     { seconds: 222, cold: true },
-      'qwen-image':   { seconds: 478, cold: true },
-      'hidream-i1':   { seconds: 80,  cold: false },
+      'flux-schnell':         { seconds: 162, cold: true },
+      'flux-dev':             { seconds: 222, cold: true },
+      'qwen-image':           { seconds: 478, cold: true },
+      'hidream-i1':           { seconds: 80,  cold: false },
+      'qwen-image-edit-2509': { seconds: 170, cold: true },
     },
     'p03-two-figures': {
-      'flux-schnell': { seconds: 15,  cold: false },
-      'flux-dev':     { seconds: 45,  cold: false },
-      'qwen-image':   { seconds: 174, cold: false },
-      'hidream-i1':   { seconds: 70,  cold: false },
+      'flux-schnell':         { seconds: 15,  cold: false },
+      'flux-dev':             { seconds: 45,  cold: false },
+      'qwen-image':           { seconds: 174, cold: false },
+      'hidream-i1':           { seconds: 70,  cold: false },
+      'qwen-image-edit-2509': { seconds: 100, cold: false },
     },
     'p04-wide-chaos': {
-      'flux-schnell': { seconds: 15,  cold: false },
-      'flux-dev':     { seconds: 45,  cold: false },
-      'qwen-image':   { seconds: 174, cold: false },
-      'hidream-i1':   { seconds: 65,  cold: false },
+      'flux-schnell':         { seconds: 15,  cold: false },
+      'flux-dev':             { seconds: 45,  cold: false },
+      'qwen-image':           { seconds: 174, cold: false },
+      'hidream-i1':           { seconds: 65,  cold: false },
+      'qwen-image-edit-2509': { seconds: 95,  cold: false },
     },
     'p06-industrial': {
-      'flux-schnell': { seconds: 15,  cold: false },
-      'flux-dev':     { seconds: 45,  cold: false },
-      'qwen-image':   { seconds: 174, cold: false },
-      'hidream-i1':   { seconds: 85,  cold: false },
+      'flux-schnell':         { seconds: 15,  cold: false },
+      'flux-dev':             { seconds: 45,  cold: false },
+      'qwen-image':           { seconds: 174, cold: false },
+      'hidream-i1':           { seconds: 85,  cold: false },
+      'qwen-image-edit-2509': { seconds: 100, cold: false },
     },
   },
 };
@@ -380,31 +396,36 @@ export default function ModelComparePage() {
         <h3 className="text-sm font-semibold mb-2">Recommended default for batch generation</h3>
         <ul className="list-disc pl-5 text-sm space-y-1">
           <li>
-            <strong>For doodle / styled docs:</strong> Qwen-Image stays the safest default — at denoise 0.7
-            it consistently follows the scene prompt (TEST button, alarm signals, prompt-specific details)
-            while keeping the doodle style. Flux schnell + Flux dev anchor too hard to the reference and
-            barely respond to the prompt.
+            <strong>NEW WINNER for doodle / styled docs: Qwen-Image-Edit-2509.</strong> Its outputs land
+            scene-specific details that no other model managed — visible TEST button, alarm bell, $10
+            MILLION bill, sleeping internet globe, multiple bent-over terminals — while keeping the
+            doodle aesthetic intact. Architecturally different from regular Qwen-Image i2i: the
+            reference image conditions the text encoder semantically (via{' '}
+            <code>TextEncodeQwenImageEdit</code> + <code>ReferenceLatent</code>) rather than acting as
+            a noise initializer, so the model composes new scenes under the ref&apos;s stylistic
+            constraint instead of nudging an existing image. ~98 s warm on 16 GB. Apache 2.0.
           </li>
           <li>
-            <strong>HiDream-I1 is now a real option for styled docs.</strong> Earlier verdict was wrong —
-            i2i at denoise 0.7 works cleanly on 16 GB (~75s warm, faster than Qwen). Its outputs are more
-            sketched / hand-drawn than Qwen&apos;s — closer to the actual reference style, less digital.
-            Trade-off: less prompt-following than Qwen, garbles in-image text. Pick HiDream for pure
-            visual feel; pick Qwen when the prompt has specific scene elements that must land.
+            <strong>Qwen-Image (plain i2i)</strong> remains the previous-best — same baseline quality,
+            slower (~174 s warm), less prompt-following because it&apos;s nudging an existing image at
+            denoise 0.7 rather than composing fresh. Pick it when you want the ref image&apos;s
+            composition preserved.
+          </li>
+          <li>
+            <strong>HiDream-I1</strong> still has a niche — its sketchier line work is closer to the
+            actual hand-drawn reference aesthetic than the cleaner Qwen output. Pick HiDream when you
+            want maximum visual-style match and the scene prompt has fewer specific elements that must
+            land.
           </li>
           <li>
             <strong>For unstyled / fast iteration:</strong> Flux schnell. Quality is good enough for
-            most non-text scenes, and ~20 s warm vs 174 s warm matters at batch scale. HiDream isn&apos;t
-            usable here — its t2i path still hangs at KSampler on 16 GB.
+            most non-text scenes, and ~20 s warm vs 95+ s warm matters at batch scale. HiDream + Qwen-Edit
+            aren&apos;t in the unstyled tab — they need a reference image to function.
           </li>
           <li>
             <strong>Auto-override on baked-text rows:</strong> when{' '}
             <code>on_screen_text_mode === &apos;bake&apos;</code> AND the OST is non-empty, switch to
             Qwen-Image regardless of the doc default. Flux schnell + HiDream both garble glyphs.
-          </li>
-          <li>
-            <strong>Per-row override:</strong> the existing model picker in production-doc rows still wins
-            for power-user cases.
           </li>
           <li>
             <strong>Skip Flux dev as default</strong> — non-commercial license infects every chained shot
@@ -414,7 +435,8 @@ export default function ModelComparePage() {
         <p className="mt-3 text-xs" style={{ color: 'var(--text-muted, #9ca3af)' }}>
           Re-run the comparisons via{' '}
           <code>python hiccup-analysis/compare_local_doodle_style.py</code>,{' '}
-          <code>python hiccup-analysis/compare_local_doodle_hidream.py</code>, or{' '}
+          <code>python hiccup-analysis/compare_local_doodle_hidream.py</code>,{' '}
+          <code>python hiccup-analysis/compare_local_doodle_qwen_edit.py</code>, or{' '}
           <code>python hiccup-analysis/compare_local_image_models.py</code>, then the new PNGs land
           under <code>public/model-comparison/...</code> automatically.
         </p>
