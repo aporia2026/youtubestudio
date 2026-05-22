@@ -51,6 +51,7 @@ import { EditorHeader } from '@/components/editor/EditorHeader';
 import { TransportBar, type PlaybackRate } from '@/components/editor/TransportBar';
 import { EditorLeftRail } from '@/components/editor/EditorLeftRail';
 import { EditorInspector, type InspectorTabId } from '@/components/editor/EditorInspector';
+import { deriveAlignmentStatus } from '@/lib/editor/alignment-status';
 import { InspectorAudioTab } from '@/components/editor/inspector/InspectorAudioTab';
 import { InspectorCaptionsTab } from '@/components/editor/inspector/InspectorCaptionsTab';
 import { TimelineV2 } from '@/components/editor/timeline-v2/TimelineV2';
@@ -1655,6 +1656,12 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       onPullFromDoc={async () => {
         await reloadFromServer();
       }}
+      alignmentStatus={
+        deriveAlignmentStatus({
+          voiceoverUrl: state.voiceoverUrl,
+          voiceoverAlignment: state.voiceoverAlignment,
+        }).status
+      }
     />
   );
 
@@ -1700,7 +1707,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         audio: (
           <AudioTab
             voiceoverUrl={state.voiceoverUrl}
-            alignmentReady={Boolean(state.voiceoverAlignment)}
+            voiceoverAlignment={state.voiceoverAlignment}
             musicUrl={state.musicUrl}
             onRegenVO={() => setShowVoRegen(true)}
             onPickVoiceover={(url, source) => {
@@ -1910,6 +1917,41 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               {state.flags.suppressLowerThirds ? 'Hidden' : 'Visible'}
             </span>
           </button>
+          {/* Doc-level fade toggle. Mirrors prod-doc's switch
+              (production-doc/page.tsx:7231-7273). `false` forces hard
+              cuts everywhere AND disables the opening fade-in on the
+              first shot + closing fade-out on the last. Per-row Cut /
+              Fade radios in the Shot tab override individual rows. */}
+          <button
+            type="button"
+            onClick={() => {
+              const fadeOn = state.doc.scene_fade_enabled !== false;
+              const next = !fadeOn;
+              console.info('[editor doc-settings scene-fade] toggled', {
+                from: state.doc.scene_fade_enabled,
+                to: next,
+              });
+              apply({ type: 'PATCH_DOC', patch: { scene_fade_enabled: next } });
+            }}
+            className="editor-btn w-full justify-between"
+            title={
+              state.doc.scene_fade_enabled !== false
+                ? 'Scene fade is on. Click to switch every shot to a hard cut.'
+                : 'Hard cuts are on. Click to restore the cross-fade between shots.'
+            }
+          >
+            <span>Scene fade between shots</span>
+            <span
+              style={{
+                color:
+                  state.doc.scene_fade_enabled !== false
+                    ? 'var(--editor-accent)'
+                    : 'var(--fg-muted)',
+              }}
+            >
+              {state.doc.scene_fade_enabled !== false ? 'On' : 'Off'}
+            </span>
+          </button>
           <button
             type="button"
             onClick={() => setShowBrandKit(true)}
@@ -1992,13 +2034,14 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               docPillarboxColorDefault={state.doc.pillarbox_color_default}
               docSceneZoomDefault={state.doc.scene_zoom_default}
               docSceneFadeDefault={state.doc.scene_fade_enabled}
+              docRegionZoomPaddingDefaultPct={state.doc.region_zoom_padding_default_pct}
               onOpenImageEdit={() => setImageEditRow(state.selection)}
             />
           ) : undefined,
         audio: (
           <InspectorAudioTab
             voiceoverUrl={state.voiceoverUrl}
-            alignmentReady={Boolean(state.voiceoverAlignment)}
+            voiceoverAlignment={state.voiceoverAlignment}
             musicUrl={state.musicUrl}
             onRegenVO={() => setShowVoRegen(true)}
             onPickVoiceover={(url, source) => {

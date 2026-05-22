@@ -27,6 +27,8 @@ import {
   Save as SaveIcon,
   Undo2,
 } from 'lucide-react';
+import { AlignmentBadge } from '@/components/editor/AlignmentBadge';
+import type { AlignmentBadgeStatus } from '@/lib/editor/alignment-status';
 
 interface EditorHeaderProps {
   title: string;
@@ -66,6 +68,11 @@ interface EditorHeaderProps {
    *  another tab, regardless of whether the editor is in empty-state.
    *  Confirms before clobbering unsaved edits. */
   onPullFromDoc?: () => Promise<void> | void;
+  /** Voiceover-alignment status. When set to anything other than
+   *  `idle`, the header renders a compact badge so the user can
+   *  confirm at a glance that scenes are retimed to the narration
+   *  (the same `AlignmentBadge` lives full-width in the Audio tab). */
+  alignmentStatus?: AlignmentBadgeStatus;
 }
 
 export function EditorHeader({
@@ -88,6 +95,7 @@ export function EditorHeader({
   onRender,
   isRendering = false,
   onPullFromDoc,
+  alignmentStatus,
 }: EditorHeaderProps): React.ReactElement {
   const [pulling, setPulling] = useState(false);
   async function handlePull() {
@@ -126,6 +134,13 @@ export function EditorHeader({
 
       {/* Action cluster ──────────────────────────────────── */}
       <div className="flex items-center gap-1.5 shrink-0">
+        {alignmentStatus && alignmentStatus !== 'idle' && (
+          <>
+            <AlignmentBadge status={alignmentStatus} compact />
+            <span className="editor-divider" aria-hidden />
+          </>
+        )}
+
         {switcherSlot}
 
         {switcherSlot && <span className="editor-divider" aria-hidden />}

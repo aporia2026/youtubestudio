@@ -13,10 +13,13 @@
 
 import { Mic, Music2, RefreshCw } from 'lucide-react';
 import { VoiceoverPicker } from '@/components/voiceover/VoiceoverPicker';
+import { AlignmentBadge } from '@/components/editor/AlignmentBadge';
+import { deriveAlignmentStatus } from '@/lib/editor/alignment-status';
+import type { ForcedAlignmentResponse } from '@/lib/elevenlabs';
 
 interface AudioTabProps {
   voiceoverUrl?: string;
-  alignmentReady: boolean;
+  voiceoverAlignment?: ForcedAlignmentResponse;
   musicUrl?: string;
   onRegenVO: () => void;
   onPickVoiceover: (url: string, source: 'auto' | 'manual' | 'clear') => void;
@@ -27,7 +30,7 @@ interface AudioTabProps {
 
 export function AudioTab({
   voiceoverUrl,
-  alignmentReady,
+  voiceoverAlignment,
   musicUrl,
   onRegenVO,
   onPickVoiceover,
@@ -35,6 +38,7 @@ export function AudioTab({
   linkedScheduleItemId,
   titleCandidates,
 }: AudioTabProps): React.ReactElement {
+  const alignment = deriveAlignmentStatus({ voiceoverUrl, voiceoverAlignment });
   return (
     <div className="flex flex-col gap-2">
       <div
@@ -46,15 +50,10 @@ export function AudioTab({
           <span className="text-[11px] font-medium" style={{ color: 'var(--fg)' }}>
             Voiceover
           </span>
-          {alignmentReady && (
-            <span
-              className="text-[9px] px-1.5 py-0.5 rounded ed-mono"
-              style={{ background: 'rgba(34,197,94,0.14)', color: '#22c55e' }}
-            >
-              aligned
-            </span>
-          )}
         </div>
+        {/* Sync badge — same surface the prod-doc page uses so the
+            user knows scenes are retimed to the audio. */}
+        <AlignmentBadge status={alignment.status} detail={alignment.detail} />
         <VoiceoverPicker
           value={voiceoverUrl ?? ''}
           onChange={onPickVoiceover}

@@ -122,6 +122,9 @@ interface ShotInspectorProps {
   docPillarboxColorDefault?: string;
   docSceneZoomDefault?: number;
   docSceneFadeDefault?: boolean;
+  /** Doc-level fallback for region zoom padding (percent of the
+   *  region's longest edge). Falls back to 15 when undefined. */
+  docRegionZoomPaddingDefaultPct?: number;
   /** Open the mask-brush image edit dialog for this shot. The parent
    *  mounts MaskBrushEditor + calls the image-edit endpoint. */
   onOpenImageEdit?: () => void;
@@ -176,6 +179,7 @@ export function ShotInspector({
   docPillarboxColorDefault,
   docSceneZoomDefault,
   docSceneFadeDefault,
+  docRegionZoomPaddingDefaultPct,
   onOpenImageEdit,
 }: ShotInspectorProps): React.ReactElement {
   const undoDepth = editHistoryDepth ?? 0;
@@ -977,26 +981,99 @@ export function ShotInspector({
                   {/* Per-shot transition customization (Batch C follow-up).
                       Only meaningful once a region is chosen — without
                       one there's nothing for the transition to act on. */}
-                  {row.thumbnail_zoom_to && (
-                    <div className="flex items-center justify-between mt-1">
-                      <div className="text-[10px]" style={{ color: 'var(--fg-muted)' }}>
-                        Transition:{' '}
-                        <span style={{ color: row.thumbnail_transition ? 'var(--editor-accent, #a78bfa)' : 'var(--fg-muted)' }}>
-                          {row.thumbnail_transition
-                            ? `${row.thumbnail_transition.kind}${row.thumbnail_transition.kind !== 'none' ? ` · ${row.thumbnail_transition.easing ?? 'spring-smooth'}` : ''}`
-                            : `default (${docThumbnail.defaultTransition?.kind ?? 'hard-cut'})`}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setTransitionDialogOpen(true)}
-                        className="text-[10px] underline"
-                        style={{ color: 'var(--editor-accent, #a78bfa)' }}
-                      >
-                        Customize…
-                      </button>
-                    </div>
-                  )}
+                  {row.thumbnail_zoom_to && (() => {
+                    // Region zoom padding slider — controls how much
+                    // breathing room sits around the marked region
+                    // when the camera zooms in. Mirrors the prod-doc
+                    // SectionRowControls slider (production-doc
+                    // SectionRowControls.tsx:295-358). 0 = exact
+                    // region, 50 = far pull-back. Override cleared
+                    // when slider lands on the doc default so the row
+                    // JSON stays free of redundant per-row values.
+                    const docFallback =
+                      typeof docRegionZoomPaddingDefaultPct === 'number'
+                        ? docRegionZoomPaddingDefaultPct
+                        : 15;
+                    const effectivePadding =
+                      typeof row.region_zoom_padding_pct === 'number'
+                        ? row.region_zoom_padding_pct
+                        : docFallback;
+                    const overrideActive =
+                      typeof row.region_zoom_padding_pct === 'number';
+                    return (
+                      <>
+                        <div className="flex items-center gap-2 mt-2">
+                          <label
+                            className="text-[10px] uppercase tracking-wider whitespace-nowrap"
+                            style={{ color: 'var(--fg-muted)' }}
+                            title="How much breathing room around the region. 0 = exact region, 50 = far pull-back."
+                          >
+                            Padding
+                          </label>
+                          <input
+                            type="range"
+                            min={0}
+                            max={50}
+                            step={1}
+                            value={effectivePadding}
+                            onChange={(e) => {
+                              const next = Number(e.target.value);
+                              console.info('[editor region-padding] changed', {
+                                shotIndex,
+                                from: row.region_zoom_padding_pct,
+                                to: next,
+                                docDefault: docFallback,
+                              });
+                              onUpdateRow({
+                                region_zoom_padding_pct:
+                                  next === docFallback ? undefined : next,
+                              });
+                            }}
+                            className="flex-1"
+                            style={{ accentColor: 'var(--editor-accent, #a78bfa)' }}
+                            aria-label={`Region zoom padding (${effectivePadding}%)`}
+                          />
+                          <span
+                            className="text-[11px] tabular-nums w-9 text-right"
+                            style={{
+                              color: overrideActive
+                                ? 'var(--editor-accent, #a78bfa)'
+                                : 'var(--fg-muted)',
+                            }}
+                          >
+                            {effectivePadding}%
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between mt-1">
+                          <div
+                            className="text-[10px]"
+                            style={{ color: 'var(--fg-muted)' }}
+                          >
+                            Transition:{' '}
+                            <span
+                              style={{
+                                color: row.thumbnail_transition
+                                  ? 'var(--editor-accent, #a78bfa)'
+                                  : 'var(--fg-muted)',
+                              }}
+                            >
+                              {row.thumbnail_transition
+                                ? `${row.thumbnail_transition.kind}${row.thumbnail_transition.kind !== 'none' ? ` · ${row.thumbnail_transition.easing ?? 'spring-smooth'}` : ''}`
+                                : `default (${docThumbnail.defaultTransition?.kind ?? 'hard-cut'})`}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setTransitionDialogOpen(true)}
+                            className="text-[10px] underline"
+                            style={{ color: 'var(--editor-accent, #a78bfa)' }}
+                          >
+                            Customize…
+                          </button>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </>
               ) : (
                 <div className="text-[10px]" style={{ color: 'var(--fg-muted)' }}>

@@ -15,10 +15,15 @@
 
 import { Mic2, Music2, RefreshCw } from 'lucide-react';
 import { VoiceoverPicker } from '@/components/voiceover/VoiceoverPicker';
+import { AlignmentBadge } from '@/components/editor/AlignmentBadge';
+import { deriveAlignmentStatus } from '@/lib/editor/alignment-status';
+import type { ForcedAlignmentResponse } from '@/lib/elevenlabs';
 
 interface InspectorAudioTabProps {
   voiceoverUrl?: string;
-  alignmentReady: boolean;
+  /** Full alignment response when present — drives the status badge.
+   *  Falsy means no alignment data is persisted for this VO. */
+  voiceoverAlignment?: ForcedAlignmentResponse;
   musicUrl?: string;
   onRegenVO: () => void;
   /** Batch A: callback fires when the picker auto-matches or the
@@ -37,7 +42,7 @@ interface InspectorAudioTabProps {
 
 export function InspectorAudioTab({
   voiceoverUrl,
-  alignmentReady,
+  voiceoverAlignment,
   musicUrl,
   onRegenVO,
   onPickVoiceover,
@@ -45,6 +50,7 @@ export function InspectorAudioTab({
   linkedScheduleItemId,
   titleCandidates,
 }: InspectorAudioTabProps): React.ReactElement {
+  const alignment = deriveAlignmentStatus({ voiceoverUrl, voiceoverAlignment });
   return (
     <div className="p-3 flex flex-col gap-3">
       {/* Voiceover card ────────────────────────────────────── */}
@@ -59,15 +65,11 @@ export function InspectorAudioTab({
               Voiceover
             </span>
           </div>
-          {alignmentReady && (
-            <span
-              className="text-[9px] px-1.5 py-0.5 rounded ed-mono"
-              style={{ background: 'rgba(34,197,94,0.14)', color: '#22c55e' }}
-            >
-              aligned
-            </span>
-          )}
         </div>
+        {/* Full-width alignment badge — replaces the tiny "aligned"
+            chip. Mirrors the prod-doc AlignmentPill so the user gets
+            the same "Synced to voiceover" confirmation surface here. */}
+        <AlignmentBadge status={alignment.status} detail={alignment.detail} />
 
         {/* Picker — same component production-doc uses. Auto-detects
             the relevant narrator stitched / full upload by
