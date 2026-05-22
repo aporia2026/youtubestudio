@@ -334,6 +334,68 @@ export function useProject(
     return () => window.removeEventListener('keydown', onKey);
   }, [flush]);
 
+  // ─── beforeunload safety net (2026-05-22) ───────────────────────
+  //
+  // The debounced auto-save can have a pending fetch in flight (or
+  // an armed 800 ms timer) when the user closes the tab / navigates
+  // away. async fetch() requests are aborted on unload, so any save
+  // that hadn't fully committed is lost. sendBeacon would survive
+  // but it only supports POST, and our PATCH endpoint won't accept
+  // that. `fetch(..., { keepalive: true })` is the modern survivor:
+  // browser holds the request alive even as the page tears down.
+  //
+  // Caveats:
+  //   - keepalive bodies are capped at 64 KB by spec. Large payloads
+  //     (many overlays + saliency maps) can exceed; in that case we
+  //     log and accept the loss. Daily flow stays under the cap.
+  //   - Same-origin auth cookies must travel — `credentials: 'same-
+  //     origin'` is implicit but explicit here for clarity.
+  //   - This fires for tab close AND navigation AND reload, exactly
+  //     the windows where the debounced save would otherwise die.
+  useEffect(() => {
+    const onBeforeUnload = () => {
+      if (!isDirtyRef.current) return;
+      const currentPayload = payloadRef.current;
+      const currentVersion = versionRef.current;
+      if (!currentPayload || currentVersion === null) return;
+      const body = JSON.stringify({ version: currentVersion, payload: currentPayload });
+      // keepalive body cap is 64 KB per spec. Above that the fetch
+      // fails to enqueue; nothing else we can do at unload — log so
+      // a return visit to devtools shows it in console history.
+      const bytes = new Blob([body]).size;
+      if (bytes > 64 * 1024) {
+        console.warn('[project payload save] beforeunload skipped — body too large for keepalive', {
+          projectId,
+          bytes,
+        });
+        return;
+      }
+      try {
+        // We don't await — the browser is unloading. The keepalive
+        // flag is what carries the request to completion.
+        void fetch(endpoint(projectId), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+          credentials: 'same-origin',
+          keepalive: true,
+        });
+        console.info('[project payload save] beforeunload keepalive PATCH', {
+          projectId,
+          version: currentVersion,
+          bytes,
+        });
+      } catch (err) {
+        console.warn('[project payload save] beforeunload threw', {
+          projectId,
+          detail: err instanceof Error ? err.message : String(err),
+        });
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [endpoint, projectId]);
+
   // ─── Cleanup ────────────────────────────────────────────────────
 
   useEffect(() => {

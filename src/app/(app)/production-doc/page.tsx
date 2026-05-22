@@ -1902,6 +1902,98 @@ function ProductionDocPage() {
   // to 'conflict' silently.
   const project = useProject(historyEntryId ?? '');
 
+  // ─── Atomic server-side asset persistence (2026-05-22) ────────────
+  //
+  // Replaces the legacy "rely on the debounced parity-bridge effect
+  // to save your generated image" path. The debounced path had three
+  // confirmed silent-drop failure modes — `historyEntryId` not set
+  // yet at gen time, useProject's GET still in flight, and tab close
+  // killing the 800 ms setTimeout. Real fallout: doc d244130f-bdfe
+  // had 181 rows saved but every image attach was lost; the user
+  // paid for generations that never reached the server.
+  //
+  // This helper POSTs to /api/edit/[projectId]/row-asset, which uses
+  // a single jsonb_set UPDATE to atomically merge one slot into the
+  // row's payload. By the time this fn returns true, the URL is on
+  // the server — surviving tab close, device switch, storage clear,
+  // and useProject's whole internal state. The reload() afterwards
+  // re-syncs useProject's local version cache so the next debounced
+  // full-payload save doesn't conflict.
+  //
+  // The reload reference goes through a ref so the callback doesn't
+  // re-create on every render (project is a fresh object each render);
+  // historyEntryId is the only "real" dep.
+  const projectReloadRef = useRef(project.reload);
+  projectReloadRef.current = project.reload;
+  const persistRowAsset = useCallback(
+    async (
+      rowIndex: number,
+      slot: 'image' | 'overlay' | 'clip',
+      value:
+        | string
+        | { status: string; url?: string }
+        | { status: string; videoUrl?: string; durationSeconds?: number; brollClipId?: string }
+        | null,
+      options: { styleVersion?: number } = {},
+    ): Promise<boolean> => {
+      if (!historyEntryId) {
+        console.warn('[row-asset persist] skipped — no historyEntryId yet', { rowIndex, slot });
+        return false;
+      }
+      try {
+        const res = await fetch(`/api/edit/${encodeURIComponent(historyEntryId)}/row-asset`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            rowIndex,
+            slot,
+            value,
+            styleVersion: options.styleVersion,
+          }),
+          credentials: 'same-origin',
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          console.error('[row-asset persist] failed', {
+            project_id: historyEntryId,
+            row_index: rowIndex,
+            slot,
+            status: res.status,
+            body: text.slice(0, 400),
+          });
+          // Surface money-losing failures explicitly. Silent drops
+          // here are the exact bug we're patching.
+          toast.error(
+            `Couldn't save the generated ${slot} for shot ${rowIndex + 1}. ` +
+              `It's in the page but will be lost on reload. Try again.`,
+            { duration: 10000 },
+          );
+          return false;
+        }
+        // Re-sync useProject's local version cache. The merge bumped
+        // the server's `version`; without a reload, the next debounced
+        // full-payload save would 409 and discard. Fire-and-forget —
+        // it lands before the next debounce in practice.
+        void projectReloadRef.current().catch(() => {});
+        return true;
+      } catch (err) {
+        console.error('[row-asset persist] threw', {
+          project_id: historyEntryId,
+          row_index: rowIndex,
+          slot,
+          detail: err instanceof Error ? err.message : String(err),
+        });
+        toast.error(
+          `Network error saving generated ${slot} for shot ${rowIndex + 1}. ` +
+            `Will be lost on reload — please try again.`,
+          { duration: 10000 },
+        );
+        return false;
+      }
+    },
+    [historyEntryId],
+  );
+
   const logEndRef = useRef<HTMLDivElement>(null);
   // Tracks which production doc (by runKey) was last explicitly saved via
   // the banner button. Drives the dirty indicator.
@@ -2502,8 +2594,23 @@ function ProductionDocPage() {
         }
         return { ...prev, [rowIndex]: nextEntry };
       });
+      // CRITICAL (2026-05-22): persist only on terminal states so we
+      // don't spam the row-asset endpoint on every poll-status tick.
+      // `ready` with a videoUrl is the money-spent moment that MUST
+      // land on the server. Clearing (clip === null) also persists so
+      // a deletion sticks across reloads.
+      if (!clip) {
+        void persistRowAsset(rowIndex, 'clip', null);
+      } else if (clip.status === 'ready' && clip.video_url) {
+        void persistRowAsset(rowIndex, 'clip', {
+          status: clip.status,
+          videoUrl: clip.video_url,
+          durationSeconds: clip.duration_seconds ?? undefined,
+          brollClipId: clip.id,
+        });
+      }
     },
-    [],
+    [persistRowAsset],
   );
 
   // — Per-user "Animate scenes" toggle. When OFF, B-roll cells are hidden
@@ -4560,6 +4667,15 @@ function ProductionDocPage() {
         };
         return next;
       });
+      // CRITICAL (2026-05-22): persist the imageUrl to the server
+      // immediately via the atomic row-asset endpoint. Without this
+      // we depend on the debounced parity-bridge effect, which has
+      // dropped real money-spent generations in the past. Fire-and-
+      // forget — the helper surfaces its own error toast and the
+      // optimistic UI above already updated.
+      void persistRowAsset(rowIndex, 'image', data.imageUrl as string, {
+        styleVersion: typeof data.styleVersion === 'number' ? data.styleVersion : undefined,
+      });
       const saliency = data.saliency;
       if (saliency) applySaliencyToRow(rowIndex, saliency);
       // Fire-and-forget the overlay fetch in parallel with the next row's
@@ -4680,6 +4796,11 @@ function ProductionDocPage() {
           ...prev,
           [rowIndex]: { status: 'done', url: data.overlayUrl!, sourceUrl: data.sourceUrl },
         }));
+        // CRITICAL (2026-05-22): persist the overlay URL server-side
+        // immediately. Same rationale as the row-image persist above
+        // — the debounced parity bridge has dropped overlay attaches
+        // in the same race-condition windows.
+        void persistRowAsset(rowIndex, 'overlay', { status: 'done', url: data.overlayUrl! });
         // Phase 4 — persist the RMBG-gate outcome on the row. Separate
         // updateRow so it lands even when no Phase-2 placement was
         // returned (e.g. sceneImageUrl wasn't provided this call).

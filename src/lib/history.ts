@@ -812,9 +812,26 @@ async function updateOnServer<T extends { id: string; timestamp: number }>(
   // for the current use case (image-attach after generate); if we
   // ever add genuinely concurrent edits, this needs a versioning
   // scheme (e.g. payload-hash etag).
-  const cache = readCache<T>(wiring.cacheKey, scope);
-  const idx = cache.findIndex((e) => e.id === id);
-  if (idx < 0) return;
+  let cache = readCache<T>(wiring.cacheKey, scope);
+  let idx = cache.findIndex((e) => e.id === id);
+  if (idx < 0) {
+    // Cache miss — previously this bailed silently and the PATCH never
+    // reached the server. That dropped real money-spent generations
+    // when localStorage was evicted or the user moved to another
+    // device. 2026-05-22 fix: refetch the entire list from the server
+    // to repopulate the cache, then retry the findIndex. The list
+    // GET is a one-time cost paid only on cache miss, so the steady
+    // state (cache hit) is unchanged.
+    cache = await listFromServer<T>(wiring);
+    idx = cache.findIndex((e) => e.id === id);
+    if (idx < 0) {
+      // Server doesn't have it either — genuinely gone. Bail with a
+      // log so the absence is visible in diagnostics rather than the
+      // silent return that masked the original bug.
+      warn('updateOnServer', `${wiring.kind} ${id} cache-miss and server-miss; PATCH skipped`);
+      return;
+    }
+  }
   const merged = { ...cache[idx], ...patch };
   cache[idx] = merged;
   writeCache(wiring.cacheKey, scope, cache);
