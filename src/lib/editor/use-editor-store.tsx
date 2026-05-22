@@ -257,6 +257,67 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
     return () => window.removeEventListener('keydown', onKey);
   }, [flushSave]);
 
+  // ─── beforeunload safety net (2026-05-22) ───────────────────────
+  //
+  // If the user closes the tab / navigates away while a debounced
+  // save is pending OR while the page has unsaved changes, async
+  // fetch() requests die when the page tears down. `fetch(..., {
+  // keepalive: true })` carries the request to completion even as
+  // the page unloads — the modern replacement for sendBeacon, with
+  // the bonus of supporting PATCH (sendBeacon is POST-only and our
+  // editor PATCH endpoint won't accept it).
+  //
+  // Mirrors the same protection added to `use-project.ts` for the
+  // production-doc page; the editor's store is a separate save path
+  // and was previously vulnerable to the same tab-close data loss.
+  //
+  // Caveats:
+  //   - keepalive bodies cap at 64 KB per spec. Editor payloads with
+  //     dozens of overlays + saliency maps can exceed; we log and
+  //     skip when that happens. The in-flight debounced save (if
+  //     close to landing) may still get through normally.
+  //   - Fires for tab close AND navigation AND reload — the windows
+  //     where the debounced save would otherwise vanish.
+  useEffect(() => {
+    const onBeforeUnload = () => {
+      const current = stateRef.current;
+      if (!current.isDirty) return;
+      const body = JSON.stringify({
+        version: current.version,
+        payload: persistableFromState(current),
+      });
+      const bytes = new Blob([body]).size;
+      if (bytes > 64 * 1024) {
+        console.warn('[editor store] beforeunload skipped — body too large for keepalive', {
+          projectId,
+          bytes,
+        });
+        return;
+      }
+      try {
+        void fetch(`/api/edit/${encodeURIComponent(projectId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+          credentials: 'same-origin',
+          keepalive: true,
+        });
+        console.info('[editor store] beforeunload keepalive PATCH', {
+          projectId,
+          version: current.version,
+          bytes,
+        });
+      } catch (err) {
+        console.warn('[editor store] beforeunload threw', {
+          projectId,
+          detail: err instanceof Error ? err.message : String(err),
+        });
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [projectId]);
+
   // Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z — undo / redo. Window-scoped for
   // the same reason as save: focus may be in a text input the
   // editor renders inline.
