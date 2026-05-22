@@ -280,13 +280,18 @@ export function TimelineV2({
           </div>
 
           {/* Playhead — single vertical line spanning every lane.
-              Pointer-events disabled so clicks pass through to the
-              lanes underneath. Position is computed against the
-              scroll container's scroll offset so it tracks even
+              The line itself is pointer-events-none so clicks pass
+              through to the lanes underneath. The diamond head on top
+              of the line is grabbable (pointer-events: auto) and
+              dispatches onSeek on drag. Position is computed against
+              the scroll container's scroll offset so it tracks even
               when the user scrolls without seeking. */}
           <PlayheadOverlay
             playheadX={playheadX}
             scrollRef={scrollRef}
+            onSeek={onSeek}
+            pixelsPerSecond={pixelsPerSecond}
+            totalDurationMs={totalDurationMs}
           />
         </div>
       </div>
@@ -329,9 +334,15 @@ function LaneLabel({
 function PlayheadOverlay({
   playheadX,
   scrollRef,
+  onSeek,
+  pixelsPerSecond,
+  totalDurationMs,
 }: {
   playheadX: number;
   scrollRef: React.RefObject<HTMLDivElement | null>;
+  onSeek: (ms: number) => void;
+  pixelsPerSecond: number;
+  totalDurationMs: number;
 }) {
   // Re-read scrollLeft on every render so the line tracks the
   // visible window. We don't need a state subscription — the
@@ -339,11 +350,61 @@ function PlayheadOverlay({
   // be synchronous on the same element.
   const scrollLeft = scrollRef.current?.scrollLeft ?? 0;
   const left = playheadX - scrollLeft;
-  if (left < 0 || left > (scrollRef.current?.clientWidth ?? 0)) {
-    // Playhead is off-screen; don't render it (the auto-scroll
-    // effect will bring it back in view shortly).
+  const viewportWidth = scrollRef.current?.clientWidth ?? 0;
+  const isOffScreen = left < 0 || left > viewportWidth;
+
+  // Track drag state across pointer events. A ref (not state) so the
+  // value sticks without triggering re-renders we don't need — the
+  // parent already re-renders on every playheadMs update during the
+  // drag (via onSeek → seek → playheadMs change).
+  const draggingRef = useRef(false);
+
+  // Keep the element mounted while the user is mid-drag, even if they
+  // scrub past the viewport edge. Once they let go, the off-screen
+  // branch unmounts as before.
+  if (isOffScreen && !draggingRef.current) {
     return null;
   }
+
+  const xToMs = (clientX: number): number => {
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return 0;
+    const rect = scrollEl.getBoundingClientRect();
+    const xInScroll = clientX - rect.left + scrollEl.scrollLeft;
+    const ms = (xInScroll / pixelsPerSecond) * 1000;
+    return Math.max(0, Math.min(totalDurationMs, ms));
+  };
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    draggingRef.current = true;
+    console.info('[playhead scrub] start', {
+      atMs: (playheadX / pixelsPerSecond) * 1000,
+      pointerId: e.pointerId,
+    });
+  };
+
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return;
+    const ms = xToMs(e.clientX);
+    onSeek(ms);
+  };
+
+  const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // Already released (e.g., pointercancel followed by pointerup).
+    }
+    draggingRef.current = false;
+    console.info('[playhead scrub] end', {
+      atMs: (playheadX / pixelsPerSecond) * 1000,
+    });
+  };
+
   return (
     <div
       aria-hidden
@@ -355,10 +416,37 @@ function PlayheadOverlay({
         boxShadow: '0 0 0 1px rgba(0,0,0,0.4)',
       }}
     >
+      {/* Grabbable head. Sits above the line, slightly wider than the
+          line so it's an easy mouse target. pointer-events: auto
+          overrides the line's parent-level pointer-events: none. */}
       <div
-        className="absolute -top-1 -left-1 w-3 h-3 rotate-45"
-        style={{ background: 'var(--editor-playhead)' }}
+        role="slider"
+        aria-label="Timeline playhead — drag to seek"
+        aria-valuemin={0}
+        aria-valuemax={totalDurationMs}
+        aria-valuenow={Math.round((playheadX / pixelsPerSecond) * 1000)}
+        tabIndex={0}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        style={{
+          position: 'absolute',
+          top: -2,
+          left: -6,
+          width: 13,
+          height: 12,
+          background: 'var(--editor-playhead)',
+          // Pentagon: flat top, pointed bottom — reads as "play head"
+          // pointing down at the line below.
+          clipPath: 'polygon(0% 0%, 100% 0%, 100% 60%, 50% 100%, 0% 60%)',
+          cursor: 'ew-resize',
+          pointerEvents: 'auto',
+          touchAction: 'none',
+          boxShadow: '0 1px 2px rgba(0,0,0,0.4)',
+        }}
       />
     </div>
   );
 }
+

@@ -150,6 +150,24 @@ export type SaveResult =
  *
  * Workspace + collaborator scoped at the SQL level — a row outside
  * scope is indistinguishable from a deleted row.
+ *
+ * Asset-map merge (2026-05-22 emergency fix): before the UPDATE we read
+ * the current row and union the asset maps (`rowImages`, `rowOverlays`,
+ * `rowVideoClips`) with the incoming payload. Incoming entries win on
+ * per-key collision (regeneration replaces correctly); existing entries
+ * the client didn't send are preserved. This stops one page's debounced
+ * full-payload save from silently wiping an asset the OTHER page just
+ * wrote through the atomic `row-asset` endpoint, which was the original
+ * "all images disappear when navigating back to prod-doc" bug.
+ *
+ * When the version check fails BUT the non-asset fields in the client's
+ * payload match the current row's, we auto-upgrade `expectedVersion` to
+ * the current version and proceed with the merge. This collapses the
+ * benign race (prod-doc just bumped via row-asset; editor debounce
+ * fires at the old version) into a successful merged save instead of a
+ * 409. Non-asset divergence still returns conflict as before.
+ *
+ * See _plans/2026-05-22-editor-prodoc-data-loss-and-fixes.md.
  */
 export async function saveProjectPatch(args: {
   id: string;
@@ -169,8 +187,78 @@ export async function saveProjectPatch(args: {
     return { kind: 'invalid', field: validation.field, reason: validation.reason };
   }
 
-  const payloadJson = JSON.stringify(validation.payload);
-  const bytes = Buffer.byteLength(payloadJson, 'utf8');
+  // Read current row up front so we can merge asset maps. Scope-checked
+  // here — a row outside the caller's scope returns 0 rows and we fall
+  // through to `not_found` below, identical to the post-update probe path.
+  const current = await sql<{ version: number; payload: unknown }>`
+    SELECT version, payload
+      FROM user_history
+     WHERE id = ${id}::uuid
+       AND workspace_id = ${session.ws}::uuid
+       AND collaborator_id = ${session.uid}::uuid
+       AND kind = 'production_doc'
+     LIMIT 1
+  `;
+
+  if (current.rows.length === 0) {
+    logger.info('[project payload save] target missing', {
+      project_id: id,
+      workspace_id: session.ws,
+    });
+    return { kind: 'not_found' };
+  }
+
+  const currentVersion = current.rows[0].version;
+  const { payload: currentPayload } = migratePayload(current.rows[0].payload);
+
+  // Decide which version we'll write against. If the client read at an
+  // older version BUT only the asset maps differ from current, auto-merge
+  // at the current version instead of returning 409. Any non-asset
+  // divergence is a real conflict — return the current payload so the
+  // client can reload + retry.
+  let targetVersion = expectedVersion;
+  let mergeRetried = false;
+  if (expectedVersion !== currentVersion) {
+    if (nonAssetFieldsEqual(validation.payload, currentPayload)) {
+      targetVersion = currentVersion;
+      mergeRetried = true;
+      logger.info('[project payload save] merge-retry', {
+        project_id: id,
+        client_version: expectedVersion,
+        server_version: currentVersion,
+      });
+    } else {
+      logger.info('[project payload save] conflict', {
+        project_id: id,
+        client_version: expectedVersion,
+        server_version: currentVersion,
+      });
+      return {
+        kind: 'conflict',
+        currentVersion,
+        currentPayload,
+      };
+    }
+  }
+
+  // Union the three asset maps. Incoming wins on key collision so a
+  // regenerated asset's new URL is honored; otherwise existing keys are
+  // preserved from the current row.
+  const { merged, preserved } = mergeAssetMaps(validation.payload, currentPayload);
+  const preservedCount =
+    preserved.rowImages.length + preserved.rowOverlays.length + preserved.rowVideoClips.length;
+  if (preservedCount > 0) {
+    logger.info('[project payload save] merged', {
+      project_id: id,
+      preserved_row_images: preserved.rowImages,
+      preserved_row_overlays: preserved.rowOverlays,
+      preserved_row_video_clips: preserved.rowVideoClips,
+      merge_retried: mergeRetried,
+    });
+  }
+
+  const mergedJson = JSON.stringify(merged);
+  const bytes = Buffer.byteLength(mergedJson, 'utf8');
   if (bytes > MAX_PAYLOAD_BYTES) {
     logger.info('[project payload save] too large', {
       project_id: id,
@@ -183,18 +271,20 @@ export async function saveProjectPatch(args: {
   logger.info('[project payload save] patch', {
     project_id: id,
     expected_version: expectedVersion,
+    target_version: targetVersion,
+    merge_retried: mergeRetried,
     bytes,
   });
 
   const updateResult = await sql<{ new_version: number }>`
     UPDATE user_history
-       SET payload = ${payloadJson}::jsonb,
+       SET payload = ${mergedJson}::jsonb,
            version = version + 1
      WHERE id = ${id}::uuid
        AND workspace_id = ${session.ws}::uuid
        AND collaborator_id = ${session.uid}::uuid
        AND kind = 'production_doc'
-       AND version = ${expectedVersion}
+       AND version = ${targetVersion}
      RETURNING (version) AS new_version
   `;
 
@@ -207,8 +297,12 @@ export async function saveProjectPatch(args: {
     return { kind: 'saved', newVersion };
   }
 
-  // 0 rows: either row missing OR stale version. Disambiguate so the
-  // client can branch (reload vs gone).
+  // 0 rows after the merged update means another writer bumped the row
+  // between our read and our write. Rare (the merge window is small) but
+  // possible under heavy autosave + row-asset traffic. Re-probe and
+  // return conflict so the client can reload + retry. We intentionally
+  // don't loop merge-retry here — at most one auto-merge per call keeps
+  // the worst-case latency bounded.
   const probe = await sql<{ version: number; payload: unknown }>`
     SELECT version, payload
       FROM user_history
@@ -220,24 +314,108 @@ export async function saveProjectPatch(args: {
   `;
 
   if (probe.rows.length === 0) {
-    logger.info('[project payload save] target missing', {
+    logger.info('[project payload save] target missing (post-merge race)', {
       project_id: id,
       workspace_id: session.ws,
     });
     return { kind: 'not_found' };
   }
 
-  const { payload: currentMigrated } = migratePayload(probe.rows[0].payload);
-  logger.info('[project payload save] conflict', {
+  const { payload: probeMigrated } = migratePayload(probe.rows[0].payload);
+  logger.info('[project payload save] conflict (post-merge race)', {
     project_id: id,
     client_version: expectedVersion,
+    target_version: targetVersion,
     server_version: probe.rows[0].version,
   });
   return {
     kind: 'conflict',
     currentVersion: probe.rows[0].version,
-    currentPayload: currentMigrated,
+    currentPayload: probeMigrated,
   };
+}
+
+// ─── Asset merge helpers ────────────────────────────────────────────
+
+/**
+ * Union the three asset maps (`rowImages`, `rowOverlays`, `rowVideoClips`)
+ * from `current` onto `incoming`. Incoming wins on key collision so a
+ * regenerated asset's new URL replaces the old one; existing keys the
+ * client never sent are preserved.
+ *
+ * Returns the merged payload plus the per-map list of keys preserved
+ * from current, so the caller can emit a diagnostic log only when the
+ * merge actually did work (the common no-drift case stays quiet).
+ */
+function mergeAssetMaps(
+  incoming: ProjectPayload,
+  current: ProjectPayload,
+): {
+  merged: ProjectPayload;
+  preserved: {
+    rowImages: number[];
+    rowOverlays: number[];
+    rowVideoClips: number[];
+  };
+} {
+  const preserved = {
+    rowImages: [] as number[],
+    rowOverlays: [] as number[],
+    rowVideoClips: [] as number[],
+  };
+
+  const mergedRowImages = { ...incoming.rowImages };
+  for (const [k, v] of Object.entries(current.rowImages)) {
+    const key = Number(k);
+    if (!(key in mergedRowImages)) {
+      mergedRowImages[key] = v;
+      preserved.rowImages.push(key);
+    }
+  }
+
+  const mergedRowOverlays = { ...incoming.rowOverlays };
+  for (const [k, v] of Object.entries(current.rowOverlays)) {
+    const key = Number(k);
+    if (!(key in mergedRowOverlays)) {
+      mergedRowOverlays[key] = v;
+      preserved.rowOverlays.push(key);
+    }
+  }
+
+  const mergedRowVideoClips = { ...incoming.rowVideoClips };
+  for (const [k, v] of Object.entries(current.rowVideoClips)) {
+    const key = Number(k);
+    if (!(key in mergedRowVideoClips)) {
+      mergedRowVideoClips[key] = v;
+      preserved.rowVideoClips.push(key);
+    }
+  }
+
+  return {
+    merged: {
+      ...incoming,
+      rowImages: mergedRowImages,
+      rowOverlays: mergedRowOverlays,
+      rowVideoClips: mergedRowVideoClips,
+    },
+    preserved,
+  };
+}
+
+/**
+ * Structural equality on everything EXCEPT the three asset maps. Used to
+ * decide whether a version-drifted save is safe to auto-merge: if the
+ * client's non-asset fields match the current row's, the only divergence
+ * is in the asset maps and the merge handles it without losing user
+ * intent. Otherwise the conflict is real (concurrent edits to doc rows,
+ * brand kit, flags, etc.) and we surface it.
+ */
+function nonAssetFieldsEqual(a: ProjectPayload, b: ProjectPayload): boolean {
+  const strip = (p: ProjectPayload) => {
+    const { rowImages: _ri, rowOverlays: _ro, rowVideoClips: _rvc, ...rest } = p;
+    return rest;
+  };
+  return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
 }
 
 // ─── Save (force, no version check) ─────────────────────────────────

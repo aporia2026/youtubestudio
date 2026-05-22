@@ -275,28 +275,34 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
   const brand = config.brand;
 
   // Thumbnail-zoom routing wins when (a) a region target is set, (b) the
-  // doc carries a thumbnail, (c) the target id resolves to a region, AND
-  // (d) the row has no per-row visual of its own. The per-row imageUrl /
-  // videoUrl is the fresher signal — when the user (re)generates an image
-  // or animates a row, the doc table cell switches to that asset, and the
-  // player must match. Without this guard the player kept zooming into a
-  // stale section-divider composite while the doc table showed the new
-  // per-row image — same row, two different visuals.
-  const hasRowVisual = Boolean(shot.imageUrl || shot.videoUrl);
+  // doc carries a thumbnail, AND (c) the target id resolves to a region.
+  //
+  // Precedence over per-row imageUrl/videoUrl is intentional (2026-05-22):
+  // assigning a region via `thumbnail_zoom_to` is the user's explicit,
+  // sticky declaration that this shot is a section divider. A per-row
+  // image is an earlier auto-pipeline artifact (or a previously generated
+  // animation) — the explicit assignment supersedes it. If a user wants
+  // the row image instead, they clear the region assignment.
   const targetRegion = findRegion(config, shot.thumbnailZoomTo);
-  if (targetRegion && config.thumbnail && !hasRowVisual) {
-    // Smooth-transition tour only applies when the previous shot was
-    // ITSELF rendered as a thumbnail-zoom — i.e. the previous shot had
-    // no per-row visual that pre-empted the same routing rule above. A
-    // previous shot that played as b-roll never visually "left from"
-    // its region, so starting the camera there would create a hard
-    // cut from b-roll directly into a region-anchored zoom.
-    const previousRegion =
-      previousShot && !previousShot.imageUrl && !previousShot.videoUrl
-        ? findRegion(config, previousShot.thumbnailZoomTo)
-        : null;
+  if (targetRegion && config.thumbnail) {
+    // Smooth-transition tour anchors against the previous shot's region
+    // when the previous shot ALSO carries a `thumbnail_zoom_to` target.
+    // Without one, the previous shot visually started elsewhere and
+    // starting the camera mid-region creates a hard cut.
+    const previousRegion = previousShot
+      ? findRegion(config, previousShot.thumbnailZoomTo)
+      : null;
     const transition = resolveTransition(shot, config.thumbnail.defaultTransition);
     const zoomFadeEnabled = shot.sceneFade ?? config.sceneFadeEnabled ?? true;
+    if (shot.imageUrl || shot.videoUrl) {
+      console.info('[scene router] thumbnail-zoom won over row image', {
+        shotIndex,
+        regionId: targetRegion.id,
+        regionLabel: targetRegion.label,
+        hadRowImage: Boolean(shot.imageUrl),
+        hadRowVideo: Boolean(shot.videoUrl),
+      });
+    }
     return (
       <ThumbnailZoomScene
         durationInFrames={durationInFrames}
