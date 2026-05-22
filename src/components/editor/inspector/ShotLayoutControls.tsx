@@ -233,7 +233,23 @@ export function ShotLayoutControls({
                   <button
                     key={String(opt.value)}
                     type="button"
-                    onClick={() => onUpdate({ scene_fade: opt.value })}
+                    onClick={() => {
+                      // `transition_in === 'cross-fade'` silently
+                      // overrides `scene_fade=false` in the renderer's
+                      // resolution (see remotion/utils.ts:856). Without
+                      // this coupling, clicking "Cut" left the timeline
+                      // cross-fade active and the user saw "fade still
+                      // appears even though I turned it off." So when
+                      // the user picks Cut, also clear transition_in;
+                      // when they pick Fade, set transition_in=null so
+                      // a stale 'cross-fade' value can't shadow scene
+                      // fade. Default leaves both undefined.
+                      const patch: { scene_fade: boolean | undefined; transition_in?: 'cross-fade' | null } =
+                        { scene_fade: opt.value };
+                      if (opt.value === false) patch.transition_in = null;
+                      if (opt.value === true) patch.transition_in = null;
+                      onUpdate(patch);
+                    }}
                     className="text-[10px] px-2 py-1 rounded border transition-colors"
                     style={{
                       borderColor: isActive ? 'var(--editor-accent, #a78bfa)' : 'var(--card-border)',

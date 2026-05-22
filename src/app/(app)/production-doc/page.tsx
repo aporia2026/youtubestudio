@@ -1893,6 +1893,25 @@ function ProductionDocPage() {
   // same entry instead of being lost.
   const [historyEntryId, setHistoryEntryId] = useState<string | null>(null);
 
+  // Honor the `?h=<historyEntryId>` URL param. The editor's "Doc"
+  // back-link carries this so navigating back lands on THIS row even
+  // when localStorage doesn't have a recent session for it (cross-
+  // device, cleared storage, private-browsing, etc.). Runs once on
+  // mount — after this the user's interactions (history switcher,
+  // generate flow) own historyEntryId. Mounted BEFORE the localStorage
+  // restore effect so the URL is authoritative if both are present.
+  const urlHistoryId = search.get('h');
+  useEffect(() => {
+    if (!urlHistoryId) return;
+    if (!/^[0-9a-f-]{36}$/i.test(urlHistoryId)) {
+      console.warn('[production-doc] ignoring malformed h param', { urlHistoryId });
+      return;
+    }
+    console.info('[production-doc] loading history entry from url', { urlHistoryId });
+    setHistoryEntryId(urlHistoryId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ─── Canonical project payload (Phase 2 parity refactor) ─────────
   //
   // `useProject` is the single persistence sink for everything the
@@ -1911,6 +1930,55 @@ function ProductionDocPage() {
   // conflict is logged at the hook level and the save status flips
   // to 'conflict' silently.
   const project = useProject(historyEntryId ?? '');
+
+  // ─── Hydrate local state from the canonical payload ──────────────
+  //
+  // When `historyEntryId` is set (URL `?h=…` or history-sidebar click)
+  // `useProject` GETs the canonical row from /api/edit/[id]. The page's
+  // working state lives in local hooks (doc, rowImages, rowOverlays,
+  // rowVideoClips) — without this effect the fetched payload sits
+  // unused and the page renders its empty form because `doc` is null.
+  // The user's repeated complaint "clicking Doc shows empty form, all
+  // images gone" was this missing hydration step in action.
+  //
+  // Guarded by a ref so it only fires the FIRST time payload arrives
+  // for a given historyEntryId. Subsequent runs (after the user has
+  // started editing, or after the save-effect bumps project.payload)
+  // do NOT clobber local state.
+  const hydratedForHistoryIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const payload = project.payload;
+    if (!payload || !historyEntryId) return;
+    if (hydratedForHistoryIdRef.current === historyEntryId) return;
+    // Only hydrate when there's no local doc yet — protects against
+    // the history-sidebar restore path (which already sets doc itself
+    // via the entry shape) from being clobbered by a later payload
+    // arrival.
+    if (doc) {
+      hydratedForHistoryIdRef.current = historyEntryId;
+      return;
+    }
+    console.info('[production-doc] hydrating local state from canonical payload', {
+      historyEntryId,
+      rowCount: payload.doc.rows.length,
+      imageCount: Object.keys(payload.rowImages).length,
+      overlayCount: Object.keys(payload.rowOverlays).length,
+      clipCount: Object.keys(payload.rowVideoClips).length,
+    });
+    setDoc(payload.doc);
+    // Convert Record<number, string> → RowImageState[] aligned to rows.
+    const restoredImages: RowImageState[] = payload.doc.rows.map((_, i) => {
+      const url = payload.rowImages[i];
+      return url ? { status: 'done', imageUrl: url } : { status: 'idle' };
+    });
+    setRowImages(restoredImages);
+    // Overlays + clips keep their Record<number, …> shape locally; just
+    // copy across (the canonical entries already match the shape the
+    // page expects).
+    setRowOverlays({ ...payload.rowOverlays } as Record<number, RowOverlayState>);
+    setRowVideoClips({ ...payload.rowVideoClips });
+    hydratedForHistoryIdRef.current = historyEntryId;
+  }, [project.payload, historyEntryId, doc]);
 
   // ─── Atomic server-side asset persistence (2026-05-22) ────────────
   //

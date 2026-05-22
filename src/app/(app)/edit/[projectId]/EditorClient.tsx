@@ -297,6 +297,30 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     [apply, writeRowAsset],
   );
 
+  // User-initiated seek. Must update BOTH the local playhead state AND
+  // the Remotion Player's internal frame. Before this helper, the three
+  // user-seek call sites (TransportBar onSeek, Audio tab onSeek,
+  // TimelineV2 onSeek) only dispatched SET_PLAYHEAD — the React state
+  // moved, but the Player kept its old frame, so pressing Play started
+  // from the previous position instead of where the user dragged to.
+  // playerRef is declared further down the file; we capture it via the
+  // outer closure since it's a ref (stable identity, no dep churn).
+  const playerRef = useRef<PlayerRef>(null);
+  const seekFromUser = useCallback(
+    (ms: number) => {
+      apply({ type: 'SET_PLAYHEAD', ms });
+      const player = playerRef.current;
+      if (!player || !videoConfigRef.current) return;
+      const fps = videoConfigRef.current.fps;
+      player.seekTo(Math.round((ms / 1000) * fps));
+    },
+    [apply],
+  );
+  // Hold the latest videoConfig in a ref so seekFromUser doesn't have to
+  // depend on it and re-create on every config recompute. The config's
+  // `fps` is the only field we read here and it's stable across edits.
+  const videoConfigRef = useRef<{ fps: number } | null>(null);
+
   // v2 (2026-05-22) — resolve the active style's `preferred_cloud_model`
   // so the ShotInspector regenerate button can show its per-image
   // cost (rule 8). One small fetch on mount + whenever the doc's
@@ -1365,6 +1389,13 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
   const inputProps = useMemo(() => (videoConfig ? { config: videoConfig } : null), [videoConfig]);
 
+  // Keep the videoConfigRef in sync. seekFromUser (declared near the
+  // top of the component) reads fps off this ref so it doesn't have to
+  // declare videoConfig as a dep and re-create on every config rebuild.
+  useEffect(() => {
+    videoConfigRef.current = videoConfig ? { fps: videoConfig.fps } : null;
+  }, [videoConfig]);
+
   const totalFrames = useMemo(() => {
     if (!videoConfig) return 1;
     const totalMs = videoConfig.shots.reduce((acc, s) => acc + s.durationMs, 0);
@@ -1514,8 +1545,10 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
   // Subscribe to frame updates so the playhead reflects the live
   // play position. Throttled at the ms-rounded level so React only
-  // re-renders the toolbar when the integer ms value changes.
-  const playerRef = useRef<PlayerRef>(null);
+  // re-renders the toolbar when the integer ms value changes. The
+  // `playerRef` itself is declared up with the other refs near
+  // `seekFromUser` so the helper can call `player.seekTo` on user
+  // seeks (drag-scrub, ruler click, transport scrub).
   useEffect(() => {
     const player = playerRef.current;
     if (!player || !videoConfig) return;
@@ -1599,6 +1632,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       onRedo={() => apply({ type: 'REDO' })}
       onSave={() => { void flushSave(); }}
       exportHref={`/api/edit/${encodeURIComponent(projectId)}/export?format=otio`}
+      docHref={`/production-doc?h=${encodeURIComponent(projectId)}`}
       onHelp={() => {
         // Help opens the StatusBar's existing shortcut overlay by
         // dispatching the same custom event. The StatusBar listens
@@ -1818,7 +1852,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         playheadMs={state.playheadMs}
         totalDurationMs={totalDurationMs}
         shotStartTimesMs={shotStartTimesMs}
-        onSeek={(ms) => apply({ type: 'SET_PLAYHEAD', ms })}
+        onSeek={seekFromUser}
         fps={videoConfig.fps}
         playbackRate={playbackRate}
         onPlaybackRateChange={setPlaybackRate}
@@ -1983,7 +2017,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           <InspectorCaptionsTab
             captions={state.captions}
             playheadMs={state.playheadMs}
-            onSeek={(ms) => apply({ type: 'SET_PLAYHEAD', ms })}
+            onSeek={seekFromUser}
             onRegen={() => { void handleRegenerateCaptions(); }}
             regenDisabled={regenCaptionsRunning || !state.voiceoverUrl}
             regenLabel={regenCaptionsLabel}
@@ -2013,7 +2047,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       rowTrims={rowTrims}
       rowTransitions={rowTransitions}
       onSelect={(shotIndex) => apply({ type: 'SET_SELECTION', shotIndex })}
-      onSeek={(ms) => apply({ type: 'SET_PLAYHEAD', ms })}
+      onSeek={seekFromUser}
       onResize={(shotIndex, durationMs) =>
         apply({ type: 'RESIZE_SHOT', shotIndex, durationMs })
       }

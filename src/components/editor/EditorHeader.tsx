@@ -44,6 +44,12 @@ interface EditorHeaderProps {
   /** Endpoint for the export download (no Next router involvement —
    *  we want the browser to download the .otio file natively). */
   exportHref: string;
+  /** Target for the "Doc" back-link. Carries the project id so the
+   *  production-doc page loads THIS row instead of falling back to
+   *  the default empty form when localStorage doesn't have a recent
+   *  history entry for this project (cross-device, cleared storage,
+   *  private-browsing, etc.). */
+  docHref: string;
   onHelp: () => void;
   /** Optional slot for the project switcher (reload + history picker).
    *  Lives at the left of the action cluster so the natural reading
@@ -76,6 +82,7 @@ export function EditorHeader({
   onRedo,
   onSave,
   exportHref,
+  docHref,
   onHelp,
   switcherSlot,
   onRender,
@@ -221,9 +228,9 @@ export function EditorHeader({
         <span className="editor-divider" aria-hidden />
 
         <Link
-          href="/production-doc"
+          href={docHref}
           className="editor-btn"
-          title="Back to Production Doc"
+          title="Back to Production Doc for this project"
         >
           <ArrowLeft size={14} strokeWidth={2} />
           <span>Doc</span>
