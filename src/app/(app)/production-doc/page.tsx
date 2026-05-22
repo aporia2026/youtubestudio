@@ -1977,6 +1977,14 @@ function ProductionDocPage() {
     // page expects).
     setRowOverlays({ ...payload.rowOverlays } as Record<number, RowOverlayState>);
     setRowVideoClips({ ...payload.rowVideoClips });
+    // Voiceover URL + alignment must come across or the in-app player
+    // shows blank audio and the scene/narration timing drifts (the
+    // realigner needs alignment to retime scene boundaries from the
+    // generated narration). Without these the user reported
+    // "narration and scenes do not correspond suddenly".
+    if (payload.voiceoverUrl) setVoiceoverUrl(payload.voiceoverUrl);
+    if (payload.voiceoverAlignment) setVoiceoverAlignment(payload.voiceoverAlignment);
+    if (payload.visualKitOverride) setVisualKitOverride(payload.visualKitOverride);
     hydratedForHistoryIdRef.current = historyEntryId;
   }, [project.payload, historyEntryId, doc]);
 
@@ -3621,6 +3629,20 @@ function ProductionDocPage() {
       }
     } catch { /* corrupt form cache — ignore */ }
 
+    // CRITICAL (2026-05-23): when the URL carries `?h=<historyEntryId>`,
+    // the user navigated here from the editor's "Doc" link expecting to
+    // see THIS row's current server state. localStorage is almost always
+    // stale relative to the server (the editor has been writing through
+    // the row-asset endpoint and the full-payload PATCH), so restoring
+    // it would silently revert the user's edits — animations disappear,
+    // fade toggles undo themselves, narration/scene timing falls out of
+    // sync. Skip the localStorage doc/rowImages restore when URL is
+    // authoritative; the canonical hydrate effect above populates from
+    // /api/edit/[id] instead.
+    if (urlHistoryId) {
+      console.info('[production-doc] skipping localStorage restore — url ?h= is authoritative');
+      return;
+    }
     try {
       const saved = localStorage.getItem('prodoc_last_result');
       if (!saved) return;
