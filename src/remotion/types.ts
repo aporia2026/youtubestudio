@@ -171,6 +171,17 @@ export interface VideoShot {
    *  visual in a scaled container; surrounding area shows the scene
    *  background (or pillarbox color in letterbox mode). Undefined ⇒ 100. */
   sceneZoom?: number;
+  /** Free-transform on the visual — Canva-style position + scale +
+   *  rotation. Composes WITH `sceneZoom` (sceneZoom acts as a coarse
+   *  shortcut; image_scale_pct as fine control). x/y are percent of
+   *  canvas width/height from center (0 = centered, ±100 = off-frame
+   *  edge). Scale is percent of natural fit (100 = today's render).
+   *  Rotation is degrees clockwise. See
+   *  `_plans/2026-05-23-editor-canva-transform.md`. */
+  imageXPct?: number;
+  imageYPct?: number;
+  imageScalePct?: number;
+  imageRotationDeg?: number;
   /** Auto-sourced real-image overlay composited on top of the scene at
    *  the planned zone. Falsy = no overlay, scene renders unmodified.
    *

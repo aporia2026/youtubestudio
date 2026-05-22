@@ -402,6 +402,26 @@ export interface ProductionRow {
    *  the doc-wide default. Cleared (undefined) means "fall back to
    *  doc-level → workspace-level resolution." */
   broll_model_id?: string;
+  /** Free-transform offset of the visual element on the 1920×1080
+   *  canvas, expressed as a percentage of canvas width/height from
+   *  the center. `0` = centered (the default). Range [-200, 200] —
+   *  values outside ±100 place the visual partially off-frame, which
+   *  is sometimes useful for stylized framings. Persisted alongside
+   *  `image_y_pct`, `image_scale_pct`, `image_rotation_deg`; the
+   *  renderer composes them into a single CSS transform applied AFTER
+   *  the existing scene_zoom wrapper. See
+   *  `_plans/2026-05-23-editor-canva-transform.md`. */
+  image_x_pct?: number;
+  image_y_pct?: number;
+  /** Free-transform scale of the visual element as a percentage of
+   *  its natural fit size. `100` = fits the canvas the way today's
+   *  render does. Composes with `scene_zoom`: effective scale is
+   *  scene_zoom% × image_scale_pct%. Range [10, 400]. */
+  image_scale_pct?: number;
+  /** Free-transform rotation in degrees, clockwise. `0` = no rotation.
+   *  Range [-3600, 3600] — stored unbounded so spins can be
+   *  represented; the renderer applies modulo as needed. */
+  image_rotation_deg?: number;
 }
 
 export interface ProductionDoc {
@@ -834,6 +854,25 @@ export function productionDocToVideoConfig(
           ? row.scene_zoom
           : typeof doc.scene_zoom_default === 'number' && Number.isFinite(doc.scene_zoom_default)
           ? doc.scene_zoom_default
+          : undefined,
+      // Canva-style free-transform — per-row, no doc-level default
+      // for v1. All four fields are optional; the renderer treats
+      // unset as identity.
+      imageXPct:
+        typeof row.image_x_pct === 'number' && Number.isFinite(row.image_x_pct)
+          ? row.image_x_pct
+          : undefined,
+      imageYPct:
+        typeof row.image_y_pct === 'number' && Number.isFinite(row.image_y_pct)
+          ? row.image_y_pct
+          : undefined,
+      imageScalePct:
+        typeof row.image_scale_pct === 'number' && Number.isFinite(row.image_scale_pct)
+          ? row.image_scale_pct
+          : undefined,
+      imageRotationDeg:
+        typeof row.image_rotation_deg === 'number' && Number.isFinite(row.image_rotation_deg)
+          ? row.image_rotation_deg
           : undefined,
       thumbnailTransition: row.thumbnail_transition,
       // Resolve thumbnail-region camera padding for THIS row. Order:

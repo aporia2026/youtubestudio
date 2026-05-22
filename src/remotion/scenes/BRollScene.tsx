@@ -24,6 +24,20 @@ const KB_DIRECTIONS: VideoShot['kenBurnsDirection'][] = [
   'zoom-in', 'pan-left', 'pan-right', 'zoom-out', 'pan-up', 'pan-down',
 ];
 
+/** Sanity-clamp a numeric transform field. Returns the clamped value
+ *  when finite + in-range, otherwise `fallback`. Keeps malformed
+ *  payloads (NaN, ±Infinity, out-of-range overrides) from blowing the
+ *  CSS transform string into something the browser can't parse. */
+function clampNum(
+  value: number | undefined,
+  min: number,
+  max: number,
+  fallback: number,
+): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
+}
+
 /**
  * B-Roll scene — three render paths in priority order:
  *
@@ -143,9 +157,29 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
       ? {}
       : { transform: `scale(${zoomScale})`, transformOrigin: 'center center' };
 
+  // Canva-style free-transform (Batch A of
+  // _plans/2026-05-23-editor-canva-transform.md). Composes INSIDE the
+  // scene_zoom wrapper so the renderer is identity-equivalent for rows
+  // that don't set any free-transform fields. Clamping protects against
+  // malformed payloads: x/y are percentages of canvas size, scale is
+  // a percent of natural fit, rotation is degrees (modulo'd visually).
+  const freeXPct = clampNum(shot.imageXPct, -200, 200, 0);
+  const freeYPct = clampNum(shot.imageYPct, -200, 200, 0);
+  const freeScalePct = clampNum(shot.imageScalePct, 10, 400, 100);
+  const freeRotDeg = clampNum(shot.imageRotationDeg, -3600, 3600, 0);
+  const freeTransformIdentity =
+    freeXPct === 0 && freeYPct === 0 && freeScalePct === 100 && freeRotDeg === 0;
+  const freeTransformStyle: React.CSSProperties = freeTransformIdentity
+    ? {}
+    : {
+        transform: `translate(${freeXPct}%, ${freeYPct}%) scale(${freeScalePct / 100}) rotate(${freeRotDeg}deg)`,
+        transformOrigin: 'center center',
+      };
+
   return (
     <AbsoluteFill style={{ background: brand.backgroundColor, overflow: 'hidden' }}>
       <AbsoluteFill style={zoomWrapperStyle}>
+      <AbsoluteFill style={freeTransformStyle}>
       {useVideo ? (
         <AbsoluteFill style={{ overflow: 'hidden' }}>
           <OffthreadVideo
@@ -220,6 +254,7 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
           onError={() => setImgError(true)}
         />
       )}
+      </AbsoluteFill>
       </AbsoluteFill>
 
       {/* Subtle dark gradient at bottom for text readability */}

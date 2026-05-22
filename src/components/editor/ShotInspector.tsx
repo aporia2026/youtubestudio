@@ -1162,6 +1162,14 @@ export function ShotInspector({
             />
           )}
 
+          {/* Canva-style free transform — Batch A of
+              _plans/2026-05-23-editor-canva-transform.md. Numeric
+              inputs only in this first cut; the interactive overlay
+              lands in Batch B. */}
+          {onUpdateRow && (
+            <ShotFreeTransformControls row={row} onUpdate={onUpdateRow} />
+          )}
+
           {(typeof row.trim_start_ms === 'number' || typeof row.trim_end_ms === 'number') && (
             <div
               className="p-2 rounded border space-y-1"
@@ -1564,6 +1572,205 @@ function Badge({ label, tone = 'default' }: BadgeProps): React.ReactElement {
     >
       {label}
     </span>
+  );
+}
+
+// ─── Per-row free-transform controls ───────────────────────────────
+//
+// Canva-style position / scale / rotation inputs for the shot's
+// visual. Composes WITH `scene_zoom`: scene_zoom is the coarse uniform
+// shortcut, these fields are the fine control. The renderer composes
+// them inside the BRollScene's existing zoom wrapper, so identity
+// values (0/0/100/0) are render-identical to today.
+function ShotFreeTransformControls({
+  row,
+  onUpdate,
+}: {
+  row: ProductionDoc['rows'][number];
+  onUpdate: (patch: Partial<ProductionDoc['rows'][number]>) => void;
+}): React.ReactElement {
+  const x = typeof row.image_x_pct === 'number' ? row.image_x_pct : 0;
+  const y = typeof row.image_y_pct === 'number' ? row.image_y_pct : 0;
+  const scale =
+    typeof row.image_scale_pct === 'number' ? row.image_scale_pct : 100;
+  const rot =
+    typeof row.image_rotation_deg === 'number' ? row.image_rotation_deg : 0;
+  const isIdentity = x === 0 && y === 0 && scale === 100 && rot === 0;
+
+  const update = (patch: Partial<ProductionDoc['rows'][number]>) => {
+    console.info('[editor transform commit] numeric', {
+      from: {
+        x: row.image_x_pct,
+        y: row.image_y_pct,
+        scale: row.image_scale_pct,
+        rot: row.image_rotation_deg,
+      },
+      to: { ...patch },
+    });
+    onUpdate(patch);
+  };
+  const resetField = (key: 'image_x_pct' | 'image_y_pct' | 'image_scale_pct' | 'image_rotation_deg') =>
+    update({ [key]: undefined });
+  const resetAll = () =>
+    update({
+      image_x_pct: undefined,
+      image_y_pct: undefined,
+      image_scale_pct: undefined,
+      image_rotation_deg: undefined,
+    });
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <span className="font-medium" style={{ color: 'var(--fg)' }}>
+          Transform
+        </span>
+        <button
+          type="button"
+          onClick={resetAll}
+          disabled={isIdentity}
+          className="text-[10px] underline disabled:opacity-30 disabled:no-underline"
+          style={{ color: 'var(--fg-muted)' }}
+          title="Reset position, scale, and rotation for this shot."
+        >
+          Reset
+        </button>
+      </div>
+      <FreeTransformRow
+        label="X"
+        suffix="%"
+        value={x}
+        min={-200}
+        max={200}
+        step={1}
+        active={typeof row.image_x_pct === 'number'}
+        onChange={(v) => update({ image_x_pct: v === 0 ? undefined : v })}
+        onReset={() => resetField('image_x_pct')}
+      />
+      <FreeTransformRow
+        label="Y"
+        suffix="%"
+        value={y}
+        min={-200}
+        max={200}
+        step={1}
+        active={typeof row.image_y_pct === 'number'}
+        onChange={(v) => update({ image_y_pct: v === 0 ? undefined : v })}
+        onReset={() => resetField('image_y_pct')}
+      />
+      <FreeTransformRow
+        label="Scale"
+        suffix="%"
+        value={scale}
+        min={10}
+        max={400}
+        step={1}
+        active={typeof row.image_scale_pct === 'number'}
+        onChange={(v) =>
+          update({ image_scale_pct: v === 100 ? undefined : v })
+        }
+        onReset={() => resetField('image_scale_pct')}
+      />
+      <FreeTransformRow
+        label="Rotate"
+        suffix="°"
+        value={rot}
+        min={-180}
+        max={180}
+        step={1}
+        active={typeof row.image_rotation_deg === 'number'}
+        onChange={(v) =>
+          update({ image_rotation_deg: v === 0 ? undefined : v })
+        }
+        onReset={() => resetField('image_rotation_deg')}
+      />
+      <div
+        className="text-[10px] mt-1"
+        style={{ color: 'var(--fg-muted)' }}
+      >
+        Composes with Layout → Scene zoom. Drag handles land in Batch B.
+      </div>
+    </div>
+  );
+}
+
+function FreeTransformRow({
+  label,
+  suffix,
+  value,
+  min,
+  max,
+  step,
+  active,
+  onChange,
+  onReset,
+}: {
+  label: string;
+  suffix: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  active: boolean;
+  onChange: (next: number) => void;
+  onReset: () => void;
+}): React.ReactElement {
+  return (
+    <div className="flex items-center gap-2">
+      <label
+        className="text-[10px] uppercase tracking-wider w-12 shrink-0"
+        style={{ color: 'var(--fg-muted)' }}
+      >
+        {label}
+      </label>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="flex-1"
+        style={{ accentColor: 'var(--editor-accent, #a78bfa)' }}
+        aria-label={`${label}${suffix}`}
+      />
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => {
+          const raw = Number(e.target.value);
+          if (!Number.isFinite(raw)) return;
+          const clamped = Math.max(min, Math.min(max, raw));
+          onChange(clamped);
+        }}
+        className="text-[11px] tabular-nums w-14 rounded border px-1 py-0.5"
+        style={{
+          borderColor: active ? 'var(--editor-accent, #a78bfa)' : 'var(--card-border)',
+          background: 'var(--bg)',
+          color: active ? 'var(--editor-accent, #a78bfa)' : 'var(--fg)',
+        }}
+        aria-label={`${label} value`}
+      />
+      <span
+        className="text-[10px] tabular-nums w-3"
+        style={{ color: 'var(--fg-muted)' }}
+      >
+        {suffix}
+      </span>
+      <button
+        type="button"
+        onClick={onReset}
+        disabled={!active}
+        className="text-[10px] underline disabled:opacity-30 disabled:no-underline w-8 text-right"
+        style={{ color: 'var(--fg-muted)' }}
+        title={`Reset ${label}`}
+      >
+        ↺
+      </button>
+    </div>
   );
 }
 
