@@ -396,6 +396,12 @@ export interface ProductionRow {
   /** Intrinsic duration of the override clip in seconds — used by
    *  BRollScene's playback-rate fit math. */
   video_duration_seconds_override?: number;
+  /** Per-row animation model lock. When set, takes precedence over
+   *  `ProductionDoc.broll_model_id` and the workspace default. Lets
+   *  the user pick a specific i2v model for THIS shot without flipping
+   *  the doc-wide default. Cleared (undefined) means "fall back to
+   *  doc-level → workspace-level resolution." */
+  broll_model_id?: string;
 }
 
 export interface ProductionDoc {

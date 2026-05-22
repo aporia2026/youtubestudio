@@ -16,12 +16,14 @@
  *     · Rewrite script-with-AI    (final Phase 3 commit)
  */
 import Link from 'next/link';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, RefreshCw, Sparkles, Undo2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatI2ICostHint } from '@/lib/image-models-i2i';
 import type { ProductionDoc, RowOverlayRenderState } from '@/remotion/utils';
 import type { ThumbnailTransitionConfig, VideoShot, VideoThumbnail } from '@/remotion/types';
+import { BROLL_MODELS } from '@/lib/broll-types';
+import { useLocalStudioEnabled } from '@/lib/local-studio-enabled';
 import { ShotLayoutControls } from '@/components/editor/inspector/ShotLayoutControls';
 import { TransitionDialog } from '@/components/production-doc/TransitionDialog';
 
@@ -81,6 +83,11 @@ interface ShotInspectorProps {
    *  small caption next to the generate button so the user knows
    *  what they're about to spend on. */
   brollModelId?: string;
+  /** Doc-level animation model id — applied as the default for every
+   *  B-roll cell unless this row has its own pick (`row.broll_model_id`).
+   *  Surfaced so the dropdown's "Default" label can show the effective
+   *  fallback ("Default — doc setting", "Default — workspace setting"). */
+  docBrollModelId?: string;
   /** Called when the user edits the row's voiceover script (inline
    *  textarea OR via the AI rephrase button). Dispatches
    *  SET_ROW_SCRIPT. */
@@ -166,6 +173,7 @@ export function ShotInspector({
   onGenerateClip,
   clipStatus,
   brollModelId,
+  docBrollModelId,
   onUpdateScript,
   onUpdateRow,
   overlayState,
@@ -651,64 +659,113 @@ export function ShotInspector({
             collapses to a busy state. Hidden when a clip is already
             attached and `ready` — the user can use Pick from
             project below to swap it. */}
-        {onGenerateClip && clipStatus !== 'ready' && (
-          <div
-            className="p-3 border-b space-y-2"
-            style={{ borderColor: 'var(--card-border)' }}
-          >
-            <div className="text-[11px] font-semibold" style={{ color: 'var(--fg)' }}>
-              Animate this shot
-            </div>
-            <button
-              type="button"
-              onClick={onGenerateClip}
-              disabled={clipStatus === 'generating'}
-              className="w-full flex items-center justify-center gap-2 text-xs px-3 py-2 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
-              style={{
-                borderColor: 'var(--accent-purple-bright, #a78bfa)',
-                color:
-                  clipStatus === 'generating'
+        {onGenerateClip && (() => {
+          // Per-row + doc-level + workspace-level model resolution
+          // mirrors the renderer's tier priority (row > doc > user).
+          // The dropdown writes row.broll_model_id; empty string clears
+          // the row override so the doc-level default kicks back in
+          // (and `undefined` doc cascades to workspace default).
+          const rowModelId = row.broll_model_id;
+          const effectiveModelId =
+            rowModelId ?? docBrollModelId ?? brollModelId ?? '';
+          const effectiveModel = BROLL_MODELS.find(
+            (m) => m.id === effectiveModelId,
+          );
+          const isReady = clipStatus === 'ready';
+          const isGenerating = clipStatus === 'generating';
+          return (
+            <div
+              className="p-3 border-b space-y-2"
+              style={{ borderColor: 'var(--card-border)' }}
+            >
+              <div className="flex items-center justify-between">
+                <div
+                  className="text-[11px] font-semibold"
+                  style={{ color: 'var(--fg)' }}
+                >
+                  Animate this shot
+                </div>
+                {isReady && (
+                  <span
+                    className="text-[9px] px-1.5 py-0.5 rounded ed-mono"
+                    style={{
+                      background: 'rgba(34,197,94,0.14)',
+                      color: '#22c55e',
+                    }}
+                  >
+                    clip ready
+                  </span>
+                )}
+              </div>
+
+              {/* Per-row model picker. Dropdown shows every i2v model
+                  in the broll registry; local entries gated behind
+                  LOCAL_STUDIO. "Default" first option clears the row
+                  override. The label includes the resolved fallback
+                  so the user knows what "Default" means right now. */}
+              {onUpdateRow && (
+                <ShotBrollModelPicker
+                  rowModelId={rowModelId}
+                  docModelId={docBrollModelId}
+                  workspaceModelId={brollModelId}
+                  onChange={(next) =>
+                    onUpdateRow({ broll_model_id: next })
+                  }
+                />
+              )}
+
+              <button
+                type="button"
+                onClick={onGenerateClip}
+                disabled={isGenerating}
+                className="w-full flex items-center justify-center gap-2 text-xs px-3 py-2 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
+                style={{
+                  borderColor: 'var(--accent-purple-bright, #a78bfa)',
+                  color: isGenerating
                     ? 'var(--fg-muted)'
                     : 'var(--accent-purple-bright, #a78bfa)',
-              }}
-              title={
-                clipStatus === 'generating'
-                  ? 'Clip is generating — this can take 1-3 minutes depending on the model.'
-                  : 'Generate a fresh B-roll animation for this shot using the workspace default model.'
-              }
-            >
-              {clipStatus === 'generating' ? (
-                <>
-                  <Loader2 size={14} strokeWidth={2} className="animate-spin" />
-                  <span>Generating animation…</span>
-                </>
-              ) : clipStatus === 'error' ? (
-                <>
-                  <RefreshCw size={14} strokeWidth={2} />
-                  <span>Retry animation</span>
-                </>
-              ) : (
-                <>
-                  <Sparkles size={14} strokeWidth={2} />
-                  <span>Generate animation</span>
-                </>
-              )}
-            </button>
-            {brollModelId && (
-              <div className="text-[10px]" style={{ color: 'var(--fg-muted)' }}>
-                Model: {brollModelId}.
-                {' '}
-                <Link
-                  href="/settings"
-                  className="underline"
+                }}
+                title={
+                  isGenerating
+                    ? 'Clip is generating — this can take 1-3 minutes depending on the model.'
+                    : isReady
+                      ? 'Regenerate the animation using the model below. The existing clip will be replaced once the new one is ready.'
+                      : 'Generate a fresh B-roll animation for this shot.'
+                }
+              >
+                {isGenerating ? (
+                  <>
+                    <Loader2 size={14} strokeWidth={2} className="animate-spin" />
+                    <span>Generating animation…</span>
+                  </>
+                ) : isReady ? (
+                  <>
+                    <RefreshCw size={14} strokeWidth={2} />
+                    <span>Regenerate animation</span>
+                  </>
+                ) : clipStatus === 'error' ? (
+                  <>
+                    <RefreshCw size={14} strokeWidth={2} />
+                    <span>Retry animation</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles size={14} strokeWidth={2} />
+                    <span>Generate animation</span>
+                  </>
+                )}
+              </button>
+              {effectiveModel && (
+                <div
+                  className="text-[10px]"
                   style={{ color: 'var(--fg-muted)' }}
                 >
-                  Change default
-                </Link>
-              </div>
-            )}
-          </div>
-        )}
+                  {effectiveModel.label} — {effectiveModel.priceUsdLabel}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Pick from project — lists clips that were already
             generated for this production-doc, so the user can swap
@@ -1507,5 +1564,72 @@ function Badge({ label, tone = 'default' }: BadgeProps): React.ReactElement {
     >
       {label}
     </span>
+  );
+}
+
+// ─── Per-row B-roll model picker ───────────────────────────────────
+//
+// Mirrors prod-doc's BrollCell model picker (BrollCell.tsx:1120+) but
+// flattened for the inspector — single dropdown grouped by family. The
+// renderer's tier priority is row > doc > workspace, so the dropdown
+// reflects the row's pick (or shows "Default" when cleared). Clearing
+// writes `broll_model_id: undefined` on the row, falling back to the
+// doc default which itself falls back to the workspace default.
+function ShotBrollModelPicker({
+  rowModelId,
+  docModelId,
+  workspaceModelId,
+  onChange,
+}: {
+  rowModelId: string | undefined;
+  docModelId: string | undefined;
+  workspaceModelId: string | undefined;
+  onChange: (next: string | undefined) => void;
+}): React.ReactElement {
+  const localStudioEnabled = useLocalStudioEnabled();
+  const i2vModels = useMemo(
+    () =>
+      BROLL_MODELS.filter((m) => m.kind === 'image-to-video').filter(
+        (m) => localStudioEnabled || m.provider !== 'comfyui-local',
+      ),
+    [localStudioEnabled],
+  );
+  // Resolve what "Default" means right now so the user can read the
+  // dropdown label without guessing. Empty value = "use Default".
+  const fallbackId = docModelId ?? workspaceModelId;
+  const fallback = fallbackId
+    ? BROLL_MODELS.find((m) => m.id === fallbackId)
+    : null;
+  const defaultLabel = fallback
+    ? `Default — ${fallback.label}${
+        docModelId ? ' (doc setting)' : ' (workspace setting)'
+      }`
+    : 'Default — workspace setting';
+  return (
+    <select
+      value={rowModelId ?? ''}
+      onChange={(e) => {
+        const next = e.target.value || undefined;
+        console.info('[editor row-broll-model] changed', {
+          from: rowModelId,
+          to: next,
+        });
+        onChange(next);
+      }}
+      className="w-full text-xs rounded border px-2 py-1.5"
+      style={{
+        borderColor: 'var(--card-border)',
+        background: 'var(--bg)',
+        color: 'var(--fg)',
+      }}
+      aria-label="Animation model for this shot"
+    >
+      <option value="">{defaultLabel}</option>
+      {i2vModels.map((m) => (
+        <option key={m.id} value={m.id}>
+          {m.label} — {m.priceUsdLabel}
+        </option>
+      ))}
+    </select>
   );
 }

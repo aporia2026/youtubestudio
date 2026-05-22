@@ -723,11 +723,21 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       }
 
       const sceneSeconds = (state.doc.rows[rowIndex] ? 5 : 5); // editor doesn't track per-shot scene seconds yet; pickModelForScene reads the workspace default to pick the tier
-      const tier = pickModelForScene(userBrollModelId, sceneSeconds);
+      // Tier priority: row.broll_model_id > doc.broll_model_id > workspace
+      // default. Mirrors the renderer's resolution so the user's per-row
+      // pick in the inspector dropdown actually drives generation.
+      const explicitModelId =
+        row.broll_model_id ?? state.doc.broll_model_id ?? undefined;
+      const tier = explicitModelId
+        ? { modelId: explicitModelId }
+        : pickModelForScene(userBrollModelId, sceneSeconds);
       console.info('[editor broll] kickoff', {
         rowIndex,
+        rowModelId: row.broll_model_id,
+        docModelId: state.doc.broll_model_id,
         userModelId: userBrollModelId,
         pickedModelId: tier.modelId,
+        explicit: Boolean(explicitModelId),
       });
 
       broolKickoffInFlightRef.current.add(rowIndex);
@@ -2294,6 +2304,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               }}
               clipStatus={state.rowVideoClips[state.selection]?.status}
               brollModelId={userBrollModelId}
+              docBrollModelId={state.doc.broll_model_id}
               onUpdateScript={(text) =>
                 apply({
                   type: 'SET_ROW_SCRIPT',
