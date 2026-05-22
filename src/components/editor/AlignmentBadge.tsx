@@ -73,6 +73,25 @@ export function AlignmentBadge({
   compact = false,
 }: AlignmentBadgeProps): React.ReactElement | null {
   if (status === 'idle') return null;
+
+  // `unsupported` doesn't deserve the same visual weight as `ready` —
+  // it's NOT an error, just a missing optimization (renders work fine
+  // with estimated row timing). Render it as a quiet single-line hint
+  // instead of a colored pill, and skip it entirely in compact (header)
+  // mode so the header doesn't yell at the user about a non-problem.
+  if (status === 'unsupported') {
+    if (compact) return null;
+    return (
+      <div
+        className="text-[10px] leading-snug px-2 py-1"
+        style={{ color: 'var(--fg-muted)' }}
+        role="status"
+      >
+        {detail ?? 'Scene timing uses estimated row durations.'}
+      </div>
+    );
+  }
+
   const p = PALETTE[status];
 
   return (

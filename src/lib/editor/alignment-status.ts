@@ -42,34 +42,26 @@ export function deriveAlignmentStatus(args: {
 }): { status: AlignmentBadgeStatus; detail: string | null } {
   const { voiceoverUrl, voiceoverAlignment } = args;
   if (!voiceoverUrl) return { status: 'idle', detail: null };
-  if (!voiceoverAlignment) {
+
+  const wordCount = Array.isArray(voiceoverAlignment?.words)
+    ? voiceoverAlignment!.words.length
+    : 0;
+
+  if (wordCount === 0) {
+    // No alignment payload — common for auto-matched VOs from the
+    // workspace library that haven't been aligned in THIS project,
+    // and for uploaded VOs that never went through TTS. Render times
+    // fall back to estimated row durations, which still works — this
+    // isn't an error, just a missing optimization.
     return {
       status: 'unsupported',
       detail:
-        'No word-level timings for this voiceover. Re-generate the voiceover on the production-doc page to enable alignment.',
+        'Scene timing uses estimated row durations. Re-gen the voiceover (Re-gen button below) to compute word-level alignment.',
     };
   }
-  // The alignment payload carries `audio_url` (camel-case varies by
-  // version of the response). When present and it doesn't match the
-  // current voiceover URL the alignment is stale.
-  const alignmentUrl =
-    (voiceoverAlignment as { audio_url?: string; audioUrl?: string }).audio_url ??
-    (voiceoverAlignment as { audio_url?: string; audioUrl?: string }).audioUrl;
-  if (alignmentUrl && alignmentUrl !== voiceoverUrl) {
-    return {
-      status: 'stale',
-      detail:
-        'The voiceover URL changed since the last alignment. Regenerate the alignment on the production-doc page.',
-    };
-  }
-  const wordCount = Array.isArray(voiceoverAlignment.words)
-    ? voiceoverAlignment.words.length
-    : 0;
+
   return {
     status: 'ready',
-    detail:
-      wordCount > 0
-        ? `Scene boundaries are retimed to ${wordCount.toLocaleString()} words of narration.`
-        : 'Scene boundaries are retimed to the narration.',
+    detail: `Scene boundaries are retimed to ${wordCount.toLocaleString()} words of narration.`,
   };
 }
