@@ -666,7 +666,11 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     // proxy flag differs.
     const rowImageArr = state.doc.rows.map((_, i) => {
       const url = state.rowImages[i];
-      return url ? { status: 'ready', imageUrl: url } : null;
+      // Status MUST be 'done' — the renderer's check at utils.ts:665
+      // is `imageState?.status === 'done'`. Passing 'ready' silently
+      // dropped every image into the text-reveal fallback path because
+      // `hasVisual` evaluated false. Cost the user real money + trust.
+      return url ? { status: 'done', imageUrl: url } : null;
     });
     const rowVideoClipArr = state.doc.rows.map((_, i) => {
       const clip = state.rowVideoClips[i];
@@ -1305,7 +1309,11 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     if (!doc) return null;
     const rowImageArr: (RowImageState | null)[] = state.doc.rows.map((_, i) => {
       const url = state.rowImages[i];
-      return url ? { status: 'ready', imageUrl: url } : null;
+      // Status MUST be 'done' — the renderer's check at utils.ts:665
+      // is `imageState?.status === 'done'`. Passing 'ready' silently
+      // dropped every image into the text-reveal fallback path because
+      // `hasVisual` evaluated false. Cost the user real money + trust.
+      return url ? { status: 'done', imageUrl: url } : null;
     });
     // rowVideoClips → array form for the renderer. Sparse: rows
     // without a clip stay null so BRollScene falls back to the Ken
