@@ -2403,6 +2403,21 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               docSceneFadeDefault={state.doc.scene_fade_enabled}
               docRegionZoomPaddingDefaultPct={state.doc.region_zoom_padding_default_pct}
               docOnScreenTextModeDefault={state.doc.on_screen_text_mode_default}
+              onApplyTransformToAll={(transform) => {
+                // Bulk-apply the transform to every shot in the doc.
+                // We iterate row-by-row so PATCH_ROW handles each
+                // row's undo entry cleanly. A single PATCH_DOC with a
+                // rows replacement would land as one undo step but
+                // would also require us to rebuild the rows array
+                // verbatim, which is harder to reason about.
+                state.doc.rows.forEach((_, i) => {
+                  apply({
+                    type: 'PATCH_ROW',
+                    rowIndex: i,
+                    patch: transform,
+                  });
+                });
+              }}
               onOpenImageEdit={() => setImageEditRow(state.selection)}
             />
           ) : undefined,

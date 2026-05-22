@@ -136,6 +136,15 @@ interface ShotInspectorProps {
    *  the layout accordion's tri-state radio so the "Default" pill
    *  shows the effective mode (e.g. "Default (overlay)"). */
   docOnScreenTextModeDefault?: 'overlay' | 'bake' | 'none';
+  /** Optional: bulk-apply THIS row's free-transform to every shot in
+   *  the doc. Surfaces an "Apply to all" link in the Transform card.
+   *  When undefined the link is hidden. */
+  onApplyTransformToAll?: (transform: {
+    image_x_pct?: number;
+    image_y_pct?: number;
+    image_scale_pct?: number;
+    image_rotation_deg?: number;
+  }) => void;
   /** Open the mask-brush image edit dialog for this shot. The parent
    *  mounts MaskBrushEditor + calls the image-edit endpoint. */
   onOpenImageEdit?: () => void;
@@ -193,6 +202,7 @@ export function ShotInspector({
   docSceneFadeDefault,
   docRegionZoomPaddingDefaultPct,
   docOnScreenTextModeDefault,
+  onApplyTransformToAll,
   onOpenImageEdit,
 }: ShotInspectorProps): React.ReactElement {
   const undoDepth = editHistoryDepth ?? 0;
@@ -1162,12 +1172,15 @@ export function ShotInspector({
             />
           )}
 
-          {/* Canva-style free transform — Batch A of
+          {/* Canva-style free transform — Batches A-D of
               _plans/2026-05-23-editor-canva-transform.md. Numeric
-              inputs only in this first cut; the interactive overlay
-              lands in Batch B. */}
+              inputs + interactive overlay + multi-shot apply. */}
           {onUpdateRow && (
-            <ShotFreeTransformControls row={row} onUpdate={onUpdateRow} />
+            <ShotFreeTransformControls
+              row={row}
+              onUpdate={onUpdateRow}
+              onApplyTransformToAll={onApplyTransformToAll}
+            />
           )}
 
           {(typeof row.trim_start_ms === 'number' || typeof row.trim_end_ms === 'number') && (
@@ -1585,9 +1598,18 @@ function Badge({ label, tone = 'default' }: BadgeProps): React.ReactElement {
 function ShotFreeTransformControls({
   row,
   onUpdate,
+  onApplyTransformToAll,
 }: {
   row: ProductionDoc['rows'][number];
   onUpdate: (patch: Partial<ProductionDoc['rows'][number]>) => void;
+  /** Optional: copy THIS row's transform to every shot in the doc.
+   *  When undefined the "Apply to all" button is hidden. */
+  onApplyTransformToAll?: (transform: {
+    image_x_pct?: number;
+    image_y_pct?: number;
+    image_scale_pct?: number;
+    image_rotation_deg?: number;
+  }) => void;
 }): React.ReactElement {
   const x = typeof row.image_x_pct === 'number' ? row.image_x_pct : 0;
   const y = typeof row.image_y_pct === 'number' ? row.image_y_pct : 0;
@@ -1688,8 +1710,41 @@ function ShotFreeTransformControls({
         className="text-[10px] mt-1"
         style={{ color: 'var(--fg-muted)' }}
       >
-        Composes with Layout → Scene zoom. Drag handles land in Batch B.
+        Composes with Layout → Scene zoom. Drag the visual in the
+        preview or use the corner + rotate handles for direct control.
       </div>
+      {onApplyTransformToAll && !isIdentity && (
+        <button
+          type="button"
+          onClick={() => {
+            if (
+              !window.confirm(
+                'Apply this transform (X, Y, Scale, Rotate) to every shot in the doc? Per-row overrides on other shots will be replaced.',
+              )
+            )
+              return;
+            console.info('[editor transform] apply-to-all', {
+              transform: {
+                image_x_pct: row.image_x_pct,
+                image_y_pct: row.image_y_pct,
+                image_scale_pct: row.image_scale_pct,
+                image_rotation_deg: row.image_rotation_deg,
+              },
+            });
+            onApplyTransformToAll({
+              image_x_pct: row.image_x_pct,
+              image_y_pct: row.image_y_pct,
+              image_scale_pct: row.image_scale_pct,
+              image_rotation_deg: row.image_rotation_deg,
+            });
+          }}
+          className="text-[10px] underline"
+          style={{ color: 'var(--editor-accent, #a78bfa)' }}
+          title="Copy these X/Y/Scale/Rotate values to every shot in the doc."
+        >
+          Apply to all shots
+        </button>
+      )}
     </div>
   );
 }
