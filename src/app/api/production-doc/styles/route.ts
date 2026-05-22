@@ -60,7 +60,39 @@ export const GET = apiRoute.authed(async (session) => {
   // styles alongside workspace-wide entries; drafts are filtered out
   // inside listAllStyles().
   const styles = await listAllStyles(session.ws, session.uid);
-  return NextResponse.json({ styles });
+  // v3 (2026-05-22): for built-ins with bundled refs, attach
+  // ready-to-render public URLs so the dialog can show a refs grid
+  // without an extra fetch. Saved styles still load their refs from
+  // /api/production-doc/styles/[id]/refs as before. Dir-mapping
+  // convention (id → directory under public/style-refs/) lives here
+  // and only here.
+  const builtInDirMap: Record<string, string> = {
+    doodle_explainer: 'Doodle-explainer',
+  };
+  const enriched = styles.map((s) => {
+    if (s.origin !== 'built-in' || !s.built_in_refs?.length) return s;
+    const dir = builtInDirMap[s.id] ?? s.id;
+    const refs = s.built_in_refs.map((ref, i) => ({
+      id: `builtin:${s.id}:${i}`,
+      position: i,
+      role: 'style' as const,
+      weight: 1,
+      r2_key: '',
+      mime_type: ref.mime_type,
+      size_bytes: null,
+      rejected_by_provider: false,
+      rejection_reason: null,
+      rejection_provider: null,
+      // Relative URL is fine for the dialog's <img src>. Vercel
+      // serves /style-refs/* as a static asset from public/.
+      download_url: `/style-refs/${dir}/${ref.filename}`,
+      content_validated: true,
+      content_validation_error: null,
+      content_validated_at: null,
+    }));
+    return { ...s, refs };
+  });
+  return NextResponse.json({ styles: enriched });
 });
 
 export const POST = apiRoute.authed(async (session, req: NextRequest) => {

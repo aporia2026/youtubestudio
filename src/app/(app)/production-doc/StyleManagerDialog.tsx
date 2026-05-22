@@ -81,6 +81,15 @@ export interface StyleSummary {
   preferred_cloud_model?: string;
   version?: number;
   owner_id?: string;
+  // v3 (2026-05-22) — built-ins that ship with refs declare them here.
+  // Surfaced through GET /api/production-doc/styles and rendered
+  // read-only by the dialog's refs grid.
+  built_in_refs?: readonly { filename: string; mime_type: string }[];
+  // v3: server-pre-rendered StyleRefSummary[] for built-ins with
+  // built_in_refs. Saves the dialog an extra fetch when a built-in
+  // with bundled refs is selected. Saved styles never carry this —
+  // they fetch their refs via the /refs subresource on selection.
+  refs?: readonly StyleRefSummary[];
 }
 
 interface StyleRefSummary {
@@ -224,8 +233,11 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
       setDraftStyleId(target.id);
       void loadRefsFor(target.id);
     } else {
+      // v3 (2026-05-22): built-ins can ALSO carry refs via
+      // `built_in_refs` on the spec, surfaced as a server-pre-rendered
+      // `refs` array. Use them directly — no API roundtrip needed.
       setDraftStyleId(null);
-      setRefs([]);
+      setRefs(target.refs ? [...target.refs] : []);
     }
   }, [editing]);
 
@@ -794,12 +806,24 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
                       />
                     </Field>
 
-                    {/* Reference images (v2) — up to 8. Skipped for
-                        built-ins; they have no refs. */}
-                    {!isBuiltIn && (
+                    {/* Reference images (v2 + v3) — up to 8. Saved styles
+                        let users upload / remove freely. Built-ins with
+                        `built_in_refs` show the bundled refs read-only;
+                        the user can fork via "Save as new" if they want
+                        a customisable copy. Built-ins WITHOUT refs hide
+                        the field entirely (legacy text-only built-ins). */}
+                    {(!isBuiltIn || refs.length > 0) && (
                       <Field
-                        label={`Reference images (${refs.length} / ${MAX_REFS})`}
-                        hint="Upload 5–8 example images that show the visual style you want. The AI uses these to match the look exactly. Drag to reorder later — first image carries the most weight."
+                        label={
+                          isBuiltIn
+                            ? `Reference images (${refs.length} — bundled)`
+                            : `Reference images (${refs.length} / ${MAX_REFS})`
+                        }
+                        hint={
+                          isBuiltIn
+                            ? 'Bundled with this built-in style. Use "Save as new" below to create a copy you can edit.'
+                            : 'Upload 5–8 example images that show the visual style you want. The AI uses these to match the look exactly. Drag to reorder later — first image carries the most weight.'
+                        }
                       >
                         <RefsGrid
                           refs={refs}
@@ -808,6 +832,7 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
                           onUpload={handleUploadRef}
                           onDelete={handleDeleteRef}
                           onClearRejection={handleClearRejection}
+                          readOnly={isBuiltIn}
                         />
                       </Field>
                     )}
@@ -1140,6 +1165,7 @@ function RefsGrid({
   onUpload,
   onDelete,
   onClearRejection,
+  readOnly = false,
 }: {
   refs: StyleRefSummary[];
   uploadBusy: boolean;
@@ -1147,6 +1173,11 @@ function RefsGrid({
   onUpload: (file: File) => Promise<void>;
   onDelete: (refId: string) => Promise<void>;
   onClearRejection: (refId: string) => Promise<void>;
+  /** v3 (2026-05-22): when true (built-ins with bundled refs), hide
+   *  the Remove + Clear-rejection buttons and the upload "add" tile.
+   *  Users still see the thumbs; editing isn't possible because
+   *  built-ins are workspace-shared and bundled with the deploy. */
+  readOnly?: boolean;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -1248,34 +1279,39 @@ function RefsGrid({
               INVALID
             </div>
           )}
-          {/* Hover actions */}
-          <div
-            className="absolute inset-0 flex flex-col items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
-            style={{ background: 'rgba(0,0,0,0.5)' }}
-          >
-            {r.rejected_by_provider && (
-              <button
-                onClick={() => void onClearRejection(r.id)}
-                className="text-[10px] px-2 py-0.5 rounded"
-                style={{ background: 'rgba(255,255,255,0.9)', color: '#111' }}
-                aria-label={`Clear rejection flag on reference image ${r.position + 1}`}
-              >
-                Clear rejection
-              </button>
-            )}
-            <button
-              onClick={() => void onDelete(r.id)}
-              className="text-[10px] px-2 py-0.5 rounded"
-              style={{ background: 'rgba(239,68,68,0.9)', color: 'white' }}
-              aria-label={`Remove reference image ${r.position + 1}`}
+          {/* Hover actions — hidden for built-in (readOnly) refs since
+              built-ins are bundled with the deploy and can't be edited
+              by users. Users can still fork via "Save as new" if they
+              want a customisable copy. */}
+          {!readOnly && (
+            <div
+              className="absolute inset-0 flex flex-col items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+              style={{ background: 'rgba(0,0,0,0.5)' }}
             >
-              Remove
-            </button>
-          </div>
+              {r.rejected_by_provider && (
+                <button
+                  onClick={() => void onClearRejection(r.id)}
+                  className="text-[10px] px-2 py-0.5 rounded"
+                  style={{ background: 'rgba(255,255,255,0.9)', color: '#111' }}
+                  aria-label={`Clear rejection flag on reference image ${r.position + 1}`}
+                >
+                  Clear rejection
+                </button>
+              )}
+              <button
+                onClick={() => void onDelete(r.id)}
+                className="text-[10px] px-2 py-0.5 rounded"
+                style={{ background: 'rgba(239,68,68,0.9)', color: 'white' }}
+                aria-label={`Remove reference image ${r.position + 1}`}
+              >
+                Remove
+              </button>
+            </div>
+          )}
         </div>
       ))}
 
-      {canUpload && (
+      {!readOnly && canUpload && (
         <button
           type="button"
           onClick={pickFile}

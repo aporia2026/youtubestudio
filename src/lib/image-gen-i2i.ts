@@ -196,9 +196,16 @@ export async function generateImageWithRefs(
   // Mint presigned URLs AT DISPATCH so a slow Kie queue can't outlive
   // the URL's signed validity window. Council pattern — see Contrarian
   // unnamed-failure-mode flag in the council verdict.
+  //
+  // v3 (2026-05-22): built-in refs carry a `public_url` field with an
+  // already-absolute URL pointing to a `/style-refs/...` static asset.
+  // Use it directly — no R2 presign is possible (these refs aren't in
+  // R2). DB-backed saved-style refs still go through the presign path.
   const refUrls: string[] = await Promise.all(
     refs.map((r) =>
-      getDownloadUrlForBucket(r.r2_bucket, r.r2_key, undefined),
+      r.public_url
+        ? Promise.resolve(r.public_url)
+        : getDownloadUrlForBucket(r.r2_bucket, r.r2_key, undefined),
     ),
   );
   // Trim to the model's max — the buildKieI2IInput helper also caps,
@@ -462,10 +469,16 @@ export async function generateImageWithRefsLocal(
   // refs uploaded = min(refs.length, spec.maxRefs). Position 0 is the
   // strongest anchor by ref-ordering convention. R2 presigned TTL is
   // 7 days by default — plenty for a single ComfyUI run.
+  //
+  // v3 (2026-05-22): built-in refs carry an absolute `public_url` —
+  // use it directly. ComfyUI fetches the URL from its host (which
+  // for local-studio is the user's PC) so the URL must be absolute.
   const refsToUpload = refs.slice(0, spec.maxRefs);
   const refImageFilenames: string[] = await Promise.all(
     refsToUpload.map(async (r) => {
-      const url = await getDownloadUrlForBucket(r.r2_bucket, r.r2_key, undefined);
+      const url = r.public_url
+        ? r.public_url
+        : await getDownloadUrlForBucket(r.r2_bucket, r.r2_key, undefined);
       return uploadUrlToComfyInput(url, {
         filenamePrefix: `style-ref-${r.style_id.slice(0, 8)}-${r.position}`,
       });

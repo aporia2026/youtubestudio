@@ -186,7 +186,13 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     const trimmedStyleId = styleId?.trim();
     if (trimmedStyleId) {
       const style = await resolveStyle(trimmedStyleId, session.ws, session.uid);
-      if (style && style.origin === 'saved') {
+      // v3 (2026-05-22): built-ins can now carry refs natively via
+      // `built_in_refs`. Drop the origin === 'saved' gate so a built-in
+      // with bundled refs (e.g. Doodle Explainer) also routes through
+      // the i2i dispatcher. loadStyleReferences short-circuits for
+      // built-in slugs and synthesizes the static-URL ref rows; the
+      // dispatcher reads `public_url` instead of presigning R2.
+      if (style) {
         const refs = await loadStyleReferences(style.id, {
           excludeRejected: true,
           // Block refs that failed the post-upload MIME sniff

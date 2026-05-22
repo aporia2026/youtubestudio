@@ -59,6 +59,16 @@ export interface ResolvedStyle {
   /** Owner-private visibility marker. NULL/undefined ⇒ workspace-wide
    *  (legacy and shared styles); set ⇒ private to that collaborator. */
   owner_id?: string;
+  // --- v3 (2026-05-22): native ref support on built-ins ---
+  /** Static reference images bundled with a built-in style. Public
+   *  URLs under `/style-refs/<style-id>/<filename>` — files live in
+   *  the repo at `public/style-refs/...`. No DB rows, no R2 uploads,
+   *  no seeder ceremony. When set on a built-in, the i2i dispatcher
+   *  uses these refs the same way it uses DB-backed saved-style
+   *  refs. Saved styles never set this (their refs live in the
+   *  `style_reference_images` table); it's the marker for "this
+   *  style ships with refs out of the box". */
+  built_in_refs?: readonly { filename: string; mime_type: string }[];
 }
 
 /** Shape of a row in the `production_doc_styles` table. */
@@ -169,6 +179,22 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
     description: 'Hand-drawn stick-figure scenes with real logos / screenshots overlaid where useful',
     ai_image_suffix:
       'minimalist hand-drawn stick figure doodle, thick uneven black outlines, simple circular heads, plain white background, flat shadowless lighting, vibrant saturated accent colors, 2D flat vector animation style, clean crisp outlines, motion-graphics aesthetic, NOT photorealistic, NOT a photograph',
+    // v3 (2026-05-22): bundled refs. Files live at
+    // public/style-refs/Doodle-explainer/<filename>. Position 0 is
+    // the strongest anchor — magnifying-glass exemplifies the line
+    // weight + colour palette best.
+    built_in_refs: [
+      { filename: 'stick-figure-magnifying-glass-phone.png', mime_type: 'image/png' },
+      { filename: 'stick-figure-hacker-laptop.png',          mime_type: 'image/png' },
+      { filename: 'stick-figure-tracked-by-location.png',    mime_type: 'image/png' },
+      { filename: 'stick-figure-hacker-deceives-guard.png',  mime_type: 'image/png' },
+      { filename: 'stick-figure-soldiers-running.png',       mime_type: 'image/png' },
+    ],
+    // v3 (2026-05-22): pin the i2i model that won the Phase 0
+    // doodle blind-rank. Built-ins now carry this field too so the
+    // dispatcher routes the right way without falling back to the
+    // workspace default. Saved styles override via PATCH.
+    preferred_cloud_model: 'nano-banana-pro-i2i',
     mixing_rules: [
       'This is a hand-drawn doodle style. The default for almost every row is "Animation" with a pure stick-figure ai_image_prompt — keep that as your base.',
       '',

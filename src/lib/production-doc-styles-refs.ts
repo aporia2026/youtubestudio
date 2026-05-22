@@ -43,6 +43,79 @@
  */
 import { sql } from '@vercel/postgres';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { getBuiltInStyle } from './production-doc-styles';
+
+/** v3 (2026-05-22): Synthesize a StyleReferenceImage[] for a built-in
+ *  style that ships with `built_in_refs`. No DB rows, no R2 — refs
+ *  resolve to public/ assets served at `/style-refs/<style-id>/...`.
+ *  The dispatcher reads `public_url` on each row instead of minting
+ *  a presigned R2 URL.
+ *
+ *  Returns absolute URLs when the env exposes a base ("https://app").
+ *  Falls back to a path-relative URL when no base is configured — fine
+ *  for the StyleManagerDialog's <img> tags but not for Kie (which
+ *  needs an absolute URL its servers can fetch). The image dispatcher
+ *  handles the absolute-resolve at call time.
+ */
+function getPublicBaseUrl(): string {
+  return (
+    process.env.NEXT_PUBLIC_APP_URL ||
+    (process.env.NEXT_PUBLIC_VERCEL_URL && `https://${process.env.NEXT_PUBLIC_VERCEL_URL}`) ||
+    (process.env.VERCEL_URL && `https://${process.env.VERCEL_URL}`) ||
+    ''
+  );
+}
+
+function synthesizeBuiltInRefs(styleId: string): StyleReferenceImage[] {
+  const builtIn = getBuiltInStyle(styleId);
+  if (!builtIn?.built_in_refs?.length) return [];
+  // The directory under public/ uses the friendly capitalized name —
+  // e.g. `Doodle-explainer` for id `doodle_explainer`. We hardcode the
+  // mapping at the built-in registration site rather than munging the
+  // id here so a future built-in with refs in a non-conventional
+  // subdirectory still works. For now there's one (Doodle Explainer),
+  // and its dir matches the convention id → Hyphen-Case-Path.
+  // 2026-05-22: just use the file-system convention used by the
+  // existing public/style-refs/Doodle-explainer/ directory.
+  const dirMap: Record<string, string> = {
+    doodle_explainer: 'Doodle-explainer',
+  };
+  const dir = dirMap[builtIn.id] ?? builtIn.id;
+  const base = getPublicBaseUrl();
+  const now = new Date().toISOString();
+  return builtIn.built_in_refs.map((ref, i) => {
+    const relativeUrl = `/style-refs/${dir}/${ref.filename}`;
+    const publicUrl = base ? `${base}${relativeUrl}` : relativeUrl;
+    // Build a synthetic StyleReferenceImage row. Id is namespaced so
+    // it can never collide with a real DB UUID. content_validated is
+    // TRUE because the bytes are bundled in the deploy; we trust
+    // ourselves. r2_bucket/r2_key are empty — the dispatcher must
+    // check public_url first, before falling back to those.
+    return {
+      id: `builtin:${builtIn.id}:${i}`,
+      style_id: builtIn.id,
+      workspace_id: '',
+      position: i,
+      role: 'style',
+      weight: 1,
+      r2_bucket: '',
+      r2_key: '',
+      size_bytes: null,
+      mime_type: ref.mime_type,
+      width: null,
+      height: null,
+      rejected_by_provider: false,
+      rejection_reason: null,
+      rejection_provider: null,
+      rejected_at: null,
+      created_at: now,
+      content_validated: true,
+      content_validation_error: null,
+      content_validated_at: now,
+      public_url: publicUrl,
+    };
+  });
+}
 
 /** A row in `style_reference_images` (migration 0080 + 0082).
  *  Surfaces every column so callers can decide whether to expose
@@ -75,6 +148,10 @@ export interface StyleReferenceImage {
   content_validation_error: string | null;
   /** Timestamp of the last validation attempt. */
   content_validated_at: string | null;
+  /** v3 (2026-05-22): for synthesized built-in refs only. When set,
+   *  the dispatcher uses this URL directly instead of minting a
+   *  presigned R2 GET. Always undefined for DB-backed refs. */
+  public_url?: string;
 }
 
 /** Hard cap shared with the API layer and the editor UI — keeps every
@@ -132,6 +209,16 @@ export async function loadStyleReferences(
   styleId: string,
   opts: LoadStyleReferencesOptions = {},
 ): Promise<StyleReferenceImage[]> {
+  // v3 (2026-05-22): built-in slugs short-circuit to the static
+  // refs registered on the built-in spec. No DB round-trip; the
+  // refs ship with the deploy. Built-in refs are never rejected
+  // (no per-workspace rejection state) and never unvalidated (we
+  // trust our own bytes), so the exclude filters don't apply.
+  const builtIn = getBuiltInStyle(styleId);
+  if (builtIn?.built_in_refs?.length) {
+    return synthesizeBuiltInRefs(styleId);
+  }
+
   const excludeRejected = opts.excludeRejected === true;
   const excludeUnvalidated = opts.excludeUnvalidated === true;
   const excludeIds = (opts.excludeIds ?? []).filter((id) => typeof id === 'string' && id.length > 0);
