@@ -52,6 +52,7 @@ import { TransportBar, type PlaybackRate } from '@/components/editor/TransportBa
 import { EditorLeftRail } from '@/components/editor/EditorLeftRail';
 import { EditorInspector, type InspectorTabId } from '@/components/editor/EditorInspector';
 import { deriveAlignmentStatus } from '@/lib/editor/alignment-status';
+import { TransformOverlay } from '@/components/editor/TransformOverlay';
 import { BROLL_MODELS } from '@/lib/broll-types';
 import { useLocalStudioEnabled } from '@/lib/local-studio-enabled';
 import { InspectorAudioTab } from '@/components/editor/inspector/InspectorAudioTab';
@@ -1907,6 +1908,40 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     state.doc.rows.length === 0 ||
     (imageReadyCount === 0 && !state.voiceoverUrl && clipReadyCount === 0);
 
+  const previewContainerRef = useRef<HTMLDivElement | null>(null);
+  // Canva-style transform of the selected shot's visual. Only rendered
+  // when (a) a shot is selected, (b) the shot has a visual (image or
+  // clip), and (c) the player container has measured its size. The
+  // overlay reads + writes through state.doc.rows[selection].
+  const selectedRow =
+    state.selection !== null ? state.doc.rows[state.selection] : null;
+  const selectedHasVisual =
+    selectedRow &&
+    (Boolean(state.rowImages[state.selection!]) ||
+      Boolean(state.rowVideoClips[state.selection!]?.videoUrl) ||
+      Boolean(selectedRow.video_url_override));
+  const overlayTransform =
+    selectedRow && selectedHasVisual
+      ? {
+          xPct:
+            typeof selectedRow.image_x_pct === 'number'
+              ? selectedRow.image_x_pct
+              : 0,
+          yPct:
+            typeof selectedRow.image_y_pct === 'number'
+              ? selectedRow.image_y_pct
+              : 0,
+          scalePct:
+            typeof selectedRow.image_scale_pct === 'number'
+              ? selectedRow.image_scale_pct
+              : 100,
+          rotationDeg:
+            typeof selectedRow.image_rotation_deg === 'number'
+              ? selectedRow.image_rotation_deg
+              : 0,
+        }
+      : null;
+
   const previewSlot = (
     <>
       {saveStatus.kind === 'conflict' && (
@@ -1918,6 +1953,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         />
       )}
       <div
+        ref={previewContainerRef}
         className="rounded-lg overflow-hidden flex-1 min-w-0 relative editor-panel"
         style={{ background: '#000' }}
       >
@@ -1955,6 +1991,37 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             onOpenSwitcher={() =>
               window.dispatchEvent(new CustomEvent('editor:open-switcher'))
             }
+          />
+        )}
+        {/* Free-transform overlay — mounts when a shot is selected
+            and has a visual. Live `onChange` fires during the drag so
+            the Player follows the mouse; `onCommit` lands the final
+            value on the undo stack via PATCH_ROW. */}
+        {state.selection !== null && overlayTransform && !showEmptyOverlay && (
+          <TransformOverlay
+            containerRef={previewContainerRef}
+            transform={overlayTransform}
+            onChange={(next) => {
+              const idx = state.selection as number;
+              apply({
+                type: 'PATCH_ROW',
+                rowIndex: idx,
+                patch: {
+                  image_x_pct: next.xPct === 0 ? undefined : next.xPct,
+                  image_y_pct: next.yPct === 0 ? undefined : next.yPct,
+                  image_scale_pct:
+                    next.scalePct === 100 ? undefined : next.scalePct,
+                  image_rotation_deg:
+                    next.rotationDeg === 0 ? undefined : next.rotationDeg,
+                },
+              });
+            }}
+            onCommit={(next) => {
+              console.info('[editor transform commit] overlay', { next });
+              // The optimistic onChange above already dispatched the
+              // value to the store, so the final commit is just a log
+              // anchor. The autosave debounce picks it up.
+            }}
           />
         )}
       </div>
