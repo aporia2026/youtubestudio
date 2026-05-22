@@ -64,7 +64,14 @@ interface TransformOverlayProps {
 type ActiveDrag =
   | null
   | { kind: 'body'; startX: number; startY: number; startXPct: number; startYPct: number }
-  | { kind: 'corner'; anchorX: number; anchorY: number; startScalePct: number; startDistance: number };
+  | { kind: 'corner'; anchorX: number; anchorY: number; startScalePct: number; startDistance: number }
+  | { kind: 'rotate'; centerX: number; centerY: number; startAngle: number; startRotationDeg: number };
+
+/** Snap-to-center / snap-to-edges threshold in canvas-relative
+ *  percentage points. Drags closer than this snap; shift disables. */
+const SNAP_THRESHOLD_PCT = 2;
+/** Targets the body drag snaps to (canvas-relative x or y percent). */
+const SNAP_TARGETS = [-50, -25, 0, 25, 50];
 
 const CANVAS_W = 1920;
 const CANVAS_H = 1080;
@@ -144,8 +151,15 @@ export function TransformOverlay({
         // the editor panel is sized).
         const deltaXPct = (deltaX / rect.width) * 100;
         const deltaYPct = (deltaY / rect.height) * 100;
-        const nextX = clamp(active.startXPct + deltaXPct, -200, 200);
-        const nextY = clamp(active.startYPct + deltaYPct, -200, 200);
+        let nextX = clamp(active.startXPct + deltaXPct, -200, 200);
+        let nextY = clamp(active.startYPct + deltaYPct, -200, 200);
+        // Snap to center / quarters / halves unless shift held.
+        if (!e.shiftKey) {
+          for (const t of SNAP_TARGETS) {
+            if (Math.abs(nextX - t) < SNAP_THRESHOLD_PCT) nextX = t;
+            if (Math.abs(nextY - t) < SNAP_THRESHOLD_PCT) nextY = t;
+          }
+        }
         onChange({ ...transformRef.current, xPct: nextX, yPct: nextY });
       } else if (active.kind === 'corner') {
         // Distance from the anchor (opposite corner) in canvas pixels.
@@ -153,6 +167,22 @@ export function TransformOverlay({
         const ratio = distance / Math.max(1, active.startDistance);
         const next = clamp(active.startScalePct * ratio, 10, 400);
         onChange({ ...transformRef.current, scalePct: next });
+      } else if (active.kind === 'rotate') {
+        // Compute angle of the pointer relative to the box center,
+        // then offset by the at-pointerdown angle so the rotation
+        // is relative to where the drag started.
+        const angle =
+          (Math.atan2(py - active.centerY, px - active.centerX) * 180) / Math.PI;
+        const delta = angle - active.startAngle;
+        let next = active.startRotationDeg + delta;
+        // Snap to 15° increments unless shift held.
+        if (!e.shiftKey) {
+          const snapped = Math.round(next / 15) * 15;
+          if (Math.abs(next - snapped) < 5) next = snapped;
+        }
+        // Wrap to [-180, 180] for storage cleanliness.
+        next = ((next + 180) % 360 + 360) % 360 - 180;
+        onChange({ ...transformRef.current, rotationDeg: next });
       }
     },
     [canvasRect, containerRef, onChange],
@@ -217,6 +247,57 @@ export function TransformOverlay({
     });
   };
 
+  const onRotatePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!canvasRect) return;
+    const containerRect = containerRef.current?.getBoundingClientRect();
+    if (!containerRect) return;
+    // Center of the selection box, in canvas-relative pixel coords
+    // (matching the pointermove math).
+    const cx = boxLeft + boxW / 2 - canvasRect.left;
+    const cy = boxTop + boxH / 2 - canvasRect.top;
+    const px = e.clientX - containerRect.left - canvasRect.left;
+    const py = e.clientY - containerRect.top - canvasRect.top;
+    const startAngle = (Math.atan2(py - cy, px - cx) * 180) / Math.PI;
+    activeRef.current = {
+      kind: 'rotate',
+      centerX: cx,
+      centerY: cy,
+      startAngle,
+      startRotationDeg: transform.rotationDeg,
+    };
+    document.addEventListener('pointermove', handlePointerMove);
+    document.addEventListener('pointerup', handlePointerUp);
+    document.addEventListener('pointercancel', handlePointerUp);
+    console.info('[editor transform overlay] drag-start', {
+      kind: 'rotate',
+      from: transform,
+    });
+  };
+
+  // Keyboard nudges — arrow keys move 1 percent, shift+arrow moves 10.
+  // Only fire when the selection body has focus to avoid stealing
+  // global shortcuts. The body div has tabIndex=0 below.
+  const onBodyKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = e.shiftKey ? 10 : 1;
+    let dx = 0;
+    let dy = 0;
+    if (e.key === 'ArrowLeft') dx = -step;
+    else if (e.key === 'ArrowRight') dx = step;
+    else if (e.key === 'ArrowUp') dy = -step;
+    else if (e.key === 'ArrowDown') dy = step;
+    else return;
+    e.preventDefault();
+    const next = {
+      ...transform,
+      xPct: clamp(transform.xPct + dx, -200, 200),
+      yPct: clamp(transform.yPct + dy, -200, 200),
+    };
+    onChange(next);
+    onCommit(next);
+  };
+
   // Each corner anchors to the OPPOSITE corner so scaling pivots
   // around that fixed point — same behaviour Canva / Figma use.
   type CornerId = 'tl' | 'tr' | 'bl' | 'br';
@@ -263,9 +344,46 @@ export function TransformOverlay({
       }}
       aria-hidden
     >
-      {/* Selection body — captures pointerdown for the move drag. */}
+      {/* Snap guides — show only while a body drag is on a snap line.
+          A vertical line at canvas-center x (xPct === 0) AND a
+          horizontal line at canvas-center y (yPct === 0). Quarter and
+          half snap lines render the same way when active. */}
+      {activeRef.current?.kind === 'body' && SNAP_TARGETS.includes(transform.xPct) && (
+        <div
+          aria-hidden
+          style={{
+            position: 'absolute',
+            left: canvasRect.left + canvasRect.width / 2 + (transform.xPct / 100) * canvasRect.width,
+            top: canvasRect.top,
+            width: 1,
+            height: canvasRect.height,
+            background: accent,
+            opacity: 0.6,
+            pointerEvents: 'none',
+          }}
+        />
+      )}
+      {activeRef.current?.kind === 'body' && SNAP_TARGETS.includes(transform.yPct) && (
+        <div
+          aria-hidden
+          style={{
+            position: 'absolute',
+            left: canvasRect.left,
+            top: canvasRect.top + canvasRect.height / 2 + (transform.yPct / 100) * canvasRect.height,
+            width: canvasRect.width,
+            height: 1,
+            background: accent,
+            opacity: 0.6,
+            pointerEvents: 'none',
+          }}
+        />
+      )}
+      {/* Selection body — captures pointerdown for the move drag.
+          tabIndex=0 lets it accept keyboard focus so arrow nudges work. */}
       <div
+        tabIndex={0}
         onPointerDown={onBodyPointerDown}
+        onKeyDown={onBodyKeyDown}
         style={{
           position: 'absolute',
           left: boxLeft,
@@ -277,8 +395,14 @@ export function TransformOverlay({
           pointerEvents: 'auto',
           background: 'transparent',
           boxSizing: 'border-box',
+          outline: 'none',
+          // Counter-rotate the selection's render so a rotated visual
+          // shows a rotated box (and the rotation handle sits above
+          // the visual's top edge, not the canvas-coord top).
+          transform: `rotate(${transform.rotationDeg}deg)`,
+          transformOrigin: 'center center',
         }}
-        title="Drag to move. Use corner handles to resize."
+        title="Drag to move. Arrow keys nudge (shift = 10×). Corner handles resize."
       />
       {/* Corner handles — aspect-locked scaling. */}
       {(['tl', 'tr', 'bl', 'br'] as const).map((corner) => {
@@ -312,6 +436,40 @@ export function TransformOverlay({
           />
         );
       })}
+      {/* Rotation handle — small circle floating above the box top
+          edge. Drag in a circular motion to rotate the visual. Snaps
+          to 15° increments unless shift is held. */}
+      <div
+        onPointerDown={onRotatePointerDown}
+        style={{
+          position: 'absolute',
+          left: boxLeft + boxW / 2 - HANDLE_SIZE / 2,
+          top: boxTop - 28,
+          width: HANDLE_SIZE,
+          height: HANDLE_SIZE,
+          background: 'white',
+          border: `1.5px solid ${accent}`,
+          borderRadius: '50%',
+          cursor: 'grab',
+          pointerEvents: 'auto',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.4)',
+        }}
+        title="Drag in a circle to rotate (snaps to 15°; shift to free-rotate)"
+      />
+      {/* Tether line from the rotation handle to the box top edge. */}
+      <div
+        aria-hidden
+        style={{
+          position: 'absolute',
+          left: boxLeft + boxW / 2 - 0.5,
+          top: boxTop - 28 + HANDLE_SIZE,
+          width: 1,
+          height: 28 - HANDLE_SIZE,
+          background: accent,
+          opacity: 0.6,
+          pointerEvents: 'none',
+        }}
+      />
     </div>
   );
 }
