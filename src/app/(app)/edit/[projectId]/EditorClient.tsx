@@ -1952,6 +1952,155 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               {state.doc.scene_fade_enabled !== false ? 'On' : 'Off'}
             </span>
           </button>
+
+          {/* Doc-level defaults (Batch 2). Each control sets the
+              doc-wide fallback that per-row values inherit. Mirrors
+              the prod-doc "apply to all" actions but without the
+              clear-overrides toast — the editor's PATCH_DOC writes
+              only the default field, leaving per-row overrides
+              intact (same behaviour as prod-doc's `applyXxxToAll`
+              functions when no per-row sweeps are involved). */}
+          <div
+            className="pt-1.5 mt-1 text-[10px] uppercase tracking-wider"
+            style={{ color: 'var(--fg-muted)', borderTop: '1px solid var(--editor-edge)' }}
+          >
+            Doc defaults
+          </div>
+          {/* Section-title layout default — overlay (stripe sits on
+              top of the full-frame scene) vs letterbox (stripe steals
+              vertical space, scene shrinks to fit). */}
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] flex-1" style={{ color: 'var(--fg)' }}>
+              Section title
+            </span>
+            <div className="flex gap-1">
+              {(['overlay', 'letterbox'] as const).map((opt) => {
+                const active =
+                  (state.doc.section_title_layout_default ?? 'letterbox') === opt;
+                return (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => {
+                      console.info('[editor doc-settings section-title-layout] changed', {
+                        from: state.doc.section_title_layout_default,
+                        to: opt,
+                      });
+                      apply({
+                        type: 'PATCH_DOC',
+                        patch: { section_title_layout_default: opt },
+                      });
+                    }}
+                    className="text-[10px] px-2 py-0.5 rounded border"
+                    style={{
+                      borderColor: active ? 'var(--editor-accent)' : 'var(--card-border)',
+                      color: active ? 'var(--editor-accent)' : 'var(--fg)',
+                      fontWeight: active ? 600 : 400,
+                    }}
+                  >
+                    {opt}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          {/* On-screen-text mode default — overlay (Remotion mounts a
+              LowerThird), bake (text already burned into the image
+              pixels by the generator), none (suppress entirely). */}
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] flex-1" style={{ color: 'var(--fg)' }}>
+              On-screen text
+            </span>
+            <div className="flex gap-1">
+              {(['overlay', 'bake', 'none'] as const).map((opt) => {
+                const active =
+                  (state.doc.on_screen_text_mode_default ?? 'bake') === opt;
+                return (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => {
+                      console.info('[editor doc-settings ost-mode] changed', {
+                        from: state.doc.on_screen_text_mode_default,
+                        to: opt,
+                      });
+                      apply({
+                        type: 'PATCH_DOC',
+                        patch: { on_screen_text_mode_default: opt },
+                      });
+                    }}
+                    className="text-[10px] px-1.5 py-0.5 rounded border"
+                    style={{
+                      borderColor: active ? 'var(--editor-accent)' : 'var(--card-border)',
+                      color: active ? 'var(--editor-accent)' : 'var(--fg)',
+                      fontWeight: active ? 600 : 400,
+                    }}
+                  >
+                    {opt}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          {/* Pillarbox color default — used when a row's scene_zoom is
+              under 100% and bars sit on either side of the scene. */}
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] flex-1" style={{ color: 'var(--fg)' }}>
+              Pillarbox color
+            </span>
+            <input
+              type="color"
+              value={state.doc.pillarbox_color_default ?? '#ffffff'}
+              onChange={(e) => {
+                const next = e.target.value;
+                console.info('[editor doc-settings pillarbox-color] changed', {
+                  from: state.doc.pillarbox_color_default,
+                  to: next,
+                });
+                apply({
+                  type: 'PATCH_DOC',
+                  patch: { pillarbox_color_default: next },
+                });
+              }}
+              className="w-9 h-6 rounded cursor-pointer"
+              style={{ border: '1px solid var(--card-border)' }}
+              title="Doc-default pillarbox bar color (used when scene_zoom < 100%)"
+            />
+          </div>
+          {/* Scene zoom default — 50-200% slider that controls how the
+              scene's frame is scaled inside the 16:9 canvas. */}
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] flex-1" style={{ color: 'var(--fg)' }}>
+              Scene zoom
+            </span>
+            <input
+              type="range"
+              min={50}
+              max={200}
+              step={5}
+              value={state.doc.scene_zoom_default ?? 100}
+              onChange={(e) => {
+                const next = Number(e.target.value);
+                console.info('[editor doc-settings scene-zoom] changed', {
+                  from: state.doc.scene_zoom_default,
+                  to: next,
+                });
+                apply({
+                  type: 'PATCH_DOC',
+                  patch: { scene_zoom_default: next },
+                });
+              }}
+              className="flex-1"
+              style={{ accentColor: 'var(--editor-accent, #a78bfa)' }}
+              aria-label={`Scene zoom default (${state.doc.scene_zoom_default ?? 100}%)`}
+            />
+            <span
+              className="text-[10px] tabular-nums w-9 text-right"
+              style={{ color: 'var(--fg-muted)' }}
+            >
+              {state.doc.scene_zoom_default ?? 100}%
+            </span>
+          </div>
           <button
             type="button"
             onClick={() => setShowBrandKit(true)}
@@ -2035,6 +2184,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               docSceneZoomDefault={state.doc.scene_zoom_default}
               docSceneFadeDefault={state.doc.scene_fade_enabled}
               docRegionZoomPaddingDefaultPct={state.doc.region_zoom_padding_default_pct}
+              docOnScreenTextModeDefault={state.doc.on_screen_text_mode_default}
               onOpenImageEdit={() => setImageEditRow(state.selection)}
             />
           ) : undefined,

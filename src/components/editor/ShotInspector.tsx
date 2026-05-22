@@ -125,6 +125,10 @@ interface ShotInspectorProps {
   /** Doc-level fallback for region zoom padding (percent of the
    *  region's longest edge). Falls back to 15 when undefined. */
   docRegionZoomPaddingDefaultPct?: number;
+  /** Doc-level fallback for per-row on-screen-text mode. Surfaced in
+   *  the layout accordion's tri-state radio so the "Default" pill
+   *  shows the effective mode (e.g. "Default (overlay)"). */
+  docOnScreenTextModeDefault?: 'overlay' | 'bake' | 'none';
   /** Open the mask-brush image edit dialog for this shot. The parent
    *  mounts MaskBrushEditor + calls the image-edit endpoint. */
   onOpenImageEdit?: () => void;
@@ -180,6 +184,7 @@ export function ShotInspector({
   docSceneZoomDefault,
   docSceneFadeDefault,
   docRegionZoomPaddingDefaultPct,
+  docOnScreenTextModeDefault,
   onOpenImageEdit,
 }: ShotInspectorProps): React.ReactElement {
   const undoDepth = editHistoryDepth ?? 0;
@@ -1095,6 +1100,7 @@ export function ShotInspector({
               docPillarboxColorDefault={docPillarboxColorDefault}
               docSceneZoomDefault={docSceneZoomDefault}
               docSceneFadeDefault={docSceneFadeDefault}
+              docOnScreenTextModeDefault={docOnScreenTextModeDefault}
               onUpdate={onUpdateRow}
             />
           )}

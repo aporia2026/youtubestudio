@@ -29,6 +29,8 @@ import type { ProductionDoc } from '@/remotion/utils';
 
 type SectionLayout = 'overlay' | 'letterbox';
 
+type OstMode = 'overlay' | 'bake' | 'none';
+
 interface ShotLayoutControlsProps {
   row: ProductionDoc['rows'][number];
   /** Doc-level fallbacks — the "Default" affordance reads these so
@@ -38,6 +40,8 @@ interface ShotLayoutControlsProps {
   docPillarboxColorDefault: string | undefined;
   docSceneZoomDefault: number | undefined;
   docSceneFadeDefault: boolean | undefined;
+  /** Doc-level fallback for the per-row on-screen-text mode. */
+  docOnScreenTextModeDefault: OstMode | undefined;
   onUpdate: (patch: Partial<ProductionDoc['rows'][number]>) => void;
 }
 
@@ -51,6 +55,7 @@ export function ShotLayoutControls({
   docPillarboxColorDefault,
   docSceneZoomDefault,
   docSceneFadeDefault,
+  docOnScreenTextModeDefault,
   onUpdate,
 }: ShotLayoutControlsProps): React.ReactElement {
   const [open, setOpen] = useState(false);
@@ -254,6 +259,59 @@ export function ShotLayoutControls({
                     style={{
                       borderColor: isActive ? 'var(--editor-accent, #a78bfa)' : 'var(--card-border)',
                       color: isActive ? 'var(--editor-accent, #a78bfa)' : 'var(--fg)',
+                      fontWeight: isActive ? 600 : 400,
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* On-screen text mode — overlay (Remotion renders a
+              LowerThird), bake (text already in image pixels), none
+              (suppress). Tri-state + Default like scene_fade. The
+              prod-doc page has the same control inline on each row
+              (production-doc/page.tsx:7731). */}
+          <div>
+            <div className="text-[10px] mb-1" style={{ color: 'var(--fg-muted)' }}>
+              On-screen text mode
+            </div>
+            <div className="flex gap-1">
+              {([
+                {
+                  label: `Default${
+                    docOnScreenTextModeDefault
+                      ? ` (${docOnScreenTextModeDefault})`
+                      : ' (bake)'
+                  }`,
+                  value: undefined,
+                },
+                { label: 'Overlay', value: 'overlay' as const },
+                { label: 'Bake', value: 'bake' as const },
+                { label: 'None', value: 'none' as const },
+              ] as const).map((opt) => {
+                const isActive = row.on_screen_text_mode === opt.value;
+                return (
+                  <button
+                    key={String(opt.value)}
+                    type="button"
+                    onClick={() => {
+                      console.info('[editor shot-layout ost-mode] changed', {
+                        from: row.on_screen_text_mode,
+                        to: opt.value,
+                      });
+                      onUpdate({ on_screen_text_mode: opt.value });
+                    }}
+                    className="text-[10px] px-1.5 py-1 rounded border transition-colors"
+                    style={{
+                      borderColor: isActive
+                        ? 'var(--editor-accent, #a78bfa)'
+                        : 'var(--card-border)',
+                      color: isActive
+                        ? 'var(--editor-accent, #a78bfa)'
+                        : 'var(--fg)',
                       fontWeight: isActive ? 600 : 400,
                     }}
                   >
