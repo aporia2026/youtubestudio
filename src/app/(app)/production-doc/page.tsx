@@ -7205,11 +7205,35 @@ function ProductionDocPage() {
                             );
                           })()}
                         </td>
-                        {/* Visual type */}
+                        {/* Visual type — editable dropdown (2026-05-22).
+                            Native <select> so we get keyboard + mobile +
+                            screen-reader support for free; styled to match
+                            the prior read-only pill, with the browser caret
+                            doubling as the affordance that says "click me".
+                            Switching to Title Card does NOT auto-rewrite
+                            script_text or on_screen_text — the user is
+                            taking explicit responsibility for the
+                            classification; the renderer uses whatever the
+                            row already holds. */}
                         <td style={{ padding: '8px 10px', whiteSpace: 'nowrap', borderRight: '1px solid var(--border)' }}>
-                          <span className="px-2 py-0.5 rounded-full text-xs font-medium" style={{ background: vt.bg, color: vt.color }}>
-                            {row.visual_type}
-                          </span>
+                          <select
+                            value={row.visual_type}
+                            onChange={(e) => updateRow(i, { visual_type: e.target.value })}
+                            className="px-2 py-0.5 rounded-full text-xs font-medium cursor-pointer"
+                            style={{
+                              background: vt.bg,
+                              color: vt.color,
+                              border: '1px solid transparent',
+                              outline: 'none',
+                            }}
+                            title="Change visual type for this shot"
+                          >
+                            {Object.keys(VISUAL_TYPE_COLORS).map((type) => (
+                              <option key={type} value={type} style={{ background: 'var(--bg-card)', color: 'var(--text-primary)' }}>
+                                {type}
+                              </option>
+                            ))}
+                          </select>
                         </td>
                         {/* Visual description */}
                         <td style={{ padding: '8px 12px', color: 'var(--text-secondary)', maxWidth: 180, lineHeight: 1.5, borderRight: '1px solid var(--border)' }}>
@@ -7613,6 +7637,30 @@ function ProductionDocPage() {
                               </button>
                             );
                           })()}
+                        </div>
+                        {/* Mobile: editable visual type. The collapsed
+                            header keeps the read-only pill — putting a
+                            <select> inside the toggle <button> would
+                            hijack the click to expand/collapse. */}
+                        <div>
+                          <p className="text-xs font-semibold mb-0.5" style={{ color: 'var(--text-muted)' }}>Visual type</p>
+                          <select
+                            value={row.visual_type}
+                            onChange={(e) => updateRow(i, { visual_type: e.target.value })}
+                            className="px-2 py-0.5 rounded-full text-xs font-medium cursor-pointer"
+                            style={{
+                              background: vt.bg,
+                              color: vt.color,
+                              border: '1px solid transparent',
+                              outline: 'none',
+                            }}
+                          >
+                            {Object.keys(VISUAL_TYPE_COLORS).map((type) => (
+                              <option key={type} value={type} style={{ background: 'var(--bg-card)', color: 'var(--text-primary)' }}>
+                                {type}
+                              </option>
+                            ))}
+                          </select>
                         </div>
                         <div>
                           <p className="text-xs font-semibold mb-0.5" style={{ color: 'var(--text-muted)' }}>Visual</p>
