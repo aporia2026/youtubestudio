@@ -2001,7 +2001,46 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           <TransformOverlay
             containerRef={previewContainerRef}
             transform={overlayTransform}
+            // Inset the selection box below the title stripe so it
+            // wraps the actual visual area, not the entire canvas.
+            // Only applies when this row has a section title AND
+            // letterbox layout — overlay-mode rows render the stripe
+            // ON TOP of the full-frame scene, so visual area is the
+            // whole canvas.
+            stripeHeightFraction={(() => {
+              if (state.selection === null) return 0;
+              const row = state.doc.rows[state.selection];
+              if (!row?.section_title) return 0;
+              const layout =
+                row.section_title_layout ??
+                state.doc.section_title_layout_default ??
+                'letterbox';
+              if (layout !== 'letterbox') return 0;
+              return state.doc.thumbnail?.stripeHeightFraction ?? 0.13;
+            })()}
             onChange={(next) => {
+              // Live updates during a drag: persist the RAW values so
+              // the drag never gets "stuck" passing through identity
+              // values. Earlier code dispatched `undefined` whenever a
+              // value hit 0/100, which collapsed the row override and
+              // re-read the start position mid-drag — felt like the
+              // drag wasn't working.
+              const idx = state.selection as number;
+              apply({
+                type: 'PATCH_ROW',
+                rowIndex: idx,
+                patch: {
+                  image_x_pct: next.xPct,
+                  image_y_pct: next.yPct,
+                  image_scale_pct: next.scalePct,
+                  image_rotation_deg: next.rotationDeg,
+                },
+              });
+            }}
+            onCommit={(next) => {
+              // Final commit on pointerup: clean identity values back
+              // to undefined so the row JSON stays free of redundant
+              // per-row overrides that match the default behavior.
               const idx = state.selection as number;
               apply({
                 type: 'PATCH_ROW',
@@ -2015,12 +2054,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                     next.rotationDeg === 0 ? undefined : next.rotationDeg,
                 },
               });
-            }}
-            onCommit={(next) => {
               console.info('[editor transform commit] overlay', { next });
-              // The optimistic onChange above already dispatched the
-              // value to the store, so the final commit is just a log
-              // anchor. The autosave debounce picks it up.
             }}
           />
         )}

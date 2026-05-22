@@ -51,6 +51,11 @@ interface TransformOverlayProps {
   /** Current transform of the selected shot. When null, the overlay
    *  renders nothing (no selection). */
   transform: FreeTransform | null;
+  /** Letterbox stripe height as a fraction of the canvas height (0-1).
+   *  When > 0, the visual area starts BELOW the title stripe and the
+   *  selection box is drawn around that smaller area. Defaults to 0
+   *  (no stripe — visual fills the entire canvas). */
+  stripeHeightFraction?: number;
   /** Fire on every pointermove during a drag (live update). The parent
    *  pushes the value into state so the Remotion Player reflects the
    *  drag in real time. */
@@ -106,6 +111,7 @@ function computeCanvasRect(el: HTMLElement | null): CanvasRect | null {
 export function TransformOverlay({
   containerRef,
   transform,
+  stripeHeightFraction = 0,
   onChange,
   onCommit,
 }: TransformOverlayProps): React.ReactElement | null {
@@ -139,6 +145,13 @@ export function TransformOverlay({
       const container = containerRef.current;
       if (!container) return;
       const containerRect = container.getBoundingClientRect();
+      // The visual area is the canvas minus the top title stripe. The
+      // renderer applies `translate(xPct%, yPct%)` against the visual
+      // element which fills this area, so the overlay's delta math
+      // must use these dimensions to keep mouse → screen mapping 1:1.
+      const stripePxLocal = rect.height * Math.max(0, Math.min(1, stripeHeightFraction));
+      const visualW = rect.width;
+      const visualH = rect.height - stripePxLocal;
       // Pointer position relative to the canvas top-left (in canvas
       // screen pixels), then convert to canvas-relative coords.
       const px = e.clientX - containerRect.left - rect.left;
@@ -146,18 +159,36 @@ export function TransformOverlay({
       if (active.kind === 'body') {
         const deltaX = e.clientX - active.startX;
         const deltaY = e.clientY - active.startY;
-        // Convert pixel delta to percent of canvas (resolution-
-        // independent so the move math is correct regardless of how
-        // the editor panel is sized).
-        const deltaXPct = (deltaX / rect.width) * 100;
-        const deltaYPct = (deltaY / rect.height) * 100;
+        // Convert pixel delta to percent of VISUAL AREA (matches what
+        // the renderer translates by).
+        const deltaXPct = (deltaX / visualW) * 100;
+        const deltaYPct = (deltaY / visualH) * 100;
         let nextX = clamp(active.startXPct + deltaXPct, -200, 200);
         let nextY = clamp(active.startYPct + deltaYPct, -200, 200);
-        // Snap to center / quarters / halves unless shift held.
-        if (!e.shiftKey) {
+        // Snap to center / quarters / halves UNLESS:
+        //   - shift held (user override)
+        //   - the drag has barely moved (< 3% of canvas) — would
+        //     snap back to the start position, making the drag feel
+        //     stuck
+        //   - the snap target IS the start value — same issue, the
+        //     visual just refuses to leave its starting point until
+        //     the cursor crosses the snap zone exit
+        const movedEnough =
+          Math.abs(deltaXPct) > 3 || Math.abs(deltaYPct) > 3;
+        if (!e.shiftKey && movedEnough) {
           for (const t of SNAP_TARGETS) {
-            if (Math.abs(nextX - t) < SNAP_THRESHOLD_PCT) nextX = t;
-            if (Math.abs(nextY - t) < SNAP_THRESHOLD_PCT) nextY = t;
+            if (
+              Math.abs(nextX - t) < SNAP_THRESHOLD_PCT &&
+              Math.abs(t - active.startXPct) > 1
+            ) {
+              nextX = t;
+            }
+            if (
+              Math.abs(nextY - t) < SNAP_THRESHOLD_PCT &&
+              Math.abs(t - active.startYPct) > 1
+            ) {
+              nextY = t;
+            }
           }
         }
         onChange({ ...transformRef.current, xPct: nextX, yPct: nextY });
@@ -216,14 +247,24 @@ export function TransformOverlay({
 
   if (!transform || !canvasRect) return null;
 
+  // Visual area = canvas minus the top title stripe (when present).
+  // The renderer composes the scene below the stripe; the selection
+  // box should match THAT area, not the full canvas. When no stripe
+  // (default), visualArea === canvasRect.
+  const stripePx = canvasRect.height * Math.max(0, Math.min(1, stripeHeightFraction));
+  const visualLeft = canvasRect.left;
+  const visualTop = canvasRect.top + stripePx;
+  const visualWidth = canvasRect.width;
+  const visualHeight = canvasRect.height - stripePx;
+
   // Compute the selection box screen rect from the current transform.
   // Selection box represents the visual's bounding box AFTER scale,
-  // centered at the offset position. The visual fills the canvas at
-  // scale=100, so box = canvas × scale.
-  const boxW = canvasRect.width * (transform.scalePct / 100);
-  const boxH = canvasRect.height * (transform.scalePct / 100);
-  const centerX = canvasRect.left + canvasRect.width / 2 + (transform.xPct / 100) * canvasRect.width;
-  const centerY = canvasRect.top + canvasRect.height / 2 + (transform.yPct / 100) * canvasRect.height;
+  // centered at the offset position. The visual fills the visualArea
+  // at scale=100, so box = visualArea × scale.
+  const boxW = visualWidth * (transform.scalePct / 100);
+  const boxH = visualHeight * (transform.scalePct / 100);
+  const centerX = visualLeft + visualWidth / 2 + (transform.xPct / 100) * visualWidth;
+  const centerY = visualTop + visualHeight / 2 + (transform.yPct / 100) * visualHeight;
   const boxLeft = centerX - boxW / 2;
   const boxTop = centerY - boxH / 2;
 
@@ -353,10 +394,10 @@ export function TransformOverlay({
           aria-hidden
           style={{
             position: 'absolute',
-            left: canvasRect.left + canvasRect.width / 2 + (transform.xPct / 100) * canvasRect.width,
-            top: canvasRect.top,
+            left: visualLeft + visualWidth / 2 + (transform.xPct / 100) * visualWidth,
+            top: visualTop,
             width: 1,
-            height: canvasRect.height,
+            height: visualHeight,
             background: accent,
             opacity: 0.6,
             pointerEvents: 'none',
@@ -368,9 +409,9 @@ export function TransformOverlay({
           aria-hidden
           style={{
             position: 'absolute',
-            left: canvasRect.left,
-            top: canvasRect.top + canvasRect.height / 2 + (transform.yPct / 100) * canvasRect.height,
-            width: canvasRect.width,
+            left: visualLeft,
+            top: visualTop + visualHeight / 2 + (transform.yPct / 100) * visualHeight,
+            width: visualWidth,
             height: 1,
             background: accent,
             opacity: 0.6,
