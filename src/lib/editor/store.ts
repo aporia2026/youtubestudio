@@ -155,6 +155,13 @@ export type EditorCommand =
    *  the next debounced PATCH would fail the optimistic version check
    *  and surface a spurious conflict banner. */
   | { type: 'SYNC_SERVER_VERSION'; version: number }
+  /** Set the voiceover alignment payload (forced-alignment words +
+   *  characters). Fired after the editor auto-fetches alignment for a
+   *  voiceover that loaded without one. Marks the state dirty so the
+   *  alignment persists via the next debounced PATCH — without this,
+   *  the editor would re-fetch the alignment on every mount and never
+   *  cache it server-side. */
+  | { type: 'SET_VOICEOVER_ALIGNMENT'; alignment: import('@/lib/elevenlabs').ForcedAlignmentResponse | undefined }
   | {
       type: 'RESET_FROM_SERVER';
       doc: ProductionDoc;
@@ -492,6 +499,21 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       return cmd.version > state.version
         ? { next: { ...state, version: cmd.version }, inverse: null }
         : { next: state, inverse: null };
+
+    case 'SET_VOICEOVER_ALIGNMENT':
+      // No-op when the alignment payload is structurally equal — avoids
+      // a redundant dirty flag + debounced PATCH for a no-change update
+      // (e.g., the auto-fetch effect re-runs and gets the same result).
+      if (
+        JSON.stringify(state.voiceoverAlignment ?? null) ===
+        JSON.stringify(cmd.alignment ?? null)
+      ) {
+        return { next: state, inverse: null };
+      }
+      return {
+        next: { ...state, voiceoverAlignment: cmd.alignment, isDirty: true },
+        inverse: null,
+      };
 
     case 'RESET_FROM_SERVER':
       return {

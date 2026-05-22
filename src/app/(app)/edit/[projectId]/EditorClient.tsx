@@ -374,6 +374,93 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     return () => { cancelled = true; };
   }, [state.doc.style_preset]);
 
+  // Auto-fetch voiceover alignment when the editor loads with a
+  // voiceover URL but no alignment data. Without this, the editor's
+  // preview falls back to estimated row timing while the render route
+  // fetches fresh alignment server-side — preview and render diverge,
+  // and the user reports "voiceover doesn't match scenes in the
+  // editor". The fetch posts to the same endpoint prod-doc uses
+  // (/api/voiceovers/align). Result is dispatched via
+  // SET_VOICEOVER_ALIGNMENT so it persists through the next debounced
+  // PATCH and survives a refresh.
+  //
+  // Guards:
+  //   - URL must be a proxy path (the align endpoint rejects raw
+  //     ElevenLabs blob URLs).
+  //   - Doc must have rows + script_text (the alignment is computed
+  //     against the row scripts).
+  //   - Skip when alignment is already in state.
+  //   - One in-flight request per project — a ref tracks the URL the
+  //     last fetch ran against so a URL flip during a slow request
+  //     doesn't fire a duplicate.
+  const VOICEOVER_PROXY_RE_ALIGN = /^\/api\/voiceovers\/[0-9a-f-]{36}\/audio$/i;
+  const alignmentFetchedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    const url = state.voiceoverUrl;
+    if (!url) return;
+    if (state.voiceoverAlignment) return;
+    if (!VOICEOVER_PROXY_RE_ALIGN.test(url)) return;
+    if (!state.doc.rows.length) return;
+    if (alignmentFetchedForRef.current === url) return;
+    alignmentFetchedForRef.current = url;
+
+    const rowScripts = state.doc.rows.map((r) => r.script_text);
+    console.info('[editor alignment auto-fetch] start', {
+      url,
+      rowCount: rowScripts.length,
+    });
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch('/api/voiceovers/align', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            audioPath: url,
+            rowScripts,
+            forceRefresh: false,
+          }),
+        });
+        if (cancelled) return;
+        if (!res.ok) {
+          console.warn('[editor alignment auto-fetch] failed', {
+            status: res.status,
+          });
+          // Reset the ref so a later URL change can retry. We don't
+          // reset for the SAME URL — that would loop on a known-bad
+          // response.
+          return;
+        }
+        const data = (await res.json().catch(() => ({}))) as {
+          status?: string;
+          alignment?: import('@/lib/elevenlabs').ForcedAlignmentResponse;
+        };
+        if (cancelled) return;
+        if (data.status === 'ready' && data.alignment) {
+          console.info('[editor alignment auto-fetch] ready', {
+            wordCount: data.alignment.words?.length ?? 0,
+          });
+          apply({ type: 'SET_VOICEOVER_ALIGNMENT', alignment: data.alignment });
+        }
+      } catch (err) {
+        if (cancelled) return;
+        console.warn('[editor alignment auto-fetch] threw', {
+          detail: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    state.voiceoverUrl,
+    state.voiceoverAlignment,
+    state.doc.rows,
+    apply,
+  ]);
+
   // Resolve the brand the renderer should use. Three layers, later
   // overrides earlier:
   //   DEFAULT_BRAND_KIT ◀ channelVisualKit ◀ visualKitOverride
