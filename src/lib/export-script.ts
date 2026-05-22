@@ -22,8 +22,10 @@ function cleanForEditor(raw: string): string {
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     // Remove italic markdown
     .replace(/\*([^*]+)\*/g, '$1')
-    // Clean section headers to plain text
-    .replace(/^##\s+(.+)$/gm, '\n--- $1 ---\n')
+    // Clean section headers to plain text. Negative lookahead skips
+    // h3+ (###) and `\s*` makes the trailing whitespace optional so
+    // `##Title` (no space) is recognised the same as `## Title`.
+    .replace(/^##(?!#)\s*(.+?)$/gm, '\n--- $1 ---\n')
     // Remove any remaining square bracket stage directions on their own line
     .replace(/^\s*\[(?!PAUSE).*\]\s*$/gm, '')
     // Clean excess whitespace
@@ -176,7 +178,8 @@ interface NarratorSection {
  *  per natural double-newline paragraph group. */
 function splitForNarrator(cleaned: string, wpm: number): NarratorSection[] {
   // Try splitting on `## Heading` markers first
-  const headingChunks = cleaned.split(/^##\s+/m);
+  // Accept `##Title` and `## Title` both; skip h3+ via negative lookahead.
+  const headingChunks = cleaned.split(/^##(?!#)\s*/m);
   let chunks: { label: string; text: string }[];
   if (headingChunks.length > 1) {
     chunks = [];

@@ -64,8 +64,9 @@ export function splitScriptIntoSections(text: string, wpm: number = 150): Script
   const MIN_WORDS = 30;
   const MAX_WORDS = 300;
 
-  // First try splitting on ## headings
-  const headingSplit = text.split(/^## /m);
+  // First try splitting on ## headings. Accept `##Title` and `## Title`
+  // both; skip h3+ via negative lookahead.
+  const headingSplit = text.split(/^##(?!#)\s*/m);
   const rawSections: { label?: string; text: string }[] = [];
 
   if (headingSplit.length > 1) {

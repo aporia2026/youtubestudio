@@ -145,6 +145,16 @@ export type EditorCommand =
   | { type: 'SET_PLAYHEAD'; ms: number }
   | { type: 'SET_SELECTION'; shotIndex: number | null }
   | { type: 'MARK_SAVED'; version: number; savedAt: number }
+  /** Note a server-side version bump that happened outside the
+   *  full-payload PATCH path — e.g. a row-asset POST succeeded and the
+   *  row's version is now newer than what the editor read on load.
+   *  Updates `version` only; does NOT clear `isDirty` (other unsaved
+   *  edits may still be pending) and does NOT touch the asset maps
+   *  (the row-asset endpoint already wrote the new value, and the
+   *  caller has dispatched the matching local update). Without this,
+   *  the next debounced PATCH would fail the optimistic version check
+   *  and surface a spurious conflict banner. */
+  | { type: 'SYNC_SERVER_VERSION'; version: number }
   | {
       type: 'RESET_FROM_SERVER';
       doc: ProductionDoc;
@@ -473,6 +483,15 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         },
         inverse: null,
       };
+
+    case 'SYNC_SERVER_VERSION':
+      // Only move version forward. A stale dispatch (response arriving
+      // after a later write already bumped local state) would otherwise
+      // reset version backwards and re-introduce the conflict it's
+      // meant to prevent.
+      return cmd.version > state.version
+        ? { next: { ...state, version: cmd.version }, inverse: null }
+        : { next: state, inverse: null };
 
     case 'RESET_FROM_SERVER':
       return {

@@ -16,12 +16,14 @@
  */
 
 import Link from 'next/link';
+import { useState } from 'react';
 import {
   ArrowLeft,
   Clapperboard,
   Download,
   HelpCircle,
   Redo2,
+  RefreshCcw,
   Save as SaveIcon,
   Undo2,
 } from 'lucide-react';
@@ -52,6 +54,12 @@ interface EditorHeaderProps {
    *  prevent double-kickoffs. */
   onRender?: () => void;
   isRendering?: boolean;
+  /** Re-fetch the canonical payload from the server and reset local
+   *  state. Surfaces in the header as "Pull from doc" so the user can
+   *  resync after the production-doc page has generated assets in
+   *  another tab, regardless of whether the editor is in empty-state.
+   *  Confirms before clobbering unsaved edits. */
+  onPullFromDoc?: () => Promise<void> | void;
 }
 
 export function EditorHeader({
@@ -72,7 +80,27 @@ export function EditorHeader({
   switcherSlot,
   onRender,
   isRendering = false,
+  onPullFromDoc,
 }: EditorHeaderProps): React.ReactElement {
+  const [pulling, setPulling] = useState(false);
+  async function handlePull() {
+    if (!onPullFromDoc || pulling) return;
+    if (
+      isDirty &&
+      !window.confirm(
+        'Pull from production doc will discard your unsaved edits in the editor. Continue?',
+      )
+    ) {
+      return;
+    }
+    setPulling(true);
+    console.info('[editor header] pull from doc requested', { isDirty });
+    try {
+      await onPullFromDoc();
+    } finally {
+      setPulling(false);
+    }
+  }
   return (
     <div className="flex items-center justify-between h-full px-3 gap-3">
       {/* Title block ─────────────────────────────────────── */}
@@ -136,6 +164,23 @@ export function EditorHeader({
           <SaveIcon size={14} strokeWidth={2} />
           <span>Save</span>
         </button>
+
+        {onPullFromDoc && (
+          <button
+            type="button"
+            className="editor-btn"
+            onClick={() => { void handlePull(); }}
+            disabled={pulling}
+            title="Re-fetch the canonical payload from the production-doc row. Use this after generating assets on the doc page in another tab. Unsaved editor edits will be discarded."
+          >
+            <RefreshCcw
+              size={14}
+              strokeWidth={2}
+              className={pulling ? 'animate-spin' : ''}
+            />
+            <span>{pulling ? 'Pulling…' : 'Pull from doc'}</span>
+          </button>
+        )}
 
         {onRender && (
           <button

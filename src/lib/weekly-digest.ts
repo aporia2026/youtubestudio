@@ -190,9 +190,13 @@ export function markdownToBasicHtml(md: string): string {
     if (/^# /.test(line)) {
       flushList(); flushPara();
       blocks.push(`<h1 style="font-size: 22px; margin: 16px 0 8px; color: #111827;">${line.slice(2)}</h1>`);
-    } else if (/^## /.test(line)) {
+    } else if (/^##(?!#)/.test(line)) {
+      // Accept `##Title` and `## Title` both; `slice(3)` assumed the
+      // strict `## ` form. Strip the prefix via replace so either form
+      // renders correctly.
       flushList(); flushPara();
-      blocks.push(`<h2 style="font-size: 18px; margin: 14px 0 6px; color: #111827;">${line.slice(3)}</h2>`);
+      const h2Text = line.replace(/^##\s*/, '');
+      blocks.push(`<h2 style="font-size: 18px; margin: 14px 0 6px; color: #111827;">${h2Text}</h2>`);
     } else if (/^- /.test(line)) {
       flushPara();
       listBuf.push(line.slice(2));

@@ -243,6 +243,60 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   );
   const { state, apply, flushSave, reloadFromServer, saveStatus, canUndo, canRedo } = store;
 
+  // Generic asset-write helper. The full-payload PATCH endpoint is
+  // asset-blind on the server (see src/lib/project/persist.ts), so every
+  // editor mutation that targets the three asset maps (`rowImages`,
+  // `rowOverlays`, `rowVideoClips`) must go through the atomic row-asset
+  // endpoint or it will not persist. Fire-and-forget: local state was
+  // already dispatched by the caller; this only handles the server write.
+  const writeRowAsset = useCallback(
+    (rowIndex: number, slot: 'image' | 'overlay' | 'clip', value: unknown) => {
+      void (async () => {
+        try {
+          const res = await fetch(`/api/edit/${encodeURIComponent(projectId)}/row-asset`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rowIndex, slot, value }),
+          });
+          if (!res.ok) {
+            const detail = await res.text().catch(() => '');
+            console.warn('[editor row-asset] write failed', {
+              rowIndex,
+              slot,
+              status: res.status,
+              detail: detail.slice(0, 200),
+            });
+            return;
+          }
+          const data = (await res.json().catch(() => ({}))) as { version?: number };
+          if (typeof data.version === 'number') {
+            // Keep the editor's local version aligned with the server.
+            // Without this sync the next debounced PATCH would fail
+            // the optimistic check and surface a spurious conflict.
+            apply({ type: 'SYNC_SERVER_VERSION', version: data.version });
+          }
+          console.info('[editor row-asset] written', { rowIndex, slot, newVersion: data.version });
+        } catch (err) {
+          console.warn('[editor row-asset] write threw', {
+            rowIndex,
+            slot,
+            detail: err instanceof Error ? err.message : String(err),
+          });
+        }
+      })();
+    },
+    [apply, projectId],
+  );
+
+  // Commit a row image: dispatch locally AND persist via row-asset.
+  const commitRowImage = useCallback(
+    (rowIndex: number, url: string | null) => {
+      apply({ type: 'SET_ROW_IMAGE', shotIndex: rowIndex, url });
+      writeRowAsset(rowIndex, 'image', url);
+    },
+    [apply, writeRowAsset],
+  );
+
   // v2 (2026-05-22) — resolve the active style's `preferred_cloud_model`
   // so the ShotInspector regenerate button can show its per-image
   // cost (rule 8). One small fetch on mount + whenever the doc's
@@ -523,8 +577,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   const setRowVideoClip = useCallback(
     (rowIndex: number, clip: { status: string; videoUrl?: string; durationSeconds?: number } | null, transient = false) => {
       apply({ type: 'SET_ROW_VIDEO_CLIP', rowIndex, clip, transient });
+      // Server-side PATCH is asset-blind for rowVideoClips, so committed
+      // states must reach the row-asset endpoint. Transient states (e.g.
+      // `loading`, `generating` placeholders) are skipped — they're
+      // ephemeral UI only, and writing them would just generate noise
+      // version churn the client doesn't care about.
+      if (!transient) {
+        writeRowAsset(rowIndex, 'clip', clip);
+      }
     },
-    [apply],
+    [apply, writeRowAsset],
   );
 
   const handleGenerateClip = useCallback(
@@ -905,8 +967,13 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   const setRowOverlay = useCallback(
     (rowIndex: number, overlay: RowOverlayRenderState | null, transient?: boolean) => {
       apply({ type: 'SET_ROW_OVERLAY', rowIndex, overlay, transient });
+      // Same reasoning as setRowVideoClip — server PATCH is asset-blind
+      // for rowOverlays, so committed states need the row-asset endpoint.
+      if (!transient) {
+        writeRowAsset(rowIndex, 'overlay', overlay);
+      }
     },
-    [apply],
+    [apply, writeRowAsset],
   );
 
   /** Phase 3 — Rethink. Mirrors production-doc's rethinkOverlayPlacement
@@ -1543,6 +1610,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       }
       onRender={() => { void executeRender(); }}
       isRendering={renderState?.status === 'rendering'}
+      onPullFromDoc={async () => {
+        await reloadFromServer();
+      }}
     />
   );
 
@@ -1836,7 +1906,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               activeStyleI2IModel={activeStyleI2IModel}
               onClose={() => apply({ type: 'SET_SELECTION', shotIndex: null })}
               onUploadImage={(url) =>
-                apply({ type: 'SET_ROW_IMAGE', shotIndex: state.selection as number, url })
+                commitRowImage(state.selection as number, url)
               }
               onPickProjectClip={(url, durationSeconds) =>
                 apply({
@@ -2128,7 +2198,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                     console.warn('[editor image-edit] failed', { rowIndex, status: res.status });
                     return;
                   }
-                  apply({ type: 'SET_ROW_IMAGE', shotIndex: rowIndex, url: data.imageUrl });
+                  commitRowImage(rowIndex, data.imageUrl);
                   if (data.saliency) {
                     updateRow(rowIndex, { image_saliency: data.saliency });
                   }

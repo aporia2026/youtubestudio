@@ -56,7 +56,8 @@ export function splitScriptSections(script: string): { name: string; content: st
   let currentLines: string[] = [];
 
   for (const line of lines) {
-    const sectionMatch = line.match(/^##\s+(.+)/);
+    // Accept `##Title` and `## Title` both; skip h3+ via negative lookahead.
+    const sectionMatch = line.match(/^##(?!#)\s*(.+)/);
     if (sectionMatch) {
       if (currentLines.length > 0) {
         const content = currentLines.join('\n').trim();
@@ -89,8 +90,8 @@ export function cleanScriptForVoiceover(text: string): string {
     .replace(/\*{0,2}\[(?:B-ROLL|CUT TO|ON SCREEN|GRAPHIC|FOOTAGE|SHOT|TRANSITION|MUSIC|SFX|SOUND)[^\]]*\]\*{0,2}/gi, '')
     // Remove pause markers (replace with a brief ellipsis for natural pacing)
     .replace(/\*{0,2}\[PAUSE\]\*{0,2}/g, '...')
-    // Remove section headers (## Section Name)
-    .replace(/^##\s+.+$/gm, '')
+    // Remove section headers (`## Name` or `##Name`); skip h3+ via lookahead.
+    .replace(/^##(?!#)\s*.+$/gm, '')
     // Remove bold markdown
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     // Remove italic markdown
