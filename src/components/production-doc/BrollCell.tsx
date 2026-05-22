@@ -355,6 +355,14 @@ export interface BrollCellProps {
   lockedAsStill?: boolean;
   /** Toggle the lock state. Parent persists. */
   onToggleLockedAsStill?: (next: boolean) => void;
+  /** v3 (2026-05-22) — doc-level animation model override. When the
+   *  parent has set `doc.broll_model_id`, every cell on that doc
+   *  receives it here and uses it as the default in preference to
+   *  the user-level setting. A row's own picker click (modelIdLocked)
+   *  still wins — the priority is row-lock > doc > user. Switching
+   *  the doc-level value while the cell is mounted re-defaults the
+   *  cell unless it was row-locked. */
+  docBrollModelId?: BrollModelId;
 }
 
 type Phase = 'idle' | 'starting' | 'generating' | 'ready' | 'failed';
@@ -381,6 +389,7 @@ export function BrollCell({
   onClipChange,
   lockedAsStill = false,
   onToggleLockedAsStill,
+  docBrollModelId,
 }: BrollCellProps) {
   const [clip, setClip] = useState<BrollClipRow | null>(initialClip ?? null);
   const [phase, setPhase] = useState<Phase>(phaseFromClip(initialClip));
@@ -416,10 +425,24 @@ export function BrollCell({
   // `modelIdLocked` is false). The kind picked depends on whether the row
   // has a still — i2v when it does, t2v when it doesn't — so generating
   // the still later auto-promotes the cell to the i2v default.
+  //
+  // v3 (2026-05-22): `docBrollModelId` (page-level "Animation model for
+  // all shots") overrides the user-level for the matching kind. If the
+  // doc-level pick is i2v and this row has a still, we use it; if the
+  // row has no still and the doc-level is i2v, we fall back to the
+  // user-level t2v (the doc-level pick is silently inapplicable for
+  // this row). Same logic in reverse for t2v doc-level picks.
   useEffect(() => {
     let cancelled = false;
-    const pickForRow = (defs: UserDefaults): BrollModelId =>
-      stillImageUrl ? defs.i2vModelId : defs.t2vModelId;
+    const docModel = docBrollModelId ? findBrollModel(docBrollModelId) : null;
+    const pickForRow = (defs: UserDefaults): BrollModelId => {
+      const wantsI2v = Boolean(stillImageUrl);
+      if (docModel) {
+        const docIsI2v = docModel.kind === 'image-to-video';
+        if (docIsI2v === wantsI2v) return docModel.id;
+      }
+      return wantsI2v ? defs.i2vModelId : defs.t2vModelId;
+    };
     fetchUserDefault().then((resolved) => {
       if (cancelled) return;
       setDefaultT2vModelId(resolved.t2vModelId);
@@ -436,7 +459,7 @@ export function BrollCell({
       cancelled = true;
       userDefaultListeners.delete(listener);
     };
-  }, [modelIdLocked, stillImageUrl]);
+  }, [modelIdLocked, stillImageUrl, docBrollModelId]);
 
   const updateClip = useCallback(
     (next: BrollClipRow | null) => {

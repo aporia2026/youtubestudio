@@ -53,10 +53,12 @@ import { MissingClipsModal } from '@/components/production-doc/MissingClipsModal
 import { MaskBrushEditor } from '@/components/production-doc/MaskBrushEditor';
 import {
   brollRowSignatureInput,
+  BROLL_MODELS,
   DEFAULT_BROLL_MODEL_ID,
   findBrollModel,
   pickModelForScene,
   type BrollClipRow,
+  type BrollModelId,
   type BrollStatus,
 } from '@/lib/broll-types';
 import {
@@ -378,6 +380,14 @@ interface ProductionDoc {
    *  type (`src/remotion/utils.ts`); the two interfaces must stay in
    *  sync. May be a built-in slug or a saved-style UUID. */
   style_preset?: string;
+  /** v3 (2026-05-22) — doc-level animation model override. When set,
+   *  every B-roll cell on this doc adopts this model as its default
+   *  (unless the user has manually overridden a specific row via the
+   *  row-level picker). Tier priority: row-level lock > doc-level >
+   *  user-level default. Persisted on the doc payload so it survives
+   *  refresh + cross-device. Empty string / undefined ⇒ fall back to
+   *  the user-level default. */
+  broll_model_id?: string;
 }
 
 interface RowImageState {
@@ -7172,6 +7182,50 @@ function ProductionDocPage() {
             );
           })()}
 
+          {/* Doc-level animation model — applies to every B-roll cell
+              on this doc as the default. Tier priority: row-level lock
+              (user clicked a specific row's picker) > doc-level > user-
+              level default. Persisted on doc.broll_model_id so it
+              survives refresh and cross-device. Empty value falls back
+              to the user-level default. Hidden when no doc rendered. */}
+          {doc.rows && doc.rows.length > 0 && (
+            <div className="mb-4 flex flex-wrap items-center gap-3 px-4 py-2.5 rounded-lg" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+              <div className="flex flex-col leading-tight flex-1 min-w-[220px]">
+                <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                  Animation model for all shots
+                </span>
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  {doc.broll_model_id
+                    ? `Every row’s B-roll cell defaults to this model. Click a single row’s picker (☆) to override one shot.`
+                    : 'No doc-level override — each row uses your global default. Pick a model to apply it to every shot in this doc.'}
+                </span>
+              </div>
+              <select
+                value={doc.broll_model_id ?? ''}
+                onChange={(e) => {
+                  const next = e.target.value || undefined;
+                  setDoc((prev) => (prev ? { ...prev, broll_model_id: next } : prev));
+                }}
+                className="input-field text-sm"
+                style={{ minWidth: 280 }}
+                aria-label="Animation model for every B-roll cell on this doc"
+              >
+                <option value="">— Use my default —</option>
+                {/* Only i2v models — t2v needs no still and the user's
+                    asking about animating their existing stills. Local
+                    models hidden in prod (same gate as Image Model). */}
+                {BROLL_MODELS
+                  .filter((m) => m.kind === 'image-to-video')
+                  .filter((m) => localStudioEnabled || m.provider !== 'comfyui-local')
+                  .map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label} — {m.priceUsdLabel}
+                    </option>
+                  ))}
+              </select>
+            </div>
+          )}
+
           {/* ── Desktop table */}
           <div className="glass rounded-xl overflow-hidden">
             <div className="overflow-x-auto hidden md:block">
@@ -7417,6 +7471,7 @@ function ProductionDocPage() {
                                 initialClip={rowBatchStubs[i] ?? undefined}
                                 lockedAsStill={Boolean(rowLockSignatures[sig])}
                                 onToggleLockedAsStill={(locked) => toggleRowLock(sig, locked)}
+                                docBrollModelId={doc.broll_model_id as BrollModelId | undefined}
                                 onClipChange={(clip) =>
                                   handleBrollClipChange(
                                     i,
@@ -7833,6 +7888,7 @@ function ProductionDocPage() {
                                 initialClip={rowBatchStubs[i] ?? undefined}
                                 lockedAsStill={Boolean(rowLockSignatures[sig])}
                                 onToggleLockedAsStill={(locked) => toggleRowLock(sig, locked)}
+                                docBrollModelId={doc.broll_model_id as BrollModelId | undefined}
                                 onClipChange={(clip) =>
                                   handleBrollClipChange(
                                     i,
