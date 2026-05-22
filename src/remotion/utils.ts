@@ -461,6 +461,14 @@ export interface ProductionDoc {
    *  the closing fade-out of the outro. Per-row `scene_fade` overrides.
    *  See `_plans/2026-05-17-scene-transition-controls.md`. */
   scene_fade_enabled?: boolean;
+  /** Doc-level animation (image-to-video) model id. Every B-roll cell
+   *  uses this as the default when the row doesn't have its own lock.
+   *  Tier priority: row-level lock > doc-level > user-level default.
+   *  Undefined ⇒ each row falls back to the user's global default.
+   *  Mirrors the production-doc page's `Animation model for all shots`
+   *  bulk picker — surfaced in the editor's doc-defaults panel so the
+   *  user can change it without bouncing pages. */
+  broll_model_id?: string;
   /** Doc-level text overlays — Phase 4 master overlay layer (shot-
    *  graph editor plan). Each overlay spans a configurable time
    *  window independent of any row. Persisted on the doc so editor

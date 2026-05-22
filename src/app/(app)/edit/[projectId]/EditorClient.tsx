@@ -52,6 +52,8 @@ import { TransportBar, type PlaybackRate } from '@/components/editor/TransportBa
 import { EditorLeftRail } from '@/components/editor/EditorLeftRail';
 import { EditorInspector, type InspectorTabId } from '@/components/editor/EditorInspector';
 import { deriveAlignmentStatus } from '@/lib/editor/alignment-status';
+import { BROLL_MODELS } from '@/lib/broll-types';
+import { useLocalStudioEnabled } from '@/lib/local-studio-enabled';
 import { InspectorAudioTab } from '@/components/editor/inspector/InspectorAudioTab';
 import { InspectorCaptionsTab } from '@/components/editor/inspector/InspectorCaptionsTab';
 import { TimelineV2 } from '@/components/editor/timeline-v2/TimelineV2';
@@ -243,6 +245,11 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     projectId,
   );
   const { state, apply, flushSave, reloadFromServer, saveStatus, canUndo, canRedo } = store;
+
+  // Gate the "Local (free)" entries in the doc-level animation-model
+  // picker. Same hook the prod-doc page uses so the same models surface
+  // on both pages.
+  const localStudioEnabled = useLocalStudioEnabled();
 
   // Generic asset-write helper. The full-payload PATCH endpoint is
   // asset-blind on the server (see src/lib/project/persist.ts), so every
@@ -2100,6 +2107,52 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             >
               {state.doc.scene_zoom_default ?? 100}%
             </span>
+          </div>
+          {/* Animation model for all shots (Batch 3.1). Doc-level i2v
+              model that every B-roll cell uses by default. Mirrors the
+              prod-doc bulk picker (page.tsx:7281-7317). Tier priority:
+              row-level lock > doc-level > user-level default. Empty
+              value falls back to the user's global default. Only the
+              image-to-video models surface (t2v has no still input);
+              local models hidden unless LOCAL_STUDIO is enabled. */}
+          <div className="space-y-1">
+            <div
+              className="text-[11px]"
+              style={{ color: 'var(--fg)' }}
+              title="Used as the default animation model for every shot's B-roll. Pick a single row's picker to override one shot."
+            >
+              Animation model
+            </div>
+            <select
+              value={state.doc.broll_model_id ?? ''}
+              onChange={(e) => {
+                const next = e.target.value || undefined;
+                console.info('[editor doc-settings broll-model] changed', {
+                  from: state.doc.broll_model_id,
+                  to: next,
+                });
+                apply({
+                  type: 'PATCH_DOC',
+                  patch: { broll_model_id: next },
+                });
+              }}
+              className="w-full text-xs rounded border px-2 py-1.5"
+              style={{
+                borderColor: 'var(--card-border)',
+                background: 'var(--bg)',
+                color: 'var(--fg)',
+              }}
+              aria-label="Animation model for every B-roll cell on this doc"
+            >
+              <option value="">— Use my default —</option>
+              {BROLL_MODELS.filter((m) => m.kind === 'image-to-video')
+                .filter((m) => localStudioEnabled || m.provider !== 'comfyui-local')
+                .map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label} — {m.priceUsdLabel}
+                  </option>
+                ))}
+            </select>
           </div>
           <button
             type="button"
