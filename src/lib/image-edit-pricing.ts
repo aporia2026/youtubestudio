@@ -151,7 +151,10 @@ export const EDIT_OPTIONS: readonly EditOption[] = [
     label: 'Qwen2 Image',
     tagline: 'Prompt-only — newer Qwen revision',
     maskCapable: false,
-    pricePerImage: null,
+    // Kie.ai pricing dashboard (2026-05-23 screenshot): 5.6 credits
+    // per image = $0.028 (official $0.035, 20% Kie discount). Per-
+    // image billing — not per-megapixel like the older Qwen.
+    pricePerImage: 0.028,
     backend: { kind: 'kie-standard', kieModel: 'qwen2/image-edit' },
   },
   {
@@ -159,7 +162,11 @@ export const EDIT_OPTIONS: readonly EditOption[] = [
     label: 'Seedream 4.5 Basic',
     tagline: 'Prompt-only — 2K output, ByteDance',
     maskCapable: false,
-    pricePerImage: null,
+    // Kie.ai pricing dashboard (2026-05-23 screenshot): 6.5 credits
+    // per image = $0.0325. High-tier top-ups bring effective price
+    // down to ~$0.030; we show the base figure so the displayed cost
+    // matches what an average-tier user actually pays.
+    pricePerImage: 0.0325,
     backend: { kind: 'kie-standard', kieModel: 'seedream/4.5-edit' },
   },
   {
@@ -167,7 +174,7 @@ export const EDIT_OPTIONS: readonly EditOption[] = [
     label: 'Seedream 4.5 High',
     tagline: 'Prompt-only — 4K output, ByteDance',
     maskCapable: false,
-    pricePerImage: null,
+    pricePerImage: 0.0325,
     backend: { kind: 'kie-standard', kieModel: 'seedream/4.5-edit' },
   },
   {
@@ -175,9 +182,19 @@ export const EDIT_OPTIONS: readonly EditOption[] = [
     label: 'Seedream v4',
     tagline: 'Prompt-only — Seedream 4.0 edit revision',
     maskCapable: false,
-    pricePerImage: null,
+    // Kie.ai pricing dashboard (2026-05-23 screenshot): 5 credits
+    // per image = $0.025, resolution-independent. High-tier top-ups
+    // bring effective price to ~$0.0225 (~10% off). We show the base
+    // figure for the average-tier user.
+    pricePerImage: 0.025,
     backend: { kind: 'kie-standard', kieModel: 'bytedance/seedream-v4-edit' },
   },
+  // Flux Kontext: not listed on the kie.ai /pricing dashboard as of
+  // 2026-05-23 (the user checked). Billing is handled through Flux's
+  // own credit system on kie.ai. Leaving `pricePerImage: null` so the
+  // dropdown surfaces "see kie.ai" instead of inventing a number
+  // (CLAUDE.md rule 1). Live-tested via scripts/test-flux-kontext.ts
+  // — wiring works; we just don't know what each call costs.
   {
     id: 'flux-kontext-pro',
     label: 'Flux Kontext Pro',
@@ -216,7 +233,7 @@ export const DEFAULT_EDIT_OPTION_ID: EditOptionId = 'nano-banana-edit';
  *
  * Ideogram v3 Quality is purpose-built for inpainting and cheaper than
  * GPT-4o Medium ($0.05 vs $0.07). Exposed as a user setting in
- * `src/lib/editor/settings.ts` (`getDefaultEraseBackend`).
+ * `src/lib/editor/settings.ts` (`getDefaultEraseBackendId`).
  */
 export const DEFAULT_ERASE_OPTION_ID: EditOptionId = 'ideogram-v3-quality';
 

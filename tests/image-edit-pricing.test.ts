@@ -114,4 +114,26 @@ describe('catalog backends', () => {
       }
     }
   });
+
+  it('every kie-standard kieModel has a known input builder', () => {
+    // Mirrors the if/else ladder in
+    // src/app/api/generate/production-doc/image/edit/route.ts:
+    // `buildKieStandardInput`. Any new catalog row using a kieModel
+    // not in this set will fail at first call with "No input
+    // builder for Kie model: X". Failing this test makes that
+    // surface at PR-review time instead.
+    const ROUTE_KNOWN_MODELS = new Set([
+      'google/nano-banana-edit',
+      'qwen/image-edit',
+      'qwen2/image-edit',
+      'seedream/4.5-edit',
+      'bytedance/seedream-v4-edit',
+      'ideogram/v3-edit',
+    ]);
+    for (const opt of EDIT_OPTIONS) {
+      if (opt.backend.kind === 'kie-standard') {
+        expect(ROUTE_KNOWN_MODELS.has(opt.backend.kieModel)).toBe(true);
+      }
+    }
+  });
 });

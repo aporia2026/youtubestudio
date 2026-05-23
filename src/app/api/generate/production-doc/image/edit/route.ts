@@ -331,10 +331,15 @@ function buildKieStandardInput(
     };
   }
   if (model === 'bytedance/seedream-v4-edit') {
+    // Seedream v4's `image_size` enum uses the `landscape_X_Y` /
+    // `portrait_X_Y` notation, not the bare `'16:9'` string the other
+    // models accept. Sending '16:9' here fails with a validation
+    // error. Verified against the kie.ai docs OpenAPI spec on
+    // 2026-05-23.
     return {
       prompt,
       image_urls: [imageUrl],
-      image_size: '16:9',
+      image_size: 'landscape_16_9',
       image_resolution: '2K',
       max_images: 1,
     };

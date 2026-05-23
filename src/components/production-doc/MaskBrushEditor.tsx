@@ -304,6 +304,12 @@ export function MaskBrushEditor({
       await onApply({ maskUrl, prompt: prompt.trim(), option });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to apply mask');
+    } finally {
+      // Reset on every path. Callers typically unmount the editor on
+      // success (so this is a no-op then), but when they don't — or
+      // when they handle failures with toasts instead of throwing —
+      // the user must be able to retry without the button stuck on
+      // "Uploading mask…".
       setIsUploading(false);
     }
   }
@@ -321,6 +327,7 @@ export function MaskBrushEditor({
       await onErase({ maskUrl });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to erase region');
+    } finally {
       setIsUploading(false);
     }
   }

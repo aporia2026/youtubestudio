@@ -18,19 +18,25 @@ import {
   __testing,
   getAudioLaneHeight,
   getAutoRegenCaptions,
+  getDefaultEraseBackendId,
   getDefaultPlaybackRate,
   getDefaultZoomLevel,
+  getLastEditOptionId,
   getLeftRailDefaultTab,
   getPreviewFitMode,
+  getShowEditModelPrices,
   getShowShortcutHints,
   getShowThumbnails,
   getVideoLaneHeight,
   setAudioLaneHeight,
   setAutoRegenCaptions,
+  setDefaultEraseBackendId,
   setDefaultPlaybackRate,
   setDefaultZoomLevel,
+  setLastEditOptionId,
   setLeftRailDefaultTab,
   setPreviewFitMode,
+  setShowEditModelPrices,
   setShowShortcutHints,
   setShowThumbnails,
   setVideoLaneHeight,
@@ -271,5 +277,40 @@ describe('editor settings — preview fit mode', () => {
     const ls = (globalThis as unknown as { window: { localStorage: MockLocalStorage } }).window.localStorage;
     ls.setItem(__testing.KEY_PREVIEW_FIT_MODE, 'whatever');
     expect(getPreviewFitMode()).toBe(__testing.DEFAULT_PREVIEW_FIT_MODE);
+  });
+});
+
+describe('editor settings — image edit picker', () => {
+  it('lastEditOptionId returns the caller-supplied fallback when unset', () => {
+    expect(getLastEditOptionId('nano-banana-edit')).toBe('nano-banana-edit');
+    expect(getLastEditOptionId('whatever-fallback')).toBe('whatever-fallback');
+  });
+
+  it('lastEditOptionId round-trips', () => {
+    setLastEditOptionId('ideogram-v3-quality');
+    expect(getLastEditOptionId('nano-banana-edit')).toBe('ideogram-v3-quality');
+  });
+
+  it('lastEditOptionId ignores empty writes (defensive — never blank the key)', () => {
+    setLastEditOptionId('ideogram-v3-quality');
+    setLastEditOptionId('');
+    expect(getLastEditOptionId('nano-banana-edit')).toBe('ideogram-v3-quality');
+  });
+
+  it('defaultEraseBackendId round-trips', () => {
+    setDefaultEraseBackendId('gpt-4o-medium');
+    expect(getDefaultEraseBackendId('ideogram-v3-quality')).toBe('gpt-4o-medium');
+  });
+
+  it('showEditModelPrices defaults to true', () => {
+    expect(getShowEditModelPrices()).toBe(__testing.DEFAULT_SHOW_EDIT_PRICES);
+    expect(__testing.DEFAULT_SHOW_EDIT_PRICES).toBe(true);
+  });
+
+  it('showEditModelPrices round-trips', () => {
+    setShowEditModelPrices(false);
+    expect(getShowEditModelPrices()).toBe(false);
+    setShowEditModelPrices(true);
+    expect(getShowEditModelPrices()).toBe(true);
   });
 });

@@ -60,6 +60,13 @@ interface OverlayEditDialogProps {
 
 type EditMode = 'smart' | 'brush';
 
+/** The overlay edit route only knows the GPT-4o backend; the brush
+ *  picker is restricted accordingly so the user can't pick an option
+ *  the server can't handle. Hoisted out of the component so we don't
+ *  recreate the array on every render (it's passed by reference to
+ *  MaskBrushEditor). */
+const OVERLAY_ALLOWED_OPTION_IDS = ['gpt-4o-low', 'gpt-4o-medium', 'gpt-4o-high'] as const;
+
 export function OverlayEditDialog({
   overlayUrl,
   termsLabel,
@@ -191,10 +198,8 @@ export function OverlayEditDialog({
     }
   }, [sourceUrl, smartPrompt, autoRmbg]);
 
-  // The overlay edit route only knows the GPT-4o backend; the brush
-  // picker is restricted accordingly. `quality` is derived from the
-  // GPT-4o option the user picked.
-  const OVERLAY_ALLOWED_OPTION_IDS = ['gpt-4o-low', 'gpt-4o-medium', 'gpt-4o-high'] as const;
+  // `quality` field for the overlay edit route is derived from the
+  // selected GPT-4o option below. Default tier = medium.
   const [brushOption, setBrushOption] = useState<EditOption>(
     () => getEditOption('gpt-4o-medium')!,
   );
