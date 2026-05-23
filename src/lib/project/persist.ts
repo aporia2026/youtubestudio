@@ -143,9 +143,9 @@ export type SaveResult =
   | { kind: 'too_large'; bytes: number };
 
 /**
- * Validate the payload, then attempt an optimistic-locked UPDATE.
+ * Validate the payload, then write it last-write-wins.
  *
- * Server is asset-blind on this endpoint (2026-05-22 v2):
+ * Server contract (2026-05-23):
  *
  *   - `rowImages`, `rowOverlays`, `rowVideoClips` from the incoming
  *     payload are IGNORED. The server always preserves the current
@@ -154,32 +154,40 @@ export type SaveResult =
  *     which uses `jsonb_set` to merge a single slot at a time. This
  *     stops the data-loss class entirely: no full-payload save —
  *     editor's or prod-doc's — can wipe an asset, because no
- *     full-payload save touches asset maps anymore. v1 of this fix
- *     used a union merge ("incoming wins on key collision"); that
- *     was wrong-direction — a stale editor snapshot would overwrite
- *     a freshly generated prod-doc image. v2 fixes that by making
- *     incoming asset maps irrelevant to the write.
+ *     full-payload save touches asset maps anymore.
  *
  *   - `doc.rows`: refuses to overwrite a non-empty rows array with
  *     an empty one. The only legitimate path to "empty rows" is the
- *     initial save during doc creation (where current is also empty
- *     or non-existent). Any later save that ships `rows: []` is
- *     almost certainly a client-state bug — refuse it loudly rather
- *     than corrupt the production doc. Returns `invalid` so the
- *     client can ignore the failed save and reload from current.
+ *     initial save during doc creation. Any later save that ships
+ *     `rows: []` is almost certainly a client-state bug — refuse it
+ *     loudly rather than corrupt the production doc.
  *
  *   - Every other field (voiceover, captions, brand kit, flags, doc
- *     metadata, etc.): client wins. Reorders, deletes, edits land.
+ *     metadata, etc.): LAST WRITE WINS. We DON'T optimistic-lock on
+ *     version anymore. The expectedVersion parameter is kept for
+ *     call-site compatibility but ignored. Rationale: with the
+ *     asset-blind rule, the only fields the client owns are
+ *     scalars + doc shape + flags. Server-side writers (VO regen,
+ *     captions regen, row-asset POSTs) bump version without going
+ *     through this endpoint, which used to produce phantom 409s
+ *     that trapped the user behind a conflict banner with no real
+ *     editing conflict to resolve. Two-tab edits can lose one tab's
+ *     non-asset changes — acceptable trade-off given asset writes
+ *     are already atomic-merged and version-safe.
+ *
+ *   - The return type still carries `conflict` so call sites don't
+ *     break, but this function will never return it under the new
+ *     contract.
  *
  * Workspace + collaborator scoped at the SQL level — a row outside
  * scope is indistinguishable from a deleted row.
- *
- * See _plans/2026-05-22-editor-prodoc-data-loss-and-fixes.md.
  */
 export async function saveProjectPatch(args: {
   id: string;
   session: SessionPayload;
   payload: unknown;
+  /** Kept for call-site compatibility; ignored by the new
+   *  last-write-wins contract. */
   expectedVersion: number;
 }): Promise<SaveResult> {
   const { id, session, payload, expectedVersion } = args;
@@ -218,21 +226,15 @@ export async function saveProjectPatch(args: {
   const currentVersion = current.rows[0].version;
   const { payload: currentPayload } = migratePayload(current.rows[0].payload);
 
-  // Version check. We don't auto-merge across versions anymore — the
-  // asset-blind rule means the only fields the client owns are scalars
-  // and doc-shape, and concurrent edits to those are real conflicts
-  // the user needs to resolve via reload.
+  // No version check — last write wins. Log the divergence so we can
+  // still audit which clients are saving with stale versions (might
+  // signal a real bug elsewhere even if it's no longer a hard error).
   if (expectedVersion !== currentVersion) {
-    logger.info('[project payload save] conflict', {
+    logger.info('[project payload save] version drift (allowed under LWW)', {
       project_id: id,
       client_version: expectedVersion,
       server_version: currentVersion,
     });
-    return {
-      kind: 'conflict',
-      currentVersion,
-      currentPayload,
-    };
   }
 
   // Catastrophic-loss guard: never let an empty doc.rows array overwrite
@@ -280,11 +282,16 @@ export async function saveProjectPatch(args: {
   logger.info('[project payload save] patch', {
     project_id: id,
     expected_version: expectedVersion,
+    server_version: currentVersion,
     current_rows: currentRows,
     incoming_rows: incomingRows,
     bytes,
   });
 
+  // Last-write-wins UPDATE: no version predicate. The row's version
+  // still increments so other observers (the prod-doc page's reactive
+  // sync, for instance) can detect "something changed" without us
+  // needing to broadcast it.
   const updateResult = await sql<{ new_version: number }>`
     UPDATE user_history
        SET payload = ${outgoingJson}::jsonb,
@@ -293,7 +300,6 @@ export async function saveProjectPatch(args: {
        AND workspace_id = ${session.ws}::uuid
        AND collaborator_id = ${session.uid}::uuid
        AND kind = 'production_doc'
-       AND version = ${expectedVersion}
      RETURNING (version) AS new_version
   `;
 
@@ -306,9 +312,9 @@ export async function saveProjectPatch(args: {
     return { kind: 'saved', newVersion };
   }
 
-  // 0 rows after the update means another writer bumped the row between
-  // our read and our write (most likely a row-asset POST that overlapped
-  // this PATCH). Re-probe and return conflict so the client can reload.
+  // The UPDATE returned 0 rows. Without a version predicate this can
+  // only mean the scope match failed (row was deleted or moved out of
+  // scope between our read and write). Re-probe to disambiguate.
   const probe = await sql<{ version: number; payload: unknown }>`
     SELECT version, payload
       FROM user_history
@@ -327,8 +333,10 @@ export async function saveProjectPatch(args: {
     return { kind: 'not_found' };
   }
 
+  // Genuinely unreachable: row still exists in our scope but the
+  // UPDATE wrote zero rows. Treat as not_found defensively.
   const { payload: probeMigrated } = migratePayload(probe.rows[0].payload);
-  logger.info('[project payload save] conflict (post-update race)', {
+  logger.warn('[project payload save] unreachable: row present but UPDATE wrote 0 rows', {
     project_id: id,
     client_version: expectedVersion,
     server_version: probe.rows[0].version,
