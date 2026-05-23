@@ -220,6 +220,35 @@ export interface ImageSaliencyMap {
   dominantColors: string[];
 }
 
+/** Mean busyness in the top stripe of a saliency map. Used by the
+ *  auto-shift heuristic in overlay-layout title rows: if the image
+ *  has high importance under where the title would sit, the renderer
+ *  shifts the image down to clear it. Returns 0 when the saliency is
+ *  malformed or the stripe is empty. */
+export function topStripeBusyness(
+  saliency: ImageSaliencyMap,
+  stripeFraction: number,
+): number {
+  if (!Array.isArray(saliency.busyness) || saliency.busyness.length === 0) {
+    return 0;
+  }
+  if (saliency.cols <= 0 || saliency.rows <= 0) return 0;
+  const stripeRowCount = Math.max(1, Math.ceil(saliency.rows * stripeFraction));
+  let sum = 0;
+  let count = 0;
+  for (let r = 0; r < stripeRowCount && r < saliency.rows; r++) {
+    for (let c = 0; c < saliency.cols; c++) {
+      const idx = r * saliency.cols + c;
+      const v = saliency.busyness[idx];
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        sum += v;
+        count++;
+      }
+    }
+  }
+  return count > 0 ? sum / count : 0;
+}
+
 /** Categorised edit tracking per row. Each field key matches the
  *  store command category that touches it. Reads via
  *  `@/lib/editor/edited-at::readRowEditedAt` to normalise the
@@ -862,10 +891,46 @@ export function productionDocToVideoConfig(
         typeof row.image_x_pct === 'number' && Number.isFinite(row.image_x_pct)
           ? row.image_x_pct
           : undefined,
-      imageYPct:
-        typeof row.image_y_pct === 'number' && Number.isFinite(row.image_y_pct)
-          ? row.image_y_pct
-          : undefined,
+      imageYPct: (() => {
+        // Manual override always wins.
+        if (typeof row.image_y_pct === 'number' && Number.isFinite(row.image_y_pct)) {
+          return row.image_y_pct;
+        }
+        // Smart auto-shift (2026-05-23): when a row has a section
+        // title in OVERLAY layout, the title stripe sits on top of the
+        // image. If the image's saliency shows high importance in the
+        // top stripe zone, automatically shift the image down by the
+        // stripe height so the busy area moves out from under the
+        // title. Saves the user from manually dragging every shot that
+        // collides. The user can still override per-row via the
+        // Transform card or the drag overlay; their value will win
+        // because of the type-check above.
+        const layout =
+          row.section_title_layout ?? doc.section_title_layout_default ?? 'letterbox';
+        if (
+          row.section_title &&
+          layout === 'overlay' &&
+          row.image_saliency &&
+          imageUrl
+        ) {
+          const stripeFraction = doc.thumbnail?.stripeHeightFraction ?? 0.13;
+          const collisionScore = topStripeBusyness(row.image_saliency, stripeFraction);
+          if (collisionScore > 0.4) {
+            const autoShiftPct = stripeFraction * 100;
+            if (typeof console !== 'undefined') {
+              console.info('[renderer auto-shift] applied', {
+                rowIndex: i,
+                collisionScore: Number(collisionScore.toFixed(2)),
+                stripeFraction,
+                autoShiftPct,
+                reason: 'overlay-mode title would cover busy image area',
+              });
+            }
+            return autoShiftPct;
+          }
+        }
+        return undefined;
+      })(),
       imageScalePct:
         typeof row.image_scale_pct === 'number' && Number.isFinite(row.image_scale_pct)
           ? row.image_scale_pct
