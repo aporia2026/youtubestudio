@@ -1091,13 +1091,26 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       // No-op short-circuit on a deep-enough equality check. Polling
       // tick that re-reports the same status with the same url would
       // otherwise stamp a redundant entry on every fire.
+      //
+      // CRITICAL: every field that callers may add over time MUST be
+      // compared here. Earlier the check only covered status, videoUrl,
+      // durationSeconds — adding brollClipId or errorMessage to an
+      // otherwise-equal clip evaluated as 'same' and the reducer
+      // returned the OLD state without persisting the new field. That
+      // broke the editor's broll polling: handleGenerateClip's second
+      // dispatch (with the kickoff's clipId) was silently dropped, so
+      // state.rowVideoClips[i].brollClipId stayed undefined and the
+      // poll loop never started. Now the check is full-shape — any
+      // field difference triggers a write.
       const isSame =
         (prev === null && clip === null) ||
         (prev !== null &&
           clip !== null &&
           prev.status === clip.status &&
           prev.videoUrl === clip.videoUrl &&
-          prev.durationSeconds === clip.durationSeconds);
+          prev.durationSeconds === clip.durationSeconds &&
+          prev.brollClipId === clip.brollClipId &&
+          prev.errorMessage === clip.errorMessage);
       if (isSame) return { next: state, inverse: null };
 
       const nextClips = { ...state.rowVideoClips };
