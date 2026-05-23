@@ -757,15 +757,16 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       // First shot's start is anchored at 0 — silently absorb any
       // deltaStart attempt rather than dispatching a confusing error.
       const hasLeft = shotIndex > 0;
-      const hasRight = shotIndex < rows.length - 1;
       const clamp = (n: number) =>
         Math.max(EDITOR_MIN_SHOT_MS, Math.min(EDITOR_MAX_SHOT_MS, Math.round(n)));
 
-      // Left side: positive deltaStart means scene starts LATER —
-      // left neighbor grows. Negative means scene starts earlier —
-      // left neighbor shrinks. When clamped to MIN/MAX, the actual
-      // deltaStart shrinks to whatever was achievable so the scene
-      // lands on the achievable start.
+      // Left side: CARVE from the immediate left neighbor. There's no
+      // alternative for the leading edge — shifting "everything before
+      // earlier" would compress past shot 0 which is anchored at 0.
+      // Positive deltaStart ⇒ scene starts LATER ⇒ left neighbor
+      // grows. Negative ⇒ scene starts earlier ⇒ left neighbor
+      // shrinks. Clamp to MIN/MAX; the actual deltaStart shrinks to
+      // whatever the neighbor can give.
       let actualDeltaStart = 0;
       let leftMutation: { rowIndex: number; priorOverride: number | null; nextOverride: number } | null = null;
       if (hasLeft && requestedDeltaStart !== 0) {
@@ -787,50 +788,30 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         }
       }
 
-      // Right side: positive deltaEnd means scene ends LATER — right
-      // neighbor shrinks. Negative means scene ends earlier — right
-      // neighbor grows. Last-shot special case (no right neighbor):
-      // honor the full deltaEnd by extending THIS shot's duration —
-      // shift fallback that grows total project length.
-      let actualDeltaEnd = 0;
-      let rightMutation: { rowIndex: number; priorOverride: number | null; nextOverride: number } | null = null;
-      let lastShotExtension = 0;
-      if (requestedDeltaEnd !== 0) {
-        if (hasRight) {
-          const rightIdx = shotIndex + 1;
-          const rightCur = effDur(rightIdx);
-          const rightRequested = rightCur - requestedDeltaEnd;
-          const rightClamped = clamp(rightRequested);
-          // Negate because shrinking the right neighbor by D means
-          // pushing the seam right by D, so deltaEnd === D.
-          actualDeltaEnd = rightCur - rightClamped;
-          if (actualDeltaEnd !== 0) {
-            const rightPrior =
-              typeof rows[rightIdx].duration_override_ms === 'number'
-                ? (rows[rightIdx].duration_override_ms as number)
-                : null;
-            rightMutation = {
-              rowIndex: rightIdx,
-              priorOverride: rightPrior,
-              nextOverride: rightClamped,
-            };
-          }
-        } else {
-          // Last shot: shift-fallback. The deltaEnd flows entirely
-          // into this shot's duration. No neighbor to carve from.
-          actualDeltaEnd = requestedDeltaEnd;
-          lastShotExtension = requestedDeltaEnd;
-        }
-      }
+      // Right side: SHIFT (NOT carve). Originally this command carved
+      // from the right neighbor so total length stayed unchanged — but
+      // that fails the second the user wants to extend a shot whose
+      // right neighbor is already at the 2 s floor (a freshly-inserted
+      // blank, for instance). The user reported this as "Set timing
+      // does nothing" and clarified that they expect "all other scenes
+      // adjusted" — i.e. downstream shifts later, matching what the
+      // trailing-edge drag already does and what every NLE does.
+      //
+      // 2026-05-23 semantics change: the requested deltaEnd flows
+      // entirely into THIS shot's duration. The right neighbor never
+      // mutates here; its start time shifts later automatically via
+      // the cascade. Total project length grows by (deltaEnd - actualDeltaStart).
+      const actualDeltaEnd = requestedDeltaEnd;
 
       const newDur = clamp(currentDur - actualDeltaStart + actualDeltaEnd);
       // No-op detection: nothing changed after all the clamping.
+      // With shift semantics on the right, actualDeltaEnd === 0 only
+      // when the user didn't move the end at all.
       if (
         actualDeltaStart === 0 &&
         actualDeltaEnd === 0 &&
         newDur === currentDur &&
-        leftMutation === null &&
-        rightMutation === null
+        leftMutation === null
       ) {
         return { next: state, inverse: null };
       }
@@ -846,14 +827,6 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           edited_at: stampEditedAt(r.edited_at, 'duration'),
         };
       }
-      if (rightMutation) {
-        const r = nextRows[rightMutation.rowIndex];
-        nextRows[rightMutation.rowIndex] = {
-          ...r,
-          duration_override_ms: rightMutation.nextOverride,
-          edited_at: stampEditedAt(r.edited_at, 'duration'),
-        };
-      }
       const thisRow = nextRows[shotIndex];
       nextRows[shotIndex] = {
         ...thisRow,
@@ -863,17 +836,13 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
 
       // Observability for clamp surfacing — the EditorClient subscribes
       // via console for now, sonner toast for the popover path.
-      if (
-        actualDeltaStart !== requestedDeltaStart ||
-        actualDeltaEnd !== requestedDeltaEnd
-      ) {
+      if (actualDeltaStart !== requestedDeltaStart) {
         console.info('[editor set-shot-timing] clamp applied', {
           shotIndex,
           requestedStart,
           requestedEnd,
           actualStart: currentStart + actualDeltaStart,
           actualEnd: currentEnd + actualDeltaEnd,
-          lastShotExtension,
         });
       }
 

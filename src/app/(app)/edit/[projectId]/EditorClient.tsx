@@ -3866,51 +3866,27 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             const cascadeStart = shotStartTimesMs[idx] ?? 0;
             const cascadeEnd = cascadeStart + rowEffectiveDurationMs(state.doc, idx);
 
-            // PREDICT the reducer's clamp. The reducer carves from
-            // neighbors and clamps each to [MIN, MAX]. When a neighbor
-            // is already at MIN we can't shrink it any further — the
-            // carve clamps to zero, the reducer no-ops, isDirty stays
-            // false, and the user sees NOTHING happen. Surfacing that
-            // here as a toast is the difference between "feature is
-            // broken" and "OK I need to free up a neighbor first."
-            // 2026-05-23 follow-up to the timebase fix — see logged
-            // bug report screenshot.
+            // PREDICT the LEFT-side clamp. Right side is SHIFT — the
+            // requested deltaEnd flows entirely into this shot's
+            // duration and downstream shifts (matches RESIZE_SHOT and
+            // the trailing-edge drag). Only the leading edge can fail:
+            // the left neighbor's duration can't drop below MIN, so a
+            // big negative deltaStart gets clamped. Surface that case
+            // so the user knows their start input was capped.
             const hasLeft = idx > 0;
-            const hasRight = idx < state.doc.rows.length - 1;
             const leftDur = hasLeft ? rowEffectiveDurationMs(state.doc, idx - 1) : 0;
-            const rightDur = hasRight ? rowEffectiveDurationMs(state.doc, idx + 1) : 0;
             const clampDur = (n: number) =>
               Math.max(EDITOR_MIN_SHOT_MS, Math.min(EDITOR_MAX_SHOT_MS, Math.round(n)));
-            // Left side: leftDur grows by deltaStart (positive ⇒ scene
-            // starts later). Negative deltaStart ⇒ left shrinks. Clamp
-            // to floor/ceiling; difference vs requested is the loss.
             const achievableDeltaStart = hasLeft
               ? clampDur(leftDur + deltaStart) - leftDur
               : 0;
-            // Right side: rightDur shrinks by deltaEnd (positive ⇒
-            // scene ends later, right neighbor gives up time). Last-
-            // shot fallback honors the request verbatim (shift mode).
-            const achievableDeltaEnd = hasRight
-              ? rightDur - clampDur(rightDur - deltaEnd)
-              : deltaEnd;
-
-            const clampedStart = Math.abs(achievableDeltaStart - deltaStart) > 1;
-            const clampedEnd = Math.abs(achievableDeltaEnd - deltaEnd) > 1;
-            if (clampedStart || clampedEnd) {
-              const msgs: string[] = [];
-              if (clampedStart) {
-                const neighborLabel = hasLeft ? `Scene ${idx}` : 'Project start';
-                msgs.push(
-                  `${neighborLabel} can't shrink past the ${(EDITOR_MIN_SHOT_MS / 1000).toFixed(0)}s minimum — start clamped to ${formatTimecodeLabel(timingPopover.initialStartMs + achievableDeltaStart)}.`,
-                );
-              }
-              if (clampedEnd) {
-                const neighborLabel = hasRight ? `Scene ${idx + 2}` : 'Project end';
-                msgs.push(
-                  `${neighborLabel} can't shrink past the ${(EDITOR_MIN_SHOT_MS / 1000).toFixed(0)}s minimum — end clamped to ${formatTimecodeLabel(timingPopover.initialEndMs + achievableDeltaEnd)}.`,
-                );
-              }
-              toast.warning(msgs.join(' '));
+            const clampedStart = hasLeft && Math.abs(achievableDeltaStart - deltaStart) > 1;
+            if (clampedStart) {
+              toast.warning(
+                `Scene ${idx} can't shrink past the ${(EDITOR_MIN_SHOT_MS / 1000).toFixed(0)}s minimum — start clamped to ${formatTimecodeLabel(timingPopover.initialStartMs + achievableDeltaStart)}.`,
+              );
+            } else if (!hasLeft && deltaStart !== 0) {
+              toast.info('Scene 1’s start is anchored at 0:00 — start change ignored.');
             }
 
             console.info('[editor set-shot-timing] popover dispatch', {
@@ -3924,11 +3900,8 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               cascadeStart,
               cascadeEnd,
               achievableDeltaStart,
-              achievableDeltaEnd,
               clampedStart,
-              clampedEnd,
               leftNeighborDurMs: hasLeft ? leftDur : null,
-              rightNeighborDurMs: hasRight ? rightDur : null,
             });
             apply({
               type: 'SET_SHOT_TIMING',

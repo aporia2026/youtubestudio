@@ -130,16 +130,17 @@ describe('SET_SHOT_TIMING — start-only', () => {
 
 // ─── End-only edits ──────────────────────────────────────────────
 
-describe('SET_SHOT_TIMING — end-only', () => {
-  it('moving end RIGHT shrinks the right neighbor and grows this shot', () => {
+describe('SET_SHOT_TIMING — end-only (shift semantics)', () => {
+  it('moving end RIGHT grows this shot; right neighbor untouched (downstream shifts via cascade)', () => {
     const state = makeState([
       row({ duration_override_ms: 5000 }),
       row({ duration_override_ms: 5000 }),
       row({ duration_override_ms: 8000 }),
     ]);
     // Move shot 1's end from 10000 to 12000:
-    //   shot 1 becomes 5000 → 12000 (dur 7000)
-    //   shot 2 shrinks from 8000 to 6000
+    //   shot 1 grows by 2000 (dur 7000)
+    //   shot 2's DURATION is unchanged; its start shifts later via the cascade
+    //   total project length grows by 2000
     const next = applyCommand(state, {
       type: 'SET_SHOT_TIMING',
       shotIndex: 1,
@@ -147,35 +148,33 @@ describe('SET_SHOT_TIMING — end-only', () => {
       endMs: 12000,
     });
     expect(next.doc.rows[1].duration_override_ms).toBe(7000);
-    expect(next.doc.rows[2].duration_override_ms).toBe(6000);
+    expect(next.doc.rows[2].duration_override_ms).toBe(8000);
   });
 
-  it("clamps when moving end would push right neighbor below 2 s", () => {
+  it('honors a large extend-end request even when the right neighbor is at the 2 s floor', () => {
+    // The bug that motivated the carve → shift switch: a freshly-
+    // inserted blank scene sits at the floor and previously blocked
+    // the user from extending its left-side neighbor by even 1 ms.
     const state = makeState([
       row({ duration_override_ms: 5000 }),
       row({ duration_override_ms: 5000 }),
-      row({ duration_override_ms: 3000 }), // can only give 1000ms
+      row({ duration_override_ms: 2000 }), // at the floor — used to be a blocker
     ]);
-    // Move shot 1's end RIGHT by 2000 (end 10000 → 12000).
-    // Right neighbor would drop to 1000 — clamp to 2000 (give 1000).
     const next = applyCommand(state, {
       type: 'SET_SHOT_TIMING',
       shotIndex: 1,
       startMs: 5000,
-      endMs: 12000,
+      endMs: 15000,
     });
+    expect(next.doc.rows[1].duration_override_ms).toBe(10000);
     expect(next.doc.rows[2].duration_override_ms).toBe(2000);
-    // Shot 1's end actually lands on 11000.
-    expect(next.doc.rows[1].duration_override_ms).toBe(6000);
   });
 
-  it('last-shot extension grows total project length (shift fallback)', () => {
+  it('last-shot extension grows total project length (same as any other shot in shift mode)', () => {
     const state = makeState([
       row({ duration_override_ms: 5000 }),
       row({ duration_override_ms: 5000 }),
     ]);
-    // Move last shot's end from 10000 to 14000.
-    // No right neighbor; this shot grows by 4000.
     const next = applyCommand(state, {
       type: 'SET_SHOT_TIMING',
       shotIndex: 1,
@@ -191,10 +190,9 @@ describe('SET_SHOT_TIMING — end-only', () => {
 
 describe('SET_SHOT_TIMING — both edges atomic', () => {
   it('moves both edges in a single dispatch and a single undo step', () => {
-    // Conceptual analogue of the user's screenshot (scene 71 at
-    // 5:40-5:42 → 5:38-5:42), using durations within the renderer's
-    // [MIN, MAX] = [2s, 5min] bounds so the clamp doesn't reshape
-    // long fixtures retroactively.
+    // User's screenshot scenario: scene currently at 5:40-5:42
+    // (dur 2s), move to 5:38-5:42 (dur 4s). Left side carves from
+    // the immediate left neighbor; right side shifts downstream.
     //   shot 0: 0     → 8000  (dur 8000)
     //   shot 1: 8000  → 10000 (dur 2000 — the freshly inserted scene)
     //   shot 2: 10000 → 15000
@@ -203,10 +201,12 @@ describe('SET_SHOT_TIMING — both edges atomic', () => {
       row({ duration_override_ms: 2000 }),
       row({ duration_override_ms: 5000 }),
     ]);
-    // Move shot 1's left edge back by 2000 + right edge forward by 1000:
-    //   shot 0 shrinks to 6000
+    // Move shot 1's left edge back by 2000 (carve) + right edge
+    // forward by 1000 (shift):
+    //   shot 0 shrinks to 6000  (carved)
     //   shot 1 becomes 6000 → 11000 (dur 5000)
-    //   shot 2 shrinks to 4000
+    //   shot 2's dur unchanged at 5000; its start cascades from
+    //   shot 1's new end at 11000 → shot 2 spans 11000-16000
     const next = applyCommand(state, {
       type: 'SET_SHOT_TIMING',
       shotIndex: 1,
@@ -215,8 +215,8 @@ describe('SET_SHOT_TIMING — both edges atomic', () => {
     });
     expect(next.doc.rows[0].duration_override_ms).toBe(6000);
     expect(next.doc.rows[1].duration_override_ms).toBe(5000);
-    expect(next.doc.rows[2].duration_override_ms).toBe(4000);
-    // ONE undo step reverses everything (both neighbors + this shot).
+    expect(next.doc.rows[2].duration_override_ms).toBe(5000);
+    // ONE undo step reverses everything.
     expect(next.undoStack).toHaveLength(1);
   });
 });
@@ -230,28 +230,31 @@ describe('SET_SHOT_TIMING — first shot', () => {
       row({ duration_override_ms: 5000 }),
     ]);
     // Try to move shot 0's start to 3000 (impossible; no left neighbor).
-    // End moves from 5000 to 7000 — right neighbor shrinks by 2000.
+    // End moves from 5000 to 7000 — shift mode: this shot grows by 2000,
+    // shot 1 cascades to start at 7000 (its dur unchanged).
     const next = applyCommand(state, {
       type: 'SET_SHOT_TIMING',
       shotIndex: 0,
       startMs: 3000,
       endMs: 7000,
     });
-    // Shot 0 stays at 7000 long, starting at 0.
     expect(next.doc.rows[0].duration_override_ms).toBe(7000);
-    expect(next.doc.rows[1].duration_override_ms).toBe(3000);
+    expect(next.doc.rows[1].duration_override_ms).toBe(5000);
   });
 });
 
 // ─── Undo / redo ─────────────────────────────────────────────────
 
 describe('SET_SHOT_TIMING — undo / redo', () => {
-  it('undo restores both neighbors AND this shot in one step', () => {
+  it('undo restores the left neighbor AND this shot in one step', () => {
     const state = makeState([
       row({ duration_override_ms: 5000 }),
       row({ duration_override_ms: 5000 }),
       row({ duration_override_ms: 5000 }),
     ]);
+    // Carve 2 s from left + shift end forward by 2 s. Right neighbor
+    // (shot 2) untouched at 5000 — its start cascades from shot 1's
+    // new end (12000).
     const next = applyCommand(state, {
       type: 'SET_SHOT_TIMING',
       shotIndex: 1,
@@ -260,7 +263,7 @@ describe('SET_SHOT_TIMING — undo / redo', () => {
     });
     expect(next.doc.rows[0].duration_override_ms).toBe(3000);
     expect(next.doc.rows[1].duration_override_ms).toBe(9000);
-    expect(next.doc.rows[2].duration_override_ms).toBe(3000);
+    expect(next.doc.rows[2].duration_override_ms).toBe(5000);
     const undone = applyCommand(next, { type: 'UNDO' });
     expect(undone.doc.rows[0].duration_override_ms).toBe(5000);
     expect(undone.doc.rows[1].duration_override_ms).toBe(5000);
@@ -285,7 +288,7 @@ describe('SET_SHOT_TIMING — undo / redo', () => {
     const redone = applyCommand(undone, { type: 'REDO' });
     expect(redone.doc.rows[0].duration_override_ms).toBe(3000);
     expect(redone.doc.rows[1].duration_override_ms).toBe(9000);
-    expect(redone.doc.rows[2].duration_override_ms).toBe(3000);
+    expect(redone.doc.rows[2].duration_override_ms).toBe(5000);
   });
 });
 
