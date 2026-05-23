@@ -246,6 +246,23 @@ export type EditorCommand =
       shotIndex: number;
       startMs: number;
       endMs: number;
+      /** Optional: override the reducer's cascade-current computation
+       *  with caller-supplied values. Used by aligned-timebase callers
+       *  (the Set timing popover, the leading-edge drag) so the delta
+       *  math lands in their timebase instead of cascade — when
+       *  alignment is active those two can differ by many seconds.
+       *
+       *  After dispatch, the shot AND left neighbor get pinned, so the
+       *  rendered position equals the caller's typed values exactly
+       *  (cascade-forward in realignVideoConfig still positions the
+       *  pinned shot at the upstream realigned cursor, which is what
+       *  the aligned-current math is designed to produce). See
+       *  `_plans/2026-05-23-editor-pin-duration-architecture.md`. */
+      overrideCurrent?: {
+        startMs: number;
+        endMs: number;
+        leftDurationMs?: number;
+      };
       /** Inverse-path only. Per-affected-row pin-state restore (this
        *  shot AND the carved left neighbor when applicable). Forward
        *  callers omit; reducer defaults to pin=true on touched rows.
@@ -809,9 +826,31 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         typeof rows[i].duration_override_ms === 'number'
           ? (rows[i].duration_override_ms as number)
           : naturalRowDurationMs(state.doc, i);
-      let currentStart = 0;
-      for (let i = 0; i < shotIndex; i += 1) currentStart += effDur(i);
-      const currentDur = effDur(shotIndex);
+      // When the caller provides `overrideCurrent`, use those values
+      // as the delta base instead of cascade-derived values. This is
+      // what makes the popover work in aligned timebase: the caller
+      // passes videoConfig.shots[i].startMs / .durationMs (post-
+      // alignment), the deltas land in aligned space, and after pin
+      // the rendered position equals the caller's typed values
+      // (provable: see the plan's "Edge case analysis" table for the
+      // pin-duration cascade-forward math). Without overrideCurrent
+      // we fall back to the historical cascade-only path used by the
+      // tests and the trailing-edge drag.
+      // 2026-05-23 pin-duration architecture follow-up.
+      let currentStart: number;
+      let currentDur: number;
+      let leftCurForCarve: number | null = null;
+      if (cmd.overrideCurrent) {
+        currentStart = cmd.overrideCurrent.startMs;
+        currentDur = cmd.overrideCurrent.endMs - cmd.overrideCurrent.startMs;
+        if (cmd.overrideCurrent.leftDurationMs !== undefined) {
+          leftCurForCarve = cmd.overrideCurrent.leftDurationMs;
+        }
+      } else {
+        currentStart = 0;
+        for (let i = 0; i < shotIndex; i += 1) currentStart += effDur(i);
+        currentDur = effDur(shotIndex);
+      }
       const currentEnd = currentStart + currentDur;
 
       const requestedStart = Math.round(cmd.startMs);
@@ -836,7 +875,12 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       let leftMutation: { rowIndex: number; priorOverride: number | null; nextOverride: number } | null = null;
       if (hasLeft && requestedDeltaStart !== 0) {
         const leftIdx = shotIndex - 1;
-        const leftCur = effDur(leftIdx);
+        // Use the caller-supplied left dur when overrideCurrent is
+        // active (aligned-timebase math) — otherwise fall back to
+        // cascade. Critical for the popover: aligned_left_dur +
+        // aligned_delta_start gives the cascade dur we need to write
+        // so the rendered cursor lands on the user's typed start.
+        const leftCur = leftCurForCarve ?? effDur(leftIdx);
         const leftRequested = leftCur + requestedDeltaStart;
         const leftClamped = clamp(leftRequested);
         actualDeltaStart = leftClamped - leftCur;

@@ -322,6 +322,106 @@ describe('SET_SHOT_TIMING — no-ops', () => {
   });
 });
 
+// ─── overrideCurrent (popover / drag aligned-timebase path) ──────
+//
+// When the caller supplies `overrideCurrent`, the reducer uses those
+// values as the delta base instead of cascade. Critical for the Set
+// timing popover: it shows aligned values (matching the ruler), and
+// the dispatched aligned target lands on the pinned shot exactly
+// because cascade-forward in realignVideoConfig pulls the pin to the
+// upstream realigned cursor. See
+// `_plans/2026-05-23-editor-pin-duration-architecture.md` and the
+// follow-up popover defaults fix.
+
+describe('SET_SHOT_TIMING — overrideCurrent (aligned-timebase callers)', () => {
+  it('uses overrideCurrent values as the delta base, not cascade', () => {
+    // Models the user's reported scenario: cascade and aligned differ
+    // by several seconds for the IMMEDIATE left neighbor. User opens
+    // popover, sees aligned values, types a new start. Without
+    // overrideCurrent the reducer would compute delta against cascade
+    // and produce a totally wrong write to the left neighbor.
+    // Realistic individual shot durations stay within [2s, 5min].
+    const state = makeState([
+      row({ duration_override_ms: 3000 }),    // cascade left dur
+      row({ duration_override_ms: 5000 }),
+      row({ duration_override_ms: 5000 }),
+    ]);
+    // Imagine alignment EXTENDED shot 0 to 7s (because that's where
+    // its narration ends in the audio). Shot 1 starts at 7s aligned.
+    const ALIGNED_LEFT_DUR = 7000;
+    const ALIGNED_START = 7000;
+    const ALIGNED_END = 9000;
+    const TYPED_START = 5000;  // user wants shot 1 to start at 5s (back 2s)
+    const TYPED_END = ALIGNED_END;
+    const next = applyCommand(state, {
+      type: 'SET_SHOT_TIMING',
+      shotIndex: 1,
+      startMs: TYPED_START,
+      endMs: TYPED_END,
+      overrideCurrent: {
+        startMs: ALIGNED_START,
+        endMs: ALIGNED_END,
+        leftDurationMs: ALIGNED_LEFT_DUR,
+      },
+    });
+    // Left neighbor: aligned_left_dur (7000) + delta_start (-2000) = 5000.
+    // CRITICAL: without overrideCurrent, the reducer would compute
+    // delta against cascade_left_dur (3000) and write 3000 + (-2000)
+    // = 1000 → CLAMPED to 2000 (MIN) and the user's typed start
+    // wouldn't be honored. With overrideCurrent we write 5000.
+    expect(next.doc.rows[0].duration_override_ms).toBe(5000);
+    // This shot: new dur = aligned_dur (2000) - delta_start (-2000)
+    //           + delta_end (0) = 4000.
+    expect(next.doc.rows[1].duration_override_ms).toBe(4000);
+    // Both pinned.
+    expect(next.doc.rows[0].pin_duration).toBe(true);
+    expect(next.doc.rows[1].pin_duration).toBe(true);
+  });
+
+  it('user-typed end is honored verbatim via shift semantics + overrideCurrent', () => {
+    // Aligned shot 1: 5000-7000 (2 s). User types end 9000 → extend by 2 s.
+    const state = makeState([
+      row({ duration_override_ms: 5000 }),
+      row({ duration_override_ms: 5000 }),
+      row({ duration_override_ms: 5000 }),
+    ]);
+    const next = applyCommand(state, {
+      type: 'SET_SHOT_TIMING',
+      shotIndex: 1,
+      startMs: 5000,
+      endMs: 9000,
+      overrideCurrent: {
+        startMs: 5000,
+        endMs: 7000,
+        leftDurationMs: 5000,
+      },
+    });
+    // No left edge change (delta_start = 0) → left untouched.
+    expect(next.doc.rows[0].duration_override_ms).toBe(5000);
+    // This shot extends by 2 s: cascade dur = 2000 (override) + 2000 = 4000.
+    expect(next.doc.rows[1].duration_override_ms).toBe(4000);
+    expect(next.doc.rows[1].pin_duration).toBe(true);
+  });
+
+  it('no overrideCurrent falls back to cascade-only (legacy callers unchanged)', () => {
+    const state = makeState([
+      row({ duration_override_ms: 5000 }),
+      row({ duration_override_ms: 5000 }),
+      row({ duration_override_ms: 5000 }),
+    ]);
+    const next = applyCommand(state, {
+      type: 'SET_SHOT_TIMING',
+      shotIndex: 1,
+      startMs: 3000,
+      endMs: 12000,
+    });
+    // Same as the existing both-edges test — cascade delta of
+    // -2000 / +2000 applies to cascade left dur (5000).
+    expect(next.doc.rows[0].duration_override_ms).toBe(3000);
+    expect(next.doc.rows[1].duration_override_ms).toBe(9000);
+  });
+});
+
 // ─── pin_duration (2026-05-23 architecture) ──────────────────────
 
 describe('SET_SHOT_TIMING — pin_duration', () => {

@@ -3267,25 +3267,28 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         apply({ type: 'RESIZE_SHOT', shotIndex, durationMs })
       }
       onLeadingResize={(shotIndex, newStartMs) => {
-        // Translate aligned-space drag → cascade-space dispatch.
-        // Timeline emits newStartMs in ALIGNED space (it sums
-        // videoConfig.shots.durationMs, which is post-alignment).
-        // SET_SHOT_TIMING reads/writes CASCADE space. We compute the
-        // aligned delta, then add it on top of cascade values pulled
-        // FRESH from state using the same helper the reducer uses
-        // (`rowEffectiveDurationMs`). End is held constant for a
-        // leading-edge drag. See plan
-        // `_plans/2026-05-23-editor-set-shot-timing-and-left-edge-drag.md`.
+        // Leading-edge drag in ALIGNED timebase (Timeline computes
+        // shotStartTimesMs from videoConfig.shots which is post-
+        // alignment). Pass aligned current values via overrideCurrent
+        // so the reducer's delta math operates in aligned space. End
+        // is held constant for a leading-edge drag. See plan
+        // `_plans/2026-05-23-editor-pin-duration-architecture.md`.
         const shot = videoConfig.shots[shotIndex];
         if (!shot) return;
-        const deltaStart = newStartMs - shot.startMs;
-        const cascadeStart = shotStartTimesMs[shotIndex] ?? shot.startMs;
-        const cascadeEnd = cascadeStart + rowEffectiveDurationMs(state.doc, shotIndex);
+        const alignedStart = shot.startMs;
+        const alignedEnd = alignedStart + shot.durationMs;
+        const alignedLeftDur =
+          shotIndex > 0 ? videoConfig.shots[shotIndex - 1]?.durationMs : undefined;
         apply({
           type: 'SET_SHOT_TIMING',
           shotIndex,
-          startMs: cascadeStart + deltaStart,
-          endMs: cascadeEnd,
+          startMs: newStartMs,
+          endMs: alignedEnd,
+          overrideCurrent: {
+            startMs: alignedStart,
+            endMs: alignedEnd,
+            leftDurationMs: alignedLeftDur,
+          },
         });
       }}
       onReorder={(fromIndex, toIndex) =>
@@ -3855,49 +3858,62 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           maxDurationMs={EDITOR_MAX_SHOT_MS}
           isFirstShot={timingPopover.isFirstShot}
           onApply={(startMs, endMs) => {
-            // 2026-05-23 pin-duration architecture: popover values
-            // ARE cascade-space (set by the menu trigger from
-            // shotStartTimesMs + rowEffectiveDurationMs). Dispatch
-            // them directly — no aligned↔cascade translation.
-            //
-            // Still predict the LEFT-side clamp (right side is SHIFT
-            // — always honored verbatim by the reducer): if the
-            // user's start input would push the left neighbor below
-            // the 2 s floor, surface a toast so they know.
+            // 2026-05-23 pin-duration architecture follow-up: popover
+            // values are ALIGNED space (matches the ruler). We pass
+            // aligned current values via overrideCurrent so the
+            // reducer's delta math operates in aligned space too.
+            // After pin, the rendered position equals the typed
+            // values exactly. See the plan's "Edge case analysis".
             const idx = timingPopover.shotIndex;
-            const deltaStart = startMs - timingPopover.initialStartMs;
+            const alignedShot = videoConfig.shots[idx];
+            const alignedStart = alignedShot?.startMs ?? timingPopover.initialStartMs;
+            const alignedEnd =
+              (alignedShot?.startMs ?? timingPopover.initialStartMs) +
+              (alignedShot?.durationMs ?? 0);
             const hasLeft = idx > 0;
-            const leftDur = hasLeft ? rowEffectiveDurationMs(state.doc, idx - 1) : 0;
+            const alignedLeftDur = hasLeft
+              ? videoConfig.shots[idx - 1]?.durationMs ?? 0
+              : undefined;
+            // Predict left-side clamp so we can toast if the user's
+            // requested start would push the left neighbor below the
+            // 2 s floor (or above the MAX). Right side is SHIFT —
+            // always honored verbatim.
+            const deltaStart = startMs - alignedStart;
             const clampDur = (n: number) =>
               Math.max(EDITOR_MIN_SHOT_MS, Math.min(EDITOR_MAX_SHOT_MS, Math.round(n)));
-            const achievableDeltaStart = hasLeft
-              ? clampDur(leftDur + deltaStart) - leftDur
+            const achievableDeltaStart = hasLeft && alignedLeftDur !== undefined
+              ? clampDur(alignedLeftDur + deltaStart) - alignedLeftDur
               : 0;
             const clampedStart = hasLeft && Math.abs(achievableDeltaStart - deltaStart) > 1;
             if (clampedStart) {
               toast.warning(
-                `Scene ${idx} can't shrink past the ${(EDITOR_MIN_SHOT_MS / 1000).toFixed(0)}s minimum — start clamped to ${formatTimecodeLabel(timingPopover.initialStartMs + achievableDeltaStart)}.`,
+                `Scene ${idx} can't shrink past the ${(EDITOR_MIN_SHOT_MS / 1000).toFixed(0)}s minimum — start clamped to ${formatTimecodeLabel(alignedStart + achievableDeltaStart)}.`,
               );
             } else if (!hasLeft && deltaStart !== 0) {
               toast.info('Scene 1’s start is anchored at 0:00 — start change ignored.');
             }
             console.info('[editor set-shot-timing] popover dispatch', {
               shotIndex: idx,
-              cascadeStartInput: startMs,
-              cascadeEndInput: endMs,
-              cascadeInitialStart: timingPopover.initialStartMs,
-              cascadeInitialEnd: timingPopover.initialEndMs,
+              typedStart: startMs,
+              typedEnd: endMs,
+              alignedStart,
+              alignedEnd,
+              alignedLeftDur,
               deltaStart,
-              deltaEnd: endMs - timingPopover.initialEndMs,
+              deltaEnd: endMs - alignedEnd,
               achievableDeltaStart,
               clampedStart,
-              leftNeighborDurMs: hasLeft ? leftDur : null,
             });
             apply({
               type: 'SET_SHOT_TIMING',
               shotIndex: idx,
               startMs,
               endMs,
+              overrideCurrent: {
+                startMs: alignedStart,
+                endMs: alignedEnd,
+                leftDurationMs: alignedLeftDur,
+              },
             });
           }}
           onClose={() => setTimingPopover(null)}
@@ -4033,21 +4049,25 @@ function buildEditorContextMenuItems(args: {
         {
           label: 'Set timing…',
           onClick: () => {
-            // 2026-05-23 pin-duration architecture: popover surfaces
-            // CASCADE values (what the reducer writes). No aligned↔
-            // cascade translation — eliminates an entire class of
-            // silent-no-op bugs. When alignment is active, the
-            // popover values may differ slightly from the ruler;
-            // after Apply, the ruler reflects the pinned cascade
-            // position for this shot.
-            const cascadeStart = cascadeStartTimesMs[i] ?? 0;
-            const cascadeEnd = cascadeStart + rowEffectiveDurationMs(doc, i);
+            // Show ALIGNED values (matches the ruler the user sees).
+            // The reducer's `overrideCurrent` field lets the dispatch
+            // operate in aligned-timebase too — after pin, the
+            // rendered position equals the user's typed values
+            // exactly. The earlier cascade-only popover (Phase 4 of
+            // the pin-duration plan) surfaced cascade values that
+            // diverged from the ruler by many seconds when alignment
+            // was active — surprised the user. Aligned values are
+            // the right UX; the reducer math handles the rest.
+            // 2026-05-23 pin-duration architecture follow-up.
+            let alignedStart = 0;
+            for (let k = 0; k < i; k += 1) alignedStart += shotDurationsMs[k] ?? 0;
+            const alignedEnd = alignedStart + (shotDurationsMs[i] ?? 0);
             setTimingPopover({
               shotIndex: i,
               x: menu.x,
               y: menu.y,
-              initialStartMs: cascadeStart,
-              initialEndMs: cascadeEnd,
+              initialStartMs: alignedStart,
+              initialEndMs: alignedEnd,
               isFirstShot: i === 0,
             });
           },
