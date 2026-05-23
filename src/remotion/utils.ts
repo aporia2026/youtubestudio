@@ -470,7 +470,19 @@ export interface ProductionRow {
    *  value takes precedence over the timecode-derived duration. The
    *  renderer recomputes the cumulative shot start times so changing
    *  this on row N shifts every subsequent row's startMs. */
-  duration_override_ms?: number;
+   duration_override_ms?: number;
+  /** When `true`, the user has explicitly pinned this row's duration
+   *  via Set timing / drag / insert / split / merge. Voiceover
+   *  alignment respects the pin — keeps cascade-derived values for
+   *  this row instead of overwriting them with word-derived positions.
+   *
+   *  Legacy rows with `duration_override_ms` but no `pin_duration`
+   *  are NOT pinned: alignment continues to overwrite, preserving
+   *  existing project playback exactly as it was before the pin
+   *  feature shipped. Only NEW user actions set this flag.
+   *
+   *  See `_plans/2026-05-23-editor-pin-duration-architecture.md`. */
+  pin_duration?: boolean;
   /** Head-trim on the underlying source clip (ms). Skips this many
    *  ms from the clip's start before playing. The on-screen duration
    *  is still controlled by `duration_override_ms` / timecode. */
@@ -1146,7 +1158,21 @@ export function productionDocToVideoConfig(
     textOverlays: doc.text_overlays,
   };
 
-  return opts.alignment ? realignVideoConfig(config, opts.alignment).config : config;
+  if (!opts.alignment) return config;
+
+  // 2026-05-23 pin-duration architecture: rows the user has
+  // explicitly pinned (via Set timing / drag / insert / split /
+  // merge) must NOT be overwritten by alignment. Build the per-row
+  // pin flag from `row.pin_duration` and pass it through.
+  //
+  // Legacy rows with `duration_override_ms` but no `pin_duration`
+  // remain unpinned — alignment keeps overwriting them, exactly as
+  // before this feature shipped. That's the migration property:
+  // existing projects play identically; only NEW user actions stick.
+  //
+  // See `_plans/2026-05-23-editor-pin-duration-architecture.md`.
+  const pinnedShots = doc.rows.map((r) => r.pin_duration === true);
+  return realignVideoConfig(config, opts.alignment, { pinnedShots }).config;
 }
 
 // ─── Voiceover-aligned re-timing ──────────────────────────────────────────────
@@ -1280,9 +1306,26 @@ function applySceneTimingRules(
  * Pure: returns a new VideoConfig + a new shots array; the input is
  * not mutated. Empty `config.shots` short-circuits to `config` unchanged.
  */
+export interface RealignVideoConfigOptions {
+  /** Per-shot pin flag (length must match `config.shots.length`).
+   *  `true` ⇒ keep the shot's cascade-derived `[startMs, durationMs]`
+   *  verbatim; alignment-derived values are discarded for that row.
+   *  Downstream non-pinned rows cascade-forward to avoid overlap
+   *  (their START shifts to the pinned shot's end; their aligned
+   *  DURATION is preserved). The shift propagates only when the
+   *  next-next row's aligned start would still overlap — alignment
+   *  gaps absorb the shift naturally.
+   *
+   *  Built by `productionDocToVideoConfig` from
+   *  `row.pin_duration === true`. See
+   *  `_plans/2026-05-23-editor-pin-duration-architecture.md`. */
+  pinnedShots?: boolean[];
+}
+
 export function realignVideoConfig(
   config: VideoConfig,
   alignment: ForcedAlignmentResponse,
+  options?: RealignVideoConfigOptions,
 ): RealignResult {
   if (!config.shots.length) return { config, alignedRows: [] };
 
@@ -1334,21 +1377,79 @@ export function realignVideoConfig(
     });
   }
 
-  // Build the new shots in one pass. Frame-snapping happens here, not
-  // in `alignRowsToWords` or `applySceneTimingRules`, so those pure
-  // helpers can be tested against exact ms values without an fps
-  // round-trip.
-  const newShots: VideoShot[] = config.shots.map((shot, i) => {
-    const aligned = alignedRows[i];
-    if (!aligned) return shot;
-    const startMs = snapMsToFrame(aligned.startMs, config.fps);
-    const endMs = snapMsToFrame(aligned.endMs, config.fps);
+  // Build the new shots in one pass.
+  //
+  // Pinned shots: keep the cascade-derived `[startMs, durationMs]`
+  // from the incoming config — the user's manual edit is the
+  // authority.
+  //
+  // Non-pinned shots: use the aligned values. If the aligned start
+  // overlaps the previous shot's end (common after a pinned shot
+  // extends past its word boundaries), cascade-forward: shift the
+  // start to the previous end, preserve the ALIGNED DURATION
+  // (so the shot doesn't grow indefinitely). The next iteration's
+  // overlap check may or may not need another shift — alignment
+  // gaps absorb the drift, so the cumulative shift is bounded.
+  //
+  // 2026-05-23 pin-duration architecture. See
+  // `_plans/2026-05-23-editor-pin-duration-architecture.md`.
+  const frameMs = 1000 / config.fps;
+  const pinnedFlags = options?.pinnedShots ?? [];
+  let pinnedRespectedCount = 0;
+  let cascadeForwardCount = 0;
+  let cursor = 0;
+  const newShots: VideoShot[] = [];
+  for (let i = 0; i < config.shots.length; i++) {
+    const shot = config.shots[i];
+    const isPinned = pinnedFlags[i] === true;
+    let startMs: number;
+    let endMs: number;
+    if (isPinned) {
+      // Cascade values verbatim — user's manual edit wins.
+      startMs = snapMsToFrame(shot.startMs, config.fps);
+      endMs = snapMsToFrame(shot.startMs + shot.durationMs, config.fps);
+      pinnedRespectedCount++;
+    } else {
+      const aligned = alignedRows[i];
+      if (!aligned) {
+        // Defensive: no aligned entry for this index. Keep the
+        // incoming shot as-is and advance the cursor.
+        newShots.push(shot);
+        cursor = shot.startMs + shot.durationMs;
+        continue;
+      }
+      startMs = snapMsToFrame(aligned.startMs, config.fps);
+      endMs = snapMsToFrame(aligned.endMs, config.fps);
+      // Cascade-forward: if this shot would overlap the previous
+      // shot's end, shift the START up. Preserve the ALIGNED
+      // DURATION by shifting the END by the same amount — the shot
+      // gets re-positioned but doesn't extend artificially. Earlier
+      // pin attempts dropped this duration-preservation rule and
+      // caused accumulated drift across the project (see commit
+      // f560537 → revert 6f2f9ef). Bounded version below avoids
+      // that regression: the shift only kicks in when there's actual
+      // overlap; alignment gaps absorb subsequent drift naturally.
+      if (startMs < cursor) {
+        const shift = cursor - startMs;
+        startMs = cursor;
+        endMs += shift;
+        cascadeForwardCount++;
+      }
+    }
     // Defensive: a single-frame minimum protects the render route's
     // `durationMs > 0` validator if the aligner produced a degenerate
     // [start, end] interval. One frame at 30 fps = 33.33 ms.
-    const durationMs = Math.max(endMs - startMs, 1000 / config.fps);
-    return { ...shot, startMs, durationMs };
-  });
+    const durationMs = Math.max(endMs - startMs, frameMs);
+    newShots.push({ ...shot, startMs, durationMs });
+    cursor = startMs + durationMs;
+  }
+  if (typeof console !== 'undefined' && console.info && pinnedRespectedCount > 0) {
+    console.info('[render-timing] respecting pin', {
+      pinnedCount: pinnedRespectedCount,
+      cascadeForwardCount,
+      totalShots: config.shots.length,
+    });
+  }
 
   return {
     config: { ...config, shots: newShots },

@@ -170,6 +170,78 @@ describe('realignVideoConfig: end-to-end on a 6-row fixture', () => {
   });
 });
 
+// ─── Pin-duration: alignment respects manual pins ────────────────────────────
+//
+// 2026-05-23 pin-duration architecture. The fixture above is shared:
+// non-pinned rows use alignment values (legacy behavior, identical to
+// today). When `pinnedShots[i] === true`, that row's cascade values
+// win over alignment. Downstream non-pinned rows cascade-forward when
+// they would otherwise overlap the pinned shot — preserving their
+// ALIGNED DURATION (not extending it indefinitely).
+
+describe('realignVideoConfig — pinnedShots option', () => {
+  it('pinned row keeps cascade durationMs even when alignment would shorten it', () => {
+    const config = buildFixtureConfig();
+    // Cascade duration for row 0 = 4_000 ms. Alignment would normally
+    // shrink to ~3.45 s (last spoken word at 3.45 s). With pin, the
+    // 4_000 ms survives.
+    const pinnedShots = config.shots.map((_, i) => i === 0);
+    const result = realignVideoConfig(config, FIXTURE_ALIGNMENT, { pinnedShots });
+    const row0 = result.config.shots[0];
+    expect(row0.startMs).toBe(snapMsToFrame(0, FPS));
+    expect(row0.durationMs).toBe(snapMsToFrame(4_000, FPS));
+  });
+
+  it('extending a pinned row past alignment cascade-forwards the immediate next row', () => {
+    const config = buildFixtureConfig();
+    // Pin row 0 with a 6_000 ms cascade (vs alignment ~3.45 s).
+    config.shots[0] = { ...config.shots[0], durationMs: 6_000 };
+    const pinnedShots = config.shots.map((_, i) => i === 0);
+    const result = realignVideoConfig(config, FIXTURE_ALIGNMENT, { pinnedShots });
+    const row0End = result.config.shots[0].startMs + result.config.shots[0].durationMs;
+    const row1Start = result.config.shots[1].startMs;
+    // Row 1 was aligned to ~3.8 s; row 0's pinned end is 6 s. Without
+    // cascade-forward, row 1 would overlap. With cascade-forward, row 1
+    // starts exactly at row 0's end.
+    expect(row1Start).toBe(row0End);
+  });
+
+  it('cascade-forward preserves aligned DURATION (does not extend)', () => {
+    const config = buildFixtureConfig();
+    // Compute the baseline (no pins) so we know what aligned values
+    // `applySceneTimingRules` actually produced for row 1 — its real
+    // duration may differ from the bare "last word minus first word"
+    // because the scene-timing rules can extend rows into following
+    // gaps. The cascade-forward shift must preserve THAT duration,
+    // not arbitrarily inflate it.
+    const baseline = realignVideoConfig(buildFixtureConfig(), FIXTURE_ALIGNMENT);
+    const baselineRow1Dur = baseline.config.shots[1].durationMs;
+    // Now pin row 0 with a 6_000 ms cascade.
+    config.shots[0] = { ...config.shots[0], durationMs: 6_000 };
+    const pinnedShots = config.shots.map((_, i) => i === 0);
+    const result = realignVideoConfig(config, FIXTURE_ALIGNMENT, { pinnedShots });
+    const row1 = result.config.shots[1];
+    // Row 1's duration after pin should match the baseline (only
+    // its start shifted forward, end shifted by the same amount).
+    expect(row1.durationMs).toBe(baselineRow1Dur);
+  });
+
+  it('legacy unpinned rows behave EXACTLY as before this feature (no regression)', () => {
+    const config = buildFixtureConfig();
+    // Empty pinnedShots ⇒ every row is unpinned ⇒ alignment dominates.
+    const withEmpty = realignVideoConfig(config, FIXTURE_ALIGNMENT, { pinnedShots: [] });
+    const withoutOptions = realignVideoConfig(config, FIXTURE_ALIGNMENT);
+    expect(withEmpty.config.shots).toEqual(withoutOptions.config.shots);
+  });
+
+  it('omitting the options argument is identical to the legacy no-option signature', () => {
+    const config = buildFixtureConfig();
+    const withOptions = realignVideoConfig(config, FIXTURE_ALIGNMENT, {});
+    const withoutOptions = realignVideoConfig(config, FIXTURE_ALIGNMENT);
+    expect(withOptions.config.shots).toEqual(withoutOptions.config.shots);
+  });
+});
+
 // ─── Auth gate on /api/voiceovers/align ───────────────────────────────────────
 
 // Mock next/headers BEFORE importing the route module, mirroring the

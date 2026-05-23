@@ -322,6 +322,84 @@ describe('SET_SHOT_TIMING — no-ops', () => {
   });
 });
 
+// ─── pin_duration (2026-05-23 architecture) ──────────────────────
+
+describe('SET_SHOT_TIMING — pin_duration', () => {
+  it('sets pin_duration: true on the edited shot AND the carved left neighbor', () => {
+    const state = makeState([
+      row({ duration_override_ms: 5000 }),
+      row({ duration_override_ms: 5000 }),
+      row({ duration_override_ms: 5000 }),
+    ]);
+    // Both rows start unpinned (legacy state).
+    expect(state.doc.rows[0].pin_duration).toBeUndefined();
+    expect(state.doc.rows[1].pin_duration).toBeUndefined();
+    const next = applyCommand(state, {
+      type: 'SET_SHOT_TIMING',
+      shotIndex: 1,
+      startMs: 3000,
+      endMs: 12000,
+    });
+    // Left neighbor was carved → pinned. Edited shot → pinned.
+    // Right neighbor untouched → still unpinned.
+    expect(next.doc.rows[0].pin_duration).toBe(true);
+    expect(next.doc.rows[1].pin_duration).toBe(true);
+    expect(next.doc.rows[2].pin_duration).toBeUndefined();
+  });
+
+  it('undo restores pin_duration on both touched rows exactly (undefined ⇒ undefined)', () => {
+    const state = makeState([
+      row({ duration_override_ms: 5000 }),
+      row({ duration_override_ms: 5000 }),
+    ]);
+    const inserted = applyCommand(state, {
+      type: 'SET_SHOT_TIMING',
+      shotIndex: 1,
+      startMs: 3000,
+      endMs: 7000,
+    });
+    expect(inserted.doc.rows[0].pin_duration).toBe(true);
+    expect(inserted.doc.rows[1].pin_duration).toBe(true);
+    const undone = applyCommand(inserted, { type: 'UNDO' });
+    // Pin state reverts to absent — original shape preserved.
+    expect(undone.doc.rows[0].pin_duration).toBeUndefined();
+    expect(undone.doc.rows[1].pin_duration).toBeUndefined();
+  });
+
+  it('undo restores pin_duration: true when the prior state was already pinned', () => {
+    const state = makeState([
+      row({ duration_override_ms: 5000, pin_duration: true }),
+      row({ duration_override_ms: 5000, pin_duration: true }),
+    ]);
+    const inserted = applyCommand(state, {
+      type: 'SET_SHOT_TIMING',
+      shotIndex: 1,
+      startMs: 4000,
+      endMs: 6000,
+    });
+    const undone = applyCommand(inserted, { type: 'UNDO' });
+    expect(undone.doc.rows[0].pin_duration).toBe(true);
+    expect(undone.doc.rows[1].pin_duration).toBe(true);
+  });
+
+  it('redo re-applies pin: true after undo', () => {
+    const state = makeState([
+      row({ duration_override_ms: 5000 }),
+      row({ duration_override_ms: 5000 }),
+    ]);
+    const inserted = applyCommand(state, {
+      type: 'SET_SHOT_TIMING',
+      shotIndex: 1,
+      startMs: 4000,
+      endMs: 6000,
+    });
+    const undone = applyCommand(inserted, { type: 'UNDO' });
+    const redone = applyCommand(undone, { type: 'REDO' });
+    expect(redone.doc.rows[0].pin_duration).toBe(true);
+    expect(redone.doc.rows[1].pin_duration).toBe(true);
+  });
+});
+
 // ─── Natural-duration neighbors ──────────────────────────────────
 
 describe('SET_SHOT_TIMING — natural duration', () => {

@@ -29,6 +29,64 @@ const VALID_DOC = {
   ],
 };
 
+// ─── pin_duration round-trip (2026-05-23 pin-duration architecture) ──
+//
+// The pin-duration plan adds a new boolean field to ProductionRow.
+// This test runs FIRST in the implementation order so we know — before
+// any other code depends on it — whether the validator+migrator pair
+// strips the field on save→load. If it does, the plan calls for
+// explicit pass-through in `migratePayload`; if it doesn't (because
+// rows pass through opaquely), no migrator change is needed.
+//
+// See `_plans/2026-05-23-editor-pin-duration-architecture.md` Phase 1.
+
+describe('pin_duration round-trip through validatePayload + migratePayload', () => {
+  function payloadWith(rows: Array<Record<string, unknown>>) {
+    return {
+      doc: {
+        title: 'Pin test',
+        niche: 'tech',
+        total_duration: '60',
+        total_words: 100,
+        speaking_pace_wpm: 150,
+        rows,
+      },
+      flags: { animateScenes: true, suppressLowerThirds: false, overlaysDisabled: false, rowLockedAsStill: {} },
+    };
+  }
+
+  it('preserves pin_duration: true on a row through migratePayload', () => {
+    const raw = payloadWith([
+      { timecode: '00:00', script_text: 'A', duration_override_ms: 4000, pin_duration: true },
+      { timecode: '00:04', script_text: 'B' },
+    ]);
+    const { payload } = migratePayload(raw);
+    const r0 = payload.doc.rows[0] as { pin_duration?: boolean; duration_override_ms?: number };
+    expect(r0.pin_duration).toBe(true);
+    expect(r0.duration_override_ms).toBe(4000);
+  });
+
+  it('leaves pin_duration undefined on a legacy row that lacks the field', () => {
+    const raw = payloadWith([
+      { timecode: '00:00', script_text: 'A', duration_override_ms: 4000 },
+    ]);
+    const { payload } = migratePayload(raw);
+    const r0 = payload.doc.rows[0] as { pin_duration?: boolean };
+    expect(r0.pin_duration).toBeUndefined();
+  });
+
+  it('survives the full validate → migrate path with the field intact', () => {
+    const raw = payloadWith([
+      { timecode: '00:00', script_text: 'A', duration_override_ms: 4000, pin_duration: true },
+    ]);
+    const result = validatePayload(raw);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const r0 = result.payload.doc.rows[0] as { pin_duration?: boolean };
+    expect(r0.pin_duration).toBe(true);
+  });
+});
+
 describe('isSafeAssetUrl', () => {
   const isSafe = __testing.isSafeAssetUrl;
 

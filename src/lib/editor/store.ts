@@ -182,7 +182,19 @@ export type EditorCommand =
     }
   | { type: 'UNDO' }
   | { type: 'REDO' }
-  | { type: 'RESIZE_SHOT'; shotIndex: number; durationMs: number }
+  | {
+      type: 'RESIZE_SHOT';
+      shotIndex: number;
+      durationMs: number;
+      /** Inverse-path only. When omitted, the forward path sets
+       *  `row.pin_duration = true` (explicit user resize always
+       *  pins — that's the whole point of the pin-duration plan).
+       *  When provided, `.value` is written verbatim; `undefined`
+       *  clears the field so the row's pre-edit pin state (which
+       *  may have been absent) is restored exactly on undo.
+       *  See `_plans/2026-05-23-editor-pin-duration-architecture.md`. */
+      restorePinDuration?: { value: boolean | undefined };
+    }
   | { type: 'SPLIT_SHOT'; shotIndex: number; splitAtMs: number }
   /** Atomic edit of both edges of a shot in a single undo step.
    *  Redistributes the start/end deltas across the immediate left and
@@ -214,7 +226,35 @@ export type EditorCommand =
    *  regardless of how many neighbors moved.
    *
    *  See `_plans/2026-05-23-editor-set-shot-timing-and-left-edge-drag.md`. */
-  | { type: 'SET_SHOT_TIMING'; shotIndex: number; startMs: number; endMs: number }
+  /** Clear both `duration_override_ms` AND `pin_duration` on the
+   *  named shot, releasing it back to alignment-driven timing.
+   *  Surfaced as the "Reset timing to alignment" context-menu entry.
+   *  Inverse restores both fields exactly (including absent → absent).
+   *  See `_plans/2026-05-23-editor-pin-duration-architecture.md`. */
+  | {
+      type: 'RESET_SHOT_TIMING';
+      shotIndex: number;
+      /** Inverse-path only. Restores `duration_override_ms` to this
+       *  value (undefined ⇒ clear). Forward callers omit. */
+      restoreDurationMs?: { value: number | undefined };
+      /** Inverse-path only. Mirrors the pin-restore pattern used by
+       *  RESIZE_SHOT and SET_SHOT_TIMING. */
+      restorePinDuration?: { value: boolean | undefined };
+    }
+  | {
+      type: 'SET_SHOT_TIMING';
+      shotIndex: number;
+      startMs: number;
+      endMs: number;
+      /** Inverse-path only. Per-affected-row pin-state restore (this
+       *  shot AND the carved left neighbor when applicable). Forward
+       *  callers omit; reducer defaults to pin=true on touched rows.
+       *  See `_plans/2026-05-23-editor-pin-duration-architecture.md`. */
+      restorePinDuration?: {
+        thisShot: { value: boolean | undefined };
+        leftNeighbor?: { value: boolean | undefined };
+      };
+    }
   /** Toolbar flag toggle — animateScenes / suppressLowerThirds /
    *  overlaysDisabled (the per-row `rowLockedAsStill` map mutates
    *  via the same path but is patched in full when it changes).
@@ -272,7 +312,18 @@ export type EditorCommand =
   // MERGE_ADJACENT_SHOTS exists only as the inverse of SPLIT_SHOT.
   // Users never dispatch it directly; the reducer emits it when
   // building an undo entry.
-  | { type: 'MERGE_ADJACENT_SHOTS'; shotIndex: number; restoredDurationOverrideMs: number | null }
+  | {
+      type: 'MERGE_ADJACENT_SHOTS';
+      shotIndex: number;
+      restoredDurationOverrideMs: number | null;
+      /** Pre-split pin state of the original row, restored on the
+       *  merged row. Inverse of SPLIT_SHOT captures this so undo
+       *  restores the exact pre-split row shape. Absent ⇒ legacy
+       *  inverse from before the pin-duration feature; leave
+       *  pin_duration as-is. See
+       *  `_plans/2026-05-23-editor-pin-duration-architecture.md`. */
+      restorePinDuration?: { value: boolean | undefined };
+    }
   | { type: 'DELETE_SHOT'; shotIndex: number; mode: 'ripple' | 'blank' }
   /** Insert a clone of the row at `shotIndex` into position
    *  `shotIndex + 1`. The clone inherits everything (script,
@@ -331,6 +382,12 @@ export type EditorCommand =
       restoreNeighbor?: {
         rowIndex: number;
         value: number | null;
+        /** Pre-carve pin state of the neighbor. Forward-path
+         *  INSERT_BLANK_SHOT pins the carved neighbor (the user's
+         *  insert intent extends to the row whose duration just got
+         *  modified). Undo restores the prior pin state exactly.
+         *  See `_plans/2026-05-23-editor-pin-duration-architecture.md`. */
+        restorePin?: { value: boolean | undefined };
       };
     }
   // Toggle a shot's `muted` flag. Self-inverse — applying twice
@@ -462,6 +519,7 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'RESIZE_SHOT':
     case 'SPLIT_SHOT':
     case 'SET_SHOT_TIMING':
+    case 'RESET_SHOT_TIMING':
     case 'MERGE_ADJACENT_SHOTS':
     case 'DELETE_SHOT':
     case 'RESTORE_ROW':
@@ -698,13 +756,18 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       );
       const row = state.doc.rows[shotIndex];
       const prevDurationMs = row.duration_override_ms;
-      if (prevDurationMs === clampedMs) {
+      // No-op detection: same duration AND same pin intent. The pin
+      // check matters because the forward path sets pin=true, so a
+      // user resize on a previously-unpinned row IS a state change
+      // even when the requested duration matches the current one.
+      const wantPinTrue = cmd.restorePinDuration === undefined;
+      const targetPin = wantPinTrue ? true : cmd.restorePinDuration!.value;
+      if (prevDurationMs === clampedMs && row.pin_duration === targetPin) {
         return { next: state, inverse: null };
       }
-      // The forward command is what got us here; the inverse takes
-      // us back. If the pre-edit row had no override, we synthesise
-      // an inverse that restores the natural (timecode-derived)
-      // duration — visually identical to "field absent."
+      // Inverse captures both the prior duration AND the prior pin
+      // state so undo restores the exact pre-edit row shape (including
+      // a missing pin_duration field if it was absent before).
       const inverse: EditorCommand = {
         type: 'RESIZE_SHOT',
         shotIndex,
@@ -712,12 +775,14 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           typeof prevDurationMs === 'number'
             ? prevDurationMs
             : naturalRowDurationMs(state.doc, shotIndex),
+        restorePinDuration: capturePinState(row),
       };
       const nextRow = {
         ...row,
         duration_override_ms: clampedMs,
         edited_at: stampEditedAt(row.edited_at, 'duration'),
       };
+      applyPinDirective(nextRow, cmd.restorePinDuration);
       const nextRows = state.doc.rows.slice();
       nextRows[shotIndex] = nextRow;
       return {
@@ -818,21 +883,32 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
 
       // Build the mutation. Order of operations doesn't matter — we
       // mutate by index into a fresh slice, no cascade dependency.
+      // applyPinDirective handles the forward/inverse split: forward
+      // (cmd.restorePinDuration === undefined) sets pin_duration =
+      // true; inverse restores the prior state captured at edit time.
       const nextRows = rows.slice();
+      const priorLeftPin = leftMutation
+        ? capturePinState(rows[leftMutation.rowIndex])
+        : undefined;
       if (leftMutation) {
         const r = nextRows[leftMutation.rowIndex];
-        nextRows[leftMutation.rowIndex] = {
+        const updated = {
           ...r,
           duration_override_ms: leftMutation.nextOverride,
           edited_at: stampEditedAt(r.edited_at, 'duration'),
         };
+        applyPinDirective(updated, cmd.restorePinDuration?.leftNeighbor);
+        nextRows[leftMutation.rowIndex] = updated;
       }
       const thisRow = nextRows[shotIndex];
-      nextRows[shotIndex] = {
+      const priorThisPin = capturePinState(rows[shotIndex]);
+      const updatedThis = {
         ...thisRow,
         duration_override_ms: newDur,
         edited_at: stampEditedAt(thisRow.edited_at, 'duration'),
       };
+      applyPinDirective(updatedThis, cmd.restorePinDuration?.thisShot);
+      nextRows[shotIndex] = updatedThis;
 
       // Observability for clamp surfacing — the EditorClient subscribes
       // via console for now, sonner toast for the popover path.
@@ -846,15 +922,72 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         });
       }
 
-      // Inverse restores the prior timing exactly. One command, one
-      // undo step — regardless of how many neighbors moved.
+      // Inverse restores the prior timing AND prior pin state for
+      // both touched rows. One command, one undo step.
       const inverse: EditorCommand = {
         type: 'SET_SHOT_TIMING',
         shotIndex,
         startMs: currentStart,
         endMs: currentEnd,
+        restorePinDuration: {
+          thisShot: priorThisPin,
+          leftNeighbor: priorLeftPin,
+        },
       };
 
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'RESET_SHOT_TIMING': {
+      const { shotIndex } = cmd;
+      if (shotIndex < 0 || shotIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const row = state.doc.rows[shotIndex];
+      // No-op when both fields are already absent (and the inverse
+      // hints — if provided — would write nothing). Forward path:
+      // there's nothing to reset.
+      const isForward = cmd.restoreDurationMs === undefined && cmd.restorePinDuration === undefined;
+      if (isForward && row.duration_override_ms === undefined && row.pin_duration === undefined) {
+        return { next: state, inverse: null };
+      }
+      const priorDuration = row.duration_override_ms;
+      const priorPin = capturePinState(row);
+      const nextRow: typeof row = { ...row };
+      // Apply duration: forward clears; inverse restores explicit value.
+      if (cmd.restoreDurationMs === undefined) {
+        // Forward path or "inverse with no duration to restore": clear.
+        delete (nextRow as { duration_override_ms?: number }).duration_override_ms;
+      } else if (cmd.restoreDurationMs.value === undefined) {
+        delete (nextRow as { duration_override_ms?: number }).duration_override_ms;
+      } else {
+        nextRow.duration_override_ms = cmd.restoreDurationMs.value;
+      }
+      // Apply pin: forward clears; inverse restores prior value.
+      if (cmd.restorePinDuration === undefined) {
+        // Forward path or inverse with no pin to restore.
+        delete (nextRow as { pin_duration?: boolean }).pin_duration;
+      } else {
+        applyPinDirective(nextRow, cmd.restorePinDuration);
+      }
+      // Stamp edit so the auto-pipeline regen path knows this row
+      // was user-touched (mirrors RESIZE_SHOT's edited_at stamp).
+      nextRow.edited_at = stampEditedAt(row.edited_at, 'duration');
+      const nextRows = state.doc.rows.slice();
+      nextRows[shotIndex] = nextRow;
+      const inverse: EditorCommand = {
+        type: 'RESET_SHOT_TIMING',
+        shotIndex,
+        restoreDurationMs: { value: priorDuration },
+        restorePinDuration: priorPin,
+      };
       return {
         next: {
           ...state,
@@ -887,11 +1020,16 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         return { next: state, inverse: null };
       }
       const splitStamp = stampEditedAt(row.edited_at, 'structure');
+      const priorPin = capturePinState(row);
       const firstHalf = { ...row, duration_override_ms: firstHalfMs, edited_at: splitStamp };
       // Structural clone with shifted-out duration. Same visual
       // content; the user diverges fields after the split if they
       // want. Both halves carry the same per-category stamp.
+      // Both halves get pin_duration: true — splitting is an
+      // explicit user duration intent.
       const secondHalf = { ...row, duration_override_ms: secondHalfMs, edited_at: splitStamp };
+      applyPinDirective(firstHalf, undefined); // forward: pin = true
+      applyPinDirective(secondHalf, undefined);
       const nextRows = [
         ...state.doc.rows.slice(0, shotIndex),
         firstHalf,
@@ -902,6 +1040,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         type: 'MERGE_ADJACENT_SHOTS',
         shotIndex,
         restoredDurationOverrideMs: row.duration_override_ms ?? null,
+        restorePinDuration: priorPin,
       };
       return {
         next: {
@@ -1105,6 +1244,28 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           delete mutable[key as string];
         } else {
           mutable[key as string] = newValue;
+        }
+      }
+      // 2026-05-23 pin-duration architecture: PATCH_ROW dispatches
+      // that touch `duration_override_ms` must also adjust
+      // `pin_duration`. A number value sets pin=true (user-intended
+      // duration); undefined (clearing the override) clears the pin
+      // too. The inverse captures the prior pin so undo restores it.
+      // Skipped when the caller has explicitly included pin_duration
+      // in the patch — they're in control.
+      if ('duration_override_ms' in patch && !('pin_duration' in patch)) {
+        const priorPin = row.pin_duration;
+        const newPin =
+          patch.duration_override_ms !== undefined ? true : undefined;
+        if (priorPin !== newPin) {
+          anyChange = true;
+          (inversePatch as Record<string, unknown>).pin_duration = priorPin;
+          const mutable = nextRow as unknown as Record<string, unknown>;
+          if (newPin === undefined) {
+            delete mutable.pin_duration;
+          } else {
+            mutable.pin_duration = newPin;
+          }
         }
       }
       if (!anyChange) {
@@ -2002,15 +2163,23 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       }
 
       // Build the new blank row + apply optional neighbor mutation.
+      // The carved neighbor gets pin_duration: true — the user's
+      // insert intent extends to the row whose duration we just
+      // changed. Capture its prior pin state for undo.
       const newRow = makeBlankRow(newRowDurationMs);
       const mutatedRows = state.doc.rows.slice();
+      const priorNeighborPin = neighborMutation
+        ? capturePinState(state.doc.rows[neighborMutation.rowIndex])
+        : undefined;
       if (neighborMutation) {
         const n = mutatedRows[neighborMutation.rowIndex];
-        mutatedRows[neighborMutation.rowIndex] = {
+        const updated = {
           ...n,
           duration_override_ms: neighborMutation.nextOverride,
           edited_at: stampEditedAt(n.edited_at, 'duration'),
         };
+        applyPinDirective(updated, undefined); // forward: pin = true
+        mutatedRows[neighborMutation.rowIndex] = updated;
       }
       const nextRows = [
         ...mutatedRows.slice(0, atIndex),
@@ -2040,6 +2209,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
                   ? neighborMutation.rowIndex
                   : neighborMutation.rowIndex + 1,
               value: neighborMutation.priorOverride,
+              restorePin: priorNeighborPin,
             }
           : undefined,
       };
@@ -2082,19 +2252,23 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
 
       const mutatedRows = state.doc.rows.slice();
       if (restoreNeighbor) {
-        const { rowIndex, value } = restoreNeighbor;
+        const { rowIndex, value, restorePin } = restoreNeighbor;
         if (rowIndex >= 0 && rowIndex < mutatedRows.length) {
           const neighbor = mutatedRows[rowIndex];
+          const copy = { ...neighbor };
           if (value === null) {
-            const copy = { ...neighbor };
             delete copy.duration_override_ms;
-            mutatedRows[rowIndex] = copy;
           } else {
-            mutatedRows[rowIndex] = {
-              ...neighbor,
-              duration_override_ms: value,
-            };
+            copy.duration_override_ms = value;
           }
+          // Restore prior pin state (may be undefined ⇒ clear, may
+          // be a boolean). When restorePin is absent the inverse
+          // was built before the pin-duration feature shipped —
+          // leave pin_duration as-is.
+          if (restorePin !== undefined) {
+            applyPinDirective(copy, restorePin);
+          }
+          mutatedRows[rowIndex] = copy;
         }
       }
       const nextRows = [
@@ -2148,7 +2322,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
     }
 
     case 'MERGE_ADJACENT_SHOTS': {
-      const { shotIndex, restoredDurationOverrideMs } = cmd;
+      const { shotIndex, restoredDurationOverrideMs, restorePinDuration } = cmd;
       if (shotIndex < 0 || shotIndex + 1 >= state.doc.rows.length) {
         return { next: state, inverse: null };
       }
@@ -2164,6 +2338,11 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         ...target,
         duration_override_ms: restoredDurationOverrideMs ?? undefined,
       };
+      // Forward-path MERGE: pin the merged row (the user's merge is
+      // an explicit duration intent). Inverse path (undo-of-SPLIT):
+      // restorePinDuration carries the pre-split pin state — apply
+      // it so the original row's shape is restored exactly.
+      applyPinDirective(restored, restorePinDuration);
       const nextRows = [
         ...state.doc.rows.slice(0, shotIndex),
         restored,
@@ -2233,6 +2412,47 @@ export function applyCommand(state: EditorState, cmd: EditorCommand): EditorStat
 }
 
 /**
+ * Apply a pin-state directive to a row. Centralises the "forward
+ * path pins, inverse path restores" semantics used by every reducer
+ * command that writes `duration_override_ms`.
+ *
+ *   - `directive === undefined` ⇒ forward path. Set `pin_duration = true`.
+ *   - `directive.value === undefined` ⇒ inverse path. Clear the field
+ *     (delete the property so the row's shape matches its pre-edit
+ *     form exactly — distinguishes "absent" from "explicit false").
+ *   - `directive.value === boolean` ⇒ inverse path. Write that value.
+ *
+ * Mutates `row` IN PLACE — caller must have already cloned the row.
+ * Returns nothing.
+ *
+ * See `_plans/2026-05-23-editor-pin-duration-architecture.md`.
+ */
+function applyPinDirective(
+  row: ProductionDoc['rows'][number],
+  directive: { value: boolean | undefined } | undefined,
+): void {
+  if (directive === undefined) {
+    row.pin_duration = true;
+    return;
+  }
+  if (directive.value === undefined) {
+    delete (row as { pin_duration?: boolean }).pin_duration;
+    return;
+  }
+  row.pin_duration = directive.value;
+}
+
+/**
+ * Capture a row's current pin state for an inverse command. Mirrors
+ * `applyPinDirective`'s shape so the round-trip is symmetric.
+ */
+function capturePinState(
+  row: ProductionDoc['rows'][number],
+): { value: boolean | undefined } {
+  return { value: row.pin_duration };
+}
+
+/**
  * Build a fresh blank-content row for INSERT_BLANK_SHOT. Mirrors the
  * field set DELETE_SHOT 'blank' mode produces (`visual_type: 'blank'`,
  * empty string fields) so downstream renderer code and auto-pipeline
@@ -2251,6 +2471,11 @@ function makeBlankRow(durationMs: number): ProductionDoc['rows'][number] {
     on_screen_text: '',
     notes: '',
     duration_override_ms: durationMs,
+    // User explicitly created this scene with a chosen duration —
+    // pin it so alignment doesn't silently swallow the blank slot
+    // into an adjacent narrated row's word boundaries.
+    // 2026-05-23 pin-duration architecture.
+    pin_duration: true,
     edited_at: stampEditedAt(undefined, 'structure'),
   };
 }

@@ -596,6 +596,63 @@ describe('INSERT_BLANK_SHOT — clamping limits', () => {
   });
 });
 
+// ─── pin_duration (2026-05-23 architecture) ──────────────────────
+
+describe('INSERT_BLANK_SHOT — pin_duration', () => {
+  it('newly inserted blank row has pin_duration: true', () => {
+    const state = makeState({ rows: [row(), row()] });
+    const next = applyCommand(state, {
+      type: 'INSERT_BLANK_SHOT',
+      atIndex: 1,
+      mode: 'shift',
+      durationMs: 2000,
+    });
+    expect(next.doc.rows[1].pin_duration).toBe(true);
+  });
+
+  it('carve mode pins BOTH the new row AND the carved neighbor', () => {
+    const state = makeState({
+      rows: [
+        row({ duration_override_ms: 6000 }),
+        row({ duration_override_ms: 6000 }),
+      ],
+    });
+    const next = applyCommand(state, {
+      type: 'INSERT_BLANK_SHOT',
+      atIndex: 1,
+      mode: 'carve',
+      durationMs: 2000,
+      carveFrom: 'right',
+    });
+    // New blank row at index 1 — pinned.
+    expect(next.doc.rows[1].pin_duration).toBe(true);
+    // Carved right neighbor (now at index 2) — also pinned.
+    expect(next.doc.rows[2].pin_duration).toBe(true);
+    // Left neighbor untouched — still unpinned.
+    expect(next.doc.rows[0].pin_duration).toBeUndefined();
+  });
+
+  it('undo restores the carved neighbor’s prior pin state exactly', () => {
+    const state = makeState({
+      rows: [
+        row({ duration_override_ms: 6000 }),
+        row({ duration_override_ms: 6000 }),
+      ],
+    });
+    const inserted = applyCommand(state, {
+      type: 'INSERT_BLANK_SHOT',
+      atIndex: 1,
+      mode: 'carve',
+      durationMs: 2000,
+      carveFrom: 'right',
+    });
+    expect(inserted.doc.rows[2].pin_duration).toBe(true);
+    const undone = applyCommand(inserted, { type: 'UNDO' });
+    // Neighbor's pin reverts to absent (its pre-carve state).
+    expect(undone.doc.rows[1].pin_duration).toBeUndefined();
+  });
+});
+
 // ─── REMOVE_INSERTED_SHOT direct dispatch ────────────────────────
 
 describe('REMOVE_INSERTED_SHOT — direct dispatch safety', () => {
