@@ -339,6 +339,27 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               status: res.status,
               detail: detail.slice(0, 200),
             });
+            // 2026-05-24: SURFACE the failure to the user. Silent
+            // console.warn meant uploaded images were vanishing on
+            // refresh without anyone noticing — data loss. Toast
+            // tells the user the write didn't land so they know to
+            // retry / report instead of assuming it worked.
+            const friendlyReason =
+              res.status === 413
+                ? 'Project is too large to add another image. Delete some shots first.'
+                : res.status === 429
+                  ? 'Too many uploads in a short window — try again in a minute.'
+                  : res.status === 404
+                    ? 'Project not found on the server (was it deleted in another tab?).'
+                    : res.status >= 500
+                      ? 'Server error while saving — try again, or refresh.'
+                      : `Couldn't save (HTTP ${res.status}).`;
+            const slotLabel =
+              slot === 'image' ? 'image' : slot === 'overlay' ? 'overlay' : 'clip';
+            toast.error(
+              `Shot ${rowIndex + 1} ${slotLabel} not saved — ${friendlyReason}`,
+              { duration: 8000 },
+            );
             return;
           }
           const data = (await res.json().catch(() => ({}))) as { version?: number };
@@ -355,6 +376,12 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             slot,
             detail: err instanceof Error ? err.message : String(err),
           });
+          const slotLabel =
+            slot === 'image' ? 'image' : slot === 'overlay' ? 'overlay' : 'clip';
+          toast.error(
+            `Shot ${rowIndex + 1} ${slotLabel} not saved — network error. Check your connection and try again.`,
+            { duration: 8000 },
+          );
         }
       })();
     },
