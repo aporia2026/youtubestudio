@@ -55,6 +55,13 @@ const KEY_SHOW_EDIT_PRICES = 'editor.imageEdit.showPrices';
 const KEY_SHOW_NARRATION_STRIP = 'editor.narration.showStrip';
 const KEY_NARRATION_FONT_SIZE = 'editor.narration.fontSize';
 const KEY_CLICK_SHOT_TO_SEEK = 'editor.playback.clickShotToSeek';
+// 2026-05-23 Phase 4 — timeline minimap. Three keys covering whether
+// to render the strip at all, whether to wrap to two rows on long
+// projects, and the minute-threshold that triggers the wrap. See
+// `_plans/2026-05-23-editor-timeline-and-shots-ux-overhaul.md` §12.
+const KEY_SHOW_MINIMAP = 'editor.timeline.showMinimap';
+const KEY_MINIMAP_WRAP_ENABLED = 'editor.timeline.minimapWrapEnabled';
+const KEY_MINIMAP_WRAP_THRESHOLD_MIN = 'editor.timeline.minimapWrapThresholdMinutes';
 
 const DEFAULT_ZOOM_LEVEL = 5;
 const DEFAULT_SHOW_THUMBNAILS = true;
@@ -68,6 +75,9 @@ const DEFAULT_PREVIEW_FIT_MODE: PreviewFitMode = 'contain';
 const DEFAULT_SHOW_NARRATION_STRIP = true;
 const DEFAULT_NARRATION_FONT_SIZE = 14;
 const DEFAULT_CLICK_SHOT_TO_SEEK = true;
+const DEFAULT_SHOW_MINIMAP = true;
+const DEFAULT_MINIMAP_WRAP_ENABLED = true;
+const DEFAULT_MINIMAP_WRAP_THRESHOLD_MIN = 5;
 
 // ─── Enumerated value types ─────────────────────────────────────
 
@@ -314,6 +324,47 @@ export function setClickShotToSeek(on: boolean): void {
   safeWrite(KEY_CLICK_SHOT_TO_SEEK, on ? '1' : '0');
 }
 
+// ─── Timeline minimap ────────────────────────────────────────────
+
+export function getShowMinimap(): boolean {
+  const raw = safeRead(KEY_SHOW_MINIMAP);
+  if (raw === null) return DEFAULT_SHOW_MINIMAP;
+  return raw === '1' || raw === 'true';
+}
+
+export function setShowMinimap(on: boolean): void {
+  safeWrite(KEY_SHOW_MINIMAP, on ? '1' : '0');
+}
+
+export function getMinimapWrapEnabled(): boolean {
+  const raw = safeRead(KEY_MINIMAP_WRAP_ENABLED);
+  if (raw === null) return DEFAULT_MINIMAP_WRAP_ENABLED;
+  return raw === '1' || raw === 'true';
+}
+
+export function setMinimapWrapEnabled(on: boolean): void {
+  safeWrite(KEY_MINIMAP_WRAP_ENABLED, on ? '1' : '0');
+}
+
+/** Clamp to a sane minute range. 1 minute is the lowest project size
+ *  where wrapping has any benefit; 60 minutes is the upper bound — past
+ *  that the wrap doesn't help either because individual blocks become
+ *  pixel-thin again on each row. */
+function clampMinimapWrapMinutes(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_MINIMAP_WRAP_THRESHOLD_MIN;
+  return Math.max(1, Math.min(60, Math.round(n)));
+}
+
+export function getMinimapWrapThresholdMinutes(): number {
+  const raw = safeRead(KEY_MINIMAP_WRAP_THRESHOLD_MIN);
+  if (raw === null) return DEFAULT_MINIMAP_WRAP_THRESHOLD_MIN;
+  return clampMinimapWrapMinutes(Number.parseInt(raw, 10));
+}
+
+export function setMinimapWrapThresholdMinutes(min: number): void {
+  safeWrite(KEY_MINIMAP_WRAP_THRESHOLD_MIN, String(clampMinimapWrapMinutes(min)));
+}
+
 // ─── Test-only export ─────────────────────────────────────────────
 
 export const __testing = {
@@ -342,9 +393,15 @@ export const __testing = {
   KEY_SHOW_NARRATION_STRIP,
   KEY_NARRATION_FONT_SIZE,
   KEY_CLICK_SHOT_TO_SEEK,
+  KEY_SHOW_MINIMAP,
+  KEY_MINIMAP_WRAP_ENABLED,
+  KEY_MINIMAP_WRAP_THRESHOLD_MIN,
   DEFAULT_SHOW_NARRATION_STRIP,
   DEFAULT_NARRATION_FONT_SIZE,
   DEFAULT_CLICK_SHOT_TO_SEEK,
+  DEFAULT_SHOW_MINIMAP,
+  DEFAULT_MINIMAP_WRAP_ENABLED,
+  DEFAULT_MINIMAP_WRAP_THRESHOLD_MIN,
   LEFT_RAIL_TABS,
   PLAYBACK_RATES,
   PREVIEW_FIT_MODES,

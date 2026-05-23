@@ -32,6 +32,7 @@ import { TimelineRuler } from './TimelineRuler';
 import { AudioLane } from './AudioLane';
 import { CaptionsLane } from './CaptionsLane';
 import { OverlaysLane } from './OverlaysLane';
+import { TimelineMinimap } from './TimelineMinimap';
 import { ZoomIn, ZoomOut } from 'lucide-react';
 
 /** Per-lane heights — defaults match the plan's 48 px tracks. The
@@ -123,6 +124,16 @@ interface TimelineV2Props {
   /** Phase 3: right-click handler for an overlay marker. Fires with
    *  the row index + viewport coords. */
   onOverlayContextMenu?: (shotIndex: number, x: number, y: number) => void;
+  /** Phase 4: render the minimap strip below the lane stack.
+   *  Default true; the editor reads `editor.timeline.showMinimap`
+   *  from the per-device settings and passes the result here. */
+  showMinimap?: boolean;
+  /** Phase 4: wrap the minimap into two rows past the threshold
+   *  minutes. Default true. */
+  minimapWrapEnabled?: boolean;
+  /** Phase 4: minute threshold past which the minimap wraps to two
+   *  rows. Default 5. */
+  minimapWrapThresholdMinutes?: number;
 }
 
 export function TimelineV2({
@@ -159,6 +170,9 @@ export function TimelineV2({
   onAudioContextMenu,
   onCaptionContextMenu,
   onOverlayContextMenu,
+  showMinimap = true,
+  minimapWrapEnabled = true,
+  minimapWrapThresholdMinutes = 5,
 }: TimelineV2Props): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -394,6 +408,26 @@ export function TimelineV2({
           />
         </div>
       </div>
+
+      {/* Minimap — Phase 4. Sits below the entire lane stack (and
+          below the scroll container's horizontal scrollbar) so the
+          user always has a project-wide overview without giving up
+          any track height. Shares the scrollRef so the viewport
+          rectangle tracks `scrollLeft` live + drag-to-pan writes
+          back to the same element. Suppressed when the user
+          disables it in settings. */}
+      {showMinimap && (
+        <TimelineMinimap
+          shots={config.shots}
+          totalDurationMs={totalDurationMs}
+          selection={selection}
+          hasAudio={Boolean(voiceoverUrl)}
+          scrollRef={scrollRef}
+          pixelsPerSecond={pixelsPerSecond}
+          wrapEnabled={minimapWrapEnabled}
+          wrapThresholdMinutes={minimapWrapThresholdMinutes}
+        />
+      )}
     </div>
   );
 }

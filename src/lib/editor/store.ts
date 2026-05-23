@@ -195,6 +195,18 @@ export type EditorCommand =
    *  text so undo restores it. No-op when the new text matches the
    *  prior text. */
   | { type: 'UPDATE_CAPTION_SEGMENT'; segmentIndex: number; text: string }
+  /** Re-align a caption segment's [start, end) timing in seconds.
+   *  Used by the captions context menu's "Re-align from playhead"
+   *  action, which shifts the segment's start to the current
+   *  playhead and keeps its duration. Self-inverse — the inverse
+   *  carries the prior `start` / `end` values. No-op when both
+   *  values match the current segment. */
+  | {
+      type: 'SET_CAPTION_SEGMENT_TIMING';
+      segmentIndex: number;
+      startSeconds: number;
+      endSeconds: number;
+    }
   /** Swap the project's voiceover URL. Used by the editor's
    *  voiceover picker (auto-match + manual select). Inverse stores
    *  the prior URL so undo restores it. Pass `null` / empty string
@@ -231,6 +243,13 @@ export type EditorCommand =
   // building an undo entry.
   | { type: 'MERGE_ADJACENT_SHOTS'; shotIndex: number; restoredDurationOverrideMs: number | null }
   | { type: 'DELETE_SHOT'; shotIndex: number; mode: 'ripple' | 'blank' }
+  /** Insert a clone of the row at `shotIndex` into position
+   *  `shotIndex + 1`. The clone inherits everything (script,
+   *  visuals, duration override, trim, overlay) so the user can
+   *  start from a known-good baseline. Selection moves to the new
+   *  slot. Inverse is a ripple DELETE_SHOT on the new slot. Phase 3
+   *  follow-up — surfaced by the right-click context menu. */
+  | { type: 'DUPLICATE_SHOT'; shotIndex: number }
   // Toggle a shot's `muted` flag. Self-inverse — applying twice
   // returns to the original state, so the inverse is the same
   // command type with the prior value as the new value.
@@ -379,9 +398,11 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'SET_FLAGS':
     case 'SET_ROW_VIDEO_CLIP':
     case 'UPDATE_CAPTION_SEGMENT':
+    case 'SET_CAPTION_SEGMENT_TIMING':
     case 'SET_VOICEOVER_URL':
     case 'PATCH_DOC':
     case 'SET_VISUAL_KIT_OVERRIDE':
+    case 'DUPLICATE_SHOT':
       return true;
     default:
       return false;
@@ -433,18 +454,31 @@ function reindexRowImages(
   atIndex: number,
   delta: 1 | -1,
 ): Record<number, string> {
-  const out: Record<number, string> = {};
-  for (const [keyStr, url] of Object.entries(rowImages)) {
+  return reindexRecord(rowImages, atIndex, delta);
+}
+
+/** Generic version of reindexRowImages — shifts numeric-keyed map
+ *  entries when a row is inserted (`delta === 1`) or removed
+ *  (`delta === -1`) at `atIndex`. Used by DUPLICATE_SHOT to keep
+ *  rowOverlays + rowVideoClips attached to the right rows after
+ *  the splice. */
+function reindexRecord<V>(
+  record: Record<number, V>,
+  atIndex: number,
+  delta: 1 | -1,
+): Record<number, V> {
+  const out: Record<number, V> = {};
+  for (const [keyStr, value] of Object.entries(record)) {
     const key = Number(keyStr);
     if (!Number.isFinite(key)) continue;
     if (delta === 1) {
       // Insert at atIndex: keys >= atIndex shift up by 1.
-      out[key >= atIndex ? key + 1 : key] = url;
+      out[key >= atIndex ? key + 1 : key] = value;
     } else {
       // Remove at atIndex: drop the deleted key; keys > atIndex
       // shift down by 1.
       if (key === atIndex) continue;
-      out[key > atIndex ? key - 1 : key] = url;
+      out[key > atIndex ? key - 1 : key] = value;
     }
   }
   return out;
@@ -1179,6 +1213,57 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       };
     }
 
+    case 'SET_CAPTION_SEGMENT_TIMING': {
+      const { segmentIndex, startSeconds, endSeconds } = cmd;
+      if (
+        !state.captions ||
+        segmentIndex < 0 ||
+        segmentIndex >= state.captions.segments.length
+      ) {
+        return { next: state, inverse: null };
+      }
+      // Reject negative / zero-duration / inverted ranges. The
+      // caller is responsible for computing a sane (start, end);
+      // the reducer just refuses to corrupt the segment.
+      if (
+        !Number.isFinite(startSeconds) ||
+        !Number.isFinite(endSeconds) ||
+        startSeconds < 0 ||
+        endSeconds <= startSeconds
+      ) {
+        console.warn('[editor store] caption-timing rejected', {
+          segmentIndex,
+          startSeconds,
+          endSeconds,
+        });
+        return { next: state, inverse: null };
+      }
+      const prev = state.captions.segments[segmentIndex];
+      if (prev.start === startSeconds && prev.end === endSeconds) {
+        return { next: state, inverse: null };
+      }
+      const nextSegments = state.captions.segments.slice();
+      nextSegments[segmentIndex] = {
+        ...prev,
+        start: startSeconds,
+        end: endSeconds,
+      };
+      const nextCaptions: CaptionsBundle = {
+        ...state.captions,
+        segments: nextSegments,
+      };
+      const inverse: EditorCommand = {
+        type: 'SET_CAPTION_SEGMENT_TIMING',
+        segmentIndex,
+        startSeconds: prev.start,
+        endSeconds: prev.end,
+      };
+      return {
+        next: { ...state, captions: nextCaptions, isDirty: true },
+        inverse,
+      };
+    }
+
     case 'SET_FLAGS': {
       // Doc-level flag toggle (animateScenes / suppressLowerThirds /
       // overlaysDisabled / rowLockedAsStill). Merges the partial into
@@ -1547,6 +1632,61 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           rowImages: nextImages,
           isDirty: true,
           selection: atIndex,
+        },
+        inverse,
+      };
+    }
+
+    case 'DUPLICATE_SHOT': {
+      const { shotIndex } = cmd;
+      if (shotIndex < 0 || shotIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const sourceRow = state.doc.rows[shotIndex];
+      // Stamp edited_at so downstream observers (auto-pipeline,
+      // analytics) see this as a fresh row, not the same source
+      // row at a new index. Same pattern DELETE_SHOT 'blank' uses.
+      const clonedRow: ProductionDoc['rows'][number] = {
+        ...sourceRow,
+        edited_at: stampEditedAt(sourceRow.edited_at, 'structure'),
+      };
+      const insertAtIndex = shotIndex + 1;
+      const nextRows = [
+        ...state.doc.rows.slice(0, insertAtIndex),
+        clonedRow,
+        ...state.doc.rows.slice(insertAtIndex),
+      ];
+      // Reindex every rowImages key ≥ insertAtIndex up by one, then
+      // copy the source row's image (if any) into the new slot so
+      // the clone shows the same visual until the user regenerates.
+      let nextImages = reindexRowImages(state.rowImages, insertAtIndex, 1);
+      const sourceImageUrl = state.rowImages[shotIndex];
+      if (sourceImageUrl) {
+        nextImages = { ...nextImages, [insertAtIndex]: sourceImageUrl };
+      }
+      // Same reindex for rowOverlays + rowVideoClips so per-row
+      // state stays attached to the right rows after the splice.
+      // We deliberately do NOT copy overlay / clip state into the
+      // new slot — those are heavyweight per-row computed artifacts
+      // that should regenerate against the cloned prompt rather
+      // than be aliased to the source row's outputs.
+      const nextOverlays = reindexRecord(state.rowOverlays, insertAtIndex, 1);
+      const nextVideoClips = reindexRecord(state.rowVideoClips, insertAtIndex, 1);
+      const inverse: EditorCommand = {
+        type: 'DELETE_SHOT',
+        shotIndex: insertAtIndex,
+        mode: 'ripple',
+      };
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          rowImages: nextImages,
+          rowOverlays: nextOverlays,
+          rowVideoClips: nextVideoClips,
+          // Select the clone so the user can start tweaking it.
+          selection: insertAtIndex,
+          isDirty: true,
         },
         inverse,
       };

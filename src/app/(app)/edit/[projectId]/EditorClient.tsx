@@ -100,6 +100,9 @@ import {
   getShowNarrationStrip,
   getNarrationFontSize,
   getClickShotToSeek,
+  getShowMinimap,
+  getMinimapWrapEnabled,
+  getMinimapWrapThresholdMinutes,
 } from '@/lib/editor/settings';
 import { NarrationStrip } from '@/components/editor/NarrationStrip';
 import {
@@ -2817,6 +2820,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         }
         setLaneFocus(kind);
       }}
+      showMinimap={getShowMinimap()}
+      minimapWrapEnabled={getMinimapWrapEnabled()}
+      minimapWrapThresholdMinutes={getMinimapWrapThresholdMinutes()}
       onShotContextMenu={(shotIndex, x, y) => {
         console.info('[editor timeline context-menu] open', { kind: 'shot', shotIndex, x, y });
         setEditorContextMenu({ kind: 'shot', shotIndex, x, y });
@@ -3283,6 +3289,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           const items = buildEditorContextMenuItems({
             menu: editorContextMenu,
             doc: state.doc,
+            captions: state.captions,
             playheadMs: state.playheadMs,
             splitTarget,
             apply,
@@ -3341,6 +3348,7 @@ function buildEditorContextMenuItems(args: {
     | { kind: 'audio'; x: number; y: number }
     | { kind: 'caption'; segmentIndex: number; x: number; y: number };
   doc: ProductionDoc;
+  captions: { segments: { start: number; end: number; text: string }[] } | undefined;
   playheadMs: number;
   splitTarget: { shotIndex: number; splitAtMs: number; validSplit: boolean } | null;
   apply: (cmd: EditorCommand) => void;
@@ -3357,6 +3365,7 @@ function buildEditorContextMenuItems(args: {
   const {
     menu,
     doc,
+    captions,
     playheadMs,
     splitTarget,
     apply,
@@ -3451,6 +3460,12 @@ function buildEditorContextMenuItems(args: {
             }),
           title: 'Toggle the cross-fade transition into this shot',
         },
+        {
+          label: 'Duplicate shot',
+          onClick: () => apply({ type: 'DUPLICATE_SHOT', shotIndex: i }),
+          title:
+            'Insert a copy of this shot right after it. The clone inherits script + visual + duration and gets selected so you can tweak it.',
+        },
         ...(menu.kind === 'shot' && hasTrim
           ? [
               {
@@ -3526,12 +3541,19 @@ function buildEditorContextMenuItems(args: {
     }
 
     case 'caption': {
-      // We don't have a "delete caption segment" command — clearing
-      // the text via UPDATE_CAPTION_SEGMENT is the safe equivalent
-      // (the renderer skips empty segments). "Edit text" is left as
-      // a hint pointing the user back to the captions lane's
-      // double-click editor; wiring a separate inline editor here
-      // would duplicate that flow. Phase 3 keeps captions minimal.
+      // "Edit text" is a hint pointing the user back to the
+      // captions lane's double-click editor; wiring a separate
+      // inline editor here would duplicate that flow.
+      // "Re-align from playhead" shifts the segment so its start
+      // lands at the current playhead time, preserving its duration
+      // — useful when the user has scrubbed to the exact moment a
+      // line is spoken and wants the caption to track from there.
+      const seg = captions?.segments?.[menu.segmentIndex];
+      const playheadSeconds = playheadMs / 1000;
+      const canRealign =
+        seg !== undefined &&
+        playheadSeconds >= 0 &&
+        Math.abs(playheadSeconds - seg.start) > 0.05; // ignore < 50 ms drift
       return [
         {
           label: 'Edit text (double-click pill)',
@@ -3542,6 +3564,25 @@ function buildEditorContextMenuItems(args: {
           },
           disabled: true,
           title: 'Captions lane: double-click the pill to edit inline',
+        },
+        {
+          label: 'Re-align from playhead',
+          onClick: () => {
+            if (!seg) return;
+            const duration = seg.end - seg.start;
+            const nextStart = playheadSeconds;
+            const nextEnd = nextStart + duration;
+            apply({
+              type: 'SET_CAPTION_SEGMENT_TIMING',
+              segmentIndex: menu.segmentIndex,
+              startSeconds: nextStart,
+              endSeconds: nextEnd,
+            });
+          },
+          disabled: !canRealign,
+          title: canRealign
+            ? `Shift this segment so it starts at ${playheadSeconds.toFixed(2)}s (keeps the duration)`
+            : 'Move the playhead off the segment\'s start to enable re-align',
         },
         {
           label: 'Clear segment text',
