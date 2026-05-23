@@ -286,6 +286,16 @@ export interface VideoConfig {
   shots: VideoShot[];
   /** Voiceover audio URL (Vercel Blob public URL) */
   voiceoverUrl?: string;
+  /** Mute voiceover at render time (composition outputs zero gain).
+   *  Forwarded from `ProductionDoc.voiceover_muted`. Default false. */
+  voiceoverMuted?: boolean;
+  /** Voiceover gain in decibels. Clamped to [-60, +12]. Default 0
+   *  (unity). Forwarded from `ProductionDoc.voiceover_volume_db`. */
+  voiceoverVolumeDb?: number;
+  /** Voiceover fade-in duration in ms. Default 0. */
+  voiceoverFadeInMs?: number;
+  /** Voiceover fade-out duration in ms. Default 0. */
+  voiceoverFadeOutMs?: number;
   /** Background music URL */
   musicUrl?: string;
   /** Music volume (0–1), defaults to 0.15 */

@@ -22,7 +22,7 @@ import {
   ThumbnailRegion,
   ThumbnailTransitionConfig,
 } from '../types';
-import { msToFrame } from '../utils';
+import { dbToLinearGain, msToFrame } from '../utils';
 
 export interface YouTubeVideoProps {
   config: VideoConfig;
@@ -60,6 +60,49 @@ function findRegion(
   // Defend against an older doc whose JSON predates the regions field.
   const regions = config.thumbnail.regions ?? [];
   return regions.find(r => r.id === id) ?? null;
+}
+
+/** Build the per-frame volume function for the voiceover `<Audio>`. The
+ *  returned shape is what Remotion's `<Audio volume={…}>` expects: either
+ *  a constant scalar or `(frame) => number`. We return a constant when no
+ *  fades are configured (common case) so the renderer can skip per-frame
+ *  evaluation. Otherwise we return a function that ramps gain linearly
+ *  through the fade-in / fade-out windows.
+ *
+ *  Project duration (used to anchor the fade-out window) is the max of
+ *  every shot's end frame — no separate field carries it. */
+function makeVoiceoverVolume(
+  config: VideoConfig,
+  fps: number,
+): number | ((frame: number) => number) {
+  if (config.voiceoverMuted) return 0;
+  const targetGain = dbToLinearGain(config.voiceoverVolumeDb ?? 0);
+  const fadeInMs = Math.max(0, config.voiceoverFadeInMs ?? 0);
+  const fadeOutMs = Math.max(0, config.voiceoverFadeOutMs ?? 0);
+  if (fadeInMs === 0 && fadeOutMs === 0) return targetGain;
+
+  const fadeInFrames = msToFrame(fadeInMs, fps);
+  const fadeOutFrames = msToFrame(fadeOutMs, fps);
+  // Total project duration in frames — end of the last shot wins. Empty
+  // shot list (defensive) treats the project as zero-length, so the
+  // fade-out window collapses and only the fade-in (if any) applies.
+  const totalFrames = config.shots.reduce(
+    (acc, s) => Math.max(acc, msToFrame(s.startMs + s.durationMs, fps)),
+    0,
+  );
+  const fadeOutStartFrame = Math.max(0, totalFrames - fadeOutFrames);
+
+  return (frame: number): number => {
+    let gain = targetGain;
+    if (fadeInFrames > 0 && frame < fadeInFrames) {
+      gain *= frame / fadeInFrames;
+    }
+    if (fadeOutFrames > 0 && frame > fadeOutStartFrame) {
+      const remaining = totalFrames - frame;
+      gain *= Math.max(0, remaining) / fadeOutFrames;
+    }
+    return Math.max(0, gain);
+  };
 }
 
 /**
@@ -118,9 +161,18 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
        *  jump" at scene boundaries even though the timeline never seeks.
        *  Enabling pauseWhenBuffering tells Remotion to halt the whole
        *  player when buffering is in flight, so audio + frame advance
-       *  resume together. No effect during server-side export. */}
+       *  resume together. No effect during server-side export.
+       *
+       *  Volume function applies, in order: mute → 0 short-circuit;
+       *  otherwise target gain = `dbToLinearGain(volumeDb)`; fade-in
+       *  ramps 0 → target over the first `fadeInMs`; fade-out ramps
+       *  target → 0 over the last `fadeOutMs` of the project. */}
       {config.voiceoverUrl && (
-        <Audio src={config.voiceoverUrl} volume={1} pauseWhenBuffering />
+        <Audio
+          src={config.voiceoverUrl}
+          volume={makeVoiceoverVolume(config, fps)}
+          pauseWhenBuffering
+        />
       )}
 
       {/* Background music — ducked under voiceover. Same buffering

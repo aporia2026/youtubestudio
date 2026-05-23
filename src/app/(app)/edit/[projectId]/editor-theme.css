@@ -266,3 +266,24 @@
   background: rgba(255, 255, 255, 0.18);
   background-clip: padding-box;
 }
+
+/* Timeline variant — the horizontal track scrollbar at the bottom of
+   the editor's lane stack. The default 10px rail is too thin to grab
+   reliably (per the editor UX overhaul plan, §Phase 4). This variant
+   bumps the horizontal scrollbar to 14px with a higher-contrast thumb
+   so the user can see + drag it on first try. The vertical scrollbar
+   on the same element keeps the default thinner look — the timeline
+   only scrolls horizontally in practice. */
+.editor-scroll--timeline::-webkit-scrollbar:horizontal {
+  height: 14px;
+}
+.editor-scroll--timeline::-webkit-scrollbar-thumb:horizontal {
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.editor-scroll--timeline::-webkit-scrollbar-thumb:horizontal:hover {
+  background: rgba(255, 255, 255, 0.34);
+  background-clip: padding-box;
+}

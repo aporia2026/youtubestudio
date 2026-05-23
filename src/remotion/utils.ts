@@ -105,6 +105,36 @@ export function clampSceneTiming(n: number, bounds: { min: number; max: number }
   return Math.min(bounds.max, Math.max(bounds.min, Math.round(n)));
 }
 
+// ─── Voiceover gain / fade clamping ───────────────────────────────────────────
+
+/** Hard limits on the doc-level voiceover gain knob. -60 dB is practical
+ *  silence; +12 dB is the most we'll allow without forcing the user
+ *  through a "are you sure" prompt to avoid clipping. */
+export const VOICEOVER_VOLUME_DB_MIN = -60;
+export const VOICEOVER_VOLUME_DB_MAX = 12;
+
+/** Hard cap on voiceover fade-in / fade-out durations. 10 s is the
+ *  longest fade that makes editorial sense for a tutorial / explainer
+ *  voiceover; longer values typically indicate a typo. */
+export const VOICEOVER_FADE_MS_MAX = 10_000;
+
+export function clampVolumeDb(value: number | undefined): number {
+  if (value == null || !Number.isFinite(value)) return 0;
+  return Math.min(VOICEOVER_VOLUME_DB_MAX, Math.max(VOICEOVER_VOLUME_DB_MIN, value));
+}
+
+export function clampFadeMs(value: number | undefined): number {
+  if (value == null || !Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(VOICEOVER_FADE_MS_MAX, Math.round(value));
+}
+
+/** Convert decibels to a linear gain multiplier for `<Audio>` volume.
+ *  Standard formula: `gain = 10 ^ (dB / 20)`. The Remotion `<Audio>`
+ *  element expects a linear multiplier in `[0, ∞)`. */
+export function dbToLinearGain(db: number): number {
+  return Math.pow(10, db / 20);
+}
+
 // ─── On-screen-text mode resolution ────────────────────────────────────────────
 
 /** Result of resolving a row's OST rendering against the doc default.
@@ -574,6 +604,26 @@ export interface ProductionDoc {
    *  row `skip_overlay` overrides this in either direction. Undefined
    *  on legacy docs ⇒ historical behaviour (overlays auto-fetch). */
   overlays_disabled?: boolean;
+  /** Doc-level voiceover mute. When `true`, the renderer outputs the
+   *  voiceover at zero gain (the `<Audio>` element still mounts so
+   *  buffering / timeline alignment stay identical — only the volume
+   *  is dropped). Undefined ⇒ historical behaviour (audible). See
+   *  `_plans/2026-05-23-editor-timeline-and-shots-ux-overhaul.md`. */
+  voiceover_muted?: boolean;
+  /** Doc-level voiceover gain in decibels relative to source. Range
+   *  clamped to [-60, +12] before use. `0` is unity gain (default).
+   *  Negative values reduce; positive values amplify (be careful past
+   *  +6 — most VOs already sit close to peak). Undefined ⇒ unity. */
+  voiceover_volume_db?: number;
+  /** Doc-level voiceover fade-in duration in ms. The renderer ramps
+   *  gain from 0 → target gain over this window starting at t=0.
+   *  Default 0 (no fade). Capped at 10s by the editor UI. */
+  voiceover_fade_in_ms?: number;
+  /** Doc-level voiceover fade-out duration in ms. The renderer ramps
+   *  gain from target gain → 0 across the last `fade_out_ms` of the
+   *  voiceover's runtime. Default 0 (no fade). Capped at 10s by the
+   *  editor UI. */
+  voiceover_fade_out_ms?: number;
 }
 
 export interface RowImageState {
@@ -1015,12 +1065,24 @@ export function productionDocToVideoConfig(
     };
   });
 
+  // Voiceover gain knobs — read straight off the doc. The mapper just
+  // copies + clamps; the actual gain math runs inside the Remotion
+  // composition (see YouTubeVideo.tsx) so a static config object is
+  // enough to drive both preview and server render.
+  const voiceoverVolumeDb = clampVolumeDb(doc.voiceover_volume_db);
+  const voiceoverFadeInMs = clampFadeMs(doc.voiceover_fade_in_ms);
+  const voiceoverFadeOutMs = clampFadeMs(doc.voiceover_fade_out_ms);
+
   const config: VideoConfig = {
     fps,
     width: 1920,
     height: 1080,
     shots,
     voiceoverUrl: opts.voiceoverUrl,
+    voiceoverMuted: doc.voiceover_muted === true,
+    voiceoverVolumeDb,
+    voiceoverFadeInMs,
+    voiceoverFadeOutMs,
     musicUrl: opts.musicUrl,
     musicVolume: 0.12,
     brand: { ...DEFAULT_BRAND_KIT, ...opts.brand },

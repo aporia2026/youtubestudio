@@ -248,6 +248,15 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // doesn't expose a setter). Local-only viewing preference. Default
   // comes from the per-device setting (1× unless the user changed it).
   const [playbackRate, setPlaybackRate] = useState<PlaybackRate>(() => getDefaultPlaybackRate());
+  // Which non-shot timeline lane currently owns the inspector. The
+  // inspector tab is computed below as: shot selected ⇒ 'shot',
+  // else falls back to this. Cleared whenever a shot is selected so
+  // the inspector deterministically follows the most recent click.
+  // Tracked in `_plans/2026-05-23-editor-timeline-and-shots-ux-overhaul.md`
+  // Phase 1.
+  const [laneFocus, setLaneFocus] = useState<
+    'audio' | 'captions' | 'overlays' | null
+  >(null);
   const pixelsPerSecond = useMemo(() => zoomLevelToPxPerSecond(zoomLevel), [zoomLevel]);
   const handleZoomDelta = useCallback((delta: number) => {
     setZoomLevel((prev) =>
@@ -2140,11 +2149,18 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // ShotInspector body; the Audio / Captions tabs land here for
   // the first time. The active tab auto-switches based on
   // `inspectorSelectionKind`: a shot tile selection → 'shot', a
-  // timeline audio-lane click (Phase 5) → 'audio', a caption pill
-  // click (Phase 5) → 'captions'. Manual tab clicks override the
-  // auto-switch until the next selection lands.
-  const inspectorSelectionKind: InspectorTabId | null =
-    state.selection !== null ? 'shot' : null;
+  // timeline audio-lane click → 'audio', a caption pill / lane
+  // click → 'captions'. Manual tab clicks override the auto-switch
+  // until the next selection lands. The 'overlays' lane focus
+  // doesn't have a dedicated tab yet — it folds into 'shot' (which
+  // hosts the overlay editor on the selected row); clicking the
+  // overlays lane background simply leaves the current tab as-is.
+  const inspectorSelectionKind: InspectorTabId | null = (() => {
+    if (state.selection !== null) return 'shot';
+    if (laneFocus === 'audio') return 'audio';
+    if (laneFocus === 'captions') return 'captions';
+    return null;
+  })();
 
   const inspectorSlot = (
     <EditorInspector
@@ -2612,6 +2628,14 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               payload.title || state.doc.title,
               state.doc.title,
             ]}
+            voiceoverMuted={state.doc.voiceover_muted === true}
+            voiceoverVolumeDb={state.doc.voiceover_volume_db ?? 0}
+            voiceoverFadeInMs={state.doc.voiceover_fade_in_ms ?? 0}
+            voiceoverFadeOutMs={state.doc.voiceover_fade_out_ms ?? 0}
+            onPatchAudio={(patch) => {
+              console.info('[editor audio-mix] patch', { patch });
+              apply({ type: 'PATCH_DOC', patch });
+            }}
           />
         ),
         captions: (
@@ -2647,7 +2671,10 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       pixelsPerSecond={pixelsPerSecond}
       rowTrims={rowTrims}
       rowTransitions={rowTransitions}
-      onSelect={(shotIndex) => apply({ type: 'SET_SELECTION', shotIndex })}
+      onSelect={(shotIndex) => {
+        setLaneFocus(null);
+        apply({ type: 'SET_SELECTION', shotIndex });
+      }}
       onSeek={seekFromUser}
       onResize={(shotIndex, durationMs) =>
         apply({ type: 'RESIZE_SHOT', shotIndex, durationMs })
@@ -2665,6 +2692,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         apply({ type: 'UPDATE_CAPTION_SEGMENT', segmentIndex, text })
       }
       onOpenOverlayPosition={(shotIndex) => {
+        setLaneFocus(null);
         apply({ type: 'SET_SELECTION', shotIndex });
         setOverlayPositionRow(shotIndex);
       }}
@@ -2674,6 +2702,21 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       onZoomChange={setZoomLevel}
       videoLaneHeight={getVideoLaneHeight()}
       audioLaneHeight={getAudioLaneHeight()}
+      focusedLane={laneFocus}
+      onLaneFocus={(kind) => {
+        console.info('[editor timeline lane-focus]', {
+          kind,
+          prevSelection: state.selection,
+          prevLaneFocus: laneFocus,
+        });
+        // Clicking a non-shot lane always clears the shot selection so
+        // the inspector's auto-tab can switch unambiguously. Without
+        // this the shot tab would stay sticky behind a stale selection.
+        if (state.selection !== null) {
+          apply({ type: 'SET_SELECTION', shotIndex: null });
+        }
+        setLaneFocus(kind);
+      }}
     />
   );
 

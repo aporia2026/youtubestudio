@@ -46,6 +46,18 @@ const CAPTIONS_LANE_HEIGHT = 32;
 const OVERLAYS_LANE_HEIGHT = 28;
 
 const LANE_HEADER_WIDTH = 80;
+/** Visual gap between stacked lanes. The gap shows the parent column
+ *  background so each lane reads as its own "track strip" — same idea
+ *  CapCut / Premiere use. Applied identically to the labels column and
+ *  the tracks column so the rows stay aligned across the divider.
+ *  Tracked in `_plans/2026-05-23-editor-timeline-and-shots-ux-overhaul.md`
+ *  §5A option B. */
+const LANE_GAP_PX = 6;
+
+/** Identifier passed back when the user clicks a non-shot lane (audio
+ *  body, captions body, overlays body). The parent maps this to the
+ *  inspector's auto-tab so the right body opens immediately. */
+export type TimelineLaneKind = 'audio' | 'captions' | 'overlays';
 
 interface TimelineV2Props {
   config: VideoConfig;
@@ -88,6 +100,17 @@ interface TimelineV2Props {
   // canonical defaults when omitted.
   videoLaneHeight?: number;
   audioLaneHeight?: number;
+  /** Which non-shot lane currently owns the inspector. Drives the
+   *  highlight ring on the lane's track strip so the user can see at
+   *  a glance which lane the inspector body refers to. `null` when no
+   *  lane is focused (a shot is selected, or nothing is). */
+  focusedLane?: TimelineLaneKind | null;
+  /** Fires when the user clicks a non-shot lane's background. The
+   *  parent dispatches the matching inspector tab + clears the shot
+   *  selection so the lane's body owns the inspector. `null` means
+   *  "the lane area was clicked but not on a child" — used to
+   *  deselect when the user clicks an empty spot. */
+  onLaneFocus?: (kind: TimelineLaneKind) => void;
 }
 
 export function TimelineV2({
@@ -118,6 +141,8 @@ export function TimelineV2({
   onZoomChange,
   videoLaneHeight = VIDEO_LANE_HEIGHT_DEFAULT,
   audioLaneHeight = AUDIO_LANE_HEIGHT_DEFAULT,
+  focusedLane = null,
+  onLaneFocus,
 }: TimelineV2Props): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -197,7 +222,11 @@ export function TimelineV2({
 
       {/* Lane stack — left-side lane labels, right-side scrolling
           tracks. Both columns are inside the flex so the labels stay
-          visible while the tracks scroll horizontally. */}
+          visible while the tracks scroll horizontally.
+          Each lane is now rendered inside its own "track strip"
+          container with a gap between strips (LANE_GAP_PX) so the
+          rows read as visually distinct rather than fused. The label
+          column applies the same gap to stay aligned. See plan §5A-B. */}
       <div className="flex flex-1" style={{ minHeight: 0 }}>
         {/* Lane labels column ─ fixed, doesn't scroll. */}
         <div
@@ -205,10 +234,30 @@ export function TimelineV2({
           style={{ width: LANE_HEADER_WIDTH, borderRight: '1px solid var(--editor-edge)' }}
         >
           <LaneLabel height={22} label="" />
-          <LaneLabel height={videoLaneHeight} label="Video" tint="purple" />
-          <LaneLabel height={audioLaneHeight} label="Audio" tint="cyan" />
-          <LaneLabel height={CAPTIONS_LANE_HEIGHT} label="Captions" tint="amber" />
-          <LaneLabel height={OVERLAYS_LANE_HEIGHT} label="Overlays" tint="green" />
+          <LaneLabel height={videoLaneHeight} label="Video" tint="purple" gapBelow />
+          <LaneLabel
+            height={audioLaneHeight}
+            label="Audio"
+            tint="cyan"
+            gapBelow
+            focused={focusedLane === 'audio'}
+            onClick={onLaneFocus ? () => onLaneFocus('audio') : undefined}
+          />
+          <LaneLabel
+            height={CAPTIONS_LANE_HEIGHT}
+            label="Captions"
+            tint="amber"
+            gapBelow
+            focused={focusedLane === 'captions'}
+            onClick={onLaneFocus ? () => onLaneFocus('captions') : undefined}
+          />
+          <LaneLabel
+            height={OVERLAYS_LANE_HEIGHT}
+            label="Overlays"
+            tint="green"
+            focused={focusedLane === 'overlays'}
+            onClick={onLaneFocus ? () => onLaneFocus('overlays') : undefined}
+          />
         </div>
 
         {/* Tracks column ─ scrolls horizontally. The playhead overlays
@@ -216,7 +265,7 @@ export function TimelineV2({
         <div className="flex-1 relative overflow-hidden">
           <div
             ref={scrollRef}
-            className="editor-scroll"
+            className="editor-scroll editor-scroll--timeline"
             style={{
               width: '100%',
               height: '100%',
@@ -232,9 +281,11 @@ export function TimelineV2({
               />
               {/* Video lane — reuses the existing Timeline, which
                   brings its drag-resize / drag-reorder / trim
-                  behaviour for free. The wrapper here just sizes
-                  the row; Timeline owns the internal layout. */}
-              <div style={{ height: videoLaneHeight, minWidth: totalWidthPx }}>
+                  behaviour for free. The wrapper here sizes the row
+                  AND owns the rounded "track strip" look (overflow
+                  hidden so the inner Timeline can't bleed past).
+                  Timeline owns the internal layout. */}
+              <LaneStrip height={videoLaneHeight} gapBelow>
                 <Timeline
                   config={config}
                   rowImages={rowImages}
@@ -249,33 +300,53 @@ export function TimelineV2({
                   onTrim={onTrim}
                   onToggleTransition={onToggleTransition}
                 />
-              </div>
-              <AudioLane
-                voiceoverUrl={voiceoverUrl}
-                totalDurationMs={totalDurationMs}
-                pixelsPerSecond={pixelsPerSecond}
+              </LaneStrip>
+              <LaneStrip
                 height={audioLaneHeight}
-                onSeek={onSeek}
-              />
-              <CaptionsLane
-                captions={captions}
-                totalDurationMs={totalDurationMs}
-                pixelsPerSecond={pixelsPerSecond}
+                gapBelow
+                focused={focusedLane === 'audio'}
+                onClickBackground={onLaneFocus ? () => onLaneFocus('audio') : undefined}
+              >
+                <AudioLane
+                  voiceoverUrl={voiceoverUrl}
+                  totalDurationMs={totalDurationMs}
+                  pixelsPerSecond={pixelsPerSecond}
+                  height={audioLaneHeight}
+                  onSeek={onSeek}
+                />
+              </LaneStrip>
+              <LaneStrip
                 height={CAPTIONS_LANE_HEIGHT}
-                playheadMs={playheadMs}
-                onSeek={onSeek}
-                onUpdateSegment={onUpdateCaption}
-              />
-              <OverlaysLane
-                rows={doc.rows}
-                rowStartTimesMs={rowStartTimesMs}
-                rowOverlays={rowOverlays}
-                totalDurationMs={totalDurationMs}
-                pixelsPerSecond={pixelsPerSecond}
+                gapBelow
+                focused={focusedLane === 'captions'}
+                onClickBackground={onLaneFocus ? () => onLaneFocus('captions') : undefined}
+              >
+                <CaptionsLane
+                  captions={captions}
+                  totalDurationMs={totalDurationMs}
+                  pixelsPerSecond={pixelsPerSecond}
+                  height={CAPTIONS_LANE_HEIGHT}
+                  playheadMs={playheadMs}
+                  onSeek={onSeek}
+                  onUpdateSegment={onUpdateCaption}
+                />
+              </LaneStrip>
+              <LaneStrip
                 height={OVERLAYS_LANE_HEIGHT}
-                onSelect={onSelect}
-                onOpenPosition={onOpenOverlayPosition}
-              />
+                focused={focusedLane === 'overlays'}
+                onClickBackground={onLaneFocus ? () => onLaneFocus('overlays') : undefined}
+              >
+                <OverlaysLane
+                  rows={doc.rows}
+                  rowStartTimesMs={rowStartTimesMs}
+                  rowOverlays={rowOverlays}
+                  totalDurationMs={totalDurationMs}
+                  pixelsPerSecond={pixelsPerSecond}
+                  height={OVERLAYS_LANE_HEIGHT}
+                  onSelect={onSelect}
+                  onOpenPosition={onOpenOverlayPosition}
+                />
+              </LaneStrip>
             </div>
           </div>
 
@@ -299,14 +370,27 @@ export function TimelineV2({
   );
 }
 
+/** Left-column lane label. Mirrors the height + tint of its track-side
+ *  counterpart so the rows align across the divider. `gapBelow` adds
+ *  the LANE_GAP_PX margin under this label so the empty-strip gap
+ *  matches the tracks column. `focused` highlights the label when its
+ *  lane currently owns the inspector body. `onClick` (when provided)
+ *  promotes the label to a clickable region — used to focus the lane
+ *  from the label area as well as from the track area. */
 function LaneLabel({
   height,
   label,
   tint,
+  gapBelow = false,
+  focused = false,
+  onClick,
 }: {
   height: number;
   label: string;
   tint?: 'purple' | 'cyan' | 'amber' | 'green';
+  gapBelow?: boolean;
+  focused?: boolean;
+  onClick?: () => void;
 }) {
   const tintBackground = tint
     ? {
@@ -319,14 +403,69 @@ function LaneLabel({
   return (
     <div
       className="flex items-center px-2 text-[10px] uppercase tracking-wider"
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
       style={{
         height,
         background: tintBackground,
-        color: 'var(--fg-muted)',
-        borderBottom: '1px solid var(--editor-edge)',
+        color: focused ? 'var(--editor-accent)' : 'var(--fg-muted)',
+        borderRadius: 4,
+        marginBottom: gapBelow ? LANE_GAP_PX : 0,
+        outline: focused ? '1px solid var(--editor-accent)' : '1px solid transparent',
+        outlineOffset: -1,
+        cursor: onClick ? 'pointer' : undefined,
       }}
+      title={onClick ? `Open ${label.toLowerCase()} inspector` : undefined}
     >
       {label}
+    </div>
+  );
+}
+
+/** Right-column lane wrapper. Owns the rounded-corner / focused-outline
+ *  visuals plus the inter-lane gap. Any click inside the strip routes
+ *  to `onClickBackground` UNLESS a child called stopPropagation — this
+ *  way the user gets the matching inspector tab as soon as they click
+ *  anywhere in the lane, but a child that has its own meaning (e.g.
+ *  a context-menu trigger) can opt out. */
+function LaneStrip({
+  height,
+  gapBelow = false,
+  focused = false,
+  onClickBackground,
+  children,
+}: {
+  height: number;
+  gapBelow?: boolean;
+  focused?: boolean;
+  onClickBackground?: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      onClick={onClickBackground}
+      style={{
+        height,
+        marginBottom: gapBelow ? LANE_GAP_PX : 0,
+        borderRadius: 4,
+        overflow: 'hidden',
+        position: 'relative',
+        outline: focused ? '1px solid var(--editor-accent)' : '1px solid transparent',
+        outlineOffset: -1,
+      }}
+    >
+      {children}
     </div>
   );
 }

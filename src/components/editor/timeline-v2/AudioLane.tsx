@@ -57,10 +57,17 @@ export function AudioLane({
     setError(null);
     setWaveformLoading(true);
 
+    // Wavesurfer renders bars centered vertically; we reserve a small
+    // interior margin so the tallest bars don't press against the
+    // lane's rounded edges (and so the lane reads as "audio inside a
+    // track strip" rather than a flush block).
+    const interiorPadPx = 4;
+    const waveformHeight = Math.max(8, height - interiorPadPx * 2);
+
     const ws = WaveSurfer.create({
       container: containerRef.current,
       url: voiceoverUrl,
-      height,
+      height: waveformHeight,
       // Cool cyan tint for the waveform so the audio lane reads
       // visually distinct from the purple-accent video tiles.
       waveColor: 'rgba(34, 211, 238, 0.55)',
@@ -106,7 +113,9 @@ export function AudioLane({
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const ms = Math.max(0, Math.round((x / pixelsPerSecond) * 1000));
-    onSeek(Math.min(ms, totalDurationMs));
+    const clampedMs = Math.min(ms, totalDurationMs);
+    console.info('[editor audio-lane] click-seek', { ms: clampedMs });
+    onSeek(clampedMs);
   };
 
   if (!voiceoverUrl) {
