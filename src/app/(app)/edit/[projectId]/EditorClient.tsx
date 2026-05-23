@@ -45,6 +45,7 @@ import {
   rowEffectiveDurationMs,
   type EditorCommand,
 } from '@/lib/editor/store';
+import { toast } from 'sonner';
 import { useEditorStore } from '@/lib/editor/use-editor-store';
 import { Timeline } from '@/components/editor/Timeline';
 import { ShotInspector } from '@/components/editor/ShotInspector';
@@ -134,7 +135,7 @@ import {
   OverlayContextMenu,
   type OverlayContextMenuItem,
 } from '@/components/production-doc/OverlayContextMenu';
-import { SetTimingPopover } from '@/components/editor/SetTimingPopover';
+import { SetTimingPopover, formatTimecode as formatTimecodeLabel } from '@/components/editor/SetTimingPopover';
 
 interface EditorClientProps {
   projectId: string;
@@ -3853,29 +3854,65 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           maxDurationMs={EDITOR_MAX_SHOT_MS}
           isFirstShot={timingPopover.isFirstShot}
           onApply={(startMs, endMs) => {
-            // Translate aligned-space user input → cascade-space dispatch.
-            //
-            // The popover surfaces aligned values (so they match the
-            // ruler). The SET_SHOT_TIMING reducer reads / writes
-            // cascade space (`duration_override_ms` + natural). We
-            // compute the cascade base FRESH from state at dispatch
-            // time using the SAME helper the reducer uses
-            // (`rowEffectiveDurationMs`) — anything we cached at
-            // popover-open could drift from the reducer's view and
-            // produce a wrong delta that silently no-ops or clamps.
-            //
-            // 2026-05-23: earlier fix captured cascade at open time
-            // but fell back to aligned dur when no override was set,
-            // which IS the case for unedited shots. The wrong dur
-            // made the captured cascadeEnd drift from the reducer's
-            // cascadeEnd, the delta was off by ~the alignment shift,
-            // and the dispatch landed on values the reducer treated
-            // as "no change" or clamped to zero. User saw nothing.
+            // Translate aligned-space input → cascade-space dispatch.
+            // popover values are in aligned space (match the ruler).
+            // The reducer reads/writes cascade space. We compute the
+            // cascade base FRESH from state at dispatch using the SAME
+            // helper the reducer uses, so the delta lands exactly
+            // where the reducer expects it.
             const idx = timingPopover.shotIndex;
             const deltaStart = startMs - timingPopover.initialStartMs;
             const deltaEnd = endMs - timingPopover.initialEndMs;
             const cascadeStart = shotStartTimesMs[idx] ?? 0;
             const cascadeEnd = cascadeStart + rowEffectiveDurationMs(state.doc, idx);
+
+            // PREDICT the reducer's clamp. The reducer carves from
+            // neighbors and clamps each to [MIN, MAX]. When a neighbor
+            // is already at MIN we can't shrink it any further — the
+            // carve clamps to zero, the reducer no-ops, isDirty stays
+            // false, and the user sees NOTHING happen. Surfacing that
+            // here as a toast is the difference between "feature is
+            // broken" and "OK I need to free up a neighbor first."
+            // 2026-05-23 follow-up to the timebase fix — see logged
+            // bug report screenshot.
+            const hasLeft = idx > 0;
+            const hasRight = idx < state.doc.rows.length - 1;
+            const leftDur = hasLeft ? rowEffectiveDurationMs(state.doc, idx - 1) : 0;
+            const rightDur = hasRight ? rowEffectiveDurationMs(state.doc, idx + 1) : 0;
+            const clampDur = (n: number) =>
+              Math.max(EDITOR_MIN_SHOT_MS, Math.min(EDITOR_MAX_SHOT_MS, Math.round(n)));
+            // Left side: leftDur grows by deltaStart (positive ⇒ scene
+            // starts later). Negative deltaStart ⇒ left shrinks. Clamp
+            // to floor/ceiling; difference vs requested is the loss.
+            const achievableDeltaStart = hasLeft
+              ? clampDur(leftDur + deltaStart) - leftDur
+              : 0;
+            // Right side: rightDur shrinks by deltaEnd (positive ⇒
+            // scene ends later, right neighbor gives up time). Last-
+            // shot fallback honors the request verbatim (shift mode).
+            const achievableDeltaEnd = hasRight
+              ? rightDur - clampDur(rightDur - deltaEnd)
+              : deltaEnd;
+
+            const clampedStart = Math.abs(achievableDeltaStart - deltaStart) > 1;
+            const clampedEnd = Math.abs(achievableDeltaEnd - deltaEnd) > 1;
+            if (clampedStart || clampedEnd) {
+              const msgs: string[] = [];
+              if (clampedStart) {
+                const neighborLabel = hasLeft ? `Scene ${idx}` : 'Project start';
+                msgs.push(
+                  `${neighborLabel} can't shrink past the ${(EDITOR_MIN_SHOT_MS / 1000).toFixed(0)}s minimum — start clamped to ${formatTimecodeLabel(timingPopover.initialStartMs + achievableDeltaStart)}.`,
+                );
+              }
+              if (clampedEnd) {
+                const neighborLabel = hasRight ? `Scene ${idx + 2}` : 'Project end';
+                msgs.push(
+                  `${neighborLabel} can't shrink past the ${(EDITOR_MIN_SHOT_MS / 1000).toFixed(0)}s minimum — end clamped to ${formatTimecodeLabel(timingPopover.initialEndMs + achievableDeltaEnd)}.`,
+                );
+              }
+              toast.warning(msgs.join(' '));
+            }
+
             console.info('[editor set-shot-timing] popover dispatch', {
               shotIndex: idx,
               alignedStartInput: startMs,
@@ -3886,8 +3923,12 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               deltaEnd,
               cascadeStart,
               cascadeEnd,
-              dispatchedStart: cascadeStart + deltaStart,
-              dispatchedEnd: cascadeEnd + deltaEnd,
+              achievableDeltaStart,
+              achievableDeltaEnd,
+              clampedStart,
+              clampedEnd,
+              leftNeighborDurMs: hasLeft ? leftDur : null,
+              rightNeighborDurMs: hasRight ? rightDur : null,
             });
             apply({
               type: 'SET_SHOT_TIMING',
