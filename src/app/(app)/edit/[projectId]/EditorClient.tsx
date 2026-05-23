@@ -42,6 +42,7 @@ import {
   EDITOR_MAX_SHOT_MS,
   initialEditorState,
   rowStartTimesMs,
+  rowEffectiveDurationMs,
   type EditorCommand,
 } from '@/lib/editor/store';
 import { useEditorStore } from '@/lib/editor/use-editor-store';
@@ -797,19 +798,17 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         shotIndex: number;
         x: number;
         y: number;
-        /** Aligned-space start (what the user sees on the ruler). */
+        /** Aligned-space start (what the user sees on the ruler). The
+         *  Apply handler computes the cascade-space dispatch fresh
+         *  from state at apply time using `rowEffectiveDurationMs` —
+         *  we DON'T snapshot cascade here because the snapshot can
+         *  drift from the reducer's view when the row has no override
+         *  (the reducer uses naturalRowDurationMs, the snapshot would
+         *  need to too). Keeping only aligned values eliminates the
+         *  divergence class entirely. */
         initialStartMs: number;
         /** Aligned-space end. */
         initialEndMs: number;
-        /** Cascade-space start at popover-open time. The reducer
-         *  operates in cascade space; on Apply we translate the user's
-         *  aligned-space input back to cascade by adding the delta to
-         *  this base. Without it the popover would dispatch values in
-         *  the wrong timebase and silently no-op. */
-        cascadeStartMs: number;
-        /** Cascade-space end at popover-open time. Same reason as
-         *  cascadeStartMs. */
-        cascadeEndMs: number;
         isFirstShot: boolean;
       }
     | null
@@ -3267,35 +3266,25 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         apply({ type: 'RESIZE_SHOT', shotIndex, durationMs })
       }
       onLeadingResize={(shotIndex, newStartMs) => {
-        // Translate aligned-space → cascade-space.
-        //
-        // Timeline.tsx emits `newStartMs` in ALIGNED timebase (its
-        // shotStartTimesMs is summed from videoConfig.shots.durationMs,
-        // which is post-alignment). The reducer SET_SHOT_TIMING reads
-        // and writes the CASCADE timebase (`duration_override_ms` +
-        // `naturalRowDurationMs`). When voiceover alignment is active
-        // these timebases differ — passing aligned values straight to
-        // the reducer makes the drag dispatch a wrong (or zero) delta
-        // and the user sees nothing happen.
-        //
-        // Fix: compute the delta the user applied in aligned space,
-        // then apply that same delta on top of the cascade start. End
-        // is held constant for the leading-edge drag, so cascadeEnd =
-        // cascadeStart + cascadeDur.
+        // Translate aligned-space drag → cascade-space dispatch.
+        // Timeline emits newStartMs in ALIGNED space (it sums
+        // videoConfig.shots.durationMs, which is post-alignment).
+        // SET_SHOT_TIMING reads/writes CASCADE space. We compute the
+        // aligned delta, then add it on top of cascade values pulled
+        // FRESH from state using the same helper the reducer uses
+        // (`rowEffectiveDurationMs`). End is held constant for a
+        // leading-edge drag. See plan
+        // `_plans/2026-05-23-editor-set-shot-timing-and-left-edge-drag.md`.
         const shot = videoConfig.shots[shotIndex];
         if (!shot) return;
-        const alignedStart = shot.startMs;
-        const cascadeStart = shotStartTimesMs[shotIndex] ?? alignedStart;
-        const cascadeDur =
-          typeof state.doc.rows[shotIndex]?.duration_override_ms === 'number'
-            ? (state.doc.rows[shotIndex].duration_override_ms as number)
-            : shot.durationMs;
-        const deltaStart = newStartMs - alignedStart;
+        const deltaStart = newStartMs - shot.startMs;
+        const cascadeStart = shotStartTimesMs[shotIndex] ?? shot.startMs;
+        const cascadeEnd = cascadeStart + rowEffectiveDurationMs(state.doc, shotIndex);
         apply({
           type: 'SET_SHOT_TIMING',
           shotIndex,
           startMs: cascadeStart + deltaStart,
-          endMs: cascadeStart + cascadeDur,
+          endMs: cascadeEnd,
         });
       }}
       onReorder={(fromIndex, toIndex) =>
@@ -3833,7 +3822,6 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             setLaneFocus,
             setShowVoRegen,
             setTimingPopover,
-            cascadeStartTimesMs: shotStartTimesMs,
             openImageEdit: (i) => setImageEditRow(i),
             handleRunRmbg: (i) => {
               void handleRunRmbg(i);
@@ -3866,19 +3854,46 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           isFirstShot={timingPopover.isFirstShot}
           onApply={(startMs, endMs) => {
             // Translate aligned-space user input → cascade-space dispatch.
-            // popover values are in aligned space (match the ruler the
-            // user sees). Reducer reads/writes cascade space. We compute
-            // the delta the user applied to the aligned-space values
-            // they were shown, then apply the same delta on top of the
-            // cascade base captured at popover-open. Without this, the
-            // dispatch silently no-ops when voiceover alignment is on.
+            //
+            // The popover surfaces aligned values (so they match the
+            // ruler). The SET_SHOT_TIMING reducer reads / writes
+            // cascade space (`duration_override_ms` + natural). We
+            // compute the cascade base FRESH from state at dispatch
+            // time using the SAME helper the reducer uses
+            // (`rowEffectiveDurationMs`) — anything we cached at
+            // popover-open could drift from the reducer's view and
+            // produce a wrong delta that silently no-ops or clamps.
+            //
+            // 2026-05-23: earlier fix captured cascade at open time
+            // but fell back to aligned dur when no override was set,
+            // which IS the case for unedited shots. The wrong dur
+            // made the captured cascadeEnd drift from the reducer's
+            // cascadeEnd, the delta was off by ~the alignment shift,
+            // and the dispatch landed on values the reducer treated
+            // as "no change" or clamped to zero. User saw nothing.
+            const idx = timingPopover.shotIndex;
             const deltaStart = startMs - timingPopover.initialStartMs;
             const deltaEnd = endMs - timingPopover.initialEndMs;
+            const cascadeStart = shotStartTimesMs[idx] ?? 0;
+            const cascadeEnd = cascadeStart + rowEffectiveDurationMs(state.doc, idx);
+            console.info('[editor set-shot-timing] popover dispatch', {
+              shotIndex: idx,
+              alignedStartInput: startMs,
+              alignedEndInput: endMs,
+              alignedInitialStart: timingPopover.initialStartMs,
+              alignedInitialEnd: timingPopover.initialEndMs,
+              deltaStart,
+              deltaEnd,
+              cascadeStart,
+              cascadeEnd,
+              dispatchedStart: cascadeStart + deltaStart,
+              dispatchedEnd: cascadeEnd + deltaEnd,
+            });
             apply({
               type: 'SET_SHOT_TIMING',
-              shotIndex: timingPopover.shotIndex,
-              startMs: timingPopover.cascadeStartMs + deltaStart,
-              endMs: timingPopover.cascadeEndMs + deltaEnd,
+              shotIndex: idx,
+              startMs: cascadeStart + deltaStart,
+              endMs: cascadeEnd + deltaEnd,
             });
           }}
           onClose={() => setTimingPopover(null)}
@@ -3923,17 +3938,10 @@ function buildEditorContextMenuItems(args: {
           y: number;
           initialStartMs: number;
           initialEndMs: number;
-          cascadeStartMs: number;
-          cascadeEndMs: number;
           isFirstShot: boolean;
         }
       | null,
   ) => void;
-  /** Cascade-space start time of every shot — what the reducer's
-   *  SET_SHOT_TIMING reads. The popover trigger captures the value
-   *  for the clicked shot so Apply can translate aligned → cascade.
-   *  Passed in as a snapshot; the helper iterates synchronously. */
-  cascadeStartTimesMs: number[];
   openImageEdit: (shotIndex: number) => void;
   handleRunRmbg: (shotIndex: number) => void;
   handleRestoreOriginalBackground: (shotIndex: number) => void;
@@ -3952,7 +3960,6 @@ function buildEditorContextMenuItems(args: {
     setLaneFocus,
     setShowVoRegen,
     setTimingPopover,
-    cascadeStartTimesMs,
     openImageEdit,
     handleRunRmbg,
     handleRestoreOriginalBackground,
@@ -4015,32 +4022,19 @@ function buildEditorContextMenuItems(args: {
         {
           label: 'Set timing…',
           onClick: () => {
-            // The popover surfaces ALIGNED-space values (so they match
-            // the ruler the user sees). The reducer SET_SHOT_TIMING
-            // operates in CASCADE space (duration_override_ms +
-            // naturalRowDurationMs). We capture both here so Apply can
-            // translate the user's aligned-space input to a cascade-
-            // space delta against the cascade base. shotDurationsMs is
-            // post-alignment (videoConfig.shots), cascadeStartTimesMs
-            // is from `rowStartTimesMs(state.doc)`.
+            // The popover surfaces ALIGNED-space values (so they
+            // match the ruler the user sees). Apply translates aligned
+            // → cascade fresh from state — see the onApply handler in
+            // EditorClient's JSX below for the dispatch logic.
             let alignedStart = 0;
             for (let k = 0; k < i; k += 1) alignedStart += shotDurationsMs[k] ?? 0;
             const alignedEnd = alignedStart + (shotDurationsMs[i] ?? 0);
-            const cascadeStart = cascadeStartTimesMs[i] ?? alignedStart;
-            const row = doc.rows[i];
-            const cascadeDur =
-              row && typeof row.duration_override_ms === 'number'
-                ? row.duration_override_ms
-                : (shotDurationsMs[i] ?? 0);
-            const cascadeEnd = cascadeStart + cascadeDur;
             setTimingPopover({
               shotIndex: i,
               x: menu.x,
               y: menu.y,
               initialStartMs: alignedStart,
               initialEndMs: alignedEnd,
-              cascadeStartMs: cascadeStart,
-              cascadeEndMs: cascadeEnd,
               isFirstShot: i === 0,
             });
           },

@@ -2287,6 +2287,25 @@ function makeBlankRow(durationMs: number): ProductionDoc['rows'][number] {
 }
 
 /**
+ * Compute the row's effective duration in ms — the SAME value the
+ * SET_SHOT_TIMING reducer uses when reading current state. Public
+ * because EditorClient needs it to translate the popover's aligned-
+ * space input into cascade-space dispatch values; without using the
+ * exact same calc as the reducer the delta lands in the wrong
+ * timebase and the dispatch silently no-ops / clamps.
+ *
+ * Override wins; otherwise falls back to `naturalRowDurationMs`
+ * which derives from timecodes.
+ */
+export function rowEffectiveDurationMs(doc: ProductionDoc, index: number): number {
+  const row = doc.rows[index];
+  if (!row) return 0;
+  return typeof row.duration_override_ms === 'number'
+    ? row.duration_override_ms
+    : naturalRowDurationMs(doc, index);
+}
+
+/**
  * Compute the natural (pre-editor) duration in ms for a row from its
  * timecode + the next row's timecode. Used to synthesise an inverse
  * for the first edit on a row that previously had no override.
