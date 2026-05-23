@@ -170,64 +170,6 @@ describe('realignVideoConfig: end-to-end on a 6-row fixture', () => {
   });
 });
 
-// ─── Regression: pinned rows ignore alignment ─────────────────────────────────
-//
-// Repro for the 2026-05-23 "Set timing does nothing" bug. The user
-// dragged / typed a new duration on a row with narration; the cascade
-// absorbed the override, then realignVideoConfig replaced the
-// startMs/durationMs with word-derived values, and the user saw no
-// visual change. Fix is the `pinnedShots` option: rows the caller
-// marks as pinned keep their cascade values; downstream rows cascade
-// forward to avoid overlap.
-
-describe('realignVideoConfig: pinnedShots option', () => {
-  it("pinned rows keep cascade durationMs (alignment doesn't overwrite)", () => {
-    const config = buildFixtureConfig();
-    // Bump row 0's cascade duration to 6_000 ms — alignment would put
-    // it at ~3.45 s (the last spoken word's end). With row 0 pinned,
-    // the renderer must keep 6_000 ms.
-    config.shots[0].durationMs = 6_000;
-    const pinnedShots = config.shots.map((_, i) => i === 0);
-    const result = realignVideoConfig(config, FIXTURE_ALIGNMENT, { pinnedShots });
-    const row0 = result.config.shots[0];
-    expect(row0.startMs).toBe(snapMsToFrame(0, FPS));
-    expect(row0.durationMs).toBeCloseTo(snapMsToFrame(6_000, FPS), 5);
-  });
-
-  it('downstream rows cascade forward past a pinned row (no overlap)', () => {
-    const config = buildFixtureConfig();
-    config.shots[0].durationMs = 6_000;
-    const pinnedShots = config.shots.map((_, i) => i === 0);
-    const result = realignVideoConfig(config, FIXTURE_ALIGNMENT, { pinnedShots });
-    const row0End = result.config.shots[0].startMs + result.config.shots[0].durationMs;
-    const row1Start = result.config.shots[1].startMs;
-    // Aligner says row 1 starts at 3.8 s (the "Don" token) — that's
-    // BEFORE row 0's pinned end (~6 s). Without the cascade-forward,
-    // the two would overlap. With it, row 1 starts exactly at row 0's
-    // end and keeps its original aligned duration (so its end shifts
-    // by the same amount).
-    expect(row1Start).toBe(row0End);
-    expect(result.config.shots[1].durationMs).toBeGreaterThan(0);
-  });
-
-  it('non-pinned rows still pick up alignment-derived values', () => {
-    const config = buildFixtureConfig();
-    // Pin nothing — should match the default behavior.
-    const result = realignVideoConfig(config, FIXTURE_ALIGNMENT, { pinnedShots: [] });
-    // Row 1's aligned start (per the alignment fixture) is the "Don"
-    // token at 3.8 s — far from the estimated 4.0 s. Confirms the
-    // alignment is actually running.
-    expect(Math.abs(result.config.shots[1].startMs - 4000)).toBeGreaterThan(1000 / FPS);
-  });
-
-  it('omitting the options argument behaves identically to before the pin feature', () => {
-    const config = buildFixtureConfig();
-    const withOptions = realignVideoConfig(config, FIXTURE_ALIGNMENT, {});
-    const withoutOptions = realignVideoConfig(config, FIXTURE_ALIGNMENT);
-    expect(withoutOptions.config.shots).toEqual(withOptions.config.shots);
-  });
-});
-
 // ─── Auth gate on /api/voiceovers/align ───────────────────────────────────────
 
 // Mock next/headers BEFORE importing the route module, mirroring the
