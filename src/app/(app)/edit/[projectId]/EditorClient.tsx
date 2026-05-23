@@ -1747,6 +1747,107 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     apply({ type: 'SET_MUTE', shotIndex: state.selection, muted: row.muted !== true });
   }, [apply, state.doc.rows, state.selection]);
 
+  // Phase 5 of `_plans/2026-05-23-editor-timeline-and-shots-ux-overhaul.md`.
+  // Per-shot Remove background AI verb. Two distinct paths:
+  //   1. First-time application — POSTs to /image/rmbg, mirrors the
+  //      cutout to R2, and patches the row with `image_rmbg_url` +
+  //      `image_rmbg_applied: true`. The renderer immediately swaps
+  //      in the cutout for the original.
+  //   2. Re-toggle (the cutout already exists) — flips
+  //      `image_rmbg_applied` only. The Bria call is skipped because
+  //      the row's `image_rmbg_url` is still on hand from a past
+  //      run, so re-applying is free + undoable.
+  // Tracks in-flight requests in a Set keyed by shotIndex so a
+  // double-click doesn't fire twice.
+  const [rmbgInflight, setRmbgInflight] = useState<Set<number>>(() => new Set());
+  const handleRunRmbg = useCallback(
+    async (shotIndex: number) => {
+      const row = state.doc.rows[shotIndex];
+      if (!row) return;
+      // Fast path: cutout already exists on this row. Just flip the
+      // flag — no network call, instant undo.
+      if (row.image_rmbg_url && row.image_rmbg_applied !== true) {
+        console.info('[editor ai-rmbg] re-apply existing cutout', { shotIndex });
+        apply({
+          type: 'PATCH_ROW',
+          rowIndex: shotIndex,
+          patch: { image_rmbg_applied: true },
+        });
+        return;
+      }
+      const sourceUrl = state.rowImages[shotIndex];
+      if (!sourceUrl) {
+        alert('Remove background needs an image on this shot first.');
+        return;
+      }
+      if (rmbgInflight.has(shotIndex)) return;
+      setRmbgInflight((prev) => {
+        const next = new Set(prev);
+        next.add(shotIndex);
+        return next;
+      });
+      const startedAt = Date.now();
+      console.info('[editor ai-rmbg] dispatch', { shotIndex });
+      try {
+        const res = await fetch('/api/generate/production-doc/image/rmbg', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ originalImageUrl: sourceUrl }),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          cutoutUrl?: string;
+          error?: string;
+        };
+        if (!res.ok || !data.cutoutUrl) {
+          alert(`Background removal failed: ${data.error || `HTTP ${res.status}`}`);
+          console.warn('[editor ai-rmbg] failed', {
+            shotIndex,
+            status: res.status,
+            error: data.error,
+          });
+          return;
+        }
+        apply({
+          type: 'PATCH_ROW',
+          rowIndex: shotIndex,
+          patch: {
+            image_rmbg_url: data.cutoutUrl,
+            image_rmbg_applied: true,
+          },
+        });
+        console.info('[editor ai-rmbg] success', {
+          shotIndex,
+          durationMs: Date.now() - startedAt,
+        });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        alert(`Background removal failed: ${detail}`);
+        console.warn('[editor ai-rmbg] error', { shotIndex, detail });
+      } finally {
+        setRmbgInflight((prev) => {
+          const next = new Set(prev);
+          next.delete(shotIndex);
+          return next;
+        });
+      }
+    },
+    [apply, state.doc.rows, state.rowImages, rmbgInflight],
+  );
+
+  /** Undo the Remove background verb in one click without re-running
+   *  the model. The cutout stays on the row so re-applying is free. */
+  const handleRestoreOriginalBackground = useCallback(
+    (shotIndex: number) => {
+      console.info('[editor ai-rmbg] restore-original', { shotIndex });
+      apply({
+        type: 'PATCH_ROW',
+        rowIndex: shotIndex,
+        patch: { image_rmbg_applied: false },
+      });
+    },
+    [apply],
+  );
+
   // Keyboard shortcuts:
   //   Space      → play / pause (standard NLE binding)
   //   B          → split at playhead (CapCut / FCP blade)
@@ -2741,6 +2842,24 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                 });
               }}
               onOpenImageEdit={() => setImageEditRow(state.selection)}
+              onRunRmbg={() => {
+                if (state.selection !== null) void handleRunRmbg(state.selection);
+              }}
+              onRestoreOriginalBackground={() => {
+                if (state.selection !== null)
+                  handleRestoreOriginalBackground(state.selection);
+              }}
+              rmbgInflight={
+                state.selection !== null && rmbgInflight.has(state.selection)
+              }
+              rmbgApplied={
+                state.selection !== null &&
+                state.doc.rows[state.selection]?.image_rmbg_applied === true
+              }
+              hasRmbgCutout={
+                state.selection !== null &&
+                typeof state.doc.rows[state.selection]?.image_rmbg_url === 'string'
+              }
             />
           ) : undefined,
         audio: (
@@ -3313,15 +3432,22 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           const items = buildEditorContextMenuItems({
             menu: editorContextMenu,
             doc: state.doc,
+            rowImages: state.rowImages,
             captions: state.captions,
             playheadMs: state.playheadMs,
             splitTarget,
+            rmbgInflight,
             apply,
             selectShotFromUser,
             setLaneFocus,
             setShowVoRegen,
             setDurationPopover,
             handleDelete,
+            openImageEdit: (i) => setImageEditRow(i),
+            handleRunRmbg: (i) => {
+              void handleRunRmbg(i);
+            },
+            handleRestoreOriginalBackground,
           });
           return (
             <OverlayContextMenu
@@ -3372,9 +3498,11 @@ function buildEditorContextMenuItems(args: {
     | { kind: 'audio'; x: number; y: number }
     | { kind: 'caption'; segmentIndex: number; x: number; y: number };
   doc: ProductionDoc;
+  rowImages: Record<number, string>;
   captions: { segments: { start: number; end: number; text: string }[] } | undefined;
   playheadMs: number;
   splitTarget: { shotIndex: number; splitAtMs: number; validSplit: boolean } | null;
+  rmbgInflight: Set<number>;
   apply: (cmd: EditorCommand) => void;
   selectShotFromUser: (shotIndex: number, source: string) => void;
   setLaneFocus: (kind: 'audio' | 'captions' | 'overlays' | null) => void;
@@ -3385,19 +3513,27 @@ function buildEditorContextMenuItems(args: {
       | null,
   ) => void;
   handleDelete: (mode: 'ripple' | 'blank') => void;
+  openImageEdit: (shotIndex: number) => void;
+  handleRunRmbg: (shotIndex: number) => void;
+  handleRestoreOriginalBackground: (shotIndex: number) => void;
 }): OverlayContextMenuItem[] {
   const {
     menu,
     doc,
+    rowImages,
     captions,
     playheadMs,
     splitTarget,
+    rmbgInflight,
     apply,
     selectShotFromUser,
     setLaneFocus,
     setShowVoRegen,
     setDurationPopover,
     handleDelete,
+    openImageEdit,
+    handleRunRmbg,
+    handleRestoreOriginalBackground,
   } = args;
 
   switch (menu.kind) {
@@ -3490,6 +3626,52 @@ function buildEditorContextMenuItems(args: {
           title:
             'Insert a copy of this shot right after it. The clone inherits script + visual + duration and gets selected so you can tweak it.',
         },
+        // ── AI Edit verbs ──────────────────────────────────────
+        // Single-tier (flat) menu, separator above so the AI block
+        // reads as its own region. The sub-menu / "AI Edit ▸"
+        // pattern from the plan would need OverlayContextMenu to
+        // grow nested support; that's out of scope here, so flat
+        // works fine for the four MVP verbs.
+        ...(rowImages[i]
+          ? [
+              {
+                label: 'AI: Replace with prompt…',
+                onClick: () => openImageEdit(i),
+                separatorAbove: true,
+                title:
+                  'Open the AI image-edit dialog (paint mask + prompt, or prompt-only models)',
+              },
+              {
+                label: 'AI: Erase region (mask)…',
+                onClick: () => openImageEdit(i),
+                title:
+                  'Open the mask-brush editor to paint over an object — Erase removes it and rebuilds the background',
+              },
+              ...(row.image_rmbg_applied === true
+                ? [
+                    {
+                      label: 'AI: Restore original background',
+                      onClick: () => handleRestoreOriginalBackground(i),
+                      title:
+                        'Revert this shot to the original image (the cutout stays on the row so re-applying is free)',
+                    },
+                  ]
+                : [
+                    {
+                      label: rmbgInflight.has(i)
+                        ? 'AI: Removing background…'
+                        : row.image_rmbg_url
+                          ? 'AI: Re-apply background removal'
+                          : 'AI: Remove background',
+                      onClick: () => handleRunRmbg(i),
+                      disabled: rmbgInflight.has(i),
+                      title: row.image_rmbg_url
+                        ? 'Re-apply the previously generated cutout (instant — no model call)'
+                        : 'Run Bria RMBG to isolate the subject; the row\'s background color shows through where the original background was',
+                    },
+                  ]),
+            ]
+          : []),
         ...(menu.kind === 'shot' && hasTrim
           ? [
               {

@@ -373,6 +373,19 @@ export interface ProductionRow {
    *  force one specific row to keep an overlay in an otherwise
    *  overlay-free doc). Undefined ⇒ follow the doc-level setting. */
   skip_overlay?: boolean;
+  /** Phase 5 of `_plans/2026-05-23-editor-timeline-and-shots-ux-overhaul.md`.
+   *  Background-removed cutout of the row's image (alpha PNG). Set by
+   *  the Remove background AI verb. Stored separately from
+   *  `image_url` so the action stays undoable: flipping
+   *  `image_rmbg_applied` back to false reverts to the original
+   *  image without re-running the model. */
+  image_rmbg_url?: string;
+  /** When true AND `image_rmbg_url` is set, the renderer uses the
+   *  cutout instead of the original image. The cutout's transparent
+   *  regions show whatever the scene background renders underneath
+   *  (row.background_color → doc.pillarbox_color_default → white).
+   *  Default false; legacy docs ⇒ historical behaviour. */
+  image_rmbg_applied?: boolean;
   /** Final overlay placement after saliency-aware resolution. When set,
    *  the renderer prefers these over `overlay_zone` / `overlay_size`.
    *  See `src/lib/overlay-placement.ts` for the resolver. */
@@ -836,7 +849,19 @@ export function productionDocToVideoConfig(
     const startMs = intervals[i].startMs;
     const durationMs = intervals[i].durationMs;
     const imageState = rowImages[i];
-    const imageUrl = imageState?.status === 'done' ? imageState.imageUrl : undefined;
+    const baseImageUrl = imageState?.status === 'done' ? imageState.imageUrl : undefined;
+    // Phase 5 of editor timeline-and-shots overhaul plan: when the
+    // user applied "Remove background" on this row, the renderer
+    // swaps in the alpha cutout. The original image is preserved
+    // in rowImages (state.rowImages keeps the originally generated
+    // URL) so flipping `image_rmbg_applied` back to false reverts
+    // without re-running the RMBG model — that's the user-visible
+    // "Restore original background" affordance.
+    const useRmbg =
+      row.image_rmbg_applied === true &&
+      typeof row.image_rmbg_url === 'string' &&
+      row.image_rmbg_url.length > 0;
+    const imageUrl = useRmbg ? row.image_rmbg_url : baseImageUrl;
 
     const lockedAsStill = opts.rowLockedAsStill?.[i] === true;
     const clipState = animateScenes && !lockedAsStill ? opts.rowVideoClips?.[i] : undefined;

@@ -162,6 +162,24 @@ interface ShotInspectorProps {
   /** Open the mask-brush image edit dialog for this shot. The parent
    *  mounts MaskBrushEditor + calls the image-edit endpoint. */
   onOpenImageEdit?: () => void;
+  /** Phase 5 of `_plans/2026-05-23-editor-timeline-and-shots-ux-overhaul.md`.
+   *  Per-shot AI verbs surfaced as a quick-actions strip at the top
+   *  of the inspector so a lazy user can reach them without
+   *  right-clicking. All three are optional; the strip hides
+   *  itself when neither the shot has an image nor any handler is
+   *  wired. */
+  onRunRmbg?: () => void;
+  onRestoreOriginalBackground?: () => void;
+  /** True when an RMBG call is in flight for this shot. The button
+   *  disables itself + shows "Removing background…". */
+  rmbgInflight?: boolean;
+  /** True when this row currently has `image_rmbg_applied === true`.
+   *  Flips the button label to "Restore original background". */
+  rmbgApplied?: boolean;
+  /** True when this row has a stored `image_rmbg_url` (i.e., a
+   *  previous run's cutout is on hand). Drives the "Re-apply" copy
+   *  variant when applied is false but a cutout is cached. */
+  hasRmbgCutout?: boolean;
   // ─── Batch B: section thumbnail region zoom ───────────────────────
   /** The doc's composite section thumbnail (if any). When present and
    *  it has regions, the inspector renders a "Zoom into region" picker
@@ -221,6 +239,11 @@ export function ShotInspector({
   docOnScreenTextModeDefault,
   onApplyTransformToAll,
   onOpenImageEdit,
+  onRunRmbg,
+  onRestoreOriginalBackground,
+  rmbgInflight,
+  rmbgApplied,
+  hasRmbgCutout,
 }: ShotInspectorProps): React.ReactElement {
   const undoDepth = editHistoryDepth ?? 0;
   const overlayReady = overlayState?.status === 'done' && Boolean(overlayState.url);
@@ -592,6 +615,78 @@ export function ShotInspector({
       </header>
 
       <div className="flex-1 overflow-y-auto">
+        {/* Phase 5 of `_plans/2026-05-23-editor-timeline-and-shots-ux-overhaul.md`.
+            Quick-actions strip — AI verbs in one row at the top of
+            the inspector. Mirrors the verbs surfaced in the shot
+            context menu so the user can reach them without
+            right-clicking (rule 10 — build for a lazy user).
+            Suppressed entirely when the row has no image and no
+            handler is wired. */}
+        {thumbnailUrl && (onOpenImageEdit || onRunRmbg) && (
+          <div
+            className="flex items-center gap-1 px-3 py-2 border-b"
+            style={{ borderColor: 'var(--card-border)' }}
+            role="toolbar"
+            aria-label="AI quick actions"
+          >
+            {onOpenImageEdit && (
+              <>
+                <button
+                  type="button"
+                  onClick={onOpenImageEdit}
+                  className="text-[11px] px-2 py-1 rounded border hover:bg-white/5 transition-colors"
+                  style={{ borderColor: 'var(--card-border)' }}
+                  title="Open the AI image-edit dialog (replace via prompt, or paint a mask to erase)"
+                >
+                  AI Replace
+                </button>
+                <button
+                  type="button"
+                  onClick={onOpenImageEdit}
+                  className="text-[11px] px-2 py-1 rounded border hover:bg-white/5 transition-colors"
+                  style={{ borderColor: 'var(--card-border)' }}
+                  title="Paint a mask over an object and Bria-erases it"
+                >
+                  Erase
+                </button>
+              </>
+            )}
+            {onRunRmbg &&
+              (rmbgApplied ? (
+                <button
+                  type="button"
+                  onClick={onRestoreOriginalBackground}
+                  className="text-[11px] px-2 py-1 rounded border hover:bg-white/5 transition-colors"
+                  style={{
+                    borderColor: 'var(--card-border)',
+                    color: 'var(--accent-purple-bright, #a78bfa)',
+                  }}
+                  title="Revert to the original background (the cutout stays — re-applying is instant)"
+                >
+                  Restore bg
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onRunRmbg}
+                  disabled={rmbgInflight === true}
+                  className="text-[11px] px-2 py-1 rounded border hover:bg-white/5 transition-colors"
+                  style={{ borderColor: 'var(--card-border)' }}
+                  title={
+                    hasRmbgCutout
+                      ? 'Re-apply the previously generated cutout (no model call)'
+                      : 'Run Bria RMBG to isolate the subject of this image'
+                  }
+                >
+                  {rmbgInflight
+                    ? 'Removing bg…'
+                    : hasRmbgCutout
+                      ? 'Re-apply bg'
+                      : 'Remove bg'}
+                </button>
+              ))}
+          </div>
+        )}
         {thumbnailUrl && (
           <div
             className="aspect-video relative"
