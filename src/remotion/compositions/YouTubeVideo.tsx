@@ -154,14 +154,17 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
 
       {/* Voiceover audio — runs for the full video.
        *
-       *  `pauseWhenBuffering` is critical for the preview player: when a
-       *  per-scene `<OffthreadVideo>` in BRollScene mounts and needs to
-       *  buffer, Chromium's audio scheduler can briefly drop frames on
-       *  *this* audio element — perceived by the user as a "voiceover
-       *  jump" at scene boundaries even though the timeline never seeks.
-       *  Enabling pauseWhenBuffering tells Remotion to halt the whole
-       *  player when buffering is in flight, so audio + frame advance
-       *  resume together. No effect during server-side export.
+       *  Smooth preview playback across scene cuts is owned by the
+       *  `premountFor={fps}` on the per-shot `<Sequence>` below: each
+       *  scene's `<OffthreadVideo>` mounts 1 second early and buffers
+       *  while the previous scene is still on screen, so the visible
+       *  cut lands on already-loaded media and no buffer pause ever
+       *  reaches this `<Audio>`. `pauseWhenBuffering` stays as a safety
+       *  net for the rare case where a buffer stall still slips through
+       *  (slow network, huge clip) — when it triggers it halts the
+       *  whole player so audio + frames resume together instead of
+       *  Chromium's audio scheduler silently dropping voiceover frames.
+       *  No effect during server-side export.
        *
        *  Volume function applies, in order: mute → 0 short-circuit;
        *  otherwise target gain = `dbToLinearGain(volumeDb)`; fade-in
@@ -251,6 +254,17 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
             key={i}
             from={fromFrame}
             durationInFrames={durationInFrames}
+            // Pre-mount the next scene 1s before it starts so its
+            // `<OffthreadVideo>` (BRollScene) finishes buffering BEFORE
+            // the shot becomes visible. Without this, every scene cut
+            // triggers a fresh OffthreadVideo mount → buffer → the
+            // sibling Audio's `pauseWhenBuffering` halts the player mid-
+            // narration → user hears a "jump" at every transition.
+            // Premount renders invisibly (opacity:0, pointer-events:none)
+            // and is a no-op for render (env.isRendering branch). See
+            // https://remotion.dev/docs/player/premounting and
+            // https://remotion.dev/docs/troubleshooting/video-flicker.
+            premountFor={fps}
             name={`Shot ${i + 1}: ${shot.thumbnailZoomTo ? 'thumbnail-zoom' : shot.sceneType}${useLetterbox ? ' (letterbox)' : ''}`}
           >
             {useLetterbox ? (
