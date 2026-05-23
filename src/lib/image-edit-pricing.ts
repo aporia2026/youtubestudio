@@ -1,0 +1,262 @@
+/**
+ * Image-edit model catalog. Single source of truth consumed by:
+ *
+ *   - the picker in EditPanel (production-doc + shot editor): label,
+ *     price, mask capability, sort key
+ *   - the edit API route's dispatcher: which Kie endpoint to hit and
+ *     what input shape to send
+ *   - the Erase action in MaskBrushEditor: which option to force when
+ *     the user asks for object removal
+ *
+ * Each entry is one *picker option*, not one raw model — Ideogram v3
+ * has three speed tiers and GPT-4o has three quality tiers, so the
+ * picker treats them as siblings instead of nested options the user
+ * has to drill into.
+ *
+ * Pricing source: kie.ai pricing dashboard (verified per row in
+ * `_plans/2026-05-23-kie-image-edit-models-and-erase.md` §5). Rows
+ * with `pricePerImage: null` were not visible at plan time; the UI
+ * shows "see kie.ai" for those rather than printing a guessed number
+ * (CLAUDE.md rule 1).
+ */
+
+export type EditOptionId =
+  // mask-capable
+  | 'gpt-4o-low'
+  | 'gpt-4o-medium'
+  | 'gpt-4o-high'
+  | 'ideogram-v3-turbo'
+  | 'ideogram-v3-balanced'
+  | 'ideogram-v3-quality'
+  // prompt-only
+  | 'nano-banana-edit'
+  | 'qwen-image-edit'
+  | 'qwen2-image-edit'
+  | 'seedream-4.5-basic'
+  | 'seedream-4.5-high'
+  | 'seedream-v4'
+  | 'flux-kontext-pro'
+  | 'flux-kontext-max';
+
+/**
+ * Dispatch hint for the API route. The route reads `backend.kind` and
+ * builds the Kie input shape per the relevant docs page.
+ *
+ *   - `kie-standard`: POST /api/v1/jobs/createTask, model + input
+ *   - `kie-gpt4o`:    POST /api/v1/gpt4o-image/generate (already wired)
+ *   - `flux-kontext`: POST /api/v1/flux/kontext/generate
+ */
+export type EditBackend =
+  | { kind: 'kie-standard'; kieModel: string }
+  | { kind: 'kie-gpt4o'; quality: 'low' | 'medium' | 'high' }
+  | { kind: 'flux-kontext'; kieModel: 'flux-kontext-pro' | 'flux-kontext-max' };
+
+export interface EditOption {
+  id: EditOptionId;
+  /** Short name shown in the picker. */
+  label: string;
+  /** One-line description shown in the dropdown row + as tooltip. */
+  tagline: string;
+  /** When true, the option accepts a brush mask. The picker enables
+   *  the Brush button only for these. */
+  maskCapable: boolean;
+  /** USD price per image. `null` when not verified — UI hides the
+   *  number rather than print a guess. */
+  pricePerImage: number | null;
+  /** When true the price is per-megapixel instead of per-image. */
+  pricedPerMegapixel?: boolean;
+  /** Backend dispatch info. */
+  backend: EditBackend;
+}
+
+/**
+ * The catalog itself. Order in source = canonical sort order before
+ * the price re-sort the picker applies (cheapest first, then unknown
+ * prices alphabetical). Keeping a stable order here helps reviewers
+ * find rows when prices shuffle.
+ */
+export const EDIT_OPTIONS: readonly EditOption[] = [
+  // Mask-capable: brush + erase work with these.
+  {
+    id: 'ideogram-v3-turbo',
+    label: 'Ideogram v3 Turbo',
+    tagline: 'Cheapest mask inpaint — fast, decent fidelity',
+    maskCapable: true,
+    pricePerImage: 0.0175,
+    backend: { kind: 'kie-standard', kieModel: 'ideogram/v3-edit' },
+  },
+  {
+    id: 'ideogram-v3-balanced',
+    label: 'Ideogram v3 Balanced',
+    tagline: 'Mid-tier mask inpaint — balanced speed and quality',
+    maskCapable: true,
+    pricePerImage: 0.035,
+    backend: { kind: 'kie-standard', kieModel: 'ideogram/v3-edit' },
+  },
+  {
+    id: 'ideogram-v3-quality',
+    label: 'Ideogram v3 Quality',
+    tagline: 'Best Ideogram inpaint — slower, sharpest output',
+    maskCapable: true,
+    pricePerImage: 0.05,
+    backend: { kind: 'kie-standard', kieModel: 'ideogram/v3-edit' },
+  },
+  {
+    id: 'gpt-4o-low',
+    label: 'GPT-4o Low',
+    tagline: 'Cheapest GPT-4o mask edit',
+    maskCapable: true,
+    pricePerImage: 0.02,
+    backend: { kind: 'kie-gpt4o', quality: 'low' },
+  },
+  {
+    id: 'gpt-4o-medium',
+    label: 'GPT-4o Medium',
+    tagline: 'Default GPT-4o mask edit',
+    maskCapable: true,
+    pricePerImage: 0.07,
+    backend: { kind: 'kie-gpt4o', quality: 'medium' },
+  },
+  {
+    id: 'gpt-4o-high',
+    label: 'GPT-4o High',
+    tagline: 'Premium GPT-4o mask edit — slowest and priciest',
+    maskCapable: true,
+    pricePerImage: 0.19,
+    backend: { kind: 'kie-gpt4o', quality: 'high' },
+  },
+
+  // Prompt-only: brush button stays disabled when one of these is
+  // selected. The model rewrites whatever the prompt names; mask
+  // inputs are not accepted by the underlying API.
+  {
+    id: 'nano-banana-edit',
+    label: 'Nano Banana',
+    tagline: 'Cheap prompt-only edit — Gemini 2.5 Flash Image',
+    maskCapable: false,
+    pricePerImage: 0.02,
+    backend: { kind: 'kie-standard', kieModel: 'google/nano-banana-edit' },
+  },
+  {
+    id: 'qwen-image-edit',
+    label: 'Qwen Image',
+    tagline: 'Prompt-only — billed per megapixel',
+    maskCapable: false,
+    pricePerImage: 0.03,
+    pricedPerMegapixel: true,
+    backend: { kind: 'kie-standard', kieModel: 'qwen/image-edit' },
+  },
+  {
+    id: 'qwen2-image-edit',
+    label: 'Qwen2 Image',
+    tagline: 'Prompt-only — newer Qwen revision',
+    maskCapable: false,
+    pricePerImage: null,
+    backend: { kind: 'kie-standard', kieModel: 'qwen2/image-edit' },
+  },
+  {
+    id: 'seedream-4.5-basic',
+    label: 'Seedream 4.5 Basic',
+    tagline: 'Prompt-only — 2K output, ByteDance',
+    maskCapable: false,
+    pricePerImage: null,
+    backend: { kind: 'kie-standard', kieModel: 'seedream/4.5-edit' },
+  },
+  {
+    id: 'seedream-4.5-high',
+    label: 'Seedream 4.5 High',
+    tagline: 'Prompt-only — 4K output, ByteDance',
+    maskCapable: false,
+    pricePerImage: null,
+    backend: { kind: 'kie-standard', kieModel: 'seedream/4.5-edit' },
+  },
+  {
+    id: 'seedream-v4',
+    label: 'Seedream v4',
+    tagline: 'Prompt-only — Seedream 4.0 edit revision',
+    maskCapable: false,
+    pricePerImage: null,
+    backend: { kind: 'kie-standard', kieModel: 'bytedance/seedream-v4-edit' },
+  },
+  {
+    id: 'flux-kontext-pro',
+    label: 'Flux Kontext Pro',
+    tagline: 'Prompt-only — Black Forest Labs',
+    maskCapable: false,
+    pricePerImage: null,
+    backend: { kind: 'flux-kontext', kieModel: 'flux-kontext-pro' },
+  },
+  {
+    id: 'flux-kontext-max',
+    label: 'Flux Kontext Max',
+    tagline: 'Prompt-only — Flux Kontext premium tier',
+    maskCapable: false,
+    pricePerImage: null,
+    backend: { kind: 'flux-kontext', kieModel: 'flux-kontext-max' },
+  },
+];
+
+const OPTIONS_BY_ID: ReadonlyMap<EditOptionId, EditOption> = new Map(
+  EDIT_OPTIONS.map(opt => [opt.id, opt]),
+);
+
+export function getEditOption(id: string): EditOption | undefined {
+  return OPTIONS_BY_ID.get(id as EditOptionId);
+}
+
+/** Default option a fresh user sees. Cheapest prompt-only model. */
+export const DEFAULT_EDIT_OPTION_ID: EditOptionId = 'nano-banana-edit';
+
+/**
+ * Default backend used by the **Erase** button in MaskBrushEditor when
+ * the user paints over an object and asks for it to be removed. The
+ * server forces this option (ignoring the picker's current choice) so
+ * a single click does the right thing without making the user pick a
+ * mask-capable model first.
+ *
+ * Ideogram v3 Quality is purpose-built for inpainting and cheaper than
+ * GPT-4o Medium ($0.05 vs $0.07). Exposed as a user setting in
+ * `src/lib/editor/settings.ts` (`getDefaultEraseBackend`).
+ */
+export const DEFAULT_ERASE_OPTION_ID: EditOptionId = 'ideogram-v3-quality';
+
+/**
+ * Erase prompt sent to the mask-capable backend. Server-generated, not
+ * client-controlled — keeps the Erase action genuinely one-click and
+ * blocks a tampered client from sneaking a wider regen by spoofing the
+ * intent.
+ */
+export const ERASE_PROMPT =
+  'Remove the painted region and rebuild the background seamlessly to match the surrounding image. ' +
+  'Preserve the rest of the image exactly.';
+
+/**
+ * Picker-ready list, sorted: known prices ascending, then unknown
+ * prices alphabetical. Mask-capable rows are not separated — the
+ * picker decorates them with an icon and the user picks freely; the
+ * Brush button reads `maskCapable` to enable or disable itself.
+ */
+export function getSortedEditOptions(): readonly EditOption[] {
+  const known = EDIT_OPTIONS.filter(o => o.pricePerImage !== null);
+  const unknown = EDIT_OPTIONS.filter(o => o.pricePerImage === null);
+  known.sort((a, b) => (a.pricePerImage as number) - (b.pricePerImage as number));
+  unknown.sort((a, b) => a.label.localeCompare(b.label));
+  return [...known, ...unknown];
+}
+
+/**
+ * Compose the row label the dropdown renders. `Nano Banana — $0.02`
+ * or `Qwen Image — $0.03/MP` or `Seedream v4 — see kie.ai` for
+ * unverified prices.
+ *
+ * Price formatting: render at 4 decimals max, strip trailing zeros,
+ * always keep at least 2 decimals. So $0.02 stays "0.02" and $0.0175
+ * stays "0.0175" — both lossless, neither padded.
+ */
+export function formatEditOptionLabel(opt: EditOption): string {
+  if (opt.pricePerImage === null) return `${opt.label} — see kie.ai`;
+  const unit = opt.pricedPerMegapixel ? '/MP' : '';
+  const padded = opt.pricePerImage.toFixed(4);
+  const price = padded.replace(/(\.\d{2,}?)0+$/, '$1');
+  return `${opt.label} — $${price}${unit}`;
+}

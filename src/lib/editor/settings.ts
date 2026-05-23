@@ -33,6 +33,16 @@ const KEY_LANE_HEIGHT_VIDEO = 'editor.timeline.laneHeights.video';
 const KEY_LANE_HEIGHT_AUDIO = 'editor.timeline.laneHeights.audio';
 const KEY_DEFAULT_PLAYBACK_RATE = 'editor.transport.defaultPlaybackRate';
 const KEY_PREVIEW_FIT_MODE = 'editor.preview.fitMode';
+// 2026-05-23 — image edit model picker. Three keys:
+//   - lastEditOptionId: which dropdown row was active last time.
+//   - defaultEraseBackendId: which mask-capable option the Erase
+//     button forces. Power users who prefer GPT-4o for object
+//     removal can flip it to a `gpt-4o-*` option.
+//   - showEditModelPrices: whether the dropdown shows $/edit inline.
+// See _plans/2026-05-23-kie-image-edit-models-and-erase.md §9.
+const KEY_LAST_EDIT_OPTION = 'editor.imageEdit.lastOptionId';
+const KEY_DEFAULT_ERASE_BACKEND = 'editor.imageEdit.defaultEraseBackendId';
+const KEY_SHOW_EDIT_PRICES = 'editor.imageEdit.showPrices';
 
 const DEFAULT_ZOOM_LEVEL = 5;
 const DEFAULT_SHOW_THUMBNAILS = true;
@@ -207,6 +217,48 @@ export function setPreviewFitMode(mode: PreviewFitMode): void {
   safeWrite(KEY_PREVIEW_FIT_MODE, mode);
 }
 
+// ─── Image edit model picker ─────────────────────────────────────
+//
+// These read/write opaque string ids — the catalog of valid ids lives
+// in `src/lib/image-edit-pricing.ts`. We deliberately do NOT import
+// the catalog here: the settings module is a pure-data leaf consumed
+// by both the picker and the API route, and a circular import would
+// break the picker. Callers validate the returned string against the
+// catalog before using it (the catalog's `getEditOption` returns
+// undefined for stale ids, which the caller falls back from).
+
+export function getLastEditOptionId(fallback: string): string {
+  const raw = safeRead(KEY_LAST_EDIT_OPTION);
+  return raw ?? fallback;
+}
+
+export function setLastEditOptionId(id: string): void {
+  if (!id) return;
+  safeWrite(KEY_LAST_EDIT_OPTION, id);
+}
+
+export function getDefaultEraseBackendId(fallback: string): string {
+  const raw = safeRead(KEY_DEFAULT_ERASE_BACKEND);
+  return raw ?? fallback;
+}
+
+export function setDefaultEraseBackendId(id: string): void {
+  if (!id) return;
+  safeWrite(KEY_DEFAULT_ERASE_BACKEND, id);
+}
+
+const DEFAULT_SHOW_EDIT_PRICES = true;
+
+export function getShowEditModelPrices(): boolean {
+  const raw = safeRead(KEY_SHOW_EDIT_PRICES);
+  if (raw === null) return DEFAULT_SHOW_EDIT_PRICES;
+  return raw === '1' || raw === 'true';
+}
+
+export function setShowEditModelPrices(on: boolean): void {
+  safeWrite(KEY_SHOW_EDIT_PRICES, on ? '1' : '0');
+}
+
 // ─── Test-only export ─────────────────────────────────────────────
 
 export const __testing = {
@@ -219,6 +271,10 @@ export const __testing = {
   KEY_LANE_HEIGHT_AUDIO,
   KEY_DEFAULT_PLAYBACK_RATE,
   KEY_PREVIEW_FIT_MODE,
+  KEY_LAST_EDIT_OPTION,
+  KEY_DEFAULT_ERASE_BACKEND,
+  KEY_SHOW_EDIT_PRICES,
+  DEFAULT_SHOW_EDIT_PRICES,
   DEFAULT_ZOOM_LEVEL,
   DEFAULT_SHOW_THUMBNAILS,
   DEFAULT_SHOW_SHORTCUT_HINTS,
