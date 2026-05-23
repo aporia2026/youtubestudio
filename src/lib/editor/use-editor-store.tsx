@@ -41,11 +41,36 @@ export interface UseEditorStoreReturn {
   canRedo: boolean;
 }
 
-export function useEditorStore(initial: EditorState, projectId: string): UseEditorStoreReturn {
+export interface UseEditorStoreOptions {
+  /**
+   * Fires synchronously AFTER a successful apply (including the
+   * internal keyboard-driven UNDO/REDO path). Receives the original
+   * command. For UNDO / REDO, also receives the underlying command
+   * that was popped off the stack — caller can inspect it to wire
+   * structural side-effects (e.g. propagate an insert/delete to a
+   * server-side `project_assets` table). Pre-dispatch state snapshot
+   * is exposed via `prevState` so the caller can read the stack tops
+   * that were just consumed without re-deriving from the new state.
+   */
+  onAfterCommand?: (info: {
+    cmd: EditorCommand;
+    resolvedInner: EditorCommand | null;
+    prevState: EditorState;
+  }) => void;
+}
+
+export function useEditorStore(
+  initial: EditorState,
+  projectId: string,
+  options: UseEditorStoreOptions = {},
+): UseEditorStoreReturn {
   const [state, dispatch] = useReducer(
     (s: EditorState, cmd: EditorCommand) => applyCommand(s, cmd),
     initial,
   );
+
+  const onAfterCommandRef = useRef(options.onAfterCommand);
+  onAfterCommandRef.current = options.onAfterCommand;
 
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: 'idle' });
 
@@ -65,7 +90,18 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
 
   const apply = useCallback((cmd: EditorCommand) => {
     console.info('[editor store] command', { type: cmd.type });
+    // Capture the pre-dispatch state so the callback can peek at the
+    // undo/redo stacks (UNDO consumes the top of undoStack, REDO
+    // consumes the top of redoStack — neither is visible post-dispatch).
+    const prevState = stateRef.current;
+    let resolvedInner: EditorCommand | null = null;
+    if (cmd.type === 'UNDO') {
+      resolvedInner = prevState.undoStack[prevState.undoStack.length - 1] ?? null;
+    } else if (cmd.type === 'REDO') {
+      resolvedInner = prevState.redoStack[prevState.redoStack.length - 1] ?? null;
+    }
     dispatch(cmd);
+    onAfterCommandRef.current?.({ cmd, resolvedInner, prevState });
   }, []);
 
   /**

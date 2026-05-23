@@ -40,6 +40,7 @@ import {
   validatePayload,
   type ProjectPayload,
 } from './payload';
+import { backfillFromPayload, loadProjectAssets } from './assets';
 
 // ─── Constants ───────────────────────────────────────────────────────
 
@@ -113,6 +114,64 @@ export async function loadProject(
       defaulted: appliedDefaults,
     });
   }
+
+  // 2026-05-24 project_assets extraction: source of truth for
+  // per-row asset URLs is now the project_assets table, not the
+  // payload's rowImages / rowOverlays / rowVideoClips fields.
+  //
+  // Lazy backfill: if the project has no rows in project_assets
+  // AND the payload still carries non-empty asset maps (legacy),
+  // run a one-shot per-project INSERT to migrate. Idempotent —
+  // future loads skip the backfill.
+  //
+  // After backfill, the table's rows are authoritative; the
+  // payload's asset maps become stale (and are overwritten in
+  // the returned payload below). We keep the payload columns
+  // untouched on disk for a graceful rollback path; the cleanup
+  // migration that strips them is a follow-up.
+  // See `_plans/2026-05-24-project-assets-extraction.md`.
+  const hasLegacyAssets =
+    Object.keys(migrated.rowImages).length > 0 ||
+    Object.keys(migrated.rowOverlays).length > 0 ||
+    Object.keys(migrated.rowVideoClips).length > 0;
+  if (hasLegacyAssets) {
+    try {
+      await backfillFromPayload(id, migrated);
+    } catch (err) {
+      logger.warn('[project-assets backfill] failed (continuing with legacy maps)', {
+        project_id: id,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  // Assemble the asset maps from the table. After backfill, this
+  // contains everything the payload had plus any subsequent
+  // row-asset writes; before backfill (fresh projects with no
+  // legacy maps), it's empty and the editor renders cleanly.
+  let assetMaps;
+  try {
+    assetMaps = await loadProjectAssets(id);
+  } catch (err) {
+    logger.warn('[project-assets load] failed (falling back to payload maps)', {
+      project_id: id,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+    // Defensive fallback: keep the payload's maps so the editor
+    // doesn't render blank everywhere if the new table query has
+    // an unexpected error.
+    assetMaps = {
+      rowImages: migrated.rowImages,
+      rowOverlays: migrated.rowOverlays,
+      rowVideoClips: migrated.rowVideoClips,
+    };
+  }
+  // Overwrite the payload's asset maps with the assembled values
+  // from project_assets. Same shape as before — every read site
+  // (editor, production-doc, renderer, OTIO export, etc.) gets
+  // exactly what it always got, sourced from the table now.
+  migrated.rowImages = assetMaps.rowImages;
+  migrated.rowOverlays = assetMaps.rowOverlays;
+  migrated.rowVideoClips = assetMaps.rowVideoClips;
 
   logger.info('[project payload load] loaded', {
     project_id: id,

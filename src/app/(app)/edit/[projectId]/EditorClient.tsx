@@ -45,6 +45,7 @@ import {
   rowEffectiveDurationMs,
   type EditorCommand,
 } from '@/lib/editor/store';
+import { reindexForCommand } from '@/lib/editor/reindex-for-command';
 import { toast } from 'sonner';
 import { useEditorStore } from '@/lib/editor/use-editor-store';
 import { Timeline } from '@/components/editor/Timeline';
@@ -287,6 +288,12 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     );
   }, []);
 
+  // Forward ref to the store's `apply` so the row-reindex callback
+  // (declared at useEditorStore construction time, before `apply` is
+  // destructured) can dispatch SYNC_SERVER_VERSION after a successful
+  // reindex POST. Filled in immediately after the destructure below.
+  const applyRef = useRef<((cmd: EditorCommand) => void) | null>(null);
+
   // Hooks run unconditionally; conditional render via early return AFTER
   // the hooks declare their values.
   const store = useEditorStore(
@@ -308,8 +315,82 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       version,
     }),
     projectId,
+    {
+      // Structural-reindex side-effect: when the user inserts /
+      // ripple-deletes a shot, OR undoes/redoes one of those, the
+      // server's project_assets row_index keys must shift to match
+      // the new shot positions. Without this fan-out, the next image
+      // upload lands at the wrong index AND on refresh existing
+      // assets appear on the wrong shots.
+      //
+      // See `_plans/2026-05-24-project-assets-extraction.md` §Reindex.
+      onAfterCommand: ({ cmd, resolvedInner }) => {
+        const effect =
+          reindexForCommand(cmd) ??
+          (resolvedInner ? reindexForCommand(resolvedInner) : null);
+        if (!effect) return;
+        console.info('[editor row-reindex] start', {
+          op: effect.op,
+          at_index: effect.atIndex,
+          via: cmd.type,
+        });
+        void (async () => {
+          try {
+            const res = await fetch(
+              `/api/edit/${encodeURIComponent(projectId)}/row-reindex`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ op: effect.op, atIndex: effect.atIndex }),
+              },
+            );
+            if (!res.ok) {
+              const detail = await res.text().catch(() => '');
+              console.warn('[editor row-reindex] failed', {
+                op: effect.op,
+                at_index: effect.atIndex,
+                status: res.status,
+                detail: detail.slice(0, 200),
+              });
+              // Surface to the user — assets are now misaligned with
+              // the client's view; ignoring it silently would mean
+              // images move to the wrong shots on next refresh.
+              toast.error(
+                `Couldn't sync shot order to the server — refresh may show assets on the wrong shots. (HTTP ${res.status})`,
+                { duration: 8000 },
+              );
+              return;
+            }
+            const data = (await res.json().catch(() => ({}))) as {
+              version?: number;
+              affected?: number;
+            };
+            console.info('[editor row-reindex] committed', {
+              op: effect.op,
+              at_index: effect.atIndex,
+              affected: data.affected,
+              new_version: data.version,
+            });
+            if (typeof data.version === 'number' && applyRef.current) {
+              applyRef.current({ type: 'SYNC_SERVER_VERSION', version: data.version });
+            }
+          } catch (err) {
+            console.warn('[editor row-reindex] threw', {
+              op: effect.op,
+              at_index: effect.atIndex,
+              detail: err instanceof Error ? err.message : String(err),
+            });
+            toast.error(
+              'Network error while syncing shot order — refresh may show assets on the wrong shots.',
+              { duration: 8000 },
+            );
+          }
+        })();
+      },
+    },
   );
   const { state, apply, flushSave, reloadFromServer, saveStatus, canUndo, canRedo } = store;
+  applyRef.current = apply;
 
   // Gate the "Local (free)" entries in the doc-level animation-model
   // picker. Same hook the prod-doc page uses so the same models surface

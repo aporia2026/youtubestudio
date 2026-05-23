@@ -1,7 +1,7 @@
 /**
  * POST /api/edit/[projectId]/row-asset
  *
- * Atomic server-side merge for a single row's expensive asset
+ * Atomic server-side write for a single row's expensive asset
  * (generated image / fetched overlay / B-roll clip).
  *
  * Why this exists:
@@ -19,21 +19,24 @@
  *     3. User navigates / closes the tab inside the 800 ms debounce
  *        window → setTimeout dies with the page, save never fires.
  *   Result: the user paid for a generation and the URL never
- *   reached the database. Confirmed by a real-world repro:
- *   `d244130f-bdfe-4d08-b886-c0c77893f5b9` had 181 shots saved but
- *   `imageCount = 0` and `version = 1`, meaning the row was written
- *   exactly once (initial doc save) and every subsequent client save
- *   missed.
+ *   reached the database.
  *
- * Why an endpoint vs. fixing the autosave:
- *   Generations cost real money. The user explicitly asked for a
- *   "robust" fix that doesn't depend on client state. Attaching the
- *   asset server-side in a single SQL statement removes every
- *   client-state dependency: no localStorage cache, no in-flight
- *   useProject GET, no debounce timer. The image lands on the server
- *   before the gen API call returns to the client. Tab close, device
- *   switch, storage eviction — none can lose the bytes once the
- *   POST has returned 200.
+ * Why server-side vs. fixing the autosave:
+ *   Generations cost real money. Attaching the asset server-side in
+ *   a single SQL statement removes every client-state dependency:
+ *   no localStorage cache, no in-flight useProject GET, no debounce
+ *   timer. The image lands on the server before the gen API call
+ *   returns to the client. Tab close, device switch, storage
+ *   eviction — none can lose the bytes once the POST has returned 200.
+ *
+ * Storage backend (2026-05-24):
+ *   Asset URLs live in the dedicated `project_assets` table now,
+ *   not in `user_history.payload`. Eliminates the payload-size cap
+ *   class entirely (the 413 issue on the 184-shot NotPetya project).
+ *   See `_plans/2026-05-24-project-assets-extraction.md`. The
+ *   per-image `rowImageStyleVersions` field stays on the payload —
+ *   it's a small integer per row, not a size-bloat source, and the
+ *   editor still reads it from there.
  *
  * Body:
  *   {
@@ -53,7 +56,6 @@
  *   200 { ok: true, version: number }   — newly-bumped row version
  *   404 { error: '...' }                — project missing or out of scope
  *   400 { error: '...' }                — invalid body shape
- *   413 { error: '...' }                — payload too large after merge
  *
  * Auth: standard editor-project ownership via `apiRoute.authed` plus
  * the SQL WHERE clause's workspace_id + collaborator_id bind so a
@@ -66,23 +68,15 @@
  * trip the limit.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { sql } from '@vercel/postgres';
+import { sql } from '@/lib/db';
 import { apiRoute } from '@/lib/route-helpers';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
+import { writeProjectAsset, bumpProjectVersion } from '@/lib/project/assets';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_URL_BYTES = 8192;
 const MAX_ROW_INDEX = 1000;
-// 2026-05-24: raised from 2 MB → 10 MB after a user hit the cap on a
-// 184-shot project (POST /row-asset returned 413 every upload, images
-// vanished on refresh). The persist.ts PATCH cap is at 5 MB; we keep
-// row-asset's cap >= that so the two save paths agree on what fits.
-// Long-term, asset URLs should move OUT of the jsonb payload into a
-// dedicated table (project_assets keyed by project_id + row_index)
-// so the payload size doesn't grow with shot count at all. Tracked
-// in the follow-up plan referenced below the row-asset commit.
-const MAX_PAYLOAD_BYTES = 10 * 1024 * 1024;
 
 type Slot = 'image' | 'overlay' | 'clip';
 
@@ -150,14 +144,6 @@ function validateValue(slot: Slot, value: unknown): { ok: true; normalized: unkn
   return { ok: false, reason: `unknown slot: ${String(slot)}` };
 }
 
-// Payload-path map. Kept here so the bare strings live in one place
-// and a typo in jsonb_set's text-array literal is easy to spot.
-const SLOT_KEY: Record<Slot, string> = {
-  image: 'rowImages',
-  overlay: 'rowOverlays',
-  clip: 'rowVideoClips',
-};
-
 export const POST = apiRoute.authed(
   async (session, req: NextRequest, ctx: { params: Promise<{ projectId: string }> }) => {
     // Per-IP rate limit — see header comment for ceiling rationale.
@@ -178,10 +164,6 @@ export const POST = apiRoute.authed(
       return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     }
 
-    // rowIndex validation — non-negative integer below an absurdity cap.
-    // jsonb_set with a numeric path index needs a stringified integer;
-    // negatives or non-integers are rejected here so the SQL never sees
-    // an invalid path expression.
     if (typeof body.rowIndex !== 'number' || !Number.isInteger(body.rowIndex) || body.rowIndex < 0 || body.rowIndex > MAX_ROW_INDEX) {
       return NextResponse.json(
         { error: `rowIndex must be an integer in [0, ${MAX_ROW_INDEX}]` },
@@ -203,9 +185,10 @@ export const POST = apiRoute.authed(
       return NextResponse.json({ error: validated.reason }, { status: 400 });
     }
 
-    // styleVersion is image-only metadata for drift detection. Validated
-    // here but applied as a parallel jsonb_set further down so a
-    // mismatched slot doesn't write a styleVersion under an overlay.
+    // styleVersion is image-only metadata for drift detection. Stays
+    // on the payload (it's a small integer per row, doesn't bloat the
+    // payload like asset URLs do); written via a separate jsonb_set
+    // after the asset write succeeds.
     let styleVersion: number | undefined;
     if (slot === 'image' && body.styleVersion !== undefined) {
       if (typeof body.styleVersion !== 'number' || !Number.isFinite(body.styleVersion) || !Number.isInteger(body.styleVersion) || body.styleVersion < 0) {
@@ -213,26 +196,6 @@ export const POST = apiRoute.authed(
       }
       styleVersion = body.styleVersion;
     }
-
-    // The merge: a single UPDATE that uses jsonb_set with
-    // create_if_missing=true so the path is created when the slot map
-    // didn't exist yet. The path is a text[] of two elements — the
-    // slot key (rowImages/rowOverlays/rowVideoClips) and the stringified
-    // rowIndex. Postgres jsonb_set treats numeric-string array indices
-    // on objects as object keys, which is exactly what we want
-    // (rowImages is shaped as `Record<number, string>` in the
-    // ProjectPayload, serialized as a JSON object with string keys).
-    //
-    // When value === null we use jsonb_set to write JSON null; the
-    // editor's render loop treats null and missing the same way.
-    //
-    // Atomicity: this is a single UPDATE on a single row. The Postgres
-    // row-level lock during the UPDATE means two concurrent writers
-    // serialize, and each merge sees the other's prior write — no
-    // last-write-wins clobbering across slots or rows.
-    const slotKey = SLOT_KEY[slot];
-    const pathLiteral = `{${slotKey},${rowIndex}}`;
-    const valueJson = JSON.stringify(validated.normalized);
 
     logger.info('[row-asset attach] start', {
       project_id: projectId,
@@ -243,98 +206,85 @@ export const POST = apiRoute.authed(
       style_version: styleVersion,
     });
 
-    // Cap the post-merge payload size by checking the projected size
-    // before commit. Two-phase: first compute the merged payload in
-    // a CTE, then either UPDATE or skip based on byte length.
-    // pg_column_size on jsonb is the on-disk size; close enough to
-    // application-layer bytes for our 2 MB ceiling and faster than
-    // re-serializing in Node.
-    let updateResult;
-    if (styleVersion !== undefined) {
-      // Image case w/ styleVersion — two jsonb_set calls nested so
-      // both fields land in the same row write.
-      const stylePathLiteral = `{rowImageStyleVersions,${rowIndex}}`;
-      updateResult = await sql<{ new_version: number; bytes: number }>`
-        WITH merged AS (
-          SELECT id,
-                 jsonb_set(
-                   jsonb_set(COALESCE(payload, '{}'::jsonb), ${pathLiteral}::text[], ${valueJson}::jsonb, true),
-                   ${stylePathLiteral}::text[], ${String(styleVersion)}::jsonb, true
-                 ) AS new_payload
-            FROM user_history
-           WHERE id = ${projectId}::uuid
-             AND workspace_id = ${session.ws}::uuid
-             AND collaborator_id = ${session.uid}::uuid
-             AND kind = 'production_doc'
-        )
-        UPDATE user_history h
-           SET payload = m.new_payload,
-               version = version + 1
-          FROM merged m
-         WHERE h.id = m.id
-           AND pg_column_size(m.new_payload) <= ${MAX_PAYLOAD_BYTES}
-         RETURNING h.version AS new_version,
-                   pg_column_size(m.new_payload)::int AS bytes
-      `;
-    } else {
-      updateResult = await sql<{ new_version: number; bytes: number }>`
-        WITH merged AS (
-          SELECT id,
-                 jsonb_set(COALESCE(payload, '{}'::jsonb), ${pathLiteral}::text[], ${valueJson}::jsonb, true) AS new_payload
-            FROM user_history
-           WHERE id = ${projectId}::uuid
-             AND workspace_id = ${session.ws}::uuid
-             AND collaborator_id = ${session.uid}::uuid
-             AND kind = 'production_doc'
-        )
-        UPDATE user_history h
-           SET payload = m.new_payload,
-               version = version + 1
-          FROM merged m
-         WHERE h.id = m.id
-           AND pg_column_size(m.new_payload) <= ${MAX_PAYLOAD_BYTES}
-         RETURNING h.version AS new_version,
-                   pg_column_size(m.new_payload)::int AS bytes
-      `;
+    // Verify project ownership + scope BEFORE touching project_assets.
+    // The FK on project_assets is ON DELETE CASCADE but doesn't enforce
+    // workspace/collaborator scoping, so the auth check lives here.
+    const ownership = await sql<{ id: string }>`
+      SELECT id
+        FROM user_history
+       WHERE id = ${projectId}::uuid
+         AND workspace_id = ${session.ws}::uuid
+         AND collaborator_id = ${session.uid}::uuid
+         AND kind = 'production_doc'
+       LIMIT 1
+    `;
+    if (ownership.rows.length === 0) {
+      logger.info('[row-asset attach] not found', { project_id: projectId });
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     }
 
-    if (updateResult.rows.length === 0) {
-      // 0 rows could mean either: (a) the project doesn't exist in
-      // this scope, or (b) the merge would have exceeded the size cap.
-      // Disambiguate with a tiny probe so the client gets the right
-      // toast.
-      const probe = await sql<{ bytes: number }>`
-        SELECT pg_column_size(payload)::int AS bytes
-          FROM user_history
-         WHERE id = ${projectId}::uuid
-           AND workspace_id = ${session.ws}::uuid
-           AND collaborator_id = ${session.uid}::uuid
-           AND kind = 'production_doc'
-         LIMIT 1
-      `;
-      if (probe.rows.length === 0) {
-        logger.info('[row-asset attach] not found', { project_id: projectId });
-        return NextResponse.json({ error: 'Project not found' }, { status: 404 });
-      }
-      logger.info('[row-asset attach] too large', {
-        project_id: projectId,
-        existing_bytes: probe.rows[0].bytes,
-        cap: MAX_PAYLOAD_BYTES,
-      });
-      return NextResponse.json(
-        { error: 'Payload would exceed size limit after merge', code: 'TOO_LARGE' },
-        { status: 413 },
+    // Asset write goes to project_assets (UPSERT on the composite PK).
+    // Each slot write is one statement — image to row N doesn't touch
+    // overlay on row N or image on any other row. No payload size cap
+    // class to hit because the asset URLs no longer live in the payload.
+    try {
+      await writeProjectAsset(
+        projectId,
+        rowIndex,
+        slot,
+        validated.normalized as string | { status: string; url?: string } | { status: string; videoUrl?: string; durationSeconds?: number; brollClipId?: string } | null,
       );
+    } catch (err) {
+      logger.error('[row-asset attach] write failed', {
+        project_id: projectId,
+        slot,
+        row_index: rowIndex,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      return NextResponse.json({ error: 'Asset write failed' }, { status: 500 });
     }
 
-    const { new_version, bytes } = updateResult.rows[0]!;
+    // Image-only: persist styleVersion onto the payload alongside the
+    // asset write. Tiny integer, stays in JSONB — no bloat concern.
+    // Failure here is non-fatal: the asset already landed, drift
+    // detection is a soft signal.
+    if (styleVersion !== undefined) {
+      const stylePathLiteral = `{rowImageStyleVersions,${rowIndex}}`;
+      try {
+        await sql`
+          UPDATE user_history
+             SET payload = jsonb_set(
+                   COALESCE(payload, '{}'::jsonb),
+                   ${stylePathLiteral}::text[],
+                   ${String(styleVersion)}::jsonb,
+                   true
+                 )
+           WHERE id = ${projectId}::uuid
+             AND workspace_id = ${session.ws}::uuid
+             AND collaborator_id = ${session.uid}::uuid
+             AND kind = 'production_doc'
+        `;
+      } catch (err) {
+        logger.warn('[row-asset attach] styleVersion write failed (non-fatal)', {
+          project_id: projectId,
+          row_index: rowIndex,
+          detail: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // Bump user_history.version so the editor's optimistic-sync
+    // contract keeps working. The asset write didn't touch the payload
+    // (asset URLs live elsewhere now); without this manual bump, the
+    // editor would never observe that the project changed.
+    const newVersion = await bumpProjectVersion(projectId);
+
     logger.info('[row-asset attach] committed', {
       project_id: projectId,
       slot,
       row_index: rowIndex,
-      new_version,
-      bytes,
+      new_version: newVersion,
     });
-    return NextResponse.json({ ok: true, version: new_version });
+    return NextResponse.json({ ok: true, version: newVersion });
   },
 );
