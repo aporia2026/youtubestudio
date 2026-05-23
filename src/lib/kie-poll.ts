@@ -16,6 +16,7 @@
  */
 const KIE_BASE = 'https://api.kie.ai/api/v1/jobs';
 const GPT4O_BASE = 'https://api.kie.ai/api/v1/gpt4o-image';
+const FLUX_KONTEXT_BASE = 'https://api.kie.ai/api/v1/flux/kontext';
 
 const POLL_INTERVAL_MS = 3000;
 const POLL_MAX_ATTEMPTS = 95;
@@ -240,4 +241,99 @@ export async function pollGpt4oImageResult(taskId: string, apiKey: string): Prom
     // GENERATING / WAITING — keep polling
   }
   throw new Error('GPT-4o image generation timed out after 285 s — try again');
+}
+
+/**
+ * Flux Kontext lives at its own endpoint (`/flux/kontext/*`) rather than
+ * the unified `/jobs/*` surface. Same retry + error-mapping shape as
+ * `createKieTask`. Inputs use Flux's camelCase keys (`inputImage`,
+ * `aspectRatio`, `outputFormat`).
+ */
+export interface FluxKontextInput {
+  prompt: string;
+  inputImage?: string;
+  model: 'flux-kontext-pro' | 'flux-kontext-max';
+  aspectRatio?: '21:9' | '16:9' | '4:3' | '1:1' | '3:4' | '9:16';
+  outputFormat?: 'jpeg' | 'png';
+  promptUpsampling?: boolean;
+  enableTranslation?: boolean;
+  safetyTolerance?: number;
+}
+
+export async function createFluxKontextTask(
+  apiKey: string,
+  input: FluxKontextInput,
+): Promise<string> {
+  let res!: Response;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt));
+    res = await fetch(`${FLUX_KONTEXT_BASE}/generate`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(input),
+    });
+    if (res.status !== 502 && res.status !== 503 && res.status !== 504) break;
+  }
+  if (!res.ok) throw new Error(await kieErrorMessage(res));
+
+  let data: Record<string, unknown>;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error('Kie.ai returned non-JSON response during Flux Kontext task creation');
+  }
+  const taskId = (data.data as Record<string, unknown>)?.taskId as string | undefined;
+  if (!taskId) {
+    const message = (data as Record<string, unknown>).message;
+    throw new Error(`No taskId from Kie.ai flux-kontext — ${String(message ?? JSON.stringify(data).slice(0, 200))}`);
+  }
+  return taskId;
+}
+
+/**
+ * Polls the Flux Kontext task and returns the result image URL.
+ *
+ * Flux Kontext uses an integer `successFlag` instead of the string
+ * `state` / `status` other endpoints use:
+ *   0 = GENERATING, 1 = SUCCESS, 2 = CREATE_TASK_FAILED, 3 = GENERATE_FAILED.
+ * Result URL lives at `data.response.resultImageUrl` (single URL, not an
+ * array).
+ */
+export async function pollFluxKontextResult(taskId: string, apiKey: string): Promise<string> {
+  for (let i = 0; i < POLL_MAX_ATTEMPTS; i++) {
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+
+    const res = await fetch(`${FLUX_KONTEXT_BASE}/record-info?taskId=${encodeURIComponent(taskId)}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!res.ok) {
+      if (res.status === 429) continue;
+      throw new Error(`Flux Kontext poll failed: ${res.status}`);
+    }
+
+    let data: Record<string, unknown>;
+    try {
+      data = await res.json();
+    } catch {
+      continue;
+    }
+    const dataObj = data.data as Record<string, unknown> | undefined;
+    const flag = dataObj?.successFlag;
+
+    if (flag === 1) {
+      const response = dataObj?.response as Record<string, unknown> | undefined;
+      const url = response?.resultImageUrl as string | undefined;
+      if (!url) throw new Error('No image URL in Flux Kontext result');
+      return url;
+    }
+    if (flag === 2 || flag === 3) {
+      const err = (dataObj?.errorMessage as string) || 'Flux Kontext task failed';
+      throw new Error(err);
+    }
+    // 0 (GENERATING) — keep polling
+  }
+  throw new Error('Flux Kontext generation timed out after 285 s — try again');
 }

@@ -13,6 +13,17 @@ import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { IMAGE_MODELS, DEFAULT_IMAGE_MODEL, getImageModelSpec } from '@/lib/image-models';
 import { formatI2ICostHint } from '@/lib/image-models-i2i';
+import {
+  DEFAULT_EDIT_OPTION_ID,
+  formatEditOptionLabel,
+  getEditOption,
+  getSortedEditOptions,
+  type EditOption,
+} from '@/lib/image-edit-pricing';
+import {
+  getLastEditOptionId,
+  setLastEditOptionId,
+} from '@/lib/editor/settings';
 import { useLocalStudioEnabled } from '@/lib/local-studio-enabled';
 import {
   saveProductionDocEntry,
@@ -1069,6 +1080,8 @@ function ImageLightbox({ imageUrl, onClose }: { imageUrl: string; onClose: () =>
 function EditPanel({
   sourceImageUrl,
   initialResult,
+  option,
+  onOptionChange,
   onApply,
   onUseThis,
   onOpenBrush,
@@ -1080,6 +1093,10 @@ function EditPanel({
    *  the result, then hands the panel off to render the review UI
    *  with a consistent "Use this / Discard" experience. */
   initialResult?: { imageUrl: string; saliency: ImageSaliencyMap | null } | null;
+  /** Active edit option (parent owns the state so the brush surface
+   *  reads the same value). */
+  option: EditOption;
+  onOptionChange: (next: EditOption) => void;
   onApply: (prompt: string) => Promise<EditResult>;
   onUseThis: (imageUrl: string, saliency: ImageSaliencyMap | null) => void;
   /** Open the mask brush modal. Optional; when absent the in-panel
@@ -1187,48 +1204,78 @@ function EditPanel({
               />
               <div style={{ flex: '1 1 280px', display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <label className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                  What should change?
+                  Model
                 </label>
-                <textarea
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  placeholder="e.g. change the t-shirt to red, make the sky stormy, add a sunset glow"
-                  rows={5}
+                <select
+                  value={option.id}
+                  onChange={(e) => {
+                    const next = getEditOption(e.target.value);
+                    if (next) onOptionChange(next);
+                  }}
                   disabled={isGenerating}
                   style={{
                     background: 'var(--bg-card, #111)',
                     color: 'var(--text-primary)',
                     border: '1px solid var(--border)',
                     borderRadius: 6,
-                    padding: 8,
+                    padding: '6px 8px',
                     fontSize: 13,
-                    resize: 'vertical',
                     fontFamily: 'inherit',
                   }}
-                  maxLength={2000}
-                />
+                >
+                  {getSortedEditOptions().map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {formatEditOptionLabel(opt)}{opt.maskCapable ? ' · brush' : ''}
+                    </option>
+                  ))}
+                </select>
                 <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                  Smart edit uses Nano Banana 2 — the model locates the region from your
-                  prompt. No mask needed. Roughly $0.02 per attempt.
+                  {option.tagline}
                 </div>
-                {onOpenBrush && (
-                  <button
-                    type="button"
-                    onClick={onOpenBrush}
-                    disabled={isGenerating}
+
+                {option.maskCapable ? (
+                  // Mask-capable models need a brush — the model
+                  // requires `mask_url` on the API side. The panel
+                  // hands the user straight to the brush editor; the
+                  // textarea + Apply button only make sense for
+                  // prompt-only models.
+                  <div
                     className="text-xs"
                     style={{
-                      background: 'transparent',
-                      color: 'var(--text-secondary)',
-                      border: 'none',
-                      cursor: isGenerating ? 'not-allowed' : 'pointer',
-                      textDecoration: 'underline',
-                      padding: 0,
-                      textAlign: 'left',
+                      color: 'var(--text-muted)',
+                      background: 'var(--bg-card, #111)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 6,
+                      padding: 10,
+                      marginTop: 4,
                     }}
                   >
-                    Paint a region instead…
-                  </button>
+                    This model edits a region you paint. Click below to open the brush, mark the area, and apply.
+                  </div>
+                ) : (
+                  <>
+                    <label className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                      What should change?
+                    </label>
+                    <textarea
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                      placeholder="e.g. change the t-shirt to red, make the sky stormy, add a sunset glow"
+                      rows={5}
+                      disabled={isGenerating}
+                      style={{
+                        background: 'var(--bg-card, #111)',
+                        color: 'var(--text-primary)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 6,
+                        padding: 8,
+                        fontSize: 13,
+                        resize: 'vertical',
+                        fontFamily: 'inherit',
+                      }}
+                      maxLength={2000}
+                    />
+                  </>
                 )}
                 {error && (
                   <div className="text-xs" style={{ color: '#f87171' }} role="alert">
@@ -1236,22 +1283,41 @@ function EditPanel({
                   </div>
                 )}
                 <div className="flex items-center gap-2 mt-1">
-                  <button
-                    type="button"
-                    onClick={apply}
-                    disabled={!prompt.trim() || isGenerating}
-                    className="text-xs px-3 py-1.5 rounded"
-                    style={{
-                      background: !prompt.trim() || isGenerating
-                        ? 'rgba(120,120,120,0.18)'
-                        : 'rgba(168,85,247,0.20)',
-                      color: !prompt.trim() || isGenerating ? 'var(--text-muted)' : '#c084fc',
-                      border: '1px solid rgba(168,85,247,0.35)',
-                      cursor: !prompt.trim() || isGenerating ? 'not-allowed' : 'pointer',
-                    }}
-                  >
-                    {isGenerating ? 'Generating…' : 'Apply (smart edit · ~$0.02)'}
-                  </button>
+                  {option.maskCapable ? (
+                    onOpenBrush && (
+                      <button
+                        type="button"
+                        onClick={onOpenBrush}
+                        disabled={isGenerating}
+                        className="text-xs px-3 py-1.5 rounded"
+                        style={{
+                          background: 'rgba(168,85,247,0.20)',
+                          color: '#c084fc',
+                          border: '1px solid rgba(168,85,247,0.35)',
+                          cursor: isGenerating ? 'not-allowed' : 'pointer',
+                        }}
+                      >
+                        🖌 Paint a region to edit
+                      </button>
+                    )
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={apply}
+                      disabled={!prompt.trim() || isGenerating}
+                      className="text-xs px-3 py-1.5 rounded"
+                      style={{
+                        background: !prompt.trim() || isGenerating
+                          ? 'rgba(120,120,120,0.18)'
+                          : 'rgba(168,85,247,0.20)',
+                        color: !prompt.trim() || isGenerating ? 'var(--text-muted)' : '#c084fc',
+                        border: '1px solid rgba(168,85,247,0.35)',
+                        cursor: !prompt.trim() || isGenerating ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      {isGenerating ? 'Generating…' : `Apply (${formatEditOptionLabel(option)})`}
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={onClose}
@@ -2557,6 +2623,21 @@ function ProductionDocPage() {
   //   flow uses.
   const [editPanelRow, setEditPanelRow] = useState<number | null>(null);
   const [editBrushOpen, setEditBrushOpen] = useState(false);
+  // 2026-05-23: Active edit option for the panel + brush. Persisted to
+  // localStorage so muscle memory follows the user across sessions.
+  // Initialised lazily on first read so the SSR pass returns the
+  // default and the client hydrates with the persisted value on mount.
+  const [editOptionId, setEditOptionIdState] = useState<string>(DEFAULT_EDIT_OPTION_ID);
+  useEffect(() => {
+    const persisted = getLastEditOptionId(DEFAULT_EDIT_OPTION_ID);
+    if (getEditOption(persisted)) setEditOptionIdState(persisted);
+  }, []);
+  const editOption: EditOption =
+    getEditOption(editOptionId) ?? getEditOption(DEFAULT_EDIT_OPTION_ID)!;
+  const updateEditOption = useCallback((next: EditOption) => {
+    setEditOptionIdState(next.id);
+    setLastEditOptionId(next.id);
+  }, []);
   // Drag-and-drop overlay position editor. `null` = closed; otherwise
   // the row index whose overlay is being positioned. Lives at the page
   // level (not the cell) because the editor needs the row's still image
@@ -4542,10 +4623,10 @@ function ProductionDocPage() {
    * Returns the candidate URL + saliency on success so the caller (the
    * edit panel) can show before/after before the user commits.
    *
-   * Two modes:
-   *   - smart: prompt-only edit via Nano Banana 2 (~$0.02). Default.
-   *   - mask:  brush-painted region edit via GPT-4o Image. Caller passes
-   *           the pre-uploaded mask URL + quality tier.
+   * The `optionId` picks one row from the catalog in
+   * `src/lib/image-edit-pricing.ts`. Mask-capable options need a
+   * `maskUrl`; prompt-only options ignore it. `intent: 'erase'` lets the
+   * route force its default Erase backend + server-generated prompt.
    *
    * The row's `RowImageState` is untouched here. Only `acceptEditForRow`
    * (called by the panel's "Use this" button) writes the result onto the
@@ -4555,7 +4636,7 @@ function ProductionDocPage() {
     rowIndex: number,
     originalImageUrl: string,
     prompt: string,
-    opts: { mask?: { url: string; quality: 'low' | 'medium' | 'high' } } = {},
+    opts: { optionId?: string; maskUrl?: string; intent?: 'erase' } = {},
   ): Promise<{ ok: true; imageUrl: string; saliency: ImageSaliencyMap | null } | { ok: false; error: string }> {
     try {
       const res = await fetch('/api/generate/production-doc/image/edit', {
@@ -4564,15 +4645,20 @@ function ProductionDocPage() {
         body: JSON.stringify({
           originalImageUrl,
           prompt,
-          model: opts.mask ? 'gpt-4o-image-edit' : 'nano-banana-edit',
-          mask: opts.mask ? { url: opts.mask.url, quality: opts.mask.quality } : undefined,
+          optionId: opts.optionId,
+          mask: opts.maskUrl ? { url: opts.maskUrl } : undefined,
+          intent: opts.intent,
         }),
       });
       const data = await safeJson(res);
       if (!res.ok) {
         return { ok: false, error: (data.error as string) || `Failed (${res.status})` };
       }
-      console.info('[prodoc image-edit] success', { rowIndex, mode: opts.mask ? 'mask' : 'smart' });
+      console.info('[prodoc image-edit] success', {
+        rowIndex,
+        optionId: opts.optionId ?? 'default',
+        intent: opts.intent ?? 'edit',
+      });
       return {
         ok: true,
         imageUrl: data.imageUrl as string,
@@ -8760,10 +8846,26 @@ function ProductionDocPage() {
           return (
             <MaskBrushEditor
               sourceImageUrl={src}
-              defaultQuality="medium"
+              option={editOption}
+              onOptionChange={updateEditOption}
               onCancel={() => setEditBrushOpen(false)}
-              onApply={async ({ maskUrl, prompt, quality }) => {
-                const r = await editImageForRow(idx, src, prompt, { mask: { url: maskUrl, quality } });
+              onApply={async ({ maskUrl, prompt, option: appliedOption }) => {
+                const r = await editImageForRow(idx, src, prompt, {
+                  optionId: appliedOption.id,
+                  maskUrl,
+                });
+                if (r.ok) {
+                  setEditResult({ imageUrl: r.imageUrl, saliency: r.saliency });
+                  setEditBrushOpen(false);
+                } else {
+                  toast.error(r.error);
+                }
+              }}
+              onErase={async ({ maskUrl }) => {
+                const r = await editImageForRow(idx, src, '', {
+                  intent: 'erase',
+                  maskUrl,
+                });
                 if (r.ok) {
                   setEditResult({ imageUrl: r.imageUrl, saliency: r.saliency });
                   setEditBrushOpen(false);
@@ -8778,7 +8880,9 @@ function ProductionDocPage() {
           <EditPanel
             sourceImageUrl={src}
             initialResult={editResult}
-            onApply={(prompt) => editImageForRow(idx, src, prompt)}
+            option={editOption}
+            onOptionChange={updateEditOption}
+            onApply={(prompt) => editImageForRow(idx, src, prompt, { optionId: editOption.id })}
             onUseThis={(imageUrl, saliency) => acceptEditForRow(idx, imageUrl, saliency)}
             onOpenBrush={() => setEditBrushOpen(true)}
             onClose={closeEditPanel}

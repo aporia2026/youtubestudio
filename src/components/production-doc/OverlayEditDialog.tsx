@@ -36,6 +36,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { MaskBrushEditor } from './MaskBrushEditor';
+import { getEditOption, type EditOption } from '@/lib/image-edit-pricing';
 
 interface OverlayEditDialogProps {
   /** Current overlay URL — used as the source for any edit. The
@@ -190,15 +191,30 @@ export function OverlayEditDialog({
     }
   }, [sourceUrl, smartPrompt, autoRmbg]);
 
+  // The overlay edit route only knows the GPT-4o backend; the brush
+  // picker is restricted accordingly. `quality` is derived from the
+  // GPT-4o option the user picked.
+  const OVERLAY_ALLOWED_OPTION_IDS = ['gpt-4o-low', 'gpt-4o-medium', 'gpt-4o-high'] as const;
+  const [brushOption, setBrushOption] = useState<EditOption>(
+    () => getEditOption('gpt-4o-medium')!,
+  );
+
   const applyBrushEdit = useCallback(
-    async (args: { maskUrl: string; prompt: string; quality: 'low' | 'medium' | 'high' }) => {
+    async (args: { maskUrl: string; prompt: string; option: EditOption }) => {
       setBrushOpen(false);
       setError(null);
       setIsWorking(true);
+      // The route only accepts GPT-4o, which the option picker is
+      // restricted to via `allowedOptionIds`. The narrowing here is
+      // defensive — if a stale option somehow slips through, fall
+      // back to medium rather than send an invalid quality.
+      const quality: 'low' | 'medium' | 'high' =
+        args.option.backend.kind === 'kie-gpt4o' ? args.option.backend.quality : 'medium';
       console.info('[overlay edit] brush edit submit', {
         overlayUrl: sourceUrl,
         maskUrl: args.maskUrl,
-        quality: args.quality,
+        optionId: args.option.id,
+        quality,
         promptLength: args.prompt.length,
       });
       if (abortRef.current) abortRef.current.abort();
@@ -212,7 +228,7 @@ export function OverlayEditDialog({
             mode: 'brush',
             overlayUrl: sourceUrl,
             prompt: args.prompt,
-            mask: { url: args.maskUrl, quality: args.quality },
+            mask: { url: args.maskUrl, quality },
             rerunRmbg: autoRmbg,
           }),
           signal: controller.signal,
@@ -598,6 +614,9 @@ export function OverlayEditDialog({
       {brushOpen && (
         <MaskBrushEditor
           sourceImageUrl={sourceUrl}
+          option={brushOption}
+          onOptionChange={setBrushOption}
+          allowedOptionIds={OVERLAY_ALLOWED_OPTION_IDS}
           onCancel={() => setBrushOpen(false)}
           onApply={(args) => applyBrushEdit(args)}
         />

@@ -1,50 +1,75 @@
 "use client";
 
 /**
- * Brush-paint mask editor for production-doc image cells.
+ * Brush-paint mask editor for production-doc image cells and the shot
+ * editor.
  *
  * Renders a fullscreen modal with the source image displayed at fit-to-
  * viewport size. A second HTML5 canvas, sized to the source's *natural*
  * pixel dimensions, is overlaid at the same on-screen position so the
- * user can paint regions to edit. When the user clicks Apply:
+ * user can paint regions to edit. When the user clicks Apply or Erase:
  *
  *   1. The paint layer is converted to a strict black/white PNG matching
- *      the source's natural dimensions (Kie GPT-4o image-edit requires
- *      identical dimensions and a binary mask).
+ *      the source's natural dimensions (Ideogram v3-edit and GPT-4o
+ *      image-edit both expect a binary mask at identical dimensions).
  *   2. The PNG is uploaded directly to R2 via a presigned PUT obtained
  *      from `/api/uploads/mask`.
- *   3. The mask URL + prompt + quality tier are handed back to the
- *      caller via `onApply` so it can fire the GPT-4o image-edit call.
+ *   3. The mask URL + prompt + selected option are handed back to the
+ *      caller via `onApply`. For Erase, the caller invokes the
+ *      production-doc image-edit route with `intent: 'erase'`, which
+ *      forces a mask-capable backend + server-generated prompt.
  *
  * Black = regenerate, white = preserve. The renderer translates the red
  * brush strokes to black at export time so the on-screen feedback can
  * stay visible without affecting the mask.
+ *
+ * Model dropdown shows only mask-capable options from the catalog
+ * (`src/lib/image-edit-pricing.ts`) since prompt-only models do not
+ * accept a mask input.
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-
-type Quality = 'low' | 'medium' | 'high';
-
-const QUALITY_LABELS: Record<Quality, string> = {
-  low: 'Low — $0.02',
-  medium: 'Medium — $0.07',
-  high: 'High — $0.19',
-};
+import {
+  formatEditOptionLabel,
+  getEditOption,
+  getSortedEditOptions,
+  type EditOption,
+} from '@/lib/image-edit-pricing';
 
 interface MaskBrushEditorProps {
   sourceImageUrl: string;
-  defaultQuality?: Quality;
+  /** Active edit option. Parent owns the state so the picker inside
+   *  this modal stays in sync with the EditPanel's dropdown when the
+   *  user toggles between them. Must be mask-capable. */
+  option: EditOption;
+  onOptionChange: (next: EditOption) => void;
+  /** Optional whitelist of option ids to expose in the brush model
+   *  picker. When omitted, all mask-capable options from the catalog
+   *  appear. Used by surfaces whose backend only supports a subset
+   *  (e.g. overlay edit, which only knows GPT-4o). */
+  allowedOptionIds?: readonly string[];
   onCancel: () => void;
   /** Called after the mask has been generated, uploaded, and the user
-   *  has clicked Apply. The caller fires the GPT-4o edit call. */
-  onApply: (args: { maskUrl: string; prompt: string; quality: Quality }) => void | Promise<void>;
+   *  has clicked Apply. The caller fires the image-edit call with the
+   *  selected option. */
+  onApply: (args: { maskUrl: string; prompt: string; option: EditOption }) => void | Promise<void>;
+  /** Called when the user clicks Erase. Object-removal: the caller
+   *  invokes the edit route with `intent: 'erase'`, which forces a
+   *  mask-capable backend + a server-generated removal prompt. The
+   *  prompt + model are not the user's concern in this flow. When
+   *  omitted (e.g. overlay edit surface, where the backing endpoint
+   *  has no `intent: 'erase'` branch) the Erase button is hidden. */
+  onErase?: (args: { maskUrl: string }) => void | Promise<void>;
 }
 
 export function MaskBrushEditor({
   sourceImageUrl,
-  defaultQuality = 'medium',
+  option,
+  onOptionChange,
+  allowedOptionIds,
   onCancel,
   onApply,
+  onErase,
 }: MaskBrushEditorProps) {
   const imgRef = useRef<HTMLImageElement>(null);
   const maskCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -54,7 +79,6 @@ export function MaskBrushEditor({
   const [tool, setTool] = useState<'brush' | 'erase'>('brush');
   const [brushSize, setBrushSize] = useState(60);
   const [prompt, setPrompt] = useState('');
-  const [quality, setQuality] = useState<Quality>(defaultQuality);
   const [hasPainted, setHasPainted] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -240,41 +264,75 @@ export function MaskBrushEditor({
     });
   }
 
+  /**
+   * Upload the painted mask to R2 and return the public URL. Shared by
+   * Apply and Erase — both flows need the same binary mask PNG, the
+   * difference is whether the caller forwards a user prompt or fires
+   * the route's `intent: 'erase'` branch.
+   */
+  async function uploadMask(): Promise<string> {
+    const blob = await buildMaskBlob();
+    const presignRes = await fetch('/api/uploads/mask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fileName: `mask-${Date.now()}.png`,
+        contentType: 'image/png',
+        fileSize: blob.size,
+      }),
+    });
+    if (!presignRes.ok) {
+      const errBody = await presignRes.json().catch(() => ({}));
+      throw new Error((errBody as { error?: string }).error || `Presign failed (${presignRes.status})`);
+    }
+    const { uploadUrl, downloadUrl } = await presignRes.json();
+    const putRes = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/png' },
+      body: blob,
+    });
+    if (!putRes.ok) throw new Error(`Mask upload failed (${putRes.status})`);
+    return downloadUrl as string;
+  }
+
   async function apply() {
     if (!prompt.trim() || !hasPainted || isUploading) return;
     setError(null);
     setIsUploading(true);
     try {
-      const blob = await buildMaskBlob();
-      // Step 1: presigned PUT
-      const presignRes = await fetch('/api/uploads/mask', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fileName: `mask-${Date.now()}.png`,
-          contentType: 'image/png',
-          fileSize: blob.size,
-        }),
-      });
-      if (!presignRes.ok) {
-        const errBody = await presignRes.json().catch(() => ({}));
-        throw new Error((errBody as { error?: string }).error || `Presign failed (${presignRes.status})`);
-      }
-      const { uploadUrl, downloadUrl } = await presignRes.json();
-      // Step 2: PUT the blob
-      const putRes = await fetch(uploadUrl, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'image/png' },
-        body: blob,
-      });
-      if (!putRes.ok) throw new Error(`Mask upload failed (${putRes.status})`);
-      // Step 3: hand the URL + prompt + quality back to the caller
-      await onApply({ maskUrl: downloadUrl, prompt: prompt.trim(), quality });
+      const maskUrl = await uploadMask();
+      await onApply({ maskUrl, prompt: prompt.trim(), option });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to apply mask');
       setIsUploading(false);
     }
   }
+
+  async function erase() {
+    if (!hasPainted || isUploading || !onErase) return;
+    console.info('[brush erase] start', {
+      hasPainted,
+      brushSize,
+    });
+    setError(null);
+    setIsUploading(true);
+    try {
+      const maskUrl = await uploadMask();
+      await onErase({ maskUrl });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to erase region');
+      setIsUploading(false);
+    }
+  }
+
+  // Only mask-capable options show in the brush picker — prompt-only
+  // models don't accept a mask, so listing them here would lie about
+  // what the brush can do. `allowedOptionIds` further restricts the
+  // list for surfaces whose backend route only supports a subset.
+  const allowedSet = allowedOptionIds ? new Set(allowedOptionIds) : null;
+  const maskOptions = getSortedEditOptions().filter(o =>
+    o.maskCapable && (!allowedSet || allowedSet.has(o.id)),
+  );
 
   return (
     <div
@@ -307,7 +365,7 @@ export function MaskBrushEditor({
         }}
       >
         <div className="flex items-center justify-between">
-          <div className="text-sm font-semibold">Paint a region to edit</div>
+          <div className="text-sm font-semibold">Paint a region to edit or erase</div>
           <button
             type="button"
             onClick={onCancel}
@@ -397,8 +455,9 @@ export function MaskBrushEditor({
                 border: `1px solid ${tool === 'erase' ? 'rgba(255,255,255,0.30)' : 'var(--border)'}`,
                 cursor: 'pointer',
               }}
+              title="Erase brush strokes (use the Erase button at the bottom to remove painted objects from the image)"
             >
-              ⌫ Erase
+              ⌫ Erase strokes
             </button>
           </div>
           <div className="flex items-center gap-2">
@@ -446,6 +505,11 @@ export function MaskBrushEditor({
           <div style={{ flex: '1 1 320px', display: 'flex', flexDirection: 'column', gap: 6 }}>
             <label className="text-xs" style={{ color: 'var(--text-muted)' }}>
               What should the painted area become?
+              {onErase && (
+                <span style={{ color: 'var(--text-muted)', opacity: 0.7 }}>
+                  {' '}(leave blank if you only want to erase the object)
+                </span>
+              )}
             </label>
             <textarea
               value={prompt}
@@ -466,11 +530,14 @@ export function MaskBrushEditor({
               }}
             />
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 200 }}>
-            <label className="text-xs" style={{ color: 'var(--text-muted)' }}>Quality</label>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 220 }}>
+            <label className="text-xs" style={{ color: 'var(--text-muted)' }}>Model</label>
             <select
-              value={quality}
-              onChange={(e) => setQuality(e.target.value as Quality)}
+              value={option.id}
+              onChange={(e) => {
+                const next = getEditOption(e.target.value);
+                if (next) onOptionChange(next);
+              }}
               disabled={isUploading}
               style={{
                 background: 'var(--bg-card, #0c0c0c)',
@@ -481,12 +548,12 @@ export function MaskBrushEditor({
                 fontSize: 13,
               }}
             >
-              <option value="low">{QUALITY_LABELS.low}</option>
-              <option value="medium">{QUALITY_LABELS.medium}</option>
-              <option value="high">{QUALITY_LABELS.high}</option>
+              {maskOptions.map((opt) => (
+                <option key={opt.id} value={opt.id}>{formatEditOptionLabel(opt)}</option>
+              ))}
             </select>
             <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-              GPT-4o image edit. Higher tiers spend more on each attempt.
+              {option.tagline}
             </div>
           </div>
         </div>
@@ -497,7 +564,7 @@ export function MaskBrushEditor({
           </div>
         )}
 
-        <div className="flex items-center gap-2 justify-end">
+        <div className="flex items-center gap-2 justify-end flex-wrap">
           <button
             type="button"
             onClick={onCancel}
@@ -512,6 +579,30 @@ export function MaskBrushEditor({
           >
             Cancel
           </button>
+          {onErase && (
+            <button
+              type="button"
+              onClick={erase}
+              disabled={!hasPainted || isUploading}
+              className="text-xs px-3 py-1.5 rounded"
+              title="Remove the painted object and rebuild the background. Uses the default mask backend (Ideogram v3 Quality, ~$0.05) regardless of the model picker."
+              style={{
+                background:
+                  !hasPainted || isUploading
+                    ? 'rgba(120,120,120,0.18)'
+                    : 'rgba(248,113,113,0.18)',
+                color:
+                  !hasPainted || isUploading
+                    ? 'var(--text-muted)'
+                    : '#fca5a5',
+                border: '1px solid rgba(248,113,113,0.35)',
+                cursor:
+                  !hasPainted || isUploading ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {isUploading ? 'Working…' : '🗑 Erase painted object'}
+            </button>
+          )}
           <button
             type="button"
             onClick={apply}
@@ -531,7 +622,7 @@ export function MaskBrushEditor({
                 !prompt.trim() || !hasPainted || isUploading ? 'not-allowed' : 'pointer',
             }}
           >
-            {isUploading ? 'Uploading mask…' : `Apply (${QUALITY_LABELS[quality]})`}
+            {isUploading ? 'Uploading mask…' : `Apply (${formatEditOptionLabel(option)})`}
           </button>
         </div>
       </div>
