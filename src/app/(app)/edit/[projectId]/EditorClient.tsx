@@ -39,8 +39,10 @@ import {
 import type { ProjectPayload } from '@/lib/project/payload';
 import {
   EDITOR_MIN_SHOT_MS,
+  EDITOR_MAX_SHOT_MS,
   initialEditorState,
   rowStartTimesMs,
+  type EditorCommand,
 } from '@/lib/editor/store';
 import { useEditorStore } from '@/lib/editor/use-editor-store';
 import { Timeline } from '@/components/editor/Timeline';
@@ -116,7 +118,11 @@ import { RegenerateFromScriptModal } from '@/components/editor/RegenerateFromScr
 // works identically across both editing surfaces.
 import { OverlayPositionEditor } from '@/components/production-doc/OverlayPositionEditor';
 import { OverlayEditDialog } from '@/components/production-doc/OverlayEditDialog';
-import { OverlayContextMenu } from '@/components/production-doc/OverlayContextMenu';
+import {
+  OverlayContextMenu,
+  type OverlayContextMenuItem,
+} from '@/components/production-doc/OverlayContextMenu';
+import { SetDurationPopover } from '@/components/editor/SetDurationPopover';
 
 interface EditorClientProps {
   projectId: string;
@@ -374,6 +380,13 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // depend on it and re-create on every config recompute. The config's
   // `fps` is the only field we read here and it's stable across edits.
   const videoConfigRef = useRef<{ fps: number } | null>(null);
+  // Hoisted above the empty-doc early-return at line ~1804 so this hook
+  // runs unconditionally. Previously this lived next to the preview-
+  // slot JSX (which only renders when the doc has rows) — that crossed
+  // the early return and tripped React's rules-of-hooks check the
+  // moment a doc transitioned from empty to populated. Mount lives at
+  // the preview's outer container; see `previewSlot` below.
+  const previewContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Phase 2 of `_plans/2026-05-23-editor-timeline-and-shots-ux-overhaul.md`.
   // Holds the cumulative shot start times in a ref so the click-to-jump
@@ -710,6 +723,35 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     x: number;
     y: number;
   } | null>(null);
+
+  /** Phase 3 of `_plans/2026-05-23-editor-timeline-and-shots-ux-overhaul.md`.
+   *  Centralized state for every right-click context menu in the
+   *  editor. One menu mounted in the JSX, items derived from `kind`.
+   *  Closing clears the state entirely. `kind: 'overlay'` is
+   *  intentionally NOT modeled here — the legacy `overlayContextMenu`
+   *  state above continues to drive that surface so the existing
+   *  history / Rethink / Edit dialog flow doesn't have to be refactored. */
+  const [editorContextMenu, setEditorContextMenu] = useState<
+    | { kind: 'shot'; shotIndex: number; x: number; y: number }
+    | { kind: 'shots-tab-item'; shotIndex: number; x: number; y: number }
+    | { kind: 'audio'; x: number; y: number }
+    | { kind: 'caption'; segmentIndex: number; x: number; y: number }
+    | null
+  >(null);
+
+  /** Floating "Set duration…" popover anchored at the cursor. Used by
+   *  shot context menus (timeline + ShotsTab) to edit `durationMs` via
+   *  a slider+ms input pair. Apply dispatches RESIZE_SHOT. */
+  const [durationPopover, setDurationPopover] = useState<
+    | {
+        kind: 'shot-duration';
+        shotIndex: number;
+        x: number;
+        y: number;
+        initialMs: number;
+      }
+    | null
+  >(null);
 
   /** Close every overlay modal (position editor, edit dialog, context
    *  menu) and clear the rethink in-flight set. Called before any
@@ -1907,6 +1949,10 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             rowImages={state.rowImages}
             selection={state.selection}
             onSelect={(shotIndex) => selectShotFromUser(shotIndex, 'shots-tab')}
+            onContextMenu={(shotIndex, x, y) => {
+              console.info('[editor shots-tab context-menu] open', { shotIndex, x, y });
+              setEditorContextMenu({ kind: 'shots-tab-item', shotIndex, x, y });
+            }}
           />
         ),
         media: (
@@ -2021,7 +2067,6 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     state.doc.rows.length === 0 ||
     (imageReadyCount === 0 && !state.voiceoverUrl && clipReadyCount === 0);
 
-  const previewContainerRef = useRef<HTMLDivElement | null>(null);
   // Canva-style transform of the selected shot's visual. Only rendered
   // when (a) a shot is selected, (b) the shot has a visual (image or
   // clip), and (c) the player container has measured its size. The
@@ -2772,6 +2817,25 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         }
         setLaneFocus(kind);
       }}
+      onShotContextMenu={(shotIndex, x, y) => {
+        console.info('[editor timeline context-menu] open', { kind: 'shot', shotIndex, x, y });
+        setEditorContextMenu({ kind: 'shot', shotIndex, x, y });
+      }}
+      onAudioContextMenu={(x, y) => {
+        console.info('[editor timeline context-menu] open', { kind: 'audio', x, y });
+        setEditorContextMenu({ kind: 'audio', x, y });
+      }}
+      onCaptionContextMenu={(segmentIndex, x, y) => {
+        console.info('[editor timeline context-menu] open', { kind: 'caption', segmentIndex, x, y });
+        setEditorContextMenu({ kind: 'caption', segmentIndex, x, y });
+      }}
+      onOverlayContextMenu={(shotIndex, x, y) => {
+        // Reuse the existing legacy overlay context menu so the user
+        // gets the same Edit image / Rethink placement / Remove
+        // overlay verbs the production-doc surface offers.
+        console.info('[editor timeline context-menu] open', { kind: 'overlay', shotIndex, x, y });
+        setOverlayContextMenu({ rowIndex: shotIndex, x, y });
+      }}
     />
   );
 
@@ -3208,8 +3272,296 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             />
           );
         })()}
+
+      {/* Phase 3 context menu — Timeline shot card / ShotsTab item /
+          audio lane / caption pill. Items derived per-kind via the
+          `buildEditorContextMenuItems` helper just above. The menu
+          itself is the same OverlayContextMenu used by the overlay
+          surface so the visuals + close-behavior stay consistent. */}
+      {editorContextMenu &&
+        (() => {
+          const items = buildEditorContextMenuItems({
+            menu: editorContextMenu,
+            doc: state.doc,
+            playheadMs: state.playheadMs,
+            splitTarget,
+            apply,
+            selectShotFromUser,
+            setLaneFocus,
+            setShowVoRegen,
+            setDurationPopover,
+            handleDelete,
+          });
+          return (
+            <OverlayContextMenu
+              x={editorContextMenu.x}
+              y={editorContextMenu.y}
+              onClose={() => setEditorContextMenu(null)}
+              items={items}
+            />
+          );
+        })()}
+
+      {/* Set-duration popover — opens from the shot / ShotsTab
+          context menu's "Set duration…" item. Apply dispatches
+          RESIZE_SHOT (the same path the trailing-edge drag uses)
+          so undo / redo Just Work. */}
+      {durationPopover && (
+        <SetDurationPopover
+          title={`Shot ${durationPopover.shotIndex + 1} duration`}
+          x={durationPopover.x}
+          y={durationPopover.y}
+          initialMs={durationPopover.initialMs}
+          minMs={EDITOR_MIN_SHOT_MS}
+          maxMs={EDITOR_MAX_SHOT_MS}
+          stepMs={100}
+          onApply={(ms) => {
+            apply({
+              type: 'RESIZE_SHOT',
+              shotIndex: durationPopover.shotIndex,
+              durationMs: ms,
+            });
+          }}
+          onClose={() => setDurationPopover(null)}
+        />
+      )}
     </>
   );
+}
+
+/** Build the item list for the Phase 3 context menu based on which
+ *  surface the user right-clicked. Pure function — the parent
+ *  passes in the doc + the dispatchers + the state setters it
+ *  needs. Defined outside the component body so the JSX above stays
+ *  readable. */
+function buildEditorContextMenuItems(args: {
+  menu:
+    | { kind: 'shot'; shotIndex: number; x: number; y: number }
+    | { kind: 'shots-tab-item'; shotIndex: number; x: number; y: number }
+    | { kind: 'audio'; x: number; y: number }
+    | { kind: 'caption'; segmentIndex: number; x: number; y: number };
+  doc: ProductionDoc;
+  playheadMs: number;
+  splitTarget: { shotIndex: number; splitAtMs: number; validSplit: boolean } | null;
+  apply: (cmd: EditorCommand) => void;
+  selectShotFromUser: (shotIndex: number, source: string) => void;
+  setLaneFocus: (kind: 'audio' | 'captions' | 'overlays' | null) => void;
+  setShowVoRegen: (open: boolean) => void;
+  setDurationPopover: (
+    p:
+      | { kind: 'shot-duration'; shotIndex: number; x: number; y: number; initialMs: number }
+      | null,
+  ) => void;
+  handleDelete: (mode: 'ripple' | 'blank') => void;
+}): OverlayContextMenuItem[] {
+  const {
+    menu,
+    doc,
+    playheadMs,
+    splitTarget,
+    apply,
+    selectShotFromUser,
+    setLaneFocus,
+    setShowVoRegen,
+    setDurationPopover,
+    handleDelete,
+  } = args;
+
+  switch (menu.kind) {
+    case 'shot':
+    case 'shots-tab-item': {
+      const i = menu.shotIndex;
+      const row = doc.rows[i];
+      if (!row) return [];
+      const muted = row.muted === true;
+      const hasTrim =
+        (row.trim_start_ms ?? 0) > 0 || (row.trim_end_ms ?? 0) > 0;
+      const crossFadeOn = row.transition_in === 'cross-fade';
+      const canSplit =
+        menu.kind === 'shot' &&
+        splitTarget !== null &&
+        splitTarget.shotIndex === i &&
+        splitTarget.validSplit;
+      const canDelete = doc.rows.length > 1;
+      const currentDurationMs = (() => {
+        // Read the same duration the timeline draws: row's
+        // `duration_override_ms` if present, else fall back to the
+        // doc's parsed timecode delta. The split-target helper
+        // computed it cleanly when it was active, but it isn't
+        // always — so we re-derive from the row here.
+        const dur = row.duration_override_ms;
+        if (typeof dur === 'number') return dur;
+        // Fallback: a sensible 4s if neither override nor timecode
+        // delta is available. The popover clamps anyway.
+        return 4000;
+      })();
+
+      const items: OverlayContextMenuItem[] = [
+        {
+          label: 'Jump to start',
+          onClick: () => selectShotFromUser(i, `${menu.kind}-context-menu`),
+          title: 'Move the playhead to this shot and select it',
+        },
+        ...(menu.kind === 'shot'
+          ? [
+              {
+                label: 'Split at playhead',
+                onClick: () => {
+                  if (!splitTarget || !splitTarget.validSplit) return;
+                  apply({
+                    type: 'SPLIT_SHOT' as const,
+                    shotIndex: splitTarget.shotIndex,
+                    splitAtMs: splitTarget.splitAtMs,
+                  });
+                },
+                disabled: !canSplit,
+                title: canSplit
+                  ? 'Cut this shot in two at the playhead'
+                  : 'Playhead must be inside this shot to split',
+              },
+            ]
+          : []),
+        {
+          label: 'Set duration…',
+          onClick: () =>
+            setDurationPopover({
+              kind: 'shot-duration',
+              shotIndex: i,
+              x: menu.x,
+              y: menu.y,
+              initialMs: currentDurationMs,
+            }),
+          title: 'Dial in a new duration via slider or numeric input',
+        },
+        {
+          label: muted ? 'Unmute shot' : 'Mute shot',
+          onClick: () =>
+            apply({ type: 'SET_MUTE', shotIndex: i, muted: !muted }),
+          title: muted
+            ? 'Re-enable this shot\'s audio (per-shot mute flag)'
+            : 'Silence this shot only (does not affect adjacent shots)',
+        },
+        {
+          label: crossFadeOn ? 'Remove cross-fade' : 'Add cross-fade in',
+          onClick: () =>
+            apply({
+              type: 'SET_TRANSITION_IN',
+              shotIndex: i,
+              transition: crossFadeOn ? null : 'cross-fade',
+            }),
+          title: 'Toggle the cross-fade transition into this shot',
+        },
+        ...(menu.kind === 'shot' && hasTrim
+          ? [
+              {
+                label: 'Reset trim',
+                onClick: () =>
+                  apply({
+                    type: 'TRIM_SHOT' as const,
+                    shotIndex: i,
+                    trimStartMs: null,
+                    trimEndMs: null,
+                  }),
+                separatorAbove: true,
+                title: 'Clear head + tail trim handles on this shot',
+              },
+            ]
+          : []),
+        {
+          label: 'Delete shot (ripple)',
+          onClick: () => {
+            // handleDelete reads state.selection; ensure we select
+            // THIS shot before dispatching so the menu's row is the
+            // one removed regardless of what was selected before.
+            selectShotFromUser(i, `${menu.kind}-delete-ripple`);
+            // Defer so the SET_SELECTION lands before the delete.
+            Promise.resolve().then(() => handleDelete('ripple'));
+          },
+          disabled: !canDelete,
+          separatorAbove: !hasTrim,
+          destructive: true,
+          title: canDelete
+            ? 'Remove this shot and pull every later shot earlier'
+            : 'Can\'t delete the last remaining shot',
+        },
+        {
+          label: 'Delete shot (keep slot)',
+          onClick: () => {
+            selectShotFromUser(i, `${menu.kind}-delete-blank`);
+            Promise.resolve().then(() => handleDelete('blank'));
+          },
+          disabled: !canDelete,
+          destructive: true,
+          title:
+            'Remove this shot\'s content but keep its timeline slot (later shots stay put)',
+        },
+      ];
+      return items;
+    }
+
+    case 'audio': {
+      const muted = doc.voiceover_muted === true;
+      return [
+        {
+          label: muted ? 'Unmute voiceover' : 'Mute voiceover',
+          onClick: () =>
+            apply({ type: 'PATCH_DOC', patch: { voiceover_muted: !muted } }),
+          title: 'Toggle the doc-level voiceover mute flag',
+        },
+        {
+          label: 'Open audio inspector',
+          onClick: () => {
+            setLaneFocus('audio');
+            apply({ type: 'SET_SELECTION', shotIndex: null });
+          },
+          title: 'Switch the inspector to the audio Mix card',
+        },
+        {
+          label: 'Regenerate voiceover…',
+          onClick: () => setShowVoRegen(true),
+          separatorAbove: true,
+          title: 'Open the voiceover regenerate modal',
+        },
+      ];
+    }
+
+    case 'caption': {
+      // We don't have a "delete caption segment" command — clearing
+      // the text via UPDATE_CAPTION_SEGMENT is the safe equivalent
+      // (the renderer skips empty segments). "Edit text" is left as
+      // a hint pointing the user back to the captions lane's
+      // double-click editor; wiring a separate inline editor here
+      // would duplicate that flow. Phase 3 keeps captions minimal.
+      return [
+        {
+          label: 'Edit text (double-click pill)',
+          onClick: () => {
+            console.info('[editor caption-context-menu] edit hint', {
+              segmentIndex: menu.segmentIndex,
+            });
+          },
+          disabled: true,
+          title: 'Captions lane: double-click the pill to edit inline',
+        },
+        {
+          label: 'Clear segment text',
+          onClick: () =>
+            apply({
+              type: 'UPDATE_CAPTION_SEGMENT',
+              segmentIndex: menu.segmentIndex,
+              text: '',
+            }),
+          destructive: true,
+          separatorAbove: true,
+          title:
+            'Empty this caption segment\'s text (the renderer skips empty segments)',
+        },
+      ];
+    }
+
+    default:
+      return [];
+  }
 }
 
 // ─── Save-status badge ─────────────────────────────────────────────

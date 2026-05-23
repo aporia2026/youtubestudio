@@ -76,6 +76,13 @@ interface TimelineProps {
   /** Optional: pixels per second. Default 80 — readable at standard
    *  shot lengths (4-15s). Phase 2 zoom controls bind this. */
   pixelsPerSecond?: number;
+  /** Phase 3 of the editor timeline-and-shots overhaul plan. Fires
+   *  on right-click of a shot card with the viewport coords so the
+   *  parent (EditorClient) can open its centralized context menu.
+   *  When omitted, native browser context menu shows up — kept
+   *  optional so callers that don't want the menu (e.g. story-book
+   *  fixtures) don't have to pass anything. */
+  onShotContextMenu?: (shotIndex: number, x: number, y: number) => void;
 }
 
 const DEFAULT_PX_PER_SECOND = 80;
@@ -138,6 +145,7 @@ export function Timeline({
   onToggleTransition,
   rowTransitions,
   pixelsPerSecond = DEFAULT_PX_PER_SECOND,
+  onShotContextMenu,
 }: TimelineProps): React.ReactElement {
   const totalMs = useMemo(
     () => config.shots.reduce((acc, s) => acc + s.durationMs, 0),
@@ -422,6 +430,15 @@ export function Timeline({
                           )
                       : undefined
                   }
+                  onContextMenu={
+                    onShotContextMenu
+                      ? (e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onShotContextMenu(idx, e.clientX, e.clientY);
+                        }
+                      : undefined
+                  }
                 />
               );
             })}
@@ -485,6 +502,9 @@ interface SortableShotCardProps {
   /** Toggle handler. Undefined on the first card (nothing to fade
    *  in from) or when the editor doesn't wire onToggleTransition. */
   onToggleTransition?: () => void;
+  /** Right-click handler. Optional — when omitted, the native browser
+   *  context menu shows. */
+  onContextMenu?: (e: React.MouseEvent<HTMLDivElement>) => void;
 }
 
 function SortableShotCard({
@@ -511,6 +531,7 @@ function SortableShotCard({
   reorderEnabled,
   transitionIn,
   onToggleTransition,
+  onContextMenu,
 }: SortableShotCardProps): React.ReactElement {
   const {
     attributes,
@@ -541,6 +562,7 @@ function SortableShotCard({
       role="button"
       tabIndex={0}
       onClick={onSelect}
+      onContextMenu={onContextMenu}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();

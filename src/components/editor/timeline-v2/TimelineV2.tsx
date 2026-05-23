@@ -111,6 +111,18 @@ interface TimelineV2Props {
    *  "the lane area was clicked but not on a child" — used to
    *  deselect when the user clicks an empty spot. */
   onLaneFocus?: (kind: TimelineLaneKind) => void;
+  /** Phase 3: right-click handler for shot cards. Forwarded to the
+   *  inner Timeline; the parent opens the centralized context menu
+   *  at the supplied viewport coords. */
+  onShotContextMenu?: (shotIndex: number, x: number, y: number) => void;
+  /** Phase 3: right-click handler for the audio lane. */
+  onAudioContextMenu?: (x: number, y: number) => void;
+  /** Phase 3: right-click handler for a caption pill. Fires with
+   *  the segment index AND viewport coords. */
+  onCaptionContextMenu?: (segmentIndex: number, x: number, y: number) => void;
+  /** Phase 3: right-click handler for an overlay marker. Fires with
+   *  the row index + viewport coords. */
+  onOverlayContextMenu?: (shotIndex: number, x: number, y: number) => void;
 }
 
 export function TimelineV2({
@@ -143,6 +155,10 @@ export function TimelineV2({
   audioLaneHeight = AUDIO_LANE_HEIGHT_DEFAULT,
   focusedLane = null,
   onLaneFocus,
+  onShotContextMenu,
+  onAudioContextMenu,
+  onCaptionContextMenu,
+  onOverlayContextMenu,
 }: TimelineV2Props): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -299,6 +315,7 @@ export function TimelineV2({
                   onReorder={onReorder}
                   onTrim={onTrim}
                   onToggleTransition={onToggleTransition}
+                  onShotContextMenu={onShotContextMenu}
                 />
               </LaneStrip>
               <LaneStrip
@@ -306,6 +323,15 @@ export function TimelineV2({
                 gapBelow
                 focused={focusedLane === 'audio'}
                 onClickBackground={onLaneFocus ? () => onLaneFocus('audio') : undefined}
+                onContextMenu={
+                  onAudioContextMenu
+                    ? (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onAudioContextMenu(e.clientX, e.clientY);
+                      }
+                    : undefined
+                }
               >
                 <AudioLane
                   voiceoverUrl={voiceoverUrl}
@@ -329,6 +355,7 @@ export function TimelineV2({
                   playheadMs={playheadMs}
                   onSeek={onSeek}
                   onUpdateSegment={onUpdateCaption}
+                  onContextMenu={onCaptionContextMenu}
                 />
               </LaneStrip>
               <LaneStrip
@@ -345,6 +372,7 @@ export function TimelineV2({
                   height={OVERLAYS_LANE_HEIGHT}
                   onSelect={onSelect}
                   onOpenPosition={onOpenOverlayPosition}
+                  onContextMenu={onOverlayContextMenu}
                 />
               </LaneStrip>
             </div>
@@ -438,23 +466,30 @@ function LaneLabel({
  *  to `onClickBackground` UNLESS a child called stopPropagation — this
  *  way the user gets the matching inspector tab as soon as they click
  *  anywhere in the lane, but a child that has its own meaning (e.g.
- *  a context-menu trigger) can opt out. */
+ *  a context-menu trigger) can opt out. Same bubble-routing applies
+ *  to `onContextMenu` so right-clicking anywhere in the lane opens
+ *  the lane's context menu (Phase 3); children that need their own
+ *  right-click behavior (caption pill, overlay marker) stop
+ *  propagation. */
 function LaneStrip({
   height,
   gapBelow = false,
   focused = false,
   onClickBackground,
+  onContextMenu,
   children,
 }: {
   height: number;
   gapBelow?: boolean;
   focused?: boolean;
   onClickBackground?: () => void;
+  onContextMenu?: (e: React.MouseEvent<HTMLDivElement>) => void;
   children: React.ReactNode;
 }) {
   return (
     <div
       onClick={onClickBackground}
+      onContextMenu={onContextMenu}
       style={{
         height,
         marginBottom: gapBelow ? LANE_GAP_PX : 0,

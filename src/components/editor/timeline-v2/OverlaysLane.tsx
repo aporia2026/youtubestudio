@@ -25,6 +25,9 @@ interface OverlaysLaneProps {
   height: number;
   onSelect: (shotIndex: number) => void;
   onOpenPosition: (shotIndex: number) => void;
+  /** Phase 3: right-click a marker. Fires with the row index +
+   *  viewport coords. */
+  onContextMenu?: (shotIndex: number, x: number, y: number) => void;
 }
 
 export function OverlaysLane({
@@ -36,6 +39,7 @@ export function OverlaysLane({
   height,
   onSelect,
   onOpenPosition,
+  onContextMenu,
 }: OverlaysLaneProps): React.ReactElement {
   const widthPx = Math.max(100, Math.round((totalDurationMs / 1000) * pixelsPerSecond));
 
@@ -94,7 +98,16 @@ export function OverlaysLane({
             onOpenPosition(m.i);
             console.info('[editor overlays-lane] click', { rowIndex: m.i });
           }}
-          title={`Shot ${m.i + 1} overlay — click to edit position`}
+          onContextMenu={
+            onContextMenu
+              ? (e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onContextMenu(m.i, e.clientX, e.clientY);
+                }
+              : undefined
+          }
+          title={`Shot ${m.i + 1} overlay — click to edit position (right-click for options)`}
         >
           <Layers size={11} strokeWidth={2} />
           <span className="text-[9px] ed-mono">{m.i + 1}</span>

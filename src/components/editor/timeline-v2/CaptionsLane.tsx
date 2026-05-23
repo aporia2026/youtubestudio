@@ -26,6 +26,10 @@ interface CaptionsLaneProps {
   playheadMs: number;
   onSeek: (ms: number) => void;
   onUpdateSegment: (index: number, text: string) => void;
+  /** Phase 3: right-click a caption pill. Fires with the segment
+   *  index + viewport coords. The pill stops propagation so the
+   *  parent LaneStrip doesn't also receive the contextmenu event. */
+  onContextMenu?: (segmentIndex: number, x: number, y: number) => void;
 }
 
 export function CaptionsLane({
@@ -36,6 +40,7 @@ export function CaptionsLane({
   playheadMs,
   onSeek,
   onUpdateSegment,
+  onContextMenu,
 }: CaptionsLaneProps): React.ReactElement {
   const widthPx = Math.max(100, Math.round((totalDurationMs / 1000) * pixelsPerSecond));
   const segments = captions?.segments ?? [];
@@ -76,6 +81,11 @@ export function CaptionsLane({
           height={height}
           onSeek={() => onSeek(Math.round(seg.start * 1000))}
           onCommit={(text) => onUpdateSegment(i, text)}
+          onContextMenu={
+            onContextMenu
+              ? (x, y) => onContextMenu(i, x, y)
+              : undefined
+          }
         />
       ))}
     </div>
@@ -89,6 +99,7 @@ function CaptionPill({
   height,
   onSeek,
   onCommit,
+  onContextMenu,
 }: {
   segment: CaptionSegment;
   isActive: boolean;
@@ -96,6 +107,7 @@ function CaptionPill({
   height: number;
   onSeek: () => void;
   onCommit: (text: string) => void;
+  onContextMenu?: (x: number, y: number) => void;
 }): React.ReactElement {
   const left = segment.start * pixelsPerSecond;
   const width = Math.max(20, (segment.end - segment.start) * pixelsPerSecond);
@@ -150,7 +162,16 @@ function CaptionPill({
         e.stopPropagation();
         setEditing(true);
       }}
-      title={editing ? 'Editing — Enter to save, Escape to cancel' : 'Click to seek, double-click to edit'}
+      onContextMenu={
+        onContextMenu
+          ? (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onContextMenu(e.clientX, e.clientY);
+            }
+          : undefined
+      }
+      title={editing ? 'Editing — Enter to save, Escape to cancel' : 'Click to seek, double-click to edit (right-click for options)'}
     >
       {editing ? (
         <input

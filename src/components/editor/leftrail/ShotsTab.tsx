@@ -19,9 +19,13 @@ interface ShotsTabProps {
   rowImages: Record<number, string>;
   selection: number | null;
   onSelect: (shotIndex: number) => void;
+  /** Phase 3: right-click a shots-tab item. Fires with the shot
+   *  index + viewport coords so EditorClient can open its
+   *  centralized context menu. */
+  onContextMenu?: (shotIndex: number, x: number, y: number) => void;
 }
 
-export function ShotsTab({ rows, rowImages, selection, onSelect }: ShotsTabProps): React.ReactElement {
+export function ShotsTab({ rows, rowImages, selection, onSelect, onContextMenu }: ShotsTabProps): React.ReactElement {
   return (
     <div className="flex flex-col gap-1.5">
       {rows.map((row, i) => {
@@ -35,6 +39,16 @@ export function ShotsTab({ rows, rowImages, selection, onSelect }: ShotsTabProps
               onSelect(i);
               console.info('[editor leftrail shots] select', { shotIndex: i });
             }}
+            onContextMenu={
+              onContextMenu
+                ? (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    console.info('[editor leftrail shots] context-menu', { shotIndex: i });
+                    onContextMenu(i, e.clientX, e.clientY);
+                  }
+                : undefined
+            }
             className="text-left rounded-md overflow-hidden transition-colors"
             style={{
               background: isActive ? 'var(--editor-accent-soft)' : 'var(--editor-panel)',
