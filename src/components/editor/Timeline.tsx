@@ -793,12 +793,34 @@ function SortableShotCard({
           draggable={false}
         />
       ) : (
+        // No image attached — render an obvious "blank shot" marker.
+        // Repeating diagonal-stripe gradient + centered "BLANK" label
+        // tells the user at a glance that this shot will render as
+        // nothing (vs. assuming the card thumbnail is just slow).
+        // 2026-05-24: addresses the "looked-like-a-render-bug-but-
+        // shot-just-had-no-image" report from the user's NotPetya
+        // project (shot 70 had visual_type='blank', no image_url).
         <div
-          className="absolute inset-0"
+          className="absolute inset-0 flex items-center justify-center"
           style={{
-            background: shot.backgroundColor ?? '#111827',
+            background:
+              'repeating-linear-gradient(135deg, rgba(255,255,255,0.04) 0 8px, rgba(255,255,255,0.10) 8px 16px), #1f2937',
           }}
-        />
+          aria-label="blank — no image"
+        >
+          <span
+            className="uppercase tracking-widest font-semibold rounded px-1.5 py-0.5"
+            style={{
+              fontSize: 9,
+              letterSpacing: '0.12em',
+              background: 'rgba(0,0,0,0.55)',
+              color: 'rgba(255,255,255,0.85)',
+              pointerEvents: 'none',
+            }}
+          >
+            blank
+          </span>
+        </div>
       )}
       {/* Tinted overlay — keeps the label legible over any thumbnail.
           Heavier when selected so the card pops. */}

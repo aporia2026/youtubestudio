@@ -687,7 +687,7 @@ export function ShotInspector({
               ))}
           </div>
         )}
-        {thumbnailUrl && (
+        {thumbnailUrl ? (
           <div
             className="aspect-video relative"
             style={{ background: '#000' }}
@@ -698,6 +698,40 @@ export function ShotInspector({
               className="absolute inset-0 w-full h-full object-cover"
               draggable={false}
             />
+          </div>
+        ) : (
+          // No image attached — banner tells the user EXACTLY what's
+          // up (renders as blank in the final video) and what to do
+          // (use the Upload / Regenerate buttons below). 2026-05-24:
+          // surfaces the most common "why is preview empty" confusion
+          // (see Timeline.tsx blank-marker for the timeline-side
+          // mirror).
+          <div
+            className="aspect-video relative flex flex-col items-center justify-center gap-2 px-4 text-center"
+            style={{
+              background:
+                'repeating-linear-gradient(135deg, rgba(255,255,255,0.04) 0 8px, rgba(255,255,255,0.10) 8px 16px), #1f2937',
+            }}
+          >
+            <div
+              className="uppercase tracking-widest font-semibold rounded px-2 py-0.5"
+              style={{
+                fontSize: 10,
+                letterSpacing: '0.14em',
+                background: 'rgba(0,0,0,0.6)',
+                color: 'rgba(255,255,255,0.92)',
+              }}
+            >
+              No image
+            </div>
+            <div
+              className="text-[11px] leading-snug"
+              style={{ color: 'rgba(255,255,255,0.75)', maxWidth: 280 }}
+            >
+              This shot renders as blank in the final video. Use{' '}
+              <strong>Upload from disk</strong> below to add one, or{' '}
+              <strong>Regenerate</strong> to create one from the prompt.
+            </div>
           </div>
         )}
 
