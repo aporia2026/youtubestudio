@@ -856,6 +856,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         videoUrl?: string;
         durationSeconds?: number;
         errorMessage?: string;
+        brollClipId?: string;
       } | null,
       transient = false,
     ) => {
@@ -935,9 +936,22 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           stillImageUrl: state.rowImages[rowIndex] || undefined,
           modelId: tier.modelId,
         });
-        // Record the clip id in the same localStorage map BrollCell
-        // uses so the poll loop knows which id to query and so the
-        // production-doc page sees the same clip on next load.
+        // CRITICAL: store the clipId DIRECTLY on the row's clip state
+        // — not just in localStorage. The poll loop reads it from
+        // here, which works even when localStorage write fails
+        // (private browsing, storage quota, browser race). The
+        // previous flow only wrote to localStorage and the poll
+        // could never find the clipId, leaving the spinner running
+        // forever. Mirrors what prod-doc's BrollCell does internally.
+        setRowVideoClip(
+          rowIndex,
+          { status: 'generating', brollClipId: stub.id },
+          true,
+        );
+        // Also write to the localStorage map BrollCell + the prod-doc
+        // page use, so a clip kicked off in the editor is poll-
+        // discoverable from prod-doc too. Belt-and-braces — the
+        // state path above is now the source of truth.
         const map = readBrollLsMap();
         map[brollRowSignatureInput({
           timecode: row.timecode,
@@ -1236,15 +1250,32 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       const rowIndex = Number(k);
       const row = state.doc.rows[rowIndex];
       if (!row) continue;
-      const sig = brollRowSignatureInput({
-        timecode: row.timecode,
-        visual_description: row.visual_description,
-      });
-      const clipId = map[sig];
-      if (clipId) out.push({ rowIndex, clipId });
+      // Source of truth: state.rowVideoClips[i].brollClipId, set by
+      // handleGenerateClip immediately after the kickoff returns.
+      // Fall back to the localStorage map BrollCell uses (for clips
+      // that were kicked off before this state field was wired, or
+      // clips kicked off in a different tab). Without this dual path
+      // the editor's poll loop would never find the clipId when
+      // localStorage was empty / corrupted / cross-origin-blocked —
+      // user perceives "endless generation."
+      let clipId: string | undefined = v.brollClipId;
+      if (!clipId) {
+        const sig = brollRowSignatureInput({
+          timecode: row.timecode,
+          visual_description: row.visual_description,
+        });
+        clipId = map[sig];
+      }
+      if (clipId) {
+        out.push({ rowIndex, clipId });
+      } else {
+        console.warn('[editor broll] generating row has no clipId — poll cannot start', {
+          rowIndex,
+          rowVideoClipState: v,
+        });
+      }
     }
     return out;
-    // Dep on the per-row signature inputs only, not the full doc.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     state.rowVideoClips,
@@ -1256,7 +1287,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         .filter(([, v]) => v?.status === 'generating')
         .map(([k]) => {
           const r = state.doc.rows[Number(k)];
-          return r ? [k, r.timecode, r.visual_description] : [k, null, null];
+          return r
+            ? [k, r.timecode, r.visual_description, state.rowVideoClips[Number(k)]?.brollClipId]
+            : [k, null, null, null];
         }),
     ),
   ]);
@@ -1309,6 +1342,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             videoUrl: clip.video_url ?? undefined,
             durationSeconds: clip.duration_seconds ?? undefined,
             errorMessage: clip.error_message ?? undefined,
+            brollClipId: clipId,
           }, false);
         } catch (err) {
           console.warn('[editor broll] poll failed', {
