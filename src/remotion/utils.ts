@@ -1165,13 +1165,17 @@ export function productionDocToVideoConfig(
   // merge) must NOT be overwritten by alignment. Build the per-row
   // pin flag from `row.pin_duration` and pass it through.
   //
-  // Legacy rows with `duration_override_ms` but no `pin_duration`
-  // remain unpinned — alignment keeps overwriting them, exactly as
-  // before this feature shipped. That's the migration property:
-  // existing projects play identically; only NEW user actions stick.
+  // CRITICAL safety property: when NO row has `pin_duration: true`
+  // (the pure-legacy case), call `realignVideoConfig` WITHOUT the
+  // options argument at all. This guarantees a byte-identical call
+  // shape to pre-pin-duration behavior — no chance any branch we
+  // didn't anticipate causes a timing shift for legacy projects.
   //
   // See `_plans/2026-05-23-editor-pin-duration-architecture.md`.
   const pinnedShots = doc.rows.map((r) => r.pin_duration === true);
+  if (!pinnedShots.some((p) => p)) {
+    return realignVideoConfig(config, opts.alignment).config;
+  }
   return realignVideoConfig(config, opts.alignment, { pinnedShots }).config;
 }
 
