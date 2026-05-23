@@ -46,7 +46,13 @@ import {
 /** Hard cap on payload size at the wire boundary. Matches the existing
  *  editor route's cap so behavior is identical for clients that
  *  exceed it (413). */
-export const MAX_PAYLOAD_BYTES = 5 * 1024 * 1024;
+// 2026-05-24: raised from 5 MB → 10 MB to match row-asset/route.ts
+// after a user hit the cap on a 184-shot project. Editor PATCH must
+// not be stricter than row-asset, otherwise text edits would fail
+// while image uploads succeed (or vice versa). Long-term plan: move
+// asset URLs out of the jsonb payload entirely; see the planned
+// `project_assets` table extraction.
+export const MAX_PAYLOAD_BYTES = 10 * 1024 * 1024;
 
 // ─── Load ────────────────────────────────────────────────────────────
 

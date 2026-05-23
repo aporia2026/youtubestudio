@@ -74,7 +74,15 @@ import { logger } from '@/lib/logger';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_URL_BYTES = 8192;
 const MAX_ROW_INDEX = 1000;
-const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
+// 2026-05-24: raised from 2 MB → 10 MB after a user hit the cap on a
+// 184-shot project (POST /row-asset returned 413 every upload, images
+// vanished on refresh). The persist.ts PATCH cap is at 5 MB; we keep
+// row-asset's cap >= that so the two save paths agree on what fits.
+// Long-term, asset URLs should move OUT of the jsonb payload into a
+// dedicated table (project_assets keyed by project_id + row_index)
+// so the payload size doesn't grow with shot count at all. Tracked
+// in the follow-up plan referenced below the row-asset commit.
+const MAX_PAYLOAD_BYTES = 10 * 1024 * 1024;
 
 type Slot = 'image' | 'overlay' | 'clip';
 
