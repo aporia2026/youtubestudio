@@ -182,6 +182,14 @@ export interface VideoShot {
   imageYPct?: number;
   imageScalePct?: number;
   imageRotationDeg?: number;
+  /** Render policy for clip/scene duration mismatch. See
+   *  `ProductionRow.clip_fit_mode` for the full description. The
+   *  renderer reads this via BRollScene. Undefined → 'stretch'
+   *  (back-compat with pre-2026-05-23 behavior). `trim-scene` is
+   *  ALSO treated as 'stretch' here because by the time the renderer
+   *  sees the shot, the inspector's button has already shortened
+   *  duration_override_ms so the two durations match. */
+  clipFitMode?: 'stretch' | 'freeze-last' | 'loop' | 'trim-scene';
   /** Auto-sourced real-image overlay composited on top of the scene at
    *  the planned zone. Falsy = no overlay, scene renders unmodified.
    *

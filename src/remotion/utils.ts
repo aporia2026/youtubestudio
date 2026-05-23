@@ -498,6 +498,26 @@ export interface ProductionRow {
    *  the doc-wide default. Cleared (undefined) means "fall back to
    *  doc-level → workspace-level resolution." */
   broll_model_id?: string;
+  /** How the renderer reconciles a clip's intrinsic duration with the
+   *  scene's duration when they differ (e.g. Kling 10s clips in a 12s
+   *  narration-driven scene). 2026-05-23.
+   *
+   *  - `stretch` (default, undefined): rescale playbackRate so the clip
+   *    fills the scene exactly. Slow-mo when scene > clip, speed-up
+   *    when scene < clip. Clamped to [0.25, 2.0] in the renderer.
+   *  - `freeze-last`: play at native 1.0× speed. If the scene is
+   *    longer, the last frame freezes for the remainder. If shorter,
+   *    the trailing clip frames are cut.
+   *  - `loop`: play at native 1.0×; when the scene is longer, the
+   *    clip restarts from frame 0 and continues as many times as
+   *    needed. Good for ambient/cyclical motion.
+   *  - `trim-scene`: data signal, not a render mode. The inspector's
+   *    "Trim scene to clip" button writes
+   *    `duration_override_ms = clip_duration_ms` so the scene's
+   *    playable window shortens to match the clip exactly. The
+   *    renderer treats it as `stretch` (which becomes a no-op once
+   *    durations match). */
+  clip_fit_mode?: 'stretch' | 'freeze-last' | 'loop' | 'trim-scene';
   /** Free-transform offset of the visual element on the 1920×1080
    *  canvas, expressed as a percentage of canvas width/height from
    *  the center. `0` = centered (the default). Range [-200, 200] —
@@ -1011,6 +1031,7 @@ export function productionDocToVideoConfig(
         typeof row.image_rotation_deg === 'number' && Number.isFinite(row.image_rotation_deg)
           ? row.image_rotation_deg
           : undefined,
+      clipFitMode: row.clip_fit_mode,
       thumbnailTransition: row.thumbnail_transition,
       // Resolve thumbnail-region camera padding for THIS row. Order:
       //   row.region_zoom_padding_pct → doc.region_zoom_padding_default_pct

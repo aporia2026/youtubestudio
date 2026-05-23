@@ -862,6 +862,19 @@ export function ShotInspector({
                   {effectiveModel.label} — {effectiveModel.priceUsdLabel}
                 </div>
               )}
+
+              {/* Clip-fit policy picker — what to do when clip and
+                  scene durations don't match. See ProductionRow.
+                  clip_fit_mode for the per-mode contract. Visible
+                  whenever this row could host a clip (the panel
+                  itself is conditional on onGenerateClip). */}
+              {isReady && onUpdateRow && (
+                <ShotClipFitPicker
+                  row={row}
+                  shotVideoDurationSeconds={shot.videoDurationSeconds}
+                  onUpdate={onUpdateRow}
+                />
+              )}
               {(clipStatus === 'error' || clipStatus === 'failed') && (
                 <div
                   className="text-[10px] rounded px-2 py-1"
@@ -2004,6 +2017,131 @@ function FreeTransformRow({
       >
         ↺
       </button>
+    </div>
+  );
+}
+
+// ─── Per-row clip-fit picker ───────────────────────────────────────
+//
+// Per-row policy for how the renderer reconciles a clip's intrinsic
+// duration with the scene's duration when they differ. Four options:
+//
+//   - Stretch (default): rescale playbackRate to fit. Slow-mo when
+//     scene > clip, speed-up when scene < clip.
+//   - Freeze last: play at native speed, freeze the last frame for
+//     the remainder. Scene > clip only.
+//   - Loop: play at native speed, restart from frame 0 when the clip
+//     ends, until the scene's done.
+//   - Trim scene: NOT a render policy. Writes the row's
+//     duration_override_ms = clip_duration so the scene's playable
+//     window matches the clip's intrinsic duration exactly. Cleaner
+//     than render-time gymnastics when the user genuinely wants the
+//     scene to be the clip's length.
+function ShotClipFitPicker({
+  row,
+  shotVideoDurationSeconds,
+  onUpdate,
+}: {
+  row: ProductionDoc['rows'][number];
+  shotVideoDurationSeconds?: number;
+  onUpdate: (patch: Partial<ProductionDoc['rows'][number]>) => void;
+}): React.ReactElement {
+  const current = row.clip_fit_mode ?? 'stretch';
+  const options: Array<{
+    value: 'stretch' | 'freeze-last' | 'loop' | 'trim-scene';
+    label: string;
+    description: string;
+  }> = [
+    {
+      value: 'stretch',
+      label: 'Stretch',
+      description: 'Slow-mo / speed-up to fit. Default.',
+    },
+    {
+      value: 'freeze-last',
+      label: 'Freeze last',
+      description: 'Native speed; hold last frame if scene is longer.',
+    },
+    {
+      value: 'loop',
+      label: 'Loop',
+      description: 'Native speed; restart clip when it ends.',
+    },
+    {
+      value: 'trim-scene',
+      label: 'Trim scene',
+      description:
+        'Shorten the scene to match the clip exactly (writes duration_override).',
+    },
+  ];
+  const handleSelect = (
+    value: 'stretch' | 'freeze-last' | 'loop' | 'trim-scene',
+  ) => {
+    console.info('[editor clip-fit] changed', {
+      from: row.clip_fit_mode,
+      to: value,
+      shotVideoDurationSeconds,
+    });
+    if (value === 'trim-scene') {
+      // Trim is a data operation: set duration_override_ms to the
+      // clip's intrinsic duration so the scene matches. ALSO clear
+      // the clip_fit_mode (or set to stretch) since the renderer
+      // would now see matched durations and stretch becomes a no-op.
+      // Skip silently when we don't know the clip duration (the
+      // renderer would have no value to fall back to either).
+      if (
+        typeof shotVideoDurationSeconds !== 'number' ||
+        !Number.isFinite(shotVideoDurationSeconds) ||
+        shotVideoDurationSeconds <= 0
+      ) {
+        toast.error(
+          'Clip duration unknown — pick a different mode or wait for the clip to finish generating.',
+        );
+        return;
+      }
+      const nextDurationMs = Math.round(shotVideoDurationSeconds * 1000);
+      onUpdate({
+        duration_override_ms: nextDurationMs,
+        clip_fit_mode: undefined,
+      });
+      toast.success(
+        `Scene trimmed to ${shotVideoDurationSeconds.toFixed(1)}s — matches clip duration.`,
+      );
+      return;
+    }
+    onUpdate({ clip_fit_mode: value === 'stretch' ? undefined : value });
+  };
+  return (
+    <div className="space-y-1">
+      <div
+        className="text-[10px] uppercase tracking-wider"
+        style={{ color: 'var(--fg-muted)' }}
+      >
+        Clip fit
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {options.map((opt) => {
+          const isActive = current === opt.value;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => handleSelect(opt.value)}
+              title={opt.description}
+              className="text-[10px] px-1.5 py-1 rounded border transition-colors"
+              style={{
+                borderColor: isActive
+                  ? 'var(--editor-accent, #a78bfa)'
+                  : 'var(--card-border)',
+                color: isActive ? 'var(--editor-accent, #a78bfa)' : 'var(--fg)',
+                fontWeight: isActive ? 600 : 400,
+              }}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

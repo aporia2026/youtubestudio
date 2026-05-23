@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AbsoluteFill, Img, OffthreadVideo, useCurrentFrame, useVideoConfig, interpolate } from 'remotion';
+import { AbsoluteFill, Img, Loop, OffthreadVideo, useCurrentFrame, useVideoConfig, interpolate } from 'remotion';
 import { KenBurns } from '../components/KenBurns';
 import { LowerThird } from '../components/LowerThird';
 import { FloatingElement } from '../components/FloatingElement';
@@ -125,8 +125,22 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
   const effectiveClipSeconds = Math.max(0.1, clipSeconds - trimStartSec - trimEndSec);
   const PLAYBACK_RATE_MIN = 0.25;
   const PLAYBACK_RATE_MAX = 2.0;
-  const rawPlaybackRate = sceneSeconds > 0 ? effectiveClipSeconds / sceneSeconds : 1;
-  const playbackRate = Math.max(PLAYBACK_RATE_MIN, Math.min(PLAYBACK_RATE_MAX, rawPlaybackRate));
+
+  // Clip/scene fit policy. The user picks per-row in the inspector;
+  // default 'stretch' preserves historical behavior. See
+  // `ProductionRow.clip_fit_mode` for the full per-mode contract.
+  const clipFitMode = shot.clipFitMode ?? 'stretch';
+  const playbackRate = (() => {
+    if (clipFitMode === 'freeze-last' || clipFitMode === 'loop') {
+      // Native speed — OffthreadVideo's startFrom + endAt + Remotion
+      // sequence math handles the rest below.
+      return 1;
+    }
+    // Default 'stretch' (also 'trim-scene', since durations should
+    // already match by the time the renderer sees the shot).
+    const rawPlaybackRate = sceneSeconds > 0 ? effectiveClipSeconds / sceneSeconds : 1;
+    return Math.max(PLAYBACK_RATE_MIN, Math.min(PLAYBACK_RATE_MAX, rawPlaybackRate));
+  })();
   // One-shot diagnostic so a viewer seeing "the clip looks weird" can
   // reason from the console instead of guessing. Frame 0 only — a 7s
   // scene at 30fps shouldn't spam 210 log lines.
@@ -137,9 +151,8 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
       trimStartSec,
       trimEndSec,
       effectiveClipSeconds: Number(effectiveClipSeconds.toFixed(2)),
-      rawPlaybackRate: Number(rawPlaybackRate.toFixed(3)),
+      clipFitMode,
       playbackRate: Number(playbackRate.toFixed(3)),
-      clamped: rawPlaybackRate !== playbackRate,
     });
   }
 
@@ -182,38 +195,20 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
       <AbsoluteFill style={freeTransformStyle}>
       {useVideo ? (
         <AbsoluteFill style={{ overflow: 'hidden' }}>
-          <OffthreadVideo
-            src={shot.videoUrl!}
-            // Editor's head-trim: when set, skip this many seconds at
-            // the start of the source clip. Defaults to 0 (no trim).
-            // Tail trim (`trimEndMs`) is data-only in v1 — wiring it
-            // requires a Sequence-level duration cap that the BRollScene
-            // doesn't currently own; the next renderer-integration pass
-            // will plumb it.
-            startFrom={
+          {/* Render based on clip-fit mode. Common props extracted so
+              each branch stays a single OffthreadVideo wrapped per
+              policy. */}
+          {(() => {
+            const videoStartFromFrames =
               typeof shot.trimStartMs === 'number' && shot.trimStartMs > 0
                 ? Math.round((shot.trimStartMs / 1000) * fps)
-                : 0
-            }
-            // Mute: the production doc's voiceover is the sole audio source;
-            // Kie clips ship with model-generated audio we never want bleeding
-            // through. (Kling i2v writes silent clips anyway, but Kling 2.6
-            // with sound=true / Veo 3 with audio could leak otherwise.)
-            muted
-            playbackRate={playbackRate}
-            // pauseWhenBuffering: halt the whole player while this clip
-            // is loading instead of letting playback drift past it. In
-            // the preview, missing this causes the composition-level
-            // voiceover to pop/dip at scene boundaries as the browser
-            // allocates decoder resources for the newly-mounted video.
-            pauseWhenBuffering
-            onError={(e) => {
-              // 2026-05-20: log the actual decode/fetch error before
-              // falling back to the still-image path. Renders that
-              // came back stills-only despite valid videoUrls in the
-              // config left no trace of WHY OffthreadVideo gave up;
-              // this captures the message and surfaces it in the
-              // Vercel function log for the render invocation.
+                : 0;
+            const videoStyle: React.CSSProperties = {
+              width: '100%',
+              height: '100%',
+              objectFit: isLetterbox ? 'contain' : 'cover',
+            };
+            const videoOnError = (e: unknown) => {
               const detail =
                 typeof e === 'object' && e !== null && 'message' in e
                   ? String((e as { message: unknown }).message)
@@ -226,13 +221,45 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
                 detail,
               });
               setVideoError(true);
-            }}
-            style={{
-              width: '100%',
-              height: '100%',
-              objectFit: isLetterbox ? 'contain' : 'cover',
-            }}
-          />
+            };
+            const videoNode = (
+              <OffthreadVideo
+                src={shot.videoUrl!}
+                startFrom={videoStartFromFrames}
+                muted
+                playbackRate={playbackRate}
+                pauseWhenBuffering
+                onError={videoOnError}
+                style={videoStyle}
+              />
+            );
+
+            if (clipFitMode === 'loop') {
+              // Loop policy: restart the clip from frame 0 every
+              // clipDurationInFrames until the scene ends. Remotion's
+              // <Loop> handles the wraparound; durationInFrames on the
+              // inner element is the clip's own length, not the scene's.
+              const loopChildDurationInFrames = Math.max(
+                1,
+                Math.round(effectiveClipSeconds * fps),
+              );
+              return (
+                <Loop durationInFrames={loopChildDurationInFrames}>
+                  {videoNode}
+                </Loop>
+              );
+            }
+            if (clipFitMode === 'freeze-last') {
+              // Native speed; OffthreadVideo holds the last frame
+              // automatically once the clip's intrinsic duration ends.
+              // No special wrapping needed.
+              return videoNode;
+            }
+            // 'stretch' (default) + 'trim-scene' (durations already
+            // match by data, so stretch is a no-op): the playbackRate
+            // computed above does the fitting.
+            return videoNode;
+          })()}
         </AbsoluteFill>
       ) : isLetterbox ? (
         // Static image at object-fit:contain — every pixel of the source
