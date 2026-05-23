@@ -145,6 +145,12 @@ interface TimelineV2Props {
   /** Default duration (ms) for a newly-inserted blank scene. Read
    *  from per-device editor settings by the parent. */
   insertSceneDefaultDurationMs?: number;
+  /** Leading-edge drag handler. Forwarded to the inner Timeline.
+   *  Each pointermove fires with the new absolute startMs; the
+   *  parent dispatches SET_SHOT_TIMING which carves from the left
+   *  neighbor in one atomic step. See
+   *  `_plans/2026-05-23-editor-set-shot-timing-and-left-edge-drag.md`. */
+  onLeadingResize?: (shotIndex: number, newStartMs: number) => void;
 }
 
 export function TimelineV2({
@@ -180,6 +186,7 @@ export function TimelineV2({
   onShotContextMenu,
   onInsertScene,
   insertSceneDefaultDurationMs,
+  onLeadingResize,
   onAudioContextMenu,
   onCaptionContextMenu,
   onOverlayContextMenu,
@@ -345,6 +352,7 @@ export function TimelineV2({
                   onShotContextMenu={onShotContextMenu}
                   onInsertScene={onInsertScene}
                   insertSceneDefaultDurationMs={insertSceneDefaultDurationMs}
+                  onLeadingResize={onLeadingResize}
                 />
               </LaneStrip>
               <LaneStrip

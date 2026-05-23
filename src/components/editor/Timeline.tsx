@@ -39,6 +39,7 @@ import { CSS } from '@dnd-kit/utilities';
 import type { VideoConfig, VideoShot } from '@/remotion/types';
 import { EDITOR_MAX_SHOT_MS, EDITOR_MIN_SHOT_MS } from '@/lib/editor/store';
 import { InsertSceneAffordance } from './InsertSceneAffordance';
+import { formatTimecode } from './SetTimingPopover';
 
 interface TimelineProps {
   config: VideoConfig;
@@ -55,6 +56,13 @@ interface TimelineProps {
    *  pointer-up with the final value. The store handles clamping +
    *  no-op detection, so calling this every pointermove is safe. */
   onResize?: (shotIndex: number, newDurationMs: number) => void;
+  /** Fired live during a LEADING-edge resize drag. Dispatches a
+   *  `SET_SHOT_TIMING { shotIndex, startMs: newStartMs, endMs:
+   *  unchanged }` against the store, which carves from / gives back
+   *  to the left neighbor in a single atomic step. Each pointermove
+   *  fires, mirroring `onResize`'s live-dispatch pattern. See
+   *  `_plans/2026-05-23-editor-set-shot-timing-and-left-edge-drag.md`. */
+  onLeadingResize?: (shotIndex: number, newStartMs: number) => void;
   /** Fired on drag-end with the source and target indices. */
   onReorder?: (fromIndex: number, toIndex: number) => void;
   /** Fired live during a trim drag (head OR tail) — and again on
@@ -137,6 +145,21 @@ interface ResizeDragState {
   previewMs: number;
 }
 
+interface LeadingResizeDragState {
+  shotIndex: number;
+  startClientX: number;
+  /** The shot's startMs at the moment the drag began (cascade-derived
+   *  from preceding durations). The drag computes the new startMs
+   *  as `startStartMs + pxToMs(deltaPx)` and dispatches it via
+   *  `onLeadingResize`. */
+  startStartMs: number;
+  /** The shot's endMs at the drag start — held constant for the entire
+   *  drag, so each dispatch sets `startMs` only. */
+  endMs: number;
+  /** Live preview value the card uses for its tooltip. */
+  previewStartMs: number;
+}
+
 type TrimSide = 'head' | 'tail';
 
 interface TrimDragState {
@@ -156,6 +179,7 @@ export function Timeline({
   playheadMs,
   onSelect,
   onResize,
+  onLeadingResize,
   onReorder,
   onTrim,
   rowTrims,
@@ -191,6 +215,18 @@ export function Timeline({
     }
     return xs;
   }, [config.shots, pixelsPerSecond]);
+  /** Cumulative start time (ms) of every shot. Used by the leading-
+   *  edge drag handler to feed `onLeadingResize` the absolute startMs
+   *  the reducer expects. Length = shots.length. */
+  const shotStartTimesMs = useMemo(() => {
+    const out: number[] = [];
+    let cumulative = 0;
+    for (const shot of config.shots) {
+      out.push(cumulative);
+      cumulative += shot.durationMs;
+    }
+    return out;
+  }, [config.shots]);
   const playheadX = useMemo(
     () => Math.min((playheadMs / 1000) * pixelsPerSecond, totalWidth),
     [playheadMs, pixelsPerSecond, totalWidth],
@@ -199,6 +235,10 @@ export function Timeline({
   const [resize, setResize] = useState<ResizeDragState | null>(null);
   const resizeRef = useRef<ResizeDragState | null>(null);
   resizeRef.current = resize;
+
+  const [leadingResize, setLeadingResize] = useState<LeadingResizeDragState | null>(null);
+  const leadingResizeRef = useRef<LeadingResizeDragState | null>(null);
+  leadingResizeRef.current = leadingResize;
 
   const [trim, setTrim] = useState<TrimDragState | null>(null);
   const trimRef = useRef<TrimDragState | null>(null);
@@ -275,6 +315,89 @@ export function Timeline({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [resize, onResize]);
+
+  // ─── Leading-edge resize pointer events ────────────────────────
+  //
+  // Mirrors the trailing-edge handlers above but drives the start
+  // (not the duration) — the reducer carves from the left neighbor
+  // and resizes this shot in a single atomic SET_SHOT_TIMING command.
+
+  const handleLeadingResizePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>, shotIndex: number) => {
+      if (!onLeadingResize) return;
+      // First shot has no left neighbor — silently ignore.
+      if (shotIndex === 0) return;
+      const shot = config.shots[shotIndex];
+      if (!shot) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      const startStartMs = shotStartTimesMs[shotIndex] ?? 0;
+      setLeadingResize({
+        shotIndex,
+        startClientX: e.clientX,
+        startStartMs,
+        endMs: startStartMs + shot.durationMs,
+        previewStartMs: startStartMs,
+      });
+    },
+    [config.shots, onLeadingResize, shotStartTimesMs],
+  );
+
+  const handleLeadingResizePointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const current = leadingResizeRef.current;
+      if (!current || !onLeadingResize) return;
+      const deltaPx = e.clientX - current.startClientX;
+      const naive = current.startStartMs + pxToMs(deltaPx);
+      // Clamp the start to [0, endMs - MIN] so the live preview
+      // never crosses the trailing edge (reducer enforces too, but
+      // pre-clamping gives a snappier visual).
+      const clamped = Math.min(
+        current.endMs - EDITOR_MIN_SHOT_MS,
+        Math.max(0, Math.round(naive)),
+      );
+      // Snap to frame boundaries for precision drag (matches the
+      // trailing-edge resize snap).
+      const fps = config.fps || 30;
+      const frameStepMs = 1000 / fps;
+      const snapped = Math.round(clamped / frameStepMs) * frameStepMs;
+      setLeadingResize({ ...current, previewStartMs: snapped });
+      if (snapped !== current.startStartMs) {
+        onLeadingResize(current.shotIndex, snapped);
+      }
+    },
+    [config.fps, onLeadingResize, pxToMs],
+  );
+
+  const handleLeadingResizePointerUp = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const current = leadingResizeRef.current;
+      if (!current) return;
+      e.currentTarget.releasePointerCapture(e.pointerId);
+      console.info('[editor timeline] leading-resize complete', {
+        shotIndex: current.shotIndex,
+        from: current.startStartMs,
+        to: current.previewStartMs,
+      });
+      setLeadingResize(null);
+    },
+    [],
+  );
+
+  // ESC cancels an in-progress leading-edge resize — restores the
+  // original start.
+  useEffect(() => {
+    if (!leadingResize || !onLeadingResize) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        onLeadingResize(leadingResize.shotIndex, leadingResize.startStartMs);
+        setLeadingResize(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [leadingResize, onLeadingResize]);
 
   // ─── Trim-handle pointer events ────────────────────────────────
 
@@ -450,6 +573,21 @@ export function Timeline({
                   }
                   onResizePointerMove={onResize ? handleResizePointerMove : undefined}
                   onResizePointerUp={onResize ? handleResizePointerUp : undefined}
+                  isLeadingResizing={leadingResize?.shotIndex === idx}
+                  leadingResizePreviewStartMs={
+                    leadingResize?.shotIndex === idx ? leadingResize.previewStartMs : null
+                  }
+                  onLeadingResizePointerDown={
+                    onLeadingResize && idx > 0
+                      ? (e) => handleLeadingResizePointerDown(e, idx)
+                      : undefined
+                  }
+                  onLeadingResizePointerMove={
+                    onLeadingResize ? handleLeadingResizePointerMove : undefined
+                  }
+                  onLeadingResizePointerUp={
+                    onLeadingResize ? handleLeadingResizePointerUp : undefined
+                  }
                   onTrimPointerDown={
                     onTrim ? (e, side) => handleTrimPointerDown(e, idx, side) : undefined
                   }
@@ -551,6 +689,17 @@ interface SortableShotCardProps {
   onResizePointerDown?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onResizePointerMove?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onResizePointerUp?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  /** True when THIS card is the active leading-edge drag target.
+   *  Drives the leading-edge handle's highlight + the live tooltip. */
+  isLeadingResizing: boolean;
+  /** Live preview startMs during the drag (cascade-derived). Null when
+   *  no drag is active. Used for the leading-edge tooltip. */
+  leadingResizePreviewStartMs: number | null;
+  /** Leading-edge drag handlers. Undefined on the first card (start
+   *  is anchored at 0; no left neighbor to carve from). */
+  onLeadingResizePointerDown?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onLeadingResizePointerMove?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onLeadingResizePointerUp?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onTrimPointerDown?: (e: React.PointerEvent<HTMLDivElement>, side: TrimSide) => void;
   onTrimPointerMove?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onTrimPointerUp?: (e: React.PointerEvent<HTMLDivElement>) => void;
@@ -584,6 +733,11 @@ function SortableShotCard({
   onResizePointerDown,
   onResizePointerMove,
   onResizePointerUp,
+  isLeadingResizing,
+  leadingResizePreviewStartMs,
+  onLeadingResizePointerDown,
+  onLeadingResizePointerMove,
+  onLeadingResizePointerUp,
   onTrimPointerDown,
   onTrimPointerMove,
   onTrimPointerUp,
@@ -858,6 +1012,30 @@ function SortableShotCard({
         </div>
       )}
 
+      {/* Leading-edge resize handle. Mirrors the trailing-edge handle
+          below but on the LEFT side. Skipped on the first card (no
+          left neighbor to carve from). Drives the SET_SHOT_TIMING
+          reducer via `onLeadingResize` — the new dual-edge timing
+          command introduced in
+          `_plans/2026-05-23-editor-set-shot-timing-and-left-edge-drag.md`. */}
+      {onLeadingResizePointerDown && (
+        <div
+          className="absolute top-0 bottom-0 z-10 cursor-ew-resize transition-colors"
+          style={{
+            left: -RESIZE_HANDLE_WIDTH / 2,
+            width: RESIZE_HANDLE_WIDTH,
+            background: isLeadingResizing
+              ? 'rgba(167, 139, 250, 0.8)'
+              : 'transparent',
+          }}
+          onPointerDown={onLeadingResizePointerDown}
+          onPointerMove={onLeadingResizePointerMove}
+          onPointerUp={onLeadingResizePointerUp}
+          onPointerCancel={onLeadingResizePointerUp}
+          aria-hidden
+        />
+      )}
+
       {/* Trailing-edge resize handle. Reaches a few pixels beyond
           the card boundary so the adjacent card's leading edge is
           grabbable too — except on the last card, flush there. */}
@@ -877,6 +1055,23 @@ function SortableShotCard({
           onPointerCancel={onResizePointerUp}
           aria-hidden
         />
+      )}
+
+      {/* Leading-drag tooltip — live preview startMs while dragging
+          the LEFT edge. Anchored at the LEFT edge so the user sees
+          the new start time near where they're pointing. */}
+      {isLeadingResizing && leadingResizePreviewStartMs !== null && (
+        <div
+          className="absolute -top-6 left-0 text-[10px] px-1.5 py-0.5 rounded tabular-nums z-20"
+          style={{
+            background: 'rgba(0,0,0,0.85)',
+            color: '#fff',
+            transform: 'translateX(-50%)',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {formatTimecode(leadingResizePreviewStartMs)}
+        </div>
       )}
 
       {/* Drag tooltip — live preview ms above the card while resizing. */}

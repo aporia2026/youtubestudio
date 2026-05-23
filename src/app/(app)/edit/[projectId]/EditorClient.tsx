@@ -133,7 +133,7 @@ import {
   OverlayContextMenu,
   type OverlayContextMenuItem,
 } from '@/components/production-doc/OverlayContextMenu';
-import { SetDurationPopover } from '@/components/editor/SetDurationPopover';
+import { SetTimingPopover } from '@/components/editor/SetTimingPopover';
 
 interface EditorClientProps {
   projectId: string;
@@ -783,16 +783,23 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     | null
   >(null);
 
-  /** Floating "Set duration…" popover anchored at the cursor. Used by
-   *  shot context menus (timeline + ShotsTab) to edit `durationMs` via
-   *  a slider+ms input pair. Apply dispatches RESIZE_SHOT. */
-  const [durationPopover, setDurationPopover] = useState<
+  /** Floating "Set timing…" popover anchored at the cursor. Used by
+   *  shot context menus (timeline + ShotsTab) to set both edges of
+   *  a shot via Start / End / Duration inputs. Apply dispatches
+   *  SET_SHOT_TIMING; the reducer carves from / gives back to both
+   *  neighbors in a single atomic step. Replaces the older
+   *  "Set duration…" popover (which was duration-only and dispatched
+   *  RESIZE_SHOT — semantically a subset of what the timing popover
+   *  can do). See
+   *  `_plans/2026-05-23-editor-set-shot-timing-and-left-edge-drag.md`. */
+  const [timingPopover, setTimingPopover] = useState<
     | {
-        kind: 'shot-duration';
         shotIndex: number;
         x: number;
         y: number;
-        initialMs: number;
+        initialStartMs: number;
+        initialEndMs: number;
+        isFirstShot: boolean;
       }
     | null
   >(null);
@@ -3248,6 +3255,18 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       onResize={(shotIndex, durationMs) =>
         apply({ type: 'RESIZE_SHOT', shotIndex, durationMs })
       }
+      onLeadingResize={(shotIndex, newStartMs) => {
+        // Read the shot's current endMs from videoConfig. End is held
+        // constant during a leading-edge drag; the reducer carves
+        // from the left neighbor and resizes this shot to honor the
+        // new start without disturbing the trailing edge or anything
+        // downstream. See
+        // `_plans/2026-05-23-editor-set-shot-timing-and-left-edge-drag.md`.
+        const shot = videoConfig.shots[shotIndex];
+        if (!shot) return;
+        const endMs = shot.startMs + shot.durationMs;
+        apply({ type: 'SET_SHOT_TIMING', shotIndex, startMs: newStartMs, endMs });
+      }}
       onReorder={(fromIndex, toIndex) =>
         apply({ type: 'REORDER_SHOTS', fromIndex, toIndex })
       }
@@ -3782,7 +3801,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             selectShotFromUser,
             setLaneFocus,
             setShowVoRegen,
-            setDurationPopover,
+            setTimingPopover,
             openImageEdit: (i) => setImageEditRow(i),
             handleRunRmbg: (i) => {
               void handleRunRmbg(i);
@@ -3799,27 +3818,29 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           );
         })()}
 
-      {/* Set-duration popover — opens from the shot / ShotsTab
-          context menu's "Set duration…" item. Apply dispatches
-          RESIZE_SHOT (the same path the trailing-edge drag uses)
-          so undo / redo Just Work. */}
-      {durationPopover && (
-        <SetDurationPopover
-          title={`Shot ${durationPopover.shotIndex + 1} duration`}
-          x={durationPopover.x}
-          y={durationPopover.y}
-          initialMs={durationPopover.initialMs}
-          minMs={EDITOR_MIN_SHOT_MS}
-          maxMs={EDITOR_MAX_SHOT_MS}
-          stepMs={100}
-          onApply={(ms) => {
+      {/* Set-timing popover — opens from the shot / ShotsTab context
+          menu's "Set timing…" item. Apply dispatches SET_SHOT_TIMING
+          which carves from / gives back to both neighbors in one
+          atomic step. */}
+      {timingPopover && (
+        <SetTimingPopover
+          title={`Shot ${timingPopover.shotIndex + 1} timing`}
+          x={timingPopover.x}
+          y={timingPopover.y}
+          initialStartMs={timingPopover.initialStartMs}
+          initialEndMs={timingPopover.initialEndMs}
+          minDurationMs={EDITOR_MIN_SHOT_MS}
+          maxDurationMs={EDITOR_MAX_SHOT_MS}
+          isFirstShot={timingPopover.isFirstShot}
+          onApply={(startMs, endMs) => {
             apply({
-              type: 'RESIZE_SHOT',
-              shotIndex: durationPopover.shotIndex,
-              durationMs: ms,
+              type: 'SET_SHOT_TIMING',
+              shotIndex: timingPopover.shotIndex,
+              startMs,
+              endMs,
             });
           }}
-          onClose={() => setDurationPopover(null)}
+          onClose={() => setTimingPopover(null)}
         />
       )}
     </>
@@ -3853,9 +3874,16 @@ function buildEditorContextMenuItems(args: {
   selectShotFromUser: (shotIndex: number, source: string) => void;
   setLaneFocus: (kind: 'audio' | 'captions' | 'overlays' | null) => void;
   setShowVoRegen: (open: boolean) => void;
-  setDurationPopover: (
+  setTimingPopover: (
     p:
-      | { kind: 'shot-duration'; shotIndex: number; x: number; y: number; initialMs: number }
+      | {
+          shotIndex: number;
+          x: number;
+          y: number;
+          initialStartMs: number;
+          initialEndMs: number;
+          isFirstShot: boolean;
+        }
       | null,
   ) => void;
   openImageEdit: (shotIndex: number) => void;
@@ -3875,7 +3903,7 @@ function buildEditorContextMenuItems(args: {
     selectShotFromUser,
     setLaneFocus,
     setShowVoRegen,
-    setDurationPopover,
+    setTimingPopover,
     openImageEdit,
     handleRunRmbg,
     handleRestoreOriginalBackground,
@@ -3936,16 +3964,26 @@ function buildEditorContextMenuItems(args: {
             ]
           : []),
         {
-          label: 'Set duration…',
-          onClick: () =>
-            setDurationPopover({
-              kind: 'shot-duration',
+          label: 'Set timing…',
+          onClick: () => {
+            // Cascade-derived current start/end for this shot. The
+            // helper has shotDurationsMs in scope but not the start
+            // times, so we sum on the fly — same formula `Timeline`
+            // uses for its seam markers.
+            let startMs = 0;
+            for (let k = 0; k < i; k += 1) startMs += shotDurationsMs[k] ?? 0;
+            const endMs = startMs + (shotDurationsMs[i] ?? 0);
+            setTimingPopover({
               shotIndex: i,
               x: menu.x,
               y: menu.y,
-              initialMs: currentDurationMs,
-            }),
-          title: 'Dial in a new duration via slider or numeric input',
+              initialStartMs: startMs,
+              initialEndMs: endMs,
+              isFirstShot: i === 0,
+            });
+          },
+          title:
+            'Set the shot\'s exact start and end timecodes. Neighbors carve / give back to honor the request.',
         },
         {
           label: muted ? 'Unmute shot' : 'Mute shot',

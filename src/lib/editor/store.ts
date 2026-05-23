@@ -184,6 +184,37 @@ export type EditorCommand =
   | { type: 'REDO' }
   | { type: 'RESIZE_SHOT'; shotIndex: number; durationMs: number }
   | { type: 'SPLIT_SHOT'; shotIndex: number; splitAtMs: number }
+  /** Atomic edit of both edges of a shot in a single undo step.
+   *  Redistributes the start/end deltas across the immediate left and
+   *  right neighbors (carve semantics: total project length unchanged
+   *  unless the right edge is moved past the project end on the last
+   *  shot, which falls back to shift). Used by the timeline's new
+   *  left-edge drag handle AND the "Set timing…" precision popover.
+   *
+   *  Algorithm:
+   *    - currentStart = sum(effectiveDuration(0..shotIndex-1))
+   *    - currentEnd   = currentStart + effectiveDuration(shotIndex)
+   *    - deltaStart   = startMs - currentStart
+   *    - deltaEnd     = endMs   - currentEnd
+   *    - Left neighbor (shotIndex > 0):
+   *        newLeftDur = leftDur + deltaStart, clamped to
+   *        [MIN_SHOT_MS, MAX_SHOT_MS]. If clamped, deltaStart shrinks
+   *        accordingly so the scene's start lands on what was achievable.
+   *    - Right neighbor (shotIndex < rows.length - 1):
+   *        newRightDur = rightDur - deltaEnd, clamped similarly.
+   *        If clamped, deltaEnd shrinks similarly.
+   *    - This shot's new duration = (currentEnd + clampedDeltaEnd) -
+   *      (currentStart + clampedDeltaStart), clamped to MIN/MAX.
+   *    - Last-shot special case (no right neighbor): a positive
+   *      deltaEnd just extends THIS shot's duration (shift fallback —
+   *      project length grows).
+   *
+   *  Inverse: a SET_SHOT_TIMING that puts startMs / endMs back to
+   *  their pre-edit values. One step undoes the whole composite edit
+   *  regardless of how many neighbors moved.
+   *
+   *  See `_plans/2026-05-23-editor-set-shot-timing-and-left-edge-drag.md`. */
+  | { type: 'SET_SHOT_TIMING'; shotIndex: number; startMs: number; endMs: number }
   /** Toolbar flag toggle — animateScenes / suppressLowerThirds /
    *  overlaysDisabled (the per-row `rowLockedAsStill` map mutates
    *  via the same path but is patched in full when it changes).
@@ -430,6 +461,7 @@ function isEditingCommand(cmd: EditorCommand): boolean {
   switch (cmd.type) {
     case 'RESIZE_SHOT':
     case 'SPLIT_SHOT':
+    case 'SET_SHOT_TIMING':
     case 'MERGE_ADJACENT_SHOTS':
     case 'DELETE_SHOT':
     case 'RESTORE_ROW':
@@ -688,6 +720,172 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       };
       const nextRows = state.doc.rows.slice();
       nextRows[shotIndex] = nextRow;
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'SET_SHOT_TIMING': {
+      const { shotIndex } = cmd;
+      if (shotIndex < 0 || shotIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const rows = state.doc.rows;
+
+      // Build the current cascade up to this shot. effDur() resolves
+      // per-row to either the explicit override or the timecode-natural
+      // value (mirrors what `productionDocToVideoConfig` does at render).
+      const effDur = (i: number) =>
+        typeof rows[i].duration_override_ms === 'number'
+          ? (rows[i].duration_override_ms as number)
+          : naturalRowDurationMs(state.doc, i);
+      let currentStart = 0;
+      for (let i = 0; i < shotIndex; i += 1) currentStart += effDur(i);
+      const currentDur = effDur(shotIndex);
+      const currentEnd = currentStart + currentDur;
+
+      const requestedStart = Math.round(cmd.startMs);
+      const requestedEnd = Math.round(cmd.endMs);
+      const requestedDeltaStart = requestedStart - currentStart;
+      const requestedDeltaEnd = requestedEnd - currentEnd;
+
+      // First shot's start is anchored at 0 — silently absorb any
+      // deltaStart attempt rather than dispatching a confusing error.
+      const hasLeft = shotIndex > 0;
+      const hasRight = shotIndex < rows.length - 1;
+      const clamp = (n: number) =>
+        Math.max(EDITOR_MIN_SHOT_MS, Math.min(EDITOR_MAX_SHOT_MS, Math.round(n)));
+
+      // Left side: positive deltaStart means scene starts LATER —
+      // left neighbor grows. Negative means scene starts earlier —
+      // left neighbor shrinks. When clamped to MIN/MAX, the actual
+      // deltaStart shrinks to whatever was achievable so the scene
+      // lands on the achievable start.
+      let actualDeltaStart = 0;
+      let leftMutation: { rowIndex: number; priorOverride: number | null; nextOverride: number } | null = null;
+      if (hasLeft && requestedDeltaStart !== 0) {
+        const leftIdx = shotIndex - 1;
+        const leftCur = effDur(leftIdx);
+        const leftRequested = leftCur + requestedDeltaStart;
+        const leftClamped = clamp(leftRequested);
+        actualDeltaStart = leftClamped - leftCur;
+        if (actualDeltaStart !== 0) {
+          const leftPrior =
+            typeof rows[leftIdx].duration_override_ms === 'number'
+              ? (rows[leftIdx].duration_override_ms as number)
+              : null;
+          leftMutation = {
+            rowIndex: leftIdx,
+            priorOverride: leftPrior,
+            nextOverride: leftClamped,
+          };
+        }
+      }
+
+      // Right side: positive deltaEnd means scene ends LATER — right
+      // neighbor shrinks. Negative means scene ends earlier — right
+      // neighbor grows. Last-shot special case (no right neighbor):
+      // honor the full deltaEnd by extending THIS shot's duration —
+      // shift fallback that grows total project length.
+      let actualDeltaEnd = 0;
+      let rightMutation: { rowIndex: number; priorOverride: number | null; nextOverride: number } | null = null;
+      let lastShotExtension = 0;
+      if (requestedDeltaEnd !== 0) {
+        if (hasRight) {
+          const rightIdx = shotIndex + 1;
+          const rightCur = effDur(rightIdx);
+          const rightRequested = rightCur - requestedDeltaEnd;
+          const rightClamped = clamp(rightRequested);
+          // Negate because shrinking the right neighbor by D means
+          // pushing the seam right by D, so deltaEnd === D.
+          actualDeltaEnd = rightCur - rightClamped;
+          if (actualDeltaEnd !== 0) {
+            const rightPrior =
+              typeof rows[rightIdx].duration_override_ms === 'number'
+                ? (rows[rightIdx].duration_override_ms as number)
+                : null;
+            rightMutation = {
+              rowIndex: rightIdx,
+              priorOverride: rightPrior,
+              nextOverride: rightClamped,
+            };
+          }
+        } else {
+          // Last shot: shift-fallback. The deltaEnd flows entirely
+          // into this shot's duration. No neighbor to carve from.
+          actualDeltaEnd = requestedDeltaEnd;
+          lastShotExtension = requestedDeltaEnd;
+        }
+      }
+
+      const newDur = clamp(currentDur - actualDeltaStart + actualDeltaEnd);
+      // No-op detection: nothing changed after all the clamping.
+      if (
+        actualDeltaStart === 0 &&
+        actualDeltaEnd === 0 &&
+        newDur === currentDur &&
+        leftMutation === null &&
+        rightMutation === null
+      ) {
+        return { next: state, inverse: null };
+      }
+
+      // Build the mutation. Order of operations doesn't matter — we
+      // mutate by index into a fresh slice, no cascade dependency.
+      const nextRows = rows.slice();
+      if (leftMutation) {
+        const r = nextRows[leftMutation.rowIndex];
+        nextRows[leftMutation.rowIndex] = {
+          ...r,
+          duration_override_ms: leftMutation.nextOverride,
+          edited_at: stampEditedAt(r.edited_at, 'duration'),
+        };
+      }
+      if (rightMutation) {
+        const r = nextRows[rightMutation.rowIndex];
+        nextRows[rightMutation.rowIndex] = {
+          ...r,
+          duration_override_ms: rightMutation.nextOverride,
+          edited_at: stampEditedAt(r.edited_at, 'duration'),
+        };
+      }
+      const thisRow = nextRows[shotIndex];
+      nextRows[shotIndex] = {
+        ...thisRow,
+        duration_override_ms: newDur,
+        edited_at: stampEditedAt(thisRow.edited_at, 'duration'),
+      };
+
+      // Observability for clamp surfacing — the EditorClient subscribes
+      // via console for now, sonner toast for the popover path.
+      if (
+        actualDeltaStart !== requestedDeltaStart ||
+        actualDeltaEnd !== requestedDeltaEnd
+      ) {
+        console.info('[editor set-shot-timing] clamp applied', {
+          shotIndex,
+          requestedStart,
+          requestedEnd,
+          actualStart: currentStart + actualDeltaStart,
+          actualEnd: currentEnd + actualDeltaEnd,
+          lastShotExtension,
+        });
+      }
+
+      // Inverse restores the prior timing exactly. One command, one
+      // undo step — regardless of how many neighbors moved.
+      const inverse: EditorCommand = {
+        type: 'SET_SHOT_TIMING',
+        shotIndex,
+        startMs: currentStart,
+        endMs: currentEnd,
+      };
+
       return {
         next: {
           ...state,
