@@ -52,6 +52,7 @@ import { TransportBar, type PlaybackRate } from '@/components/editor/TransportBa
 import { EditorLeftRail } from '@/components/editor/EditorLeftRail';
 import { EditorInspector, type InspectorTabId } from '@/components/editor/EditorInspector';
 import { deriveAlignmentStatus } from '@/lib/editor/alignment-status';
+import { computeAutoShiftYPct } from '@/remotion/utils';
 import { TransformOverlay } from '@/components/editor/TransformOverlay';
 import { BROLL_MODELS } from '@/lib/broll-types';
 import { useLocalStudioEnabled } from '@/lib/local-studio-enabled';
@@ -2365,6 +2366,70 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               {state.visualKitOverride ? 'Override' : 'Default'}
             </span>
           </button>
+
+          {/* Smart auto-fix doc-level action. Scans every row, finds
+              the ones the renderer would auto-shift (overlay title +
+              busy top saliency) AND that the user hasn't already
+              overridden, and writes the recommended Y value to each.
+              Disabled when no row qualifies (button label shows the
+              count). Confirmation gate prevents accidental clicks. */}
+          {(() => {
+            const candidates = state.doc.rows
+              .map((r, i) => {
+                if (typeof r.image_y_pct === 'number') return null;
+                const hasVisual = Boolean(
+                  state.rowImages[i] ||
+                    state.rowVideoClips[i]?.videoUrl ||
+                    r.video_url_override,
+                );
+                const auto = computeAutoShiftYPct(r, state.doc, hasVisual);
+                return auto ? { i, yPct: auto.yPct } : null;
+              })
+              .filter((c): c is { i: number; yPct: number } => c !== null);
+            return (
+              <button
+                type="button"
+                disabled={candidates.length === 0}
+                onClick={() => {
+                  if (
+                    !window.confirm(
+                      `Apply smart auto-fix to ${candidates.length} shot${candidates.length === 1 ? '' : 's'}? The renderer is already shifting these at render time; this writes the value explicitly so you can see + tweak each one.`,
+                    )
+                  )
+                    return;
+                  console.info('[editor doc auto-fix] apply-to-all', {
+                    count: candidates.length,
+                    rows: candidates.map((c) => c.i),
+                  });
+                  candidates.forEach((c) => {
+                    apply({
+                      type: 'PATCH_ROW',
+                      rowIndex: c.i,
+                      patch: { image_y_pct: c.yPct },
+                    });
+                  });
+                }}
+                className="editor-btn w-full justify-between disabled:opacity-40"
+                title={
+                  candidates.length === 0
+                    ? 'No rows currently qualify (overlay-mode title + busy top saliency).'
+                    : `Make the renderer's auto-shift explicit on ${candidates.length} row${candidates.length === 1 ? '' : 's'}.`
+                }
+              >
+                <span>✨ Apply auto-fix to all</span>
+                <span
+                  style={{
+                    color:
+                      candidates.length > 0
+                        ? 'var(--editor-accent)'
+                        : 'var(--fg-muted)',
+                  }}
+                >
+                  {candidates.length} row{candidates.length === 1 ? '' : 's'}
+                </span>
+              </button>
+            );
+          })()}
           <p className="text-[10px] pt-1" style={{ color: 'var(--fg-muted)' }}>
             More project settings live in the left rail’s Settings tab.
           </p>
@@ -2377,6 +2442,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               shotIndex={state.selection}
               shot={videoConfig.shots[state.selection]}
               row={state.doc.rows[state.selection]}
+              doc={state.doc}
               thumbnailUrl={state.rowImages[state.selection] ?? null}
               totalShots={state.doc.rows.length}
               projectId={projectId}

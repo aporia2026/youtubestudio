@@ -21,6 +21,7 @@ import { Loader2, RefreshCw, Sparkles, Undo2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatI2ICostHint } from '@/lib/image-models-i2i';
 import type { ProductionDoc, RowOverlayRenderState } from '@/remotion/utils';
+import { computeAutoShiftYPct } from '@/remotion/utils';
 import type { ThumbnailTransitionConfig, VideoShot, VideoThumbnail } from '@/remotion/types';
 import { BROLL_MODELS } from '@/lib/broll-types';
 import { useLocalStudioEnabled } from '@/lib/local-studio-enabled';
@@ -43,6 +44,10 @@ interface ShotInspectorProps {
   shotIndex: number;
   shot: VideoShot;
   row: ProductionDoc['rows'][number];
+  /** Parent doc — needed for doc-level defaults that the smart
+   *  auto-shift recommendation reads (section_title_layout_default,
+   *  doc.thumbnail.stripeHeightFraction). */
+  doc: ProductionDoc;
   /** rowImages[shotIndex] — first-frame thumbnail URL when present. */
   thumbnailUrl: string | null;
   totalShots: number;
@@ -180,6 +185,7 @@ export function ShotInspector({
   shotIndex,
   shot,
   row,
+  doc,
   thumbnailUrl,
   totalShots,
   projectId,
@@ -1275,6 +1281,8 @@ export function ShotInspector({
           {onUpdateRow && (
             <ShotFreeTransformControls
               row={row}
+              doc={doc}
+              hasVisual={Boolean(thumbnailUrl || row.video_url_override || clipStatus === 'ready')}
               onUpdate={onUpdateRow}
               onApplyTransformToAll={onApplyTransformToAll}
             />
@@ -1694,10 +1702,19 @@ function Badge({ label, tone = 'default' }: BadgeProps): React.ReactElement {
 // values (0/0/100/0) are render-identical to today.
 function ShotFreeTransformControls({
   row,
+  doc,
+  hasVisual,
   onUpdate,
   onApplyTransformToAll,
 }: {
   row: ProductionDoc['rows'][number];
+  /** The parent doc — needed so the auto-shift recommendation can
+   *  read the doc-level section_title_layout_default and the
+   *  composite thumbnail's stripeHeightFraction. */
+  doc: ProductionDoc;
+  /** Whether this row has any visual on the canvas. The auto-shift
+   *  recommendation only fires when there's something to shift. */
+  hasVisual: boolean;
   onUpdate: (patch: Partial<ProductionDoc['rows'][number]>) => void;
   /** Optional: copy THIS row's transform to every shot in the doc.
    *  When undefined the "Apply to all" button is hidden. */
@@ -1715,6 +1732,18 @@ function ShotFreeTransformControls({
   const rot =
     typeof row.image_rotation_deg === 'number' ? row.image_rotation_deg : 0;
   const isIdentity = x === 0 && y === 0 && scale === 100 && rot === 0;
+
+  // Smart auto-shift availability for this row. Returns the recommended
+  // y_pct when the row qualifies (overlay-mode title with busy top
+  // saliency); null otherwise. When the user has a manual y override
+  // the recommendation is hidden — their value already wins.
+  const autoShift = computeAutoShiftYPct(row, doc, hasVisual);
+  const hasManualY = typeof row.image_y_pct === 'number';
+  const showAutoShiftHint = autoShift !== null && !hasManualY;
+  const autoShiftAlreadyApplied =
+    hasManualY &&
+    autoShift !== null &&
+    Math.abs((row.image_y_pct ?? 0) - autoShift.yPct) < 0.5;
 
   const update = (patch: Partial<ProductionDoc['rows'][number]>) => {
     console.info('[editor transform commit] numeric', {
@@ -1810,6 +1839,59 @@ function ShotFreeTransformControls({
         Composes with Layout → Scene zoom. Drag the visual in the
         preview or use the corner + rotate handles for direct control.
       </div>
+
+      {/* Smart auto-fix surface. Shown when:
+          - row qualifies (overlay-mode title + saliency busy at top)
+          - AND the user hasn't already overridden Y.
+          The renderer applies the same value automatically; this
+          button just makes the value EXPLICIT on the row so the user
+          can see it in the slider and tweak it after. */}
+      {showAutoShiftHint && autoShift && (
+        <div
+          className="text-[10px] rounded px-2 py-1.5 flex items-start gap-2"
+          style={{
+            background: 'rgba(168,85,247,0.10)',
+            border: '1px solid rgba(168,85,247,0.3)',
+            color: 'var(--editor-accent, #a78bfa)',
+          }}
+        >
+          <span aria-hidden style={{ fontSize: 12, lineHeight: '14px' }}>✨</span>
+          <div className="flex-1 leading-snug">
+            <div className="font-medium">Auto-fix recommended</div>
+            <div
+              className="opacity-80"
+              style={{ color: 'var(--fg-muted)' }}
+            >
+              The title would cover busy image content
+              ({Math.round(autoShift.collisionScore * 100)}% saliency in the top
+              stripe). The renderer is already shifting this row down
+              by {autoShift.yPct.toFixed(0)}% at preview/render time.
+              Click Apply to make the value explicit so you can tweak it.
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                console.info('[editor transform auto-fix] apply', {
+                  yPct: autoShift.yPct,
+                });
+                onUpdate({ image_y_pct: autoShift.yPct });
+              }}
+              className="mt-1 text-[10px] underline"
+              style={{ color: 'var(--editor-accent, #a78bfa)' }}
+            >
+              Apply (Y = {autoShift.yPct.toFixed(0)}%)
+            </button>
+          </div>
+        </div>
+      )}
+      {autoShiftAlreadyApplied && (
+        <div
+          className="text-[10px]"
+          style={{ color: 'var(--fg-muted)' }}
+        >
+          ✨ This Y value matches the smart auto-fix recommendation.
+        </div>
+      )}
       {onApplyTransformToAll && !isIdentity && (
         <button
           type="button"

@@ -220,6 +220,15 @@ export interface ImageSaliencyMap {
   dominantColors: string[];
 }
 
+/** Threshold above which `topStripeBusyness` is considered "the title
+ *  would cover busy image content" — drives the smart auto-shift in
+ *  overlay-layout title rows. Conservative enough to leave rows with
+ *  blank-sky tops alone, low enough to catch the typical illustration
+ *  where the doodle action is dead-centre. Surfaces in the editor's
+ *  per-row indicator so the user knows WHY a row is recommended for
+ *  auto-fix. */
+export const AUTO_SHIFT_COLLISION_THRESHOLD = 0.4;
+
 /** Mean busyness in the top stripe of a saliency map. Used by the
  *  auto-shift heuristic in overlay-layout title rows: if the image
  *  has high importance under where the title would sit, the renderer
@@ -247,6 +256,34 @@ export function topStripeBusyness(
     }
   }
   return count > 0 ? sum / count : 0;
+}
+
+/** Decide whether a row qualifies for the smart auto-shift. Returns
+ *  the recommended `image_y_pct` value when the row WOULD benefit, or
+ *  `null` when it wouldn't (no title, wrong layout, no saliency,
+ *  busyness below threshold, or no visual on the row).
+ *
+ *  Pure function — no side effects, safe to call from the editor
+ *  inspector to drive the "Apply auto-fix" affordance AND from the
+ *  renderer's `productionDocToVideoConfig` to apply automatically
+ *  when the row has no manual override. Same logic in both places
+ *  keeps the "what the editor recommends" and "what the renderer
+ *  does" perfectly aligned. */
+export function computeAutoShiftYPct(
+  row: ProductionRow,
+  doc: ProductionDoc,
+  hasVisual: boolean,
+): { yPct: number; collisionScore: number; stripeFraction: number } | null {
+  if (!hasVisual) return null;
+  const layout =
+    row.section_title_layout ?? doc.section_title_layout_default ?? 'letterbox';
+  if (!row.section_title || layout !== 'overlay' || !row.image_saliency) {
+    return null;
+  }
+  const stripeFraction = doc.thumbnail?.stripeHeightFraction ?? 0.13;
+  const collisionScore = topStripeBusyness(row.image_saliency, stripeFraction);
+  if (collisionScore <= AUTO_SHIFT_COLLISION_THRESHOLD) return null;
+  return { yPct: stripeFraction * 100, collisionScore, stripeFraction };
 }
 
 /** Categorised edit tracking per row. Each field key matches the
@@ -896,40 +933,21 @@ export function productionDocToVideoConfig(
         if (typeof row.image_y_pct === 'number' && Number.isFinite(row.image_y_pct)) {
           return row.image_y_pct;
         }
-        // Smart auto-shift (2026-05-23): when a row has a section
-        // title in OVERLAY layout, the title stripe sits on top of the
-        // image. If the image's saliency shows high importance in the
-        // top stripe zone, automatically shift the image down by the
-        // stripe height so the busy area moves out from under the
-        // title. Saves the user from manually dragging every shot that
-        // collides. The user can still override per-row via the
-        // Transform card or the drag overlay; their value will win
-        // because of the type-check above.
-        const layout =
-          row.section_title_layout ?? doc.section_title_layout_default ?? 'letterbox';
-        if (
-          row.section_title &&
-          layout === 'overlay' &&
-          row.image_saliency &&
-          imageUrl
-        ) {
-          const stripeFraction = doc.thumbnail?.stripeHeightFraction ?? 0.13;
-          const collisionScore = topStripeBusyness(row.image_saliency, stripeFraction);
-          if (collisionScore > 0.4) {
-            const autoShiftPct = stripeFraction * 100;
-            if (typeof console !== 'undefined') {
-              console.info('[renderer auto-shift] applied', {
-                rowIndex: i,
-                collisionScore: Number(collisionScore.toFixed(2)),
-                stripeFraction,
-                autoShiftPct,
-                reason: 'overlay-mode title would cover busy image area',
-              });
-            }
-            return autoShiftPct;
-          }
+        // Smart auto-shift (2026-05-23) — see computeAutoShiftYPct
+        // for the decision logic. Same helper drives the editor's
+        // "Apply auto-fix" UI so the recommendation and the actual
+        // render stay in lockstep.
+        const auto = computeAutoShiftYPct(row, doc, Boolean(imageUrl || videoUrl));
+        if (auto && typeof console !== 'undefined') {
+          console.info('[renderer auto-shift] applied', {
+            rowIndex: i,
+            collisionScore: Number(auto.collisionScore.toFixed(2)),
+            stripeFraction: auto.stripeFraction,
+            autoShiftPct: auto.yPct,
+            reason: 'overlay-mode title would cover busy image area',
+          });
         }
-        return undefined;
+        return auto?.yPct;
       })(),
       imageScalePct:
         typeof row.image_scale_pct === 'number' && Number.isFinite(row.image_scale_pct)
