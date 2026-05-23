@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { applyCommand, persistableFromState, type EditorCommand, type EditorState } from './store';
 import { saveEditorPayload, type SaveResult } from './save-client';
+import { isGestureActive } from './gesture-state';
 
 const AUTO_SAVE_DEBOUNCE_MS = 800;
 
@@ -134,7 +135,16 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
         // changes anyway, plus they'd have to figure out why the
         // banner won't clear. Done via setTimeout because
         // reloadFromServer is declared further down the closure.
-        setTimeout(() => {
+        // Defer the auto-reload if a user gesture (drag/resize/rotate)
+        // is currently in flight. Reloading mid-gesture wipes the
+        // live drag state and the user perceives "drag doesn't work."
+        // We poll the gesture flag and reload once it clears.
+        const tryAutoReload = () => {
+          if (isGestureActive()) {
+            console.info('[editor store] deferring auto-reload — gesture in flight');
+            setTimeout(tryAutoReload, 250);
+            return;
+          }
           const wasDirty = stateRef.current.isDirty;
           console.info('[editor store] auto-reloading after conflict', { wasDirty });
           void reloadFromServerRef.current?.().then(() => {
@@ -147,7 +157,8 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
               }).catch(() => {});
             }
           });
-        }, 0);
+        };
+        setTimeout(tryAutoReload, 0);
         break;
       case 'gone':
         setSaveStatus({ kind: 'error', message: 'Project was deleted.' });
@@ -176,6 +187,7 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
     }
     return performSave();
   }, [performSave]);
+
 
   /**
    * Re-fetch the project from the server and reset local state.

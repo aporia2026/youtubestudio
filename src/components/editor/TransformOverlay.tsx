@@ -35,6 +35,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { markGestureEnd, markGestureStart } from '@/lib/editor/gesture-state';
 
 export interface FreeTransform {
   xPct: number;
@@ -64,6 +65,12 @@ interface TransformOverlayProps {
    *  dispatches PATCH_ROW so the change lands on the undo stack and
    *  the autosave picks it up. */
   onCommit: (next: FreeTransform) => void;
+  /** Fire once on pointerdown when ANY drag begins (body, corner,
+   *  rotate). The parent uses this to cancel any pending autosave so
+   *  it can't fire mid-drag — a stale-version PATCH returning 409
+   *  during the drag would trigger an auto-reload that wipes the
+   *  drag state and the user perceives "drag doesn't work." */
+  onGestureStart?: () => void;
 }
 
 type ActiveDrag =
@@ -226,6 +233,11 @@ export function TransformOverlay({
     document.removeEventListener('pointermove', handlePointerMove);
     document.removeEventListener('pointerup', handlePointerUp);
     document.removeEventListener('pointercancel', handlePointerUp);
+    // Clear the gesture flag so the conflict handler can resume
+    // auto-reloading. Pair with the markGestureStart in each
+    // pointerdown handler — counter-based so a drag can't double-end
+    // and drift the counter negative.
+    markGestureEnd(`transform-${active.kind}`);
     if (transformRef.current) {
       console.info('[editor transform overlay] drag-end', {
         kind: active.kind,
@@ -272,6 +284,7 @@ export function TransformOverlay({
     e.stopPropagation();
     e.preventDefault();
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    markGestureStart('transform-body');
     activeRef.current = {
       kind: 'body',
       startX: e.clientX,
@@ -301,6 +314,7 @@ export function TransformOverlay({
     const px = e.clientX - containerRect.left - canvasRect.left;
     const py = e.clientY - containerRect.top - canvasRect.top;
     const startAngle = (Math.atan2(py - cy, px - cx) * 180) / Math.PI;
+    markGestureStart('transform-rotate');
     activeRef.current = {
       kind: 'rotate',
       centerX: cx,
@@ -355,6 +369,7 @@ export function TransformOverlay({
     const px = e.clientX - containerRect.left - canvasRect.left;
     const py = e.clientY - containerRect.top - canvasRect.top;
     const startDistance = Math.hypot(px - ax, py - ay);
+    markGestureStart('transform-corner');
     activeRef.current = {
       kind: 'corner',
       anchorX: ax,
