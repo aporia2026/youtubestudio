@@ -38,6 +38,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import type { VideoConfig, VideoShot } from '@/remotion/types';
 import { EDITOR_MAX_SHOT_MS, EDITOR_MIN_SHOT_MS } from '@/lib/editor/store';
+import { InsertSceneAffordance } from './InsertSceneAffordance';
 
 interface TimelineProps {
   config: VideoConfig;
@@ -83,6 +84,22 @@ interface TimelineProps {
    *  optional so callers that don't want the menu (e.g. story-book
    *  fixtures) don't have to pass anything. */
   onShotContextMenu?: (shotIndex: number, x: number, y: number) => void;
+  /** Fires when the user clicks "+" between two cards (or before the
+   *  first / after the last) and picks an insert mode. The parent
+   *  dispatches `INSERT_BLANK_SHOT { atIndex, mode, durationMs,
+   *  carveFrom }`. When omitted, the seam "+" affordances aren't
+   *  rendered. See
+   *  `_plans/2026-05-23-editor-insert-blank-scene-between.md`. */
+  onInsertScene?: (
+    atIndex: number,
+    mode: 'carve' | 'shift',
+    carveFrom?: 'left' | 'right' | 'auto',
+  ) => void;
+  /** Default duration (ms) for a newly-inserted blank scene. From the
+   *  user's editor settings; the affordance shows this in its button
+   *  labels so the user sees what they'll get. Falls back to
+   *  `EDITOR_MIN_SHOT_MS` when not provided. */
+  insertSceneDefaultDurationMs?: number;
 }
 
 const DEFAULT_PX_PER_SECOND = 80;
@@ -146,6 +163,8 @@ export function Timeline({
   rowTransitions,
   pixelsPerSecond = DEFAULT_PX_PER_SECOND,
   onShotContextMenu,
+  onInsertScene,
+  insertSceneDefaultDurationMs = EDITOR_MIN_SHOT_MS,
 }: TimelineProps): React.ReactElement {
   const totalMs = useMemo(
     () => config.shots.reduce((acc, s) => acc + s.durationMs, 0),
@@ -155,6 +174,23 @@ export function Timeline({
     () => Math.max(120, (totalMs / 1000) * pixelsPerSecond),
     [totalMs, pixelsPerSecond],
   );
+  /** Pixel offsets of every seam between shots, plus the start (0)
+   *  and end (totalWidth). Same widthPx formula the cards use so the
+   *  seam markers line up exactly with the card edges. Length =
+   *  shots.length + 1: index 0 = before-first, index N = after-last. */
+  const seamXs = useMemo(() => {
+    const xs: number[] = [0];
+    let cumulative = 0;
+    for (const shot of config.shots) {
+      const widthPx = Math.max(
+        MIN_CARD_WIDTH,
+        (shot.durationMs / 1000) * pixelsPerSecond,
+      );
+      cumulative += widthPx;
+      xs.push(cumulative);
+    }
+    return xs;
+  }, [config.shots, pixelsPerSecond]);
   const playheadX = useMemo(
     () => Math.min((playheadMs / 1000) * pixelsPerSecond, totalWidth),
     [playheadMs, pixelsPerSecond, totalWidth],
@@ -442,6 +478,29 @@ export function Timeline({
                 />
               );
             })}
+
+            {/* Insert-scene seam affordances. One before card 0, one
+                between every adjacent pair, one after the last card.
+                Each is absolutely positioned at the seam X so the
+                existing flex layout isn't perturbed. Rendered only when
+                the parent wires onInsertScene. See
+                `_plans/2026-05-23-editor-insert-blank-scene-between.md`. */}
+            {onInsertScene &&
+              seamXs.map((seamX, i) => (
+                <InsertSceneAffordance
+                  key={`insert-${i}`}
+                  atIndex={i}
+                  seamX={seamX}
+                  height={STRIP_HEIGHT}
+                  leftDurationMs={i > 0 ? config.shots[i - 1].durationMs : undefined}
+                  rightDurationMs={
+                    i < config.shots.length ? config.shots[i].durationMs : undefined
+                  }
+                  defaultDurationMs={insertSceneDefaultDurationMs}
+                  minShotMs={EDITOR_MIN_SHOT_MS}
+                  onInsert={(mode, carveFrom) => onInsertScene(i, mode, carveFrom)}
+                />
+              ))}
 
             {/* Playhead. Renders even when ms === 0 so the user has a
                 visual anchor at the start of the strip. */}

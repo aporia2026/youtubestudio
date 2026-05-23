@@ -250,6 +250,58 @@ export type EditorCommand =
    *  slot. Inverse is a ripple DELETE_SHOT on the new slot. Phase 3
    *  follow-up — surfaced by the right-click context menu. */
   | { type: 'DUPLICATE_SHOT'; shotIndex: number }
+  /** Insert a fresh, blank-content row at `atIndex` (valid range
+   *  `[0, rows.length]`; `rows.length` appends). The new row has
+   *  empty script / visual fields, no image, no overlay, no broll —
+   *  the user fills it in afterward.
+   *
+   *  Two modes govern how the new row's duration interacts with the
+   *  surrounding cascade:
+   *
+   *    – `'carve'`: the new row steals `durationMs` from one of the
+   *      neighbors so the total project length is unchanged. Used to
+   *      fix audio-vs-visual mismatches at a seam — downstream
+   *      visuals stay aligned with the voiceover. `carveFrom` picks
+   *      which side gives up the time; falls back to the other side
+   *      if the preferred side can't give enough slack without
+   *      dropping below `EDITOR_MIN_SHOT_MS`. No-op (with a console
+   *      warn) when neither neighbor has ≥ `2 * EDITOR_MIN_SHOT_MS`
+   *      effective duration.
+   *
+   *    – `'shift'`: the new row adds `durationMs` to the total
+   *      project length; every downstream visual shifts later in
+   *      absolute time, the voiceover plays straight through. Used
+   *      to add a beat / breathing room.
+   *
+   *  Selection moves to the new row. Inverse is REMOVE_INSERTED_SHOT
+   *  which also restores the carved neighbor's prior override (if any).
+   *  See `_plans/2026-05-23-editor-insert-blank-scene-between.md`. */
+  | {
+      type: 'INSERT_BLANK_SHOT';
+      atIndex: number;
+      mode: 'carve' | 'shift';
+      durationMs: number;
+      /** Carve mode only. `'auto'` picks the larger neighbor;
+       *  `'left'`/`'right'` force a specific side and fall back to
+       *  the other if the preferred can't give enough slack. Ignored
+       *  in shift mode. */
+      carveFrom?: 'left' | 'right' | 'auto';
+    }
+  /** Inverse of INSERT_BLANK_SHOT. Removes the row at `atIndex`,
+   *  reindexes `rowImages` / `rowOverlays` / `rowVideoClips` down by
+   *  one, and (when `restoreNeighbor` is present) puts the carved
+   *  neighbor's `duration_override_ms` back to its pre-carve value.
+   *  `value: null` means the neighbor had no override before the carve
+   *  — clear the field entirely. Built as an inverse only; users never
+   *  dispatch it directly. */
+  | {
+      type: 'REMOVE_INSERTED_SHOT';
+      atIndex: number;
+      restoreNeighbor?: {
+        rowIndex: number;
+        value: number | null;
+      };
+    }
   // Toggle a shot's `muted` flag. Self-inverse — applying twice
   // returns to the original state, so the inverse is the same
   // command type with the prior value as the new value.
@@ -403,6 +455,8 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'PATCH_DOC':
     case 'SET_VISUAL_KIT_OVERRIDE':
     case 'DUPLICATE_SHOT':
+    case 'INSERT_BLANK_SHOT':
+    case 'REMOVE_INSERTED_SHOT':
       return true;
     default:
       return false;
@@ -1705,6 +1759,227 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       };
     }
 
+    case 'INSERT_BLANK_SHOT': {
+      const { atIndex, mode, durationMs, carveFrom } = cmd;
+      // Valid insertion range is [0, rows.length]; rows.length appends.
+      if (atIndex < 0 || atIndex > state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const clampedDurationMs = Math.min(
+        EDITOR_MAX_SHOT_MS,
+        Math.max(EDITOR_MIN_SHOT_MS, Math.round(durationMs)),
+      );
+
+      // Carve mode: pick a neighbor with ≥ 2 × MIN_SHOT_MS effective
+      // duration (one MIN for itself post-carve, one MIN for what we're
+      // giving away) and reduce its override by the carve amount. Shift
+      // mode: leave neighbors alone, new row just extends total length.
+      let newRowDurationMs = clampedDurationMs;
+      let neighborMutation: {
+        rowIndex: number;
+        priorOverride: number | null;
+        nextOverride: number;
+      } | null = null;
+
+      if (mode === 'carve') {
+        const candidate = (i: number) => {
+          if (i < 0 || i >= state.doc.rows.length) return null;
+          const r = state.doc.rows[i];
+          const override =
+            typeof r.duration_override_ms === 'number' ? r.duration_override_ms : null;
+          const eff = override ?? naturalRowDurationMs(state.doc, i);
+          return { idx: i, eff, override };
+        };
+        // Left neighbor sits at atIndex - 1; right neighbor at atIndex
+        // BEFORE the splice (it'll move to atIndex + 1 after insert).
+        const left = candidate(atIndex - 1);
+        const right = candidate(atIndex);
+        // Need ≥ 2 × floor so we can give MIN_SHOT_MS and keep MIN_SHOT_MS.
+        const canGive = (n: { eff: number } | null) =>
+          n !== null && n.eff >= 2 * EDITOR_MIN_SHOT_MS;
+        const preferred = carveFrom ?? 'auto';
+        let chosen: { idx: number; eff: number; override: number | null } | null = null;
+        if (preferred === 'auto') {
+          if (canGive(left) && canGive(right)) {
+            chosen = left!.eff >= right!.eff ? left : right;
+          } else if (canGive(left)) {
+            chosen = left;
+          } else if (canGive(right)) {
+            chosen = right;
+          }
+        } else if (preferred === 'left') {
+          chosen = canGive(left) ? left : canGive(right) ? right : null;
+        } else {
+          chosen = canGive(right) ? right : canGive(left) ? left : null;
+        }
+        if (!chosen) {
+          console.warn('[editor store] insert-blank-shot carve no-op — no neighbor with slack', {
+            atIndex,
+            leftMs: left?.eff,
+            rightMs: right?.eff,
+            requiredEffMs: 2 * EDITOR_MIN_SHOT_MS,
+          });
+          return { next: state, inverse: null };
+        }
+        // min() handles the case where the chosen neighbor has less
+        // slack than the requested carve; we take what's available and
+        // the new row's duration matches what was actually carved.
+        const maxCarve = chosen.eff - EDITOR_MIN_SHOT_MS;
+        const actualCarve = Math.min(clampedDurationMs, maxCarve);
+        newRowDurationMs = actualCarve;
+        neighborMutation = {
+          rowIndex: chosen.idx,
+          priorOverride: chosen.override,
+          nextOverride: chosen.eff - actualCarve,
+        };
+      }
+
+      // Build the new blank row + apply optional neighbor mutation.
+      const newRow = makeBlankRow(newRowDurationMs);
+      const mutatedRows = state.doc.rows.slice();
+      if (neighborMutation) {
+        const n = mutatedRows[neighborMutation.rowIndex];
+        mutatedRows[neighborMutation.rowIndex] = {
+          ...n,
+          duration_override_ms: neighborMutation.nextOverride,
+          edited_at: stampEditedAt(n.edited_at, 'duration'),
+        };
+      }
+      const nextRows = [
+        ...mutatedRows.slice(0, atIndex),
+        newRow,
+        ...mutatedRows.slice(atIndex),
+      ];
+
+      // Reindex all three per-row maps so existing rows stay attached
+      // to their assets after the splice. DUPLICATE_SHOT does the same.
+      const nextImages = reindexRowImages(state.rowImages, atIndex, 1);
+      const nextOverlays = reindexRecord(state.rowOverlays, atIndex, 1);
+      const nextVideoClips = reindexRecord(state.rowVideoClips, atIndex, 1);
+
+      const inverse: EditorCommand = {
+        type: 'REMOVE_INSERTED_SHOT',
+        atIndex,
+        // restoreNeighbor.rowIndex is the POST-insert position of the
+        // carved neighbor (the inverse handler runs against the post-
+        // insert state). Left neighbor: pre-insert = atIndex - 1, post
+        // = atIndex - 1 (the splice happens to its right, so its index
+        // is unchanged). Right neighbor: pre-insert = atIndex, post =
+        // atIndex + 1 (the splice pushed it one slot right).
+        restoreNeighbor: neighborMutation
+          ? {
+              rowIndex:
+                neighborMutation.rowIndex < atIndex
+                  ? neighborMutation.rowIndex
+                  : neighborMutation.rowIndex + 1,
+              value: neighborMutation.priorOverride,
+            }
+          : undefined,
+      };
+
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          rowImages: nextImages,
+          rowOverlays: nextOverlays,
+          rowVideoClips: nextVideoClips,
+          selection: atIndex,
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'REMOVE_INSERTED_SHOT': {
+      const { atIndex, restoreNeighbor } = cmd;
+      if (atIndex < 0 || atIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      // Refuse to empty the doc — mirrors the DELETE_SHOT guard above.
+      // Wouldn't normally fire as an inverse (you can't have inserted
+      // INTO an empty doc) but defends against direct dispatch.
+      if (state.doc.rows.length === 1) {
+        console.warn('[editor store] remove-inserted-shot refused — can\'t empty the doc');
+        return { next: state, inverse: null };
+      }
+
+      // Capture the to-be-removed row's effective duration BEFORE the
+      // splice — the redo INSERT_BLANK_SHOT needs it to reproduce
+      // this state.
+      const rowToRemove = state.doc.rows[atIndex];
+      const removedDurationMs =
+        typeof rowToRemove.duration_override_ms === 'number'
+          ? rowToRemove.duration_override_ms
+          : naturalRowDurationMs(state.doc, atIndex);
+
+      const mutatedRows = state.doc.rows.slice();
+      if (restoreNeighbor) {
+        const { rowIndex, value } = restoreNeighbor;
+        if (rowIndex >= 0 && rowIndex < mutatedRows.length) {
+          const neighbor = mutatedRows[rowIndex];
+          if (value === null) {
+            const copy = { ...neighbor };
+            delete copy.duration_override_ms;
+            mutatedRows[rowIndex] = copy;
+          } else {
+            mutatedRows[rowIndex] = {
+              ...neighbor,
+              duration_override_ms: value,
+            };
+          }
+        }
+      }
+      const nextRows = [
+        ...mutatedRows.slice(0, atIndex),
+        ...mutatedRows.slice(atIndex + 1),
+      ];
+
+      const nextImages = reindexRowImages(state.rowImages, atIndex, -1);
+      const nextOverlays = reindexRecord(state.rowOverlays, atIndex, -1);
+      const nextVideoClips = reindexRecord(state.rowVideoClips, atIndex, -1);
+
+      // Selection follows the same rules as DELETE_SHOT ripple.
+      let nextSelection = state.selection;
+      if (nextSelection !== null) {
+        if (nextSelection === atIndex) {
+          nextSelection = nextRows.length === 0 ? null : Math.min(atIndex, nextRows.length - 1);
+        } else if (nextSelection > atIndex) {
+          nextSelection -= 1;
+        }
+      }
+
+      // Redo path: reconstruct the original INSERT_BLANK_SHOT. carveFrom
+      // is derived from where the restored neighbor sits relative to
+      // the insertion point (rowIndex < atIndex ⇒ left was carved;
+      // rowIndex > atIndex ⇒ right was carved). rowIndex === atIndex
+      // is impossible — that index was the inserted row itself.
+      const inverse: EditorCommand = {
+        type: 'INSERT_BLANK_SHOT',
+        atIndex,
+        mode: restoreNeighbor ? 'carve' : 'shift',
+        durationMs: removedDurationMs,
+        carveFrom: restoreNeighbor
+          ? restoreNeighbor.rowIndex < atIndex
+            ? 'left'
+            : 'right'
+          : undefined,
+      };
+
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          rowImages: nextImages,
+          rowOverlays: nextOverlays,
+          rowVideoClips: nextVideoClips,
+          selection: nextSelection,
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
     case 'MERGE_ADJACENT_SHOTS': {
       const { shotIndex, restoredDurationOverrideMs } = cmd;
       if (shotIndex < 0 || shotIndex + 1 >= state.doc.rows.length) {
@@ -1787,6 +2062,29 @@ export function applyCommand(state: EditorState, cmd: EditorCommand): EditorStat
     ...next,
     undoStack: pushUndo(state.undoStack, inverse),
     redoStack: [],
+  };
+}
+
+/**
+ * Build a fresh blank-content row for INSERT_BLANK_SHOT. Mirrors the
+ * field set DELETE_SHOT 'blank' mode produces (`visual_type: 'blank'`,
+ * empty string fields) so downstream renderer code and auto-pipeline
+ * gates treat newly-inserted scenes identically to blanked ones. The
+ * caller picks `durationMs`; the row's `edited_at` is stamped fresh
+ * so re-gen passes recognise it as user-touched and don't overwrite.
+ */
+function makeBlankRow(durationMs: number): ProductionDoc['rows'][number] {
+  return {
+    timecode: '',
+    script_text: '',
+    visual_type: 'blank',
+    visual_description: '',
+    stock_search_terms: '',
+    ai_image_prompt: '',
+    on_screen_text: '',
+    notes: '',
+    duration_override_ms: durationMs,
+    edited_at: stampEditedAt(undefined, 'structure'),
   };
 }
 

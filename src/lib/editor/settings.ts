@@ -62,6 +62,14 @@ const KEY_CLICK_SHOT_TO_SEEK = 'editor.playback.clickShotToSeek';
 const KEY_SHOW_MINIMAP = 'editor.timeline.showMinimap';
 const KEY_MINIMAP_WRAP_ENABLED = 'editor.timeline.minimapWrapEnabled';
 const KEY_MINIMAP_WRAP_THRESHOLD_MIN = 'editor.timeline.minimapWrapThresholdMinutes';
+// 2026-05-23 — seam-based scene insertion. Defaults consumed by the
+// hover-"+" affordance between cards. The settings panel UI for these
+// is a follow-up; the getters are wired now so the affordance reads
+// real defaults instead of hard-coded constants the user can't change.
+// See `_plans/2026-05-23-editor-insert-blank-scene-between.md`.
+const KEY_INSERT_MODE_DEFAULT = 'editor.insert.modeDefault';
+const KEY_INSERT_DURATION_MS = 'editor.insert.defaultDurationMs';
+const KEY_INSERT_CARVE_SOURCE = 'editor.insert.carveSource';
 
 const DEFAULT_ZOOM_LEVEL = 5;
 const DEFAULT_SHOW_THUMBNAILS = true;
@@ -78,6 +86,9 @@ const DEFAULT_CLICK_SHOT_TO_SEEK = true;
 const DEFAULT_SHOW_MINIMAP = true;
 const DEFAULT_MINIMAP_WRAP_ENABLED = true;
 const DEFAULT_MINIMAP_WRAP_THRESHOLD_MIN = 5;
+const DEFAULT_INSERT_MODE: InsertModeDefault = 'carve';
+const DEFAULT_INSERT_DURATION_MS = 2000;
+const DEFAULT_INSERT_CARVE_SOURCE: InsertCarveSource = 'auto';
 
 // ─── Enumerated value types ─────────────────────────────────────
 
@@ -97,6 +108,19 @@ const PLAYBACK_RATES: readonly PlaybackRateValue[] = [0.5, 1, 1.5, 2];
  *  distort). */
 export type PreviewFitMode = 'contain' | 'fill';
 const PREVIEW_FIT_MODES: readonly PreviewFitMode[] = ['contain', 'fill'];
+
+/** Default mode the seam-"+" affordance picks. `'carve'` keeps total
+ *  duration unchanged by stealing from a neighbor (right for mismatch
+ *  fixes); `'shift'` adds time and pushes downstream visuals later;
+ *  `'ask'` always shows the popover. */
+export type InsertModeDefault = 'carve' | 'shift' | 'ask';
+const INSERT_MODE_DEFAULTS: readonly InsertModeDefault[] = ['carve', 'shift', 'ask'];
+
+/** Which neighbor carve mode steals from by default. `'auto'` picks
+ *  the larger neighbor; `'right'` / `'left'` force a side (with
+ *  fallback if the preferred can't give enough slack). */
+export type InsertCarveSource = 'auto' | 'right' | 'left';
+const INSERT_CARVE_SOURCES: readonly InsertCarveSource[] = ['auto', 'right', 'left'];
 
 function safeRead(key: string): string | null {
   if (typeof window === 'undefined') return null;
@@ -365,6 +389,62 @@ export function setMinimapWrapThresholdMinutes(min: number): void {
   safeWrite(KEY_MINIMAP_WRAP_THRESHOLD_MIN, String(clampMinimapWrapMinutes(min)));
 }
 
+// ─── Seam-based scene insertion defaults ─────────────────────────
+//
+// Drive the hover-"+" affordance between timeline cards. The current
+// surface picks the mode every time (the popover offers both); these
+// defaults exist for the imminent settings-panel UI follow-up and so
+// the affordance's "default duration" badge reads from the same place.
+
+export function getInsertModeDefault(): InsertModeDefault {
+  const raw = safeRead(KEY_INSERT_MODE_DEFAULT);
+  if (raw === null) return DEFAULT_INSERT_MODE;
+  if (INSERT_MODE_DEFAULTS.includes(raw as InsertModeDefault)) return raw as InsertModeDefault;
+  return DEFAULT_INSERT_MODE;
+}
+
+export function setInsertModeDefault(mode: InsertModeDefault): void {
+  if (!INSERT_MODE_DEFAULTS.includes(mode)) return;
+  safeWrite(KEY_INSERT_MODE_DEFAULT, mode);
+}
+
+/** Clamp the configured default to the same `[MIN_SHOT, MAX_SHOT]`
+ *  the reducer enforces. Local consts mirror EDITOR_MIN_SHOT_MS /
+ *  EDITOR_MAX_SHOT_MS — duplicated here so this leaf module doesn't
+ *  pull in `@/lib/editor/store` (which would create a cycle: store
+ *  doesn't import this module, but its consumers do). */
+const INSERT_MIN_DURATION_MS = 2000;
+const INSERT_MAX_DURATION_MS = 5 * 60 * 1000;
+function clampInsertDuration(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_INSERT_DURATION_MS;
+  return Math.max(
+    INSERT_MIN_DURATION_MS,
+    Math.min(INSERT_MAX_DURATION_MS, Math.round(n)),
+  );
+}
+
+export function getInsertDefaultDurationMs(): number {
+  const raw = safeRead(KEY_INSERT_DURATION_MS);
+  if (raw === null) return DEFAULT_INSERT_DURATION_MS;
+  return clampInsertDuration(Number.parseInt(raw, 10));
+}
+
+export function setInsertDefaultDurationMs(ms: number): void {
+  safeWrite(KEY_INSERT_DURATION_MS, String(clampInsertDuration(ms)));
+}
+
+export function getInsertCarveSource(): InsertCarveSource {
+  const raw = safeRead(KEY_INSERT_CARVE_SOURCE);
+  if (raw === null) return DEFAULT_INSERT_CARVE_SOURCE;
+  if (INSERT_CARVE_SOURCES.includes(raw as InsertCarveSource)) return raw as InsertCarveSource;
+  return DEFAULT_INSERT_CARVE_SOURCE;
+}
+
+export function setInsertCarveSource(source: InsertCarveSource): void {
+  if (!INSERT_CARVE_SOURCES.includes(source)) return;
+  safeWrite(KEY_INSERT_CARVE_SOURCE, source);
+}
+
 // ─── Test-only export ─────────────────────────────────────────────
 
 export const __testing = {
@@ -402,6 +482,14 @@ export const __testing = {
   DEFAULT_SHOW_MINIMAP,
   DEFAULT_MINIMAP_WRAP_ENABLED,
   DEFAULT_MINIMAP_WRAP_THRESHOLD_MIN,
+  KEY_INSERT_MODE_DEFAULT,
+  KEY_INSERT_DURATION_MS,
+  KEY_INSERT_CARVE_SOURCE,
+  DEFAULT_INSERT_MODE,
+  DEFAULT_INSERT_DURATION_MS,
+  DEFAULT_INSERT_CARVE_SOURCE,
+  INSERT_MODE_DEFAULTS,
+  INSERT_CARVE_SOURCES,
   LEFT_RAIL_TABS,
   PLAYBACK_RATES,
   PREVIEW_FIT_MODES,

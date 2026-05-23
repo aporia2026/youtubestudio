@@ -103,6 +103,8 @@ import {
   getShowMinimap,
   getMinimapWrapEnabled,
   getMinimapWrapThresholdMinutes,
+  getInsertDefaultDurationMs,
+  getInsertCarveSource,
 } from '@/lib/editor/settings';
 import { NarrationStrip } from '@/components/editor/NarrationStrip';
 import type { CaptionsBundle } from '@/lib/editor/captions';
@@ -3178,6 +3180,24 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         // overlay verbs the production-doc surface offers.
         console.info('[editor timeline context-menu] open', { kind: 'overlay', shotIndex, x, y });
         setOverlayContextMenu({ rowIndex: shotIndex, x, y });
+      }}
+      insertSceneDefaultDurationMs={getInsertDefaultDurationMs()}
+      onInsertScene={(atIndex, mode, carveFrom) => {
+        // `carveFrom` may be undefined when the affordance dispatches
+        // 'shift'. For 'carve', the popover always sends 'auto' today;
+        // honor the per-device setting so a user who's pinned 'right'
+        // or 'left' gets that side first (with the reducer's auto-
+        // fallback if it can't give enough slack). See
+        // `_plans/2026-05-23-editor-insert-blank-scene-between.md`.
+        const resolvedCarveFrom: 'left' | 'right' | 'auto' | undefined =
+          mode === 'carve' ? (carveFrom ?? getInsertCarveSource()) : undefined;
+        apply({
+          type: 'INSERT_BLANK_SHOT',
+          atIndex,
+          mode,
+          durationMs: getInsertDefaultDurationMs(),
+          carveFrom: resolvedCarveFrom,
+        });
       }}
     />
   );

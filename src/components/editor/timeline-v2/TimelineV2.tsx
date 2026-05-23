@@ -134,6 +134,17 @@ interface TimelineV2Props {
   /** Phase 4: minute threshold past which the minimap wraps to two
    *  rows. Default 5. */
   minimapWrapThresholdMinutes?: number;
+  /** Insert a blank scene at `atIndex`. Forwarded to the inner
+   *  Timeline's seam "+" affordances. See
+   *  `_plans/2026-05-23-editor-insert-blank-scene-between.md`. */
+  onInsertScene?: (
+    atIndex: number,
+    mode: 'carve' | 'shift',
+    carveFrom?: 'left' | 'right' | 'auto',
+  ) => void;
+  /** Default duration (ms) for a newly-inserted blank scene. Read
+   *  from per-device editor settings by the parent. */
+  insertSceneDefaultDurationMs?: number;
 }
 
 export function TimelineV2({
@@ -167,6 +178,8 @@ export function TimelineV2({
   focusedLane = null,
   onLaneFocus,
   onShotContextMenu,
+  onInsertScene,
+  insertSceneDefaultDurationMs,
   onAudioContextMenu,
   onCaptionContextMenu,
   onOverlayContextMenu,
@@ -330,6 +343,8 @@ export function TimelineV2({
                   onTrim={onTrim}
                   onToggleTransition={onToggleTransition}
                   onShotContextMenu={onShotContextMenu}
+                  onInsertScene={onInsertScene}
+                  insertSceneDefaultDurationMs={insertSceneDefaultDurationMs}
                 />
               </LaneStrip>
               <LaneStrip
