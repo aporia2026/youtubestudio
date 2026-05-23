@@ -1796,6 +1796,11 @@ function ProductionDocPage() {
 
   // — Inputs
   const [script, setScript] = useState('');
+  const scriptTextareaRef = useRef<HTMLTextAreaElement>(null);
+  // Tracks whether the user has a non-empty selection in the script textarea —
+  // drives the disabled state of the "Mark as title" button. We update on
+  // every select/keyup so the toolbar reacts to keyboard selection too.
+  const [hasScriptSelection, setHasScriptSelection] = useState(false);
   const [niche, setNiche] = useState('');
   const [topic, setTopic] = useState('');
   // Per-session override only. The canonical default is set in
@@ -2286,7 +2291,13 @@ function ProductionDocPage() {
         return `${Math.floor(totalSec / 60)}:${String(totalSec % 60).padStart(2, '0')}`;
       };
 
-      const strippedScript = sourceRow.script_text.replace(/^\s*##[^\n]*\n?\s*/, '').trim();
+      // Strip the title from the source row's script_text. Handles both the
+      // legacy `## ${heading}` prefix (kept for back-compat) AND the new
+      // non-`##` case where the LLM merged a missed title into the body of
+      // a B-Roll row and the user types the title text to extract it.
+      const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const stripRe = new RegExp(`^\\s*(?:##\\s*)?${escapedHeading}\\s*[\\.,:;—-]?\\s*`, 'i');
+      const strippedScript = sourceRow.script_text.replace(stripRe, '').trim();
       const titleCardRow: ProductionRow = {
         timecode: sourceRow.timecode,
         script_text: '',
@@ -5468,6 +5479,16 @@ function ProductionDocPage() {
           throw new Error(`Chunk ${ci + 1} returned empty — try again`);
         }
 
+        // Surface server-side `generation_warnings` (overlong-row splits,
+        // missing/extra title cards, sentinel leakage, extractor caps) so
+        // the user sees what we couldn't fix automatically and can recover
+        // with the Promote / Split row actions if needed.
+        if (Array.isArray(data.generation_warnings)) {
+          for (const w of data.generation_warnings as string[]) {
+            appendLog(`⚠ ${w}`);
+          }
+        }
+
         if (ci === 0) firstResult = chunkResult;
         allRows = allRows.concat(chunkResult.rows);
 
@@ -6709,6 +6730,64 @@ function ProductionDocPage() {
           <div className="flex items-center justify-between mb-1.5 flex-wrap gap-2">
             <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>Script *</label>
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={!hasScriptSelection}
+                onClick={() => {
+                  // Snap the selection to its surrounding line boundaries
+                  // (so a mid-word selection still becomes a clean line) and
+                  // either prepend `## ` to mark each affected line as a
+                  // section title, or strip the marker if every affected
+                  // line already has one (toggle behavior). The Outsider
+                  // council voice was emphatic: never wrap mid-word.
+                  const ta = scriptTextareaRef.current;
+                  if (!ta) return;
+                  const start = ta.selectionStart;
+                  const end = ta.selectionEnd;
+                  if (start === end) return;
+                  const text = script;
+                  const lineStart = text.lastIndexOf('\n', start - 1) + 1;
+                  const lineEndIdx = text.indexOf('\n', end);
+                  const lineEnd = lineEndIdx === -1 ? text.length : lineEndIdx;
+                  const block = text.slice(lineStart, lineEnd);
+                  const lines = block.split('\n');
+                  const allMarked = lines.every(l => /^##(?!#)\s/.test(l));
+                  const newLines = lines.map(l => {
+                    if (allMarked) return l.replace(/^##(?!#)\s+/, '');
+                    if (/^##(?!#)\s/.test(l)) return l;
+                    return `## ${l.trim()}`;
+                  });
+                  const replacement = newLines.join('\n');
+                  const next = text.slice(0, lineStart) + replacement + text.slice(lineEnd);
+                  setScript(next);
+                  console.info('[production-doc mark-as-title]', {
+                    affectedLineCount: lines.length,
+                    toggleOff: allMarked,
+                    newBlockChars: replacement.length,
+                  });
+                  // Restore focus + select the new block so the user can see
+                  // what was changed and undo via Ctrl+Z if needed.
+                  requestAnimationFrame(() => {
+                    ta.focus();
+                    ta.setSelectionRange(lineStart, lineStart + replacement.length);
+                  });
+                }}
+                title={
+                  hasScriptSelection
+                    ? 'Wrap the selected line(s) as section titles (## Title). Click again to remove.'
+                    : 'Select the title text first.'
+                }
+                className="text-xs px-2 py-1 rounded border transition-colors"
+                style={{
+                  borderColor: 'var(--border)',
+                  color: hasScriptSelection ? 'var(--text-primary)' : 'var(--text-muted)',
+                  background: hasScriptSelection ? 'var(--surface-hover)' : 'transparent',
+                  cursor: hasScriptSelection ? 'pointer' : 'not-allowed',
+                  opacity: hasScriptSelection ? 1 : 0.5,
+                }}
+              >
+                Mark as title
+              </button>
               {script.trim().length > 0 && (
                 <>
                   <CopyForElevenLabs script={script} version="v2" />
@@ -6723,8 +6802,14 @@ function ProductionDocPage() {
             </div>
           </div>
           <textarea
+            ref={scriptTextareaRef}
             value={script}
             onChange={e => setScript(e.target.value)}
+            onSelect={e => {
+              const t = e.currentTarget;
+              setHasScriptSelection(t.selectionStart !== t.selectionEnd);
+            }}
+            onBlur={() => setHasScriptSelection(false)}
             placeholder="Paste your finished script here..."
             className="input-field font-mono text-xs leading-relaxed"
             style={{ minHeight: 200, resize: 'vertical' }}
@@ -7455,14 +7540,47 @@ function ProductionDocPage() {
                             into a new locked-as-still row. */}
                         <td style={{ padding: '8px 12px', color: 'var(--text-primary)', maxWidth: 200, lineHeight: 1.5, borderRight: '1px solid var(--border)' }}>
                           {(() => {
+                            // Two row-recovery affordances live here, both
+                            // hidden on rows that are already Title Cards:
+                            //
+                            //  1. "Make this a title card" — promotes the
+                            //     whole row to Title Card, wiping the
+                            //     visual fields. Used when the LLM missed
+                            //     a `##` heading and folded the title text
+                            //     into a B-Roll row on its own.
+                            //
+                            //  2. "Split as title card…" — extracts a
+                            //     leading title fragment into its own
+                            //     Title Card row above. Originally only
+                            //     visible on rows whose script_text still
+                            //     starts with `##`; now visible on any
+                            //     non-Title-Card row, since the Phase 1
+                            //     deterministic pre-pass strips `##` from
+                            //     the script before the LLM sees it.
                             const hasHeadingMarker = /^\s*##/.test(row.script_text);
-                            // Pre-fill guess: the first 2 words after `##`.
-                            // Two words is a sensible default for the common
-                            // case ("The Escalation", "Phase One", "Day Three")
-                            // and the user can extend in the input.
-                            const guessMatch = row.script_text.match(/^\s*##\s*(\S+(?:\s+\S+){0,1})/);
+                            const isTitleCard = row.visual_type === 'Title Card';
+                            const guessMatch = hasHeadingMarker
+                              ? row.script_text.match(/^\s*##\s*(\S+(?:\s+\S+){0,1})/)
+                              : row.script_text.match(/^\s*(\S+(?:\s+\S+){0,1})/);
                             const guess = guessMatch?.[1]?.trim() || '';
                             const isEditingThisRow = splittingRow?.rowIndex === i;
+
+                            // Live preview for the split: shows what the
+                            // two resulting rows will hold so the user
+                            // can verify before clicking Apply. Strips a
+                            // matching prefix (with or without `##`) and
+                            // trims trailing punctuation.
+                            const previewSplit = (draft: string): { title: string; remainder: string } | null => {
+                              const t = draft.trim();
+                              if (!t) return null;
+                              const re = new RegExp(`^\\s*(?:##\\s*)?${t.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s*[\\.,:;—-]?\\s*`, 'i');
+                              const m = row.script_text.match(re);
+                              if (!m) {
+                                return { title: t, remainder: row.script_text };
+                              }
+                              return { title: t, remainder: row.script_text.slice(m[0].length).trim() };
+                            };
+
                             return (
                               <>
                                 <div>{row.script_text}</div>
@@ -7500,12 +7618,40 @@ function ProductionDocPage() {
                                         outline: 'none',
                                       }}
                                     />
+                                    {(() => {
+                                      const preview = previewSplit(splittingRow.titleDraft);
+                                      if (!preview) return null;
+                                      return (
+                                        <div
+                                          className="text-[10px] flex flex-col gap-0.5 px-2 py-1.5 rounded"
+                                          style={{
+                                            background: 'rgba(0,0,0,0.25)',
+                                            color: 'var(--text-secondary)',
+                                            border: '1px dashed rgba(255,255,255,0.10)',
+                                          }}
+                                        >
+                                          <div>
+                                            <span style={{ color: '#22d3ee', fontWeight: 600 }}>Title card:</span>{' '}
+                                            &quot;{preview.title}&quot;
+                                          </div>
+                                          <div style={{ color: 'var(--text-muted)' }}>
+                                            <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>This row keeps:</span>{' '}
+                                            {preview.remainder || <em style={{ opacity: 0.6 }}>(empty — the row will only have the title)</em>}
+                                          </div>
+                                        </div>
+                                      );
+                                    })()}
                                     <div className="flex items-center gap-1">
                                       <button
                                         type="button"
                                         onClick={() => {
                                           const t = splittingRow.titleDraft.trim();
                                           if (!t) return;
+                                          console.info('[production-doc row-split]', {
+                                            rowIndex: i,
+                                            titleLen: t.length,
+                                            scriptCharsBefore: row.script_text.length,
+                                          });
                                           splitTitleCardFromRow(i, t);
                                           setSplittingRow(null);
                                         }}
@@ -7536,21 +7682,67 @@ function ProductionDocPage() {
                                       </button>
                                     </div>
                                   </div>
-                                ) : hasHeadingMarker ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => setSplittingRow({ rowIndex: i, titleDraft: guess })}
-                                    className="mt-1.5 text-[10px] px-2 py-0.5 rounded"
-                                    style={{
-                                      background: 'rgba(34,211,238,0.12)',
-                                      color: '#22d3ee',
-                                      border: '1px solid rgba(34,211,238,0.35)',
-                                      cursor: 'pointer',
-                                    }}
-                                    title="Extract a title-card row from this script. You'll confirm the exact title text."
-                                  >
-                                    ✂ Split as title card…
-                                  </button>
+                                ) : !isTitleCard ? (
+                                  <div className="mt-1.5 flex flex-wrap gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (row.ai_image_prompt && row.ai_image_prompt.trim().length > 0) {
+                                          const ok = confirm(
+                                            `Replace the image prompt and visual fields?\n\nThe current AI image prompt will be saved to row notes so you can paste it back if needed.`,
+                                          );
+                                          if (!ok) return;
+                                        }
+                                        const backup = row.ai_image_prompt && row.ai_image_prompt.trim().length > 0
+                                          ? `\n[backup-from-promote] ai_image_prompt was: ${row.ai_image_prompt}`
+                                          : '';
+                                        const titleText = row.script_text.trim();
+                                        console.info('[production-doc row-promote]', {
+                                          rowIndex: i,
+                                          prevType: row.visual_type,
+                                          titleChars: titleText.length,
+                                          hadAiPrompt: Boolean(row.ai_image_prompt && row.ai_image_prompt.trim().length > 0),
+                                        });
+                                        updateRow(i, {
+                                          visual_type: 'Title Card',
+                                          ai_image_prompt: '',
+                                          on_screen_text: titleText,
+                                          stock_search_terms: '',
+                                          visual_description: `Title card displaying "${titleText}"`,
+                                          notes: `${(row.notes ?? '').trim()}${backup ? `\n${backup}`.trimStart() : ''}`.trim() ||
+                                            'Title card scene — rendered as crisp typography without an image.',
+                                        });
+                                      }}
+                                      className="text-[10px] px-2 py-0.5 rounded"
+                                      style={{
+                                        background: 'rgba(168,85,247,0.12)',
+                                        color: '#c084fc',
+                                        border: '1px solid rgba(168,85,247,0.35)',
+                                        cursor: 'pointer',
+                                      }}
+                                      title="Convert this whole row into a Title Card. The AI image prompt and stock terms will be cleared; the current prompt is backed up to row notes."
+                                    >
+                                      ⬚ Make this a title card
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setSplittingRow({ rowIndex: i, titleDraft: guess })}
+                                      className="text-[10px] px-2 py-0.5 rounded"
+                                      style={{
+                                        background: 'rgba(34,211,238,0.12)',
+                                        color: '#22d3ee',
+                                        border: '1px solid rgba(34,211,238,0.35)',
+                                        cursor: 'pointer',
+                                      }}
+                                      title={
+                                        hasHeadingMarker
+                                          ? 'Extract a title-card row from this script. You’ll confirm the exact title text.'
+                                          : 'Split this row in two: a title card with the text you pick, plus a content row with what remains.'
+                                      }
+                                    >
+                                      ✂ Split as title card…
+                                    </button>
+                                  </div>
                                 ) : null}
                               </>
                             );
@@ -7906,7 +8098,10 @@ function ProductionDocPage() {
                           <p className="text-xs" style={{ color: 'var(--text-primary)' }}>{row.script_text}</p>
                           {(() => {
                             const hasHeadingMarker = /^\s*##/.test(row.script_text);
-                            const guessMatch = row.script_text.match(/^\s*##\s*(\S+(?:\s+\S+){0,1})/);
+                            const isTitleCard = row.visual_type === 'Title Card';
+                            const guessMatch = hasHeadingMarker
+                              ? row.script_text.match(/^\s*##\s*(\S+(?:\s+\S+){0,1})/)
+                              : row.script_text.match(/^\s*(\S+(?:\s+\S+){0,1})/);
                             const guess = guessMatch?.[1]?.trim() || '';
                             const isEditingThisRow = splittingRow?.rowIndex === i;
                             if (isEditingThisRow) {
@@ -7940,6 +8135,7 @@ function ProductionDocPage() {
                                       onClick={() => {
                                         const t = splittingRow.titleDraft.trim();
                                         if (!t) return;
+                                        console.info('[production-doc row-split]', { rowIndex: i, titleLen: t.length });
                                         splitTitleCardFromRow(i, t);
                                         setSplittingRow(null);
                                       }}
@@ -7972,21 +8168,61 @@ function ProductionDocPage() {
                                 </div>
                               );
                             }
-                            if (!hasHeadingMarker) return null;
+                            if (isTitleCard) return null;
                             return (
-                              <button
-                                type="button"
-                                onClick={() => setSplittingRow({ rowIndex: i, titleDraft: guess })}
-                                className="mt-1.5 text-[10px] px-2 py-0.5 rounded"
-                                style={{
-                                  background: 'rgba(34,211,238,0.12)',
-                                  color: '#22d3ee',
-                                  border: '1px solid rgba(34,211,238,0.35)',
-                                  cursor: 'pointer',
-                                }}
-                              >
-                                ✂ Split as title card…
-                              </button>
+                              <div className="mt-1.5 flex flex-wrap gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (row.ai_image_prompt && row.ai_image_prompt.trim().length > 0) {
+                                      const ok = confirm(
+                                        `Replace the image prompt and visual fields?\n\nThe current AI image prompt will be saved to row notes so you can paste it back if needed.`,
+                                      );
+                                      if (!ok) return;
+                                    }
+                                    const backup = row.ai_image_prompt && row.ai_image_prompt.trim().length > 0
+                                      ? `[backup-from-promote] ai_image_prompt was: ${row.ai_image_prompt}`
+                                      : '';
+                                    const titleText = row.script_text.trim();
+                                    console.info('[production-doc row-promote]', {
+                                      rowIndex: i,
+                                      prevType: row.visual_type,
+                                      titleChars: titleText.length,
+                                    });
+                                    updateRow(i, {
+                                      visual_type: 'Title Card',
+                                      ai_image_prompt: '',
+                                      on_screen_text: titleText,
+                                      stock_search_terms: '',
+                                      visual_description: `Title card displaying "${titleText}"`,
+                                      notes: `${(row.notes ?? '').trim()}${backup ? `\n${backup}` : ''}`.trim() ||
+                                        'Title card scene — rendered as crisp typography without an image.',
+                                    });
+                                  }}
+                                  className="text-[10px] px-2 py-0.5 rounded"
+                                  style={{
+                                    background: 'rgba(168,85,247,0.12)',
+                                    color: '#c084fc',
+                                    border: '1px solid rgba(168,85,247,0.35)',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  ⬚ Make this a title card
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setSplittingRow({ rowIndex: i, titleDraft: guess })}
+                                  className="text-[10px] px-2 py-0.5 rounded"
+                                  style={{
+                                    background: 'rgba(34,211,238,0.12)',
+                                    color: '#22d3ee',
+                                    border: '1px solid rgba(34,211,238,0.35)',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  ✂ Split as title card…
+                                </button>
+                              </div>
                             );
                           })()}
                         </div>

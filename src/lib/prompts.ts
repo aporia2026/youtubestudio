@@ -2015,8 +2015,8 @@ export function productionDocPrompt({
   style,
   creativeBrief,
   startTimecodeSeconds = 0,
-  isChunk = false,
   overlaysDisabled = false,
+  titles = [],
 }: {
   script: string;
   niche: string;
@@ -2027,14 +2027,17 @@ export function productionDocPrompt({
   creativeBrief?: string;
   /** Timecode offset in seconds — used when generating a chunk of a longer script */
   startTimecodeSeconds?: number;
-  /** True when this is a continuation chunk (suppress title card, adjust timecode start) */
-  isChunk?: boolean;
   /** Forwarded from the production-doc page's `overlays_disabled` toggle.
    *  When true, the prompt instructs the LLM to leave `overlay_stock_terms`
    *  empty on every row and rely entirely on baking brand/logo content
    *  into `ai_image_prompt` instead. The doc-level skip flag on the page
    *  still gates the actual auto-fetch even if the LLM ignored this. */
   overlaysDisabled?: boolean;
+  /** Section titles deterministically extracted from the script by
+   *  `extractScriptTitles`. The `script` passed in has each heading line
+   *  replaced by its sentinel (`<<TITLE_N>>`); this list tells the LLM
+   *  what each sentinel maps to. Empty when the chunk contains no headings. */
+  titles?: ReadonlyArray<{ text: string; sentinel: string }>;
 }): { system: string; user: string } {
   const wordCount = script.trim().split(/\s+/).length;
   const chunkDurationSeconds = Math.round((wordCount / speakingPaceWpm) * 60);
@@ -2091,8 +2094,7 @@ Break the provided script into timed production rows. Each row = one visual shot
 - **Hard ceiling: 7 seconds.** If a sentence alone would exceed this, break the sentence between two rows at a natural pause (comma, conjunction, clause boundary) so each row stays within the cap. The two rows share continuous narration but show DIFFERENT visuals — pick distinct visual moments to keep the screen alive.
 - A row may run shorter than 4 seconds if the content truly calls for a quick cut (one-line punchline, beat shift, sudden pivot) — short is fine, long is not.
 - Timecodes for THIS segment start at **${startTimecode}** and end at **${endTimecode}**
-- First row timecode MUST be "${startTimecode}" — increment from there based on word count${isChunk ? `
-- This is a CONTINUATION chunk — do NOT include a Title Card row` : ''}
+- First row timecode MUST be "${startTimecode}" — increment from there based on word count
 
 ### Worked example — splitting a long sentence across two rows
 
@@ -2112,7 +2114,7 @@ Each row is ~5–6 s. The narration flows continuously when the two voiceover li
 **script_text** — The EXACT verbatim words the narrator speaks in this segment. Do not paraphrase.
 
 **visual_type** — Choose based on what best fits the content:
-  - "Title Card" — RESERVED EXCLUSIVELY for short section-heading rows that display only a title (e.g. "The Escalation", "Chapter One", "Day Three"). Use this ONLY when extracting a markdown \`##Heading\` marker from the script (see "Heading extraction" below). DO NOT use Title Card for cinematic opening scenes, doodle openers, or any scene with substantive imagery — those are "Animation" or "B-Roll".
+  - "Title Card" — RESERVED EXCLUSIVELY for the title-sentinel rows described in "Title card sentinels" below (e.g. "The Escalation", "Chapter One", "Day Three"). DO NOT use Title Card for cinematic opening scenes, doodle openers, or any scene with substantive imagery — those are "Animation" or "B-Roll".
   - "Talking Head" — on-camera presenter/narrator shot (real person or animated avatar). Use whenever a direct-to-camera moment fits the content. NOTE: ai_image_prompt is always "" for this type — use stock_search_terms to describe the presenter style (e.g. "animated host, 2D cartoon" or "presenter on camera, professional")
   - "B-Roll" — footage over narration (live-action, stock, or animated scenes)
   - "Screen Recording" — software/website demonstration
@@ -2121,25 +2123,24 @@ Each row is ~5–6 s. The narration flows continuously when the two voiceover li
   - "Statistics" — on-screen data visualization
   - "Cutaway" — reaction shot or insert
 
-## HEADING EXTRACTION — \`##Heading\` MARKERS
+## TITLE CARD SENTINELS — \`<<TITLE_N>>\` MARKERS
 
-The input script uses markdown-style \`##Heading\` to mark section dividers (e.g. \`##The Escalation As we saw with the attack...\`). When you encounter one, you MUST split it into TWO consecutive rows:
+The input script has been pre-processed: section titles were extracted server-side and replaced with sentinel tokens of the form \`<<TITLE_N>>\` on their own line. ${titles.length > 0 ? `This chunk contains ${titles.length} title sentinel${titles.length === 1 ? '' : 's'}:
 
-  1. **A standalone Title Card row** — duration ~1–2 s, just the heading spoken:
-     - \`script_text\` = the heading text ONLY (e.g. \`"The Escalation"\`)
-     - \`visual_type\` = \`"Title Card"\`
-     - \`visual_description\` = \`Title card displaying "[heading]"\`
-     - \`ai_image_prompt\` = \`""\` (empty — the renderer's TitleCardScene draws the text without an image, which preserves the typography crisply and avoids i2v models mangling the title during animation)
-     - \`on_screen_text\` = the heading
-     - \`stock_search_terms\` = \`""\`
-     - \`notes\` = \`"Title card scene — rendered as crisp typography without an image."\`
+${titles.map(t => `  - \`${t.sentinel}\` → "${t.text}"`).join('\n')}
 
-  2. **The actual narration row immediately after** — duration determined by the rest of the section's words:
-     - \`script_text\` = the section's narration with the \`##Heading\` prefix REMOVED (verbatim otherwise)
-     - \`visual_type\` = whatever fits the content (Animation / B-Roll / etc.) — NEVER Title Card
-     - All other fields populated normally
+For EACH sentinel in the script (in the order they appear), emit ONE standalone Title Card row at that position:
+  - \`script_text\` = the title text EXACTLY as listed above (e.g. \`"${titles[0].text}"\`)
+  - \`visual_type\` = \`"Title Card"\`
+  - \`visual_description\` = \`Title card displaying "[title text]"\`
+  - \`ai_image_prompt\` = \`""\` (empty — the renderer draws the text without an image)
+  - \`on_screen_text\` = the title text
+  - \`stock_search_terms\` = \`""\`
+  - \`notes\` = \`"Title card scene — rendered as crisp typography without an image."\`
 
-This pattern is non-negotiable: every \`##Heading\` in the script produces exactly one Title Card row + one content row. The narrator speaking the heading aloud (~1–2 s) gives the title-card scene its natural duration.
+The sentinel itself NEVER appears in any row's \`script_text\` — only the title text does. The narrator speaks the title aloud (~1–2 s), which gives the title-card scene its natural duration.
+
+Then the narration that FOLLOWS the sentinel becomes one or more subsequent rows with appropriate non-Title-Card \`visual_type\` (Animation / B-Roll / etc.).` : 'This chunk contains NO title sentinels. Do not emit any Title Card rows.'}
 
 **visual_description** — Specific and actionable for the editor. Include: subject, action, shot type (wide/medium/close), lighting/mood. Match the chosen visual style precisely.
 
@@ -2219,10 +2220,11 @@ ABSOLUTE RULES:
 - ai_image_prompt ≥ 40 words for every non-Talking Head / non-Screen Recording / non-Title-Card row
 - Every ai_image_prompt MUST end with the style suffix${styleSuffix ? ` "${styleSuffix}"` : ' (if one was specified)'}
 - Talking Head + Screen Recording + Title Card → ai_image_prompt = ""
-- EVERY \`##Heading\` marker in the input script MUST become a standalone Title Card row + a separate narration row (see "Heading extraction" above). Do not collapse them into a single row.
-- Title Card rows are SHORT — \`script_text\` is the heading text only (1–6 words, ~1–2 s), nothing else.
+- EVERY \`<<TITLE_N>>\` sentinel in the input script MUST become exactly one standalone Title Card row at that position. Do NOT skip any sentinel. Do NOT invent extra Title Card rows for text that is not a sentinel.
+- The sentinel text itself (\`<<TITLE_0>>\`, \`<<TITLE_1>>\`, etc.) MUST NEVER appear inside any row's \`script_text\` — use the mapped title text only.
+- Title Card rows are SHORT — \`script_text\` is the title text only (1–6 words, ~1–2 s), nothing else.
 - Title Card rows have \`ai_image_prompt = ""\` always; the renderer draws crisp typography from \`on_screen_text\`.
-- Opening row: ${isChunk ? 'First B-Roll/Animation scene (no Title Card — continuation chunk)' : 'If the script starts with `##Heading`, a Title Card row; otherwise the first B-Roll/Animation scene.'}
+- Opening row: if the chunk starts with a \`<<TITLE_N>>\` sentinel, the first row is a Title Card; otherwise the first row is a B-Roll/Animation/etc. scene.
 - Statistics/numbers in the script → "Statistics" type with on_screen_text${allowOverlay ? `
 - overlay_stock_terms is OPTIONAL — populate it ONLY when the Mixing Rules apply. Most rows leave it as "".
 - WHEN overlay_stock_terms IS SET: overlay_zone AND overlay_size MUST BOTH be set, AND the ai_image_prompt MUST describe that zone of the scene as empty/plain content (not as an instruction — describe the empty space as part of the picture).` : ''}`,

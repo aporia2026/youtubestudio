@@ -19,6 +19,7 @@
  */
 import { sql } from '@vercel/postgres';
 import { productionDocPrompt } from '../../prompts';
+import { extractScriptTitles } from '../../script-titles';
 import { generateTextWithFallback } from '../../ai';
 import { GenerateFailure } from '../../ai-fallback';
 import { resolveChain } from '../resolve-chain';
@@ -79,11 +80,17 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
 
   const chain = await resolveChain('production-doc', preset);
 
+  // Same deterministic title pre-pass as the user-facing routes — strip
+  // `##Heading` lines into sentinel tokens server-side so the LLM doesn't
+  // have to detect them itself.
+  const extracted = extractScriptTitles(script);
+
   let result: Awaited<ReturnType<typeof generateTextWithFallback>>;
   try {
     result = await generateTextWithFallback(chain, (modelId) => {
       const prompt = productionDocPrompt({
-        script,
+        script: extracted.stripped,
+        titles: extracted.titles,
         niche,
         topic,
         style: style

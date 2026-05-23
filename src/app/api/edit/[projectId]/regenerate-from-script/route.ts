@@ -11,6 +11,7 @@ import { resolveStyle } from '@/lib/production-doc-styles';
 import { getEffectiveModelId } from '@/lib/model-defaults';
 import { validateAndSplitOverlongRows } from '@/lib/production-doc-postprocess';
 import { readRowEditedAt } from '@/lib/editor/edited-at';
+import { extractScriptTitles } from '@/lib/script-titles';
 import type { ProductionDoc } from '@/remotion/utils';
 
 /**
@@ -238,15 +239,25 @@ export const POST = apiRoute.authed(async (
       ? body.modelId
       : await getEffectiveModelId(session.ws, 'production-doc');
 
+  // Extract `##Heading` titles deterministically before the LLM sees the
+  // script — same fix as the main /api/generate/production-doc route.
+  const extracted = extractScriptTitles(newScript);
+  logger.info('[editor regen-from-script] title-extract', {
+    project_id: projectId,
+    titleCount: extracted.titles.length,
+    titles: extracted.titles.map(t => t.text),
+    warnings: extracted.warnings,
+  });
+
   // Build the prompt + run the generator.
   const { system, user } = productionDocPrompt({
-    script: newScript,
+    script: extracted.stripped,
+    titles: extracted.titles,
     niche,
     topic,
     speakingPaceWpm: oldDoc.speaking_pace_wpm,
     style,
     startTimecodeSeconds: 0,
-    isChunk: false,
   });
 
   let raw: string;

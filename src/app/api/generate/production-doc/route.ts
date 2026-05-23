@@ -11,6 +11,7 @@ import {
   validateAndSplitOverlongRows,
   type ProductionDocRowLike,
 } from '@/lib/production-doc-postprocess';
+import { extractScriptTitles, TITLE_SENTINEL_LEAK_RE } from '@/lib/script-titles';
 
 export const maxDuration = 300;
 
@@ -73,10 +74,28 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       }
     : null;
 
-  const { system, user } = productionDocPrompt({
-    script, niche, topic, speakingPaceWpm, style, creativeBrief,
-    startTimecodeSeconds: typeof startTimecodeSeconds === 'number' ? startTimecodeSeconds : 0,
+  // Deterministic title pre-pass. The LLM used to detect `##Heading` markers
+  // itself, which was unreliable: a 6-title script could come back missing
+  // titles silently. Now we extract them server-side per chunk and replace
+  // each heading line with a `<<TITLE_N>>` sentinel before the LLM sees it.
+  // The prompt then instructs the model to emit one Title Card row per
+  // sentinel. Per-chunk scoping is automatic because the chunk's own text
+  // is what gets parsed — no risk of titles from other chunks leaking in.
+  const extracted = extractScriptTitles(script);
+  logger.info('[production-doc title-extract]', {
+    inputScriptChars: script.length,
+    strippedScriptChars: extracted.stripped.length,
+    titleCount: extracted.titles.length,
+    titles: extracted.titles.map(t => t.text),
     isChunk: isChunk === true,
+    warnings: extracted.warnings,
+  });
+
+  const { system, user } = productionDocPrompt({
+    script: extracted.stripped,
+    titles: extracted.titles,
+    niche, topic, speakingPaceWpm, style, creativeBrief,
+    startTimecodeSeconds: typeof startTimecodeSeconds === 'number' ? startTimecodeSeconds : 0,
     overlaysDisabled: overlaysDisabled === true,
   });
 
@@ -170,6 +189,77 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       });
       result.rows = split.rows;
       generation_warnings = split.warnings;
+    }
+  }
+
+  // Title-card emission validator: confirm every extracted sentinel produced
+  // exactly one Title Card row whose script_text matches the title text.
+  // Surfaces missing/extra/leaked-sentinel cases as warnings so the user can
+  // recover with the Promote / Split row actions instead of having to
+  // re-generate the whole doc.
+  if (Array.isArray(result.rows)) {
+    const titleCardRows = result.rows.filter(
+      r => r.visual_type === 'Title Card',
+    );
+    const emittedTexts = titleCardRows.map(r =>
+      typeof r.script_text === 'string' ? r.script_text.trim() : '',
+    );
+    const expectedTexts = extracted.titles.map(t => t.text);
+
+    const emittedCounts = new Map<string, number>();
+    for (const t of emittedTexts) emittedCounts.set(t, (emittedCounts.get(t) ?? 0) + 1);
+
+    const missing: string[] = [];
+    for (const expected of expectedTexts) {
+      const c = emittedCounts.get(expected) ?? 0;
+      if (c === 0) missing.push(expected);
+      else emittedCounts.set(expected, c - 1);
+    }
+    const extra: string[] = [];
+    for (const [text, count] of emittedCounts) {
+      for (let i = 0; i < count; i++) if (text) extra.push(text);
+    }
+
+    const leaked = result.rows
+      .filter(r =>
+        typeof r.script_text === 'string'
+          ? TITLE_SENTINEL_LEAK_RE.test(r.script_text)
+          : false,
+      )
+      .map(r => (typeof r.script_text === 'string' ? r.script_text : ''));
+
+    logger.info('[production-doc title-emit]', {
+      modelId: effectiveModelId,
+      expected: expectedTexts.length,
+      emitted: titleCardRows.length,
+      missingCount: missing.length,
+      missing,
+      extraCount: extra.length,
+      extra,
+      leakedSentinelCount: leaked.length,
+    });
+
+    if (missing.length > 0) {
+      generation_warnings.push(
+        `Missing title card(s) — the model didn't emit a Title Card row for: ${missing
+          .map(t => `"${t}"`)
+          .join(', ')}. Use the "Make this a title card" row action to add them where they belong.`,
+      );
+    }
+    if (extra.length > 0) {
+      generation_warnings.push(
+        `Unexpected title card(s) — the model emitted Title Cards we didn't request: ${extra
+          .map(t => `"${t}"`)
+          .join(', ')}. Review and delete if not wanted.`,
+      );
+    }
+    if (leaked.length > 0) {
+      generation_warnings.push(
+        `Title sentinel leaked into row text on ${leaked.length} row(s). Edit the affected rows to remove the <<TITLE_N>> marker.`,
+      );
+    }
+    if (extracted.warnings.length > 0) {
+      generation_warnings.push(...extracted.warnings);
     }
   }
 
