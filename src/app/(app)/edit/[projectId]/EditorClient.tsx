@@ -1298,15 +1298,39 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   useEffect(() => {
     if (brollPollTargets.length === 0) return;
 
+    // Observability: log every restart of the poll loop with the
+    // current target set. Without this, "did my kickoff actually
+    // start polling?" is unanswerable from the console — the only
+    // existing logs fire on terminal/failure, which a still-generating
+    // Kling 3.0 Pro clip won't trigger for 5+ minutes.
+    console.info('[editor broll] poll loop started', {
+      targets: brollPollTargets,
+      intervalMs: 5000,
+    });
+
     let cancelled = false;
+    let tickIndex = 0;
     const tick = async () => {
+      const myTick = ++tickIndex;
+      console.info('[editor broll] poll tick', {
+        tick: myTick,
+        targets: brollPollTargets.map((t) => ({ rowIndex: t.rowIndex, clipId: t.clipId })),
+      });
       for (const { rowIndex, clipId } of brollPollTargets) {
         if (cancelled) return;
         try {
           const res = await fetch(`/api/broll/${encodeURIComponent(clipId)}`, {
             cache: 'no-store',
           });
-          if (!res.ok) continue;
+          if (!res.ok) {
+            console.warn('[editor broll] poll http not ok', {
+              tick: myTick,
+              rowIndex,
+              clipId,
+              httpStatus: res.status,
+            });
+            continue;
+          }
           // The server wraps the row in `{ clip }` (matches BrollCell's
           // hydrate + poll loops in production-doc/BrollCell.tsx).
           // The editor previously read `data.status` / `data.video_url`
@@ -1326,8 +1350,22 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           };
           if (cancelled) return;
           const clip = data.clip;
-          if (!clip) continue;
+          if (!clip) {
+            console.warn('[editor broll] poll response missing clip field', {
+              tick: myTick,
+              rowIndex,
+              clipId,
+            });
+            continue;
+          }
           const status = typeof clip.status === 'string' ? clip.status : 'generating';
+          console.info('[editor broll] poll status', {
+            tick: myTick,
+            rowIndex,
+            clipId,
+            status,
+            hasVideoUrl: Boolean(clip.video_url),
+          });
           if (status === 'generating' || status === 'pending') continue;
           // Terminal state — commit it through the non-transient
           // path so Cmd+Z reverses cleanly to the prior state.
@@ -1359,6 +1397,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     return () => {
       cancelled = true;
       clearInterval(handle);
+      console.info('[editor broll] poll loop stopped', {
+        targets: brollPollTargets,
+      });
     };
   }, [brollPollTargets, setRowVideoClip]);
 
