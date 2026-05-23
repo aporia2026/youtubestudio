@@ -1395,6 +1395,16 @@ export function realignVideoConfig(
   // `_plans/2026-05-23-editor-pin-duration-architecture.md`.
   const frameMs = 1000 / config.fps;
   const pinnedFlags = options?.pinnedShots ?? [];
+  // CRITICAL: cascade-forward only runs when the doc has at least
+  // one pinned shot. For a pure-legacy project (no pins anywhere),
+  // this loop must produce byte-identical output to the pre-pin
+  // implementation — otherwise legacy projects could see subtle
+  // timing shifts they didn't ask for. The cascade-forward shift
+  // is only meaningful relative to a pinned upstream shot anyway:
+  // without pins, the aligned values already encode the
+  // word-derived ordering and we should trust them verbatim.
+  // 2026-05-23 pin-duration architecture follow-up.
+  const anyPinned = pinnedFlags.some((p) => p === true);
   let pinnedRespectedCount = 0;
   let cascadeForwardCount = 0;
   let cursor = 0;
@@ -1420,16 +1430,11 @@ export function realignVideoConfig(
       }
       startMs = snapMsToFrame(aligned.startMs, config.fps);
       endMs = snapMsToFrame(aligned.endMs, config.fps);
-      // Cascade-forward: if this shot would overlap the previous
-      // shot's end, shift the START up. Preserve the ALIGNED
-      // DURATION by shifting the END by the same amount — the shot
-      // gets re-positioned but doesn't extend artificially. Earlier
-      // pin attempts dropped this duration-preservation rule and
-      // caused accumulated drift across the project (see commit
-      // f560537 → revert 6f2f9ef). Bounded version below avoids
-      // that regression: the shift only kicks in when there's actual
-      // overlap; alignment gaps absorb subsequent drift naturally.
-      if (startMs < cursor) {
+      // Cascade-forward: only fires when AT LEAST ONE shot in the
+      // doc is pinned (anyPinned). For pure-legacy projects this
+      // branch is unreachable and the loop falls back to identical
+      // pre-pin behavior.
+      if (anyPinned && startMs < cursor) {
         const shift = cursor - startMs;
         startMs = cursor;
         endMs += shift;
