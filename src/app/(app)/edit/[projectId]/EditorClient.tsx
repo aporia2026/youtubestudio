@@ -356,8 +356,27 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     (rowIndex: number, url: string | null) => {
       apply({ type: 'SET_ROW_IMAGE', shotIndex: rowIndex, url });
       writeRowAsset(rowIndex, 'image', url);
+      // Phase 5 QA fix: a new image makes the previously cached RMBG
+      // cutout stale (it was generated against the OLD image). Clear
+      // both fields so the renderer falls back to the new original
+      // and the user can run RMBG again on it if they want. Without
+      // this clear, "AI Replace with prompt…" or "AI Erase region…"
+      // would change rowImages[i] but the renderer would keep showing
+      // the old cutout because `image_rmbg_applied` was still true.
+      //
+      // Conditional dispatch — only fire the PATCH_ROW when the row
+      // actually has RMBG state to clear. Saves an empty undo entry
+      // for the (common) case where the row never had RMBG applied.
+      const row = state.doc.rows[rowIndex];
+      if (row && (row.image_rmbg_url || row.image_rmbg_applied === true)) {
+        apply({
+          type: 'PATCH_ROW',
+          rowIndex,
+          patch: { image_rmbg_url: undefined, image_rmbg_applied: undefined },
+        });
+      }
     },
-    [apply, writeRowAsset],
+    [apply, writeRowAsset, state.doc.rows],
   );
 
   // User-initiated seek. Must update BOTH the local playhead state AND
@@ -3433,6 +3452,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             menu: editorContextMenu,
             doc: state.doc,
             rowImages: state.rowImages,
+            shotDurationsMs: videoConfig.shots.map((s) => s.durationMs),
             captions: state.captions,
             playheadMs: state.playheadMs,
             splitTarget,
@@ -3442,7 +3462,6 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             setLaneFocus,
             setShowVoRegen,
             setDurationPopover,
-            handleDelete,
             openImageEdit: (i) => setImageEditRow(i),
             handleRunRmbg: (i) => {
               void handleRunRmbg(i);
@@ -3499,6 +3518,12 @@ function buildEditorContextMenuItems(args: {
     | { kind: 'caption'; segmentIndex: number; x: number; y: number };
   doc: ProductionDoc;
   rowImages: Record<number, string>;
+  /** Cumulative computed shot durations in ms. Read from the same
+   *  `videoConfig.shots[i].durationMs` the timeline draws so the
+   *  Set duration… popover initializes to the duration the user
+   *  visually sees — even when `duration_override_ms` isn't set
+   *  and the duration comes from the doc's timecode delta. */
+  shotDurationsMs: number[];
   captions: { segments: { start: number; end: number; text: string }[] } | undefined;
   playheadMs: number;
   splitTarget: { shotIndex: number; splitAtMs: number; validSplit: boolean } | null;
@@ -3512,7 +3537,6 @@ function buildEditorContextMenuItems(args: {
       | { kind: 'shot-duration'; shotIndex: number; x: number; y: number; initialMs: number }
       | null,
   ) => void;
-  handleDelete: (mode: 'ripple' | 'blank') => void;
   openImageEdit: (shotIndex: number) => void;
   handleRunRmbg: (shotIndex: number) => void;
   handleRestoreOriginalBackground: (shotIndex: number) => void;
@@ -3521,6 +3545,7 @@ function buildEditorContextMenuItems(args: {
     menu,
     doc,
     rowImages,
+    shotDurationsMs,
     captions,
     playheadMs,
     splitTarget,
@@ -3530,7 +3555,6 @@ function buildEditorContextMenuItems(args: {
     setLaneFocus,
     setShowVoRegen,
     setDurationPopover,
-    handleDelete,
     openImageEdit,
     handleRunRmbg,
     handleRestoreOriginalBackground,
@@ -3552,18 +3576,18 @@ function buildEditorContextMenuItems(args: {
         splitTarget.shotIndex === i &&
         splitTarget.validSplit;
       const canDelete = doc.rows.length > 1;
-      const currentDurationMs = (() => {
-        // Read the same duration the timeline draws: row's
-        // `duration_override_ms` if present, else fall back to the
-        // doc's parsed timecode delta. The split-target helper
-        // computed it cleanly when it was active, but it isn't
-        // always — so we re-derive from the row here.
-        const dur = row.duration_override_ms;
-        if (typeof dur === 'number') return dur;
-        // Fallback: a sensible 4s if neither override nor timecode
-        // delta is available. The popover clamps anyway.
-        return 4000;
-      })();
+      // Read the duration the user actually sees on the timeline.
+      // `shotDurationsMs[i]` is sourced from videoConfig.shots which
+      // resolves override > timecode delta > min-scene fallback in
+      // the same way the render does — so the popover initializes
+      // to the value the user expects regardless of which source
+      // the row's effective duration came from. Defensive fallback
+      // to 4000 ms if the index is somehow out of range (shouldn't
+      // happen — the helper validated `row` exists above).
+      const currentDurationMs =
+        typeof shotDurationsMs[i] === 'number' && shotDurationsMs[i] > 0
+          ? shotDurationsMs[i]
+          : row.duration_override_ms ?? 4000;
 
       const items: OverlayContextMenuItem[] = [
         {
@@ -3690,14 +3714,14 @@ function buildEditorContextMenuItems(args: {
           : []),
         {
           label: 'Delete shot (ripple)',
-          onClick: () => {
-            // handleDelete reads state.selection; ensure we select
-            // THIS shot before dispatching so the menu's row is the
-            // one removed regardless of what was selected before.
-            selectShotFromUser(i, `${menu.kind}-delete-ripple`);
-            // Defer so the SET_SELECTION lands before the delete.
-            Promise.resolve().then(() => handleDelete('ripple'));
-          },
+          // Dispatch DELETE_SHOT directly with shotIndex: i — going
+          // through `handleDelete` would read a stale `state.selection`
+          // from the closure (the closure captures selection at the
+          // render BEFORE the menu opened, not the row the user
+          // right-clicked). The reducer adjusts selection itself
+          // post-delete, so no SET_SELECTION precursor is needed.
+          onClick: () =>
+            apply({ type: 'DELETE_SHOT', shotIndex: i, mode: 'ripple' }),
           disabled: !canDelete,
           separatorAbove: !hasTrim,
           destructive: true,
@@ -3707,10 +3731,8 @@ function buildEditorContextMenuItems(args: {
         },
         {
           label: 'Delete shot (keep slot)',
-          onClick: () => {
-            selectShotFromUser(i, `${menu.kind}-delete-blank`);
-            Promise.resolve().then(() => handleDelete('blank'));
-          },
+          onClick: () =>
+            apply({ type: 'DELETE_SHOT', shotIndex: i, mode: 'blank' }),
           disabled: !canDelete,
           destructive: true,
           title:
