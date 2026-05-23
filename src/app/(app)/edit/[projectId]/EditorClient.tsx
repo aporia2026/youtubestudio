@@ -2406,6 +2406,22 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                 void handleGenerateClip(state.selection as number);
               }}
               clipStatus={state.rowVideoClips[state.selection]?.status}
+              clipError={
+                (state.rowVideoClips[state.selection] as
+                  | { errorMessage?: string }
+                  | undefined)?.errorMessage
+              }
+              onCancelClip={() => {
+                const idx = state.selection as number;
+                console.info('[editor broll] cancel clicked', { rowIndex: idx });
+                // Clear the row's clip slot locally. The poll loop in
+                // EditorClient watches rowVideoClips for `generating`
+                // entries; clearing this one removes it from the poll
+                // set so we stop hitting /api/broll/{id}. The server-
+                // side job may still complete and be billed; this just
+                // detaches the editor from waiting on it.
+                setRowVideoClip(idx, null, true);
+              }}
               brollModelId={userBrollModelId}
               docBrollModelId={state.doc.broll_model_id}
               onUpdateScript={(text) =>

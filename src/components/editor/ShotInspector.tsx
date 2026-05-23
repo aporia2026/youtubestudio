@@ -75,10 +75,19 @@ interface ShotInspectorProps {
    *  pushes status updates into the editor's `rowVideoClips` state
    *  via SET_ROW_VIDEO_CLIP. */
   onGenerateClip?: () => void;
+  /** Cancel an in-flight B-roll clip generation for this row. The
+   *  caller clears the row's `rowVideoClips` entry so the poll loop
+   *  stops looking for it. The server-side generation may still
+   *  complete and be billed, but the UI stops waiting on it. */
+  onCancelClip?: () => void;
   /** Live B-roll clip status for this row. Drives the "Generate"
    *  button's label / disabled state — `generating` collapses it
    *  into a busy spinner; `ready` hides it (clip is already there). */
   clipStatus?: string;
+  /** Last error message from a failed clip generation. Surfaced as
+   *  an inline alert below the Animate button so the user knows what
+   *  went wrong. */
+  clipError?: string;
   /** Workspace's currently-resolved B-roll model id. Surfaced as a
    *  small caption next to the generate button so the user knows
    *  what they're about to spend on. */
@@ -180,7 +189,9 @@ export function ShotInspector({
   onUploadImage,
   onPickProjectClip,
   onGenerateClip,
+  onCancelClip,
   clipStatus,
+  clipError,
   brollModelId,
   docBrollModelId,
   onUpdateScript,
@@ -217,8 +228,14 @@ export function ShotInspector({
   const [regenState, setRegenState] = useState<
     | { kind: 'idle' }
     | { kind: 'generating' }
+    | { kind: 'cancelled' }
     | { kind: 'error'; message: string }
   >({ kind: 'idle' });
+  // AbortController for the in-flight regenerate fetch. Set when a
+  // generation kicks off, cleared on completion / error / cancel.
+  // The Stop button calls .abort() to cancel mid-flight; the fetch
+  // throws AbortError which the catch block surfaces as `cancelled`.
+  const regenAbortRef = useRef<AbortController | null>(null);
 
   // TransitionDialog open/close. Self-contained — the dialog owns its
   // working copy; we only listen for `onSave` + `onReset` and dispatch
@@ -244,6 +261,12 @@ export function ShotInspector({
       return;
     }
     setRegenState({ kind: 'generating' });
+    // Set up an AbortController for this attempt so the Stop button
+    // can cancel mid-flight. Abort any prior in-flight first — a stale
+    // controller from a previous attempt should not stick around.
+    regenAbortRef.current?.abort();
+    const controller = new AbortController();
+    regenAbortRef.current = controller;
     try {
       const res = await fetch('/api/generate/production-doc/image', {
         method: 'POST',
@@ -260,6 +283,7 @@ export function ShotInspector({
           styleId: stylePreset || undefined,
           excludeRefIds: excludeRefIds.length > 0 ? excludeRefIds : undefined,
         }),
+        signal: controller.signal,
       });
       const data = (await res.json().catch(() => ({}))) as {
         error?: string;
@@ -324,8 +348,18 @@ export function ShotInspector({
         imageUrl: data.imageUrl,
       });
       onUploadImage(data.imageUrl);
+      regenAbortRef.current = null;
       setRegenState({ kind: 'idle' });
     } catch (err) {
+      regenAbortRef.current = null;
+      // AbortError → user clicked Stop; not a real error. Distinct
+      // state so the inspector can show "Cancelled" instead of a red
+      // error pill.
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        console.info('[editor inspector] regenerate cancelled by user', { shotIndex });
+        setRegenState({ kind: 'cancelled' });
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       console.warn('[editor inspector] regenerate failed', { detail: message });
       setRegenState({ kind: 'error', message });
@@ -610,16 +644,30 @@ export function ShotInspector({
                 pricing + rate-limit + R2 mirroring behave identically
                 to a Production-Doc-page regenerate. */}
             <div className="flex gap-1.5">
+              {regenState.kind === 'generating' ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    console.info('[editor inspector] regenerate stop clicked', { shotIndex });
+                    regenAbortRef.current?.abort();
+                  }}
+                  className="flex-1 text-xs px-3 py-1.5 rounded border transition-colors hover:bg-white/5"
+                  style={{ borderColor: '#f87171', color: '#f87171' }}
+                  title="Cancel this generation"
+                >
+                  Stop · Regenerating…
+                </button>
+              ) : (
               <button
                 type="button"
                 onClick={() => void handleRegenerate()}
-                disabled={regenState.kind === 'generating'}
+                disabled={regenState.kind === 'generating' as never}
                 className="flex-1 text-xs px-3 py-1.5 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
                 style={{ borderColor: 'var(--card-border)' }}
                 title="Re-run the image generator on this row's current prompt"
               >
-                {regenState.kind === 'generating'
-                  ? 'Regenerating…'
+                {regenState.kind === 'cancelled'
+                  ? 'Retry'
                   : 'Regenerate'}
                 {/* v2 (2026-05-22) — inline cost hint when the active
                     style pins an i2i model (rule 8: cost preview before
@@ -639,6 +687,7 @@ export function ShotInspector({
                   );
                 })()}
               </button>
+              )}
               {/* Batch C — open the mask-brush AI edit dialog with this
                   row's current still. The parent owns the modal mount
                   + the API call (same endpoint production-doc uses). */}
@@ -655,8 +704,26 @@ export function ShotInspector({
               )}
             </div>
             {regenState.kind === 'error' && (
-              <div className="text-[10px]" style={{ color: '#f87171' }}>
+              <div
+                className="text-[10px] rounded px-2 py-1"
+                style={{
+                  color: '#f87171',
+                  background: 'rgba(239,68,68,0.10)',
+                  border: '1px solid rgba(239,68,68,0.3)',
+                }}
+                role="alert"
+              >
+                <span className="font-medium">Generation failed:</span>{' '}
                 {regenState.message}
+              </div>
+            )}
+            {regenState.kind === 'cancelled' && (
+              <div
+                className="text-[10px] rounded px-2 py-1"
+                style={{ color: '#fbbf24' }}
+                role="status"
+              >
+                Cancelled. Click Retry to try again.
               </div>
             )}
           </div>
@@ -724,53 +791,83 @@ export function ShotInspector({
                 />
               )}
 
-              <button
-                type="button"
-                onClick={onGenerateClip}
-                disabled={isGenerating}
-                className="w-full flex items-center justify-center gap-2 text-xs px-3 py-2 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
-                style={{
-                  borderColor: 'var(--accent-purple-bright, #a78bfa)',
-                  color: isGenerating
-                    ? 'var(--fg-muted)'
-                    : 'var(--accent-purple-bright, #a78bfa)',
-                }}
-                title={
-                  isGenerating
-                    ? 'Clip is generating — this can take 1-3 minutes depending on the model.'
-                    : isReady
+              {isGenerating && onCancelClip ? (
+                <div className="flex gap-1.5">
+                  <button
+                    type="button"
+                    disabled
+                    className="flex-1 flex items-center justify-center gap-2 text-xs px-3 py-2 rounded border opacity-70"
+                    style={{ borderColor: 'var(--card-border)', color: 'var(--fg-muted)' }}
+                  >
+                    <Loader2 size={14} strokeWidth={2} className="animate-spin" />
+                    <span>Generating…</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      console.info('[editor inspector] animation stop clicked', { shotIndex });
+                      onCancelClip();
+                    }}
+                    className="text-xs px-3 py-2 rounded border transition-colors hover:bg-white/5"
+                    style={{ borderColor: '#f87171', color: '#f87171' }}
+                    title="Stop waiting on this generation. The server-side job may still run and be billed."
+                  >
+                    Stop
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onGenerateClip}
+                  className="w-full flex items-center justify-center gap-2 text-xs px-3 py-2 rounded border transition-colors hover:bg-white/5"
+                  style={{
+                    borderColor: 'var(--accent-purple-bright, #a78bfa)',
+                    color: 'var(--accent-purple-bright, #a78bfa)',
+                  }}
+                  title={
+                    isReady
                       ? 'Regenerate the animation using the model below. The existing clip will be replaced once the new one is ready.'
                       : 'Generate a fresh B-roll animation for this shot.'
-                }
-              >
-                {isGenerating ? (
-                  <>
-                    <Loader2 size={14} strokeWidth={2} className="animate-spin" />
-                    <span>Generating animation…</span>
-                  </>
-                ) : isReady ? (
-                  <>
-                    <RefreshCw size={14} strokeWidth={2} />
-                    <span>Regenerate animation</span>
-                  </>
-                ) : clipStatus === 'error' ? (
-                  <>
-                    <RefreshCw size={14} strokeWidth={2} />
-                    <span>Retry animation</span>
-                  </>
-                ) : (
-                  <>
-                    <Sparkles size={14} strokeWidth={2} />
-                    <span>Generate animation</span>
-                  </>
-                )}
-              </button>
+                  }
+                >
+                  {isReady ? (
+                    <>
+                      <RefreshCw size={14} strokeWidth={2} />
+                      <span>Regenerate animation</span>
+                    </>
+                  ) : clipStatus === 'error' ? (
+                    <>
+                      <RefreshCw size={14} strokeWidth={2} />
+                      <span>Retry animation</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles size={14} strokeWidth={2} />
+                      <span>Generate animation</span>
+                    </>
+                  )}
+                </button>
+              )}
               {effectiveModel && (
                 <div
                   className="text-[10px]"
                   style={{ color: 'var(--fg-muted)' }}
                 >
                   {effectiveModel.label} — {effectiveModel.priceUsdLabel}
+                </div>
+              )}
+              {(clipStatus === 'error' || clipStatus === 'failed') && (
+                <div
+                  className="text-[10px] rounded px-2 py-1"
+                  style={{
+                    color: '#f87171',
+                    background: 'rgba(239,68,68,0.10)',
+                    border: '1px solid rgba(239,68,68,0.3)',
+                  }}
+                  role="alert"
+                >
+                  <span className="font-medium">Animation failed.</span>{' '}
+                  {clipError ?? 'Click Retry to try again. Check the browser console for the full error.'}
                 </div>
               )}
             </div>
