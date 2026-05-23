@@ -1146,7 +1146,21 @@ export function productionDocToVideoConfig(
     textOverlays: doc.text_overlays,
   };
 
-  return opts.alignment ? realignVideoConfig(config, opts.alignment).config : config;
+  if (!opts.alignment) return config;
+
+  // 2026-05-23: when alignment is active, it used to UNCONDITIONALLY
+  // override every row's startMs/durationMs with word-derived values.
+  // That made Set timing (and the existing trailing-edge drag) silently
+  // ineffective on rows with narration — the user dragged or typed a
+  // new duration, the cascade absorbed it, then alignment overwrote
+  // the cascade with word boundaries. User saw no change. Fix: pass
+  // a per-row "pinned" flag derived from `duration_override_ms`;
+  // realignVideoConfig keeps cascade values for pinned rows and
+  // cascades downstream rows forward to avoid overlap.
+  const pinnedShots = doc.rows.map(
+    (r) => typeof r.duration_override_ms === 'number',
+  );
+  return realignVideoConfig(config, opts.alignment, { pinnedShots }).config;
 }
 
 // ─── Voiceover-aligned re-timing ──────────────────────────────────────────────
@@ -1280,9 +1294,22 @@ function applySceneTimingRules(
  * Pure: returns a new VideoConfig + a new shots array; the input is
  * not mutated. Empty `config.shots` short-circuits to `config` unchanged.
  */
+export interface RealignVideoConfigOptions {
+  /** Per-shot pin flag. `pinnedShots[i] === true` ⇒ keep the shot's
+   *  cascade-derived startMs / durationMs as-is; alignment-derived
+   *  values are discarded for this row. Downstream rows cascade
+   *  forward to avoid overlap with pinned rows. Set by
+   *  `productionDocToVideoConfig` for every row that carries
+   *  `duration_override_ms` — without this, manual duration edits
+   *  (Set timing popover, trailing-edge drag) are silently
+   *  overwritten by alignment and the user sees no effect. */
+  pinnedShots?: boolean[];
+}
+
 export function realignVideoConfig(
   config: VideoConfig,
   alignment: ForcedAlignmentResponse,
+  options?: RealignVideoConfigOptions,
 ): RealignResult {
   if (!config.shots.length) return { config, alignedRows: [] };
 
@@ -1338,17 +1365,48 @@ export function realignVideoConfig(
   // in `alignRowsToWords` or `applySceneTimingRules`, so those pure
   // helpers can be tested against exact ms values without an fps
   // round-trip.
-  const newShots: VideoShot[] = config.shots.map((shot, i) => {
-    const aligned = alignedRows[i];
-    if (!aligned) return shot;
-    const startMs = snapMsToFrame(aligned.startMs, config.fps);
-    const endMs = snapMsToFrame(aligned.endMs, config.fps);
-    // Defensive: a single-frame minimum protects the render route's
-    // `durationMs > 0` validator if the aligner produced a degenerate
-    // [start, end] interval. One frame at 30 fps = 33.33 ms.
-    const durationMs = Math.max(endMs - startMs, 1000 / config.fps);
-    return { ...shot, startMs, durationMs };
-  });
+  //
+  // Pinned shots (rows with explicit `duration_override_ms`): keep
+  // cascade-derived startMs/durationMs — the user's manual edit wins
+  // over alignment. Non-pinned shots: use aligned values, but pushed
+  // forward so they don't overlap a preceding pinned shot.
+  // 2026-05-23 — see the productionDocToVideoConfig caller comment.
+  const frameMs = 1000 / config.fps;
+  const newShots: VideoShot[] = [];
+  let cursor = 0;
+  for (let i = 0; i < config.shots.length; i++) {
+    const shot = config.shots[i];
+    const isPinned = options?.pinnedShots?.[i] === true;
+    let startMs: number;
+    let endMs: number;
+    if (isPinned) {
+      // Cascade values verbatim — the user's explicit override wins.
+      startMs = snapMsToFrame(shot.startMs, config.fps);
+      endMs = snapMsToFrame(shot.startMs + shot.durationMs, config.fps);
+    } else {
+      const aligned = alignedRows[i];
+      if (!aligned) {
+        newShots.push(shot);
+        cursor = shot.startMs + shot.durationMs;
+        continue;
+      }
+      startMs = snapMsToFrame(aligned.startMs, config.fps);
+      endMs = snapMsToFrame(aligned.endMs, config.fps);
+    }
+    // Defensive: keep monotonic ordering. If this shot's aligned start
+    // is before the previous shot's end (common after a pinned shot
+    // got extended past its word boundaries), push this shot forward
+    // by the same amount — shift its END too so we don't squeeze the
+    // shot below the floor.
+    if (startMs < cursor) {
+      const shift = cursor - startMs;
+      startMs = cursor;
+      endMs += shift;
+    }
+    const durationMs = Math.max(endMs - startMs, frameMs);
+    newShots.push({ ...shot, startMs, durationMs });
+    cursor = startMs + durationMs;
+  }
 
   return {
     config: { ...config, shots: newShots },
