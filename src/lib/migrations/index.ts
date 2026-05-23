@@ -82,6 +82,7 @@ import migration0079 from './0079_user_history_version_column';
 import migration0080 from './0080_extend_production_doc_styles_with_refs';
 import migration0081 from './0081_style_constraints_and_indexes';
 import migration0082 from './0082_style_ref_content_validation';
+import migration0083 from './0083_create_generation_events';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -171,6 +172,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0080,
   migration0081,
   migration0082,
+  migration0083,
 ]);
 
 /**

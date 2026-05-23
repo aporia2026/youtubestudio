@@ -53,6 +53,11 @@ import { EditorHeader } from '@/components/editor/EditorHeader';
 import { TransportBar, type PlaybackRate } from '@/components/editor/TransportBar';
 import { EditorLeftRail } from '@/components/editor/EditorLeftRail';
 import { EditorInspector, type InspectorTabId } from '@/components/editor/EditorInspector';
+import { GenerationHistoryPanel } from '@/components/editor/inspector/GenerationHistoryPanel';
+import {
+  markGenerationEventTerminal,
+  recordGenerationKickoff,
+} from '@/lib/editor/generation-events';
 import { deriveAlignmentStatus } from '@/lib/editor/alignment-status';
 import { computeAutoShiftYPct } from '@/remotion/utils';
 import { TransformOverlay } from '@/components/editor/TransformOverlay';
@@ -851,6 +856,42 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // a generation. Mirrors the rethink pattern above.
   const broolKickoffInFlightRef = useRef<Set<number>>(new Set());
 
+  // ─── Generation history (Inspector → History tab) ───────────────
+  //
+  // The History tab reads `/api/edit/[projectId]/generation-events`
+  // for an append-only log of every animation kickoff. To wire the
+  // log into the existing kickoff → poll flow without changing its
+  // shape we keep three pieces of local state:
+  //
+  //   - `clipIdToEventIdRef`: map from `broll_clips.id` → the event
+  //     row we inserted at kickoff. The poll loop's terminal branch
+  //     looks up the eventId by clipId to PATCH the right row.
+  //     Cleaned on terminal so the map doesn't grow unbounded across
+  //     a long session.
+  //
+  //   - `historyRefreshTick`: bumped on every kickoff / terminal so
+  //     the panel refetches immediately instead of waiting for its
+  //     5s tick. The panel uses this as a useEffect dep.
+  //
+  //   - `historySwitchIntent` + `historyAutoSwitchedRef`: the
+  //     one-time "auto-switch to History on the first generation of
+  //     the session" UX. We fire the switch intent exactly once per
+  //     mount (ref-guarded) and the EditorInspector ignores
+  //     unchanged nonces so it doesn't re-fire on every re-render.
+  //
+  // Source of truth for the user-visible clip remains
+  // `state.rowVideoClips` — the history log is a parallel audit
+  // surface. If any log write fails, the clip itself still renders.
+  // See `_plans/2026-05-23-editor-generation-history-log.md` and
+  // the helper in `src/lib/editor/generation-events.ts`.
+  const clipIdToEventIdRef = useRef<Map<string, string>>(new Map());
+  const [historyRefreshTick, setHistoryRefreshTick] = useState(0);
+  const [historySwitchIntent, setHistorySwitchIntent] = useState<{
+    tab: InspectorTabId;
+    nonce: number;
+  } | null>(null);
+  const historyAutoSwitchedRef = useRef(false);
+
   const setRowVideoClip = useCallback(
     (
       rowIndex: number,
@@ -918,6 +959,15 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         explicit: Boolean(explicitModelId),
       });
 
+      // Capture the prior clip-id BEFORE the first SET_ROW_VIDEO_CLIP
+      // dispatch wipes it (the reducer overwrites; it does NOT merge).
+      // If a clip-id was already present, this kickoff is a re-generate
+      // (the user is replacing an existing clip on this row). The
+      // History log distinguishes these so the panel can flag them
+      // with a 'Regen' badge.
+      const priorBrollClipId = state.rowVideoClips[rowIndex]?.brollClipId ?? null;
+      const eventType = priorBrollClipId ? 'regenerate' : 'generate';
+
       broolKickoffInFlightRef.current.add(rowIndex);
       setRowVideoClip(rowIndex, { status: 'generating' }, true);
       const startMs = Date.now();
@@ -963,6 +1013,41 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         writeBrollLsMap(map);
         console.info('[editor broll] kickoff committed', { rowIndex, clipId: stub.id });
         setClipGenPhase((prev) => ({ ...prev, [rowIndex]: 'polling' }));
+
+        // History log — best-effort audit insert. Failure does NOT
+        // block the generation (the helper swallows errors and
+        // returns null). Surfaces in the Inspector's History tab.
+        // The promptExcerpt gives the user something to recognize
+        // each entry by when scrolling a long log on the same scene.
+        const promptExcerpt =
+          (row.visual_description || row.ai_image_prompt || row.script_text || '').trim() || undefined;
+        const eventId = await recordGenerationKickoff({
+          projectId,
+          rowIndex,
+          brollClipId: stub.id,
+          modelId: tier.modelId,
+          eventType,
+          promptExcerpt,
+        });
+        if (eventId) {
+          clipIdToEventIdRef.current.set(stub.id, eventId);
+        }
+        // Refresh the panel even when eventId is null — the reconciliation
+        // path on GET will still pick up the entry from broll_clips if the
+        // POST raced past the user's reload.
+        setHistoryRefreshTick((n) => n + 1);
+        // One-time auto-switch: on the first kickoff of the session,
+        // open the History tab so the user sees the new entry land.
+        // Ref-guarded so subsequent kickoffs don't yank the user out
+        // of whatever tab they've manually settled on.
+        if (!historyAutoSwitchedRef.current) {
+          historyAutoSwitchedRef.current = true;
+          setHistorySwitchIntent({ tab: 'history', nonce: Date.now() });
+          console.info('[history panel] auto-switched on first kickoff', {
+            rowIndex,
+            eventId,
+          });
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn('[editor broll] kickoff failed', { rowIndex, detail: msg });
@@ -982,7 +1067,14 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         broolKickoffInFlightRef.current.delete(rowIndex);
       }
     },
-    [state.doc.rows, state.rowImages, userBrollModelId, projectId, setRowVideoClip],
+    [
+      state.doc.rows,
+      state.rowImages,
+      state.rowVideoClips,
+      userBrollModelId,
+      projectId,
+      setRowVideoClip,
+    ],
   );
 
   // Tick once a second to drive the elapsed-time counter in the
@@ -1385,6 +1477,29 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             errorMessage: clip.error_message ?? undefined,
             brollClipId: clipId,
           }, false);
+
+          // History log — terminal PATCH. Best-effort: failure does NOT
+          // block the user-visible clip commit above. If the eventId
+          // isn't in the ref (e.g. user reloaded mid-generation so the
+          // ref didn't survive), skip the PATCH; the History panel's
+          // GET handler reconciles stuck 'generating' entries by
+          // joining broll_clips, so the UI still shows the truth.
+          const eventId = clipIdToEventIdRef.current.get(clipId);
+          if (eventId && (status === 'ready' || status === 'failed')) {
+            void markGenerationEventTerminal({
+              projectId,
+              eventId,
+              status,
+              errorMessage: clip.error_message ?? undefined,
+            }).then(() => {
+              clipIdToEventIdRef.current.delete(clipId);
+              setHistoryRefreshTick((n) => n + 1);
+            });
+          } else {
+            // No eventId — still refresh so the GET-side reconciliation
+            // path surfaces the terminal status to the panel.
+            setHistoryRefreshTick((n) => n + 1);
+          }
         } catch (err) {
           console.warn('[editor broll] poll failed', {
             rowIndex,
@@ -1403,7 +1518,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         targets: brollPollTargets,
       });
     };
-  }, [brollPollTargets, setRowVideoClip]);
+  }, [brollPollTargets, setRowVideoClip, projectId]);
 
   /** Thin adapter so the ported handlers below read like their
    *  production-doc counterparts. Routes through PATCH_ROW so the
@@ -2593,6 +2708,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   const inspectorSlot = (
     <EditorInspector
       selectionKind={inspectorSelectionKind}
+      switchToTab={historySwitchIntent}
       kebabContent={
         <div className="space-y-2">
           <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: 'var(--fg-muted)' }}>
@@ -3092,6 +3208,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             onRegen={() => { void handleRegenerateCaptions(); }}
             regenDisabled={regenCaptionsRunning || !state.voiceoverUrl}
             regenLabel={regenCaptionsLabel}
+          />
+        ),
+        history: (
+          <GenerationHistoryPanel
+            projectId={projectId}
+            rows={state.doc.rows}
+            refreshTick={historyRefreshTick}
+            onJumpToScene={(rowIndex) =>
+              selectShotFromUser(rowIndex, 'history-panel')
+            }
           />
         ),
       }}

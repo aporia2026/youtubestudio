@@ -4,7 +4,7 @@
  * Tabbed inspector — Phase 4 of
  * `_plans/2026-05-19-editor-real-nle-look.md`.
  *
- * Sits in the `inspector` slot of `EditorChrome`. Three tabs:
+ * Sits in the `inspector` slot of `EditorChrome`. Four tabs:
  *
  *   - Shot       — every per-shot field (script, prompts, image,
  *                  clip, overlay). The existing `ShotInspector`
@@ -15,6 +15,11 @@
  *                  lane is selected (Phase 5).
  *   - Captions   — caption count, regen, per-segment edit. Active
  *                  when a caption pill is selected (Phase 5).
+ *   - History    — chronological log of every B-roll (animation)
+ *                  generation kickoff for this project. Read
+ *                  from `/api/edit/[projectId]/generation-events`.
+ *                  Click an entry to jump to that scene. Added
+ *                  per `_plans/2026-05-23-editor-generation-history-log.md`.
  *
  * The tab auto-switches based on the selection kind: a shot
  * selection picks Shot, an audio-lane click picks Audio, a
@@ -22,16 +27,21 @@
  * always possible via the tab strip — auto-switch just sets the
  * default. The user can override by clicking a tab.
  *
+ * The History tab has no selection kind (it's not driven by a
+ * timeline click); the parent uses `switchToTab` to fire a
+ * one-time programmatic switch on the first generation of a
+ * session — see header for that prop.
+ *
  * Per-project doc settings (animateScenes, lower-thirds, etc.)
  * surface behind a kebab `⋮` menu in the inspector header, not as
  * a tab. Confirmed by the plan's resolved open-questions section.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MoreVertical } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 
-export type InspectorTabId = 'shot' | 'audio' | 'captions';
+export type InspectorTabId = 'shot' | 'audio' | 'captions' | 'history';
 
 interface EditorInspectorProps {
   /** Tab bodies. Only the active one renders. */
@@ -44,18 +54,30 @@ interface EditorInspectorProps {
    *  parent assembles the doc-level controls (flag toggles etc.)
    *  and passes them in so the inspector stays presentational. */
   kebabContent?: React.ReactNode;
+  /** One-time programmatic tab switch. When `nonce` changes to a
+   *  new value, the inspector force-switches to `tab` and clears
+   *  the manual-override flag. Used by the parent to trigger
+   *  signal-driven switches that don't come from a selection
+   *  change (e.g. "open History on the first generate of the
+   *  session"). The parent assigns a fresh nonce each time it
+   *  wants the switch to fire; reusing the same nonce is a no-op,
+   *  so a re-render of the parent without a new intent will not
+   *  override the user's current tab choice. */
+  switchToTab?: { tab: InspectorTabId; nonce: number } | null;
 }
 
 const TABS: Array<{ id: InspectorTabId; label: string }> = [
   { id: 'shot', label: 'Shot' },
   { id: 'audio', label: 'Audio' },
   { id: 'captions', label: 'Captions' },
+  { id: 'history', label: 'History' },
 ];
 
 export function EditorInspector({
   slots,
   selectionKind,
   kebabContent,
+  switchToTab,
 }: EditorInspectorProps): React.ReactElement {
   const [activeTab, setActiveTab] = useState<InspectorTabId>('shot');
   const [manualOverride, setManualOverride] = useState(false);
@@ -79,6 +101,26 @@ export function EditorInspector({
   useEffect(() => {
     setManualOverride(false);
   }, [selectionKind]);
+
+  // Programmatic switch driven by `switchToTab.nonce`. The nonce
+  // (not the whole object) is the dep — a parent re-render that
+  // passes an unchanged nonce will not re-fire the switch, so the
+  // user's manual tab choice survives unrelated re-renders. Also
+  // clears the manual-override flag so a follow-up selection-kind
+  // change can still auto-switch.
+  const lastSwitchNonceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!switchToTab) return;
+    if (lastSwitchNonceRef.current === switchToTab.nonce) return;
+    lastSwitchNonceRef.current = switchToTab.nonce;
+    setActiveTab(switchToTab.tab);
+    setManualOverride(false);
+    console.info('[editor inspector tab] switch', {
+      to: switchToTab.tab,
+      trigger: 'programmatic',
+      nonce: switchToTab.nonce,
+    });
+  }, [switchToTab]);
 
   // Close the kebab popover on outside-click / Escape.
   useEffect(() => {
@@ -186,7 +228,9 @@ export function EditorInspector({
                   ? 'Select a shot on the timeline to inspect or edit it.'
                   : activeTab === 'audio'
                     ? 'Click the audio lane on the timeline to inspect the voiceover.'
-                    : 'Click a caption pill on the timeline to inspect or edit its text.'}
+                    : activeTab === 'captions'
+                      ? 'Click a caption pill on the timeline to inspect or edit its text.'
+                      : 'No generations yet. Click Generate on any scene to start.'}
               </div>
             )}
           </motion.div>
