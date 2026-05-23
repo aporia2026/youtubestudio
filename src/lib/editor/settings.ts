@@ -43,6 +43,18 @@ const KEY_PREVIEW_FIT_MODE = 'editor.preview.fitMode';
 const KEY_LAST_EDIT_OPTION = 'editor.imageEdit.lastOptionId';
 const KEY_DEFAULT_ERASE_BACKEND = 'editor.imageEdit.defaultEraseBackendId';
 const KEY_SHOW_EDIT_PRICES = 'editor.imageEdit.showPrices';
+// 2026-05-23 Phase 2 — editor timeline + shots UX overhaul.
+//   - showNarrationStrip: hide the "now reading" strip if the user
+//     finds it distracting.
+//   - narrationFontSize: bump the strip's text up/down for
+//     readability without touching the rest of the editor's
+//     typography.
+//   - clickShotToSeek: escape hatch in case someone wants the old
+//     "click selects, doesn't seek" behavior back.
+// See _plans/2026-05-23-editor-timeline-and-shots-ux-overhaul.md §7.
+const KEY_SHOW_NARRATION_STRIP = 'editor.narration.showStrip';
+const KEY_NARRATION_FONT_SIZE = 'editor.narration.fontSize';
+const KEY_CLICK_SHOT_TO_SEEK = 'editor.playback.clickShotToSeek';
 
 const DEFAULT_ZOOM_LEVEL = 5;
 const DEFAULT_SHOW_THUMBNAILS = true;
@@ -53,6 +65,9 @@ const DEFAULT_LANE_HEIGHT_VIDEO = 64;
 const DEFAULT_LANE_HEIGHT_AUDIO = 56;
 const DEFAULT_PLAYBACK_RATE: PlaybackRateValue = 1;
 const DEFAULT_PREVIEW_FIT_MODE: PreviewFitMode = 'contain';
+const DEFAULT_SHOW_NARRATION_STRIP = true;
+const DEFAULT_NARRATION_FONT_SIZE = 14;
+const DEFAULT_CLICK_SHOT_TO_SEEK = true;
 
 // ─── Enumerated value types ─────────────────────────────────────
 
@@ -259,6 +274,46 @@ export function setShowEditModelPrices(on: boolean): void {
   safeWrite(KEY_SHOW_EDIT_PRICES, on ? '1' : '0');
 }
 
+// ─── Narration strip + click-to-seek ─────────────────────────────
+
+export function getShowNarrationStrip(): boolean {
+  const raw = safeRead(KEY_SHOW_NARRATION_STRIP);
+  if (raw === null) return DEFAULT_SHOW_NARRATION_STRIP;
+  return raw === '1' || raw === 'true';
+}
+
+export function setShowNarrationStrip(on: boolean): void {
+  safeWrite(KEY_SHOW_NARRATION_STRIP, on ? '1' : '0');
+}
+
+/** Clamp the narration font size so a malformed setting can't
+ *  blow the preview's vertical budget. 10..22 covers everything
+ *  from "I want it tiny" to "I'm presenting to a room." */
+function clampNarrationFontSize(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_NARRATION_FONT_SIZE;
+  return Math.max(10, Math.min(22, Math.round(n)));
+}
+
+export function getNarrationFontSize(): number {
+  const raw = safeRead(KEY_NARRATION_FONT_SIZE);
+  if (raw === null) return DEFAULT_NARRATION_FONT_SIZE;
+  return clampNarrationFontSize(Number.parseInt(raw, 10));
+}
+
+export function setNarrationFontSize(px: number): void {
+  safeWrite(KEY_NARRATION_FONT_SIZE, String(clampNarrationFontSize(px)));
+}
+
+export function getClickShotToSeek(): boolean {
+  const raw = safeRead(KEY_CLICK_SHOT_TO_SEEK);
+  if (raw === null) return DEFAULT_CLICK_SHOT_TO_SEEK;
+  return raw === '1' || raw === 'true';
+}
+
+export function setClickShotToSeek(on: boolean): void {
+  safeWrite(KEY_CLICK_SHOT_TO_SEEK, on ? '1' : '0');
+}
+
 // ─── Test-only export ─────────────────────────────────────────────
 
 export const __testing = {
@@ -284,6 +339,12 @@ export const __testing = {
   DEFAULT_LANE_HEIGHT_AUDIO,
   DEFAULT_PLAYBACK_RATE,
   DEFAULT_PREVIEW_FIT_MODE,
+  KEY_SHOW_NARRATION_STRIP,
+  KEY_NARRATION_FONT_SIZE,
+  KEY_CLICK_SHOT_TO_SEEK,
+  DEFAULT_SHOW_NARRATION_STRIP,
+  DEFAULT_NARRATION_FONT_SIZE,
+  DEFAULT_CLICK_SHOT_TO_SEEK,
   LEFT_RAIL_TABS,
   PLAYBACK_RATES,
   PREVIEW_FIT_MODES,

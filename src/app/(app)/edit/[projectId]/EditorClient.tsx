@@ -95,7 +95,11 @@ import {
   getAudioLaneHeight,
   getDefaultPlaybackRate,
   getPreviewFitMode,
+  getShowNarrationStrip,
+  getNarrationFontSize,
+  getClickShotToSeek,
 } from '@/lib/editor/settings';
+import { NarrationStrip } from '@/components/editor/NarrationStrip';
 import {
   kickoffBrollGeneration,
   readBrollLsMap,
@@ -370,6 +374,37 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // depend on it and re-create on every config recompute. The config's
   // `fps` is the only field we read here and it's stable across edits.
   const videoConfigRef = useRef<{ fps: number } | null>(null);
+
+  // Phase 2 of `_plans/2026-05-23-editor-timeline-and-shots-ux-overhaul.md`.
+  // Holds the cumulative shot start times in a ref so the click-to-jump
+  // helper can read them without taking shotStartTimesMs as a dependency
+  // and re-creating on every doc edit. shotStartTimesMs is computed
+  // further down via useMemo, but the ref is updated synchronously by
+  // the effect right after it so the lookup never goes stale.
+  const shotStartTimesMsRef = useRef<number[]>([]);
+  // Picks a shot AND (when enabled) moves the playhead to its start.
+  // Used by every shot-click surface: timeline cards, ShotsTab items,
+  // and the overlay-position-open flow. Centralized so the
+  // `editor.playback.clickShotToSeek` escape hatch is honored uniformly
+  // and so the seek + select land as a single user-intent transaction.
+  const selectShotFromUser = useCallback(
+    (shotIndex: number, source: string) => {
+      setLaneFocus(null);
+      apply({ type: 'SET_SELECTION', shotIndex });
+      if (!getClickShotToSeek()) return;
+      const startMs = shotStartTimesMsRef.current[shotIndex];
+      if (typeof startMs !== 'number') return;
+      console.info('[editor select-shot] seek', { source, shotIndex, startMs });
+      // Defer the seek to the next microtask so the SET_SELECTION
+      // commit and the SET_PLAYHEAD commit don't fight the player
+      // ref's frame state inside the same render. Without this the
+      // Player occasionally jumps to the new frame before the
+      // selection state propagates, which makes the inspector tab
+      // flicker briefly between 'shot' and the previous tab.
+      Promise.resolve().then(() => seekFromUser(startMs));
+    },
+    [apply, seekFromUser],
+  );
 
   // v2 (2026-05-22) — resolve the active style's `preferred_cloud_model`
   // so the ShotInspector regenerate button can show its per-image
@@ -1750,6 +1785,13 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // transitions (empty doc → populated doc would otherwise change the
   // number of hooks the component runs and break React's call order).
   const shotStartTimesMs = useMemo(() => rowStartTimesMs(state.doc), [state.doc]);
+  // Keep the ref in sync so `selectShotFromUser` (declared earlier in
+  // the render order) can read the latest cumulative start times
+  // without taking the memo as a dep. Phase 2 of the timeline-and-
+  // shots overhaul plan.
+  useEffect(() => {
+    shotStartTimesMsRef.current = shotStartTimesMs;
+  }, [shotStartTimesMs]);
 
   // Pre-compute the save-status label + color for the header pill so
   // the in-place SaveStatusBadge doesn't have to reach into the
@@ -1864,7 +1906,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             rows={state.doc.rows}
             rowImages={state.rowImages}
             selection={state.selection}
-            onSelect={(shotIndex) => apply({ type: 'SET_SELECTION', shotIndex })}
+            onSelect={(shotIndex) => selectShotFromUser(shotIndex, 'shots-tab')}
           />
         ),
         media: (
@@ -2132,6 +2174,23 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           />
         )}
       </div>
+      {/* Narration strip — Phase 2 of
+          `_plans/2026-05-23-editor-timeline-and-shots-ux-overhaul.md`.
+          Shows the active caption segment as the playhead moves so
+          the user always sees what's being said. Hidden entirely
+          when captions don't exist OR the user disabled the strip
+          in settings. Click on the line seeks to the active
+          segment's start (the strip's own NavigateBack convenience).
+          Mounted between the preview canvas and the TransportBar so
+          it sits in the natural visual flow without crowding either. */}
+      {getShowNarrationStrip() && (
+        <NarrationStrip
+          captions={state.captions}
+          playheadMs={state.playheadMs}
+          onSeek={seekFromUser}
+          fontSize={getNarrationFontSize()}
+        />
+      )}
       <TransportBar
         playerRef={playerRef}
         playheadMs={state.playheadMs}
@@ -2671,10 +2730,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       pixelsPerSecond={pixelsPerSecond}
       rowTrims={rowTrims}
       rowTransitions={rowTransitions}
-      onSelect={(shotIndex) => {
-        setLaneFocus(null);
-        apply({ type: 'SET_SELECTION', shotIndex });
-      }}
+      onSelect={(shotIndex) => selectShotFromUser(shotIndex, 'timeline')}
       onSeek={seekFromUser}
       onResize={(shotIndex, durationMs) =>
         apply({ type: 'RESIZE_SHOT', shotIndex, durationMs })
@@ -2692,8 +2748,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         apply({ type: 'UPDATE_CAPTION_SEGMENT', segmentIndex, text })
       }
       onOpenOverlayPosition={(shotIndex) => {
-        setLaneFocus(null);
-        apply({ type: 'SET_SELECTION', shotIndex });
+        selectShotFromUser(shotIndex, 'overlay-position');
         setOverlayPositionRow(shotIndex);
       }}
       zoomLevel={zoomLevel}
@@ -2741,7 +2796,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         <VoiceoverDriftReport
           doc={state.doc}
           onClose={() => setShowDriftReport(false)}
-          onJumpToShot={(shotIndex) => apply({ type: 'SET_SELECTION', shotIndex })}
+          onJumpToShot={(shotIndex) => selectShotFromUser(shotIndex, 'drift-report')}
         />
       )}
 
