@@ -300,6 +300,14 @@ export type EditorCommand =
       type: 'PATCH_ROW';
       rowIndex: number;
       patch: Partial<ProductionDoc['rows'][number]>;
+      /** When true, apply the patch to local state but do NOT mark
+       *  state dirty and do NOT push an undo entry. Used for live-
+       *  preview updates during a drag — 60 pointermove ticks per
+       *  second would otherwise pump 60 undo entries + 60 dirty-flag
+       *  flips into the store every second, lagging the UI and
+       *  starting a save storm. The non-transient commit fires once
+       *  on pointerup with the final value. */
+      transient?: boolean;
     }
   /** Set or clear the per-row overlay render state (the URL + status
    *  the renderer reads to composite an overlay). Passing `null`
@@ -849,6 +857,16 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       }
       const nextRows = state.doc.rows.slice();
       nextRows[rowIndex] = nextRow;
+      // Transient patches (e.g. live drag preview) update local state
+      // ONLY — no dirty flag (skips autosave) and no undo entry. The
+      // non-transient commit fires once at the end of the gesture
+      // with the final value and IS persisted.
+      if (cmd.transient) {
+        return {
+          next: { ...state, doc: { ...state.doc, rows: nextRows } },
+          inverse: null,
+        };
+      }
       const inverse: EditorCommand = {
         type: 'PATCH_ROW',
         rowIndex,

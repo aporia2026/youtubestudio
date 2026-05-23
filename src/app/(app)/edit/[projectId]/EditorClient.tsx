@@ -2019,12 +2019,11 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               return state.doc.thumbnail?.stripeHeightFraction ?? 0.13;
             })()}
             onChange={(next) => {
-              // Live updates during a drag: persist the RAW values so
-              // the drag never gets "stuck" passing through identity
-              // values. Earlier code dispatched `undefined` whenever a
-              // value hit 0/100, which collapsed the row override and
-              // re-read the start position mid-drag — felt like the
-              // drag wasn't working.
+              // Live updates during a drag: TRANSIENT patch — local
+              // state moves so the Player follows the cursor, but
+              // isDirty stays as-is (no autosave storm) and no undo
+              // entry is created (no 60-undos-per-second). The single
+              // non-transient commit fires on pointerup below.
               const idx = state.selection as number;
               apply({
                 type: 'PATCH_ROW',
@@ -2035,12 +2034,15 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                   image_scale_pct: next.scalePct,
                   image_rotation_deg: next.rotationDeg,
                 },
+                transient: true,
               });
             }}
             onCommit={(next) => {
               // Final commit on pointerup: clean identity values back
               // to undefined so the row JSON stays free of redundant
               // per-row overrides that match the default behavior.
+              // Non-transient: marks dirty, single undo entry, single
+              // autosave fires.
               const idx = state.selection as number;
               apply({
                 type: 'PATCH_ROW',

@@ -52,6 +52,13 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
   // re-creating the timer on every dispatch.
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  // Forward-declared ref the conflict handler reads to schedule an
+  // auto-reload. Filled in after reloadFromServer is defined further
+  // down. Direct closure capture isn't possible because performSave
+  // (which dispatches the conflict branch) is declared before
+  // reloadFromServer.
+  const reloadFromServerRef = useRef<(() => Promise<void>) | null>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlightAbortRef = useRef<AbortController | null>(null);
 
@@ -111,6 +118,23 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
           clientVersion: versionAtAttempt,
           serverVersion: result.currentVersion,
         });
+        // Auto-reload from server when there are no other unsaved
+        // edits (the conflicting save itself flipped isDirty back to
+        // false on attempt-start, but the user might have typed since).
+        // Without this, every subsequent autosave returns 409 and the
+        // user is stuck in a conflict-banner trap where nothing they
+        // do persists. The reload picks up the server's current
+        // version + payload; the next save resumes normally. We do
+        // NOT clobber unsaved edits — the conflict banner stays up so
+        // the user clicks Reload manually if they have local work
+        // they don't want to discard. Done via a settimeout because
+        // reloadFromServer is declared further down the closure.
+        setTimeout(() => {
+          if (!stateRef.current.isDirty) {
+            console.info('[editor store] auto-reloading after conflict (no unsaved edits)');
+            void reloadFromServerRef.current?.();
+          }
+        }, 0);
         break;
       case 'gone':
         setSaveStatus({ kind: 'error', message: 'Project was deleted.' });
@@ -336,6 +360,11 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [apply]);
+
+  // Keep the forward-declared reload ref in sync. The conflict
+  // handler in performSave (declared before reloadFromServer) reads
+  // through this to schedule an auto-reload on safe (clean) conflicts.
+  reloadFromServerRef.current = reloadFromServer;
 
   return {
     state,
