@@ -149,8 +149,13 @@ export function buildBrollPrompt(args: BuildBrollPromptArgs): string {
  *  (`waiting`, `queuing`, `generating`); we collapse the latter
  *  to 'generating' and ignore unknown values (treat as in-flight). */
 export function mapKieStateToStatus(state: unknown): BrollStatus {
-  if (state === 'success') return 'ready';
-  if (state === 'fail') return 'failed';
+  // Accept the common synonyms Kie has used across model families.
+  // Without this any "succeeded" / "completed" / "error" / "failed"
+  // value Kie ever returns for a new model (Kling 3.0 in particular
+  // has been a moving target) silently keeps the row in 'generating'
+  // and the poll loop never terminates.
+  if (state === 'success' || state === 'succeeded' || state === 'completed') return 'ready';
+  if (state === 'fail' || state === 'failed' || state === 'error') return 'failed';
   return 'generating';
 }
 
@@ -297,6 +302,26 @@ function parseJobsStatus(data: Record<string, unknown>): KieStatusResult {
   const thumbnailUrl = (parsed.thumbnailUrl as string | undefined) || (parsed.coverUrl as string | undefined);
   const widthRaw = parsed.width;
   const heightRaw = parsed.height;
+  // Diagnostic — when Kie returns an UNFAMILIAR state string (or no
+  // state at all), `mapKieStateToStatus` treats it as 'generating' and
+  // the row polls forever. Capture the raw envelope so we can extend
+  // the parser to recognise it. Only emits when state isn't one of the
+  // known healthy values so successful polls don't spam logs.
+  const KNOWN_STATES = new Set([
+    'waiting', 'queuing', 'queued', 'pending',
+    'generating', 'processing', 'running',
+    'success', 'succeeded', 'completed',
+    'fail', 'failed', 'error',
+  ]);
+  if (typeof state !== 'string' || !KNOWN_STATES.has(state)) {
+    logger.warn('broll: parseJobsStatus saw unfamiliar state — clip will poll forever as "generating" unless this state is mapped', {
+      stateValue: state,
+      stateType: typeof state,
+      innerKeys: Object.keys(inner),
+      rawDataKeys: Object.keys(data),
+      innerSnippet: JSON.stringify(inner).slice(0, 400),
+    });
+  }
   return {
     state: typeof state === 'string' ? state : 'generating',
     videoUrl,
@@ -455,6 +480,15 @@ export async function startBrollGeneration(
  * Read a clip row, and if it's still in-flight, do ONE Kie status check and
  * persist the result. Returns the up-to-date row.
  */
+/** Hard upper bound on how long a clip is allowed to sit in
+ *  'generating' before we force it to 'failed' so the editor's poll
+ *  loop terminates. 15 minutes well exceeds the worst-case Kling 3.0
+ *  Pro generation (typically 1-3 min) — anything beyond is stuck on
+ *  Kie's side or returning a state shape we don't recognise. Without
+ *  this, the editor spinner runs forever and the user has no way to
+ *  recover except clicking Stop. See user report 2026-05-23. */
+const BROLL_GENERATION_TIMEOUT_MS = 15 * 60 * 1000;
+
 export async function getAndAdvanceBrollClip(
   clipId: string,
   workspaceId: string,
@@ -464,6 +498,33 @@ export async function getAndAdvanceBrollClip(
   if (!row) return null;
   if (row.status !== 'generating' && row.status !== 'pending') return row;
   if (!row.task_id) return row;
+
+  // Hard timeout — force the row to failed so the client stops polling.
+  // We compute age from `created_at` which is set by startBrollGeneration.
+  const createdAtMs = new Date(row.created_at).getTime();
+  if (Number.isFinite(createdAtMs)) {
+    const ageMs = Date.now() - createdAtMs;
+    if (ageMs > BROLL_GENERATION_TIMEOUT_MS) {
+      const minutes = Math.round(ageMs / 60_000);
+      logger.warn('broll: timing out stuck-generating clip', {
+        clipId,
+        modelId: row.model_id,
+        ageMinutes: minutes,
+        taskId: row.task_id,
+      });
+      await sql`
+        UPDATE broll_clips
+           SET status = 'failed',
+               error_message = ${
+                 `Generation exceeded ${Math.round(BROLL_GENERATION_TIMEOUT_MS / 60_000)} min — Kie never reported terminal status. Task ${row.task_id} may still complete server-side.`
+               },
+               updated_at = NOW(),
+               completed_at = NOW()
+         WHERE id = ${clipId}::uuid AND workspace_id = ${workspaceId}::uuid
+      `;
+      return getBrollClip(clipId, workspaceId);
+    }
+  }
 
   // Dispatch the status call to the right endpoint family. The clip row
   // stores `model_id`; the model descriptor tells us which Kie URL space

@@ -872,6 +872,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     [apply, writeRowAsset],
   );
 
+  // Track elapsed time per active generation. The Animate panel reads
+  // this so the user sees a counter ticking instead of an opaque
+  // spinner. Reset when the clip is no longer 'generating'.
+  const [clipGenStartMs, setClipGenStartMs] = useState<Record<number, number>>({});
+  // Phase per row: 'kickoff' = waiting for /api/broll to return a
+  // clipId; 'polling' = clipId in localStorage, /api/broll/[id] poll
+  // is running. Drives the inspector label so a slow kickoff is
+  // distinguishable from a slow generation.
+  const [clipGenPhase, setClipGenPhase] = useState<Record<number, 'kickoff' | 'polling'>>({});
+
   const handleGenerateClip = useCallback(
     async (rowIndex: number) => {
       if (broolKickoffInFlightRef.current.has(rowIndex)) return;
@@ -906,6 +916,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
       broolKickoffInFlightRef.current.add(rowIndex);
       setRowVideoClip(rowIndex, { status: 'generating' }, true);
+      const startMs = Date.now();
+      setClipGenStartMs((prev) => ({ ...prev, [rowIndex]: startMs }));
+      setClipGenPhase((prev) => ({ ...prev, [rowIndex]: 'kickoff' }));
 
       try {
         const stub = await kickoffBrollGeneration({
@@ -932,17 +945,63 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         })] = stub.id;
         writeBrollLsMap(map);
         console.info('[editor broll] kickoff committed', { rowIndex, clipId: stub.id });
+        setClipGenPhase((prev) => ({ ...prev, [rowIndex]: 'polling' }));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn('[editor broll] kickoff failed', { rowIndex, detail: msg });
         alert(`Couldn't kick off animation: ${msg}`);
         setRowVideoClip(rowIndex, null, true);
+        setClipGenStartMs((prev) => {
+          const next = { ...prev };
+          delete next[rowIndex];
+          return next;
+        });
+        setClipGenPhase((prev) => {
+          const next = { ...prev };
+          delete next[rowIndex];
+          return next;
+        });
       } finally {
         broolKickoffInFlightRef.current.delete(rowIndex);
       }
     },
     [state.doc.rows, state.rowImages, userBrollModelId, projectId, setRowVideoClip],
   );
+
+  // Tick once a second to drive the elapsed-time counter in the
+  // Animate panel. Cheap when no rows are generating — the interval
+  // sets state that's identical to the previous render, so React's
+  // bailout skips the re-render. Stops entirely when nothing is
+  // active.
+  const [clipElapsedTick, setClipElapsedTick] = useState(0);
+  useEffect(() => {
+    if (Object.keys(clipGenStartMs).length === 0) return;
+    const id = setInterval(() => setClipElapsedTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [clipGenStartMs]);
+  // Clean up start-time entries when the row's clip leaves
+  // 'generating' (success, failure, or user-cancelled). Run as an
+  // effect so the cleanup happens on the same render the new status
+  // lands; doing it inside the poll handler would race against the
+  // dispatch.
+  useEffect(() => {
+    const toRemove = Object.keys(clipGenStartMs).filter((k) => {
+      const idx = Number(k);
+      const status = state.rowVideoClips[idx]?.status;
+      return status !== 'generating';
+    });
+    if (toRemove.length === 0) return;
+    setClipGenStartMs((prev) => {
+      const next = { ...prev };
+      for (const k of toRemove) delete next[Number(k)];
+      return next;
+    });
+    setClipGenPhase((prev) => {
+      const next = { ...prev };
+      for (const k of toRemove) delete next[Number(k)];
+      return next;
+    });
+  }, [state.rowVideoClips, clipGenStartMs]);
 
   // ─── Batch E: render-to-MP4 kickoff ─────────────────────────────
   const executeRender = useCallback(async () => {
