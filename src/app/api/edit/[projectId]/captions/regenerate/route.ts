@@ -172,7 +172,7 @@ export const POST = apiRoute.authed(async (
   // JSONB merge so concurrent edits to OTHER fields don't get
   // clobbered. Bumps `version` so the editor's optimistic-lock
   // sees the change and reloads.
-  await sql`
+  const { rows: savedRow } = await sql`
     UPDATE user_history
        SET payload = payload || ${JSON.stringify({ captions: bundle })}::jsonb,
            version = version + 1
@@ -180,13 +180,19 @@ export const POST = apiRoute.authed(async (
        AND workspace_id = ${session.ws}::uuid
        AND collaborator_id = ${session.uid}::uuid
        AND kind = 'production_doc'
+     RETURNING version
   `;
+  // Return the new version so the editor can SYNC_SERVER_VERSION and
+  // avoid the next full-payload PATCH failing the optimistic check.
+  const newVersion =
+    Array.isArray(savedRow) && savedRow.length > 0 ? (savedRow[0] as { version?: number }).version : null;
 
   logger.info('[editor captions] regenerated', {
     project_id: projectId,
     segment_count: segments.length,
     workspace_id: session.ws,
+    new_version: newVersion,
   });
 
-  return NextResponse.json({ ok: true, bundle });
+  return NextResponse.json({ ok: true, bundle, version: newVersion });
 });

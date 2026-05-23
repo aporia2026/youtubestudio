@@ -117,23 +117,36 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
         console.warn('[editor store] save conflict — server is ahead', {
           clientVersion: versionAtAttempt,
           serverVersion: result.currentVersion,
+          isDirty: stateRef.current.isDirty,
         });
-        // Auto-reload from server when there are no other unsaved
-        // edits (the conflicting save itself flipped isDirty back to
-        // false on attempt-start, but the user might have typed since).
-        // Without this, every subsequent autosave returns 409 and the
-        // user is stuck in a conflict-banner trap where nothing they
-        // do persists. The reload picks up the server's current
-        // version + payload; the next save resumes normally. We do
-        // NOT clobber unsaved edits — the conflict banner stays up so
-        // the user clicks Reload manually if they have local work
-        // they don't want to discard. Done via a settimeout because
+        // Always auto-reload from server on conflict. Without this, a
+        // single conflict (often caused by a background server-side
+        // write — VO regen, captions regen, row-asset POST that
+        // didn't sync version, etc.) traps the user in a banner that
+        // every subsequent autosave re-triggers, while nothing they
+        // do persists. Reloading consumes the server's current
+        // version + payload; the next save resumes normally.
+        //
+        // When state is dirty we lose the unsaved local changes.
+        // Surface this via a toast so the user knows what happened
+        // and can redo. Skipping the reload here would be worse: the
+        // user would have to manually click Reload + lose the same
+        // changes anyway, plus they'd have to figure out why the
+        // banner won't clear. Done via setTimeout because
         // reloadFromServer is declared further down the closure.
         setTimeout(() => {
-          if (!stateRef.current.isDirty) {
-            console.info('[editor store] auto-reloading after conflict (no unsaved edits)');
-            void reloadFromServerRef.current?.();
-          }
+          const wasDirty = stateRef.current.isDirty;
+          console.info('[editor store] auto-reloading after conflict', { wasDirty });
+          void reloadFromServerRef.current?.().then(() => {
+            if (wasDirty) {
+              import('sonner').then(({ toast }) => {
+                toast.warning(
+                  'Project was edited elsewhere — reloaded from server. Any unsaved edits since the last successful save are gone.',
+                  { duration: 8000 },
+                );
+              }).catch(() => {});
+            }
+          });
         }, 0);
         break;
       case 'gone':

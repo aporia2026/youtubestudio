@@ -311,7 +311,7 @@ export const POST = apiRoute.authed(async (
     thumbnail: oldDoc.thumbnail,
   };
 
-  await sql`
+  const { rows: savedRow } = await sql`
     UPDATE user_history
        SET payload = payload || ${JSON.stringify({ doc: newDoc })}::jsonb,
            version = version + 1
@@ -319,7 +319,12 @@ export const POST = apiRoute.authed(async (
        AND workspace_id = ${session.ws}::uuid
        AND collaborator_id = ${session.uid}::uuid
        AND kind = 'production_doc'
+     RETURNING version
   `;
+  // Return new version so the editor can SYNC_SERVER_VERSION and
+  // avoid the next full-payload PATCH failing the optimistic check.
+  const newVersion =
+    Array.isArray(savedRow) && savedRow.length > 0 ? (savedRow[0] as { version?: number }).version : null;
 
   logger.info('[editor regen-from-script] success', {
     project_id: projectId,
@@ -329,11 +334,13 @@ export const POST = apiRoute.authed(async (
     merged_count: Math.min(oldRows.length, split.rows.length),
     overlong_split_count: split.splitCount,
     warning_count: split.warnings.length,
+    new_version: newVersion,
   });
 
   return NextResponse.json({
     ok: true,
     rowCount: mergedRows.length,
     warnings: split.warnings,
+    version: newVersion,
   });
 });
