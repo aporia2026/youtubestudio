@@ -1949,22 +1949,6 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
   const inputProps = useMemo(() => (videoConfig ? { config: videoConfig } : null), [videoConfig]);
 
-  // TEMP DIAGNOSTIC (2026-05-24): dump shot 70's full row data + its
-  // resolved videoConfig shot AND any overlay state. Helps trace the
-  // "preview shows wrong content at 5:40" report. Removed once we
-  // have the data.
-  useEffect(() => {
-    if (!videoConfig) return;
-    const idx = 69; // shot 70 (0-indexed)
-    const row = state.doc.rows[idx];
-    if (!row) return;
-    console.info('[debug shot 70] row', row);
-    console.info('[debug shot 70] videoConfig.shots[69]', videoConfig.shots[idx]);
-    console.info('[debug shot 70] rowImages[69]', state.rowImages[idx]);
-    console.info('[debug shot 70] rowOverlays[69]', state.rowOverlays[idx]);
-    console.info('[debug shot 70] rowVideoClips[69]', state.rowVideoClips[idx]);
-  }, [videoConfig, state.doc.rows, state.rowImages, state.rowOverlays, state.rowVideoClips]);
-
   // Keep the videoConfigRef in sync. seekFromUser (declared near the
   // top of the component) reads fps off this ref so it doesn't have to
   // declare videoConfig as a dep and re-create on every config rebuild.
