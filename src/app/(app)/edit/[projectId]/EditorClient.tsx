@@ -398,6 +398,14 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // further down via useMemo, but the ref is updated synchronously by
   // the effect right after it so the lookup never goes stale.
   const shotStartTimesMsRef = useRef<number[]>([]);
+  // Holds the renderer's per-shot startMs (post-alignment, post-trim,
+  // post-tail-buffer). Source of truth for "where does shot N actually
+  // start in the Player." Diverges from shotStartTimesMs when the doc
+  // has voiceover alignment OR per-row trims, in which case the timeline
+  // thumbnails and the playhead use different timebases — clicking a
+  // shot card seeks to the WRONG time. We keep both refs synced so the
+  // click-to-jump helper can read the renderer's value.
+  const shotRenderStartTimesMsRef = useRef<number[]>([]);
   // Picks a shot AND (when enabled) moves the playhead to its start.
   // Used by every shot-click surface: timeline cards, ShotsTab items,
   // and the overlay-position-open flow. Centralized so the
@@ -408,7 +416,13 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       setLaneFocus(null);
       apply({ type: 'SET_SELECTION', shotIndex });
       if (!getClickShotToSeek()) return;
-      const startMs = shotStartTimesMsRef.current[shotIndex];
+      // Prefer the renderer's startMs (matches the Player's timebase
+      // and the timeline thumbnail X positions). Fall back to the
+      // editor-store start for shots the renderer hasn't seen yet
+      // (e.g. just-inserted row before videoConfig recomputes).
+      const startMs =
+        shotRenderStartTimesMsRef.current[shotIndex] ??
+        shotStartTimesMsRef.current[shotIndex];
       if (typeof startMs !== 'number') return;
       console.info('[editor select-shot] seek', { source, shotIndex, startMs });
       // Defer the seek to the next microtask so the SET_SELECTION
@@ -1837,6 +1851,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   useEffect(() => {
     shotStartTimesMsRef.current = shotStartTimesMs;
   }, [shotStartTimesMs]);
+  // Mirror the renderer's per-shot startMs so click-to-jump lands on
+  // the actual Player time of the shot, not the editor-store cumulative
+  // duration (these differ when voiceover alignment retimes scenes
+  // or when per-row trims apply). Without this sync the playhead would
+  // appear "far from" the shot the user clicked.
+  useEffect(() => {
+    shotRenderStartTimesMsRef.current = videoConfig
+      ? videoConfig.shots.map((s) => s.startMs)
+      : [];
+  }, [videoConfig]);
 
   // Pre-compute the save-status label + color for the header pill so
   // the in-place SaveStatusBadge doesn't have to reach into the
