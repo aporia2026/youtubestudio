@@ -61,6 +61,15 @@ import { InspectorCaptionsTab } from '@/components/editor/inspector/InspectorCap
 import { TimelineV2 } from '@/components/editor/timeline-v2/TimelineV2';
 import { SectionThumbnailModal } from '@/components/editor/SectionThumbnailModal';
 import { MaskBrushEditor } from '@/components/production-doc/MaskBrushEditor';
+import {
+  DEFAULT_EDIT_OPTION_ID,
+  getEditOption,
+  type EditOption,
+} from '@/lib/image-edit-pricing';
+import {
+  getLastEditOptionId,
+  setLastEditOptionId,
+} from '@/lib/editor/settings';
 import type { ImageSaliencyMap } from '@/remotion/utils';
 import {
   type ChannelVisualBrandKit,
@@ -181,6 +190,28 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // uses and dispatch SET_ROW_IMAGE with the new URL.
   const [imageEditRow, setImageEditRow] = useState<number | null>(null);
   const [imageEditApplying, setImageEditApplying] = useState(false);
+  // 2026-05-23: Same picker state production-doc owns. Initialised
+  // from localStorage post-mount so SSR returns the default and the
+  // client picks up the persisted value.
+  const [imageEditOptionId, setImageEditOptionIdState] = useState<string>(DEFAULT_EDIT_OPTION_ID);
+  useEffect(() => {
+    const persisted = getLastEditOptionId(DEFAULT_EDIT_OPTION_ID);
+    if (getEditOption(persisted)) setImageEditOptionIdState(persisted);
+  }, []);
+  const imageEditOption: EditOption =
+    getEditOption(imageEditOptionId) ?? getEditOption(DEFAULT_EDIT_OPTION_ID)!;
+  // The shot editor jumps straight into the brush surface (no
+  // EditPanel intermediate), so the option must be mask-capable —
+  // pick the cheapest mask-capable fallback when the persisted value
+  // is prompt-only (which can happen if the user last edited from
+  // production-doc with Nano Banana selected).
+  const resolvedBrushOption: EditOption = imageEditOption.maskCapable
+    ? imageEditOption
+    : getEditOption('ideogram-v3-balanced')!;
+  const updateImageEditOption = (next: EditOption) => {
+    setImageEditOptionIdState(next.id);
+    setLastEditOptionId(next.id);
+  };
   // BrandKitModal open/close. Triggered from the inspector kebab
   // and from the AI Tools tab's brand-kit summary row.
   const [showBrandKit, setShowBrandKit] = useState(false);
@@ -696,7 +727,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   const broolKickoffInFlightRef = useRef<Set<number>>(new Set());
 
   const setRowVideoClip = useCallback(
-    (rowIndex: number, clip: { status: string; videoUrl?: string; durationSeconds?: number } | null, transient = false) => {
+    (
+      rowIndex: number,
+      clip: {
+        status: string;
+        videoUrl?: string;
+        durationSeconds?: number;
+        errorMessage?: string;
+      } | null,
+      transient = false,
+    ) => {
       apply({ type: 'SET_ROW_VIDEO_CLIP', rowIndex, clip, transient });
       // Server-side PATCH is asset-blind for rowVideoClips, so committed
       // states must reach the row-asset endpoint. Transient states (e.g.
@@ -1052,21 +1092,42 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             cache: 'no-store',
           });
           if (!res.ok) continue;
+          // The server wraps the row in `{ clip }` (matches BrollCell's
+          // hydrate + poll loops in production-doc/BrollCell.tsx).
+          // The editor previously read `data.status` / `data.video_url`
+          // directly on `data`, which were always undefined → the poll
+          // defaulted status to 'generating' and NEVER terminated.
+          // Result: spinner spun forever even when the clip was ready
+          // in the DB. Bug present since the editor's broll integration
+          // landed. 2026-05-23 fix: read `data.clip.*` like everyone
+          // else does.
           const data = (await res.json()) as {
-            status?: string;
-            video_url?: string | null;
-            duration_seconds?: number | null;
+            clip?: {
+              status?: string;
+              video_url?: string | null;
+              duration_seconds?: number | null;
+              error_message?: string | null;
+            };
           };
           if (cancelled) return;
-          const status = typeof data.status === 'string' ? data.status : 'generating';
+          const clip = data.clip;
+          if (!clip) continue;
+          const status = typeof clip.status === 'string' ? clip.status : 'generating';
           if (status === 'generating' || status === 'pending') continue;
           // Terminal state — commit it through the non-transient
           // path so Cmd+Z reverses cleanly to the prior state.
-          console.info('[editor broll] poll terminal', { rowIndex, clipId, status });
+          console.info('[editor broll] poll terminal', {
+            rowIndex,
+            clipId,
+            status,
+            hasVideoUrl: Boolean(clip.video_url),
+            errorMessage: clip.error_message,
+          });
           setRowVideoClip(rowIndex, {
             status,
-            videoUrl: data.video_url ?? undefined,
-            durationSeconds: data.duration_seconds ?? undefined,
+            videoUrl: clip.video_url ?? undefined,
+            durationSeconds: clip.duration_seconds ?? undefined,
+            errorMessage: clip.error_message ?? undefined,
           }, false);
         } catch (err) {
           console.warn('[editor broll] poll failed', {
@@ -2472,11 +2533,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                 void handleGenerateClip(state.selection as number);
               }}
               clipStatus={state.rowVideoClips[state.selection]?.status}
-              clipError={
-                (state.rowVideoClips[state.selection] as
-                  | { errorMessage?: string }
-                  | undefined)?.errorMessage
-              }
+              clipError={state.rowVideoClips[state.selection]?.errorMessage}
               onCancelClip={() => {
                 const idx = state.selection as number;
                 console.info('[editor broll] cancel clicked', { rowIndex: idx });
@@ -2756,13 +2813,14 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           >
             <MaskBrushEditor
               sourceImageUrl={state.rowImages[imageEditRow]!}
-              defaultQuality="medium"
+              option={resolvedBrushOption}
+              onOptionChange={updateImageEditOption}
               onCancel={() => setImageEditRow(null)}
-              onApply={async ({ maskUrl, prompt, quality }) => {
+              onApply={async ({ maskUrl, prompt, option: appliedOption }) => {
                 if (imageEditApplying) return;
                 const rowIndex = imageEditRow;
                 setImageEditApplying(true);
-                console.info('[editor image-edit] apply', { rowIndex, quality });
+                console.info('[editor image-edit] apply', { rowIndex, optionId: appliedOption.id });
                 try {
                   const res = await fetch('/api/generate/production-doc/image/edit', {
                     method: 'POST',
@@ -2770,8 +2828,8 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                     body: JSON.stringify({
                       originalImageUrl: state.rowImages[rowIndex],
                       prompt,
-                      model: 'gpt-4o-image-edit',
-                      mask: { url: maskUrl, quality },
+                      optionId: appliedOption.id,
+                      mask: { url: maskUrl },
                     }),
                   });
                   const data = (await res.json().catch(() => ({}))) as {
@@ -2792,6 +2850,43 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                   setImageEditRow(null);
                 } catch (err) {
                   alert(`Image edit failed: ${err instanceof Error ? err.message : String(err)}`);
+                } finally {
+                  setImageEditApplying(false);
+                }
+              }}
+              onErase={async ({ maskUrl }) => {
+                if (imageEditApplying) return;
+                const rowIndex = imageEditRow;
+                setImageEditApplying(true);
+                console.info('[editor image-edit] erase', { rowIndex });
+                try {
+                  const res = await fetch('/api/generate/production-doc/image/edit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      originalImageUrl: state.rowImages[rowIndex],
+                      intent: 'erase',
+                      mask: { url: maskUrl },
+                    }),
+                  });
+                  const data = (await res.json().catch(() => ({}))) as {
+                    imageUrl?: string;
+                    saliency?: ImageSaliencyMap;
+                    error?: string;
+                  };
+                  if (!res.ok || !data.imageUrl) {
+                    alert(`Erase failed: ${data.error || `HTTP ${res.status}`}`);
+                    console.warn('[editor image-edit] erase failed', { rowIndex, status: res.status });
+                    return;
+                  }
+                  commitRowImage(rowIndex, data.imageUrl);
+                  if (data.saliency) {
+                    updateRow(rowIndex, { image_saliency: data.saliency });
+                  }
+                  console.info('[editor image-edit] erase success', { rowIndex });
+                  setImageEditRow(null);
+                } catch (err) {
+                  alert(`Erase failed: ${err instanceof Error ? err.message : String(err)}`);
                 } finally {
                   setImageEditApplying(false);
                 }

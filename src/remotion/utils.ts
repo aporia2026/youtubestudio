@@ -603,6 +603,10 @@ export interface RowVideoClipState {
    *  remains the source of truth for the in-browser preview player
    *  (where the presigned URL works fine). 2026-05-20. */
   brollClipId?: string;
+  /** Provider error message when status is 'failed' or 'error'. The
+   *  inspector surfaces this inline so the user sees WHY the animation
+   *  failed instead of just a generic "Animation failed" pill. */
+  errorMessage?: string;
 }
 
 /** Per-row auto-fetched overlay state passed into the renderer. Only rows
