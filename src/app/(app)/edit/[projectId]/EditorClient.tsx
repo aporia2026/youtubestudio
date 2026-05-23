@@ -105,6 +105,7 @@ import {
   getMinimapWrapThresholdMinutes,
 } from '@/lib/editor/settings';
 import { NarrationStrip } from '@/components/editor/NarrationStrip';
+import type { CaptionsBundle } from '@/lib/editor/captions';
 import {
   kickoffBrollGeneration,
   readBrollLsMap,
@@ -2083,6 +2084,46 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     [videoConfig],
   );
 
+  // Narration strip data source. Real captions (generated via the
+  // `Generate captions` action) take priority. When they don't exist
+  // yet but the project HAS a voiceover, derive a fallback bundle from
+  // each row's `script_text` paired with the renderer's per-shot
+  // startMs/durationMs. The Player's playhead matches videoConfig
+  // timing (post-alignment, post-trim), so `shots[i].startMs` is the
+  // correct timebase here — `shotStartTimesMs` would drift when
+  // voiceover alignment retimes scenes. Empty script rows are skipped
+  // so the strip falls back to its "— silence —" placeholder instead
+  // of rendering a blank line.
+  const narrationCaptions = useMemo<CaptionsBundle | undefined>(() => {
+    if (state.captions) return state.captions;
+    if (!state.voiceoverUrl) return undefined;
+    if (!videoConfig) return undefined;
+    const segments = videoConfig.shots
+      .map((shot, i) => {
+        const text = state.doc.rows[i]?.script_text?.trim() ?? '';
+        if (!text) return null;
+        return {
+          start: shot.startMs / 1000,
+          end: (shot.startMs + shot.durationMs) / 1000,
+          text,
+        };
+      })
+      .filter((s): s is { start: number; end: number; text: string } => s !== null);
+    if (segments.length === 0) return undefined;
+    console.info('[editor narration-fallback] using script_text', {
+      rowCount: state.doc.rows.length,
+      segmentCount: segments.length,
+      voiceoverPresent: true,
+      captionsPresent: false,
+    });
+    return {
+      voiceoverUrlHash: 'fallback',
+      modelId: 'script-text-fallback',
+      generatedAt: new Date(0).toISOString(),
+      segments,
+    };
+  }, [state.captions, state.voiceoverUrl, state.doc.rows, videoConfig]);
+
   if (!doc || doc.rows.length === 0 || !inputProps || !videoConfig) {
     console.warn('[editor client] payload missing rows', {
       projectId,
@@ -2470,7 +2511,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           it sits in the natural visual flow without crowding either. */}
       {getShowNarrationStrip() && (
         <NarrationStrip
-          captions={state.captions}
+          captions={narrationCaptions}
           playheadMs={state.playheadMs}
           onSeek={seekFromUser}
           fontSize={getNarrationFontSize()}

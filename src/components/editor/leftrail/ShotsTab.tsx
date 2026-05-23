@@ -26,6 +26,13 @@ interface ShotsTabProps {
 }
 
 export function ShotsTab({ rows, rowImages, selection, onSelect, onContextMenu }: ShotsTabProps): React.ReactElement {
+  // Uniform badge width so single-, double-, and triple-digit shot
+  // numbers all line up cleanly — without this, the thumbnail column
+  // shifts horizontally when crossing 10 / 100 shots in a project.
+  // Sized for the widest number this project will render, not the
+  // current row's number.
+  const badgeDigits = Math.max(2, String(rows.length).length);
+  const badgeMinWidth = 16 + badgeDigits * 8; // 8px per digit at 12px tabular-nums, + 16px chrome
   return (
     <div className="flex flex-col gap-1.5">
       {rows.map((row, i) => {
@@ -57,6 +64,26 @@ export function ShotsTab({ rows, rowImages, selection, onSelect, onContextMenu }
             }}
           >
             <div className="flex items-center gap-2 p-1.5">
+              {/* Number badge — left of the thumbnail so the shot's
+                  ordinal reads independently of the timecode. Tabular
+                  nums keep the column flush as digits grow (1 → 99 →
+                  180+). Width scales with digit count to avoid
+                  jagged-left rows in long projects. */}
+              <div
+                className="shrink-0 flex items-center justify-center rounded ed-mono tabular-nums font-semibold text-[12px]"
+                style={{
+                  minWidth: badgeMinWidth,
+                  height: 32,
+                  padding: '0 4px',
+                  background: isActive
+                    ? 'var(--editor-accent)'
+                    : 'var(--editor-edge)',
+                  color: isActive ? '#fff' : 'var(--fg)',
+                }}
+                aria-hidden
+              >
+                {i + 1}
+              </div>
               <div
                 className="shrink-0 rounded overflow-hidden"
                 style={{ width: 56, height: 32, background: '#000' }}
@@ -83,7 +110,7 @@ export function ShotsTab({ rows, rowImages, selection, onSelect, onContextMenu }
                   className="text-[10px] tabular-nums ed-mono"
                   style={{ color: isActive ? 'var(--editor-accent)' : 'var(--fg-muted)' }}
                 >
-                  {i + 1}. {row.timecode || '—'}
+                  {row.timecode || '—'}
                 </div>
                 <div
                   className="text-[11px] truncate"
