@@ -144,87 +144,113 @@ export function TransformOverlay({
   const transformRef = useRef<FreeTransform | null>(transform);
   transformRef.current = transform;
 
-  const handlePointerMove = useCallback(
-    (e: PointerEvent) => {
-      const active = activeRef.current;
-      const rect = canvasRect;
-      if (!active || !rect || !transformRef.current) return;
-      const container = containerRef.current;
-      if (!container) return;
-      const containerRect = container.getBoundingClientRect();
-      // The visual area is the canvas minus the top title stripe. The
-      // renderer applies `translate(xPct%, yPct%)` against the visual
-      // element which fills this area, so the overlay's delta math
-      // must use these dimensions to keep mouse → screen mapping 1:1.
-      const stripePxLocal = rect.height * Math.max(0, Math.min(1, stripeHeightFraction));
-      const visualW = rect.width;
-      const visualH = rect.height - stripePxLocal;
-      // Pointer position relative to the canvas top-left (in canvas
-      // screen pixels), then convert to canvas-relative coords.
-      const px = e.clientX - containerRect.left - rect.left;
-      const py = e.clientY - containerRect.top - rect.top;
-      if (active.kind === 'body') {
-        const deltaX = e.clientX - active.startX;
-        const deltaY = e.clientY - active.startY;
-        // Convert pixel delta to percent of VISUAL AREA (matches what
-        // the renderer translates by).
-        const deltaXPct = (deltaX / visualW) * 100;
-        const deltaYPct = (deltaY / visualH) * 100;
-        let nextX = clamp(active.startXPct + deltaXPct, -200, 200);
-        let nextY = clamp(active.startYPct + deltaYPct, -200, 200);
-        // Snap to center / quarters / halves UNLESS:
-        //   - shift held (user override)
-        //   - the drag has barely moved (< 3% of canvas) — would
-        //     snap back to the start position, making the drag feel
-        //     stuck
-        //   - the snap target IS the start value — same issue, the
-        //     visual just refuses to leave its starting point until
-        //     the cursor crosses the snap zone exit
-        const movedEnough =
-          Math.abs(deltaXPct) > 3 || Math.abs(deltaYPct) > 3;
-        if (!e.shiftKey && movedEnough) {
-          for (const t of SNAP_TARGETS) {
-            if (
-              Math.abs(nextX - t) < SNAP_THRESHOLD_PCT &&
-              Math.abs(t - active.startXPct) > 1
-            ) {
-              nextX = t;
-            }
-            if (
-              Math.abs(nextY - t) < SNAP_THRESHOLD_PCT &&
-              Math.abs(t - active.startYPct) > 1
-            ) {
-              nextY = t;
-            }
+  // Latest-value refs for everything the pointer handlers read. Without
+  // these, `handlePointerMove` and `handlePointerUp` would close over
+  // changing props/state (`onChange`, `onCommit`, `canvasRect`,
+  // `stripeHeightFraction`) and re-create on every parent render. That
+  // matters because the FIRST onChange dispatch fires a transient
+  // PATCH_ROW which causes the parent to re-render synchronously after
+  // the event handler — the cleanup `useEffect` below then sees its
+  // deps change and removes the document-level listeners that
+  // pointerdown JUST registered. Net result: drags die after one
+  // pointermove (or before, if the parent re-rendered between
+  // pointerdown and the first move for unrelated reasons — playhead
+  // tick, autosave-status change, etc.) and the user perceives drag
+  // and resize as completely broken. Routing everything through refs
+  // lets the handlers stay stable for the lifetime of the component.
+  const canvasRectRef = useRef(canvasRect);
+  canvasRectRef.current = canvasRect;
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
+  const stripeHeightFractionRef = useRef(stripeHeightFraction);
+  stripeHeightFractionRef.current = stripeHeightFraction;
+
+  // Stable identity (empty deps). Reads everything off refs above so a
+  // parent re-render mid-drag does not invalidate the listener that
+  // pointerdown registered. See the long comment above for why this
+  // matters.
+  const handlePointerMove = useCallback((e: PointerEvent) => {
+    const active = activeRef.current;
+    const rect = canvasRectRef.current;
+    if (!active || !rect || !transformRef.current) return;
+    const container = containerRef.current;
+    if (!container) return;
+    const containerRect = container.getBoundingClientRect();
+    // The visual area is the canvas minus the top title stripe. The
+    // renderer applies `translate(xPct%, yPct%)` against the visual
+    // element which fills this area, so the overlay's delta math
+    // must use these dimensions to keep mouse → screen mapping 1:1.
+    const stripeFrac = stripeHeightFractionRef.current;
+    const stripePxLocal = rect.height * Math.max(0, Math.min(1, stripeFrac));
+    const visualW = rect.width;
+    const visualH = rect.height - stripePxLocal;
+    // Pointer position relative to the canvas top-left (in canvas
+    // screen pixels), then convert to canvas-relative coords.
+    const px = e.clientX - containerRect.left - rect.left;
+    const py = e.clientY - containerRect.top - rect.top;
+    if (active.kind === 'body') {
+      const deltaX = e.clientX - active.startX;
+      const deltaY = e.clientY - active.startY;
+      // Convert pixel delta to percent of VISUAL AREA (matches what
+      // the renderer translates by).
+      const deltaXPct = (deltaX / visualW) * 100;
+      const deltaYPct = (deltaY / visualH) * 100;
+      let nextX = clamp(active.startXPct + deltaXPct, -200, 200);
+      let nextY = clamp(active.startYPct + deltaYPct, -200, 200);
+      // Snap to center / quarters / halves UNLESS:
+      //   - shift held (user override)
+      //   - the drag has barely moved (< 3% of canvas) — would
+      //     snap back to the start position, making the drag feel
+      //     stuck
+      //   - the snap target IS the start value — same issue, the
+      //     visual just refuses to leave its starting point until
+      //     the cursor crosses the snap zone exit
+      const movedEnough =
+        Math.abs(deltaXPct) > 3 || Math.abs(deltaYPct) > 3;
+      if (!e.shiftKey && movedEnough) {
+        for (const t of SNAP_TARGETS) {
+          if (
+            Math.abs(nextX - t) < SNAP_THRESHOLD_PCT &&
+            Math.abs(t - active.startXPct) > 1
+          ) {
+            nextX = t;
+          }
+          if (
+            Math.abs(nextY - t) < SNAP_THRESHOLD_PCT &&
+            Math.abs(t - active.startYPct) > 1
+          ) {
+            nextY = t;
           }
         }
-        onChange({ ...transformRef.current, xPct: nextX, yPct: nextY });
-      } else if (active.kind === 'corner') {
-        // Distance from the anchor (opposite corner) in canvas pixels.
-        const distance = Math.hypot(px - active.anchorX, py - active.anchorY);
-        const ratio = distance / Math.max(1, active.startDistance);
-        const next = clamp(active.startScalePct * ratio, 10, 400);
-        onChange({ ...transformRef.current, scalePct: next });
-      } else if (active.kind === 'rotate') {
-        // Compute angle of the pointer relative to the box center,
-        // then offset by the at-pointerdown angle so the rotation
-        // is relative to where the drag started.
-        const angle =
-          (Math.atan2(py - active.centerY, px - active.centerX) * 180) / Math.PI;
-        const delta = angle - active.startAngle;
-        let next = active.startRotationDeg + delta;
-        // Snap to 15° increments unless shift held.
-        if (!e.shiftKey) {
-          const snapped = Math.round(next / 15) * 15;
-          if (Math.abs(next - snapped) < 5) next = snapped;
-        }
-        // Wrap to [-180, 180] for storage cleanliness.
-        next = ((next + 180) % 360 + 360) % 360 - 180;
-        onChange({ ...transformRef.current, rotationDeg: next });
       }
-    },
-    [canvasRect, containerRef, onChange],
-  );
+      onChangeRef.current({ ...transformRef.current, xPct: nextX, yPct: nextY });
+    } else if (active.kind === 'corner') {
+      // Distance from the anchor (opposite corner) in canvas pixels.
+      const distance = Math.hypot(px - active.anchorX, py - active.anchorY);
+      const ratio = distance / Math.max(1, active.startDistance);
+      const next = clamp(active.startScalePct * ratio, 10, 400);
+      onChangeRef.current({ ...transformRef.current, scalePct: next });
+    } else if (active.kind === 'rotate') {
+      // Compute angle of the pointer relative to the box center,
+      // then offset by the at-pointerdown angle so the rotation
+      // is relative to where the drag started.
+      const angle =
+        (Math.atan2(py - active.centerY, px - active.centerX) * 180) / Math.PI;
+      const delta = angle - active.startAngle;
+      let next = active.startRotationDeg + delta;
+      // Snap to 15° increments unless shift held.
+      if (!e.shiftKey) {
+        const snapped = Math.round(next / 15) * 15;
+        if (Math.abs(next - snapped) < 5) next = snapped;
+      }
+      // Wrap to [-180, 180] for storage cleanliness.
+      next = ((next + 180) % 360 + 360) % 360 - 180;
+      onChangeRef.current({ ...transformRef.current, rotationDeg: next });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handlePointerUp = useCallback(() => {
     const active = activeRef.current;
@@ -243,12 +269,17 @@ export function TransformOverlay({
         kind: active.kind,
         final: transformRef.current,
       });
-      onCommit(transformRef.current);
+      onCommitRef.current(transformRef.current);
     }
-  }, [handlePointerMove, onCommit]);
+    // handlePointerMove is itself a stable useCallback (empty deps), so
+    // referencing it here without listing it is safe.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Cleanup on unmount: drop the document-level listeners if a drag
   // was in flight when the overlay unmounted (e.g. selection cleared).
+  // Because handlePointerMove and handlePointerUp are stable, this
+  // effect runs only on unmount.
   useEffect(() => {
     return () => {
       document.removeEventListener('pointermove', handlePointerMove);

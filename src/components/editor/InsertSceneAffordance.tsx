@@ -28,6 +28,15 @@ import { createPortal } from 'react-dom';
  *  translateX(-50%). */
 const HOVER_ZONE_WIDTH = 14;
 const BUTTON_SIZE = 22;
+/** Vertical extent of the hover zone in px. Limited to the top strip
+ *  where the "+" button visually sits so the zone does NOT cover the
+ *  full STRIP_HEIGHT and silently swallow pointer events for the
+ *  card's resize handle (z-10, centered on the same seam) and the
+ *  card's leading trim handle (z-10, just inside the seam). Without
+ *  this cap the wrapper at z-30 wins the hit-test along the entire
+ *  strip and timeline resize/trim feels broken everywhere a seam
+ *  intersects an edge handle. */
+const HOVER_ZONE_HEIGHT = BUTTON_SIZE + 8;
 const POPOVER_WIDTH = 232;
 /** Approximate; used to keep the popover on-screen when the seam is
  *  near the viewport's bottom edge. Real height varies with content
@@ -114,7 +123,10 @@ export function InsertSceneAffordance({
         style={{
           left: seamX,
           width: HOVER_ZONE_WIDTH,
-          height,
+          // Cap at HOVER_ZONE_HEIGHT (not full strip height) so the
+          // resize / trim / reorder handles below the top strip stay
+          // hittable. See the constant above for context.
+          height: Math.min(height, HOVER_ZONE_HEIGHT),
           transform: 'translateX(-50%)',
         }}
       >
