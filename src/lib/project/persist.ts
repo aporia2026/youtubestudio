@@ -288,6 +288,26 @@ export async function saveProjectPatch(args: {
     bytes,
   });
 
+  // Diagnostic warning for "I edited and now rows are missing" reports.
+  // A save that strictly SHRINKS doc.rows is suspicious — could be
+  // legitimate (user deleted rows in this tab) but is far more often
+  // a stale-tab overwrite (production-doc tab loaded before another
+  // tab inserted rows, then PATCHed its older snapshot back under
+  // last-write-wins). Log loudly so a single repro shows up in the
+  // ops dashboard. 2026-05-23.
+  if (incomingRows < currentRows) {
+    logger.warn('[project payload save] row count shrank', {
+      project_id: id,
+      collaborator_id: session.uid,
+      workspace_id: session.ws,
+      expected_version: expectedVersion,
+      server_version: currentVersion,
+      current_rows: currentRows,
+      incoming_rows: incomingRows,
+      stale_version_drift: expectedVersion !== currentVersion,
+    });
+  }
+
   // Last-write-wins UPDATE: no version predicate. The row's version
   // still increments so other observers (the prod-doc page's reactive
   // sync, for instance) can detect "something changed" without us

@@ -88,6 +88,18 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
     const versionAtAttempt = current.version;
     setSaveStatus({ kind: 'saving' });
 
+    // Observability for data-loss diagnosis (2026-05-23): when the user
+    // reports "I inserted N scenes and they disappeared", the first
+    // question is "did the save include them?". Logging row count +
+    // version here means console history alone can answer it without
+    // adding server-side tooling.
+    console.info('[editor store] save dispatch', {
+      projectId,
+      versionAtAttempt,
+      rowCount: current.doc.rows.length,
+      isDirty: current.isDirty,
+    });
+
     const result = await saveEditorPayload({
       projectId,
       version: versionAtAttempt,
@@ -102,6 +114,15 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
     switch (result.kind) {
       case 'saved': {
         const savedAt = Date.now();
+        // Diagnostics for the inserts-vanish-on-refresh bug class.
+        // Pairs with the `save dispatch` log above so a console paste
+        // shows the full round-trip: what we sent, what the server
+        // returned, and the row count at each step.
+        console.info('[editor store] save committed', {
+          projectId,
+          newVersion: result.version,
+          rowCountSent: stateRef.current.doc.rows.length,
+        });
         // MARK_SAVED clears isDirty unconditionally. If the user
         // typed during the round-trip, those commands flipped
         // isDirty back; we re-flip it here only if the local
@@ -328,9 +349,21 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
   //   - Fires for tab close AND navigation AND reload — the windows
   //     where the debounced save would otherwise vanish.
   useEffect(() => {
-    const onBeforeUnload = () => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
       const current = stateRef.current;
       if (!current.isDirty) return;
+      // Block the unload with a browser confirm dialog. The keepalive
+      // PATCH below races the new page's GET — fast refreshes can land
+      // the GET before the PATCH commits and the user perceives their
+      // edits as "lost." A confirm prompt cuts off that race entirely
+      // (the user either waits for save or knowingly accepts the
+      // discard). The confirm text is largely ignored by modern
+      // browsers — they show a generic "Changes you made may not be
+      // saved" — but setting returnValue is what triggers it.
+      // 2026-05-23: introduced after inserted-scenes-vanish-on-refresh
+      // bug report. See `_plans/2026-05-23-editor-insert-blank-scene-between.md`.
+      e.preventDefault();
+      e.returnValue = '';
       const body = JSON.stringify({
         version: current.version,
         payload: persistableFromState(current),
@@ -340,6 +373,7 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
         console.warn('[editor store] beforeunload skipped — body too large for keepalive', {
           projectId,
           bytes,
+          rowCount: current.doc.rows.length,
         });
         return;
       }
@@ -354,6 +388,7 @@ export function useEditorStore(initial: EditorState, projectId: string): UseEdit
         console.info('[editor store] beforeunload keepalive PATCH', {
           projectId,
           version: current.version,
+          rowCount: current.doc.rows.length,
           bytes,
         });
       } catch (err) {
