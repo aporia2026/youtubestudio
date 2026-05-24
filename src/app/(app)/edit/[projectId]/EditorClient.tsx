@@ -443,8 +443,23 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // can't help them. Per-retry log lines stay in the console so a
   // future investigation can grep for the pattern.
   const writeRowAsset = useCallback(
-    (rowIndex: number, slot: 'image' | 'overlay' | 'clip', value: unknown) => {
-      void (async () => {
+    (
+      rowIndex: number,
+      slot: 'image' | 'overlay' | 'clip',
+      value: unknown,
+      opts: {
+        /** When true, suppress the user-facing toast on permanent
+         *  failure. Used by the force-sync-all flow which shows one
+         *  consolidated summary toast instead of N per-shot toasts.
+         *  Console logging is unchanged so a developer can still
+         *  diagnose what went wrong. */
+        suppressToast?: boolean;
+      } = {},
+    ): Promise<{ ok: boolean; failureClass?: string; status?: number; message?: string }> => {
+      // Returns a Promise so the force-sync-all loop can await each
+      // write + tally results. Existing fire-and-forget callers ignore
+      // the promise; their behaviour is unchanged.
+      return (async () => {
         const slotLabel =
           slot === 'image' ? 'image' : slot === 'overlay' ? 'overlay' : 'clip';
         const MAX_ATTEMPTS = 3;
@@ -482,7 +497,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                 newVersion: data.version,
                 attempts: attempt,
               });
-              return;
+              return { ok: true };
             }
             // Parse the response body as JSON first — the server returns
             // a classified failure shape `{ error, failureClass, step }`
@@ -586,10 +601,18 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           step: lastFailureDetail.step,
           detail: lastFailureDetail.message,
         });
-        toast.error(
-          `Shot ${rowIndex + 1} ${slotLabel} not saved — ${friendlyReason}`,
-          { duration: 8000 },
-        );
+        if (!opts.suppressToast) {
+          toast.error(
+            `Shot ${rowIndex + 1} ${slotLabel} not saved — ${friendlyReason}`,
+            { duration: 8000 },
+          );
+        }
+        return {
+          ok: false,
+          failureClass: lastFailureDetail.failureClass,
+          status: lastFailureDetail.status,
+          message: friendlyReason,
+        };
       })();
     },
     [apply, projectId],
@@ -1163,6 +1186,80 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   const stopRegenerateShot = useCallback((shotIndex: number) => {
     regenAbortsRef.current.get(shotIndex)?.abort();
     console.info('[editor regen stop]', { shotIndex });
+  }, []);
+
+  // ── Force-sync all images to the server ───────────────────────────────
+  //
+  // Escape-hatch for the "I'm afraid to refresh because the toast says
+  // some images weren't saved" situation. Iterates every shot with a
+  // current imageUrl in browser state, posts each to the row-asset
+  // endpoint (which has its own 3-retry loop), and reports ONE summary
+  // toast at the end. Per-shot toasts are suppressed so the user
+  // doesn't get bombarded with 100 noise events.
+  //
+  // Sequential, not parallel — keeps the load on the row-asset
+  // endpoint predictable + makes the "Saving X/Y" progress label
+  // monotonically increasing. ~50-200ms per shot in the happy path,
+  // so 100 shots ≈ 5-20s.
+  type SyncState =
+    | { kind: 'idle' }
+    | { kind: 'running'; done: number; total: number; failed: number };
+  const [syncState, setSyncState] = useState<SyncState>({ kind: 'idle' });
+  const syncAbortRef = useRef<{ cancelled: boolean } | null>(null);
+  const runForceSyncImages = useCallback(async () => {
+    if (syncState.kind === 'running') return;
+    const liveState = stateRef.current;
+    const items: Array<{ shotIndex: number; url: string }> = [];
+    for (const [k, v] of Object.entries(liveState.rowImages)) {
+      const idx = Number(k);
+      if (!Number.isInteger(idx) || idx < 0) continue;
+      if (typeof v === 'string' && /^https?:/.test(v)) {
+        items.push({ shotIndex: idx, url: v });
+      }
+    }
+    if (items.length === 0) {
+      toast.info('No images to sync — every shot is blank.');
+      return;
+    }
+    console.info('[editor force-sync] start', { total: items.length });
+    const flag = { cancelled: false };
+    syncAbortRef.current = flag;
+    setSyncState({ kind: 'running', done: 0, total: items.length, failed: 0 });
+    let ok = 0;
+    let failed = 0;
+    const failures: Array<{ shotIndex: number; reason: string }> = [];
+    for (let i = 0; i < items.length; i++) {
+      if (flag.cancelled) {
+        console.info('[editor force-sync] cancelled', { done: ok + failed, total: items.length });
+        break;
+      }
+      const { shotIndex, url } = items[i];
+      const result = await writeRowAsset(shotIndex, 'image', url, { suppressToast: true });
+      if (result.ok) {
+        ok += 1;
+      } else {
+        failed += 1;
+        failures.push({
+          shotIndex,
+          reason: result.message ?? result.failureClass ?? `HTTP ${result.status ?? '?'}`,
+        });
+      }
+      setSyncState({ kind: 'running', done: ok + failed, total: items.length, failed });
+    }
+    syncAbortRef.current = null;
+    setSyncState({ kind: 'idle' });
+    console.info('[editor force-sync] done', { ok, failed, total: items.length, failures });
+    if (failed === 0) {
+      toast.success(`Synced ${ok} image${ok === 1 ? '' : 's'} to the server — safe to refresh.`);
+    } else {
+      toast.error(
+        `Synced ${ok}/${items.length} — ${failed} shot${failed === 1 ? '' : 's'} still unsaved. See console for the list.`,
+        { duration: 12_000 },
+      );
+    }
+  }, [syncState.kind, writeRowAsset]);
+  const stopForceSync = useCallback(() => {
+    if (syncAbortRef.current) syncAbortRef.current.cancelled = true;
   }, []);
 
   // User-initiated seek. Must update BOTH the local playhead state AND
@@ -3944,6 +4041,58 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               <Sparkles size={14} strokeWidth={2} style={{ color: 'var(--fg-muted)' }} />
             </button>
           )}
+
+          {/* Force-sync all images to the server. Escape-hatch for the
+              "afraid to refresh because the toast said some images
+              weren't saved" situation. Walks every shot with a current
+              imageUrl and re-posts to row-asset (which has its own
+              3-retry loop). Shows ONE summary toast at the end. */}
+          {syncState.kind === 'running' ? (
+            <div
+              className="flex items-center gap-2 w-full text-xs px-2 py-1.5 rounded border"
+              style={{
+                borderColor: 'var(--card-border)',
+                background: 'var(--bg)',
+                color: 'var(--fg)',
+              }}
+            >
+              <Loader2 size={14} strokeWidth={2} className="animate-spin shrink-0" />
+              <span className="flex-1 tabular-nums">
+                Syncing {syncState.done}/{syncState.total}
+                {syncState.failed > 0 ? ` · ${syncState.failed} failed` : ''}
+              </span>
+              <button
+                type="button"
+                onClick={stopForceSync}
+                className="text-xs px-2 py-0.5 rounded border transition-colors hover:bg-white/5"
+                style={{ borderColor: '#f87171', color: '#f87171' }}
+                title="Cancel the sync. Already-synced shots are kept."
+              >
+                Stop
+              </button>
+            </div>
+          ) : (() => {
+            const count = Object.values(state.rowImages).filter(
+              (v) => typeof v === 'string' && /^https?:/.test(v),
+            ).length;
+            return (
+              <button
+                type="button"
+                onClick={() => { void runForceSyncImages(); }}
+                disabled={count === 0}
+                className="editor-btn w-full justify-between disabled:opacity-40"
+                title={
+                  count === 0
+                    ? 'No images in browser state to sync.'
+                    : `Force-save all ${count} current image${count === 1 ? '' : 's'} to the server. Use after a "Shot N image not saved" toast — verifies every shot is persisted before refresh.`
+                }
+              >
+                <span>Sync {count} image{count === 1 ? '' : 's'} to server</span>
+                <span style={{ color: 'var(--fg-muted)', fontSize: '10px' }}>safe-refresh</span>
+              </button>
+            );
+          })()}
+
           <button
             type="button"
             onClick={() => setShowBrandKit(true)}
