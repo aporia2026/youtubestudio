@@ -4206,6 +4206,49 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               onStopRegenerateShot={() => {
                 stopRegenerateShot(state.selection as number);
               }}
+              // Mirrors the production-doc page's `applyTitleCardAsSectionTitle`
+              // affordance, but works from any shot's manually-edited
+              // Section title field. Count = rows after `selection` up
+              // to (not including) the next Title Card row, or end of
+              // doc. Click stamps the current shot's section_title onto
+              // every row in that range in a single PATCH_DOC.
+              {...(() => {
+                const sel = state.selection as number;
+                let endIndex = state.doc.rows.length - 1;
+                for (let i = sel + 1; i < state.doc.rows.length; i++) {
+                  if (state.doc.rows[i]!.visual_type === 'Title Card') {
+                    endIndex = i - 1;
+                    break;
+                  }
+                }
+                const count = Math.max(0, endIndex - sel);
+                return {
+                  applyTitleForwardCount: count,
+                  onApplyTitleForward: () => {
+                    if (count <= 0) return;
+                    const text = state.doc.rows[sel]?.section_title?.trim() ?? '';
+                    const next = text.length > 0 ? text : undefined;
+                    console.info('[editor section-title forward]', {
+                      from: sel,
+                      to: endIndex,
+                      count,
+                      text: next ?? '(clearing)',
+                    });
+                    const patchedRows = state.doc.rows.map((r, i) =>
+                      i > sel && i <= endIndex ? { ...r, section_title: next } : r,
+                    );
+                    apply({
+                      type: 'PATCH_DOC',
+                      patch: { rows: patchedRows },
+                    });
+                    toast.success(
+                      next
+                        ? `Applied "${next}" as section title to ${count} shot${count === 1 ? '' : 's'}.`
+                        : `Cleared section title from ${count} shot${count === 1 ? '' : 's'}.`,
+                    );
+                  },
+                };
+              })()}
               onClose={() => apply({ type: 'SET_SELECTION', shotIndex: null })}
               onUploadImage={(url) =>
                 commitRowImage(state.selection as number, url)

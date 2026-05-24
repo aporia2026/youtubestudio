@@ -215,6 +215,24 @@ interface ShotInspectorProps {
   /** Abort an in-flight regen for the currently displayed shot. No-op
    *  when nothing is in flight. */
   onStopRegenerateShot: () => void;
+
+  // ─── Section-title forward propagation ────────────────────────────────
+  //
+  // Mirrors the production-doc page's "Apply title card → section title"
+  // affordance, but works from any shot's manually-edited Section title
+  // field. Takes the current shot's `section_title` value and stamps it
+  // onto every following shot up to (but not including) the next Title
+  // Card row, or the end of the doc. Hidden when the count below is 0.
+  /** Number of following shots that would be affected by a propagate.
+   *  Computed by the parent (counts rows after `shotIndex` until the
+   *  next `visual_type === 'Title Card'` or end-of-doc). The button
+   *  hides when this is 0 so the inspector doesn't show a no-op
+   *  action. */
+  applyTitleForwardCount: number;
+  /** Stamp `row.section_title` onto the `applyTitleForwardCount`
+   *  following shots in one batched mutation. When `row.section_title`
+   *  is empty/undefined, clears section_title on those rows instead. */
+  onApplyTitleForward: () => void;
 }
 
 /** Lifted regen state shape — kept here so EditorClient and the
@@ -245,6 +263,8 @@ export function ShotInspector({
   regenState,
   onRegenerateShot,
   onStopRegenerateShot,
+  applyTitleForwardCount,
+  onApplyTitleForward,
   onClose,
   onUploadImage,
   onPickProjectClip,
@@ -1175,6 +1195,30 @@ export function ShotInspector({
             />
           ) : (
             row.section_title && <Field label="Section title" value={row.section_title} />
+          )}
+          {/* Propagate this shot's section title forward, mirroring the
+              production-doc's "Title Card → section title" affordance.
+              Walks until (not including) the next Title Card row, or
+              end of doc. Hidden when no following non-title-card shots
+              exist (count = 0). When section_title is empty, the button
+              clears section_title on the same range — symmetric so the
+              user can both apply AND wipe a section in one click. */}
+          {onUpdateRow && applyTitleForwardCount > 0 && (
+            <button
+              type="button"
+              onClick={onApplyTitleForward}
+              className="text-[11px] underline self-start"
+              style={{ color: 'var(--editor-accent, #a78bfa)' }}
+              title={
+                row.section_title?.trim()
+                  ? `Stamp "${row.section_title.trim()}" onto the next ${applyTitleForwardCount} shot${applyTitleForwardCount === 1 ? '' : 's'} up to the next Title Card row.`
+                  : `Clear section title on the next ${applyTitleForwardCount} shot${applyTitleForwardCount === 1 ? '' : 's'} up to the next Title Card row.`
+              }
+            >
+              {row.section_title?.trim()
+                ? `Apply to next ${applyTitleForwardCount} shot${applyTitleForwardCount === 1 ? '' : 's'} →`
+                : `Clear from next ${applyTitleForwardCount} shot${applyTitleForwardCount === 1 ? '' : 's'} →`}
+            </button>
           )}
 
           {/* Section-thumbnail region zoom (Batch B). Only renders when
