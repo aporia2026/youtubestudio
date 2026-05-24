@@ -77,43 +77,6 @@ interface PixelTransform {
   ty: number;       // canvas-pixel y translation
 }
 
-/** Region box after padding, clamped to image bounds (image-pixel coords). */
-interface PaddedBox {
-  left: number;
-  top: number;
-  right: number;
-  bottom: number;
-  width: number;
-  height: number;
-}
-
-/** Axis-aligned rectangle in canvas-pixel coords. */
-export interface CanvasRect {
-  left: number;
-  top: number;
-  right: number;
-  bottom: number;
-}
-
-/**
- * Bundle of everything the scene needs to render a region — the
- * framing the camera will use, the padded image-coord box that
- * framing was derived from, and a `clipMode` flag that tells the
- * renderer whether to spotlight-clip the canvas to the region's
- * projected bounds. Returned by `planRegionFraming`.
- */
-export interface RegionPlan {
-  framing: Framing;
-  paddedBox: PaddedBox;
-  /** True when the camera can't physically zoom further than the
-   *  whole-image CONTAIN framing (e.g. a full-height column in a
-   *  same-aspect canvas). In that case the scene clips the canvas
-   *  to the region's projected bounds — brand backgroundColor shows
-   *  as letterbox on the sides — so the region still appears visually
-   *  zoomed even though the camera scale didn't change. */
-  clipMode: boolean;
-}
-
 const DEFAULTS = {
   holdAtFullMs: 500,
   zoomDurationMs: 1000,
@@ -125,7 +88,7 @@ const DEFAULTS = {
 // Infinity scale and break the render; clamp to a sane minimum.
 const MIN_DIM = 1; // pixels
 
-export function containFraming(tW: number, tH: number, cW: number, cH: number): Framing {
+function containFraming(tW: number, tH: number, cW: number, cH: number): Framing {
   const w = Math.max(tW, MIN_DIM);
   const h = Math.max(tH, MIN_DIM);
   return {
@@ -142,58 +105,22 @@ export function containFraming(tW: number, tH: number, cW: number, cH: number): 
  * Switched from COVER to CONTAIN scaling earlier (no more "middle-band
  * crop" on tall+narrow regions inside wide canvases). The 2026-05-20
  * iteration adds `paddingPct` — a creator-controllable amount of
- * breathing room around the region. The 2026-05-25 hardening then
- * fixes a class of bugs that surface on n-level grid thumbnails (e.g.
- * a 7-column countdown where each region is the full image height):
- *
- *  1) Pre-fix, padding inflated the region rectangle naïvely. A full-
- *     height region inflated vertically beyond `imgH`, which dropped
- *     the contain scale BELOW the whole-image contain scale. The
- *     rendered image then became smaller than the canvas and the
- *     brand `backgroundColor` leaked through as letterbox — visible
- *     to the creator as "the zoom shrank my thumbnail and made white
- *     space around it". Fix: inflate the box, then CLAMP it to image
- *     bounds before computing scale, so padding never asks the camera
- *     to frame pixels that don't exist.
- *
- *  2) Belt-and-suspenders: even with the clamp, float rounding and
- *     thumbnails whose intrinsic dimensions are smaller than the
- *     canvas could still produce a scale below the whole-image contain
- *     scale. Cap explicitly at `containScaleWholeImage` so the
- *     rendered image is GUARANTEED to fill the canvas, no matter what
- *     region or padding the creator supplies.
- *
- *  3) Focus follows the padded box centre (not the raw region centre).
- *     Padding pulls the camera back AROUND what the creator marked —
- *     the camera target moves outward symmetrically, balancing the
- *     extra breathing room. Still clamped to image bounds so the
- *     canvas keeps filling with image pixels.
+ * breathing room around the region. The math inflates the region by
+ * `paddingPx = max(rw, rh) * paddingPct/100` on each side before
+ * computing scale, then picks the SMALLEST scale that keeps the
+ * inflated rectangle inside the canvas. Focus stays at the region
+ * center (we never shift away from what the user marked), clamped to
+ * image bounds so the canvas keeps filling with image pixels.
  *
  *   paddingPct = 0  ⇒  byte-identical to the pre-padding contain math.
  *   paddingPct = 50 ⇒  region inflated by 50% of its longest edge on
- *                      each side, then clamped to image bounds —
- *                      camera pulls back as far as the image allows.
+ *                      each side — camera pulls back substantially.
+ *
+ * Tiny images smaller than the canvas at contain-scale still show
+ * background letterbox; we don't up-rez since that would reintroduce
+ * the over-zoom this fixed.
  */
-function paddedRegionBoxInImage(
-  r: ThumbnailRegion, imgW: number, imgH: number, paddingPct: number,
-): PaddedBox {
-  const safeImgW = Math.max(imgW, MIN_DIM);
-  const safeImgH = Math.max(imgH, MIN_DIM);
-  const rw = Math.max(r.w, MIN_DIM);
-  const rh = Math.max(r.h, MIN_DIM);
-  const padPx = Math.max(0, paddingPct) * Math.max(rw, rh) / 100;
-  const left = Math.max(0, r.x - padPx);
-  const top = Math.max(0, r.y - padPx);
-  const right = Math.min(safeImgW, r.x + rw + padPx);
-  const bottom = Math.min(safeImgH, r.y + rh + padPx);
-  return {
-    left, top, right, bottom,
-    width: Math.max(MIN_DIM, right - left),
-    height: Math.max(MIN_DIM, bottom - top),
-  };
-}
-
-export function regionFraming(
+function regionFraming(
   r: ThumbnailRegion,
   cW: number,
   cH: number,
@@ -201,118 +128,32 @@ export function regionFraming(
   imgH: number,
   paddingPct: number,
 ): Framing {
-  return planRegionFraming(r, cW, cH, imgW, imgH, paddingPct).framing;
-}
-
-/**
- * Compute the region's CONTAIN framing AND decide whether the scene
- * should spotlight-clip the canvas to that region's bounds.
- *
- * Two modes:
- *
- *  - **Camera mode** (`clipMode === false`): the region's CONTAIN scale
- *    exceeds the whole-image CONTAIN scale, so the camera can
- *    physically zoom into the region. Focus is clamped to image bounds
- *    so the canvas keeps filling with image pixels — neighbouring
- *    content shows in the wide-axis slack (the explicit design
- *    decision from commit 5a332f7).
- *
- *  - **Clip mode** (`clipMode === true`): the region's CONTAIN scale
- *    equals (or is less than) the whole-image CONTAIN scale, so any
- *    camera "zoom" would be a no-op. This happens for full-height or
- *    full-width regions whose aspect matches the image (e.g. one
- *    column of an n-level countdown thumbnail in a 16:9 canvas).
- *    Focus runs UNCLAMPED so the image shifts and the region's
- *    centre lands at canvas centre; the image may extend off-canvas
- *    on the side and the renderer clips the canvas to the region's
- *    projected bounds. Brand `backgroundColor` becomes letterbox.
- *
- * Returns the framing + the padded box (so the scene can project it
- * back onto the canvas to compute the clip rect) + the mode flag.
- */
-export function planRegionFraming(
-  r: ThumbnailRegion,
-  cW: number,
-  cH: number,
-  imgW: number,
-  imgH: number,
-  paddingPct: number,
-): RegionPlan {
-  const box = paddedRegionBoxInImage(r, imgW, imgH, paddingPct);
-  const safeImgW = Math.max(imgW, MIN_DIM);
-  const safeImgH = Math.max(imgH, MIN_DIM);
-
-  const containScaleWholeImage = Math.min(cW / safeImgW, cH / safeImgH);
-  const regionScale = Math.min(cW / box.width, cH / box.height);
-
-  // Strict `>` so float ties (e.g. region exactly matching the image's
-  // aspect ratio) take the clip path — that's where the visual zoom
-  // would otherwise be invisible.
-  const clipMode = !(regionScale > containScaleWholeImage);
-
-  // Belt-and-suspenders min scale even on the camera-mode branch,
-  // so a tiny rounding wobble never produces background letterbox
-  // outside of clip mode.
-  const scale = Math.max(containScaleWholeImage, regionScale);
-
-  const wantFocusX = (box.left + box.right) / 2;
-  const wantFocusY = (box.top + box.bottom) / 2;
-
-  let focusX: number;
-  let focusY: number;
-  if (clipMode) {
-    focusX = wantFocusX;
-    focusY = wantFocusY;
-  } else {
-    const halfW = cW / (2 * scale);
-    const halfH = cH / (2 * scale);
-    const minFocusX = halfW;
-    const maxFocusX = Math.max(minFocusX, safeImgW - halfW);
-    const minFocusY = halfH;
-    const maxFocusY = Math.max(minFocusY, safeImgH - halfH);
-    focusX = Math.max(minFocusX, Math.min(maxFocusX, wantFocusX));
-    focusY = Math.max(minFocusY, Math.min(maxFocusY, wantFocusY));
-  }
-
+  const rw = Math.max(r.w, MIN_DIM);
+  const rh = Math.max(r.h, MIN_DIM);
+  // Inflate the region by `paddingPct` of its longest edge so the
+  // computed scale leaves breathing room around what the creator
+  // marked. Using the longest edge (rather than per-axis) keeps the
+  // padding visually balanced — a tall narrow region gets the same
+  // absolute padding on its short axis as its long axis.
+  const padPx = Math.max(0, paddingPct) * Math.max(rw, rh) / 100;
+  const rwPadded = rw + 2 * padPx;
+  const rhPadded = rh + 2 * padPx;
+  const scale = Math.min(cW / rwPadded, cH / rhPadded);
+  // Half-canvas in image-pixel units after scaling. Focus clamped to this
+  // inset on each side keeps the visible canvas filled with image pixels.
+  const halfW = cW / (2 * scale);
+  const halfH = cH / (2 * scale);
+  const minFocusX = halfW;
+  const maxFocusX = Math.max(minFocusX, imgW - halfW);
+  const minFocusY = halfH;
+  const maxFocusY = Math.max(minFocusY, imgH - halfH);
+  const wantFocusX = r.x + rw / 2;
+  const wantFocusY = r.y + rh / 2;
   return {
-    framing: { scale, focusX, focusY },
-    paddedBox: box,
-    clipMode,
+    scale,
+    focusX: Math.max(minFocusX, Math.min(maxFocusX, wantFocusX)),
+    focusY: Math.max(minFocusY, Math.min(maxFocusY, wantFocusY)),
   };
-}
-
-/**
- * Project a padded image-coord box into canvas-coord pixels under a
- * given framing. Used to compute the spotlight clip rect from the
- * region's bounds at the current frame's framing.
- */
-export function projectBoxOnCanvas(
-  box: PaddedBox, framing: Framing, cW: number, cH: number,
-): CanvasRect {
-  const xform = framingToPixelTransform(framing, cW, cH);
-  return {
-    left: box.left * xform.scale + xform.tx,
-    top: box.top * xform.scale + xform.ty,
-    right: box.right * xform.scale + xform.tx,
-    bottom: box.bottom * xform.scale + xform.ty,
-  };
-}
-
-function fullCanvasRect(cW: number, cH: number): CanvasRect {
-  return { left: 0, top: 0, right: cW, bottom: cH };
-}
-
-function lerpCanvasRect(a: CanvasRect, b: CanvasRect, p: number): CanvasRect {
-  return {
-    left: a.left + (b.left - a.left) * p,
-    top: a.top + (b.top - a.top) * p,
-    right: a.right + (b.right - a.right) * p,
-    bottom: a.bottom + (b.bottom - a.bottom) * p,
-  };
-}
-
-function canvasRectToInset(c: CanvasRect, cW: number, cH: number): string {
-  return `inset(${c.top}px ${cW - c.right}px ${cH - c.bottom}px ${c.left}px)`;
 }
 
 function lerpFraming(a: Framing, b: Framing, p: number): Framing {
@@ -364,27 +205,10 @@ export const ThumbnailZoomScene: React.FC<ThumbnailZoomSceneProps> = ({
   const clampedPadding = Math.max(0, Math.min(50, paddingPct));
 
   const contain = containFraming(thumbnail.width, thumbnail.height, cW, cH);
-  const targetPlan = planRegionFraming(
-    region, cW, cH, thumbnail.width, thumbnail.height, clampedPadding,
-  );
-  const fromPlan = previousRegion
-    ? planRegionFraming(previousRegion, cW, cH, thumbnail.width, thumbnail.height, clampedPadding)
+  const target = regionFraming(region, cW, cH, thumbnail.width, thumbnail.height, clampedPadding);
+  const from = previousRegion
+    ? regionFraming(previousRegion, cW, cH, thumbnail.width, thumbnail.height, clampedPadding)
     : null;
-
-  const target = targetPlan.framing;
-  const from = fromPlan?.framing ?? null;
-
-  // Spotlight clip rect at each endpoint. Full canvas means "no
-  // visible clipping". Region's projected bbox at its own framing
-  // produces the letterbox-around-region effect that makes the zoom
-  // feel like a zoom for aspect-matched regions (clip mode).
-  const fullClip = fullCanvasRect(cW, cH);
-  const targetClip = targetPlan.clipMode
-    ? projectBoxOnCanvas(targetPlan.paddedBox, target, cW, cH)
-    : fullClip;
-  const fromClip = (fromPlan?.clipMode && from)
-    ? projectBoxOnCanvas(fromPlan.paddedBox, from, cW, cH)
-    : fullClip;
 
   // One-shot diagnostic dump per scene mount. We only emit on frame 0 so
   // a 7s scene doesn't spew 210 log lines. The values here are exactly
@@ -404,43 +228,28 @@ export const ThumbnailZoomScene: React.FC<ThumbnailZoomSceneProps> = ({
       containFraming: contain,
       targetFraming: target,
       targetTransform: framingToPixelTransform(target, cW, cH),
-      // Plan 2026-05-25 — clip-mode spotlight. When `clipMode` is true
-      // the camera physically can't zoom further than contain (region
-      // aspect matches image aspect) and the renderer clips the canvas
-      // to `targetClip` so the region still appears visually zoomed.
-      // When false, no clipping is applied and the existing camera-
-      // mode framing handles the zoom on its own.
-      clipMode: targetPlan.clipMode,
-      targetClip: targetPlan.clipMode ? targetClip : null,
     });
   }
 
-  // Pick the framing AND clip for this frame. Both interpolate by the
-  // same progress `p` so the camera position and spotlight stay in
-  // sync. Branches by transition kind.
+  // Pick the framing for this frame. Branches by transition kind.
   let framing: Framing;
-  let clip: CanvasRect;
   if (transition.kind === 'none') {
     // No animation at all: render the target region from frame 0. Used
     // when the creator wants an immediate cut into the section instead
     // of the hard-cut's hold-then-zoom or the smooth path's tour.
     framing = target;
-    clip = targetClip;
-  } else if (transition.kind === 'smooth' && from && fromPlan) {
+  } else if (transition.kind === 'smooth' && from) {
     // Phase 1: previous-region → contain   over [0, zoomFrames)
     // Phase 2: contain → target            over [zoomFrames, 2 * zoomFrames)
     // After:   target                      held
     if (frame < zoomFrames) {
       const p = spring({ frame, fps, config: springConfig, from: 0, to: 1, durationInFrames: zoomFrames });
       framing = lerpFraming(from, contain, p);
-      clip = lerpCanvasRect(fromClip, fullClip, p);
     } else if (frame < zoomFrames * 2) {
       const p = spring({ frame: frame - zoomFrames, fps, config: springConfig, from: 0, to: 1, durationInFrames: zoomFrames });
       framing = lerpFraming(contain, target, p);
-      clip = lerpCanvasRect(fullClip, targetClip, p);
     } else {
       framing = target;
-      clip = targetClip;
     }
   } else {
     // Hard-cut (or smooth with no prior region — degrades cleanly).
@@ -449,19 +258,15 @@ export const ThumbnailZoomScene: React.FC<ThumbnailZoomSceneProps> = ({
     // After:   target held
     if (frame < holdFrames) {
       framing = contain;
-      clip = fullClip;
     } else if (frame < holdFrames + zoomFrames) {
       const p = spring({ frame: frame - holdFrames, fps, config: springConfig, from: 0, to: 1, durationInFrames: zoomFrames });
       framing = lerpFraming(contain, target, p);
-      clip = lerpCanvasRect(fullClip, targetClip, p);
     } else {
       framing = target;
-      clip = targetClip;
     }
   }
 
   const xform = framingToPixelTransform(framing, cW, cH);
-  const clipInset = canvasRectToInset(clip, cW, cH);
 
   // Brief opening fade so the first frame doesn't pop on a black background
   // when the scene mounts. 4 frames is short enough to feel like a cut.
@@ -484,34 +289,22 @@ export const ThumbnailZoomScene: React.FC<ThumbnailZoomSceneProps> = ({
           position: 'absolute',
           left: 0,
           top: 0,
-          width: cW,
-          height: cH,
-          clipPath: clipInset,
-          WebkitClipPath: clipInset,
+          width: thumbnail.width,
+          height: thumbnail.height,
+          transform: `translate(${xform.tx}px, ${xform.ty}px) scale(${xform.scale})`,
+          transformOrigin: '0 0',
+          opacity: intro,
+          willChange: 'transform',
         }}
       >
-        <div
+        <Img
+          src={thumbnail.imageUrl}
           style={{
-            position: 'absolute',
-            left: 0,
-            top: 0,
             width: thumbnail.width,
             height: thumbnail.height,
-            transform: `translate(${xform.tx}px, ${xform.ty}px) scale(${xform.scale})`,
-            transformOrigin: '0 0',
-            opacity: intro,
-            willChange: 'transform',
+            display: 'block',
           }}
-        >
-          <Img
-            src={thumbnail.imageUrl}
-            style={{
-              width: thumbnail.width,
-              height: thumbnail.height,
-              display: 'block',
-            }}
-          />
-        </div>
+        />
       </div>
     </AbsoluteFill>
   );
