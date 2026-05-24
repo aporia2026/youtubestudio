@@ -220,21 +220,48 @@ function SeoPage() {
     if (!niche) { toast.error('Please select a niche'); return; }
     setGenerating(true);
     setResult(null);
-    // Pull the selected SEO template's content (if any) and merge with
-    // the freeform context the user typed for this run. Same handoff
-    // pattern as Script Generator / QA so the prompt's USER DIRECTION
-    // block carries both reusable rules and one-off direction together.
+    // Resolve the selected template (if any) and route its content
+    // based on `field_type`:
+    //   - 'seo' (or any non-description type) → merged into
+    //     `additionalContext` alongside the per-call freeform context,
+    //     so the model treats it as a global direction that shapes
+    //     titles + description + tags + chapters together.
+    //   - 'youtube_description' → travels separately as
+    //     `descriptionStyle` so it ONLY shapes the description body
+    //     and doesn't bleed into title/tag generation. This is the
+    //     fix for the cross-field caveat created when the SEO picker
+    //     started accepting borrowed description templates.
+    // The per-call freeform context is always treated as global SEO
+    // direction — the user typed it on the SEO page, not bound to a
+    // specific output field.
     let mergedContext = seoContext;
+    let descriptionStyle: string | undefined;
     if (seoTemplateId) {
       try {
         const tplRes = await fetch(`/api/templates/${seoTemplateId}`);
         if (tplRes.ok) {
           const { template } = await tplRes.json();
-          mergedContext = buildCombinedContext(template?.content, seoContext);
+          const tplContent: string | undefined = template?.content;
+          const tplFieldType: string | undefined = template?.field_type;
+          if (tplFieldType === 'youtube_description') {
+            descriptionStyle = tplContent?.trim() || undefined;
+            // Freeform context stays in mergedContext as global SEO
+            // direction; description-only template content is kept
+            // out of it so it doesn't influence titles / tags.
+          } else if (tplContent) {
+            mergedContext = buildCombinedContext(tplContent, seoContext);
+          }
+          console.info('[seo template] route', {
+            templateId: seoTemplateId,
+            fieldType: tplFieldType,
+            routedTo: tplFieldType === 'youtube_description' ? 'descriptionStyle' : 'additionalContext',
+            hasFreeformContext: seoContext.trim().length > 0,
+          });
         }
-      } catch {
+      } catch (err) {
         // Network blip — fall through with the per-call context only
         // so the user still gets a generation instead of a blocking error.
+        console.warn('[seo template] fetch failed, falling back to freeform only', err);
       }
     }
     // Prepend the analyzer reference block when this generation was
@@ -257,6 +284,7 @@ function SeoPage() {
           targetKeywords: targetKeywords.trim() || undefined,
           existingTitle: existingTitle.trim() || undefined,
           additionalContext: mergedContext.trim() || undefined,
+          descriptionStyle,
         }),
       });
       if (!res.ok) {
@@ -571,6 +599,7 @@ function SeoPage() {
             <TemplateContextPicker
               fieldType="seo"
               extraFieldTypes={['youtube_description']}
+              borrowedScopeNote="Scoped to the description body only — titles, tags, and chapter labels keep following the built-in SEO rules."
               label="SEO style template"
               templateId={seoTemplateId}
               onTemplateChange={setSeoTemplateId}

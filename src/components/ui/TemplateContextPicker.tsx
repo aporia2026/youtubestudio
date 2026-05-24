@@ -39,6 +39,15 @@ interface Props {
    * are read-only borrowed content.
    */
   extraFieldTypes?: FieldType[];
+  /**
+   * Short note shown under the dropdown when the selected template
+   * comes from one of `extraFieldTypes` (not the primary `fieldType`).
+   * Use this to tell the user where the borrowed template will apply —
+   * e.g. "Scoped to the description only — titles & tags follow the
+   * built-in SEO rules." Skipped when the selected template matches
+   * the primary type or when no note is provided.
+   */
+  borrowedScopeNote?: string;
   /** The currently-selected template id (or null for "no template"). */
   templateId: string | null;
   onTemplateChange: (id: string | null) => void;
@@ -66,6 +75,7 @@ interface Props {
 export function TemplateContextPicker({
   fieldType,
   extraFieldTypes,
+  borrowedScopeNote,
   templateId,
   onTemplateChange,
   context,
@@ -235,6 +245,23 @@ export function TemplateContextPicker({
             );
           })}
         </select>
+        {selected && borrowedScopeNote && selected.field_type !== fieldType && (
+          // Borrowed-category template — communicate the routing scope
+          // so the user knows the rules won't apply uniformly. Styled
+          // distinctly from the content preview below so it reads as
+          // meta-info, not as template content.
+          <p
+            className="text-[11px] mt-1.5 px-2 py-1.5 rounded flex items-start gap-1.5"
+            style={{
+              background: 'rgba(59,130,246,0.08)',
+              color: '#93c5fd',
+              borderLeft: '2px solid #3b82f6',
+            }}
+          >
+            <span aria-hidden style={{ flexShrink: 0 }}>ℹ</span>
+            <span>{borrowedScopeNote}</span>
+          </p>
+        )}
         {selected && (
           <p className="text-[11px] mt-1.5 px-2 py-1.5 rounded whitespace-pre-wrap" style={{ background: 'rgba(124,58,237,0.06)', color: 'var(--text-muted)', borderLeft: '2px solid rgba(124,58,237,0.4)' }}>
             {selected.content.length > 240 ? selected.content.slice(0, 240) + '…' : selected.content}

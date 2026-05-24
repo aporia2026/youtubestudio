@@ -990,6 +990,7 @@ export function seoOptimizationPrompt({
   targetKeywords,
   existingTitle,
   additionalContext,
+  descriptionStyle,
 }: {
   topic: string;
   niche: string;
@@ -1002,12 +1003,22 @@ export function seoOptimizationPrompt({
    *  description body, hashtags, tags, chapters) — not just the
    *  field it appears closest to. Skipped when empty. */
   additionalContext?: string;
+  /** Description-only style instructions. When the SEO Optimizer's
+   *  template picker selects a `youtube_description` template, its
+   *  content travels here rather than in `additionalContext` so the
+   *  model applies it strictly to the description body and does not
+   *  leak description-shaped rules into titles, tags, or chapters
+   *  (which usually want different voice and structure). Skipped when
+   *  empty. */
+  descriptionStyle?: string;
 }): { system: string; user: string } {
   return {
     system: `You are the world's top YouTube SEO strategist. You've optimized metadata for channels with 50M+ subscribers. You understand YouTube's algorithm, search ranking factors, and click psychology at an expert level.
 
 ## RULE PRECEDENCE (READ FIRST):
 If the user message opens with a "USER DIRECTION" block, treat every rule there as a HARD RULE the SEO package must satisfy — applies equally to titles, description, hashtags, tags, and chapter labels. The user's rules override any conflicting default in this prompt (length targets, structure suggestions, hashtag count, brand voice, etc.). Do not soften, summarise, or reinterpret them — match their wording where relevant and verify in the JSON that you actually honoured each rule.
+
+If the user message also contains a "DESCRIPTION-ONLY STYLE" block, treat those rules as HARD RULES too — but scoped exclusively to the "description" field. Do NOT let description-only rules influence title generation, tag selection, hashtag picks, or chapter labels. Titles and tags must still be optimised for search/CTR even when the description style asks for a particular voice, structure, or vocabulary. If a description-only rule would conflict with title/tag SEO best practice, ignore it for those fields and honour it only in the description body.
 
 ## GROUND CLAIMS IN CURRENT, VERIFIABLE REALITY:
 - The description, chapter labels, and any "year"/"month"/"recently"-style markers must use current, accurate references — fabricated dates or fake citations tank YouTube's quality signals and the viewer's trust.
@@ -1053,6 +1064,11 @@ ${additionalContext && additionalContext.trim() ? `
 ${additionalContext.trim()}
 
 These rules are binding. Re-read them before you produce the description in particular — that's where they matter most. If anything else in this brief conflicts with a rule here, the user direction wins.
+` : ''}${descriptionStyle && descriptionStyle.trim() ? `
+## DESCRIPTION-ONLY STYLE — apply ONLY to the "description" field (full_description, above_fold, hashtags). Do NOT use these rules to shape titles, tags, or chapter labels:
+${descriptionStyle.trim()}
+
+These instructions describe how the description body should read — voice, structure, sign-off, hashtag conventions, links, CTAs. Titles and tags must keep following the SEO best practices above (keyword placement, character budget, CTR triggers) even if the description style would suggest otherwise.
 ` : ''}
 **Topic:** ${topic}
 **Niche:** ${niche}
