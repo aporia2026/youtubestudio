@@ -27,6 +27,7 @@
  */
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Loader2, Sparkles } from 'lucide-react';
 import { Player, type PlayerRef } from '@remotion/player';
 import { YouTubeVideo } from '@/remotion/compositions/YouTubeVideo';
 import {
@@ -263,6 +264,23 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     };
   }, []);
 
+  // ─── Fill blank shots: throttled bulk image generation ───────────
+  //
+  // The user clicks "Fill N blank shots" in the doc-defaults panel; we
+  // run a 3-worker pool over every shot that has no image, calling the
+  // same /api/generate/production-doc/image endpoint the single-shot
+  // Regenerate uses. 3 was picked over prod-doc's chunked-2 because a
+  // pool doesn't stall on the slowest call in a chunk, and 3 still
+  // sits well under Kie's 30/min per-IP and per-user ceilings. See
+  // _plans/2026-05-24-editor-fill-blank-shots.md.
+  const [fillState, setFillState] = useState<'idle' | 'running'>('idle');
+  const [fillProgress, setFillProgress] = useState<{
+    done: number;
+    total: number;
+    failed: number;
+  }>({ done: 0, total: 0, failed: 0 });
+  const fillAbortRef = useRef<AbortController | null>(null);
+
   // Timeline zoom. Lives in the client because zoom is a viewing
   // preference, not part of the doc. The user's preferred default
   // comes from localStorage via `getDefaultZoomLevel()` (Phase 4b
@@ -393,6 +411,14 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   const { state, apply, flushSave, reloadFromServer, saveStatus, canUndo, canRedo } = store;
   applyRef.current = apply;
 
+  // Fresh-state ref. Long-running async batches (fill-blank-shots
+  // worker pool) close over state at kickoff time, so without this
+  // ref they'd send the stale snapshot for every shot. The useEffect
+  // below keeps stateRef.current pointed at the latest store state.
+  // Mirrors applyRef's stale-closure dodge above.
+  const stateRef = useRef(state);
+  useEffect(() => { stateRef.current = state; }, [state]);
+
   // Gate the "Local (free)" entries in the doc-level animation-model
   // picker. Same hook the prod-doc page uses so the same models surface
   // on both pages.
@@ -497,6 +523,187 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     },
     [apply, writeRowAsset, state.doc.rows],
   );
+
+  // Indices of every shot that currently lacks an image. Source of
+  // truth in the editor is `state.rowImages` — `state.doc.rows[i]`
+  // does NOT carry the URL (`imageUrl` lives on the derived VideoShot,
+  // not the raw row). Memoised so the Fill button's label re-renders
+  // when shots gain/lose images without re-walking the array on every
+  // render.
+  const blankShotIndices = useMemo(
+    () => state.doc.rows
+      .map((_, i) => (state.rowImages[i] ? -1 : i))
+      .filter((i): i is number => i >= 0),
+    [state.doc.rows, state.rowImages],
+  );
+
+  // Bulk-fill every blank shot with a freshly-generated image. 3-worker
+  // pool over /api/generate/production-doc/image — same endpoint the
+  // inspector's Regenerate uses, so rate-limit + cost + R2 mirroring
+  // are identical. Per-shot model resolution mirrors the inspector:
+  // row.image_model > doc.image_model_default > server default. Each
+  // worker pulls the next blank index from a shared queue when its
+  // current call finishes, so we never stall on the slowest call. The
+  // fillAbortRef's controller is shared by every in-flight fetch so a
+  // Stop click aborts the whole batch at once.
+  const runFillBlanks = useCallback(async () => {
+    if (fillState === 'running') return;
+    const initialBlanks = stateRef.current.doc.rows
+      .map((_, i) => (stateRef.current.rowImages[i] ? -1 : i))
+      .filter((i): i is number => i >= 0);
+    if (initialBlanks.length === 0) {
+      toast.info('All shots already have an image.');
+      return;
+    }
+    // Snapshot row count at kickoff so we can detect a structural
+    // shift mid-run (insert/delete) and bail instead of writing to
+    // the wrong index. The doc-reindex side-effect handles
+    // project_assets, but our queue holds raw numeric indices.
+    const lockedRowCount = stateRef.current.doc.rows.length;
+    const docModelDefault = stateRef.current.doc.image_model_default;
+    const modelLabel =
+      getImageModelSpec(docModelDefault ?? DEFAULT_IMAGE_MODEL)?.label ??
+      'the default image model';
+    const CONCURRENCY = Math.min(3, initialBlanks.length);
+    // Rough ETA — assumes ~15s/image (Kie cloud median). Floors at 1
+    // so the prompt never reads "~0m" for a small batch.
+    const etaMin = Math.max(1, Math.ceil((initialBlanks.length * 15) / CONCURRENCY / 60));
+    const ok = window.confirm(
+      `Generate ${initialBlanks.length} image${initialBlanks.length === 1 ? '' : 's'} ` +
+      `using ${modelLabel}?\n\n` +
+      `Estimated time: ~${etaMin} min (${CONCURRENCY} at a time so we don't hammer the API).\n` +
+      `You can Stop mid-run; already-generated shots are kept.`,
+    );
+    if (!ok) return;
+
+    console.info('[editor fill-blanks start]', {
+      total: initialBlanks.length,
+      modelDefault: docModelDefault ?? '(server default)',
+      concurrency: CONCURRENCY,
+    });
+    const controller = new AbortController();
+    fillAbortRef.current = controller;
+    setFillState('running');
+    setFillProgress({ done: 0, total: initialBlanks.length, failed: 0 });
+
+    const queue = [...initialBlanks];
+    let nextIdx = 0;
+    let succeeded = 0;
+    let failed = 0;
+    const startedAt = Date.now();
+    const pull = (): number | null => (nextIdx < queue.length ? queue[nextIdx++] : null);
+
+    const generateOne = async (shotIndex: number): Promise<void> => {
+      const t0 = Date.now();
+      // Re-read from the live state ref each iteration. Catches mid-
+      // run prompt edits + skips shots that already got filled by
+      // another path (e.g. user clicked Regenerate manually on this
+      // shot while the worker was still queued).
+      const liveState = stateRef.current;
+      if (liveState.doc.rows.length !== lockedRowCount) {
+        // Row count changed mid-batch — we can no longer trust the
+        // index. Abort the whole batch instead of writing into the
+        // wrong row.
+        console.warn('[editor fill-blanks shot skip] row count changed', {
+          shotIndex,
+          lockedRowCount,
+          currentRowCount: liveState.doc.rows.length,
+        });
+        controller.abort();
+        return;
+      }
+      if (liveState.rowImages[shotIndex]) {
+        // Already filled (manual regen, undo, etc.) — count as done
+        // without spending a call.
+        console.info('[editor fill-blanks shot skip] already has image', { shotIndex });
+        succeeded += 1;
+        setFillProgress((p) => ({ ...p, done: p.done + 1 }));
+        return;
+      }
+      const row = liveState.doc.rows[shotIndex];
+      if (!row) return;
+      const prompt = row.ai_image_prompt?.trim() || row.visual_description?.trim();
+      if (!prompt) {
+        console.warn('[editor fill-blanks shot skip] no prompt', { shotIndex });
+        failed += 1;
+        setFillProgress((p) => ({ ...p, failed: p.failed + 1 }));
+        return;
+      }
+      const model = row.image_model || liveState.doc.image_model_default || undefined;
+      try {
+        const res = await fetch('/api/generate/production-doc/image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt,
+            model,
+            onScreenText: row.on_screen_text ?? '',
+            sectionTitle: row.section_title ?? '',
+            styleId: liveState.doc.style_preset || undefined,
+          }),
+          signal: controller.signal,
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          imageUrl?: string;
+          error?: string;
+        };
+        if (!res.ok || typeof data.imageUrl !== 'string') {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        // Direct dispatch + persist (no commitRowImage detour) because
+        // blank shots by definition have no prior image, so the RMBG-
+        // clearing branch inside commitRowImage is a no-op. Avoiding
+        // it also avoids the stale-closure risk on commitRowImage's
+        // captured state.doc.rows.
+        apply({ type: 'SET_ROW_IMAGE', shotIndex, url: data.imageUrl });
+        writeRowAsset(shotIndex, 'image', data.imageUrl);
+        succeeded += 1;
+        setFillProgress((p) => ({ ...p, done: p.done + 1 }));
+        console.info('[editor fill-blanks shot ok]', {
+          shotIndex,
+          durationMs: Date.now() - t0,
+          model: model ?? '(server default)',
+        });
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        const message = err instanceof Error ? err.message : String(err);
+        failed += 1;
+        setFillProgress((p) => ({ ...p, failed: p.failed + 1 }));
+        console.warn('[editor fill-blanks shot fail]', {
+          shotIndex,
+          error: message,
+        });
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: CONCURRENCY }, async () => {
+        for (let i = pull(); i !== null; i = pull()) {
+          if (controller.signal.aborted) return;
+          await generateOne(i);
+        }
+      }),
+    );
+
+    const cancelled = controller.signal.aborted;
+    fillAbortRef.current = null;
+    setFillState('idle');
+    console.info('[editor fill-blanks done]', {
+      succeeded,
+      failed,
+      cancelled,
+      elapsedMs: Date.now() - startedAt,
+    });
+    if (cancelled) {
+      toast.info(`Fill stopped — ${succeeded} of ${initialBlanks.length} shots filled.`);
+    } else if (failed > 0) {
+      toast.warning(
+        `Filled ${succeeded} shot${succeeded === 1 ? '' : 's'}; ${failed} failed (see console).`,
+      );
+    } else {
+      toast.success(`Filled ${succeeded} shot${succeeded === 1 ? '' : 's'}.`);
+    }
+  }, [apply, fillState, writeRowAsset]);
 
   // User-initiated seek. Must update BOTH the local playhead state AND
   // the Remotion Player's internal frame. Before this helper, the three
@@ -3149,6 +3356,62 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               ))}
             </select>
           </div>
+          {/* Fill blank shots — kicks off a throttled (3-at-a-time)
+              batch image generation for every shot that currently has
+              no image. Uses the doc-level Image model picked above
+              (per-shot overrides win on shots that have one). While
+              running, the button collapses into a progress label +
+              Stop pill. */}
+          {fillState === 'running' ? (
+            <div
+              className="flex items-center gap-2 w-full text-xs px-2 py-1.5 rounded border"
+              style={{
+                borderColor: 'var(--card-border)',
+                background: 'var(--bg)',
+                color: 'var(--fg)',
+              }}
+            >
+              <Loader2 size={14} strokeWidth={2} className="animate-spin shrink-0" />
+              <span className="flex-1 tabular-nums">
+                Filling {fillProgress.done}/{fillProgress.total}
+                {fillProgress.failed > 0 ? ` · ${fillProgress.failed} failed` : ''}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  console.info('[editor fill-blanks] stop clicked', {
+                    done: fillProgress.done,
+                    failed: fillProgress.failed,
+                  });
+                  fillAbortRef.current?.abort();
+                }}
+                className="text-xs px-2 py-0.5 rounded border transition-colors hover:bg-white/5"
+                style={{ borderColor: '#f87171', color: '#f87171' }}
+                title="Stop the batch. Already-generated shots are kept."
+              >
+                Stop
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => { void runFillBlanks(); }}
+              disabled={blankShotIndices.length === 0}
+              className="editor-btn w-full justify-between disabled:opacity-40"
+              title={
+                blankShotIndices.length === 0
+                  ? 'Every shot already has an image.'
+                  : `Generate images for ${blankShotIndices.length} blank shot${blankShotIndices.length === 1 ? '' : 's'} (3 at a time).`
+              }
+            >
+              <span>
+                {blankShotIndices.length === 0
+                  ? 'All shots have images'
+                  : `Fill ${blankShotIndices.length} blank shot${blankShotIndices.length === 1 ? '' : 's'}`}
+              </span>
+              <Sparkles size={14} strokeWidth={2} style={{ color: 'var(--fg-muted)' }} />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setShowBrandKit(true)}
