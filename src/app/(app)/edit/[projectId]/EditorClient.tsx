@@ -450,7 +450,15 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         const MAX_ATTEMPTS = 3;
         const RETRY_DELAYS_MS = [500, 1_500, 3_500] as const;
         let lastFailureKind: 'http_5xx' | 'http_4xx' | 'network' = 'network';
-        let lastFailureDetail: { status?: number; message?: string } = {};
+        let lastFailureDetail: {
+          status?: number;
+          message?: string;
+          /** Server-classified failure category — surfaced in the
+           *  final toast so the user sees actionable text. */
+          failureClass?: string;
+          /** Which DB step failed (ownership / asset_write / version_bump). */
+          step?: string;
+        } = {};
 
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
           try {
@@ -476,8 +484,32 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               });
               return;
             }
-            const detail = await res.text().catch(() => '');
-            lastFailureDetail = { status: res.status, message: detail.slice(0, 200) };
+            // Parse the response body as JSON first — the server returns
+            // a classified failure shape `{ error, failureClass, step }`
+            // (see src/lib/db-error.ts + the row-asset route). Fall back
+            // to raw text when the body isn't JSON (proxy 5xx, edge HTML).
+            const rawBody = await res.text().catch(() => '');
+            let serverError: string | undefined;
+            let serverFailureClass: string | undefined;
+            let serverStep: string | undefined;
+            try {
+              const parsed = JSON.parse(rawBody) as {
+                error?: string;
+                failureClass?: string;
+                step?: string;
+              };
+              serverError = parsed.error;
+              serverFailureClass = parsed.failureClass;
+              serverStep = parsed.step;
+            } catch {
+              // not JSON — keep rawBody as detail for the log
+            }
+            lastFailureDetail = {
+              status: res.status,
+              message: (serverError ?? rawBody).slice(0, 200),
+              failureClass: serverFailureClass,
+              step: serverStep,
+            };
             // 4xx: deterministic, can't fix with retry. Surface now.
             if (res.status < 500) {
               lastFailureKind = 'http_4xx';
@@ -486,11 +518,14 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                 slot,
                 status: res.status,
                 attempt,
-                detail: detail.slice(0, 200),
+                failure_class: serverFailureClass,
+                step: serverStep,
+                detail: lastFailureDetail.message,
               });
               break;
             }
-            // 5xx: log + retry.
+            // 5xx: log + retry. Capture the server's failureClass so
+            // the final exhausted-retries log + toast can show it.
             lastFailureKind = 'http_5xx';
             console.warn('[editor row-asset] write failed (5xx — retrying)', {
               rowIndex,
@@ -498,7 +533,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               status: res.status,
               attempt,
               max_attempts: MAX_ATTEMPTS,
-              detail: detail.slice(0, 200),
+              failure_class: serverFailureClass,
+              step: serverStep,
+              detail: lastFailureDetail.message,
             });
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
@@ -519,26 +556,34 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           }
         }
 
-        // Exhausted retries (or hit a 4xx). Surface to the user.
+        // Exhausted retries (or hit a 4xx). Surface to the user. The
+        // server's `failureClass` (when present) gives the most
+        // actionable text — falls back to status-based copy for 4xx
+        // that don't have a classified body, and network errors.
         const status = lastFailureDetail.status;
         const friendlyReason =
-          status === 413
-            ? 'Project is too large to add another image. Delete some shots first.'
-            : status === 429
-              ? 'Too many uploads in a short window — try again in a minute.'
-              : status === 404
-                ? 'Project not found on the server (was it deleted in another tab?).'
-                : lastFailureKind === 'network'
-                  ? 'Network error. Check your connection and try again.'
-                  : status && status >= 500
-                    ? `Server error after ${MAX_ATTEMPTS} retries — try again, or refresh.`
-                    : `Couldn't save (HTTP ${status ?? '?'}).`;
+          // Server-classified message wins when available.
+          lastFailureDetail.failureClass && lastFailureDetail.message
+            ? lastFailureDetail.message
+            : status === 413
+              ? 'Project is too large to add another image. Delete some shots first.'
+              : status === 429
+                ? 'Too many uploads in a short window — try again in a minute.'
+                : status === 404
+                  ? 'Project not found on the server (was it deleted in another tab?).'
+                  : lastFailureKind === 'network'
+                    ? 'Network error. Check your connection and try again.'
+                    : status && status >= 500
+                      ? `Server error after ${MAX_ATTEMPTS} retries — try again, or refresh.`
+                      : `Couldn't save (HTTP ${status ?? '?'}).`;
         console.error('[editor row-asset] write failed permanently', {
           rowIndex,
           slot,
           kind: lastFailureKind,
           status,
           attempts: MAX_ATTEMPTS,
+          failure_class: lastFailureDetail.failureClass,
+          step: lastFailureDetail.step,
           detail: lastFailureDetail.message,
         });
         toast.error(
@@ -2883,8 +2928,38 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName?.toLowerCase();
       if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return;
-      // Bail on modifier combos that belong to other handlers
-      // (Cmd/Ctrl+Z, Cmd/Ctrl+S already bound at the store layer).
+
+      // ── Undo / redo ────────────────────────────────────────────────
+      // Cmd/Ctrl+Z       → undo
+      // Cmd/Ctrl+Shift+Z → redo (Mac convention + secondary Windows)
+      // Cmd/Ctrl+Y       → redo (primary Windows convention)
+      //
+      // These fire BEFORE the modifier-skip below so the Cmd/Ctrl is
+      // actually honoured. The input/contentEditable gate above keeps
+      // typing-undo inside text fields working natively in the browser
+      // — only our doc state undo fires when focus is elsewhere.
+      const isMod = e.metaKey || e.ctrlKey;
+      const lowerKey = e.key.toLowerCase();
+      if (isMod && !e.altKey && lowerKey === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          apply({ type: 'REDO' });
+          console.info('[editor shortcut] redo', { source: 'cmd+shift+z' });
+        } else {
+          apply({ type: 'UNDO' });
+          console.info('[editor shortcut] undo', { source: 'cmd+z' });
+        }
+        return;
+      }
+      if (isMod && !e.altKey && !e.shiftKey && lowerKey === 'y') {
+        e.preventDefault();
+        apply({ type: 'REDO' });
+        console.info('[editor shortcut] redo', { source: 'cmd+y' });
+        return;
+      }
+
+      // Bail on remaining modifier combos that don't belong here
+      // (browser shortcuts like Cmd+S, find-in-page, etc.).
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const key = e.key.toLowerCase();
       // Spacebar → play / pause. Standard NLE binding. `e.key` is
@@ -2933,7 +3008,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [handleDelete, handleSplit, handleToggleMute, handleZoomDelta, state.playheadMs]);
+  }, [apply, handleDelete, handleSplit, handleToggleMute, handleZoomDelta, state.playheadMs]);
 
   // Subscribe to frame updates so the playhead reflects the live
   // play position. Throttled at the ms-rounded level so React only

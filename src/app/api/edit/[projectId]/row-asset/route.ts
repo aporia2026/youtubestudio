@@ -73,6 +73,7 @@ import { apiRoute } from '@/lib/route-helpers';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
 import { writeProjectAsset, bumpProjectVersion } from '@/lib/project/assets';
+import { classifyDbError, FAILURE_CLASS_USER_MESSAGES } from '@/lib/db-error';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_URL_BYTES = 8192;
@@ -209,15 +210,24 @@ export const POST = apiRoute.authed(
     // Verify project ownership + scope BEFORE touching project_assets.
     // The FK on project_assets is ON DELETE CASCADE but doesn't enforce
     // workspace/collaborator scoping, so the auth check lives here.
-    const ownership = await sql<{ id: string }>`
-      SELECT id
-        FROM user_history
-       WHERE id = ${projectId}::uuid
-         AND workspace_id = ${session.ws}::uuid
-         AND collaborator_id = ${session.uid}::uuid
-         AND kind = 'production_doc'
-       LIMIT 1
-    `;
+    // Step-scoped try/catch so a connection blip on ownership doesn't
+    // get attributed to the asset write below — distinct log lines +
+    // failureClass per step.
+    const ownershipStart = Date.now();
+    let ownership: { rows: Array<{ id: string }> };
+    try {
+      ownership = await sql<{ id: string }>`
+        SELECT id
+          FROM user_history
+         WHERE id = ${projectId}::uuid
+           AND workspace_id = ${session.ws}::uuid
+           AND collaborator_id = ${session.uid}::uuid
+           AND kind = 'production_doc'
+         LIMIT 1
+      `;
+    } catch (err) {
+      return dbStepFailure('ownership_check', err, { projectId, slot, rowIndex });
+    }
     if (ownership.rows.length === 0) {
       logger.info('[row-asset attach] not found', { project_id: projectId });
       return NextResponse.json({ error: 'Project not found' }, { status: 404 });
@@ -227,6 +237,7 @@ export const POST = apiRoute.authed(
     // Each slot write is one statement — image to row N doesn't touch
     // overlay on row N or image on any other row. No payload size cap
     // class to hit because the asset URLs no longer live in the payload.
+    const writeStart = Date.now();
     try {
       await writeProjectAsset(
         projectId,
@@ -235,19 +246,19 @@ export const POST = apiRoute.authed(
         validated.normalized as string | { status: string; url?: string } | { status: string; videoUrl?: string; durationSeconds?: number; brollClipId?: string } | null,
       );
     } catch (err) {
-      logger.error('[row-asset attach] write failed', {
-        project_id: projectId,
+      return dbStepFailure('asset_write', err, {
+        projectId,
         slot,
-        row_index: rowIndex,
-        detail: err instanceof Error ? err.message : String(err),
+        rowIndex,
+        durationMs: Date.now() - writeStart,
+        ownershipMs: writeStart - ownershipStart,
       });
-      return NextResponse.json({ error: 'Asset write failed' }, { status: 500 });
     }
 
     // Image-only: persist styleVersion onto the payload alongside the
     // asset write. Tiny integer, stays in JSONB — no bloat concern.
     // Failure here is non-fatal: the asset already landed, drift
-    // detection is a soft signal.
+    // detection is a soft signal — log + classify but don't 500.
     if (styleVersion !== undefined) {
       const stylePathLiteral = `{rowImageStyleVersions,${rowIndex}}`;
       try {
@@ -265,10 +276,13 @@ export const POST = apiRoute.authed(
              AND kind = 'production_doc'
         `;
       } catch (err) {
+        const classified = classifyDbError(err);
         logger.warn('[row-asset attach] styleVersion write failed (non-fatal)', {
           project_id: projectId,
           row_index: rowIndex,
-          detail: err instanceof Error ? err.message : String(err),
+          failure_class: classified.failureClass,
+          pg_code: classified.pg_code,
+          detail: classified.serverMessage.slice(0, 300),
         });
       }
     }
@@ -277,14 +291,56 @@ export const POST = apiRoute.authed(
     // contract keeps working. The asset write didn't touch the payload
     // (asset URLs live elsewhere now); without this manual bump, the
     // editor would never observe that the project changed.
-    const newVersion = await bumpProjectVersion(projectId);
+    let newVersion: number;
+    try {
+      newVersion = await bumpProjectVersion(projectId);
+    } catch (err) {
+      return dbStepFailure('version_bump', err, { projectId, slot, rowIndex });
+    }
 
     logger.info('[row-asset attach] committed', {
       project_id: projectId,
       slot,
       row_index: rowIndex,
       new_version: newVersion,
+      total_ms: Date.now() - ownershipStart,
     });
     return NextResponse.json({ ok: true, version: newVersion });
   },
 );
+
+/** Centralised classify-log-respond for a failed DB step. Returns
+ *  a 500 with the classified failureClass + a client-safe user
+ *  message; full PG fields (code, table, constraint, hint) land in
+ *  the server log at ERROR level for triage. */
+function dbStepFailure(
+  step: 'ownership_check' | 'asset_write' | 'version_bump',
+  err: unknown,
+  ctx: { projectId: string; slot: string; rowIndex: number; durationMs?: number; ownershipMs?: number },
+): NextResponse {
+  const classified = classifyDbError(err);
+  logger.error('[row-asset attach] step failed', {
+    step,
+    project_id: ctx.projectId,
+    slot: ctx.slot,
+    row_index: ctx.rowIndex,
+    failure_class: classified.failureClass,
+    pg_code: classified.pg_code,
+    pg_severity: classified.pg_severity,
+    pg_table: classified.pg_table,
+    pg_constraint: classified.pg_constraint,
+    pg_detail: classified.pg_detail?.slice(0, 300),
+    pg_hint: classified.pg_hint?.slice(0, 300),
+    raw_message: classified.raw_message.slice(0, 300),
+    duration_ms: ctx.durationMs,
+    ownership_ms: ctx.ownershipMs,
+  });
+  return NextResponse.json(
+    {
+      error: FAILURE_CLASS_USER_MESSAGES[classified.failureClass],
+      failureClass: classified.failureClass,
+      step,
+    },
+    { status: 500 },
+  );
+}
