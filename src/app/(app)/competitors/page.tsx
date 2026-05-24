@@ -208,6 +208,12 @@ export default function CompetitorsPage() {
 
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  // "Sync All" walks every competitor sequentially (YouTube Data API
+  // quota is per-key, so concurrent syncs just race against the same
+  // ceiling). `done` is the count of finished competitors (success or
+  // fail); `total` is the snapshot at kickoff so the button label
+  // stays stable even if competitors are added mid-run.
+  const [syncAllProgress, setSyncAllProgress] = useState<{ done: number; total: number } | null>(null);
 
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('competitor-analysis'));
   const [analysisNiche, setAnalysisNiche] = useState('General');
@@ -275,6 +281,42 @@ export default function CompetitorsPage() {
       if (selectedId === id) openDetail(id);
     } catch { toast.error('Sync failed'); }
     finally { setSyncingId(null); }
+  }
+
+  async function syncAllCompetitors() {
+    if (syncAllProgress) return;
+    const snapshot = competitors.slice();
+    if (snapshot.length === 0) return;
+    if (!confirm(`Sync all ${snapshot.length} competitors? Runs sequentially — this can take a couple of minutes per channel against the YouTube API.`)) return;
+    console.info('[competitors sync-all] start', { count: snapshot.length });
+    setSyncAllProgress({ done: 0, total: snapshot.length });
+    let okCount = 0;
+    let failCount = 0;
+    for (let i = 0; i < snapshot.length; i++) {
+      const c = snapshot[i];
+      setSyncingId(c.id);
+      try {
+        const res = await fetch(`/api/competitors/${c.id}/sync`, { method: 'POST' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        okCount++;
+        console.info('[competitors sync-all] synced', { id: c.id, title: c.title, synced: data.synced, new: data.new });
+      } catch (err) {
+        failCount++;
+        console.warn('[competitors sync-all] failed', { id: c.id, title: c.title, error: err instanceof Error ? err.message : String(err) });
+      } finally {
+        setSyncAllProgress({ done: i + 1, total: snapshot.length });
+      }
+    }
+    setSyncingId(null);
+    setSyncAllProgress(null);
+    await fetchCompetitors();
+    if (failCount === 0) {
+      toast.success(`Synced all ${okCount} competitors`);
+    } else {
+      toast.error(`Synced ${okCount}/${snapshot.length} · ${failCount} failed (check console)`);
+    }
+    console.info('[competitors sync-all] done', { ok: okCount, fail: failCount });
   }
 
   async function deleteCompetitor(id: string) {
@@ -541,6 +583,20 @@ export default function CompetitorsPage() {
               />
               <button className="btn-primary whitespace-nowrap flex items-center gap-2" onClick={addCompetitor} disabled={adding || !channelUrl.trim()}>
                 {adding ? <Spinner /> : '+'} Add Competitor
+              </button>
+              <button
+                className="btn-secondary whitespace-nowrap flex items-center gap-2"
+                onClick={syncAllCompetitors}
+                disabled={Boolean(syncAllProgress) || competitors.length === 0}
+                title={
+                  competitors.length === 0
+                    ? 'Add a competitor first'
+                    : `Re-sync all ${competitors.length} tracked competitors sequentially`
+                }
+              >
+                {syncAllProgress
+                  ? <><Spinner size={14} /> Syncing {syncAllProgress.done}/{syncAllProgress.total}</>
+                  : <>↻ Sync All</>}
               </button>
             </div>
 

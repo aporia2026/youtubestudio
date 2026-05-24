@@ -73,6 +73,17 @@ interface EditorHeaderProps {
    *  confirm at a glance that scenes are retimed to the narration
    *  (the same `AlignmentBadge` lives full-width in the Audio tab). */
   alignmentStatus?: AlignmentBadgeStatus;
+  /** Persistent download URL from the last completed render. When
+   *  set, the header surfaces a green "Download MP4" button so the
+   *  user can grab the file even after dismissing the "Render
+   *  complete" dialog. Set by EditorClient when a render transitions
+   *  to `done`; cleared on a new render kickoff. */
+  latestDownloadUrl?: string | null;
+  /** Optional handler to re-open the full Render-complete dialog
+   *  with the cached URL. The header's inline Download button is the
+   *  primary affordance; the dialog is the secondary path for users
+   *  who want the surrounding context (file size hint, etc.). */
+  onReopenRenderModal?: () => void;
 }
 
 export function EditorHeader({
@@ -96,6 +107,8 @@ export function EditorHeader({
   isRendering = false,
   onPullFromDoc,
   alignmentStatus,
+  latestDownloadUrl,
+  onReopenRenderModal,
 }: EditorHeaderProps): React.ReactElement {
   const [pulling, setPulling] = useState(false);
   async function handlePull() {
@@ -202,6 +215,45 @@ export function EditorHeader({
             />
             <span>{pulling ? 'Pulling…' : 'Pull from doc'}</span>
           </button>
+        )}
+
+        {/* Persistent Download MP4 anchor — surfaces whenever the last
+            render completed successfully, regardless of whether the
+            user has since dismissed the Render-complete modal. Direct
+            link to R2 (no Vercel function in the path) so multi-GB
+            files don't time out. The right-click "Show again" wires
+            back into the full modal for users who want the surrounding
+            context. Hidden while a new render is in flight (the URL
+            from the prior run is stale and gets cleared on kickoff).
+            Placed BEFORE the Render MP4 button so it lands in a more
+            prominent slot — the action cluster can overflow on narrow
+            viewports, and the user's eye lands on the rightmost slots
+            last. */}
+        {latestDownloadUrl && !isRendering && (
+          <a
+            href={latestDownloadUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="editor-btn"
+            style={{
+              color: '#22c55e',
+              borderColor: 'rgba(34,197,94,0.5)',
+              background: 'rgba(34,197,94,0.08)',
+            }}
+            title="Download the rendered MP4 from your last render. Direct R2 stream — multi-GB files don't time out. Right-click to reopen the full Render-complete dialog."
+            onContextMenu={(e) => {
+              // Right-click reopens the full modal. Plain left-click
+              // stays as the standard "download this link" anchor
+              // behaviour so the user's existing muscle memory works.
+              if (onReopenRenderModal) {
+                e.preventDefault();
+                onReopenRenderModal();
+              }
+            }}
+          >
+            <Download size={14} strokeWidth={2} />
+            <span>Download MP4</span>
+          </a>
         )}
 
         {onRender && (

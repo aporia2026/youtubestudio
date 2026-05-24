@@ -249,6 +249,12 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // `null` means no render in flight or surfaced; otherwise the
   // RenderModal renders the appropriate body.
   const [renderState, setRenderState] = useState<RenderState | null>(null);
+  // Persistent reference to the last completed render's download URL.
+  // Set when a render transitions to 'done'; survives the user closing
+  // the Render complete modal so the top-bar "Download MP4" button
+  // stays accessible. Cleared only when a new render kicks off
+  // (the old URL is stale) — never when the modal is dismissed.
+  const [latestDownloadUrl, setLatestDownloadUrl] = useState<string | null>(null);
   // Channel visual brand kit — server-side default that the per-doc
   // visualKitOverride layers on top of. Fetched once on mount (or
   // when the channelId on the payload changes); the BrandKitModal
@@ -2054,6 +2060,10 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     });
 
     setRenderState({ status: 'rendering', progress: 0, renderId: null });
+    // Clear any prior render's persistent download URL — the file it
+    // pointed at is now stale (we're about to make a new one). The
+    // top-bar "Download MP4" button hides until the new render lands.
+    setLatestDownloadUrl(null);
     console.info('[editor render] start', {
       rowCount: renderConfig.shots.length,
       hasVoiceover: Boolean(renderConfig.voiceoverUrl),
@@ -2122,6 +2132,13 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             downloadUrl: statusData.downloadUrl ?? null,
             renderId,
           });
+          // Persist the download URL outside the modal lifecycle so
+          // closing the "Render complete" dialog doesn't lose the
+          // user's only way back to the file. The header renders a
+          // "Download MP4" button whenever this is set.
+          if (statusData.downloadUrl) {
+            setLatestDownloadUrl(statusData.downloadUrl);
+          }
           return;
         }
         if (statusData.status === 'error') {
@@ -3273,6 +3290,24 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       }
       onRender={() => { void executeRender(); }}
       isRendering={renderState?.status === 'rendering'}
+      // Persistent download URL from the last completed render. The
+      // header surfaces a "Download MP4" button while this is set so
+      // the user can grab the file even after dismissing the
+      // Render-complete modal. Cleared when a new render kicks off.
+      latestDownloadUrl={latestDownloadUrl}
+      onReopenRenderModal={() => {
+        // Re-mount the dialog with the cached state. Useful when the
+        // user wants the full "Render complete" panel back (download
+        // link + the surrounding copy) — but the inline header button
+        // is the primary affordance.
+        if (latestDownloadUrl) {
+          setRenderState({
+            status: 'done',
+            downloadUrl: latestDownloadUrl,
+            renderId: null,
+          });
+        }
+      }}
       onPullFromDoc={async () => {
         await reloadFromServer();
       }}
