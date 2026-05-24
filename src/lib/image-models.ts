@@ -6,9 +6,24 @@
 //                       LOCAL_STUDIO=1 in dev (Phase 4 of the local-broll
 //                       plan). Routes return 503 if the env flag is missing.
 //
-// This file is t2i-only — the v2 image-to-image registry (NanoBanana Pro,
+// This file is t2i-only — the v2 image-to-image registry (NanoBanana 2 i2i,
 // Flux 2 Pro i2i, GPT Image 2 i2i) lives in `image-models-i2i.ts`. Keep
 // this one focused on per-row generation per its consumer at the picker.
+//
+// ─── 1K-only policy ────────────────────────────────────────────────────────
+// Every cloud (kie) generation in this registry is pinned to 1K output.
+// Every cloud generation also flows through the system-wide auto-upscale
+// pass (`src/lib/upscale.ts`, Recraft Crisp Upscale, ~4×, $0.0025/image).
+// Net result: each shot lands at ~4K with one generation call worth of
+// inference cost + a quarter cent of upscale. Bumping any model to 2K/4K
+// at the source pays the model's higher-tier price ($0.06–$0.09 on
+// NanoBanana 2) for output that the upscaler would have produced for
+// $0.0025 anyway. Don't do it.
+//
+// `buildKieImageInput` enforces this at the bottom of the function — if a
+// caller mutates the registry or a future entry slips in a non-1K
+// `resolution`, the builder throws at request time instead of silently
+// burning money. See `tests/image-models-1k-enforcement.test.ts`.
 
 export type ImageModelProvider = 'kie' | 'comfyui-local';
 
@@ -69,7 +84,12 @@ export const IMAGE_MODELS: ImageModelSpec[] = [
   { value: 'grok-imagine-t2i', label: 'Grok Imagine', provider: 'kie', kieModel: 'grok-imagine/text-to-image', hint: 'Default — fast, broad style range' },
   { value: 'flux2-pro-t2i', label: 'Flux 2 Pro', provider: 'kie', kieModel: 'flux-2/pro-text-to-image', hint: 'Highest fidelity — slower, costlier' },
   { value: 'flux2-flex-t2i', label: 'Flux 2 Flex', provider: 'kie', kieModel: 'flux-2/flex-text-to-image', hint: 'Flux 2 — balanced cost/quality' },
-  { value: 'nano-banana', label: 'Google NanoBanana', provider: 'kie', kieModel: 'google/nano-banana', hint: 'Google Imagen via Kie.ai' },
+  // NanoBanana 2 (Gemini 3.1 Flash Image). The `value` stays `'nano-banana'`
+  // so existing rows that picked the older Gemini 2.5 Flash entry resolve
+  // to the new model without a DB migration. The underlying kie model
+  // string changes to `nano-banana-2`. Same `image_input` refs field is
+  // exposed by the i2i registry entry (max 14 refs).
+  { value: 'nano-banana', label: 'Google NanoBanana 2', provider: 'kie', kieModel: 'nano-banana-2', hint: 'Gemini 3.1 Flash Image — fast, accurate text rendering, $0.04/image' },
   { value: 'gpt-image-2-t2i', label: 'GPT Image 2', provider: 'kie', kieModel: 'gpt-image-2-text-to-image', hint: 'OpenAI image model via Kie.ai' },
   // Ideogram v3 — best-in-class for rendering legible text inside the image
   // (signage, posters, hand-lettered captions). Caveat for the production-doc
@@ -97,10 +117,13 @@ export function getImageModelSpec(value: string): ImageModelSpec | undefined {
 
 /** Build the per-model `input` payload for Kie.ai's createTask call.
  *  Centralised so client + server agree on which fields each model family needs.
- *  Always 16:9 — the production doc renders at video aspect.
+ *  Always 16:9 at 1K — the production doc renders at video aspect, and every
+ *  generation gets system-upscaled (see top-of-file 1K-only policy block).
  *
  *  Throws if called for a non-kie model — caller is expected to dispatch
- *  on `spec.provider` BEFORE reaching this function. */
+ *  on `spec.provider` BEFORE reaching this function. Throws if any branch
+ *  ends up setting `resolution` to anything other than `'1K'` (defence in
+ *  depth against future edits drifting from the upscale-everything policy). */
 export function buildKieImageInput(modelValue: string, prompt: string): Record<string, unknown> {
   const spec = getImageModelSpec(modelValue);
   if (!spec || spec.provider === 'comfyui-local' || !spec.kieModel) {
@@ -110,16 +133,25 @@ export function buildKieImageInput(modelValue: string, prompt: string): Record<s
   const input: Record<string, unknown> = { prompt };
 
   // GPT Image 2 and Ideogram v3 don't document an nsfw_checker field;
-  // sending it can 422 on stricter validators.
-  if (!kieModel.startsWith('gpt-image-2') && !kieModel.startsWith('ideogram/')) {
+  // sending it can 422 on stricter validators. NanoBanana 2 also doesn't
+  // expose nsfw_checker (Gemini handles content policy server-side).
+  if (
+    !kieModel.startsWith('gpt-image-2')
+    && !kieModel.startsWith('ideogram/')
+    && kieModel !== 'nano-banana-2'
+  ) {
     input.nsfw_checker = true;
   }
 
   if (kieModel.startsWith('flux-2')) {
     input.aspect_ratio = '16:9';
     input.resolution = '1K';
-  } else if (kieModel.startsWith('google/')) {
-    input.image_size = '16:9';
+  } else if (kieModel === 'nano-banana-2') {
+    // Gemini 3.1 Flash Image. Same field shape as GPT Image 2:
+    // `aspect_ratio` + `resolution`. Defaults to 'auto' / '1K' per
+    // docs.kie.ai/market/google/nanobanana2 — we pin both.
+    input.aspect_ratio = '16:9';
+    input.resolution = '1K';
     input.output_format = 'png';
   } else if (kieModel.startsWith('gpt-image-2')) {
     input.aspect_ratio = '16:9';
@@ -128,7 +160,8 @@ export function buildKieImageInput(modelValue: string, prompt: string): Record<s
     // Ideogram uses enum names for aspect (not "16:9") and routes the
     // tier through the rendering_speed field — all three tiers share
     // the single `ideogram/v3-text-to-image` model string, so the
-    // speed is encoded in the spec value.
+    // speed is encoded in the spec value. Ideogram has no `resolution`
+    // field; the 1K guard below doesn't fire because we don't set one.
     input.image_size = 'landscape_16_9';
     input.rendering_speed = modelValue.includes('turbo')
       ? 'TURBO'
@@ -137,6 +170,16 @@ export function buildKieImageInput(modelValue: string, prompt: string): Record<s
         : 'QUALITY';
   } else {
     input.aspect_ratio = '16:9';
+  }
+
+  // 1K-policy enforcement (see top-of-file comment). If any branch above
+  // ever drifts to 2K/4K, this guard fires before the request leaves the
+  // process. The guard only checks when `resolution` is set — models that
+  // omit the field (Ideogram, future entries) are unaffected.
+  if (input.resolution !== undefined && input.resolution !== '1K') {
+    throw new Error(
+      `[image registry 1k-policy] blocked non-1K resolution for ${modelValue}: ${String(input.resolution)} — every cloud generation gets auto-upscaled, bumping the source tier wastes money`,
+    );
   }
   return input;
 }

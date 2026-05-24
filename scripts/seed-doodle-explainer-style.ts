@@ -160,8 +160,8 @@ async function main() {
 
   // Create the style row. `draft = FALSE`, `approved_at = NOW()`, and
   // `version = 1` so it lands ready-to-use in the picker.
-  // `preferred_cloud_model = nano-banana-pro-i2i` — won the Phase 0
-  // doodle blind-rank.
+  // `preferred_cloud_model = nano-banana-2-i2i` — Gemini 3.1 Flash Image,
+  // replaced the original NanoBanana Pro on 2026-05-24 (cheaper + 14 refs).
   const { rows: styleRows } = await sql<{ id: string }>`
     INSERT INTO production_doc_styles (
       workspace_id, name, description,
@@ -174,7 +174,7 @@ async function main() {
       ${builtIn.ai_image_suffix}, ${builtIn.mixing_rules ?? null}, ${builtIn.allow_overlay_stock},
       ${'doodle_explainer'}, ${args.ownerId},
       ${args.ownerId}, FALSE, NOW(), 1,
-      NULL, ${'nano-banana-pro-i2i'}
+      NULL, ${'nano-banana-2-i2i'}
     )
     RETURNING id
   `;

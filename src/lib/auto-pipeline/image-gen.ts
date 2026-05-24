@@ -31,6 +31,7 @@ import {
   getImagesBucket,
   uploadToBucket,
 } from '../r2';
+import { upscaleViaRecraft } from '../upscale';
 
 const KIE_BASE = 'https://api.kie.ai/api/v1/jobs';
 
@@ -109,7 +110,11 @@ export async function generateImageWithFallback(
     const t0 = Date.now();
     try {
       const kieUrl = await callKie(spec.kieModel, spec.value, trimmedPrompt, apiKey);
-      const hosted = await reHostToBlob(kieUrl, opts.blobPathPrefix);
+      // System-wide auto-upscale before re-host. Recraft Crisp Upscale
+      // (~4×, $0.0025/image). Skips kick in for outputs already
+      // >2000px or when AUTO_UPSCALE_ENABLED=false. See src/lib/upscale.ts.
+      const upscaleResult = await upscaleViaRecraft(kieUrl);
+      const hosted = await reHostToBlob(upscaleResult.url, opts.blobPathPrefix);
       attempts.push({ modelValue, durationMs: Date.now() - t0 });
       logger.info('auto-pipeline image-gen: succeeded', {
         model: modelValue,

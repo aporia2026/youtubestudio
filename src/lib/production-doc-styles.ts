@@ -190,11 +190,13 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       { filename: 'stick-figure-hacker-deceives-guard.png',  mime_type: 'image/png' },
       { filename: 'stick-figure-soldiers-running.png',       mime_type: 'image/png' },
     ],
-    // v3 (2026-05-22): pin the i2i model that won the Phase 0
-    // doodle blind-rank. Built-ins now carry this field too so the
-    // dispatcher routes the right way without falling back to the
-    // workspace default. Saved styles override via PATCH.
-    preferred_cloud_model: 'nano-banana-pro-i2i',
+    // v3 (2026-05-22): pin the i2i model used for this built-in.
+    // Built-ins carry this field so the dispatcher routes the right
+    // way without falling back to the workspace default. Saved styles
+    // override via PATCH. Updated 2026-05-24: NanoBanana Pro retired
+    // in favour of NanoBanana 2 (Gemini 3.1 Flash, cheaper + faster
+    // + 14 refs vs 8). Same `image_input` field shape.
+    preferred_cloud_model: 'nano-banana-2-i2i',
     mixing_rules: [
       'This is a hand-drawn doodle style. The default for almost every row is "Animation" with a pure stick-figure ai_image_prompt — keep that as your base.',
       '',

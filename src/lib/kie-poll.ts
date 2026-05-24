@@ -100,6 +100,12 @@ export async function createKieTask(
  *
  * 429 rate-limit responses are retried without consuming an attempt slot
  * (rare in practice; the 3s gap usually covers any per-IP limit).
+ *
+ * Note: most cloud-image surfaces should prefer `pollKieResultThenUpscale`
+ * which adds the system-wide auto-upscale pass after the poll. Keep this
+ * lower-level helper for paths that genuinely shouldn't upscale (b-roll
+ * video frames where image upscaling doesn't apply, internal probes,
+ * or the upscale call itself recursing inside `upscale.ts`).
  */
 export async function pollKieResult(taskId: string, apiKey: string): Promise<string> {
   for (let i = 0; i < POLL_MAX_ATTEMPTS; i++) {
@@ -146,6 +152,37 @@ export async function pollKieResult(taskId: string, apiKey: string): Promise<str
   }
 
   throw new Error('Image generation timed out after 285 s — try again');
+}
+
+/**
+ * Poll then auto-upscale. The single chokepoint that every cloud-image
+ * route should call instead of `pollKieResult` directly, so the
+ * system-wide upscale pass happens uniformly across the app without
+ * each route reinventing it.
+ *
+ * Returns the final URL to use downstream — upscaled when Recraft
+ * succeeded, original kie URL when the upscale skipped or failed
+ * gracefully (see `upscale.ts` for the skip / failure matrix). The
+ * upscale step never propagates an exception; if the poll itself
+ * throws, that error surfaces as-is (the generation genuinely failed).
+ *
+ * Caller pattern (replace `pollKieResult` one-line):
+ *   const url = await pollKieResultThenUpscale(taskId, apiKey);
+ *
+ * Existing R2 re-host code downstream works unchanged — it just
+ * mirrors whatever URL this returns.
+ */
+export async function pollKieResultThenUpscale(
+  taskId: string,
+  apiKey: string,
+): Promise<string> {
+  // Lazy import — keeps the upscale module out of paths that don't use
+  // it (the bare `pollKieResult` callers). Avoids a circular-import
+  // surprise too: upscale.ts imports `pollKieResult` from this module.
+  const { upscaleViaRecraft } = await import('./upscale');
+  const kieUrl = await pollKieResult(taskId, apiKey);
+  const upscaleResult = await upscaleViaRecraft(kieUrl);
+  return upscaleResult.url;
 }
 
 /**
@@ -243,6 +280,20 @@ export async function pollGpt4oImageResult(taskId: string, apiKey: string): Prom
   throw new Error('GPT-4o image generation timed out after 285 s — try again');
 }
 
+/** Poll + auto-upscale wrapper for GPT-4o image tasks. Mirrors
+ *  `pollKieResultThenUpscale` for symmetry — both edit and overlay routes
+ *  call into this so the system-wide upscale pass runs uniformly across
+ *  the three kie pollers. */
+export async function pollGpt4oImageResultThenUpscale(
+  taskId: string,
+  apiKey: string,
+): Promise<string> {
+  const { upscaleViaRecraft } = await import('./upscale');
+  const kieUrl = await pollGpt4oImageResult(taskId, apiKey);
+  const upscaleResult = await upscaleViaRecraft(kieUrl);
+  return upscaleResult.url;
+}
+
 /**
  * Flux Kontext lives at its own endpoint (`/flux/kontext/*`) rather than
  * the unified `/jobs/*` surface. Same retry + error-mapping shape as
@@ -336,4 +387,16 @@ export async function pollFluxKontextResult(taskId: string, apiKey: string): Pro
     // 0 (GENERATING) — keep polling
   }
   throw new Error('Flux Kontext generation timed out after 285 s — try again');
+}
+
+/** Poll + auto-upscale wrapper for Flux Kontext tasks. Mirrors
+ *  `pollKieResultThenUpscale` for symmetry. */
+export async function pollFluxKontextResultThenUpscale(
+  taskId: string,
+  apiKey: string,
+): Promise<string> {
+  const { upscaleViaRecraft } = await import('./upscale');
+  const kieUrl = await pollFluxKontextResult(taskId, apiKey);
+  const upscaleResult = await upscaleViaRecraft(kieUrl);
+  return upscaleResult.url;
 }

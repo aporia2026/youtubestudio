@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
-import { createKieTask, pollKieResult } from '@/lib/kie-poll';
+import { createKieTask, pollKieResultThenUpscale } from '@/lib/kie-poll';
 import { getAppUrl } from '@/lib/email';
 import { generateImageOpenAI, isOpenAIDirectImageModel } from '@/lib/openai-images';
 import { uploadToBucket, getImagesBucket, getImagesDownloadUrl } from '@/lib/r2';
@@ -255,7 +255,8 @@ export async function POST(req: NextRequest) {
 
       const apiKey = requireKieKey();
       taskId = await createKieTask(apiKey, config.model, input);
-      const kieImageUrl = await pollKieResult(taskId, apiKey);
+      // System-wide auto-upscale runs after poll. See src/lib/upscale.ts.
+      const kieImageUrl = await pollKieResultThenUpscale(taskId, apiKey);
 
       // Persist the result bytes to R2. Kie's hosted resultUrls expire
       // after hours/days AND live on a host that the download-proxy

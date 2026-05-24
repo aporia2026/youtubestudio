@@ -29,7 +29,7 @@
  * caller usually picks a single model deliberately.
  */
 import { buildKieI2IInput, getI2IModelSpec, isKieI2ISpec } from './image-models-i2i';
-import { createKieTask, pollKieResult } from './kie-poll';
+import { createKieTask, pollKieResultThenUpscale } from './kie-poll';
 import {
   getDownloadUrlForBucket,
   getImagesBucket,
@@ -240,7 +240,8 @@ export async function generateImageWithRefs(
 
   let kieUrl: string;
   try {
-    kieUrl = await pollKieResult(taskId, apiKey);
+    // System-wide auto-upscale runs after poll. See src/lib/upscale.ts.
+    kieUrl = await pollKieResultThenUpscale(taskId, apiKey);
   } catch (err) {
     const refusal = classifyAsReferenceRejection(err);
     if (refusal) {

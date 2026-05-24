@@ -653,6 +653,16 @@ export interface ProductionDoc {
    *  Values are entries of `IMAGE_MODELS` in
    *  `src/lib/image-models.ts`. */
   image_model_default?: string;
+  /** Collage batching toggle. When `true`, the "Generate all missing
+   *  stills" batch button and the fresh-doc generation flow group
+   *  consecutive shots in chunks of 4 and ask the chosen image model
+   *  to produce a single 2×2 collage per group. The server then
+   *  upscales the collage and crops it into 4 per-shot images. Cuts
+   *  generation cost ~70–75% per group at the cost of one combined
+   *  prompt (each cell gets its own region prompt). Per-shot Regenerate
+   *  always stays single-image regardless of this flag. Default
+   *  `false`. See `_plans/2026-05-24-system-upscale-and-collage.md`. */
+  collage_mode?: boolean;
   /** Doc-level text overlays — Phase 4 master overlay layer (shot-
    *  graph editor plan). Each overlay spans a configurable time
    *  window independent of any row. Persisted on the doc so editor

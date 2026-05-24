@@ -9,11 +9,12 @@
  *
  * Verified against docs.kie.ai during the Phase 0 cloud spike
  * (2026-05-21) — see `_plans/2026-05-21-phase-0-spike-prompts.md`
- * for the per-model behaviour matrix. NanoBanana Pro won the spike
- * on a speed tiebreaker after tying GPT Image 2 visually, and is the
- * default cloud i2i model for ref-bearing styles. Local Qwen-Image
- * won the local spike (single-ref via VAE-encode) so it's the local
- * default when LOCAL_STUDIO=1 + ComfyUI reachable.
+ * for the per-model behaviour matrix. NanoBanana Pro originally won
+ * the spike on a speed tiebreaker but has since been retired in
+ * favour of NanoBanana 2 (Gemini 3.1 Flash Image) which covers v1's
+ * capability at lower cost ($0.04 vs $0.05/image) and is faster.
+ * Local Qwen-Image won the local spike (single-ref via VAE-encode)
+ * so it's the local default when LOCAL_STUDIO=1 + ComfyUI reachable.
  *
  * Consumers:
  *   - editor picker             → `I2I_MODELS` for the dropdown options
@@ -22,6 +23,22 @@
  *   - cloud dispatcher          → `buildKieI2IInput` + `getI2IModelSpec`
  *   - local dispatcher          → `getI2IModelSpec().localWorkflowId`
  *   - production-doc image route → branches on provider via `getI2IModelSpec`
+ *
+ * ─── 1K-only policy ───────────────────────────────────────────────────────
+ * Every cloud (kie) i2i call here is pinned to 1K output. Every cloud
+ * generation also flows through the system-wide auto-upscale pass
+ * (`src/lib/upscale.ts`, Recraft Crisp Upscale, ~4×, $0.0025/image), so
+ * the final shot lands at ~4K regardless. Bumping any model to 2K/4K at
+ * the source pays the model's higher-tier price for output that the
+ * upscaler would have produced for $0.0025 anyway. `buildKieI2IInput`
+ * enforces this at the bottom of the function. See
+ * `tests/image-models-1k-enforcement.test.ts`.
+ *
+ * ─── Read-time fallback for retired models ────────────────────────────────
+ * `getI2IModelSpec` returns the default spec for unknown values instead
+ * of `undefined`. Lets retired entries (e.g. `'nano-banana-pro-i2i'`
+ * before the 2026-05-24 swap) resolve cleanly without a DB migration —
+ * the call logs a warning and falls back to `DEFAULT_CLOUD_I2I_MODEL`.
  */
 
 export type I2IProvider = 'kie' | 'comfyui-local';
@@ -85,22 +102,22 @@ export interface I2IModelSpec {
 }
 
 export const I2I_MODELS: readonly I2IModelSpec[] = Object.freeze([
-  // Cloud — spec-verified 2026-05-21 against docs.kie.ai + empirically
-  // tested by scripts/style-spike.ts on the 5 doodle refs × 10 prompts
-  // grid. NanoBanana won the visual tie on a speed tiebreaker.
+  // Cloud — NanoBanana 2 (Gemini 3.1 Flash Image) replaced the original
+  // NanoBanana Pro on 2026-05-24. Spec verified against
+  // docs.kie.ai/market/google/nanobanana2 — same `image_input` refs
+  // field shape as Pro, but `maxRefs` bumps from 8 → 14, the model
+  // accepts both `aspect_ratio` and `resolution` (we pin both), and
+  // pricing drops from $0.05 → $0.04 per 1K image.
   {
-    value: 'nano-banana-pro-i2i',
-    label: 'Reference-driven (NanoBanana Pro)',
+    value: 'nano-banana-2-i2i',
+    label: 'Reference-driven (NanoBanana 2)',
     provider: 'kie',
-    kieModel: 'nano-banana-pro',
+    kieModel: 'nano-banana-2',
     refsField: 'image_input',
-    maxRefs: 8,
-    // Only aspect_ratio survives — `output_format` and `resolution`
-    // 500 the endpoint despite being in the docs. See
-    // scripts/style-spike-debug.ts.
-    extraInput: { aspect_ratio: '16:9' },
-    hint: 'Default for ref-bearing styles. ~$0.05/image, ~90s, supports 8 references.',
-    costUsdPerImage: 0.05,
+    maxRefs: 14,
+    extraInput: { aspect_ratio: '16:9', resolution: '1K', output_format: 'png' },
+    hint: 'Default for ref-bearing styles. Gemini 3.1 Flash, ~$0.04/image, supports 14 references.',
+    costUsdPerImage: 0.04,
   },
   {
     value: 'gpt-image-2-i2i',
@@ -169,17 +186,43 @@ export function formatI2ICostHint(modelValue: string): string | null {
   return `~$${spec.costUsdPerImage.toFixed(2)}/image`;
 }
 
-/** Default cloud model for ref-bearing v2 styles. Phase 0 spike winner;
- *  see `_plans/2026-05-21-phase-0-spike-prompts.md`. */
-export const DEFAULT_CLOUD_I2I_MODEL = 'nano-banana-pro-i2i';
+/** Default cloud model for ref-bearing v2 styles. Original Phase 0 spike
+ *  winner was NanoBanana Pro; replaced on 2026-05-24 by NanoBanana 2
+ *  (Gemini 3.1 Flash Image) which covers the same capability at lower
+ *  cost. See `_plans/2026-05-24-system-upscale-and-collage.md`. */
+export const DEFAULT_CLOUD_I2I_MODEL = 'nano-banana-2-i2i';
 
 /** All known i2i model values. Used by the styles validator to
  *  allow-list `preferred_cloud_model` storage. Single source of truth
- *  — adding an entry to `I2I_MODELS` surfaces it here automatically. */
+ *  — adding an entry to `I2I_MODELS` surfaces it here automatically.
+ *
+ *  Note: the validator should treat this as the *current* allow-list,
+ *  not the *historical* one. Retired values (e.g. `'nano-banana-pro-i2i'`
+ *  before the 2026-05-24 swap) resolve to the default via the read-time
+ *  fallback in `getI2IModelSpec` — `I2I_MODEL_VALUES` deliberately
+ *  doesn't include them. */
 export const I2I_MODEL_VALUES: readonly string[] = I2I_MODELS.map((m) => m.value);
 
+/** Look up an i2i spec by its stored `value`. Falls back to the default
+ *  spec when the requested value is unknown (e.g. an old DB row storing
+ *  a retired model id like `'nano-banana-pro-i2i'`). Logs a warning so
+ *  registry drift is visible in production logs — silent fallback would
+ *  also mask an attacker storing garbage to coerce model selection.
+ *
+ *  Returns `undefined` only if the default itself can't be resolved
+ *  (registry corruption — should never happen). */
 export function getI2IModelSpec(value: string): I2IModelSpec | undefined {
-  return I2I_MODELS.find((m) => m.value === value);
+  const direct = I2I_MODELS.find((m) => m.value === value);
+  if (direct) return direct;
+  const fallback = I2I_MODELS.find((m) => m.value === DEFAULT_CLOUD_I2I_MODEL);
+  if (fallback) {
+    console.warn('[i2i registry] unknown model → falling back to default', {
+      requested: value,
+      fallback: DEFAULT_CLOUD_I2I_MODEL,
+    });
+    return fallback;
+  }
+  return undefined;
 }
 
 /** Type guard for cloud-Kie i2i specs. Narrows the optional fields
@@ -235,6 +278,16 @@ export function buildKieI2IInput(
     input.image_url = trimmed[0];
   } else {
     input[spec.refsField] = trimmed;
+  }
+
+  // 1K-policy enforcement (see top-of-file comment). If any spec's
+  // `extraInput.resolution` ever drifts to 2K/4K, this guard fires
+  // before the request leaves the process. The guard only checks when
+  // `resolution` is set — models that omit the field are unaffected.
+  if (input.resolution !== undefined && input.resolution !== '1K') {
+    throw new Error(
+      `[i2i registry 1k-policy] blocked non-1K resolution for ${modelValue}: ${String(input.resolution)} — every cloud generation gets auto-upscaled, bumping the source tier wastes money`,
+    );
   }
   return input;
 }

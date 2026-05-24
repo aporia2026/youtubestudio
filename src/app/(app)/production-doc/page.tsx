@@ -4,7 +4,8 @@ import React, { Suspense, useState, useEffect, useRef, useCallback } from 'react
 import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
-import { EDITOR_V1_PUBLIC } from '@/lib/feature-flags';
+import { COLLAGE_TESTER_PUBLIC, EDITOR_V1_PUBLIC } from '@/lib/feature-flags';
+import { CollageTesterPanel } from '@/components/production-doc/CollageTesterPanel';
 import type { ScheduleItem } from '@/lib/schedule';
 import { getScheduleLinkId, fetchScheduleItem, loadFullContextForItem, buildContextNotesFromItem } from '@/lib/schedule-link';
 import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
@@ -407,6 +408,17 @@ interface ProductionDoc {
    *  remotion-side `ProductionDoc` (`src/remotion/utils.ts`); the two
    *  interfaces must stay in sync. */
   image_model_default?: string;
+  /** Collage batching toggle (2026-05-24 plan). When `true`, the
+   *  "Generate all missing stills" batch button and the fresh-doc
+   *  generation flow group consecutive shots in chunks of 4 and ask
+   *  the chosen image model to produce a single 2×2 collage per
+   *  group. The server then auto-upscales the collage and crops it
+   *  into 4 per-shot images. Cuts generation cost ~70–75% per group.
+   *  Per-shot Regenerate always stays single-image regardless of
+   *  this flag. Default `false`. Mirrors the same field on the
+   *  remotion-side `ProductionDoc`; the two interfaces must stay
+   *  in sync. */
+  collage_mode?: boolean;
 }
 
 interface RowImageState {
@@ -3522,35 +3534,174 @@ function ProductionDocPage() {
   // missing) with a usable AI prompt. Shares the same sequential
   // pipeline as the retry batch so we don't hammer Kie in parallel.
   // Confirms first because a 30-row doc could cost real money.
+  //
+  // When `doc.collage_mode === true`, sequential chunks of 4 shots are
+  // batched into a single 2×2 collage call (+ 1 upscale), cutting Kie
+  // generation cost ~70–75% per group. The chunk falls back to 4
+  // single-shot calls if the collage path reports `fallback_needed`
+  // (malformed output after one retry OR generation error). The tail
+  // group of <4 shots always uses single-shot calls. v1 limitations:
+  // no per-cell OST baking, no style-ref i2i — when those features
+  // are needed, turn collage off in the doc settings.
   const runGenerateEmptyImages = useCallback(async () => {
     if (retryingImages || imagesGenerating) return;
     if (emptyImagePlan.length === 0) return;
-    const confirmed = window.confirm(
-      `Generate stills for ${emptyImagePlan.length} empty row${emptyImagePlan.length === 1 ? '' : 's'}? This calls the image model once per row.`,
-    );
+
+    const collageOn = doc?.collage_mode === true;
+    const chunkCount = collageOn ? Math.floor(emptyImagePlan.length / 4) : 0;
+    const tailCount = emptyImagePlan.length - chunkCount * 4;
+    const confirmMsg = collageOn
+      ? `Generate stills for ${emptyImagePlan.length} empty row${emptyImagePlan.length === 1 ? '' : 's'}? Collage mode is ON — ${chunkCount} batched group${chunkCount === 1 ? '' : 's'} of 4${tailCount > 0 ? ` + ${tailCount} single shot${tailCount === 1 ? '' : 's'}` : ''}.`
+      : `Generate stills for ${emptyImagePlan.length} empty row${emptyImagePlan.length === 1 ? '' : 's'}? This calls the image model once per row.`;
+    const confirmed = window.confirm(confirmMsg);
     if (!confirmed) return;
+
     setRetryingImages({ done: 0, total: emptyImagePlan.length });
-    for (let n = 0; n < emptyImagePlan.length; n++) {
-      const item = emptyImagePlan[n]!;
-      await generateImageForRow(item.rowIndex, item.prompt, {
-        onScreenText: item.onScreenText,
-        onScreenTextMode: item.onScreenTextMode,
-        sectionTitle: item.sectionTitle,
-        sectionTitleLayout: item.sectionTitleLayout,
-        referenceImageUrl: item.referenceImageUrl,
-        styleSheetDescription: item.styleSheetDescription,
-        overlayStockTerms: item.overlayStockTerms,
-        skipOverlay: item.skipOverlay,
-      });
-      setRetryingImages({ done: n + 1, total: emptyImagePlan.length });
+    let completed = 0;
+
+    if (collageOn) {
+      // Group eligible shots in chunks of 4. Sequential — no eligibility
+      // filter beyond "has a prompt" (which `emptyImagePlan` already
+      // enforces). If a chunk falls back, the 4 single-shot calls run
+      // inline before moving to the next chunk.
+      const chunkSize = 4;
+      for (let start = 0; start + chunkSize <= emptyImagePlan.length; start += chunkSize) {
+        const chunk = emptyImagePlan.slice(start, start + chunkSize);
+        // Mark all 4 rows loading at once so the UI doesn't show 3 idle
+        // tiles while the 4th is still running.
+        setRowImages((prev) => {
+          const next = [...prev];
+          for (const item of chunk) {
+            next[item.rowIndex] = { ...next[item.rowIndex], status: 'loading' };
+          }
+          return next;
+        });
+        console.info('[prodoc collage batch] start', {
+          chunk_indices: chunk.map((c) => c.rowIndex),
+          model: imageModel,
+        });
+        let collageOk = false;
+        try {
+          const res = await fetch('/api/generate/production-doc/collage', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompts: chunk.map((c) => c.prompt),
+              model: imageModel,
+            }),
+          });
+          const data = await safeJson(res) as {
+            status?: 'success' | 'fallback_needed';
+            imageUrls?: string[];
+            saliencies?: (ImageSaliencyMap | null)[];
+            reason?: string;
+            detail?: string;
+            error?: string;
+          };
+          if (res.ok && data.status === 'success' && Array.isArray(data.imageUrls) && data.imageUrls.length === 4) {
+            setRowImages((prev) => {
+              const next = [...prev];
+              for (let i = 0; i < chunk.length; i++) {
+                next[chunk[i].rowIndex] = {
+                  status: 'done',
+                  imageUrl: data.imageUrls![i],
+                  source: 'generated',
+                };
+              }
+              return next;
+            });
+            // Apply per-quadrant saliency so the overlay-placement
+            // resolver lands real-image overlays on the emptiest cell
+            // instead of falling back to the LLM-planned zone. Mirrors
+            // the single-shot path which calls applySaliencyToRow
+            // after each generation lands.
+            if (Array.isArray(data.saliencies)) {
+              for (let i = 0; i < chunk.length; i++) {
+                const sal = data.saliencies[i];
+                if (sal) applySaliencyToRow(chunk[i].rowIndex, sal);
+              }
+            }
+            console.info('[prodoc collage batch] success', {
+              chunk_indices: chunk.map((c) => c.rowIndex),
+            });
+            collageOk = true;
+          } else {
+            console.warn('[prodoc collage batch] fallback', {
+              chunk_indices: chunk.map((c) => c.rowIndex),
+              reason: data.reason ?? `http_${res.status}`,
+              detail: (data.detail ?? data.error ?? '').slice(0, 200),
+            });
+          }
+        } catch (err) {
+          console.warn('[prodoc collage batch] threw — falling back to single', {
+            chunk_indices: chunk.map((c) => c.rowIndex),
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        if (!collageOk) {
+          // Per-shot fallback for this chunk only.
+          for (const item of chunk) {
+            await generateImageForRow(item.rowIndex, item.prompt, {
+              onScreenText: item.onScreenText,
+              onScreenTextMode: item.onScreenTextMode,
+              sectionTitle: item.sectionTitle,
+              sectionTitleLayout: item.sectionTitleLayout,
+              referenceImageUrl: item.referenceImageUrl,
+              styleSheetDescription: item.styleSheetDescription,
+              overlayStockTerms: item.overlayStockTerms,
+              skipOverlay: item.skipOverlay,
+            });
+          }
+        }
+        completed += chunk.length;
+        setRetryingImages({ done: completed, total: emptyImagePlan.length });
+      }
+      // Tail of <4 shots → single-shot each.
+      for (let i = chunkCount * chunkSize; i < emptyImagePlan.length; i++) {
+        const item = emptyImagePlan[i]!;
+        await generateImageForRow(item.rowIndex, item.prompt, {
+          onScreenText: item.onScreenText,
+          onScreenTextMode: item.onScreenTextMode,
+          sectionTitle: item.sectionTitle,
+          sectionTitleLayout: item.sectionTitleLayout,
+          referenceImageUrl: item.referenceImageUrl,
+          styleSheetDescription: item.styleSheetDescription,
+          overlayStockTerms: item.overlayStockTerms,
+          skipOverlay: item.skipOverlay,
+        });
+        completed++;
+        setRetryingImages({ done: completed, total: emptyImagePlan.length });
+      }
+    } else {
+      // Legacy per-shot path — collage mode off.
+      for (let n = 0; n < emptyImagePlan.length; n++) {
+        const item = emptyImagePlan[n]!;
+        await generateImageForRow(item.rowIndex, item.prompt, {
+          onScreenText: item.onScreenText,
+          onScreenTextMode: item.onScreenTextMode,
+          sectionTitle: item.sectionTitle,
+          sectionTitleLayout: item.sectionTitleLayout,
+          referenceImageUrl: item.referenceImageUrl,
+          styleSheetDescription: item.styleSheetDescription,
+          overlayStockTerms: item.overlayStockTerms,
+          skipOverlay: item.skipOverlay,
+        });
+        setRetryingImages({ done: n + 1, total: emptyImagePlan.length });
+      }
     }
+
     setRetryingImages(null);
     toast.success(
-      `Generated ${emptyImagePlan.length} image${emptyImagePlan.length === 1 ? '' : 's'}.`,
+      collageOn
+        ? `Generated ${emptyImagePlan.length} image${emptyImagePlan.length === 1 ? '' : 's'} (${chunkCount} collage group${chunkCount === 1 ? '' : 's'}).`
+        : `Generated ${emptyImagePlan.length} image${emptyImagePlan.length === 1 ? '' : 's'}.`,
     );
-    // Same deps justification as runRetryFailedImages above.
+    // Same deps justification as runRetryFailedImages above. `imageModel`
+    // and `doc.collage_mode` are read inside but stable enough at the
+    // batch's scope that we don't need to refire the callback when they
+    // change mid-batch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [retryingImages, imagesGenerating, emptyImagePlan]);
+  }, [retryingImages, imagesGenerating, emptyImagePlan, doc?.collage_mode, imageModel]);
 
   const runRetryFailedVideos = useCallback(async () => {
     if (animatingAll || retryingVideos) return;
@@ -7088,6 +7239,54 @@ function ProductionDocPage() {
               {doc.overlays_disabled === true
                 ? '— off: brands & logos must be in the image prompt itself'
                 : '— on: stock PNG overlays composited on top of stills'}
+            </span>
+          </div>
+
+          {/* Collage tester debug panel — hidden behind the public flag
+              `NEXT_PUBLIC_COLLAGE_TESTER`. Backed by /api/dev/collage-test
+              which has its own server-side flag (defence in depth). */}
+          {COLLAGE_TESTER_PUBLIC && <CollageTesterPanel />}
+
+          {/* Collage batch mode — when on, "Generate empty" groups 4
+              consecutive shots into a single 2×2 collage call + 1
+              upscale (~75% cheaper than 4 single calls). Per-shot
+              Regenerate stays single-image regardless. Falls back to
+              single shots automatically on per-chunk failure. v1
+              limitations: no per-cell OST baking, no style-ref i2i. */}
+          <div
+            className="flex items-center gap-2 mb-4 px-3 py-2 rounded text-xs"
+            style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}
+          >
+            <label
+              className="flex items-center gap-2 cursor-pointer"
+              title='Group every 4 shots into a single 2×2 collage call. The server upscales the collage and crops it into 4 per-shot images. ~75% cheaper than 4 single calls. Limitations: no per-cell on-screen-text baking. Per-shot Regenerate always stays single-image.'
+            >
+              <input
+                type="checkbox"
+                checked={doc.collage_mode === true}
+                onChange={(e) => {
+                  const next: ProductionDoc = { ...doc };
+                  if (e.target.checked) {
+                    next.collage_mode = true;
+                  } else {
+                    delete next.collage_mode;
+                  }
+                  console.info('[collage-mode] doc-level toggle', { collage_mode: next.collage_mode === true });
+                  setDoc(next);
+                  if (historyEntryId) {
+                    updateProductionDocEntry(historyEntryId, { doc: next }).catch(() => {});
+                  }
+                }}
+                style={{ accentColor: '#a855f7' }}
+              />
+              <span style={{ color: 'var(--text-secondary)' }}>
+                Generate 4 shots at once (collage mode)
+              </span>
+            </label>
+            <span style={{ color: 'var(--text-muted)' }}>
+              {doc.collage_mode === true
+                ? 'on: ~75% cheaper, slight quality tradeoff, no per-cell text baking'
+                : 'off: each shot is its own generation call'}
             </span>
           </div>
 

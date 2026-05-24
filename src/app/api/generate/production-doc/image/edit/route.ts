@@ -7,9 +7,9 @@ import {
   createFluxKontextTask,
   createGpt4oImageTask,
   createKieTask,
-  pollFluxKontextResult,
-  pollGpt4oImageResult,
-  pollKieResult,
+  pollFluxKontextResultThenUpscale,
+  pollGpt4oImageResultThenUpscale,
+  pollKieResultThenUpscale,
 } from '@/lib/kie-poll';
 import { checkSafePublicUrl } from '@/lib/url-safety';
 import {
@@ -197,7 +197,10 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
         const input = buildKieStandardInput(option, prompt, originalImageUrl, maskUrl);
         const taskId = await createKieTask(apiKey, option.backend.kieModel, input);
         console.info('[image-edit task]', { taskId, optionId: option.id, kind: 'kie-standard' });
-        resultUrl = await pollKieResult(taskId, apiKey);
+        // System-wide auto-upscale runs after poll (skips if output is
+        // already >2000px on the long edge — common for edits of
+        // previously-upscaled images). See src/lib/upscale.ts.
+        resultUrl = await pollKieResultThenUpscale(taskId, apiKey);
         break;
       }
       case 'kie-gpt4o': {
@@ -212,7 +215,8 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
           quality: option.backend.quality,
         });
         console.info('[image-edit task]', { taskId, optionId: option.id, kind: 'kie-gpt4o' });
-        resultUrl = await pollGpt4oImageResult(taskId, apiKey);
+        // System-wide auto-upscale: see src/lib/upscale.ts.
+        resultUrl = await pollGpt4oImageResultThenUpscale(taskId, apiKey);
         break;
       }
       case 'flux-kontext': {
@@ -224,7 +228,8 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
           outputFormat: 'png',
         });
         console.info('[image-edit task]', { taskId, optionId: option.id, kind: 'flux-kontext' });
-        resultUrl = await pollFluxKontextResult(taskId, apiKey);
+        // System-wide auto-upscale: see src/lib/upscale.ts.
+        resultUrl = await pollFluxKontextResultThenUpscale(taskId, apiKey);
         break;
       }
     }

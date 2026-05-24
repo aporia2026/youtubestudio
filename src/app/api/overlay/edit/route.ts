@@ -7,8 +7,8 @@ import { logger } from '@/lib/logger';
 import {
   createGpt4oImageTask,
   createKieTask,
-  pollGpt4oImageResult,
-  pollKieResult,
+  pollGpt4oImageResultThenUpscale,
+  pollKieResultThenUpscale,
 } from '@/lib/kie-poll';
 import { checkSafePublicUrl } from '@/lib/url-safety';
 import {
@@ -230,7 +230,10 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         image_size: kieSize,
         output_format: 'png',
       });
-      resultUrl = await pollKieResult(taskId, apiKey);
+      // System-wide auto-upscale: see src/lib/upscale.ts. Edits often
+      // preserve dimensions, so on already-large overlays the skip rule
+      // fires and no upscale call is made.
+      resultUrl = await pollKieResultThenUpscale(taskId, apiKey);
     } else {
       // GPT-4o image edit only accepts 1:1 / 3:2 / 2:3 per Kie docs.
       // Map the overlay's native aspect to the closest of those — a
@@ -250,7 +253,8 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         size: gptSize,
         quality: maskQuality,
       });
-      resultUrl = await pollGpt4oImageResult(taskId, apiKey);
+      // System-wide auto-upscale: see src/lib/upscale.ts.
+      resultUrl = await pollGpt4oImageResultThenUpscale(taskId, apiKey);
     }
 
     // Mirror the result to R2 under `overlays/edit-…` so the source

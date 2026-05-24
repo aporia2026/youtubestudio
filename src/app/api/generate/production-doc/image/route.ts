@@ -12,7 +12,7 @@ import {
   getI2IModelSpec,
 } from '@/lib/image-models-i2i';
 import { computeImageSaliency } from '@/lib/image-saliency';
-import { createKieTask, pollKieResult } from '@/lib/kie-poll';
+import { createKieTask, pollKieResultThenUpscale } from '@/lib/kie-poll';
 import {
   getDownloadUrlForBucket,
   getImagesBucket,
@@ -461,7 +461,11 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     }
 
     const taskId = await createKieTask(apiKey, spec.kieModel, buildKieImageInput(spec.value, augmentedPrompt));
-    const kieUrl = await pollKieResult(taskId, apiKey);
+    // System-wide auto-upscale: every cloud generation lands at ~4K via
+    // Recraft Crisp Upscale before the R2 mirror below picks it up.
+    // Skips kick in for >2000px outputs and when AUTO_UPSCALE_ENABLED=false.
+    // See src/lib/upscale.ts.
+    const kieUrl = await pollKieResultThenUpscale(taskId, apiKey);
 
     // Re-host in R2 (images bucket) so the URL doesn't depend on Kie's
     // CDN retention. On mirror failure fall back to the Kie URL —

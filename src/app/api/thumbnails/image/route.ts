@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { domainErrorResponse } from '@/lib/route-helpers';
-import { createKieTask, pollKieResult } from '@/lib/kie-poll';
+import { createKieTask, pollKieResultThenUpscale } from '@/lib/kie-poll';
 import { generateImageOpenAI } from '@/lib/openai-images';
 import { uploadToBucket, getImagesBucket, getImagesDownloadUrl } from '@/lib/r2';
 
@@ -38,7 +38,11 @@ const MODEL_MAP: Record<string, ModelConfig> = {
   'grok-imagine-t2i': { provider: 'kie', model: 'grok-imagine/text-to-image', type: 'text-to-image' },
   'flux2-pro-t2i': { provider: 'kie', model: 'flux-2/pro-text-to-image', type: 'text-to-image' },
   'flux2-flex-t2i': { provider: 'kie', model: 'flux-2/flex-text-to-image', type: 'text-to-image' },
-  'nano-banana': { provider: 'kie', model: 'google/nano-banana', type: 'text-to-image' },
+  // NanoBanana 2 (Gemini 3.1 Flash Image). Replaced the original
+  // `google/nano-banana` (Gemini 2.5 Flash) on 2026-05-24. Same `value`
+  // id so existing thumbnail rows that picked it still resolve. Model
+  // string changed from `google/nano-banana` → `nano-banana-2`.
+  'nano-banana': { provider: 'kie', model: 'nano-banana-2', type: 'text-to-image' },
   'gpt-image-2-t2i': { provider: 'kie', model: 'gpt-image-2-text-to-image', type: 'text-to-image' },
   // Ideogram v3 — single model string, tier via renderingSpeed. See
   // the input-building block below for the field translation.
@@ -144,22 +148,33 @@ export async function POST(req: NextRequest) {
     // Kie.ai path (default).
     const apiKey = requireKieKey();
 
-    // Build request body. GPT Image 2 and Ideogram v3 don't document an
-    // nsfw_checker field (per Kie market spec) — including it risks a 422
+    // Build request body. GPT Image 2, Ideogram v3, and NanoBanana 2
+    // don't document an nsfw_checker field — including it risks a 422
     // on stricter validators. Every other Kie image model accepts it.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const input: Record<string, any> = { prompt };
-    if (!config.model.startsWith('gpt-image-2') && !config.model.startsWith('ideogram/')) {
+    if (
+      !config.model.startsWith('gpt-image-2')
+      && !config.model.startsWith('ideogram/')
+      && config.model !== 'nano-banana-2'
+    ) {
       input.nsfw_checker = true;
     }
 
-    // Text-to-image models
+    // Text-to-image models. 1K-only policy (mirrors src/lib/image-models.ts) —
+    // every cloud generation flows through the system-wide auto-upscale, so
+    // we always pin to 1K at the source. The guard below blocks accidental
+    // 2K/4K drift.
     if (config.type === 'text-to-image') {
       if (config.model.startsWith('flux-2')) {
         input.aspect_ratio = '16:9';
         input.resolution = '1K';
-      } else if (config.model.startsWith('google/')) {
-        input.image_size = '16:9';
+      } else if (config.model === 'nano-banana-2') {
+        // Gemini 3.1 Flash Image. Same `aspect_ratio` + `resolution` shape
+        // as GPT Image 2 — replaces the old `google/nano-banana` (v1) which
+        // used `image_size` instead. See docs.kie.ai/market/google/nanobanana2.
+        input.aspect_ratio = '16:9';
+        input.resolution = '1K';
         input.output_format = 'png';
       } else if (config.model.startsWith('gpt-image-2')) {
         input.aspect_ratio = '16:9';
@@ -172,6 +187,15 @@ export async function POST(req: NextRequest) {
         input.rendering_speed = config.renderingSpeed ?? 'QUALITY';
       } else {
         input.aspect_ratio = '16:9';
+      }
+
+      // 1K-policy enforcement (defence in depth — same guard as
+      // src/lib/image-models.ts:buildKieImageInput). If a future branch
+      // drifts to 2K/4K, this fires before the request leaves the process.
+      if (input.resolution !== undefined && input.resolution !== '1K') {
+        throw new Error(
+          `[thumbnails 1k-policy] blocked non-1K resolution for ${config.model}: ${String(input.resolution)} — every cloud generation gets auto-upscaled, bumping the source tier wastes money`,
+        );
       }
     }
 
@@ -186,7 +210,8 @@ export async function POST(req: NextRequest) {
     }
 
     const taskId = await createKieTask(apiKey, config.model, input);
-    const imageUrl = await pollKieResult(taskId, apiKey);
+    // System-wide auto-upscale runs after poll. See src/lib/upscale.ts.
+    const imageUrl = await pollKieResultThenUpscale(taskId, apiKey);
 
     return NextResponse.json({ imageUrl, taskId });
   } catch (err) {

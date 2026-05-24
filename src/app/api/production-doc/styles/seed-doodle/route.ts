@@ -72,7 +72,9 @@ const REF_FILENAMES = [
 ] as const;
 
 const DEFAULT_NAME = 'Doodle Explainer (refs)';
-const DEFAULT_MODEL = 'nano-banana-pro-i2i';
+// Updated 2026-05-24: NanoBanana Pro retired in favour of NanoBanana 2
+// (Gemini 3.1 Flash, $0.04/image, 14 refs vs Pro's 8). Same field shape.
+const DEFAULT_MODEL = 'nano-banana-2-i2i';
 
 interface ExistingStyleProbe {
   id: string;
