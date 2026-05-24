@@ -2262,6 +2262,24 @@ function ProductionDocPage() {
   // pattern as splittingRow above.
   const [editingPromptRow, setEditingPromptRow] = useState<{ rowIndex: number; draft: string } | null>(null);
 
+  // Per-row "edit script text" inline form state. Mirrors editingPromptRow
+  // exactly — click ✎ on the script_text cell to open a textarea, ⌘/Ctrl+Enter
+  // or Save commits, Escape or Cancel discards. Does NOT recompute downstream
+  // timecodes; the user is editing the wording, not the timing.
+  const [editingScriptRow, setEditingScriptRow] = useState<{ rowIndex: number; draft: string } | null>(null);
+
+  // Row-filter state. Both fields default to empty / unset = no filter.
+  //  - `visualTypes` is a set of `visual_type` values; row passes when its
+  //    visual_type is in the set, OR when the set is empty (no filter).
+  //  - `search` is a case-insensitive substring matched across script_text,
+  //    visual_description, and on_screen_text; row passes when the substring
+  //    appears in any of those, OR when search is empty.
+  // The filter applies to both the desktop table and the mobile cards.
+  const [filters, setFilters] = useState<{ visualTypes: string[]; search: string }>({
+    visualTypes: [],
+    search: '',
+  });
+
   /**
    * Split a row at its `##` markdown heading into TWO rows: a new
    * Title Card row above (containing just the heading as on-screen
@@ -7487,6 +7505,108 @@ function ProductionDocPage() {
             </div>
           )}
 
+          {/* ── Row filter bar — visible above both desktop table and mobile cards.
+              Visual-type pills are derived from the visual_types actually present
+              in the doc (so a Talking-Head-only doc doesn't show a B-Roll pill).
+              Filtering uses the doc-index `i` to render `null` for filtered-out
+              rows, so every row action keeps pointing at the right row. */}
+          {(() => {
+            const rows = doc.rows ?? [];
+            const typeCounts = rows.reduce<Record<string, number>>((acc, r) => {
+              acc[r.visual_type] = (acc[r.visual_type] ?? 0) + 1;
+              return acc;
+            }, {});
+            const distinctTypes = Object.keys(typeCounts).sort();
+            const hasAnyFilter = filters.visualTypes.length > 0 || filters.search.trim().length > 0;
+            const search = filters.search.trim().toLowerCase();
+            const visibleCount = rows.filter(r => {
+              if (filters.visualTypes.length > 0 && !filters.visualTypes.includes(r.visual_type)) return false;
+              if (search.length > 0) {
+                const hay = `${r.script_text ?? ''}\n${r.visual_description ?? ''}\n${r.on_screen_text ?? ''}`.toLowerCase();
+                if (!hay.includes(search)) return false;
+              }
+              return true;
+            }).length;
+            return (
+              <div className="glass rounded-xl p-3 flex flex-wrap items-center gap-2 mb-3" style={{ rowGap: 8 }}>
+                <input
+                  type="search"
+                  value={filters.search}
+                  onChange={(e) => {
+                    const next = { ...filters, search: e.target.value };
+                    setFilters(next);
+                    console.info('[production-doc filter-change]', next);
+                  }}
+                  placeholder="Search script, visual, on-screen…"
+                  className="text-xs px-2 py-1 rounded"
+                  style={{
+                    background: 'rgba(0,0,0,0.20)',
+                    color: 'var(--text)',
+                    border: '1px solid rgba(255,255,255,0.10)',
+                    outline: 'none',
+                    minWidth: 220,
+                    flex: '0 1 280px',
+                  }}
+                />
+                <div className="flex flex-wrap items-center gap-1">
+                  {distinctTypes.map(type => {
+                    const active = filters.visualTypes.includes(type);
+                    const color = VISUAL_TYPE_COLORS[type] || VISUAL_TYPE_COLORS['B-Roll'];
+                    return (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => {
+                          const nextTypes = active
+                            ? filters.visualTypes.filter(t => t !== type)
+                            : [...filters.visualTypes, type];
+                          const next = { ...filters, visualTypes: nextTypes };
+                          setFilters(next);
+                          console.info('[production-doc filter-change]', next);
+                        }}
+                        className="text-[11px] px-2 py-0.5 rounded-full font-medium"
+                        style={{
+                          background: active ? color.bg : 'transparent',
+                          color: active ? color.color : 'var(--text-muted)',
+                          border: `1px solid ${active ? color.color : 'rgba(255,255,255,0.15)'}`,
+                          cursor: 'pointer',
+                          opacity: active ? 1 : 0.75,
+                        }}
+                        title={active ? `Click to remove "${type}" from filter` : `Click to show only "${type}" rows`}
+                      >
+                        {type} · {typeCounts[type]}
+                      </button>
+                    );
+                  })}
+                </div>
+                {hasAnyFilter && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = { visualTypes: [], search: '' };
+                      setFilters(next);
+                      console.info('[production-doc filter-change]', next);
+                    }}
+                    className="text-[11px] px-2 py-0.5 rounded"
+                    style={{
+                      background: 'transparent',
+                      color: 'var(--text-muted)',
+                      border: '1px solid rgba(255,255,255,0.15)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Clear filters
+                  </button>
+                )}
+                <span className="text-[11px] ml-auto" style={{ color: 'var(--text-muted)' }}>
+                  {hasAnyFilter
+                    ? `Showing ${visibleCount} of ${rows.length} rows`
+                    : `${rows.length} rows`}
+                </span>
+              </div>
+            );
+          })()}
+
           {/* ── Desktop table */}
           <div className="glass rounded-xl overflow-hidden">
             <div className="overflow-x-auto hidden md:block">
@@ -7514,6 +7634,14 @@ function ProductionDocPage() {
                 </thead>
                 <tbody>
                   {doc.rows?.map((row, i) => {
+                    // Filter check — return null so the row index `i` stays
+                    // tied to the doc index for every handler that follows.
+                    if (filters.visualTypes.length > 0 && !filters.visualTypes.includes(row.visual_type)) return null;
+                    if (filters.search.trim().length > 0) {
+                      const q = filters.search.trim().toLowerCase();
+                      const hay = `${row.script_text ?? ''}\n${row.visual_description ?? ''}\n${row.on_screen_text ?? ''}`.toLowerCase();
+                      if (!hay.includes(q)) return null;
+                    }
                     const vt = VISUAL_TYPE_COLORS[row.visual_type] || VISUAL_TYPE_COLORS['B-Roll'];
                     const imgState = rowImages[i] || { status: 'idle' };
                     return (
@@ -7581,9 +7709,105 @@ function ProductionDocPage() {
                               return { title: t, remainder: row.script_text.slice(m[0].length).trim() };
                             };
 
+                            const isEditingScript = editingScriptRow?.rowIndex === i;
                             return (
                               <>
-                                <div>{row.script_text}</div>
+                                {isEditingScript ? (
+                                  <div className="flex flex-col gap-1">
+                                    <textarea
+                                      autoFocus
+                                      value={editingScriptRow.draft}
+                                      onChange={(e) => setEditingScriptRow({ rowIndex: i, draft: e.target.value })}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Escape') setEditingScriptRow(null);
+                                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                                          const next = editingScriptRow.draft;
+                                          console.info('[production-doc script-edit]', {
+                                            rowIndex: i,
+                                            charsBefore: row.script_text.length,
+                                            charsAfter: next.length,
+                                          });
+                                          updateRow(i, { script_text: next });
+                                          setEditingScriptRow(null);
+                                        }
+                                      }}
+                                      rows={4}
+                                      style={{
+                                        fontSize: 12,
+                                        padding: '6px 8px',
+                                        borderRadius: 4,
+                                        background: 'rgba(0,0,0,0.25)',
+                                        color: 'var(--text)',
+                                        border: '1px solid rgba(34,211,238,0.35)',
+                                        outline: 'none',
+                                        width: '100%',
+                                        boxSizing: 'border-box',
+                                        resize: 'vertical',
+                                        lineHeight: 1.4,
+                                      }}
+                                    />
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const next = editingScriptRow.draft;
+                                          console.info('[production-doc script-edit]', {
+                                            rowIndex: i,
+                                            charsBefore: row.script_text.length,
+                                            charsAfter: next.length,
+                                          });
+                                          updateRow(i, { script_text: next });
+                                          setEditingScriptRow(null);
+                                        }}
+                                        className="text-[10px] px-2 py-0.5 rounded"
+                                        style={{
+                                          background: 'rgba(34,211,238,0.20)',
+                                          color: '#22d3ee',
+                                          border: '1px solid rgba(34,211,238,0.45)',
+                                          cursor: 'pointer',
+                                          fontWeight: 600,
+                                        }}
+                                      >
+                                        Save
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setEditingScriptRow(null)}
+                                        className="text-[10px] px-2 py-0.5 rounded"
+                                        style={{
+                                          background: 'transparent',
+                                          color: 'var(--text-muted)',
+                                          border: '1px solid rgba(255,255,255,0.10)',
+                                          cursor: 'pointer',
+                                        }}
+                                      >
+                                        Cancel
+                                      </button>
+                                      <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>
+                                        ⌘/Ctrl+Enter to save · Esc to cancel
+                                      </span>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-start gap-1">
+                                    <span style={{ flex: 1 }}>{row.script_text}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditingScriptRow({ rowIndex: i, draft: row.script_text })}
+                                      className="text-[10px] px-1.5 py-0.5 rounded shrink-0"
+                                      style={{
+                                        background: 'rgba(34,211,238,0.10)',
+                                        color: '#22d3ee',
+                                        border: '1px solid rgba(34,211,238,0.30)',
+                                        cursor: 'pointer',
+                                        lineHeight: 1.1,
+                                      }}
+                                      title="Edit script text"
+                                    >
+                                      ✎
+                                    </button>
+                                  </div>
+                                )}
                                 {isEditingThisRow ? (
                                   <div
                                     className="mt-1.5 flex flex-col gap-1.5 p-2 rounded"
@@ -8073,6 +8297,12 @@ function ProductionDocPage() {
             {/* ── Mobile cards */}
             <div className="md:hidden divide-y" style={{ borderColor: 'var(--border)' }}>
               {doc.rows?.map((row, i) => {
+                if (filters.visualTypes.length > 0 && !filters.visualTypes.includes(row.visual_type)) return null;
+                if (filters.search.trim().length > 0) {
+                  const q = filters.search.trim().toLowerCase();
+                  const hay = `${row.script_text ?? ''}\n${row.visual_description ?? ''}\n${row.on_screen_text ?? ''}`.toLowerCase();
+                  if (!hay.includes(q)) return null;
+                }
                 const vt = VISUAL_TYPE_COLORS[row.visual_type] || VISUAL_TYPE_COLORS['B-Roll'];
                 const imgState = rowImages[i] || { status: 'idle' };
                 const isOpen = expandedRow === i;
@@ -8095,7 +8325,99 @@ function ProductionDocPage() {
                       <div className="mt-3 space-y-2.5 pl-4">
                         <div>
                           <p className="text-xs font-semibold mb-0.5" style={{ color: 'var(--text-muted)' }}>Script</p>
-                          <p className="text-xs" style={{ color: 'var(--text-primary)' }}>{row.script_text}</p>
+                          {editingScriptRow?.rowIndex === i ? (
+                            <div className="flex flex-col gap-1">
+                              <textarea
+                                autoFocus
+                                value={editingScriptRow.draft}
+                                onChange={(e) => setEditingScriptRow({ rowIndex: i, draft: e.target.value })}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Escape') setEditingScriptRow(null);
+                                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                                    const next = editingScriptRow.draft;
+                                    console.info('[production-doc script-edit]', {
+                                      rowIndex: i,
+                                      charsBefore: row.script_text.length,
+                                      charsAfter: next.length,
+                                    });
+                                    updateRow(i, { script_text: next });
+                                    setEditingScriptRow(null);
+                                  }
+                                }}
+                                rows={5}
+                                style={{
+                                  fontSize: 12,
+                                  padding: '6px 8px',
+                                  borderRadius: 4,
+                                  background: 'rgba(0,0,0,0.25)',
+                                  color: 'var(--text)',
+                                  border: '1px solid rgba(34,211,238,0.35)',
+                                  outline: 'none',
+                                  width: '100%',
+                                  boxSizing: 'border-box',
+                                  resize: 'vertical',
+                                  lineHeight: 1.4,
+                                }}
+                              />
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const next = editingScriptRow.draft;
+                                    console.info('[production-doc script-edit]', {
+                                      rowIndex: i,
+                                      charsBefore: row.script_text.length,
+                                      charsAfter: next.length,
+                                    });
+                                    updateRow(i, { script_text: next });
+                                    setEditingScriptRow(null);
+                                  }}
+                                  className="text-[10px] px-2 py-0.5 rounded"
+                                  style={{
+                                    background: 'rgba(34,211,238,0.20)',
+                                    color: '#22d3ee',
+                                    border: '1px solid rgba(34,211,238,0.45)',
+                                    cursor: 'pointer',
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingScriptRow(null)}
+                                  className="text-[10px] px-2 py-0.5 rounded"
+                                  style={{
+                                    background: 'transparent',
+                                    color: 'var(--text-muted)',
+                                    border: '1px solid rgba(255,255,255,0.10)',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-start gap-1">
+                              <p className="text-xs flex-1" style={{ color: 'var(--text-primary)' }}>{row.script_text}</p>
+                              <button
+                                type="button"
+                                onClick={() => setEditingScriptRow({ rowIndex: i, draft: row.script_text })}
+                                className="text-[10px] px-1.5 py-0.5 rounded shrink-0"
+                                style={{
+                                  background: 'rgba(34,211,238,0.10)',
+                                  color: '#22d3ee',
+                                  border: '1px solid rgba(34,211,238,0.30)',
+                                  cursor: 'pointer',
+                                  lineHeight: 1.1,
+                                }}
+                                title="Edit script text"
+                              >
+                                ✎
+                              </button>
+                            </div>
+                          )}
                           {(() => {
                             const hasHeadingMarker = /^\s*##/.test(row.script_text);
                             const isTitleCard = row.visual_type === 'Title Card';
