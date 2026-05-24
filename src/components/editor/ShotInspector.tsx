@@ -24,6 +24,7 @@ import type { ProductionDoc, RowOverlayRenderState } from '@/remotion/utils';
 import { computeAutoShiftYPct } from '@/remotion/utils';
 import type { ThumbnailTransitionConfig, VideoShot, VideoThumbnail } from '@/remotion/types';
 import { BROLL_MODELS } from '@/lib/broll-types';
+import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS, getImageModelSpec } from '@/lib/image-models';
 import { useLocalStudioEnabled } from '@/lib/local-studio-enabled';
 import { ShotLayoutControls } from '@/components/editor/inspector/ShotLayoutControls';
 import { TransitionDialog } from '@/components/production-doc/TransitionDialog';
@@ -102,6 +103,12 @@ interface ShotInspectorProps {
    *  Surfaced so the dropdown's "Default" label can show the effective
    *  fallback ("Default — doc setting", "Default — workspace setting"). */
   docBrollModelId?: string;
+  /** Doc-level image (still) model id — applied as the default for
+   *  every shot's Regenerate unless the row has its own pick
+   *  (`row.image_model`). Undefined falls back to `DEFAULT_IMAGE_MODEL`
+   *  server-side. Surfaced so the per-shot picker's "Default" label can
+   *  show what it resolves to right now. */
+  docImageModelDefault?: string;
   /** Called when the user edits the row's voiceover script (inline
    *  textarea OR via the AI rephrase button). Dispatches
    *  SET_ROW_SCRIPT. */
@@ -218,6 +225,7 @@ export function ShotInspector({
   clipError,
   brollModelId,
   docBrollModelId,
+  docImageModelDefault,
   onUpdateScript,
   onUpdateRow,
   overlayState,
@@ -296,12 +304,26 @@ export function ShotInspector({
     regenAbortRef.current?.abort();
     const controller = new AbortController();
     regenAbortRef.current = controller;
+    // Resolve which image model THIS regenerate will use. Tier
+    // priority mirrors the broll resolver: row > doc > server-side
+    // default. Sent verbatim as `model` so the API route doesn't have
+    // to second-guess; the route validates against IMAGE_MODELS and
+    // 400s on unknowns (route.ts:329).
+    const resolvedImageModel =
+      row.image_model || docImageModelDefault || undefined;
+    console.info('[editor inspector] regenerate model resolved', {
+      shotIndex,
+      rowModel: row.image_model ?? null,
+      docDefault: docImageModelDefault ?? null,
+      sent: resolvedImageModel ?? '(server default)',
+    });
     try {
       const res = await fetch('/api/generate/production-doc/image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt,
+          model: resolvedImageModel,
           onScreenText: row.on_screen_text ?? '',
           sectionTitle: row.section_title ?? '',
           // v2 (2026-05-22) — when the doc has a style preset pinned,
@@ -393,7 +415,7 @@ export function ShotInspector({
       console.warn('[editor inspector] regenerate failed', { detail: message });
       setRegenState({ kind: 'error', message });
     }
-  }, [onUploadImage, row.ai_image_prompt, row.visual_description, row.on_screen_text, row.section_title, shotIndex, stylePreset]);
+  }, [onUploadImage, row.ai_image_prompt, row.visual_description, row.on_screen_text, row.section_title, row.image_model, docImageModelDefault, shotIndex, stylePreset]);
 
   // Inline-edit + Rephrase state for the voiceover script field.
   // The textarea is a controlled mirror of `row.script_text`; we
@@ -773,6 +795,26 @@ export function ShotInspector({
               JPG, PNG, WebP, or GIF · max 10 MB. The new still replaces this shot
               immediately; Cmd/Ctrl+Z undoes.
             </div>
+
+            {/* Per-shot image (still) model picker. Controls which
+                model Regenerate sends to /api/generate/production-doc/image.
+                "Default" clears row.image_model so the doc-level default
+                (set in the editor's doc-defaults panel and stamped on
+                fresh docs by the production-doc page) takes over. */}
+            {onUpdateRow && (
+              <ShotImageModelPicker
+                rowModelId={row.image_model}
+                docModelId={docImageModelDefault}
+                onChange={(next) => {
+                  console.info('[editor row-image-model] changed', {
+                    shotIndex,
+                    from: row.image_model,
+                    to: next,
+                  });
+                  onUpdateRow({ image_model: next });
+                }}
+              />
+            )}
 
             {/* Regenerate from this row's current prompt. Calls the
                 existing /api/generate/production-doc/image route so
@@ -2339,5 +2381,69 @@ function ShotBrollModelPicker({
         </option>
       ))}
     </select>
+  );
+}
+
+// ─── Per-row image (still) model picker ────────────────────────────
+//
+// Mirrors ShotBrollModelPicker above but for the still-image side:
+// controls what /api/generate/production-doc/image gets called with
+// when the user clicks Regenerate. Resolution tier is row > doc >
+// server-side DEFAULT_IMAGE_MODEL (the route's fallback at
+// route.ts:327). Clearing writes `image_model: undefined` so the row
+// falls back to the doc-level default, which itself falls through to
+// the server default if undefined.
+function ShotImageModelPicker({
+  rowModelId,
+  docModelId,
+  onChange,
+}: {
+  rowModelId: string | undefined;
+  docModelId: string | undefined;
+  onChange: (next: string | undefined) => void;
+}): React.ReactElement {
+  const localStudioEnabled = useLocalStudioEnabled();
+  const models = useMemo(
+    () =>
+      IMAGE_MODELS.filter(
+        (m) => localStudioEnabled || m.provider !== 'comfyui-local',
+      ),
+    [localStudioEnabled],
+  );
+  // Resolve what "Default" means right now so the label is honest.
+  // Doc-level pick wins; otherwise the server's hardcoded default.
+  const fallbackId = docModelId ?? DEFAULT_IMAGE_MODEL;
+  const fallback = getImageModelSpec(fallbackId);
+  const defaultLabel = fallback
+    ? `Default — ${fallback.label}${docModelId ? ' (doc setting)' : ''}`
+    : 'Default';
+  return (
+    <div className="space-y-1">
+      <div
+        className="text-[11px] font-semibold"
+        style={{ color: 'var(--fg)' }}
+      >
+        Image model
+      </div>
+      <select
+        value={rowModelId ?? ''}
+        onChange={(e) => onChange(e.target.value || undefined)}
+        className="w-full text-xs rounded border px-2 py-1.5"
+        style={{
+          borderColor: 'var(--card-border)',
+          background: 'var(--bg)',
+          color: 'var(--fg)',
+        }}
+        aria-label="Image model for this shot's Regenerate"
+      >
+        <option value="">{defaultLabel}</option>
+        {models.map((m) => (
+          <option key={m.value} value={m.value}>
+            {m.label}
+            {m.hint ? ` — ${m.hint}` : ''}
+          </option>
+        ))}
+      </select>
+    </div>
   );
 }

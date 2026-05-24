@@ -523,6 +523,14 @@ export interface ProductionRow {
    *  the doc-wide default. Cleared (undefined) means "fall back to
    *  doc-level → workspace-level resolution." */
   broll_model_id?: string;
+  /** Per-row image (still) model lock. When set, the inspector's
+   *  Regenerate button sends this value as `model` to
+   *  `/api/generate/production-doc/image`. Cleared (undefined) means
+   *  "fall back to `ProductionDoc.image_model_default` → server-side
+   *  `DEFAULT_IMAGE_MODEL`." Mirrors `broll_model_id` for the still
+   *  side of the row. Values are entries of `IMAGE_MODELS` in
+   *  `src/lib/image-models.ts`. */
+  image_model?: string;
   /** How the renderer reconciles a clip's intrinsic duration with the
    *  scene's duration when they differ (e.g. Kling 10s clips in a 12s
    *  narration-driven scene). 2026-05-23.
@@ -636,6 +644,15 @@ export interface ProductionDoc {
    *  bulk picker — surfaced in the editor's doc-defaults panel so the
    *  user can change it without bouncing pages. */
   broll_model_id?: string;
+  /** Doc-level image (still) model. Every row's inspector Regenerate
+   *  uses this as the default when the row doesn't have its own
+   *  `image_model` lock. Tier priority: row > doc > server-side
+   *  `DEFAULT_IMAGE_MODEL`. Stamped when the production-doc page
+   *  generates the doc (mirrors the page's Image Model picker) so
+   *  per-shot Regenerates inherit the user's gen-time choice.
+   *  Values are entries of `IMAGE_MODELS` in
+   *  `src/lib/image-models.ts`. */
+  image_model_default?: string;
   /** Doc-level text overlays — Phase 4 master overlay layer (shot-
    *  graph editor plan). Each overlay spans a configurable time
    *  window independent of any row. Persisted on the doc so editor

@@ -65,6 +65,7 @@ import { deriveAlignmentStatus } from '@/lib/editor/alignment-status';
 import { computeAutoShiftYPct } from '@/remotion/utils';
 import { TransformOverlay } from '@/components/editor/TransformOverlay';
 import { BROLL_MODELS } from '@/lib/broll-types';
+import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS, getImageModelSpec } from '@/lib/image-models';
 import { useLocalStudioEnabled } from '@/lib/local-studio-enabled';
 import { InspectorAudioTab } from '@/components/editor/inspector/InspectorAudioTab';
 import { InspectorCaptionsTab } from '@/components/editor/inspector/InspectorCaptionsTab';
@@ -3102,6 +3103,52 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                 ))}
             </select>
           </div>
+          {/* Image model — doc-level default for the per-shot
+              Regenerate button in the inspector. Tier priority:
+              row.image_model > doc.image_model_default > server-side
+              DEFAULT_IMAGE_MODEL. The production-doc page stamps this
+              field when it generates a fresh doc so the editor opens
+              with the user's gen-time choice already populated. */}
+          <div className="space-y-1">
+            <div
+              className="text-[11px]"
+              style={{ color: 'var(--fg)' }}
+              title="Used as the default image model when you click Regenerate on a shot. Each shot's inspector can override this."
+            >
+              Image model
+            </div>
+            <select
+              value={state.doc.image_model_default ?? ''}
+              onChange={(e) => {
+                const next = e.target.value || undefined;
+                console.info('[editor doc-settings image-model] changed', {
+                  from: state.doc.image_model_default,
+                  to: next,
+                });
+                apply({
+                  type: 'PATCH_DOC',
+                  patch: { image_model_default: next },
+                });
+              }}
+              className="w-full text-xs rounded border px-2 py-1.5"
+              style={{
+                borderColor: 'var(--card-border)',
+                background: 'var(--bg)',
+                color: 'var(--fg)',
+              }}
+              aria-label="Default image model for every shot on this doc"
+            >
+              <option value="">
+                — Default ({getImageModelSpec(DEFAULT_IMAGE_MODEL)?.label ?? DEFAULT_IMAGE_MODEL}) —
+              </option>
+              {IMAGE_MODELS.filter((m) => localStudioEnabled || m.provider !== 'comfyui-local').map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                  {m.hint ? ` — ${m.hint}` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
           <button
             type="button"
             onClick={() => setShowBrandKit(true)}
@@ -3233,6 +3280,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               }}
               brollModelId={userBrollModelId}
               docBrollModelId={state.doc.broll_model_id}
+              docImageModelDefault={state.doc.image_model_default}
               onUpdateScript={(text) =>
                 apply({
                   type: 'SET_ROW_SCRIPT',

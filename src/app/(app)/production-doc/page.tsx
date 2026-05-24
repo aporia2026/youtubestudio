@@ -399,6 +399,14 @@ interface ProductionDoc {
    *  refresh + cross-device. Empty string / undefined ⇒ fall back to
    *  the user-level default. */
   broll_model_id?: string;
+  /** Doc-level image (still) model default. Stamped at gen-time from
+   *  the page-level Image Model picker so the editor opens with that
+   *  choice already populated as the per-shot Regenerate default.
+   *  Tier priority: row.image_model > doc.image_model_default >
+   *  server-side `DEFAULT_IMAGE_MODEL`. Mirrors the same field on the
+   *  remotion-side `ProductionDoc` (`src/remotion/utils.ts`); the two
+   *  interfaces must stay in sync. */
+  image_model_default?: string;
 }
 
 interface RowImageState {
@@ -5524,6 +5532,12 @@ function ProductionDocPage() {
         total_duration: `${totalMins}:${String(totalSecs).padStart(2, '0')}`,
         total_words: totalWords,
         rows: allRows,
+        // Stamp the gen-time image model so the editor opens with the
+        // user's choice already populated as the doc-level default
+        // (rule 10 — lazy user). Per-shot Regenerate in the inspector
+        // resolves: row.image_model > doc.image_model_default >
+        // server-side DEFAULT_IMAGE_MODEL.
+        image_model_default: imageModel,
         // Seed `overlays_disabled` from the user's input-panel preference
         // so the doc carries the user's intent forward. The post-doc
         // toggle near the rows table can override per-doc afterwards.
