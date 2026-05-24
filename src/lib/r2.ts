@@ -18,6 +18,16 @@ function getR2Client() {
     region: 'auto',
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId, secretAccessKey },
+    // Opt out of the SDK's default flexible checksums (WHEN_SUPPORTED, set
+    // by @aws-sdk/client-s3 ~3.726+). Otherwise every presigned PUT carries
+    // `x-amz-checksum-crc32` + `x-amz-sdk-checksum-algorithm` in both the
+    // signed query string and as request headers, which fails CORS
+    // preflight against R2 unless those exact headers are listed in the
+    // bucket's AllowedHeaders. WHEN_REQUIRED keeps checksums on for the
+    // few ops that genuinely need them (none in this codebase) and lets
+    // the browser PUT with just `Content-Type`.
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
   });
   return _r2Client;
 }
