@@ -430,67 +430,121 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // `rowOverlays`, `rowVideoClips`) must go through the atomic row-asset
   // endpoint or it will not persist. Fire-and-forget: local state was
   // already dispatched by the caller; this only handles the server write.
+  //
+  // Retry policy (2026-05-24): the project_assets table sits behind a
+  // Vercel Postgres pool that occasionally drops a transient connection
+  // or returns a 502 during regional flaps. Users were seeing
+  // "Shot N image not saved" toasts on different shots throughout a
+  // batch — none of those errors were data problems, just transient
+  // 5xx. We retry up to 3 times total on 5xx + network errors with
+  // exponential backoff (500ms, 1.5s, 3.5s — total ~5.5s before
+  // surfacing failure). 4xx (413 too-large, 429 rate-limited, 404
+  // not-found, 400 bad-input) short-circuit instantly because retry
+  // can't help them. Per-retry log lines stay in the console so a
+  // future investigation can grep for the pattern.
   const writeRowAsset = useCallback(
     (rowIndex: number, slot: 'image' | 'overlay' | 'clip', value: unknown) => {
       void (async () => {
-        try {
-          const res = await fetch(`/api/edit/${encodeURIComponent(projectId)}/row-asset`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ rowIndex, slot, value }),
-          });
-          if (!res.ok) {
+        const slotLabel =
+          slot === 'image' ? 'image' : slot === 'overlay' ? 'overlay' : 'clip';
+        const MAX_ATTEMPTS = 3;
+        const RETRY_DELAYS_MS = [500, 1_500, 3_500] as const;
+        let lastFailureKind: 'http_5xx' | 'http_4xx' | 'network' = 'network';
+        let lastFailureDetail: { status?: number; message?: string } = {};
+
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+          try {
+            const res = await fetch(`/api/edit/${encodeURIComponent(projectId)}/row-asset`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ rowIndex, slot, value }),
+            });
+            if (res.ok) {
+              const data = (await res.json().catch(() => ({}))) as { version?: number };
+              if (typeof data.version === 'number') {
+                // Keep the editor's local version aligned with the
+                // server. Without this sync the next debounced PATCH
+                // would fail the optimistic check and surface a
+                // spurious conflict.
+                apply({ type: 'SYNC_SERVER_VERSION', version: data.version });
+              }
+              console.info('[editor row-asset] written', {
+                rowIndex,
+                slot,
+                newVersion: data.version,
+                attempts: attempt,
+              });
+              return;
+            }
             const detail = await res.text().catch(() => '');
-            console.warn('[editor row-asset] write failed', {
+            lastFailureDetail = { status: res.status, message: detail.slice(0, 200) };
+            // 4xx: deterministic, can't fix with retry. Surface now.
+            if (res.status < 500) {
+              lastFailureKind = 'http_4xx';
+              console.warn('[editor row-asset] write failed (4xx — no retry)', {
+                rowIndex,
+                slot,
+                status: res.status,
+                attempt,
+                detail: detail.slice(0, 200),
+              });
+              break;
+            }
+            // 5xx: log + retry.
+            lastFailureKind = 'http_5xx';
+            console.warn('[editor row-asset] write failed (5xx — retrying)', {
               rowIndex,
               slot,
               status: res.status,
+              attempt,
+              max_attempts: MAX_ATTEMPTS,
               detail: detail.slice(0, 200),
             });
-            // 2026-05-24: SURFACE the failure to the user. Silent
-            // console.warn meant uploaded images were vanishing on
-            // refresh without anyone noticing — data loss. Toast
-            // tells the user the write didn't land so they know to
-            // retry / report instead of assuming it worked.
-            const friendlyReason =
-              res.status === 413
-                ? 'Project is too large to add another image. Delete some shots first.'
-                : res.status === 429
-                  ? 'Too many uploads in a short window — try again in a minute.'
-                  : res.status === 404
-                    ? 'Project not found on the server (was it deleted in another tab?).'
-                    : res.status >= 500
-                      ? 'Server error while saving — try again, or refresh.'
-                      : `Couldn't save (HTTP ${res.status}).`;
-            const slotLabel =
-              slot === 'image' ? 'image' : slot === 'overlay' ? 'overlay' : 'clip';
-            toast.error(
-              `Shot ${rowIndex + 1} ${slotLabel} not saved — ${friendlyReason}`,
-              { duration: 8000 },
-            );
-            return;
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            lastFailureKind = 'network';
+            lastFailureDetail = { message };
+            console.warn('[editor row-asset] write threw (retrying)', {
+              rowIndex,
+              slot,
+              attempt,
+              max_attempts: MAX_ATTEMPTS,
+              detail: message,
+            });
           }
-          const data = (await res.json().catch(() => ({}))) as { version?: number };
-          if (typeof data.version === 'number') {
-            // Keep the editor's local version aligned with the server.
-            // Without this sync the next debounced PATCH would fail
-            // the optimistic check and surface a spurious conflict.
-            apply({ type: 'SYNC_SERVER_VERSION', version: data.version });
+          // Not the last attempt → sleep then retry.
+          if (attempt < MAX_ATTEMPTS) {
+            const delay = RETRY_DELAYS_MS[attempt - 1] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1]!;
+            await new Promise((r) => setTimeout(r, delay));
           }
-          console.info('[editor row-asset] written', { rowIndex, slot, newVersion: data.version });
-        } catch (err) {
-          console.warn('[editor row-asset] write threw', {
-            rowIndex,
-            slot,
-            detail: err instanceof Error ? err.message : String(err),
-          });
-          const slotLabel =
-            slot === 'image' ? 'image' : slot === 'overlay' ? 'overlay' : 'clip';
-          toast.error(
-            `Shot ${rowIndex + 1} ${slotLabel} not saved — network error. Check your connection and try again.`,
-            { duration: 8000 },
-          );
         }
+
+        // Exhausted retries (or hit a 4xx). Surface to the user.
+        const status = lastFailureDetail.status;
+        const friendlyReason =
+          status === 413
+            ? 'Project is too large to add another image. Delete some shots first.'
+            : status === 429
+              ? 'Too many uploads in a short window — try again in a minute.'
+              : status === 404
+                ? 'Project not found on the server (was it deleted in another tab?).'
+                : lastFailureKind === 'network'
+                  ? 'Network error. Check your connection and try again.'
+                  : status && status >= 500
+                    ? `Server error after ${MAX_ATTEMPTS} retries — try again, or refresh.`
+                    : `Couldn't save (HTTP ${status ?? '?'}).`;
+        console.error('[editor row-asset] write failed permanently', {
+          rowIndex,
+          slot,
+          kind: lastFailureKind,
+          status,
+          attempts: MAX_ATTEMPTS,
+          detail: lastFailureDetail.message,
+        });
+        toast.error(
+          `Shot ${rowIndex + 1} ${slotLabel} not saved — ${friendlyReason}`,
+          { duration: 8000 },
+        );
       })();
     },
     [apply, projectId],
@@ -872,6 +926,199 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     // to the same reference every fillBlanks invocation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apply, fillState, writeRowAsset]);
+
+  // ── Per-shot regenerate state ─────────────────────────────────────────
+  //
+  // The inspector's Regenerate button used to keep its state local to
+  // the ShotInspector component. Because the inspector is a single
+  // instance that re-renders with a different `shotIndex` prop when
+  // the user navigates, that state bled across shots — clicking Shot
+  // 34 → Regenerate → Shot 35 would show Shot 34's "generating…" pill
+  // on Shot 35, and clicking Regenerate on Shot 35 aborted Shot 34's
+  // in-flight call. State is lifted here, keyed by shotIndex, so:
+  //
+  //   - multiple shots can regenerate in parallel;
+  //   - navigating away mid-gen no longer cancels;
+  //   - error messages stay pinned to the shot that produced them, so
+  //     navigating back to a failed shot still shows what went wrong;
+  //   - the result lands on the originating shotIndex regardless of
+  //     where the user has navigated by the time the response arrives.
+  type RegenState =
+    | { kind: 'idle' }
+    | { kind: 'generating' }
+    | { kind: 'cancelled' }
+    | { kind: 'error'; message: string };
+  const [regenStates, setRegenStates] = useState<Record<number, RegenState>>({});
+  // Map (not Record) because we mutate this from the async generation
+  // path, and a Map's .set()/.get()/.delete() are simpler than spreading
+  // a Record without re-creating the ref's identity every call.
+  const regenAbortsRef = useRef<Map<number, AbortController>>(new Map());
+
+  const setShotRegenState = useCallback(
+    (shotIndex: number, next: RegenState) => {
+      setRegenStates((prev) => {
+        // Drop the entry entirely when going back to idle so the map
+        // stays small and unmount-on-idle invariants hold.
+        if (next.kind === 'idle') {
+          if (!(shotIndex in prev)) return prev;
+          const copy = { ...prev };
+          delete copy[shotIndex];
+          return copy;
+        }
+        return { ...prev, [shotIndex]: next };
+      });
+    },
+    [],
+  );
+
+  // Kick off a single-shot regenerate. Always single-image — never a
+  // collage, regardless of `doc.collage_mode` (collage only applies to
+  // the batch fill-blanks path; per-shot regen needs to be predictable
+  // because the user just clicked Regenerate on one specific shot).
+  //
+  // `opts.excludeRefIds` is forwarded into the v2 i2i dispatcher when
+  // the previous attempt returned 409 REFERENCE_REJECTED. Lifted here
+  // so the toast's Retry action keeps working after the state lift.
+  const regenerateShot = useCallback(
+    async (shotIndex: number, opts: { excludeRefIds?: readonly string[] } = {}) => {
+      const liveState = stateRef.current;
+      const row = liveState.doc.rows[shotIndex];
+      if (!row) return;
+      const prompt = row.ai_image_prompt?.trim() || row.visual_description?.trim();
+      if (!prompt) {
+        setShotRegenState(shotIndex, {
+          kind: 'error',
+          message: "No prompt to regenerate from. Edit the row's prompt first.",
+        });
+        return;
+      }
+
+      // Abort any prior in-flight gen FOR THIS SHOT only. Other shots'
+      // generations are left running so the user can fan out across
+      // shots without one click cancelling another shot's work.
+      regenAbortsRef.current.get(shotIndex)?.abort();
+      const controller = new AbortController();
+      regenAbortsRef.current.set(shotIndex, controller);
+      setShotRegenState(shotIndex, { kind: 'generating' });
+
+      // Tier priority mirrors the inspector: row > doc > server default.
+      const resolvedModel =
+        row.image_model || liveState.doc.image_model_default || undefined;
+      console.info('[editor regen start]', {
+        shotIndex,
+        model: resolvedModel ?? '(server default)',
+        excludeRefIds: opts.excludeRefIds?.length ?? 0,
+      });
+
+      try {
+        const res = await fetch('/api/generate/production-doc/image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt,
+            model: resolvedModel,
+            onScreenText: row.on_screen_text ?? '',
+            sectionTitle: row.section_title ?? '',
+            styleId: liveState.doc.style_preset || undefined,
+            excludeRefIds:
+              opts.excludeRefIds && opts.excludeRefIds.length > 0
+                ? opts.excludeRefIds
+                : undefined,
+          }),
+          signal: controller.signal,
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          code?: string;
+          imageUrl?: string;
+          rejectedRefIds?: string[];
+          saliency?: ImageSaliencyMap;
+        };
+
+        // v2 reference-rejected: surface a toast with a Retry action
+        // that re-fires this function with the rejected ids excluded.
+        // Cap retries so a misbehaving server can't loop a paid call.
+        if (res.status === 409 && data?.code === 'REFERENCE_REJECTED') {
+          const rejectedIds = data.rejectedRefIds ?? [];
+          const accumulated = [...(opts.excludeRefIds ?? []), ...rejectedIds];
+          const allRefsRejected = accumulated.length >= 8;
+          const maxAttemptsHit = (opts.excludeRefIds?.length ?? 0) >= 8;
+          const n = rejectedIds.length;
+          const offerRegenerate =
+            !allRefsRejected && !maxAttemptsHit && rejectedIds.length > 0;
+          const message = allRefsRejected
+            ? 'All reference images rejected — edit the style and clear rejections before retrying.'
+            : maxAttemptsHit
+              ? 'Too many retries. Edit the style before trying again.'
+              : `${n || 'One or more'} reference image${n === 1 ? '' : 's'} rejected by the provider — click Regenerate to retry without them.`;
+          regenAbortsRef.current.delete(shotIndex);
+          setShotRegenState(shotIndex, { kind: 'error', message });
+          toast.error(
+            allRefsRejected
+              ? `Shot ${shotIndex + 1}: all reference images rejected.`
+              : maxAttemptsHit
+                ? `Shot ${shotIndex + 1}: stopped retrying after multiple rejections.`
+                : `Shot ${shotIndex + 1}: ${n || 'one or more'} reference image${n === 1 ? ' was' : 's were'} rejected.`,
+            {
+              duration: 10_000,
+              action: offerRegenerate
+                ? {
+                    label: 'Regenerate',
+                    onClick: () => {
+                      void regenerateShot(shotIndex, { excludeRefIds: accumulated });
+                    },
+                  }
+                : undefined,
+            },
+          );
+          return;
+        }
+
+        if (!res.ok) {
+          throw new Error(data?.error || `Generate failed: HTTP ${res.status}`);
+        }
+        if (typeof data.imageUrl !== 'string') {
+          throw new Error('Server response missing imageUrl');
+        }
+
+        commitRowImage(shotIndex, data.imageUrl);
+        if (data.saliency) {
+          updateRow(shotIndex, { image_saliency: data.saliency });
+        }
+        regenAbortsRef.current.delete(shotIndex);
+        setShotRegenState(shotIndex, { kind: 'idle' });
+        console.info('[editor regen ok]', { shotIndex });
+      } catch (err) {
+        regenAbortsRef.current.delete(shotIndex);
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          setShotRegenState(shotIndex, { kind: 'cancelled' });
+          console.info('[editor regen cancelled]', { shotIndex });
+          return;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        setShotRegenState(shotIndex, { kind: 'error', message });
+        // Also surface as a toast so a user who's navigated away from
+        // this shot sees the failure immediately instead of having to
+        // come back to find a red banner. Includes the shot number so
+        // they know which one.
+        toast.error(`Shot ${shotIndex + 1} regen failed: ${message}`, {
+          duration: 8000,
+        });
+        console.warn('[editor regen failed]', { shotIndex, error: message });
+      }
+    },
+    // `commitRowImage` + `updateRow` are stable useCallbacks declared
+    // later in this file (used-before-declaration if listed in deps).
+    // setShotRegenState is stable. So nothing actually changes for the
+    // closure here across renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [setShotRegenState],
+  );
+
+  const stopRegenerateShot = useCallback((shotIndex: number) => {
+    regenAbortsRef.current.get(shotIndex)?.abort();
+    console.info('[editor regen stop]', { shotIndex });
+  }, []);
 
   // User-initiated seek. Must update BOTH the local playhead state AND
   // the Remotion Player's internal frame. Before this helper, the three
@@ -3723,6 +3970,18 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               // Regenerate button. Null when the active style is a
               // built-in, has no preferred model, or the fetch failed.
               activeStyleI2IModel={activeStyleI2IModel}
+              // Per-shot regenerate state lifted to EditorClient so it
+              // doesn't bleed across shots when the inspector re-renders
+              // with a different shotIndex. See the regenerateShot block
+              // above for the contract. Default to idle for shots that
+              // haven't been regenerated this session.
+              regenState={regenStates[state.selection] ?? { kind: 'idle' }}
+              onRegenerateShot={() => {
+                void regenerateShot(state.selection as number);
+              }}
+              onStopRegenerateShot={() => {
+                stopRegenerateShot(state.selection as number);
+              }}
               onClose={() => apply({ type: 'SET_SELECTION', shotIndex: null })}
               onUploadImage={(url) =>
                 commitRowImage(state.selection as number, url)

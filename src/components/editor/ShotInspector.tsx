@@ -197,7 +197,33 @@ interface ShotInspectorProps {
    *  picker so the user can create regions without leaving the
    *  inspector. */
   onOpenSectionThumbnail?: () => void;
+
+  // ─── Per-shot regenerate (state lifted to EditorClient) ─────────────
+  //
+  // The inspector used to own this state locally, but the inspector is
+  // a single component instance reused across shots — so Shot A's
+  // "generating" state bled onto Shot B when the user navigated, and
+  // clicking Regenerate on Shot B aborted Shot A's in-flight call.
+  // EditorClient now keeps a shotIndex-keyed map of regen states +
+  // controllers and threads the current shot's slice down here.
+  /** Current regen state for the displayed shot. `idle` for shots
+   *  that haven't been regenerated this session. */
+  regenState: ShotRegenState;
+  /** Trigger a single-shot regenerate against the active row's prompt.
+   *  Always single-image (never a collage) regardless of doc.collage_mode. */
+  onRegenerateShot: () => void;
+  /** Abort an in-flight regen for the currently displayed shot. No-op
+   *  when nothing is in flight. */
+  onStopRegenerateShot: () => void;
 }
+
+/** Lifted regen state shape — kept here so EditorClient and the
+ *  inspector share one source of truth on the union members. */
+export type ShotRegenState =
+  | { kind: 'idle' }
+  | { kind: 'generating' }
+  | { kind: 'cancelled' }
+  | { kind: 'error'; message: string };
 
 function fmt(ms: number | undefined): string {
   if (typeof ms !== 'number') return '—';
@@ -216,6 +242,9 @@ export function ShotInspector({
   projectId,
   stylePreset,
   activeStyleI2IModel,
+  regenState,
+  onRegenerateShot,
+  onStopRegenerateShot,
   onClose,
   onUploadImage,
   onPickProjectClip,
@@ -262,160 +291,15 @@ export function ShotInspector({
     | { kind: 'error'; message: string }
   >({ kind: 'idle' });
 
-  const [regenState, setRegenState] = useState<
-    | { kind: 'idle' }
-    | { kind: 'generating' }
-    | { kind: 'cancelled' }
-    | { kind: 'error'; message: string }
-  >({ kind: 'idle' });
-  // AbortController for the in-flight regenerate fetch. Set when a
-  // generation kicks off, cleared on completion / error / cancel.
-  // The Stop button calls .abort() to cancel mid-flight; the fetch
-  // throws AbortError which the catch block surfaces as `cancelled`.
-  const regenAbortRef = useRef<AbortController | null>(null);
-
   // TransitionDialog open/close. Self-contained — the dialog owns its
   // working copy; we only listen for `onSave` + `onReset` and dispatch
   // through `onUpdateRow`. Only meaningful when this shot has a
   // `thumbnail_zoom_to` region set.
   const [transitionDialogOpen, setTransitionDialogOpen] = useState(false);
-
-  // Recursive — call site re-invokes itself with accumulated
-  // `excludeRefIds` after a 409 REFERENCE_REJECTED, mirroring the
-  // production-doc page's regenerate flow. The server's already
-  // flagged the offending refs as rejected; passing them in
-  // `excludeRefIds` just makes the retry deterministic in case the
-  // user clicks the toast Regenerate button before the flag write
-  // commits.
-  const handleRegenerate = useCallback(async (excludeRefIds: readonly string[] = []) => {
-    if (!onUploadImage) return;
-    const prompt = row.ai_image_prompt?.trim() || row.visual_description?.trim();
-    if (!prompt) {
-      setRegenState({
-        kind: 'error',
-        message: 'No prompt to regenerate from. Edit the row’s prompt first.',
-      });
-      return;
-    }
-    setRegenState({ kind: 'generating' });
-    // Set up an AbortController for this attempt so the Stop button
-    // can cancel mid-flight. Abort any prior in-flight first — a stale
-    // controller from a previous attempt should not stick around.
-    regenAbortRef.current?.abort();
-    const controller = new AbortController();
-    regenAbortRef.current = controller;
-    // Resolve which image model THIS regenerate will use. Tier
-    // priority mirrors the broll resolver: row > doc > server-side
-    // default. Sent verbatim as `model` so the API route doesn't have
-    // to second-guess; the route validates against IMAGE_MODELS and
-    // 400s on unknowns (route.ts:329).
-    const resolvedImageModel =
-      row.image_model || docImageModelDefault || undefined;
-    console.info('[editor inspector] regenerate model resolved', {
-      shotIndex,
-      rowModel: row.image_model ?? null,
-      docDefault: docImageModelDefault ?? null,
-      sent: resolvedImageModel ?? '(server default)',
-    });
-    try {
-      const res = await fetch('/api/generate/production-doc/image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt,
-          model: resolvedImageModel,
-          onScreenText: row.on_screen_text ?? '',
-          sectionTitle: row.section_title ?? '',
-          // v2 (2026-05-22) — when the doc has a style preset pinned,
-          // route the regenerate through the v2 i2i dispatcher so the
-          // refs (if any) flow into the new image. Built-in slugs
-          // resolve to origin='built-in' inside the route and fall
-          // back to legacy T2I unchanged.
-          styleId: stylePreset || undefined,
-          excludeRefIds: excludeRefIds.length > 0 ? excludeRefIds : undefined,
-        }),
-        signal: controller.signal,
-      });
-      const data = (await res.json().catch(() => ({}))) as {
-        error?: string;
-        code?: string;
-        imageUrl?: string;
-        rejectedRefIds?: string[];
-      };
-      // v2 — provider rejected one or more refs. Same UX as the
-      // production-doc page: surface a toast with a one-click
-      // Regenerate action that re-fires this function with the
-      // rejected ids excluded. Server has already flagged them.
-      //
-      // Two safety gates:
-      // (a) terminal state when all refs are rejected — keep offering
-      //     "Regenerate" would just trigger another doomed call that
-      //     falls back to T2I or errors;
-      // (b) max-attempts cap so a misbehaving server can't loop the
-      //     user through paid retries via rage-clicks. After ~$0.15
-      //     of wasted spend (3 cloud i2i attempts) we stop offering
-      //     the action.
-      if (res.status === 409 && data?.code === 'REFERENCE_REJECTED') {
-        const rejectedIds = data.rejectedRefIds ?? [];
-        const accumulated = [...excludeRefIds, ...rejectedIds];
-        const allRefsRejected = accumulated.length >= 8;
-        const maxAttemptsHit = excludeRefIds.length >= 8; // already 8 prior excludes = 3rd+ click
-        const n = rejectedIds.length;
-        const offerRegenerate = !allRefsRejected && !maxAttemptsHit && rejectedIds.length > 0;
-        const message = allRefsRejected
-          ? 'All reference images rejected — edit the style and clear rejections before retrying.'
-          : maxAttemptsHit
-            ? 'Too many retries. Edit the style before trying again.'
-            : `${n || 'One or more'} reference image${n === 1 ? '' : 's'} rejected by the provider — click Regenerate to retry without them.`;
-        setRegenState({ kind: 'error', message });
-        toast.error(
-          allRefsRejected
-            ? 'All reference images rejected.'
-            : maxAttemptsHit
-              ? 'Stopped retrying after multiple rejections.'
-              : `${n || 'One or more'} reference image${n === 1 ? ' was' : 's were'} rejected by the provider.`,
-          {
-            duration: 10000,
-            action: offerRegenerate
-              ? {
-                  label: 'Regenerate',
-                  onClick: () => {
-                    void handleRegenerate(accumulated);
-                  },
-                }
-              : undefined,
-          },
-        );
-        return;
-      }
-      if (!res.ok) {
-        throw new Error(data?.error || `Generate failed: HTTP ${res.status}`);
-      }
-      if (typeof data.imageUrl !== 'string') {
-        throw new Error('Server response missing imageUrl');
-      }
-      console.info('[editor inspector] regenerate complete', {
-        shotIndex,
-        imageUrl: data.imageUrl,
-      });
-      onUploadImage(data.imageUrl);
-      regenAbortRef.current = null;
-      setRegenState({ kind: 'idle' });
-    } catch (err) {
-      regenAbortRef.current = null;
-      // AbortError → user clicked Stop; not a real error. Distinct
-      // state so the inspector can show "Cancelled" instead of a red
-      // error pill.
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        console.info('[editor inspector] regenerate cancelled by user', { shotIndex });
-        setRegenState({ kind: 'cancelled' });
-        return;
-      }
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn('[editor inspector] regenerate failed', { detail: message });
-      setRegenState({ kind: 'error', message });
-    }
-  }, [onUploadImage, row.ai_image_prompt, row.visual_description, row.on_screen_text, row.section_title, row.image_model, docImageModelDefault, shotIndex, stylePreset]);
+  // Regenerate state is lifted to EditorClient (per-shot map keyed by
+  // shotIndex) so it doesn't bleed across shots when this inspector
+  // re-renders with a different `shotIndex` prop. See the
+  // `regenerateShot` block in EditorClient.tsx for the contract.
 
   // Inline-edit + Rephrase state for the voiceover script field.
   // The textarea is a controlled mirror of `row.script_text`; we
@@ -826,7 +710,7 @@ export function ShotInspector({
                   type="button"
                   onClick={() => {
                     console.info('[editor inspector] regenerate stop clicked', { shotIndex });
-                    regenAbortRef.current?.abort();
+                    onStopRegenerateShot();
                   }}
                   className="flex-1 text-xs px-3 py-1.5 rounded border transition-colors hover:bg-white/5"
                   style={{ borderColor: '#f87171', color: '#f87171' }}
@@ -837,8 +721,7 @@ export function ShotInspector({
               ) : (
               <button
                 type="button"
-                onClick={() => void handleRegenerate()}
-                disabled={regenState.kind === 'generating' as never}
+                onClick={() => onRegenerateShot()}
                 className="flex-1 text-xs px-3 py-1.5 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
                 style={{ borderColor: 'var(--card-border)' }}
                 title="Re-run the image generator on this row's current prompt"
