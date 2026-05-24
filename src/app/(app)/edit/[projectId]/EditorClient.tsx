@@ -546,6 +546,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // current call finishes, so we never stall on the slowest call. The
   // fillAbortRef's controller is shared by every in-flight fetch so a
   // Stop click aborts the whole batch at once.
+  //
+  // When `doc.collage_mode === true`, the queue holds work units instead
+  // of bare indices: groups of 4 consecutive blanks become collage units,
+  // the trailing <4 stay as single units. Each worker tries the collage
+  // path for a 4-unit and per-chunk-falls-back to 4 single calls on
+  // failure. Per-shot row.image_model overrides are honoured in the
+  // single path; in collage mode the 4 cells must share one model, so
+  // we always use doc.image_model_default for collage units — shots
+  // with a row override fall through to the single path automatically
+  // because they break the chunk's same-model run.
   const runFillBlanks = useCallback(async () => {
     if (fillState === 'running') return;
     const initialBlanks = stateRef.current.doc.rows
@@ -561,16 +571,72 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     // project_assets, but our queue holds raw numeric indices.
     const lockedRowCount = stateRef.current.doc.rows.length;
     const docModelDefault = stateRef.current.doc.image_model_default;
+    const collageOn = stateRef.current.doc.collage_mode === true;
     const modelLabel =
       getImageModelSpec(docModelDefault ?? DEFAULT_IMAGE_MODEL)?.label ??
       'the default image model';
-    const CONCURRENCY = Math.min(3, initialBlanks.length);
-    // Rough ETA — assumes ~15s/image (Kie cloud median). Floors at 1
-    // so the prompt never reads "~0m" for a small batch.
-    const etaMin = Math.max(1, Math.ceil((initialBlanks.length * 15) / CONCURRENCY / 60));
+
+    // Build work units. In collage mode, group runs of 4 consecutive
+    // blanks WHOSE ROWS DON'T HAVE A PER-SHOT MODEL OVERRIDE into
+    // collage units; everything else is a single unit. A row with its
+    // own image_model breaks the chunk so its override survives.
+    type WorkUnit =
+      | { kind: 'collage'; indices: number[] }
+      | { kind: 'single'; index: number };
+    const docRows = stateRef.current.doc.rows;
+    const units: WorkUnit[] = [];
+    if (collageOn) {
+      let i = 0;
+      while (i < initialBlanks.length) {
+        // Try to fill a chunk of 4. Each candidate must have no
+        // row-level model override (or share doc.image_model_default
+        // explicitly). Anything else breaks the chunk and lands in
+        // singles.
+        const chunkCandidate: number[] = [];
+        let j = i;
+        while (j < initialBlanks.length && chunkCandidate.length < 4) {
+          const rowIndex = initialBlanks[j];
+          const rowOverride = docRows[rowIndex]?.image_model;
+          if (rowOverride && rowOverride !== docModelDefault) break;
+          chunkCandidate.push(rowIndex);
+          j++;
+        }
+        if (chunkCandidate.length === 4) {
+          units.push({ kind: 'collage', indices: chunkCandidate });
+          i += 4;
+        } else {
+          // Partial chunk — emit the first as a single and try again
+          // from i+1. Avoids stranding a shot with an override at the
+          // start of what could have been a chunk.
+          units.push({ kind: 'single', index: initialBlanks[i] });
+          i += 1;
+        }
+      }
+    } else {
+      for (const idx of initialBlanks) units.push({ kind: 'single', index: idx });
+    }
+
+    const collageUnitCount = units.filter((u) => u.kind === 'collage').length;
+    const singleUnitCount = units.length - collageUnitCount;
+    // Concurrency: stays at min(3, units) because the worker pool's
+    // benefit (no stall on slowest call) applies to chunks the same
+    // way it applies to single shots. Collage chunks are heavier per
+    // unit but still well under the 30/min Kie rate limit at this
+    // concurrency (3 chunks in flight = 6 kie tasks max counting the
+    // upscale).
+    const CONCURRENCY = Math.min(3, units.length);
+    // Rough ETA. Collage units ~30s each (1 gen + 1 upscale), singles
+    // ~15s each. Floors at 1 so the prompt never reads "~0m".
+    const totalSec = collageUnitCount * 30 + singleUnitCount * 15;
+    const etaMin = Math.max(1, Math.ceil(totalSec / CONCURRENCY / 60));
+    const breakdown = collageOn
+      ? `${collageUnitCount} collage group${collageUnitCount === 1 ? '' : 's'} of 4`
+      + (singleUnitCount > 0 ? ` + ${singleUnitCount} single shot${singleUnitCount === 1 ? '' : 's'}` : '')
+      : `${initialBlanks.length} single shot${initialBlanks.length === 1 ? '' : 's'}`;
     const ok = window.confirm(
       `Generate ${initialBlanks.length} image${initialBlanks.length === 1 ? '' : 's'} ` +
       `using ${modelLabel}?\n\n` +
+      `${breakdown}.\n` +
       `Estimated time: ~${etaMin} min (${CONCURRENCY} at a time so we don't hammer the API).\n` +
       `You can Stop mid-run; already-generated shots are kept.`,
     );
@@ -578,6 +644,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
     console.info('[editor fill-blanks start]', {
       total: initialBlanks.length,
+      collage_mode: collageOn,
+      collage_units: collageUnitCount,
+      single_units: singleUnitCount,
       modelDefault: docModelDefault ?? '(server default)',
       concurrency: CONCURRENCY,
     });
@@ -586,12 +655,101 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     setFillState('running');
     setFillProgress({ done: 0, total: initialBlanks.length, failed: 0 });
 
-    const queue = [...initialBlanks];
+    const queue = [...units];
     let nextIdx = 0;
     let succeeded = 0;
     let failed = 0;
     const startedAt = Date.now();
-    const pull = (): number | null => (nextIdx < queue.length ? queue[nextIdx++] : null);
+    const pull = (): WorkUnit | null => (nextIdx < queue.length ? queue[nextIdx++] : null);
+
+    // Process a 4-shot collage chunk. On success, write all 4 row
+    // images + saliencies. On any failure (network, fallback_needed,
+    // malformed-after-retry), fall back to 4 single calls inline so
+    // the chunk still produces images. The per-shot fallback inherits
+    // the worker's abort signal so a Stop click halts it too.
+    const generateCollageChunk = async (indices: number[]): Promise<void> => {
+      const t0 = Date.now();
+      const liveState = stateRef.current;
+      if (liveState.doc.rows.length !== lockedRowCount) {
+        controller.abort();
+        return;
+      }
+      // Skip any chunk index that's already been filled (manual
+      // regen mid-batch). If fewer than 4 remain, fall through to
+      // singles for those instead of sending a partial collage.
+      const stillBlank = indices.filter((i) => !liveState.rowImages[i]);
+      if (stillBlank.length === 0) {
+        // Whole chunk filled out from under us — count as done.
+        succeeded += indices.length;
+        setFillProgress((p) => ({ ...p, done: p.done + indices.length }));
+        return;
+      }
+      if (stillBlank.length < 4) {
+        for (const i of stillBlank) await generateOne(i);
+        return;
+      }
+      const prompts = stillBlank.map((i) => {
+        const row = liveState.doc.rows[i];
+        return row?.ai_image_prompt?.trim() || row?.visual_description?.trim() || '';
+      });
+      if (prompts.some((p) => p.length === 0)) {
+        // At least one shot has no usable prompt — fall back to
+        // singles so generateOne can mark the empty ones as failed
+        // individually (the collage route would 400 the whole chunk).
+        for (const i of stillBlank) await generateOne(i);
+        return;
+      }
+      try {
+        const res = await fetch('/api/generate/production-doc/collage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompts, model: docModelDefault }),
+          signal: controller.signal,
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          status?: 'success' | 'fallback_needed';
+          imageUrls?: string[];
+          saliencies?: (ImageSaliencyMap | null)[];
+          reason?: string;
+          detail?: string;
+          error?: string;
+        };
+        if (res.ok && data.status === 'success' && Array.isArray(data.imageUrls) && data.imageUrls.length === 4) {
+          for (let k = 0; k < stillBlank.length; k++) {
+            const shotIndex = stillBlank[k];
+            const url = data.imageUrls[k];
+            apply({ type: 'SET_ROW_IMAGE', shotIndex, url });
+            writeRowAsset(shotIndex, 'image', url);
+            const sal = data.saliencies?.[k];
+            if (sal) updateRow(shotIndex, { image_saliency: sal });
+          }
+          succeeded += stillBlank.length;
+          setFillProgress((p) => ({ ...p, done: p.done + stillBlank.length }));
+          console.info('[editor fill-blanks collage ok]', {
+            indices: stillBlank,
+            durationMs: Date.now() - t0,
+            model: docModelDefault ?? '(server default)',
+          });
+          return;
+        }
+        console.warn('[editor fill-blanks collage fallback]', {
+          indices: stillBlank,
+          reason: data.reason ?? `http_${res.status}`,
+          detail: (data.detail ?? data.error ?? '').slice(0, 200),
+        });
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        console.warn('[editor fill-blanks collage threw — falling back to single]', {
+          indices: stillBlank,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      // Fallback: per-shot single calls for the chunk.
+      for (const i of stillBlank) {
+        if (controller.signal.aborted) return;
+        await generateOne(i);
+      }
+    };
 
     const generateOne = async (shotIndex: number): Promise<void> => {
       const t0 = Date.now();
@@ -678,9 +836,13 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
     await Promise.all(
       Array.from({ length: CONCURRENCY }, async () => {
-        for (let i = pull(); i !== null; i = pull()) {
+        for (let unit = pull(); unit !== null; unit = pull()) {
           if (controller.signal.aborted) return;
-          await generateOne(i);
+          if (unit.kind === 'collage') {
+            await generateCollageChunk(unit.indices);
+          } else {
+            await generateOne(unit.index);
+          }
         }
       }),
     );
@@ -703,6 +865,12 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     } else {
       toast.success(`Filled ${succeeded} shot${succeeded === 1 ? '' : 's'}.`);
     }
+    // `updateRow` is declared further down in this component, so
+    // including it in the dep list would trip TS2448 (used-before-
+    // declaration). It's a stable useCallback that doesn't change
+    // between renders, so omitting it is safe — the closure resolves
+    // to the same reference every fillBlanks invocation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apply, fillState, writeRowAsset]);
 
   // User-initiated seek. Must update BOTH the local playhead state AND
@@ -3356,12 +3524,54 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               ))}
             </select>
           </div>
+          {/* Collage batch mode — when on, "Fill blank shots" below
+              groups sequential blanks in chunks of 4 and asks the
+              chosen image model to produce one 2×2 collage per group
+              (cropped server-side into 4 per-shot images). ~75%
+              cheaper than 4 single-shot calls. Per-shot Regenerate
+              in the inspector stays single-shot regardless. Mirrors
+              the production-doc page's toggle. v1 limits: no per-cell
+              OST baking, no style-ref i2i. */}
+          <div className="space-y-1">
+            <label
+              className="flex items-start gap-2 text-[11px] cursor-pointer"
+              style={{ color: 'var(--fg)' }}
+              title='When on, "Fill blank shots" batches groups of 4 into a single 2×2 collage call (+ 1 upscale), ~75% cheaper than 4 single calls. Per-chunk fallback to single shots on collage failure. Limitations: no per-cell on-screen-text baking.'
+            >
+              <input
+                type="checkbox"
+                checked={state.doc.collage_mode === true}
+                onChange={(e) => {
+                  const next = e.target.checked;
+                  console.info('[editor doc-settings collage-mode] changed', {
+                    from: state.doc.collage_mode === true,
+                    to: next,
+                  });
+                  apply({
+                    type: 'PATCH_DOC',
+                    patch: { collage_mode: next ? true : undefined },
+                  });
+                }}
+                className="mt-0.5"
+              />
+              <span>
+                Collage mode for Fill blanks
+                <span className="block text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  {state.doc.collage_mode === true
+                    ? 'on: groups of 4 batch into one 2×2 call (~75% cheaper)'
+                    : 'off: one call per shot'}
+                </span>
+              </span>
+            </label>
+          </div>
           {/* Fill blank shots — kicks off a throttled (3-at-a-time)
               batch image generation for every shot that currently has
               no image. Uses the doc-level Image model picked above
-              (per-shot overrides win on shots that have one). While
-              running, the button collapses into a progress label +
-              Stop pill. */}
+              (per-shot overrides win on shots that have one). When
+              the Collage toggle above is on, groups of 4 batch into
+              a single 2×2 collage call instead of 4 single calls.
+              While running, the button collapses into a progress
+              label + Stop pill. */}
           {fillState === 'running' ? (
             <div
               className="flex items-center gap-2 w-full text-xs px-2 py-1.5 rounded border"
