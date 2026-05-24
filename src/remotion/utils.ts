@@ -863,6 +863,25 @@ export interface RenderConfigDiagnosticSummary {
     startMs: number;
     durationMs: number;
   }>;
+  /** EVERY shot (any index) that has at least one non-identity transform,
+   *  scene-zoom, overlay section-title, or thumbnail-zoom assignment.
+   *  Capped at 60 entries so a doc where the user globally overrode
+   *  everything doesn't drown the log. When the rendered MP4 looks
+   *  positioned differently than the editor preview for shot N, find
+   *  shot N in this array on BOTH the client log and the server log —
+   *  any field difference is the bug. */
+  shotsWithOverrides: Array<{
+    i: number;
+    sectionTitleLayout: string | undefined;
+    imageXPct: number | undefined;
+    imageYPct: number | undefined;
+    imageScalePct: number | undefined;
+    imageRotationDeg: number | undefined;
+    sceneZoom: number | undefined;
+    thumbnailZoomTo: string | undefined;
+    hasSectionTitle: boolean;
+  }>;
+  shotsWithOverridesTotal: number;
 }
 
 export function summarizeConfigForDiagnostics(
@@ -877,24 +896,53 @@ export function summarizeConfigForDiagnostics(
   let withSectionTitle = 0;
   let letterboxShots = 0;
 
-  for (const s of config.shots) {
+  const overrideEntries: RenderConfigDiagnosticSummary['shotsWithOverrides'] = [];
+  let overrideTotal = 0;
+  const OVERRIDE_DUMP_CAP = 60;
+
+  for (let i = 0; i < config.shots.length; i++) {
+    const s = config.shots[i];
     const t = s.sceneType ?? 'undefined';
     bySceneType[t] = (bySceneType[t] ?? 0) + 1;
     if (s.thumbnailZoomTo) withThumbnailZoomTo++;
     if (s.imageUrl) withImageUrl++;
     if (s.videoUrl) withVideoUrl++;
-    if (typeof s.sceneZoom === 'number' && s.sceneZoom !== 100) {
-      withSceneZoomOverride++;
-    }
+    const hasSceneZoomOverride =
+      typeof s.sceneZoom === 'number' && s.sceneZoom !== 100;
+    if (hasSceneZoomOverride) withSceneZoomOverride++;
     const freeIdentity =
       (s.imageXPct === undefined || s.imageXPct === 0) &&
       (s.imageYPct === undefined || s.imageYPct === 0) &&
       (s.imageScalePct === undefined || s.imageScalePct === 100) &&
       (s.imageRotationDeg === undefined || s.imageRotationDeg === 0);
     if (!freeIdentity) withFreeTransformOverride++;
+    const hasOverlayTitle =
+      Boolean(s.sectionTitle) && s.sectionTitleLayout === 'overlay';
     if (s.sectionTitle) {
       withSectionTitle++;
       if ((s.sectionTitleLayout ?? 'letterbox') === 'letterbox') letterboxShots++;
+    }
+    // Collect every shot that has ANY override the editor/render math
+    // can disagree on — free-transform, scene-zoom, overlay layout, or
+    // thumbnail-zoom. These are the shots most likely to render
+    // differently between preview and MP4, so we dump full detail.
+    const isOverrideShot =
+      !freeIdentity || hasSceneZoomOverride || hasOverlayTitle || Boolean(s.thumbnailZoomTo);
+    if (isOverrideShot) {
+      overrideTotal++;
+      if (overrideEntries.length < OVERRIDE_DUMP_CAP) {
+        overrideEntries.push({
+          i,
+          sectionTitleLayout: s.sectionTitleLayout,
+          imageXPct: s.imageXPct,
+          imageYPct: s.imageYPct,
+          imageScalePct: s.imageScalePct,
+          imageRotationDeg: s.imageRotationDeg,
+          sceneZoom: s.sceneZoom,
+          thumbnailZoomTo: s.thumbnailZoomTo,
+          hasSectionTitle: Boolean(s.sectionTitle),
+        });
+      }
     }
   }
 
@@ -939,6 +987,8 @@ export function summarizeConfigForDiagnostics(
       startMs: s.startMs,
       durationMs: s.durationMs,
     })),
+    shotsWithOverrides: overrideEntries,
+    shotsWithOverridesTotal: overrideTotal,
   };
 }
 
