@@ -22,7 +22,7 @@ import {
   buildCanonicalScript,
 } from '@/lib/voiceover-alignment-cache';
 import { stripProductionMarkers } from '@/lib/script-markers';
-import { realignVideoConfig } from '@/remotion/utils';
+import { realignVideoConfig, summarizeConfigForDiagnostics } from '@/remotion/utils';
 import {
   buildRenderDownloadFilename,
   buildRenderKey,
@@ -253,6 +253,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: validationError }, { status: 400 });
   }
 
+  // Boundary 2/3 of the preview-vs-render divergence trace. Pairs with
+  // `[editor render] config summary` (browser console) and
+  // `[render] config effective` below. Logged BEFORE any server-side
+  // mutation so a diff against boundary 1 isolates "did the wire
+  // strip something" from "did absolutize/realign change it." Same
+  // helper shape as the client so a side-by-side compare is trivial.
+  logger.info('[render] config received', {
+    titleHead: title?.slice(0, 60) ?? null,
+    ...summarizeConfigForDiagnostics(config as VideoConfig),
+  });
+
   // Optional voiceover alignment resolution. Runs before the render
   // job is created so an alignment-time DB outage doesn't leave an
   // orphan 'pending' row; once we're past this block, the config is
@@ -265,6 +276,15 @@ export async function POST(req: NextRequest) {
     effectiveConfig = resolved.config;
     alignmentTelemetry = resolved.telemetry;
   }
+
+  // Boundary 3/3 of the preview-vs-render divergence trace. The
+  // `effectiveConfig` here is the EXACT input Remotion's renderer
+  // will mount the composition against — if this differs from
+  // boundary 2 the mutation is from absolutize/realign; if this
+  // matches boundary 2 but differs from the editor preview's frame-0
+  // logs ([broll mounted] / [thumbnail-zoom] mounted) the divergence
+  // is in the renderer's per-scene math, not in the config.
+  logger.info('[render] config effective', { ...summarizeConfigForDiagnostics(effectiveConfig) });
 
   try {
     await ensureTable();

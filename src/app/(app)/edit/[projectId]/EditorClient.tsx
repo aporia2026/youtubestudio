@@ -32,6 +32,7 @@ import { Player, type PlayerRef } from '@remotion/player';
 import { YouTubeVideo } from '@/remotion/compositions/YouTubeVideo';
 import {
   productionDocToVideoConfig,
+  summarizeConfigForDiagnostics,
   type ProductionDoc,
   type RowImageState,
   type RowOverlayRenderState,
@@ -2069,6 +2070,13 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       hasVoiceover: Boolean(renderConfig.voiceoverUrl),
       title: state.doc.title || null,
     });
+    // Boundary 1/3 of the preview-vs-render divergence trace. Pairs
+    // with `[render] config received` (after parse) and `[render]
+    // config effective` (after absolutize + realign) on the server so a
+    // creator reporting "the MP4 doesn't match my preview" can paste
+    // these three lines and we can spot which boundary mutated the
+    // shot data. Cheap: ~1KB of JSON per render kickoff.
+    console.info('[editor render] config summary', summarizeConfigForDiagnostics(renderConfig));
 
     const body: Record<string, unknown> = {
       config: renderConfig,

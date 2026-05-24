@@ -805,6 +805,143 @@ export interface ProductionDocToVideoConfigOptions {
   useBrollProxy?: boolean;
 }
 
+// ─── Render-config diagnostic summary ───────────────────────────────────────
+//
+// Editor preview and the server-side renderer share the same
+// composition + same `productionDocToVideoConfig` builder, so any
+// visual divergence (e.g. "the MP4 shows different zoom than the
+// preview") has to come from the config data drifting between the
+// three boundaries on its way to the renderer:
+//
+//   1. Client kickoff       — what the editor POSTs       (browser console)
+//   2. Server receive       — what the route parses       (Vercel function logs)
+//   3. Server effective     — post absolutize + realign   (Vercel function logs)
+//
+// All three log the SHAPE returned by this helper so a side-by-side
+// diff pinpoints exactly which boundary mutated the field. Per-shot
+// detail is capped at the first 5 shots (the reported bug is usually
+// shot 1 and 195-shot dumps drown the console); the `counts` aggregate
+// covers the rest.
+export interface RenderConfigDiagnosticSummary {
+  totalShots: number;
+  fps: number;
+  width: number;
+  height: number;
+  hasVoiceover: boolean;
+  thumbnail: {
+    present: boolean;
+    width: number | null;
+    height: number | null;
+    imageUrlHead: string | null;
+    regionCount: number;
+  };
+  counts: {
+    bySceneType: Record<string, number>;
+    withThumbnailZoomTo: number;
+    withImageUrl: number;
+    withVideoUrl: number;
+    withSceneZoomOverride: number;
+    withFreeTransformOverride: number;
+    withSectionTitle: number;
+    letterboxShots: number;
+  };
+  firstFiveShots: Array<{
+    i: number;
+    sceneType: string | undefined;
+    thumbnailZoomTo: string | undefined;
+    hasImageUrl: boolean;
+    imageUrlHead: string | null;
+    hasVideoUrl: boolean;
+    sceneZoom: number | undefined;
+    imageScalePct: number | undefined;
+    imageXPct: number | undefined;
+    imageYPct: number | undefined;
+    imageRotationDeg: number | undefined;
+    sectionTitle: string | undefined;
+    sectionTitleLayout: string | undefined;
+    regionZoomPaddingPct: number | undefined;
+    startMs: number;
+    durationMs: number;
+  }>;
+}
+
+export function summarizeConfigForDiagnostics(
+  config: VideoConfig,
+): RenderConfigDiagnosticSummary {
+  const bySceneType: Record<string, number> = {};
+  let withThumbnailZoomTo = 0;
+  let withImageUrl = 0;
+  let withVideoUrl = 0;
+  let withSceneZoomOverride = 0;
+  let withFreeTransformOverride = 0;
+  let withSectionTitle = 0;
+  let letterboxShots = 0;
+
+  for (const s of config.shots) {
+    const t = s.sceneType ?? 'undefined';
+    bySceneType[t] = (bySceneType[t] ?? 0) + 1;
+    if (s.thumbnailZoomTo) withThumbnailZoomTo++;
+    if (s.imageUrl) withImageUrl++;
+    if (s.videoUrl) withVideoUrl++;
+    if (typeof s.sceneZoom === 'number' && s.sceneZoom !== 100) {
+      withSceneZoomOverride++;
+    }
+    const freeIdentity =
+      (s.imageXPct === undefined || s.imageXPct === 0) &&
+      (s.imageYPct === undefined || s.imageYPct === 0) &&
+      (s.imageScalePct === undefined || s.imageScalePct === 100) &&
+      (s.imageRotationDeg === undefined || s.imageRotationDeg === 0);
+    if (!freeIdentity) withFreeTransformOverride++;
+    if (s.sectionTitle) {
+      withSectionTitle++;
+      if ((s.sectionTitleLayout ?? 'letterbox') === 'letterbox') letterboxShots++;
+    }
+  }
+
+  return {
+    totalShots: config.shots.length,
+    fps: config.fps,
+    width: config.width,
+    height: config.height,
+    hasVoiceover: Boolean(config.voiceoverUrl),
+    thumbnail: {
+      present: Boolean(config.thumbnail),
+      width: config.thumbnail?.width ?? null,
+      height: config.thumbnail?.height ?? null,
+      imageUrlHead: config.thumbnail?.imageUrl?.slice(0, 80) ?? null,
+      regionCount: config.thumbnail?.regions?.length ?? 0,
+    },
+    counts: {
+      bySceneType,
+      withThumbnailZoomTo,
+      withImageUrl,
+      withVideoUrl,
+      withSceneZoomOverride,
+      withFreeTransformOverride,
+      withSectionTitle,
+      letterboxShots,
+    },
+    firstFiveShots: config.shots.slice(0, 5).map((s, i) => ({
+      i,
+      sceneType: s.sceneType,
+      thumbnailZoomTo: s.thumbnailZoomTo,
+      hasImageUrl: Boolean(s.imageUrl),
+      imageUrlHead: s.imageUrl?.slice(0, 100) ?? null,
+      hasVideoUrl: Boolean(s.videoUrl),
+      sceneZoom: s.sceneZoom,
+      imageScalePct: s.imageScalePct,
+      imageXPct: s.imageXPct,
+      imageYPct: s.imageYPct,
+      imageRotationDeg: s.imageRotationDeg,
+      sectionTitle: s.sectionTitle,
+      sectionTitleLayout: s.sectionTitleLayout,
+      regionZoomPaddingPct: s.regionZoomPaddingPct,
+      startMs: s.startMs,
+      durationMs: s.durationMs,
+    })),
+  };
+}
+
 export function productionDocToVideoConfig(
   doc: ProductionDoc,
   rowImages: (RowImageState | null)[],

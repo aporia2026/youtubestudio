@@ -189,6 +189,34 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
         transformOrigin: 'center center',
       };
 
+  // Boundary 4/4 of the preview-vs-render divergence trace. Frame 0
+  // only so a 7s scene doesn't spam 210 lines. Pairs with the three
+  // config-summary boundaries (client kickoff → server receive →
+  // server effective): when [broll mounted] for shot N differs
+  // between the browser preview and the Vercel function logs the
+  // divergence is in what reached this component, not in our math.
+  // Only fires for the first 5 shots — same cap as the config
+  // summary — to keep render logs scannable on 195-shot projects.
+  if (frame === 0 && shotIndex < 5) {
+    console.info('[broll mounted]', {
+      shotIndex,
+      useVideo,
+      useImage,
+      isLetterbox,
+      sectionTitle: shot.sectionTitle,
+      sectionTitleLayout: shot.sectionTitleLayout,
+      sceneZoom: shot.sceneZoom,
+      zoomScale,
+      freeXPct,
+      freeYPct,
+      freeScalePct,
+      freeRotDeg,
+      kenBurnsDirection: direction,
+      imageUrlHead: shot.imageUrl?.slice(0, 100),
+      videoUrlHead: shot.videoUrl?.slice(0, 100),
+    });
+  }
+
   return (
     <AbsoluteFill style={{ background: brand.backgroundColor, overflow: 'hidden' }}>
       <AbsoluteFill style={zoomWrapperStyle}>
