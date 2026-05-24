@@ -11,6 +11,10 @@ type FieldType =
   | 'idea'
   | 'qa'
   | 'production_doc'
+  // SEO Optimizer produces titles + description + tags + chapters in a
+  // single pass, so a single umbrella `seo` template covers the whole
+  // workflow instead of forcing the user to maintain separate ones.
+  | 'seo'
   | 'other';
 
 interface Template {
@@ -31,6 +35,7 @@ const FIELD_META: Array<{ id: FieldType; label: string; example: string; color: 
   { id: 'idea',                label: 'Idea Generator',         example: 'e.g. "Focus on contrarian takes, niche-specific angles"',               color: '#22c55e' },
   { id: 'qa',                  label: 'QA Engine',              example: 'e.g. "Be brutally direct, flag every passive sentence"',                 color: '#ec4899' },
   { id: 'production_doc',      label: 'Production Doc',         example: 'e.g. "Documentary style — slow, archival B-roll, sparse music"',        color: '#14b8a6' },
+  { id: 'seo',                 label: 'SEO Optimizer',          example: 'e.g. "Always end the description with the channel CTA + 3 niche hashtags"', color: '#3b82f6' },
   { id: 'other',               label: 'Other',                  example: 'Any other reusable preset',                                              color: 'var(--text-muted)' },
 ];
 

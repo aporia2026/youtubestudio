@@ -260,26 +260,32 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     >
       {/* Logo */}
       <div className="flex items-center h-16 px-4 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-        <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
-          style={{ background: 'linear-gradient(135deg, #7c3aed, #06b6d4)' }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-            <path d="M8 5v14l11-7L8 5z" fill="white" />
-          </svg>
-        </div>
-        <AnimatePresence>
-          {!collapsed && (
-            <motion.div
-              initial={{ opacity: 0, x: -10 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -10 }}
-              transition={{ duration: 0.15 }}
-              className="ml-3 overflow-hidden whitespace-nowrap"
-            >
-              <div className="text-sm font-bold gradient-text leading-tight">YT Studio</div>
-              <div className="text-xs" style={{ color: 'var(--text-muted)' }}>AI Engine</div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+        <Link
+          href="/dashboard"
+          className="flex items-center min-w-0 rounded-md transition-colors hover:opacity-90 cursor-pointer"
+          title="Go to dashboard"
+        >
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
+            style={{ background: 'linear-gradient(135deg, #7c3aed, #06b6d4)' }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <path d="M8 5v14l11-7L8 5z" fill="white" />
+            </svg>
+          </div>
+          <AnimatePresence>
+            {!collapsed && (
+              <motion.div
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -10 }}
+                transition={{ duration: 0.15 }}
+                className="ml-3 overflow-hidden whitespace-nowrap"
+              >
+                <div className="text-sm font-bold gradient-text leading-tight">YT Studio</div>
+                <div className="text-xs" style={{ color: 'var(--text-muted)' }}>AI Engine</div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </Link>
         <button
           onClick={onToggle}
           className="ml-auto p-1.5 rounded-md transition-colors hover:bg-white/5 cursor-pointer"

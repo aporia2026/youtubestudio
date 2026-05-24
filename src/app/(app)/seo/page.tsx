@@ -561,8 +561,16 @@ function SeoPage() {
                 up in the dropdown so the user doesn't have to retype the rules
                 they care about (e.g. "always include channel pillars in the
                 description, never use ALL CAPS in titles"). */}
+            {/* `extraFieldTypes` borrows YouTube Description templates into
+                the dropdown alongside dedicated SEO ones. The SEO Optimizer
+                output is mostly description + titles + tags, and the user's
+                "description style" rules are usually identical to what they
+                want here — so reusing those templates saves duplicating
+                them under a second category. New saves still land under
+                `seo` (the canonical category for this picker). */}
             <TemplateContextPicker
               fieldType="seo"
+              extraFieldTypes={['youtube_description']}
               label="SEO style template"
               templateId={seoTemplateId}
               onTemplateChange={setSeoTemplateId}

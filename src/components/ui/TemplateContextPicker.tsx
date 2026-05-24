@@ -27,6 +27,18 @@ interface Template {
 
 interface Props {
   fieldType: FieldType;
+  /**
+   * Optional additional template categories to surface in the dropdown
+   * alongside `fieldType`. Useful when a feature can reasonably consume
+   * templates authored for a related generator — e.g. the SEO Optimizer
+   * also accepts YouTube Description templates so users don't have to
+   * duplicate their description style under a second category.
+   *
+   * `fieldType` remains the canonical save target: the "Save as template"
+   * button and `autoSelectDefault` both prefer the primary type. Extras
+   * are read-only borrowed content.
+   */
+  extraFieldTypes?: FieldType[];
   /** The currently-selected template id (or null for "no template"). */
   templateId: string | null;
   onTemplateChange: (id: string | null) => void;
@@ -53,6 +65,7 @@ interface Props {
  */
 export function TemplateContextPicker({
   fieldType,
+  extraFieldTypes,
   templateId,
   onTemplateChange,
   context,
@@ -70,17 +83,39 @@ export function TemplateContextPicker({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  // Comma-joined list of every category we read from. Memoised into a
+  // string so the effect's dependency array stays stable across renders
+  // when the caller passes a fresh array literal each time.
+  const allFieldTypes: FieldType[] = [fieldType, ...(extraFieldTypes || [])];
+  const fieldTypesKey = allFieldTypes.join(',');
+
   async function reload(): Promise<Template[]> {
     setLoading(true);
     try {
-      const res = await fetch(`/api/templates?field_type=${fieldType}`);
-      if (!res.ok) return [];
-      const data = await res.json();
-      const list: Template[] = data.templates || [];
-      setTemplates(list);
-      return list;
-    } catch {
-      return [];
+      // Fetch each category in parallel. Done client-side to avoid an
+      // API surface change; the templates endpoint accepts one type
+      // per request.
+      const results = await Promise.all(
+        allFieldTypes.map(async (ft) => {
+          try {
+            const res = await fetch(`/api/templates?field_type=${ft}`);
+            if (!res.ok) return [] as Template[];
+            const data = await res.json();
+            return (data.templates || []) as Template[];
+          } catch {
+            return [] as Template[];
+          }
+        }),
+      );
+      // Dedup by id (a template only belongs to one field_type today, but
+      // belt-and-braces in case the same id surfaces twice).
+      const byId = new Map<string, Template>();
+      for (const list of results) {
+        for (const t of list) if (!byId.has(t.id)) byId.set(t.id, t);
+      }
+      const merged = Array.from(byId.values());
+      setTemplates(merged);
+      return merged;
     } finally {
       setLoading(false);
     }
@@ -92,9 +127,12 @@ export function TemplateContextPicker({
       const list = await reload();
       if (cancelled) return;
       // Auto-select the user's default template the first time we see it.
+      // Prefer the primary field's default over an extra-category default
+      // so the save target and the chosen template agree by default.
       if (autoSelectDefault && templateId === null) {
-        const def = list.find((t) => t.is_default);
-        if (def) onTemplateChange(def.id);
+        const primaryDefault = list.find((t) => t.is_default && t.field_type === fieldType);
+        const anyDefault = primaryDefault || list.find((t) => t.is_default);
+        if (anyDefault) onTemplateChange(anyDefault.id);
       }
     }
     load();
@@ -107,7 +145,7 @@ export function TemplateContextPicker({
       document.removeEventListener('visibilitychange', onVisible);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fieldType]);
+  }, [fieldTypesKey]);
 
   async function handleSaveAsTemplate() {
     const name = saveName.trim();
@@ -151,6 +189,14 @@ export function TemplateContextPicker({
 
   const selected = templates.find(t => t.id === templateId) || null;
 
+  // Order: primary-type templates first (defaults at the top), then each
+  // extra category in the order the caller passed them. Inside a category
+  // we keep the API's existing ordering (defaults first, then name asc).
+  const orderedTemplates = allFieldTypes.flatMap((ft) =>
+    templates.filter(t => t.field_type === ft),
+  );
+  const hasMultipleCategories = allFieldTypes.length > 1;
+
   return (
     <div className={compact ? 'space-y-2' : 'space-y-3'}>
       <div>
@@ -174,11 +220,20 @@ export function TemplateContextPicker({
           disabled={loading}
         >
           <option value="">{loading ? 'Loading templates…' : 'No template (default behavior)'}</option>
-          {templates.map(t => (
-            <option key={t.id} value={t.id}>
-              {t.name}{t.is_default ? '  ★' : ''}
-            </option>
-          ))}
+          {orderedTemplates.map(t => {
+            // When the picker pulls in extra categories, suffix the
+            // template name with its category so the user can tell a
+            // borrowed "YouTube Description" template apart from a
+            // dedicated "SEO" one.
+            const categoryLabel = hasMultipleCategories && t.field_type !== fieldType
+              ? `  ·  ${t.field_type.replace(/_/g, ' ')}`
+              : '';
+            return (
+              <option key={t.id} value={t.id}>
+                {t.name}{t.is_default ? '  ★' : ''}{categoryLabel}
+              </option>
+            );
+          })}
         </select>
         {selected && (
           <p className="text-[11px] mt-1.5 px-2 py-1.5 rounded whitespace-pre-wrap" style={{ background: 'rgba(124,58,237,0.06)', color: 'var(--text-muted)', borderLeft: '2px solid rgba(124,58,237,0.4)' }}>
