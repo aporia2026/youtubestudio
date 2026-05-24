@@ -216,6 +216,26 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
         const useLetterbox =
           Boolean(shot.sectionTitle) &&
           (shot.sectionTitleLayout ?? 'letterbox') === 'letterbox';
+        // One-shot per-shot diagnostic for the first 5 shots: verifies
+        // useLetterbox is actually true at render time when the data
+        // says letterbox. Pairs with the [render] config effective
+        // log so a creator reporting "letterbox shot has title
+        // overlapping image" can see whether the wrapper was applied
+        // or skipped. Hoisted out of the .map() to avoid logging once
+        // per frame — Remotion re-evaluates the component each frame.
+        if (i < 5) {
+          console.info('[composition letterbox check]', {
+            shotIndex: i,
+            hasSectionTitle: Boolean(shot.sectionTitle),
+            sectionTitleLayoutRaw: shot.sectionTitleLayout,
+            useLetterbox,
+            stripeHeightPx:
+              Boolean(shot.sectionTitle) &&
+              (shot.sectionTitleLayout ?? 'letterbox') === 'letterbox'
+                ? config.height * clampSectionStripeFraction(config.thumbnail?.stripeHeightFraction)
+                : 0,
+          });
+        }
         const pillarboxColor =
           shot.pillarboxColor || config.pillarboxColorDefault || '#FFFFFF';
         const sceneConfig = useLetterbox
@@ -268,13 +288,24 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
             name={`Shot ${i + 1}: ${shot.thumbnailZoomTo ? 'thumbnail-zoom' : shot.sceneType}${useLetterbox ? ' (letterbox)' : ''}`}
           >
             {useLetterbox ? (
+              // Explicit width + height instead of right:0 / bottom:0
+              // inset positioning. Sequence wraps children in an
+              // AbsoluteFill which is `display: flex, flexDirection:
+              // column` — a position:absolute child styled with only
+              // inset offsets can render inconsistently across
+              // runtimes (browser Player vs Lambda headless Chromium).
+              // Pinning explicit dimensions makes the box deterministic
+              // regardless of the flex parent. See bug report:
+              // letterbox shots showed title overlapping the image in
+              // the rendered MP4 even when the data carried
+              // sectionTitleLayout='letterbox'. 2026-05-24.
               <div
                 style={{
                   position: 'absolute',
                   top: stripeHeightPx,
                   left: 0,
-                  right: 0,
-                  bottom: 0,
+                  width: containerWidth,
+                  height: containerHeight,
                   overflow: 'hidden',
                   background: pillarboxColor,
                 }}
