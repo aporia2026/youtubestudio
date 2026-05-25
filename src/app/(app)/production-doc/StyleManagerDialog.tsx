@@ -29,7 +29,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
-import { I2I_MODELS, DEFAULT_CLOUD_I2I_MODEL } from '@/lib/image-models-i2i';
+import { I2I_MODELS, DEFAULT_CLOUD_I2I_MODEL, formatI2ICostHint } from '@/lib/image-models-i2i';
 
 /**
  * Promise-wrapped confirmation toast. Replaces native `window.confirm()`
@@ -934,11 +934,20 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
                       const modelValue = isBuiltIn ? (target?.preferred_cloud_model ?? '') : draft.preferred_cloud_model;
                       const pickedSpec = I2I_MODEL_OPTIONS.find((m) => m.value === modelValue);
                       const isLocalPick = pickedSpec?.isLocal === true;
-                      // Per-provider cost + speed hints. Local is free
-                      // but requires LOCAL_STUDIO=1 + ComfyUI running.
+                      // Per-provider cost + speed hints. Cost comes
+                      // from the model spec via formatI2ICostHint so
+                      // the label stays in sync when a model's price
+                      // changes (e.g. NanoBanana Pro $0.05 →
+                      // NanoBanana 2 $0.04, or the Atlas $0.011
+                      // route). Falls back to a generic label when
+                      // the cost field is missing on the spec.
+                      const costHint = formatI2ICostHint(modelValue);
+                      const idleLabel = isLocalPick
+                        ? 'Run test (free, local)'
+                        : (costHint ? `Run test (${costHint})` : 'Run test');
                       const buttonLabel = isLocalPick
-                        ? (testRenderBusy ? 'Rendering… (~60s)' : 'Run test (free, local)')
-                        : (testRenderBusy ? 'Rendering… (~90s)' : 'Run test (~$0.05)');
+                        ? (testRenderBusy ? 'Rendering… (~60s)' : idleLabel)
+                        : (testRenderBusy ? 'Rendering… (~90s)' : idleLabel);
                       const busyHint = isLocalPick
                         ? 'Qwen-Image i2i typically takes 30–90 s.'
                         : 'NanoBanana Pro typically takes 60–150 s.';

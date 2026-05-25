@@ -136,6 +136,19 @@ export function isPathPublic(pathname: string): boolean {
     return true;
   }
   if (pathname.startsWith('/_next') || pathname.startsWith('/favicon')) return true;
+  // /style-refs/* is the public static folder for built-in style
+  // reference images (bundled with the deploy at
+  // public/style-refs/<Style-Slug>/<filename>). Two distinct callers
+  // need anonymous access:
+  //   - the i2i image generation provider (Kie / Atlas) — its servers
+  //     fetch ref URLs with no cookie, and without this allowlist a
+  //     307 → /login lands them at HTML instead of an image, causing
+  //     "Models task execute failed" downstream
+  //   - any other image-fetcher pipeline (e.g. Lambda renderer) that
+  //     touches these URLs cookie-less
+  // The bytes are bundled publicly in the deploy anyway — gating them
+  // behind auth has no security upside, just a correctness downside.
+  if (pathname.startsWith('/style-refs/')) return true;
   return false;
 }
 
