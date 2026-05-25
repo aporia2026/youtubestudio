@@ -38,6 +38,7 @@
 import type { protos } from '@google-cloud/text-to-speech';
 import { logger } from '../../logger';
 import { synthCostUsd } from '../cost';
+import { chunkScriptForGoogle, DEFAULT_MAX_CHUNK_BYTES } from '../chunker';
 import { assertGoogleCredentialsValid, loadGoogleCredentials } from '../google-env';
 import { listGoogleVoices } from '../voices/google-catalog';
 import {
@@ -58,6 +59,15 @@ const PROVIDER_ID = 'google' as const;
  * use byte length, not char length, for the check.
  */
 const SYNC_INPUT_BYTE_LIMIT = 5000;
+
+/**
+ * Parallelism cap for long-form chunked synthesis. Google's per-project
+ * QPS quotas for TTS are generous (300/min default at writing) but
+ * concurrent requests on Chirp 3 HD can throttle. 3 in-flight is a
+ * conservative ceiling that keeps a 30-minute YouTube narration
+ * (~5 chunks) completing in two waves.
+ */
+const LONG_FORM_CONCURRENCY = 3;
 
 /**
  * Lazy SDK import. Keeps cold-start cheap on routes that don't touch
@@ -102,13 +112,22 @@ class GoogleSynthesizer implements Synthesizer {
     const payloadBytes = Buffer.byteLength(useSsml ? ssml! : text, 'utf8');
 
     if (payloadBytes > SYNC_INPUT_BYTE_LIMIT) {
-      throw new TtsProviderError(
-        `Google synchronous synthesis input exceeds ${SYNC_INPUT_BYTE_LIMIT}-byte limit ` +
-          `(${payloadBytes} bytes). Chunk the script or use long-form synthesis (not yet wired).`,
-        PROVIDER_ID,
-        'invalid_request',
-        false,
-      );
+      if (useSsml) {
+        // SSML can't be chunked safely — tags would slice across chunk
+        // boundaries and produce broken markup. Callers passing SSML
+        // must keep each request under the limit themselves.
+        throw new TtsProviderError(
+          `Google SSML input exceeds ${SYNC_INPUT_BYTE_LIMIT}-byte limit ` +
+            `(${payloadBytes} bytes). Chunking SSML is not supported because ` +
+            `tags would break across boundaries. Pass plain text instead, or ` +
+            `chunk the SSML caller-side at safe tag boundaries.`,
+          PROVIDER_ID,
+          'invalid_request',
+          false,
+        );
+      }
+      // Plain text — chunk + parallel synth + concat MP3 bytes.
+      return this.synthesizeLongForm(req);
     }
 
     if (isChirp3Hd(req.voice.voiceId)) {
@@ -221,6 +240,108 @@ class GoogleSynthesizer implements Synthesizer {
   estimateCost(req: Pick<SynthesizeRequest, 'voice' | 'text' | 'ssml'>): number {
     const charCount = (req.ssml ?? req.text).length;
     return synthCostUsd(req.voice.tier, charCount);
+  }
+
+  /**
+   * Long-form synthesis path: text exceeds the sync endpoint's 5,000-
+   * byte limit. We chunk on sentence boundaries (see ../chunker.ts),
+   * synthesize each chunk in waves of `LONG_FORM_CONCURRENCY`, then
+   * concatenate the MP3 byte streams.
+   *
+   * MP3 frames are self-contained, so byte-level concatenation works
+   * for playback. Sentence-boundary joints fall during natural pauses
+   * where Google's TTS already adds ~250 ms of silence — the seam is
+   * inaudible to listeners. If a user encounters audible artifacts on
+   * a specific script, the fix is usually to add a paragraph break
+   * earlier in that sentence so the chunker picks a different
+   * boundary.
+   *
+   * Errors mid-batch are propagated as TtsProviderError — we don't
+   * partially return audio for a partially-failed batch, since the
+   * caller would have no way to know which sentences were missing.
+   */
+  private async synthesizeLongForm(req: SynthesizeRequest): Promise<SynthesizeResult> {
+    const chunks = chunkScriptForGoogle(req.text, DEFAULT_MAX_CHUNK_BYTES);
+    if (chunks.length === 0) {
+      throw new TtsProviderError(
+        'Google long-form synthesis received empty text after chunking.',
+        PROVIDER_ID,
+        'invalid_request',
+        false,
+      );
+    }
+
+    logger.info('[tts google synth long-form] start', {
+      voiceId: req.voice.voiceId,
+      tier: req.voice.tier,
+      languageCode: req.voice.languageCode,
+      totalChars: req.text.length,
+      totalBytes: Buffer.byteLength(req.text, 'utf8'),
+      chunkCount: chunks.length,
+      concurrency: LONG_FORM_CONCURRENCY,
+    });
+
+    const startedAt = Date.now();
+    const audioBuffers: Uint8Array[] = [];
+    let totalCharCount = 0;
+    let totalCostUsd = 0;
+
+    for (let i = 0; i < chunks.length; i += LONG_FORM_CONCURRENCY) {
+      const wave = chunks.slice(i, i + LONG_FORM_CONCURRENCY);
+      // Recursive call back into synthesize() — each chunk is below
+      // the limit so it lands on the short-form path. Strip ssml from
+      // the request: we already validated up front that the long-form
+      // path is text-only.
+      const results = await Promise.all(
+        wave.map((chunkText) =>
+          this.synthesize({
+            ...req,
+            text: chunkText,
+            ssml: undefined,
+          }),
+        ),
+      );
+      for (const r of results) {
+        audioBuffers.push(r.audioBytes);
+        totalCharCount += r.charCount;
+        totalCostUsd += r.costUsd;
+      }
+    }
+
+    const totalBytes = audioBuffers.reduce((sum, b) => sum + b.byteLength, 0);
+    const merged = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const buf of audioBuffers) {
+      merged.set(buf, offset);
+      offset += buf.byteLength;
+    }
+
+    const durationSeconds = Math.max(1, totalCharCount / 15);
+
+    logger.info('[tts google synth long-form] ok', {
+      voiceId: req.voice.voiceId,
+      chunkCount: chunks.length,
+      totalBytes,
+      totalCharCount,
+      totalCostUsd,
+      durationMs: Date.now() - startedAt,
+      estimatedDurationSec: durationSeconds,
+    });
+
+    return {
+      audioBytes: merged,
+      mimeType: 'audio/mpeg',
+      durationSeconds,
+      charCount: totalCharCount,
+      costUsd: totalCostUsd,
+      providerMetadata: {
+        voiceId: req.voice.voiceId,
+        tier: req.voice.tier,
+        languageCode: req.voice.languageCode,
+        chunked: true,
+        chunkCount: chunks.length,
+      },
+    };
   }
 }
 
