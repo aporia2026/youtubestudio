@@ -4666,8 +4666,19 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       {/* Floating modals — rendered outside the chrome grid because
           they're position:fixed overlays. Keeping them after the
           chrome means the layout grid doesn't have to budget any
-          space for them. */}
+          space for them.
 
+          IMPORTANT: this block is wrapped in `.editor-root` so the
+          editor's CSS custom properties (`--editor-panel`,
+          `--editor-edge`, `--fg`, etc.) resolve here too. Without the
+          wrapper, modals sit at the React tree level OUTSIDE
+          EditorChrome's own `.editor-root`, so every `var(--editor-*)`
+          reference falls back to its initial value — which renders
+          modal backgrounds transparent and washes out content (the
+          Section thumbnail modal looked broken because of this). The
+          wrapper has no visible footprint because every child is
+          position:fixed (taken out of normal flow). */}
+      <div className="editor-root">
       {showDriftReport && (
         <VoiceoverDriftReport
           doc={state.doc}
@@ -5199,6 +5210,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           onClose={() => setTimingPopover(null)}
         />
       )}
+      </div>
     </>
   );
 }
