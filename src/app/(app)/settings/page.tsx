@@ -186,12 +186,17 @@ export default function SettingsPage() {
           keywords: newNicheKeywords.split(',').map(k => k.trim()).filter(Boolean),
         }),
       });
-      if (!res.ok) throw new Error();
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error || 'Failed to add niche');
+      }
       toast.success('Niche added!');
       setNewNiche(''); setNewNicheDesc(''); setNewNicheKeywords('');
       const data = await (await fetch('/api/niches')).json();
       setNiches(data.niches || []);
-    } catch { toast.error('Failed to add niche'); }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to add niche');
+    }
     finally { setAddingNiche(false); }
   }
 

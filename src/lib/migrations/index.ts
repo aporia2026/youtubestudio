@@ -86,6 +86,7 @@ import migration0083 from './0083_create_generation_events';
 import migration0084 from './0084_create_project_assets';
 import migration0085 from './0085_ask_studio_thread_replies';
 import migration0086 from './0086_add_channel_description_brief';
+import migration0087 from './0087_niches_workspace_name_unique';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -179,6 +180,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0084,
   migration0085,
   migration0086,
+  migration0087,
 ]);
 
 /**

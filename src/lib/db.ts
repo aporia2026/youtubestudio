@@ -309,14 +309,20 @@ export async function initDatabase() {
     )
   `;
 
-  // Niches table (for flexible niche management)
+  // Niches table (for flexible niche management). Uniqueness is workspace-
+  // scoped via migration 0087's `niches_workspace_name_unique` constraint —
+  // a global UNIQUE on `name` would leak across tenants, so it's deliberately
+  // not declared inline here. `workspace_id` is added by the generic 0011
+  // rollout on existing DBs; declared inline so fresh installs don't depend
+  // on a subsequent ALTER pass to gain the column.
   await sql`
     CREATE TABLE IF NOT EXISTS niches (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      name TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
       description TEXT,
       keywords JSONB DEFAULT '[]',
       is_active BOOLEAN DEFAULT true,
+      workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `;
@@ -373,14 +379,22 @@ export async function initDatabase() {
   try { await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS video_analyzed_at TIMESTAMPTZ`; } catch {}
   try { await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS video_analysis_model TEXT`; } catch {}
 
-  // Seed default niches if empty
-  await sql`
-    INSERT INTO niches (name, description, keywords)
-    VALUES
-      ('Cybersecurity & Antivirus', 'Explainer videos about cybersecurity, antivirus software, digital safety', '["antivirus", "cybersecurity", "malware", "vpn", "privacy", "hacking", "firewall", "ransomware"]'),
-      ('General Tech', 'Technology reviews, tutorials and explainers', '["tech", "software", "hardware", "review", "tutorial"]')
-    ON CONFLICT (name) DO NOTHING
+  // Seed default niches into the bootstrap workspace if it exists. Skip the
+  // seed on a workspace-less DB rather than crashing — initDatabase is
+  // sometimes invoked before migration 0005 has run.
+  const bootstrapWs = await sql`
+    SELECT id FROM workspaces ORDER BY created_at ASC, id ASC LIMIT 1
   `;
+  const bootstrapWsId = bootstrapWs.rows[0]?.id as string | undefined;
+  if (bootstrapWsId) {
+    await sql`
+      INSERT INTO niches (name, description, keywords, workspace_id)
+      VALUES
+        ('Cybersecurity & Antivirus', 'Explainer videos about cybersecurity, antivirus software, digital safety', '["antivirus", "cybersecurity", "malware", "vpn", "privacy", "hacking", "firewall", "ransomware"]', ${bootstrapWsId}::uuid),
+        ('General Tech', 'Technology reviews, tutorials and explainers', '["tech", "software", "hardware", "review", "tutorial"]', ${bootstrapWsId}::uuid)
+      ON CONFLICT (workspace_id, name) DO NOTHING
+    `;
+  }
 }
 
 /** Idempotent setup for the channels table + per-account columns. */
