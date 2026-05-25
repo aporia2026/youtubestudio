@@ -333,6 +333,7 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
             text={run.title}
             brand={config.brand}
             heightFraction={config.thumbnail?.stripeHeightFraction}
+            variant={config.styleId === 'doodle_explainer_2' ? 'doodle-bold' : 'default'}
           />
         </Sequence>
       ))}

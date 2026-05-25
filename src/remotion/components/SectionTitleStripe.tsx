@@ -1,7 +1,19 @@
 import React from 'react';
 import { useVideoConfig } from 'remotion';
-import { PATRICK_HAND_FAMILY } from '../fonts';
+import { PATRICK_HAND_FAMILY, LILITA_ONE_FAMILY } from '../fonts';
 import type { BrandKit } from '../types';
+
+/** Visual treatment variants for the section-title stripe. Phase 2.1
+ *  of `_plans/2026-05-25-style-aware-overlay-text.md`.
+ *
+ *   - 'default'      Patrick Hand on a white band with soft drop shadow
+ *                    (whiteboard-explainer aesthetic, every other style)
+ *   - 'doodle-bold' bold black Lilita One floating over the frame with
+ *                    no background box — matches the persistent black
+ *                    title at top in the doodle_explainer_2 ref videos
+ *                    (`Wannacry`, `Russian Sleep Experiment`, `Stuxnet`)
+ */
+export type SectionTitleStripeVariant = 'default' | 'doodle-bold';
 
 /**
  * Fixed white band at the top of the frame showing a section's title.
@@ -23,6 +35,9 @@ interface SectionTitleStripeProps {
   /** Stripe height as a fraction of frame height. Default 0.13 (~140px at 1080p).
    *  Clamped to [0.06, 0.22] to avoid invisible / overwhelming bands. */
   heightFraction?: number;
+  /** Visual treatment. Defaults to 'default' so every existing caller
+   *  produces the classic white-band Patrick Hand stripe unchanged. */
+  variant?: SectionTitleStripeVariant;
 }
 
 // Stripe-geometry constants + clamp helper moved to a pure-TS module so
@@ -41,6 +56,7 @@ export const SectionTitleStripe: React.FC<SectionTitleStripeProps> = ({
   text,
   brand,
   heightFraction,
+  variant = 'default',
 }) => {
   const { height } = useVideoConfig();
   const stripeHeight = height * clampSectionStripeFraction(heightFraction);
@@ -48,6 +64,61 @@ export const SectionTitleStripe: React.FC<SectionTitleStripeProps> = ({
   // generous. ~52% of stripe height gives a tight optical center.
   const fontSize = Math.round(stripeHeight * 0.52);
 
+  if (variant === 'doodle-bold') {
+    // Bold black hand-drawn-ish title floating at the top of the
+    // frame, no background box, no shadow. Matches the persistent
+    // top-of-frame title in the source ref videos
+    // (e.g. `Wannacry`, `Russian Sleep Experiment`). Uses the same
+    // stripe geometry so the doc's letterbox layout (which reserves
+    // `stripeHeight` at the top) keeps working unchanged — the
+    // floating title just sits inside that reserved band instead of
+    // a white-painted version of it.
+    return (
+      <div
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: stripeHeight,
+          // Transparent — the AI image's top region is already white
+          // for this style, so painting a white band would just stack
+          // identical pixels and the soft shadow on the default
+          // variant would look out of place over a doodle scene.
+          background: 'transparent',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 5,
+          pointerEvents: 'none',
+        }}
+      >
+        <span
+          style={{
+            fontFamily: `'${LILITA_ONE_FAMILY}', 'Impact', 'Arial Black', sans-serif`,
+            fontSize: Math.round(fontSize * 1.1),
+            fontWeight: 400,
+            color: '#111111',
+            lineHeight: 1.2,
+            maxWidth: '90%',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            letterSpacing: 1,
+            // Very subtle pencil-like outline so the black title stays
+            // legible if it happens to sit over a darker scene element
+            // (e.g. a red skull). Soft enough not to look applied to
+            // pure-white-background frames.
+            textShadow: '0 1px 0 rgba(0,0,0,0.06)',
+          }}
+        >
+          {text}
+        </span>
+      </div>
+    );
+  }
+
+  // Default variant — original Patrick-Hand white-band behavior unchanged.
   return (
     <div
       style={{
