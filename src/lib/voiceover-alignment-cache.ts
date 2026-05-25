@@ -1,36 +1,42 @@
 /**
- * Voiceover alignment cache + ElevenLabs orchestrator.
+ * Voiceover alignment cache + provider-aware aligner orchestrator.
  *
- * This is the side-effecting layer that sits between the pure cursor
- * walk in `voiceover-alignment.ts` and the production-doc render path.
- * Responsibilities:
+ * Sits between the pure cursor walk in `voiceover-alignment.ts` and the
+ * production-doc render path. Responsibilities:
  *
- *   1. Compute a deterministic cache key for an audio URL + canonical
- *      script pair (sha256 of both, joined so neither alone can produce
- *      a collision).
+ *   1. Compute a deterministic cache key. For ElevenLabs (the historic
+ *      default) the key shape is unchanged so existing cache rows still
+ *      resolve. For Google (added 2026-05-25 in the TTS-dispatch
+ *      migration) the key gets a `google` salt so the two providers'
+ *      alignments never collide on the same audio URL.
  *   2. Look the key up in `voiceover_alignments`; on hit, return the
- *      stored alignment + a `cached: true` flag.
- *   3. On miss, fetch the audio, call ElevenLabs Forced Alignment, and
- *      persist the response.
+ *      stored alignment + `cached: true`.
+ *   3. On miss, fetch the audio, dispatch through `tts/dispatch.align()`
+ *      which routes to the right aligner (ElevenLabs Forced Alignment
+ *      or Google Speech-to-Text), and persist the response.
  *   4. Enforce a per-day spend cap (env-configurable) so a runaway
- *      invalidation loop can't burn the budget.
+ *      invalidation loop can't burn the budget. Cap covers BOTH
+ *      providers — Google STT cost lands in the same `cost_usd`
+ *      column.
  *
  * The cache is workspace-global on purpose — two workspaces aligning
  * the same audio + script get the same answer, and there's no reason
  * to duplicate the row. Workspace-level access control lives at the
- * route layer (`apiRoute.authed`).
+ * route layer.
  *
  * Never throws past the caller's expectations: every failure mode
- * (no API key, audio fetch error, ElevenLabs 5xx, daily cap reached)
+ * (no API key, audio fetch error, vendor 5xx, daily cap reached)
  * surfaces as a typed result so the production-doc page can render a
  * specific pill rather than a generic "something went wrong" toast.
  */
 
 import { createHash } from 'crypto';
 import { sql } from '@vercel/postgres';
-import { forceAlign, type ForcedAlignmentResponse } from './elevenlabs';
 import { buildCanonicalScript } from './voiceover-alignment';
 import { logger } from './logger';
+import { align as dispatchAlign } from './tts/dispatch';
+import type { AlignResult, VoiceRef } from './tts/types';
+import { TtsProviderError } from './tts/types';
 
 // ─── Tunables ─────────────────────────────────────────────────────────────────
 
@@ -38,10 +44,12 @@ import { logger } from './logger';
 const ELEVENLABS_SCRIBE_USD_PER_HOUR = 0.22;
 
 /**
- * Per-day spend cap on Forced Alignment calls. Default $2/day at
- * Scribe pricing buys ~9 hours of audio alignment — well above any
- * legitimate daily usage; the cap exists to catch a runaway cache
- * invalidation loop. Override via `ELEVENLABS_ALIGNMENT_MAX_USD_PER_DAY`.
+ * Per-day spend cap on aligner calls (both providers share the cap).
+ * Default $2/day at Scribe pricing buys ~9 hours of audio alignment
+ * — well above any legitimate daily usage; the cap exists to catch a
+ * runaway cache invalidation loop. Override via
+ * `ELEVENLABS_ALIGNMENT_MAX_USD_PER_DAY` (env name preserved from the
+ * pre-dispatch era for compatibility with existing deploys).
  */
 const DEFAULT_DAILY_BUDGET_USD = 2;
 
@@ -51,6 +59,20 @@ function getDailyBudgetUsd(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DAILY_BUDGET_USD;
 }
 
+/**
+ * Default voice ref used when a caller doesn't supply one. Keeps
+ * pre-dispatch callers (render route, smoke script) working without
+ * change — alignment goes through the ElevenLabs path. New callers
+ * (the /api/voiceovers/align route post-2026-05-25) look up the
+ * media_assets row first and pass the actual provider's voice ref.
+ */
+const DEFAULT_ELEVENLABS_VOICE: VoiceRef = {
+  providerId: 'elevenlabs',
+  voiceId: 'unknown',
+  languageCode: 'en-US',
+  tier: 'multilingual-v2',
+};
+
 // ─── Cache key derivation ─────────────────────────────────────────────────────
 
 function sha256Hex(input: string): string {
@@ -59,20 +81,31 @@ function sha256Hex(input: string): string {
 
 /**
  * Cache key = sha256(audioUrl) joined with sha256(canonicalScript) and
- * hashed again. Either input changing produces a different key, which
- * is exactly the invalidation contract:
- *   - same audio + same script → cache hit ($0)
- *   - same audio + edited script → miss, fresh alignment
- *   - same script + replaced audio → miss, fresh alignment
+ * hashed again. For Google voiceovers a `google` salt is mixed in so
+ * the same URL aligned with two different aligners produces two
+ * distinct keys (this is mostly defensive — a Google R2 audio URL
+ * shouldn't ever be claimed by ElevenLabs and vice versa, but the
+ * salt makes that invariant cheap to enforce).
+ *
+ * Backward compatibility: the ElevenLabs branch produces the exact
+ * same key shape as before the provider abstraction. Existing rows
+ * continue to resolve without re-alignment.
  *
  * Exported for tests + so the production-doc page can pre-warm the
  * cache via `/api/voiceover/align` using the exact same key the render
  * path will compute later.
  */
-export function deriveCacheKey(audioUrl: string, canonicalScript: string): string {
+export function deriveCacheKey(
+  audioUrl: string,
+  canonicalScript: string,
+  voice: VoiceRef = DEFAULT_ELEVENLABS_VOICE,
+): string {
   const urlHash = sha256Hex(audioUrl);
   const scriptHash = sha256Hex(canonicalScript);
-  return sha256Hex(`${urlHash}|${scriptHash}`);
+  if (voice.providerId === 'elevenlabs') {
+    return sha256Hex(`${urlHash}|${scriptHash}`);
+  }
+  return sha256Hex(`${urlHash}|${scriptHash}|${voice.providerId}`);
 }
 
 // ─── Result envelope ──────────────────────────────────────────────────────────
@@ -80,7 +113,7 @@ export function deriveCacheKey(audioUrl: string, canonicalScript: string): strin
 export type EnsureAlignmentResult =
   | {
       status: 'ready';
-      alignment: ForcedAlignmentResponse;
+      alignment: AlignResultShape;
       durationMs: number;
       cacheKey: string;
       cached: boolean;
@@ -93,13 +126,30 @@ export type EnsureAlignmentResult =
       cacheKey: string;
     };
 
+/**
+ * Storage shape we persist in `voiceover_alignments.alignment_json`.
+ * Backward-compat with the pre-dispatch JSON shape (words: [{text,
+ * start, end}]) — kept identical so the production-doc renderer and
+ * existing cached rows continue to parse without a migration.
+ */
+export interface AlignResultShape {
+  words: Array<{ text: string; start: number; end: number }>;
+  characters?: unknown;
+  loss?: number;
+}
+
 // ─── Public entry point ───────────────────────────────────────────────────────
 
 export interface EnsureAlignmentOptions {
-  /** Skip the cache read and always call ElevenLabs. Used by the
+  /** Skip the cache read and always call the aligner. Used by the
    *  production-doc "Re-align" pill when the creator explicitly asks
    *  to invalidate. */
   forceRefresh?: boolean;
+  /** Origin voice ref. When omitted, defaults to a synthetic
+   *  ElevenLabs ref — preserves pre-dispatch behavior for callers
+   *  that haven't migrated yet. New callers should pass the real
+   *  VoiceRef looked up from `media_assets.metadata`. */
+  voice?: VoiceRef;
 }
 
 /**
@@ -113,7 +163,8 @@ export async function ensureAlignmentForVoiceover(
   canonicalScript: string,
   options: EnsureAlignmentOptions = {},
 ): Promise<EnsureAlignmentResult> {
-  const cacheKey = deriveCacheKey(audioUrl, canonicalScript);
+  const voice = options.voice ?? DEFAULT_ELEVENLABS_VOICE;
+  const cacheKey = deriveCacheKey(audioUrl, canonicalScript, voice);
 
   if (!canonicalScript.trim()) {
     return { status: 'failed', reason: 'Script is empty — nothing to align.', cacheKey };
@@ -146,15 +197,6 @@ export async function ensureAlignmentForVoiceover(
     }
   }
 
-  const apiKey = process.env.ELEVENLABS_API_KEY;
-  if (!apiKey) {
-    return {
-      status: 'failed',
-      reason: 'ElevenLabs API key is not configured on the server.',
-      cacheKey,
-    };
-  }
-
   // Daily spend cap is checked BEFORE the audio fetch so the cap math
   // is paid per attempt (and a busted audio URL doesn't get a free
   // pass past the cap).
@@ -168,9 +210,9 @@ export async function ensureAlignmentForVoiceover(
     };
   }
 
-  // Fetch the audio bytes server-side so the URL never leaks to
-  // ElevenLabs as a callback URL. Same pattern as src/lib/alignment.ts.
-  let audioBlob: Blob;
+  // Fetch the audio bytes server-side so the URL never leaks to the
+  // aligner as a callback URL. Same SSRF posture as before.
+  let audioBytes: Uint8Array;
   try {
     const audioRes = await fetch(audioUrl);
     if (!audioRes.ok) {
@@ -180,7 +222,7 @@ export async function ensureAlignmentForVoiceover(
         cacheKey,
       };
     }
-    audioBlob = await audioRes.blob();
+    audioBytes = new Uint8Array(await audioRes.arrayBuffer());
   } catch (err) {
     return {
       status: 'failed',
@@ -188,31 +230,61 @@ export async function ensureAlignmentForVoiceover(
       cacheKey,
     };
   }
-  if (audioBlob.size === 0) {
+  if (audioBytes.byteLength === 0) {
     return { status: 'failed', reason: 'Voiceover audio is empty.', cacheKey };
   }
 
-  let alignment: ForcedAlignmentResponse;
+  let alignResult: AlignResult;
   try {
-    alignment = await forceAlign(apiKey, {
-      audioBlob,
-      audioFilename: 'voiceover.mp3',
+    alignResult = await dispatchAlign({
+      voice,
+      audio: audioBytes,
+      mimeType: 'audio/mpeg',
       text: canonicalScript,
+      languageCode: voice.languageCode,
     });
   } catch (err) {
-    // `forceAlign` interpolates the response body into its error
-    // message — sanitise before surfacing to callers / logs.
+    // Dispatch layer surfaces TtsProviderError for vendor failures and
+    // misconfiguration; everything else is a programming bug. Sanitise
+    // the message before surfacing to callers / logs.
     const raw = err instanceof Error ? err.message : String(err);
     const safe = raw.replace(/https?:\/\/\S+/g, '<url>').slice(0, 240);
-    logger.warn('voiceover-alignment-cache: forceAlign failed', { cacheKey, detail: safe });
-    return { status: 'failed', reason: `ElevenLabs alignment failed: ${safe}`, cacheKey };
+    logger.warn('voiceover-alignment-cache: align failed', {
+      cacheKey,
+      provider: voice.providerId,
+      code: err instanceof TtsProviderError ? err.code : 'unknown',
+      detail: safe,
+    });
+    return {
+      status: 'failed',
+      reason:
+        voice.providerId === 'google'
+          ? `Google STT alignment failed: ${safe}`
+          : `ElevenLabs alignment failed: ${safe}`,
+      cacheKey,
+    };
   }
 
-  const durationMs = inferDurationMs(alignment);
-  const cost = (durationMs / 1000 / 3600) * ELEVENLABS_SCRIBE_USD_PER_HOUR;
+  // Persist in the legacy alignment_json shape: words: [{text, start, end}]
+  // — same fields the renderer + existing cached rows expect.
+  const alignmentForCache: AlignResultShape = {
+    words: alignResult.words.map((w) => ({ text: w.text, start: w.startSec, end: w.endSec })),
+  };
+
+  const durationMs = Math.round(alignResult.durationSec * 1000);
+  // Use the cost the aligner returned. For ElevenLabs that's still
+  // proportional to spoken duration via ELEVENLABS_SCRIBE_USD_PER_HOUR
+  // (the aligner module's own constant matches the one here — see
+  // src/lib/tts/cost.ts).
+  const cost = alignResult.costUsd;
 
   try {
-    await writeCachedAlignment({ cacheKey, alignment, durationMs, cost });
+    await writeCachedAlignment({
+      cacheKey,
+      alignment: alignmentForCache,
+      durationMs,
+      cost,
+    });
   } catch (err) {
     // Write failure is non-fatal: we have a usable alignment in memory
     // even if persisting it lost a race against another worker who
@@ -225,7 +297,7 @@ export async function ensureAlignmentForVoiceover(
 
   return {
     status: 'ready',
-    alignment,
+    alignment: alignmentForCache,
     durationMs,
     cacheKey,
     cached: false,
@@ -235,24 +307,18 @@ export async function ensureAlignmentForVoiceover(
 
 // ─── Re-export for callers that build the cache key from rows ─────────────────
 
-/**
- * Convenience: given per-row stripped scripts, compute the canonical
- * script the cache will see. The production-doc UI uses this to derive
- * the cache key client-side (no real "compute" cost on the wire — the
- * value is exactly what `buildCanonicalScript` produces).
- */
 export { buildCanonicalScript };
 
 // ─── DB helpers (kept private — go through `ensureAlignmentForVoiceover`) ─────
 
 interface CacheRow {
-  alignment_json: ForcedAlignmentResponse;
+  alignment_json: AlignResultShape;
   duration_ms: number;
 }
 
 async function readCachedAlignment(
   cacheKey: string,
-): Promise<{ alignment: ForcedAlignmentResponse; durationMs: number } | null> {
+): Promise<{ alignment: AlignResultShape; durationMs: number } | null> {
   const result = await sql<CacheRow>`
     SELECT alignment_json, duration_ms
     FROM voiceover_alignments
@@ -268,7 +334,7 @@ async function readCachedAlignment(
 
 async function writeCachedAlignment(args: {
   cacheKey: string;
-  alignment: ForcedAlignmentResponse;
+  alignment: AlignResultShape;
   durationMs: number;
   cost: number;
 }): Promise<void> {
@@ -300,18 +366,5 @@ async function getTodaySpendUsd(): Promise<number> {
   return Number.isFinite(n) ? n : 0;
 }
 
-/**
- * Derive audio duration from the alignment response. The last spoken
- * word's `end` is the audio length in seconds (ElevenLabs aligns
- * exactly the supplied script, so trailing silence past the final
- * word is not represented in the response — `duration_ms` here is the
- * spoken duration, which is what the cost cap math wants).
- */
-function inferDurationMs(alignment: ForcedAlignmentResponse): number {
-  const words = alignment.words || [];
-  let endSec = 0;
-  for (const w of words) {
-    if (typeof w.end === 'number' && w.end > endSec) endSec = w.end;
-  }
-  return Math.round(endSec * 1000);
-}
+// Re-export for callers / tests that want the constant directly.
+export { ELEVENLABS_SCRIBE_USD_PER_HOUR };

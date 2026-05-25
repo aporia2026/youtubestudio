@@ -47,12 +47,14 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { apiRoute } from '@/lib/route-helpers';
+import { sql } from '@/lib/db';
 import {
   ensureAlignmentForVoiceover,
   buildCanonicalScript,
 } from '@/lib/voiceover-alignment-cache';
 import { stripProductionMarkers } from '@/lib/script-markers';
 import { logger } from '@/lib/logger';
+import type { TtsProviderId, VoiceRef, VoiceTier } from '@/lib/tts/types';
 
 export const runtime = 'nodejs';
 // ElevenLabs Forced Alignment for ~15 min of audio runs in 5-15 s.
@@ -114,6 +116,47 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
   // alignment rows, which is the desired isolation.
   const absoluteUrl = new URL(audioPath, req.nextUrl.origin).toString();
 
+  // ── Look up the voiceover row so the aligner knows which provider
+  // produced the audio. Pre-dispatch rows have no `provider` in
+  // metadata — we default to ElevenLabs for them, which preserves the
+  // exact alignment behavior they had before the 2026-05-25 migration.
+  const assetId = audioPath.match(VOICEOVER_PATH_RE)
+    ? audioPath.split('/')[3]
+    : null;
+  let voice: VoiceRef | undefined;
+  if (assetId) {
+    try {
+      const { rows } = await sql<{ metadata: Record<string, unknown> | null }>`
+        SELECT metadata FROM media_assets WHERE id = ${assetId}::uuid LIMIT 1
+      `;
+      const metadata = rows[0]?.metadata ?? null;
+      if (metadata) {
+        const provider = typeof metadata.provider === 'string'
+          ? metadata.provider
+          : 'elevenlabs';
+        const voiceId = typeof metadata.voiceId === 'string' ? metadata.voiceId : 'unknown';
+        const languageCode = typeof metadata.languageCode === 'string'
+          ? metadata.languageCode
+          : 'en-US';
+        const tier = typeof metadata.tier === 'string'
+          ? (metadata.tier as VoiceTier)
+          : (provider === 'google' ? 'chirp3-hd' : 'multilingual-v2');
+        voice = {
+          providerId: provider as TtsProviderId,
+          voiceId,
+          languageCode,
+          tier,
+        };
+      }
+    } catch (err) {
+      logger.warn('voiceover/align: media_assets lookup failed', {
+        assetId,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      // Non-fatal — alignment falls through to the default ElevenLabs path.
+    }
+  }
+
   // ── Build the canonical script the aligner saw ────────────────────
   // Strip production markers per row, then join newline-style — same
   // shape `buildAlignmentScript` produces for the narrator-take path,
@@ -129,7 +172,10 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
   }
 
   // ── Run / cache the alignment ─────────────────────────────────────
-  const result = await ensureAlignmentForVoiceover(absoluteUrl, canonicalScript, { forceRefresh });
+  const result = await ensureAlignmentForVoiceover(absoluteUrl, canonicalScript, {
+    forceRefresh,
+    voice,
+  });
 
   if (result.status === 'failed') {
     logger.warn('voiceover/align: failed', { reason: result.reason, cacheKey: result.cacheKey });
