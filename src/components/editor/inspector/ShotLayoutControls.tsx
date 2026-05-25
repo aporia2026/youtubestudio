@@ -19,9 +19,17 @@
  * with a partial-row patch the parent dispatches through PATCH_ROW.
  * Undo / autosave handle the rest.
  *
- * Bulk-edit actions production-doc has (apply-to-range,
- * apply-to-all, clear-overrides) are NOT included here — they're
- * production-doc's specialty. The editor inspector is per-shot.
+ * Bulk-apply / clear-overrides actions (see `_plans/2026-05-25-editor-bulk-apply-actions.md`)
+ * are surfaced as a compact secondary row under each field. They mirror
+ * production-doc's semantics: "Apply to all" sets the doc-level default
+ * for the field (so per-row overrides keep sticking out); "Clear
+ * overrides" wipes every row's per-row override of that field. Both
+ * actions are optional props — when the parent doesn't pass them the
+ * row hides itself so this component still works in any host.
+ *
+ * Range-apply (e.g. shots N..M) is intentionally not included — the
+ * editor has no range UI for these fields yet. See the plan for the
+ * v2 carve-out.
  */
 
 import { useEffect, useState } from 'react';
@@ -43,6 +51,37 @@ interface ShotLayoutControlsProps {
   /** Doc-level fallback for the per-row on-screen-text mode. */
   docOnScreenTextModeDefault: OstMode | undefined;
   onUpdate: (patch: Partial<ProductionDoc['rows'][number]>) => void;
+  /** Total row count in the doc — used by Clear-overrides to label
+   *  the disabled state correctly (a single-row doc has nothing to
+   *  clear). When undefined we render the buttons in their normal
+   *  state and let the parent's no-op handler do the right thing. */
+  totalRows?: number;
+  // ─── Bulk-apply / clear-overrides handlers ───────────────────────
+  //
+  // Each pair targets one of the five per-row layout fields. When
+  // any prop is undefined the corresponding row of secondary buttons
+  // hides itself, so this component still renders cleanly in hosts
+  // that don't wire bulks.
+  //
+  // "Apply to all" sets the matching doc-level default. It does NOT
+  // stamp the value onto every row — per-row overrides stay intact,
+  // mirroring production-doc's model.
+  // "Clear overrides" wipes every row's per-row override of that
+  // field via a PATCH_ROW loop in the parent.
+  onApplySectionTitleLayoutToAll?: (layout: SectionLayout) => void;
+  onClearSectionTitleLayoutOverrides?: () => void;
+  onApplyPillarboxColorToAll?: (color: string) => void;
+  onClearPillarboxColorOverrides?: () => void;
+  onApplySceneZoomToAll?: (zoom: number) => void;
+  onClearSceneZoomOverrides?: () => void;
+  /** Scene-fade has tri-state semantics. The "Apply to all" handler
+   *  receives the *effective* boolean (what the renderer would use
+   *  right now for this row) — passing `undefined` is meaningless
+   *  here. */
+  onApplySceneFadeToAll?: (sceneFade: boolean) => void;
+  onClearSceneFadeOverrides?: () => void;
+  onApplyOstModeToAll?: (mode: OstMode | undefined) => void;
+  onClearOstModeOverrides?: () => void;
 }
 
 function isValidHex(s: string): boolean {
@@ -57,6 +96,16 @@ export function ShotLayoutControls({
   docSceneFadeDefault,
   docOnScreenTextModeDefault,
   onUpdate,
+  onApplySectionTitleLayoutToAll,
+  onClearSectionTitleLayoutOverrides,
+  onApplyPillarboxColorToAll,
+  onClearPillarboxColorOverrides,
+  onApplySceneZoomToAll,
+  onClearSceneZoomOverrides,
+  onApplySceneFadeToAll,
+  onClearSceneFadeOverrides,
+  onApplyOstModeToAll,
+  onClearOstModeOverrides,
 }: ShotLayoutControlsProps): React.ReactElement {
   const [open, setOpen] = useState(false);
 
@@ -127,6 +176,15 @@ export function ShotLayoutControls({
                 </button>
               )}
             </div>
+            <BulkActionsRow
+              onApplyToAll={
+                onApplySectionTitleLayoutToAll
+                  ? () => onApplySectionTitleLayoutToAll(effectiveLayout)
+                  : undefined
+              }
+              applyDisabled={effectiveLayout === (docSectionTitleLayoutDefault ?? 'letterbox')}
+              onClearOverrides={onClearSectionTitleLayoutOverrides}
+            />
           </div>
 
           {/* Pillarbox color — text + swatch */}
@@ -187,6 +245,17 @@ export function ShotLayoutControls({
                 </button>
               )}
             </div>
+            <BulkActionsRow
+              onApplyToAll={
+                onApplyPillarboxColorToAll
+                  ? () => onApplyPillarboxColorToAll(effectivePillar.toLowerCase())
+                  : undefined
+              }
+              applyDisabled={
+                effectivePillar.toLowerCase() === (docPillarboxColorDefault ?? '#ffffff').toLowerCase()
+              }
+              onClearOverrides={onClearPillarboxColorOverrides}
+            />
           </div>
 
           {/* Scene zoom — 50-200% slider */}
@@ -220,6 +289,15 @@ export function ShotLayoutControls({
                 </button>
               )}
             </div>
+            <BulkActionsRow
+              onApplyToAll={
+                onApplySceneZoomToAll
+                  ? () => onApplySceneZoomToAll(effectiveZoom)
+                  : undefined
+              }
+              applyDisabled={effectiveZoom === (docSceneZoomDefault ?? 100)}
+              onClearOverrides={onClearSceneZoomOverrides}
+            />
           </div>
 
           {/* Scene fade — tri-state radio */}
@@ -267,6 +345,18 @@ export function ShotLayoutControls({
                 );
               })}
             </div>
+            <BulkActionsRow
+              onApplyToAll={
+                onApplySceneFadeToAll
+                  ? () => onApplySceneFadeToAll(Boolean(row.scene_fade ?? docSceneFadeDefault ?? true))
+                  : undefined
+              }
+              applyDisabled={
+                Boolean(row.scene_fade ?? docSceneFadeDefault ?? true) ===
+                Boolean(docSceneFadeDefault ?? true)
+              }
+              onClearOverrides={onClearSceneFadeOverrides}
+            />
           </div>
 
           {/* On-screen text mode — overlay (Remotion renders a
@@ -320,8 +410,67 @@ export function ShotLayoutControls({
                 );
               })}
             </div>
+            <BulkActionsRow
+              onApplyToAll={
+                onApplyOstModeToAll
+                  ? () => onApplyOstModeToAll(row.on_screen_text_mode ?? docOnScreenTextModeDefault)
+                  : undefined
+              }
+              applyDisabled={
+                (row.on_screen_text_mode ?? docOnScreenTextModeDefault) === docOnScreenTextModeDefault
+              }
+              onClearOverrides={onClearOstModeOverrides}
+            />
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Bulk-action affordance ────────────────────────────────────────────────
+//
+// Small secondary row rendered under each field. Reads as "advanced" —
+// muted text, dotted underline, no border — so it never competes with
+// the primary controls. Self-hides when neither handler is passed.
+
+function BulkActionsRow({
+  onApplyToAll,
+  applyDisabled,
+  onClearOverrides,
+}: {
+  onApplyToAll?: () => void;
+  applyDisabled?: boolean;
+  onClearOverrides?: () => void;
+}): React.ReactElement | null {
+  if (!onApplyToAll && !onClearOverrides) return null;
+  return (
+    <div className="flex gap-2 mt-1 text-[10px]" style={{ color: 'var(--fg-muted)' }}>
+      {onApplyToAll && (
+        <button
+          type="button"
+          onClick={onApplyToAll}
+          disabled={applyDisabled}
+          className="underline decoration-dotted underline-offset-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:no-underline"
+          title={
+            applyDisabled
+              ? 'This shot already matches the doc default — nothing to apply.'
+              : 'Make this the default for every shot. Per-shot overrides stay until you clear them.'
+          }
+        >
+          Apply to all
+        </button>
+      )}
+      {onApplyToAll && onClearOverrides && <span aria-hidden>·</span>}
+      {onClearOverrides && (
+        <button
+          type="button"
+          onClick={onClearOverrides}
+          className="underline decoration-dotted underline-offset-2"
+          title="Reset every shot to the doc default for this field."
+        >
+          Clear overrides
+        </button>
       )}
     </div>
   );

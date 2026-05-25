@@ -166,6 +166,23 @@ interface ShotInspectorProps {
     image_scale_pct?: number;
     image_rotation_deg?: number;
   }) => void;
+  // ─── Layout bulks (`_plans/2026-05-25-editor-bulk-apply-actions.md`) ──
+  //
+  // Forwarded to ShotLayoutControls. Each pair targets one of the five
+  // per-row layout fields. Optional — when undefined, the matching
+  // affordance hides itself. See ShotLayoutControlsProps for the
+  // semantics (Apply-to-all sets the doc default; Clear-overrides
+  // wipes per-row overrides via PATCH_ROW).
+  onApplySectionTitleLayoutToAll?: (layout: 'overlay' | 'letterbox') => void;
+  onClearSectionTitleLayoutOverrides?: () => void;
+  onApplyPillarboxColorToAll?: (color: string) => void;
+  onClearPillarboxColorOverrides?: () => void;
+  onApplySceneZoomToAll?: (zoom: number) => void;
+  onClearSceneZoomOverrides?: () => void;
+  onApplySceneFadeToAll?: (sceneFade: boolean) => void;
+  onClearSceneFadeOverrides?: () => void;
+  onApplyOstModeToAll?: (mode: 'overlay' | 'bake' | 'none' | undefined) => void;
+  onClearOstModeOverrides?: () => void;
   /** Open the mask-brush image edit dialog for this shot. The parent
    *  mounts MaskBrushEditor + calls the image-edit endpoint. */
   onOpenImageEdit?: () => void;
@@ -295,6 +312,16 @@ export function ShotInspector({
   docRegionZoomPaddingDefaultPct,
   docOnScreenTextModeDefault,
   onApplyTransformToAll,
+  onApplySectionTitleLayoutToAll,
+  onClearSectionTitleLayoutOverrides,
+  onApplyPillarboxColorToAll,
+  onClearPillarboxColorOverrides,
+  onApplySceneZoomToAll,
+  onClearSceneZoomOverrides,
+  onApplySceneFadeToAll,
+  onClearSceneFadeOverrides,
+  onApplyOstModeToAll,
+  onClearOstModeOverrides,
   onOpenImageEdit,
   onRunRmbg,
   onRestoreOriginalBackground,
@@ -1383,6 +1410,17 @@ export function ShotInspector({
               docSceneFadeDefault={docSceneFadeDefault}
               docOnScreenTextModeDefault={docOnScreenTextModeDefault}
               onUpdate={onUpdateRow}
+              totalRows={totalShots}
+              onApplySectionTitleLayoutToAll={onApplySectionTitleLayoutToAll}
+              onClearSectionTitleLayoutOverrides={onClearSectionTitleLayoutOverrides}
+              onApplyPillarboxColorToAll={onApplyPillarboxColorToAll}
+              onClearPillarboxColorOverrides={onClearPillarboxColorOverrides}
+              onApplySceneZoomToAll={onApplySceneZoomToAll}
+              onClearSceneZoomOverrides={onClearSceneZoomOverrides}
+              onApplySceneFadeToAll={onApplySceneFadeToAll}
+              onClearSceneFadeOverrides={onClearSceneFadeOverrides}
+              onApplyOstModeToAll={onApplyOstModeToAll}
+              onClearOstModeOverrides={onClearOstModeOverrides}
             />
           )}
 

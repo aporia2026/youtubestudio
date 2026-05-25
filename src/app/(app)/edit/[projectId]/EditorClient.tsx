@@ -4369,6 +4369,88 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                   });
                 });
               }}
+              // Layout bulks — `_plans/2026-05-25-editor-bulk-apply-actions.md`.
+              // "Apply to all" sets the doc-level default so future
+              // rows inherit it; per-row overrides stay until the user
+              // hits "Clear overrides", which walks the rows array
+              // dispatching one PATCH_ROW per shot (mirrors the
+              // onApplyTransformToAll pattern — N undo entries, same
+              // documented limitation).
+              onApplySectionTitleLayoutToAll={(layout) => {
+                apply({
+                  type: 'PATCH_DOC',
+                  patch: { section_title_layout_default: layout },
+                });
+              }}
+              onClearSectionTitleLayoutOverrides={() => {
+                state.doc.rows.forEach((_, i) => {
+                  apply({
+                    type: 'PATCH_ROW',
+                    rowIndex: i,
+                    patch: { section_title_layout: undefined },
+                  });
+                });
+              }}
+              onApplyPillarboxColorToAll={(color) => {
+                apply({
+                  type: 'PATCH_DOC',
+                  patch: { pillarbox_color_default: color },
+                });
+              }}
+              onClearPillarboxColorOverrides={() => {
+                state.doc.rows.forEach((_, i) => {
+                  apply({
+                    type: 'PATCH_ROW',
+                    rowIndex: i,
+                    patch: { pillarbox_color: undefined },
+                  });
+                });
+              }}
+              onApplySceneZoomToAll={(zoom) => {
+                apply({
+                  type: 'PATCH_DOC',
+                  patch: { scene_zoom_default: zoom },
+                });
+              }}
+              onClearSceneZoomOverrides={() => {
+                state.doc.rows.forEach((_, i) => {
+                  apply({
+                    type: 'PATCH_ROW',
+                    rowIndex: i,
+                    patch: { scene_zoom: undefined },
+                  });
+                });
+              }}
+              onApplySceneFadeToAll={(sceneFade) => {
+                apply({
+                  type: 'PATCH_DOC',
+                  patch: { scene_fade_enabled: sceneFade },
+                });
+              }}
+              onClearSceneFadeOverrides={() => {
+                state.doc.rows.forEach((_, i) => {
+                  apply({
+                    type: 'PATCH_ROW',
+                    rowIndex: i,
+                    patch: { scene_fade: undefined },
+                  });
+                });
+              }}
+              onApplyOstModeToAll={(mode) => {
+                apply({
+                  type: 'PATCH_DOC',
+                  patch: { on_screen_text_mode_default: mode },
+                });
+              }}
+              onClearOstModeOverrides={() => {
+                state.doc.rows.forEach((_, i) => {
+                  apply({
+                    type: 'PATCH_ROW',
+                    rowIndex: i,
+                    patch: { on_screen_text_mode: undefined },
+                  });
+                });
+              }}
               onOpenImageEdit={() => setImageEditRow(state.selection)}
               onRunRmbg={() => {
                 if (state.selection !== null) void handleRunRmbg(state.selection);
