@@ -450,11 +450,14 @@ export default function ChannelPage() {
                       className="glass rounded-xl p-5"
                       style={{ borderLeft: `3px solid ${acColor}` }}
                     >
-                      <div className="flex items-start gap-4 flex-wrap">
+                      {/* Header row — avatar + channel info. Buttons live on
+                          their own row below so they can never crowd the info
+                          column or get squished into a sliver on narrow widths. */}
+                      <div className="flex items-start gap-4">
                         {channel.thumbnail_url ? (
-                          <img src={channel.thumbnail_url} alt="" width={56} height={56} className="w-14 h-14 rounded-full object-cover" />
+                          <img src={channel.thumbnail_url} alt="" width={56} height={56} className="w-14 h-14 rounded-full object-cover shrink-0" />
                         ) : (
-                          <div className="w-14 h-14 rounded-full flex items-center justify-center text-2xl"
+                          <div className="w-14 h-14 rounded-full flex items-center justify-center text-2xl shrink-0"
                             style={{ background: 'var(--bg-secondary)' }}>📺</div>
                         )}
                         <div className="flex-1 min-w-0">
@@ -483,7 +486,10 @@ export default function ChannelPage() {
                             {channel.account_email && <span>📧 {channel.account_email}</span>}
                           </div>
                         </div>
-                        <div className="flex gap-2 shrink-0 flex-wrap">
+                      </div>
+                      {/* Action buttons — full-width row below the header so
+                          they wrap naturally without competing with info. */}
+                      <div className="flex gap-2 flex-wrap mt-4 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
                           {/* OAuth Connect/Disconnect */}
                           {hasOAuthConfig && !channel.oauth_connected && (
                             <button
@@ -569,7 +575,6 @@ export default function ChannelPage() {
                             ✕
                           </button>
                         </div>
-                      </div>
                       {channel.last_synced_at && (
                         <p className="text-xs mt-3 pt-3" style={{ color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}>
                           Last synced: {new Date(channel.last_synced_at).toLocaleDateString()}
