@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
 import { fetchChannelData, fetchMyChannelOAuth } from '@/lib/youtube';
 import { getValidAccessToken } from '@/lib/google-oauth';
-import { domainErrorResponse } from '@/lib/route-helpers';
+import { logger } from '@/lib/logger';
+
+/** Cover cold starts + occasionally slow YouTube API responses. Matches the
+ *  pattern used by /api/channels/[id]/analyze (300s) and the visual-brand-kit
+ *  logo route (30s) — sync is a single API call + a DB write so 60s is
+ *  generous without being wasteful. */
+export const maxDuration = 60;
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -54,9 +60,17 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
 
     return NextResponse.json({ success: true, method: 'api_key' });
   } catch (err) {
-    return domainErrorResponse(err, {
-      op: 'channels: sync',
-      fallbackMessage: 'Could not sync channel — please try again.',
-    });
+    // Surface the real error to the client. Sync operates on the caller's
+    // own channel + their own workspace, so the underlying YouTube /
+    // database / OAuth message is not sensitive — and the generic
+    // "try again" message has been masking actionable failures (expired
+    // refresh token, quota exceeded, schema drift) for too long. Server
+    // logs still get the structured detail.
+    const detail = err instanceof Error ? err.message : String(err);
+    logger.error('channels: sync: unexpected failure', { detail });
+    return NextResponse.json(
+      { error: `Sync failed: ${detail}` },
+      { status: 500 },
+    );
   }
 }
