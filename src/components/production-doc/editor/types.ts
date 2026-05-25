@@ -60,6 +60,28 @@ export interface EditorWriters {
   ) => void;
   toggleRowLock: (rowSignature: string, locked: boolean) => void;
   computeRowSceneDurationMs: (rowIndex: number) => number;
+
+  // ─── Phase 3 (2026-05-25): variant-group mutators ────────────────
+  //
+  // Plumb through to the same useCallback writers in page.tsx that
+  // the main grid view uses (Phase 3.3 + 3.7). Single source of
+  // truth — the editor view never redefines variant semantics, it
+  // just exposes them through a different UI shell.
+  //
+  // See `_plans/2026-05-25-editor-view-variant-inspector.md`.
+  /** Add a new variant row anchored to `baseIndex`. Auto-promotes
+   *  the base into a group on first call. Caps at 4 rows / group. */
+  addVariantRow: (baseIndex: number) => void;
+  /** Generate the image for the variant at `variantIndex` via the
+   *  Atlas Edit route. Async — Inspector should show a busy state
+   *  while pending. */
+  generateVariantImage: (variantIndex: number) => Promise<void>;
+  /** Delete a variant row and renumber the remaining variants in
+   *  the group. Base rows can NOT be deleted via this writer. */
+  deleteVariantRow: (variantIndex: number) => void;
+  /** Swap a variant row with its previous or next sibling in the
+   *  same group. Disabled at group boundaries. */
+  moveVariantRow: (variantIndex: number, direction: 'up' | 'down') => void;
 }
 
 /**

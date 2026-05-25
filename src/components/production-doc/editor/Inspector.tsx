@@ -11,6 +11,8 @@ import { OverlayCell } from '@/components/production-doc/OverlayCell';
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
 import { brollRowSignatureInput } from '@/lib/broll-types';
 import { InlinePromptEditor } from './InlinePromptEditor';
+import { VariantPanel } from './VariantPanel';
+import { isVariantRow, getVariantGroup } from '@/remotion/utils';
 
 interface InspectorProps {
   doc: EditorViewProps['doc'];
@@ -29,6 +31,11 @@ interface InspectorProps {
    *  tool. Currently only `'overlay-position'` is wired inline; mask
    *  and region editors still open as fullscreen modals. */
   onOpenStageTool?: (tool: StageTool) => void;
+  /** Phase 3 (2026-05-25) — switch the editor's active section. Used
+   *  by the Variants accordion's "jump to base" link and mini-strip
+   *  thumbnails so the user can pivot context within the same
+   *  Inspector without scrolling the SectionStrip. */
+  onJumpToSection?: (rowIndex: number) => void;
 }
 
 /**
@@ -63,6 +70,7 @@ export const Inspector: React.FC<InspectorProps> = (props) => {
     brollContext,
     animateScenes,
     onOpenStageTool,
+    onJumpToSection,
   } = props;
   const row: ProductionRow | undefined = doc.rows?.[activeSection];
   const totalSections = doc.rows?.length ?? 0;
@@ -159,6 +167,14 @@ export const Inspector: React.FC<InspectorProps> = (props) => {
             rowIndex={activeSection}
             doc={doc}
             writers={writers}
+          />
+          <VariantsAccordionItem
+            doc={doc}
+            row={row}
+            activeSection={activeSection}
+            rowImages={rowImages}
+            writers={writers}
+            onJumpToSection={onJumpToSection}
           />
         </Accordion.Root>
       </div>
@@ -538,6 +554,60 @@ const SectionSettingsAccordionItem: React.FC<SectionSettingsAccordionProps> = ({
           <ReadOnlyRow label="Scene zoom" value={`${row.scene_zoom ?? doc.scene_zoom_default ?? 100}%`} />
         </div>
       )}
+    </ItemShell>
+  );
+};
+
+// ─── Variants accordion (Phase 3 of Doodle Explainer 2) ─────────────
+//
+// Surfaces the variant-group management UI the main grid view ships:
+// promote a standalone row, add variants to a base, edit + generate +
+// move + delete variant rows, see the stale-on-base-change banner.
+// Single source of truth for mutations is the EditorWriters bundle —
+// this accordion is presentation only, delegating to <VariantPanel>.
+// See `_plans/2026-05-25-editor-view-variant-inspector.md`.
+
+interface VariantsAccordionItemProps {
+  doc: InspectorProps['doc'];
+  row: ProductionRow;
+  activeSection: number;
+  rowImages: InspectorProps['rowImages'];
+  writers?: EditorWriters;
+  onJumpToSection?: (rowIndex: number) => void;
+}
+
+const VariantsAccordionItem: React.FC<VariantsAccordionItemProps> = ({
+  doc,
+  row,
+  activeSection,
+  rowImages,
+  writers,
+  onJumpToSection,
+}) => {
+  // Build a short summary line so the collapsed accordion header
+  // surfaces the row's group status without forcing the user to open
+  // it — same UX as the other sections (which preview the title /
+  // transition kind / etc.).
+  let summary: string | undefined;
+  if (isVariantRow(row) && row.group_id) {
+    const group = getVariantGroup(doc, row.group_id);
+    const variantIdx = row.variant_index ?? 0;
+    summary = variantIdx === 0
+      ? `base · ${group.length - 1}v`
+      : `v${variantIdx}/${group.length - 1}`;
+  } else {
+    summary = 'standalone';
+  }
+
+  return (
+    <ItemShell value="variants" icon="🎬" label="Variants" shortcut="4" summary={summary}>
+      <VariantPanel
+        doc={doc}
+        activeSection={activeSection}
+        rowImages={rowImages}
+        writers={writers}
+        onJumpToSection={onJumpToSection}
+      />
     </ItemShell>
   );
 };

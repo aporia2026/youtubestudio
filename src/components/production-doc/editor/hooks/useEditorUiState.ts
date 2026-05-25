@@ -16,7 +16,12 @@ import { useCallback, useEffect, useReducer } from 'react';
  * read-only Phase 1 already shipped with four sections; the localStorage
  * reader treats unknown keys as `false` so old state degrades cleanly.
  */
-export const ACCORDION_KEYS = ['broll', 'overlay', 'sectionSettings'] as const;
+// Phase 3 (2026-05-25): 'variants' added for the variant-group
+// Inspector panel. localStorage reader treats unknown keys as false,
+// so old saved state degrades cleanly without a migration. Default
+// is collapsed — most rows are standalone and the panel is empty for
+// them; users who actively work with variant groups will open it.
+export const ACCORDION_KEYS = ['broll', 'overlay', 'sectionSettings', 'variants'] as const;
 export type AccordionKey = (typeof ACCORDION_KEYS)[number];
 export type AccordionState = Record<AccordionKey, boolean>;
 
@@ -29,6 +34,7 @@ const DEFAULT_ACCORDION_STATE: AccordionState = {
   broll: true,
   overlay: false,
   sectionSettings: false,
+  variants: false,
 };
 
 function readAccordionLs(): AccordionState {
@@ -42,6 +48,7 @@ function readAccordionLs(): AccordionState {
       broll: parsed.broll === false ? false : true,
       overlay: Boolean(parsed.overlay),
       sectionSettings: Boolean(parsed.sectionSettings),
+      variants: Boolean(parsed.variants),
     };
   } catch {
     return DEFAULT_ACCORDION_STATE;
