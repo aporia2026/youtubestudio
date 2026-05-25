@@ -81,6 +81,13 @@ import {
   MIN_SCENE_MS_BOUNDS,
   TAIL_BUFFER_MS_BOUNDS,
   clampSceneTiming,
+  // Phase 3 (2026-05-25) — variant-group helpers. See
+  // _plans/2026-05-25-near-static-variants.md.
+  isVariantRow,
+  getVariantGroup,
+  getBaseRow,
+  composeVariantEditRequest,
+  MAX_VARIANTS_PER_GROUP,
   type ImageSaliencyMap,
 } from '@/remotion/utils';
 import { resolveOverlayPlacement } from '@/lib/overlay-placement';
@@ -314,6 +321,13 @@ interface ProductionRow {
    *  is set. See
    *  `_plans/2026-05-20-render-config-drop-zoom-padding-region-import.md`. */
   region_zoom_padding_pct?: number;
+  // Phase 3 (2026-05-25) — variant-group fields. Optional / JSONB-stored,
+  // so old docs are back-compat (group_id = undefined ⇒ standalone row).
+  // Mirrors the canonical definition in src/remotion/utils.ts. See
+  // _plans/2026-05-25-near-static-variants.md.
+  group_id?: string;
+  variant_index?: number;
+  variant_edit_prompt?: string;
 }
 
 interface ProductionDoc {
@@ -2269,6 +2283,210 @@ function ProductionDocPage() {
       return nextDoc;
     });
   }, [historyEntryId]);
+
+  /**
+   * Phase 3.3 — Add a variant row anchored to the row at `baseIndex`.
+   *
+   * Behavior:
+   *
+   *   - If the base row doesn't already belong to a group, auto-promote
+   *     it by assigning a fresh `group_id` and `variant_index = 0`.
+   *   - The new variant lands immediately after the last existing
+   *     row in the group (so variants stay contiguous).
+   *   - `ai_image_prompt`, `visual_type`, `visual_description` are
+   *     cloned from the base so the variant inherits the scene context.
+   *     `script_text`, `on_screen_text`, `timecode` start empty —
+   *     each variant has its own narration beat.
+   *   - Caps at `MAX_VARIANTS_PER_GROUP` (4: 1 base + 3 edits). When
+   *     the cap is hit, toasts and no-ops.
+   *
+   * Autosave fires through the same `updateProductionDocEntry` path
+   * `updateRow` uses, so the new row persists immediately. `rowImages`
+   * gets a parallel empty slot inserted at the same index so the
+   * sidecar stays aligned with `doc.rows`.
+   */
+  const addVariantRow = useCallback((baseIndex: number) => {
+    setDoc(prev => {
+      if (!prev) return prev;
+      const baseRow = prev.rows[baseIndex];
+      if (!baseRow) return prev;
+
+      // Determine the group id — reuse if already grouped, mint
+      // otherwise. UUID generation prefers crypto.randomUUID (Edge +
+      // modern browsers); falls back to a timestamp+random string for
+      // the rare older runtime.
+      const existingGroupId = baseRow.group_id;
+      const groupId = existingGroupId
+        ?? (typeof crypto !== 'undefined' && 'randomUUID' in crypto
+              ? crypto.randomUUID()
+              : `g-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+
+      const groupRows = prev.rows.filter(r => r.group_id === groupId);
+      const currentSize = existingGroupId ? groupRows.length : 1; // base counts even when un-grouped before this call
+      if (currentSize >= MAX_VARIANTS_PER_GROUP) {
+        toast.error(`Variant group is at the cap of ${MAX_VARIANTS_PER_GROUP} rows (1 base + ${MAX_VARIANTS_PER_GROUP - 1} variants).`);
+        return prev;
+      }
+
+      const nextVariantIndex = existingGroupId
+        ? Math.max(...groupRows.map(r => r.variant_index ?? 0)) + 1
+        : 1;
+
+      // Promote the base if needed.
+      const rowsWithBasePromoted = existingGroupId
+        ? prev.rows
+        : prev.rows.map((r, i) =>
+            i === baseIndex
+              ? { ...r, group_id: groupId, variant_index: 0 }
+              : r,
+          );
+
+      // Find insertion index — right after the LAST row in the group.
+      let lastGroupIndex = baseIndex;
+      for (let i = baseIndex + 1; i < rowsWithBasePromoted.length; i++) {
+        if (rowsWithBasePromoted[i]?.group_id === groupId) {
+          lastGroupIndex = i;
+        } else {
+          break; // variants are contiguous; first non-group row terminates the run
+        }
+      }
+      const insertAt = lastGroupIndex + 1;
+
+      const newRow: ProductionRow = {
+        timecode: '',
+        script_text: '',
+        // Cloned scene-context fields from the base.
+        visual_type: baseRow.visual_type,
+        visual_description: baseRow.visual_description,
+        stock_search_terms: baseRow.stock_search_terms,
+        // ai_image_prompt is intentionally left empty on the variant
+        // itself — the dispatcher composes the base prompt with the
+        // edit instruction. Storing the base's prompt here would
+        // double-bake context if anyone reads the row directly.
+        ai_image_prompt: '',
+        on_screen_text: '',
+        notes: '',
+        group_id: groupId,
+        variant_index: nextVariantIndex,
+        variant_edit_prompt: '',
+      };
+
+      const nextRows = [
+        ...rowsWithBasePromoted.slice(0, insertAt),
+        newRow,
+        ...rowsWithBasePromoted.slice(insertAt),
+      ];
+      const nextDoc = { ...prev, rows: nextRows };
+      if (historyEntryId) {
+        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+      }
+      // Keep `rowImages` aligned with `doc.rows` by inserting a parallel
+      // empty slot. Without this every row at index > insertAt would
+      // look up the WRONG image until the next full reload.
+      setRowImages(prev => {
+        const next = [...prev];
+        next.splice(insertAt, 0, { status: 'idle' });
+        return next;
+      });
+      return nextDoc;
+    });
+  }, [historyEntryId]);
+
+  /**
+   * Phase 3.3 — Generate the image for a variant row by POSTing the
+   * composed Atlas-Edit request to the existing
+   * `/api/generate/production-doc/image/edit` route.
+   *
+   * Routes through `composeVariantEditRequest` so the dispatcher
+   * receives the base scene context + the variant's edit instruction
+   * in the canonical shape (per `_plans/2026-05-25-near-static-variants.md`).
+   *
+   * Surfaces typed errors as toasts so the user gets actionable
+   * messages instead of a generic 500:
+   *
+   *   BASE_NOT_GENERATED   → "Generate the base image first."
+   *   MISSING_EDIT_PROMPT  → "Describe what changes from the base."
+   *   NOT_A_VARIANT, BASE_NOT_FOUND → "Row isn't a valid variant."
+   *
+   * Atlas Edit costs $0.011/call (vs $0.04 for a base i2i generation),
+   * so a 3-variant group total is ~$0.073 — surfaced inline on the
+   * Generate button label.
+   */
+  const generateVariantImage = useCallback(async (variantIndex: number) => {
+    if (!doc) return;
+    const variantRow = doc.rows[variantIndex];
+    if (!variantRow) return;
+    const groupId = variantRow.group_id;
+    if (!groupId) {
+      toast.error('Row is not part of a variant group.');
+      return;
+    }
+    // Resolve the base's image URL from the rowImages sidecar — that's
+    // where the editor stores generated image state. Falls back to
+    // empty (which becomes BASE_NOT_GENERATED below).
+    const base = getBaseRow(doc, groupId);
+    if (!base) {
+      toast.error('Base row not found for this variant group.');
+      return;
+    }
+    const baseRowIndex = doc.rows.indexOf(base);
+    // Snapshot rowImages via the setState callback. The state is
+    // declared LATER in the file (`rowImages` lives in a useState
+    // ~200 lines below the writers block), so referring to it in a
+    // useCallback dep array would be a use-before-declaration. The
+    // functional-setter callback runs synchronously with the freshest
+    // state and lets us read without a textual reference up here.
+    let snapshot: RowImageState[] = [];
+    setRowImages(prev => {
+      snapshot = prev;
+      return prev;
+    });
+    const baseImageUrl = snapshot[baseRowIndex]?.imageUrl ?? '';
+
+    const prepared = composeVariantEditRequest(doc, variantRow, baseImageUrl);
+    if (prepared.kind === 'error') {
+      toast.error(prepared.message);
+      return;
+    }
+
+    setRowImages(prev => {
+      const next = [...prev];
+      next[variantIndex] = { ...(next[variantIndex] || { status: 'idle' }), status: 'loading' };
+      return next;
+    });
+
+    try {
+      const res = await fetch('/api/generate/production-doc/image/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(prepared.request),
+      });
+      const data = await res.json() as { imageUrl?: string; error?: string };
+      if (res.ok && data.imageUrl) {
+        setRowImages(prev => {
+          const next = [...prev];
+          next[variantIndex] = { status: 'done', imageUrl: data.imageUrl!, source: 'generated' };
+          return next;
+        });
+        toast.success(`Variant ${variantRow.variant_index} generated`);
+      } else {
+        setRowImages(prev => {
+          const next = [...prev];
+          next[variantIndex] = { status: 'error', error: data.error ?? `HTTP ${res.status}` };
+          return next;
+        });
+        toast.error(data.error || `Generation failed (HTTP ${res.status})`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Generation failed';
+      setRowImages(prev => {
+        const next = [...prev];
+        next[variantIndex] = { status: 'error', error: msg };
+        return next;
+      });
+      toast.error(msg);
+    }
+  }, [doc]);
 
   // Per-row "split as title card" inline form state. When non-null, the row
   // at `rowIndex` shows a title-text input + Apply/Cancel instead of the
@@ -7857,12 +8075,32 @@ function ProductionDocPage() {
                     }
                     const vt = VISUAL_TYPE_COLORS[row.visual_type] || VISUAL_TYPE_COLORS['B-Roll'];
                     const imgState = rowImages[i] || { status: 'idle' };
+                    // Phase 3.3 — variant-group awareness for this row.
+                    // `isInGroup` covers BOTH the base (variant_index=0) and
+                    // variants (>0); `isVariant` is true for variants only.
+                    // Used to drive the row's left-border accent and the
+                    // "+ Add variant" vs "Generate variant" affordance.
+                    const isInGroup = isVariantRow(row);
+                    const isVariant = isInGroup && (row.variant_index ?? 0) > 0;
+                    const groupSize = isInGroup && row.group_id
+                      ? getVariantGroup(doc, row.group_id).length
+                      : 1;
+                    const canAddVariant = groupSize < MAX_VARIANTS_PER_GROUP && !isVariant;
                     return (
                       <tr
                         key={i}
                         style={{
                           borderBottom: '1px solid var(--border)',
                           background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)',
+                          // Phase 3.3 — left-border accent indicates a row
+                          // is part of a variant group. Base rows get a
+                          // solid accent, variants get a softer one so the
+                          // base reads as "the anchor".
+                          ...(isInGroup ? {
+                            borderLeft: isVariant
+                              ? '3px solid rgba(34,211,238,0.45)'
+                              : '3px solid rgba(34,211,238,0.85)',
+                          } : {}),
                         }}
                       >
                         {/* # */}
@@ -8181,6 +8419,122 @@ function ProductionDocPage() {
                                     </button>
                                   </div>
                                 ) : null}
+                                {/* Phase 3.3 — variant-group controls. See
+                                    _plans/2026-05-25-near-static-variants.md.
+                                    Three branches:
+                                      1. Variant row (variant_index > 0): show
+                                         the "variant N of M" chip, the
+                                         edit-prompt input, the Generate
+                                         button ($0.011 Atlas Edit), and
+                                         a small Delete affordance.
+                                      2. Base row (variant_index === 0):
+                                         show a "base — N variants" chip
+                                         and the "+ Add variant" button.
+                                      3. Standalone row (no group): show
+                                         only "+ Add variant" so the user
+                                         can promote the row into a group.
+                                    The button is hidden when the group is
+                                    at MAX_VARIANTS_PER_GROUP. */}
+                                {isVariant ? (
+                                  <div className="mt-1.5" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                      <span
+                                        className="text-[10px] px-1.5 py-0.5 rounded"
+                                        style={{
+                                          background: 'rgba(34,211,238,0.12)',
+                                          color: '#22d3ee',
+                                          border: '1px solid rgba(34,211,238,0.35)',
+                                          fontWeight: 600,
+                                        }}
+                                        title={`Variant ${row.variant_index} of ${groupSize - 1}. Image is derived from the base row's image via Atlas GPT Image 2 Edit ($0.011/call).`}
+                                      >
+                                        ⟜ variant {row.variant_index}/{groupSize - 1}
+                                      </span>
+                                    </div>
+                                    <textarea
+                                      value={row.variant_edit_prompt ?? ''}
+                                      onChange={(e) => updateRow(i, { variant_edit_prompt: e.target.value })}
+                                      placeholder="What changes from the base? e.g. raise the right eyebrow"
+                                      className="text-[10px] w-full"
+                                      style={{
+                                        minHeight: 38,
+                                        resize: 'vertical',
+                                        background: 'var(--bg-tertiary)',
+                                        color: 'var(--text-primary)',
+                                        border: '1px solid var(--border)',
+                                        borderRadius: 4,
+                                        padding: '4px 6px',
+                                      }}
+                                      maxLength={400}
+                                    />
+                                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                                      <button
+                                        type="button"
+                                        onClick={() => generateVariantImage(i)}
+                                        disabled={imgState.status === 'loading' || !row.variant_edit_prompt?.trim()}
+                                        className="text-[10px] px-2 py-0.5 rounded"
+                                        style={{
+                                          background: 'rgba(124,58,237,0.15)',
+                                          color: 'var(--accent-purple-bright)',
+                                          border: '1px solid rgba(124,58,237,0.35)',
+                                          cursor: imgState.status === 'loading' || !row.variant_edit_prompt?.trim() ? 'not-allowed' : 'pointer',
+                                          opacity: imgState.status === 'loading' || !row.variant_edit_prompt?.trim() ? 0.5 : 1,
+                                        }}
+                                        title="Generate this variant by editing the base image with your prompt. ~$0.011 via Atlas GPT Image 2 Edit."
+                                      >
+                                        {imgState.status === 'loading' ? 'Generating…' : '✨ Generate variant (~$0.011)'}
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : isInGroup ? (
+                                  <div className="mt-1.5" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                    <span
+                                      className="text-[10px] px-1.5 py-0.5 rounded"
+                                      style={{
+                                        background: 'rgba(34,211,238,0.18)',
+                                        color: '#22d3ee',
+                                        border: '1px solid rgba(34,211,238,0.4)',
+                                        fontWeight: 600,
+                                      }}
+                                      title="This is the BASE of a variant group. Generate this row's image normally; variants are derived from it."
+                                    >
+                                      ⏺ base · {groupSize - 1} variant{groupSize - 1 === 1 ? '' : 's'}
+                                    </span>
+                                    {canAddVariant && (
+                                      <button
+                                        type="button"
+                                        onClick={() => addVariantRow(i)}
+                                        className="text-[10px] px-2 py-0.5 rounded"
+                                        style={{
+                                          background: 'rgba(34,211,238,0.12)',
+                                          color: '#22d3ee',
+                                          border: '1px solid rgba(34,211,238,0.35)',
+                                          cursor: 'pointer',
+                                        }}
+                                        title={`Add another variant of this row. Max ${MAX_VARIANTS_PER_GROUP} per group (1 base + ${MAX_VARIANTS_PER_GROUP - 1} variants).`}
+                                      >
+                                        + Add variant
+                                      </button>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="mt-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => addVariantRow(i)}
+                                      className="text-[10px] px-2 py-0.5 rounded"
+                                      style={{
+                                        background: 'rgba(34,211,238,0.08)',
+                                        color: '#22d3ee',
+                                        border: '1px dashed rgba(34,211,238,0.4)',
+                                        cursor: 'pointer',
+                                      }}
+                                      title="Promote this row into a variant group and add the first variant. Variants share the same composition; each one is a small edit of the base image (Atlas GPT Image 2 Edit, ~$0.011/call)."
+                                    >
+                                      + Add variant
+                                    </button>
+                                  </div>
+                                )}
                               </>
                             );
                           })()}
