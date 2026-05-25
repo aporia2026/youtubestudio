@@ -19,11 +19,12 @@
 
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import type { TtsProviderId } from '@/lib/tts/types';
+import type { TtsProviderId, VoiceCatalogEntry } from '@/lib/tts/types';
 
 interface StoredSettings {
   defaultProvider?: TtsProviderId;
   defaultVoiceId?: string;
+  defaultVoiceProvider?: TtsProviderId;
   defaultLanguageCode?: string;
   allowStudioTier?: boolean;
   enabledProviders?: TtsProviderId[];
@@ -32,6 +33,7 @@ interface StoredSettings {
 interface EffectiveSettings {
   defaultProvider: TtsProviderId;
   defaultVoiceId: string | null;
+  defaultVoiceProvider: TtsProviderId;
   defaultLanguageCode: string;
   allowStudioTier: boolean;
   enabledProviders: TtsProviderId[];
@@ -53,6 +55,11 @@ export function VoiceoverSettingsPanel() {
   const [effective, setEffective] = useState<EffectiveSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // Voices for the currently-chosen default provider + language combo.
+  // Refetched whenever either changes — small payload, free Google API
+  // call, ElevenLabs uses the server env key.
+  const [availableVoices, setAvailableVoices] = useState<VoiceCatalogEntry[]>([]);
+  const [voicesLoading, setVoicesLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -71,6 +78,31 @@ export function VoiceoverSettingsPanel() {
       cancelled = true;
     };
   }, []);
+
+  // Refetch the voice catalog whenever the chosen default provider or
+  // language changes. The dropdown below depends on this.
+  useEffect(() => {
+    if (!effective) return;
+    let cancelled = false;
+    setVoicesLoading(true);
+    fetch(
+      `/api/tts/voices?provider=${encodeURIComponent(effective.defaultProvider)}&languageCode=${encodeURIComponent(effective.defaultLanguageCode)}`,
+    )
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled) return;
+        setAvailableVoices((data?.voices as VoiceCatalogEntry[]) ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setAvailableVoices([]);
+      })
+      .finally(() => {
+        if (!cancelled) setVoicesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [effective?.defaultProvider, effective?.defaultLanguageCode]);
 
   async function patch(next: StoredSettings) {
     setSaving(true);
@@ -169,6 +201,58 @@ export function VoiceoverSettingsPanel() {
             </select>
             <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
               Used for Google voice filtering. ElevenLabs voices are multilingual and listed for any language.
+            </p>
+          </div>
+
+          {/* Default voice */}
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+              Default voice
+            </label>
+            {voicesLoading ? (
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Loading voices…</p>
+            ) : availableVoices.length === 0 ? (
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                {effective.defaultProvider === 'elevenlabs'
+                  ? 'No ElevenLabs voices available — check that ELEVENLABS_API_KEY is configured server-side.'
+                  : `No ${effective.defaultProvider} voices for ${effective.defaultLanguageCode}.`}
+              </p>
+            ) : (
+              <select
+                value={
+                  // Only honor the stored default if its provider matches the
+                  // currently-selected default provider — otherwise the dropdown
+                  // would have a value that isn't in its options.
+                  effective.defaultVoiceProvider === effective.defaultProvider
+                    ? (effective.defaultVoiceId ?? '')
+                    : ''
+                }
+                onChange={(e) => {
+                  if (!e.target.value) {
+                    patch({ defaultVoiceId: undefined, defaultVoiceProvider: undefined });
+                  } else {
+                    patch({
+                      defaultVoiceId: e.target.value,
+                      defaultVoiceProvider: effective.defaultProvider,
+                    });
+                  }
+                }}
+                disabled={saving}
+                className="input-field"
+                style={{ padding: '6px 10px', fontSize: 13, maxWidth: 360 }}
+              >
+                <option value="">— Picker chooses (best of selected tier) —</option>
+                {availableVoices.map((v) => (
+                  <option key={v.voice.voiceId} value={v.voice.voiceId}>
+                    {v.displayName} ({v.voice.tier}
+                    {v.gender ? `, ${v.gender}` : ''})
+                  </option>
+                ))}
+              </select>
+            )}
+            <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
+              The voiceover studio pre-selects this voice on load. Leave at &quot;Picker chooses&quot;
+              to let the picker pick the best voice for the active quality band.
             </p>
           </div>
         </div>

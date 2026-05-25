@@ -201,6 +201,14 @@ function VoiceoverStudio() {
   //     the per-user localStorage preference; the server is authoritative
   //     and would reject Studio requests anyway)
   //   - enabledProviders excluding google → hides the Google list entirely
+  //   - defaultVoiceId + defaultVoiceProvider → pre-selects that voice
+  //     in the picker (resolved against the loaded catalog, since voices
+  //     may not be available yet when settings come back)
+  const [pendingDefaultVoiceId, setPendingDefaultVoiceId] = useState<{
+    provider: TtsProviderId;
+    voiceId: string;
+  } | null>(null);
+
   useEffect(() => {
     fetch('/api/workspace/tts-settings')
       .then((r) => (r.ok ? r.json() : null))
@@ -218,9 +226,59 @@ function VoiceoverStudio() {
           setGoogleVoices([]);
           setSelectedGoogleVoice(null);
         }
+        if (
+          typeof eff.defaultVoiceId === 'string' &&
+          (eff.defaultVoiceProvider === 'google' || eff.defaultVoiceProvider === 'elevenlabs')
+        ) {
+          setPendingDefaultVoiceId({
+            provider: eff.defaultVoiceProvider,
+            voiceId: eff.defaultVoiceId,
+          });
+        }
       })
       .catch(() => {});
   }, []);
+
+  // Once the relevant catalog loads, resolve the pending default to an
+  // actual VoiceCatalogEntry and select it (mirrors handleSelectEntry
+  // so the band and provider mirror state stay consistent). For
+  // ElevenLabs we search the raw `voices` array and synthesize an entry
+  // shape — this avoids a hoisting dependency on elevenLabsEntries
+  // which is declared further down the component.
+  useEffect(() => {
+    if (!pendingDefaultVoiceId) return;
+    let match: VoiceCatalogEntry | undefined;
+    if (pendingDefaultVoiceId.provider === 'google') {
+      match = googleVoices.find((v) => v.voice.voiceId === pendingDefaultVoiceId.voiceId);
+    } else {
+      const raw = voices.find((v) => v.voice_id === pendingDefaultVoiceId.voiceId);
+      if (raw) {
+        match = {
+          voice: {
+            providerId: 'elevenlabs',
+            voiceId: raw.voice_id,
+            languageCode: 'en-US',
+            tier: 'multilingual-v2',
+          },
+          displayName: raw.name,
+          gender:
+            raw.labels?.gender?.toLowerCase() === 'male'
+              ? 'male'
+              : raw.labels?.gender?.toLowerCase() === 'female'
+                ? 'female'
+                : undefined,
+          previewUrl: raw.preview_url,
+        };
+      }
+    }
+    if (match) {
+      handleSelectEntry(match);
+      setPendingDefaultVoiceId(null);
+    }
+  // handleSelectEntry is recreated each render but idempotent on identical
+  // input — omitting from deps prevents an infinite reapply loop.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingDefaultVoiceId, googleVoices, voices]);
 
   async function loadGoogleVoicesForLanguage(languageCode: string) {
     try {

@@ -15,6 +15,7 @@
  */
 
 import { sql } from '@vercel/postgres';
+import { logger } from '../logger';
 import type { TtsProviderId, VoiceTier } from './types';
 
 export interface WorkspaceTtsSettings {
@@ -134,15 +135,34 @@ export function effectiveSettings(stored: WorkspaceTtsSettings): EffectiveTtsSet
  * Read raw stored settings for a workspace. Returns {} when the row
  * doesn't exist (shouldn't happen for any authed request but defensive
  * default keeps callers simple).
+ *
+ * Migration tolerance: if migration 0089 hasn't run yet (the column
+ * doesn't exist), Postgres throws SQLSTATE 42703 (undefined_column).
+ * We catch that specifically and return {} so the caller falls through
+ * to defaults instead of getting a 500. Production deploys can't hit
+ * this path (vercel-build runs migrations before the new code goes
+ * live, and a failed migration fails the build) — but local dev
+ * environments without `npm run db:migrate` would, and we don't want
+ * the settings UI to surface a scary error in that case.
  */
 export async function getStoredTtsSettings(workspaceId: string): Promise<WorkspaceTtsSettings> {
-  const { rows } = await sql<{ tts_settings: WorkspaceTtsSettings | null }>`
-    SELECT tts_settings FROM workspaces WHERE id = ${workspaceId}::uuid LIMIT 1
-  `;
-  const raw = rows[0]?.tts_settings ?? {};
-  // Defensive validation — even though we wrote through validate, a
-  // direct DB edit could leave malformed data.
-  return validateTtsSettings(raw);
+  try {
+    const { rows } = await sql<{ tts_settings: WorkspaceTtsSettings | null }>`
+      SELECT tts_settings FROM workspaces WHERE id = ${workspaceId}::uuid LIMIT 1
+    `;
+    const raw = rows[0]?.tts_settings ?? {};
+    // Defensive validation — even though we wrote through validate, a
+    // direct DB edit could leave malformed data.
+    return validateTtsSettings(raw);
+  } catch (err) {
+    if (isUndefinedColumnError(err)) {
+      logger.warn('[tts workspace-settings] tts_settings column missing — run migration 0089', {
+        workspaceId,
+      });
+      return {};
+    }
+    throw err;
+  }
 }
 
 /** Convenience: read + merge with defaults in one call. */
@@ -154,6 +174,11 @@ export async function getEffectiveTtsSettings(workspaceId: string): Promise<Effe
  * Replace the stored settings for a workspace. The provided partial
  * is merged with whatever's already there — callers can PATCH a single
  * field without reading first. Always validated before write.
+ *
+ * Migration tolerance: same undefined_column branch as the read path,
+ * but the write surfaces the error to the caller — saving settings
+ * before the migration runs would silently swallow the user's choice,
+ * which is worse than a clear "settings unavailable" message in the UI.
  */
 export async function updateTtsSettings(
   workspaceId: string,
@@ -162,10 +187,36 @@ export async function updateTtsSettings(
   const cleaned = validateTtsSettings(patch);
   const existing = await getStoredTtsSettings(workspaceId);
   const merged: WorkspaceTtsSettings = { ...existing, ...cleaned };
-  await sql`
-    UPDATE workspaces
-       SET tts_settings = ${JSON.stringify(merged)}::jsonb
-     WHERE id = ${workspaceId}::uuid
-  `;
+  try {
+    await sql`
+      UPDATE workspaces
+         SET tts_settings = ${JSON.stringify(merged)}::jsonb
+       WHERE id = ${workspaceId}::uuid
+    `;
+  } catch (err) {
+    if (isUndefinedColumnError(err)) {
+      throw new Error(
+        'Voiceover settings storage is not ready yet. ' +
+          'Run `npm run db:migrate` (local) or wait for the next deploy to finish.',
+      );
+    }
+    throw err;
+  }
   return merged;
+}
+
+/**
+ * Postgres surfaces "column does not exist" as SQLSTATE 42703. The
+ * @vercel/postgres client exposes the error with a `code` property on
+ * the thrown Error. We match on that AND on a substring of the
+ * message to be robust against future client-library shape changes.
+ */
+function isUndefinedColumnError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { code?: unknown; message?: unknown };
+  if (e.code === '42703') return true;
+  if (typeof e.message === 'string' && /column .*tts_settings.* does not exist/i.test(e.message)) {
+    return true;
+  }
+  return false;
 }
