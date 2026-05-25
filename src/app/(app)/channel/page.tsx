@@ -450,7 +450,7 @@ export default function ChannelPage() {
                       className="glass rounded-xl p-5"
                       style={{ borderLeft: `3px solid ${acColor}` }}
                     >
-                      <div className="flex items-start gap-4">
+                      <div className="flex items-start gap-4 flex-wrap">
                         {channel.thumbnail_url ? (
                           <img src={channel.thumbnail_url} alt="" width={56} height={56} className="w-14 h-14 rounded-full object-cover" />
                         ) : (
