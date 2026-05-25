@@ -2488,6 +2488,114 @@ function ProductionDocPage() {
     }
   }, [doc]);
 
+  /**
+   * Phase 3.7a — Delete a variant row from its group.
+   *
+   * Only operates on variant rows (variant_index > 0). Deleting the
+   * BASE of a group is intentionally not supported here — that's a
+   * full row-delete and should go through whatever the regular row-
+   * delete affordance is. If the user wants to break up a group,
+   * they delete each variant and the base becomes a standalone row
+   * by virtue of being the only one left with that group_id (which
+   * the renderer treats indistinguishably from a true standalone).
+   *
+   * After deletion, the remaining variants in the group are
+   * re-indexed so variant_index stays contiguous (0, 1, 2, ...).
+   * Keeps the rowImages sidecar aligned by splicing the same index.
+   */
+  const deleteVariantRow = useCallback((variantIndex: number) => {
+    setDoc(prev => {
+      if (!prev) return prev;
+      const target = prev.rows[variantIndex];
+      if (!target) return prev;
+      const groupId = target.group_id;
+      if (!groupId || (target.variant_index ?? 0) === 0) {
+        toast.error('Use the regular delete for non-variant rows.');
+        return prev;
+      }
+      // Remove the row and re-index remaining variants in the same
+      // group so indices stay 0..N-1 with no gaps.
+      const without = prev.rows.filter((_, i) => i !== variantIndex);
+      let seen = 0;
+      const reindexed = without.map(r => {
+        if (r.group_id !== groupId) return r;
+        if ((r.variant_index ?? 0) === 0) return r; // base stays at 0
+        seen += 1;
+        return { ...r, variant_index: seen };
+      });
+      const nextDoc = { ...prev, rows: reindexed };
+      if (historyEntryId) {
+        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+      }
+      setRowImages(prev => {
+        const next = [...prev];
+        next.splice(variantIndex, 1);
+        return next;
+      });
+      return nextDoc;
+    });
+  }, [historyEntryId]);
+
+  /**
+   * Phase 3.7b — Reorder variants within a group via move-up /
+   * move-down. (Drag-to-reorder would need @dnd-kit which isn't
+   * installed; these buttons cover the common case with no new dep.)
+   *
+   * Direction `'up'` moves the variant one slot earlier in the row
+   * list AND swaps variant_index with the previous variant — so the
+   * timeline order and the variant numbering stay in sync. Variants
+   * can only swap with OTHER VARIANTS IN THE SAME GROUP; cannot
+   * move past the base (variant_index 0) and cannot move past the
+   * last variant in the group.
+   */
+  const moveVariantRow = useCallback((variantIndex: number, direction: 'up' | 'down') => {
+    setDoc(prev => {
+      if (!prev) return prev;
+      const target = prev.rows[variantIndex];
+      if (!target) return prev;
+      const groupId = target.group_id;
+      const targetVariantIdx = target.variant_index ?? 0;
+      if (!groupId || targetVariantIdx === 0) {
+        return prev; // base / standalone can't be reordered by this helper
+      }
+
+      // Find the sibling variant we'd swap with — the one whose
+      // variant_index is targetVariantIdx ± 1 in the same group.
+      const swapVariantIdx = direction === 'up' ? targetVariantIdx - 1 : targetVariantIdx + 1;
+      if (swapVariantIdx < 1) return prev; // can't move past the base
+      const swapRowIndex = prev.rows.findIndex(
+        r => r.group_id === groupId && (r.variant_index ?? 0) === swapVariantIdx,
+      );
+      if (swapRowIndex < 0) return prev; // no sibling at that index — boundary
+
+      // Swap both the row positions in `rows` and the variant_index
+      // values, so both timeline order and the numbering stay
+      // consistent. Doing both is important — the dispatcher reads
+      // variant_index for ordering, and the editor reads the row
+      // position for display.
+      const nextRows = prev.rows.slice();
+      const a = { ...nextRows[variantIndex], variant_index: swapVariantIdx };
+      const b = { ...nextRows[swapRowIndex], variant_index: targetVariantIdx };
+      nextRows[variantIndex] = b;
+      nextRows[swapRowIndex] = a;
+
+      const nextDoc = { ...prev, rows: nextRows };
+      if (historyEntryId) {
+        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+      }
+      // Mirror the row swap on rowImages so each row's image stays
+      // bound to its (now reordered) row position.
+      setRowImages(prev => {
+        const next = [...prev];
+        const tmp = next[variantIndex];
+        next[variantIndex] = next[swapRowIndex];
+        next[swapRowIndex] = tmp;
+        return next;
+      });
+      return nextDoc;
+    });
+  }, [historyEntryId]);
+
   // Per-row "split as title card" inline form state. When non-null, the row
   // at `rowIndex` shows a title-text input + Apply/Cancel instead of the
   // one-click chip. Lets the user confirm exactly which text to extract,
@@ -8437,7 +8545,7 @@ function ProductionDocPage() {
                                     at MAX_VARIANTS_PER_GROUP. */}
                                 {isVariant ? (
                                   <div className="mt-1.5" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                                       <span
                                         className="text-[10px] px-1.5 py-0.5 rounded"
                                         style={{
@@ -8450,6 +8558,60 @@ function ProductionDocPage() {
                                       >
                                         ⟜ variant {row.variant_index}/{groupSize - 1}
                                       </span>
+                                      {/* Phase 3.7b — move up / move down within the
+                                          group. Disabled at boundaries. */}
+                                      <button
+                                        type="button"
+                                        onClick={() => moveVariantRow(i, 'up')}
+                                        disabled={(row.variant_index ?? 0) <= 1}
+                                        className="text-[10px] px-1.5 py-0.5 rounded"
+                                        style={{
+                                          background: 'rgba(255,255,255,0.04)',
+                                          color: 'var(--text-secondary)',
+                                          border: '1px solid var(--border)',
+                                          cursor: (row.variant_index ?? 0) <= 1 ? 'not-allowed' : 'pointer',
+                                          opacity: (row.variant_index ?? 0) <= 1 ? 0.4 : 1,
+                                        }}
+                                        title="Move this variant earlier in the sequence"
+                                      >
+                                        ↑
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => moveVariantRow(i, 'down')}
+                                        disabled={(row.variant_index ?? 0) >= groupSize - 1}
+                                        className="text-[10px] px-1.5 py-0.5 rounded"
+                                        style={{
+                                          background: 'rgba(255,255,255,0.04)',
+                                          color: 'var(--text-secondary)',
+                                          border: '1px solid var(--border)',
+                                          cursor: (row.variant_index ?? 0) >= groupSize - 1 ? 'not-allowed' : 'pointer',
+                                          opacity: (row.variant_index ?? 0) >= groupSize - 1 ? 0.4 : 1,
+                                        }}
+                                        title="Move this variant later in the sequence"
+                                      >
+                                        ↓
+                                      </button>
+                                      {/* Phase 3.7a — delete this variant. Confirms
+                                          before destroying. */}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (window.confirm(`Delete variant ${row.variant_index}?`)) {
+                                            deleteVariantRow(i);
+                                          }
+                                        }}
+                                        className="text-[10px] px-1.5 py-0.5 rounded"
+                                        style={{
+                                          background: 'rgba(239,68,68,0.08)',
+                                          color: '#f87171',
+                                          border: '1px solid rgba(239,68,68,0.3)',
+                                          cursor: 'pointer',
+                                        }}
+                                        title="Delete this variant. Remaining variants in the group renumber automatically."
+                                      >
+                                        🗑
+                                      </button>
                                     </div>
                                     <textarea
                                       value={row.variant_edit_prompt ?? ''}
