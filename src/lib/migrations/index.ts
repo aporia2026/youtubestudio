@@ -84,6 +84,7 @@ import migration0081 from './0081_style_constraints_and_indexes';
 import migration0082 from './0082_style_ref_content_validation';
 import migration0083 from './0083_create_generation_events';
 import migration0084 from './0084_create_project_assets';
+import migration0085 from './0085_ask_studio_thread_replies';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -175,6 +176,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0082,
   migration0083,
   migration0084,
+  migration0085,
 ]);
 
 /**

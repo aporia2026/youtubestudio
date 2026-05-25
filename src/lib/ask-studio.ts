@@ -579,6 +579,14 @@ interface RunnerArgs {
   workspaceId: string;
   modelId: string;
   question: string;
+  /** Prior turns in the thread, oldest first. Each turn becomes a
+   *  (user, assistant) message pair prepended to the runner's message
+   *  array so the model sees the full conversation. Tool traces are NOT
+   *  replayed — the prior assistant answers already summarise what was
+   *  found, and re-replaying tool_use blocks would force every runner
+   *  to know the original provider's wire format. If the model needs
+   *  the data again, it'll just re-call the tool. */
+  priorTurns?: Array<{ question: string; answer: string }>;
 }
 
 interface RunnerResult {
@@ -634,9 +642,12 @@ async function runAnthropicCompatibleLoop(
     input_schema: t.input_schema,
   }));
 
-  const messages: Array<{ role: 'user' | 'assistant'; content: MessageContentBlock }> = [
-    { role: 'user', content: args.question.trim() },
-  ];
+  const messages: Array<{ role: 'user' | 'assistant'; content: MessageContentBlock }> = [];
+  for (const turn of args.priorTurns ?? []) {
+    messages.push({ role: 'user', content: turn.question });
+    messages.push({ role: 'assistant', content: turn.answer });
+  }
+  messages.push({ role: 'user', content: args.question.trim() });
 
   const trace: PersistedToolStep[] = [];
   let inputTokens = 0;
@@ -735,10 +746,12 @@ async function runOpenAIChatLoop(
   });
 
   const tools = toOpenAITools(TOOL_CATALOG);
-  const messages: OpenAIChatMessage[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: args.question.trim() },
-  ];
+  const messages: OpenAIChatMessage[] = [{ role: 'system', content: SYSTEM_PROMPT }];
+  for (const turn of args.priorTurns ?? []) {
+    messages.push({ role: 'user', content: turn.question });
+    messages.push({ role: 'assistant', content: turn.answer });
+  }
+  messages.push({ role: 'user', content: args.question.trim() });
 
   const trace: PersistedToolStep[] = [];
   let inputTokens = 0;
@@ -870,7 +883,15 @@ async function runGeminiLoop(args: RunnerArgs): Promise<RunnerResult> {
     tools: [{ functionDeclarations: toGeminiFunctionDeclarations(TOOL_CATALOG) as any }],
   });
 
-  const chat = model.startChat();
+  // Gemini's chat session lets us seed prior turns via the `history`
+  // option — role is 'model' for assistant turns (not 'assistant').
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const history: any[] = [];
+  for (const turn of args.priorTurns ?? []) {
+    history.push({ role: 'user', parts: [{ text: turn.question }] });
+    history.push({ role: 'model', parts: [{ text: turn.answer }] });
+  }
+  const chat = model.startChat({ history });
   const trace: PersistedToolStep[] = [];
   let inputTokens = 0;
   let outputTokens = 0;
@@ -1010,6 +1031,12 @@ export interface AskStudioRunArgs {
   collaboratorId: string | null;
   question: string;
   modelId?: string;
+  /** When set, the new turn is a reply within the thread that this id
+   *  belongs to. The runner walks ancestors to gather prior (user,
+   *  assistant) turns, locks the model to the root turn's `ai_model`
+   *  (so a thread doesn't change voice mid-stream), and persists the
+   *  new row with `parent_id = parentId`. */
+  parentId?: string;
 }
 
 /** Pre-flight validation surfaced by the POST route as a 400, before any
@@ -1028,11 +1055,81 @@ export class AskStudioModelNotSupported extends Error {
   }
 }
 
+export class AskStudioParentNotFound extends Error {
+  constructor(parentId: string) {
+    super(`Parent question ${parentId} not found in this workspace.`);
+    this.name = 'AskStudioParentNotFound';
+  }
+}
+
+/** Fetch the linked-list of ancestors (oldest first) for a given turn,
+ *  bounded by workspace. Used both for thread context assembly during a
+ *  reply AND to look up the root's locked model id. */
+async function fetchAncestors(
+  turnId: string,
+  workspaceId: string,
+): Promise<AskStudioQuestionRow[]> {
+  const { rows } = await sql<AskStudioQuestionRow>`
+    WITH RECURSIVE ancestors AS (
+      SELECT id, workspace_id, asked_by_collaborator_id,
+             question, answer, error_message,
+             tool_trace, tool_call_count, ai_model,
+             input_tokens, output_tokens, duration_ms,
+             created_at, completed_at, parent_id
+        FROM ask_studio_questions
+       WHERE id = ${turnId}::uuid
+         AND workspace_id = ${workspaceId}::uuid
+      UNION ALL
+      SELECT q.id, q.workspace_id, q.asked_by_collaborator_id,
+             q.question, q.answer, q.error_message,
+             q.tool_trace, q.tool_call_count, q.ai_model,
+             q.input_tokens, q.output_tokens, q.duration_ms,
+             q.created_at, q.completed_at, q.parent_id
+        FROM ask_studio_questions q
+        JOIN ancestors a ON q.id = a.parent_id
+       WHERE q.workspace_id = ${workspaceId}::uuid
+    )
+    SELECT id, workspace_id, asked_by_collaborator_id,
+           question, answer, error_message,
+           tool_trace, tool_call_count, ai_model,
+           input_tokens, output_tokens, duration_ms,
+           created_at::text AS created_at,
+           completed_at::text AS completed_at,
+           parent_id
+      FROM ancestors
+     ORDER BY created_at ASC
+  `;
+  return rows;
+}
+
 export async function askStudio(args: AskStudioRunArgs): Promise<{ id: string; answer: AskStudioAnswer }> {
   if (!args.question.trim()) {
     throw new Error('question is required');
   }
-  const modelId = args.modelId || (await getEffectiveModelId(args.workspaceId, 'ask-studio'));
+
+  // Thread setup: if this is a reply, walk ancestors to find the root and
+  // gather prior turns. The root's model is "sticky" so the thread doesn't
+  // change voice mid-stream — the user's per-question picker only applies
+  // to brand-new threads.
+  let priorTurns: Array<{ question: string; answer: string }> = [];
+  let lockedModelId: string | null = null;
+  if (args.parentId) {
+    const ancestors = await fetchAncestors(args.parentId, args.workspaceId);
+    if (ancestors.length === 0) throw new AskStudioParentNotFound(args.parentId);
+    // Recursive CTE walks UP, then we sort ASC by created_at, so [0] is the
+    // root of the thread.
+    const root = ancestors[0];
+    lockedModelId = root.ai_model;
+    // Skip errored or still-pending turns from the conversation history —
+    // sending the model a "question with no answer" wastes tokens and
+    // can confuse it into restating the error.
+    priorTurns = ancestors
+      .filter((a) => a.answer && !a.error_message)
+      .map((a) => ({ question: a.question, answer: a.answer! }));
+  }
+
+  const modelId =
+    lockedModelId ?? args.modelId ?? (await getEffectiveModelId(args.workspaceId, 'ask-studio'));
 
   // Validate the model BEFORE inserting the placeholder row so an
   // unsupported-model 400 doesn't leave an orphan errored row in history.
@@ -1044,12 +1141,13 @@ export async function askStudio(args: AskStudioRunArgs): Promise<{ id: string; a
   // if the agent loop crashes mid-flight.
   const insert = await sql<{ id: string }>`
     INSERT INTO ask_studio_questions (
-      workspace_id, asked_by_collaborator_id, question, ai_model
+      workspace_id, asked_by_collaborator_id, question, ai_model, parent_id
     ) VALUES (
       ${args.workspaceId}::uuid,
       ${args.collaboratorId}::uuid,
       ${args.question.trim()},
-      ${modelId}
+      ${modelId},
+      ${args.parentId ?? null}
     )
     RETURNING id
   `;
@@ -1062,6 +1160,7 @@ export async function askStudio(args: AskStudioRunArgs): Promise<{ id: string; a
       workspaceId: args.workspaceId,
       modelId,
       question: args.question.trim(),
+      priorTurns,
     });
 
     const duration = Date.now() - startedAt;
@@ -1118,6 +1217,9 @@ export interface AskStudioQuestionRow {
   duration_ms: number | null;
   created_at: string;
   completed_at: string | null;
+  /** Null for thread roots (top-level questions). For replies, points at
+   *  the immediate prior turn so the thread is a linked list. */
+  parent_id: string | null;
 }
 
 export async function getAskStudioQuestion(
@@ -1130,7 +1232,8 @@ export async function getAskStudioQuestion(
            tool_trace, tool_call_count, ai_model,
            input_tokens, output_tokens, duration_ms,
            created_at::text AS created_at,
-           completed_at::text AS completed_at
+           completed_at::text AS completed_at,
+           parent_id
       FROM ask_studio_questions
      WHERE id = ${id}::uuid AND workspace_id = ${workspaceId}::uuid
      LIMIT 1
@@ -1138,6 +1241,11 @@ export async function getAskStudioQuestion(
   return rows[0] ?? null;
 }
 
+/**
+ * History list — returns thread ROOTS only, newest first. Replies are
+ * fetched on-demand via `getAskStudioThread` when the user expands a
+ * card, so the list query stays cheap regardless of average thread depth.
+ */
 export async function listAskStudioQuestions(
   workspaceId: string,
   opts: { limit?: number } = {},
@@ -1149,11 +1257,56 @@ export async function listAskStudioQuestions(
            tool_trace, tool_call_count, ai_model,
            input_tokens, output_tokens, duration_ms,
            created_at::text AS created_at,
-           completed_at::text AS completed_at
+           completed_at::text AS completed_at,
+           parent_id
       FROM ask_studio_questions
      WHERE workspace_id = ${workspaceId}::uuid
+       AND parent_id IS NULL
      ORDER BY created_at DESC
      LIMIT ${limit}
+  `;
+  return rows;
+}
+
+/**
+ * Fetch every turn in a thread (root + all descendants), oldest first.
+ * `rootId` MUST be the id of the thread root — pass a non-root id and
+ * you'll get back only that subtree, which is probably not what you want.
+ * Use this in the UI when the user expands a card.
+ */
+export async function getAskStudioThread(
+  rootId: string,
+  workspaceId: string,
+): Promise<AskStudioQuestionRow[]> {
+  const { rows } = await sql<AskStudioQuestionRow>`
+    WITH RECURSIVE thread AS (
+      SELECT id, workspace_id, asked_by_collaborator_id,
+             question, answer, error_message,
+             tool_trace, tool_call_count, ai_model,
+             input_tokens, output_tokens, duration_ms,
+             created_at, completed_at, parent_id
+        FROM ask_studio_questions
+       WHERE id = ${rootId}::uuid
+         AND workspace_id = ${workspaceId}::uuid
+      UNION ALL
+      SELECT q.id, q.workspace_id, q.asked_by_collaborator_id,
+             q.question, q.answer, q.error_message,
+             q.tool_trace, q.tool_call_count, q.ai_model,
+             q.input_tokens, q.output_tokens, q.duration_ms,
+             q.created_at, q.completed_at, q.parent_id
+        FROM ask_studio_questions q
+        JOIN thread t ON q.parent_id = t.id
+       WHERE q.workspace_id = ${workspaceId}::uuid
+    )
+    SELECT id, workspace_id, asked_by_collaborator_id,
+           question, answer, error_message,
+           tool_trace, tool_call_count, ai_model,
+           input_tokens, output_tokens, duration_ms,
+           created_at::text AS created_at,
+           completed_at::text AS completed_at,
+           parent_id
+      FROM thread
+     ORDER BY created_at ASC
   `;
   return rows;
 }
