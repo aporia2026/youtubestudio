@@ -87,6 +87,7 @@ import migration0084 from './0084_create_project_assets';
 import migration0085 from './0085_ask_studio_thread_replies';
 import migration0086 from './0086_add_channel_description_brief';
 import migration0087 from './0087_niches_workspace_name_unique';
+import migration0088 from './0088_create_oauth_tokens';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -181,6 +182,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0085,
   migration0086,
   migration0087,
+  migration0088,
 ]);
 
 /**

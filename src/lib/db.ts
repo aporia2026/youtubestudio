@@ -434,6 +434,42 @@ export async function ensureChannelsSchema() {
   }
 }
 
+/** Idempotent setup for oauth_tokens. Mirrors migration 0088 so hot
+ *  deploys self-heal before the migration runner has fired. The table
+ *  was originally created only inside `initDatabase()` (manual-only),
+ *  so databases bootstrapped via the migration runner alone lacked it
+ *  and every getValidAccessToken call 500-d with
+ *  "relation oauth_tokens does not exist". */
+let oauthTokensMigrated = false;
+export async function ensureOAuthTokensSchema() {
+  if (oauthTokensMigrated) return;
+  try {
+    await sql`
+      CREATE TABLE IF NOT EXISTS oauth_tokens (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        channel_id UUID REFERENCES channels(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL DEFAULT 'google',
+        access_token_encrypted TEXT NOT NULL,
+        refresh_token_encrypted TEXT,
+        token_expiry TIMESTAMPTZ NOT NULL,
+        scopes TEXT[] NOT NULL DEFAULT '{}',
+        google_email TEXT,
+        workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(channel_id, provider)
+      )
+    `;
+    try { await sql`ALTER TABLE oauth_tokens ADD COLUMN IF NOT EXISTS google_email TEXT`; } catch {}
+    try { await sql`ALTER TABLE oauth_tokens ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE`; } catch {}
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_oauth_tokens_channel_provider ON oauth_tokens(channel_id, provider)`; } catch {}
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_oauth_tokens_workspace ON oauth_tokens(workspace_id) WHERE workspace_id IS NOT NULL`; } catch {}
+    oauthTokensMigrated = true;
+  } catch (err) {
+    logger.error('ensureOAuthTokensSchema error', { detail: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 /** Idempotent setup for the schedule feature.
  *  One schedule_item per planned video slot (recurring rules expand into concrete items).
  *  Multi-channel via join table so cross-posting doesn't require schema changes.
