@@ -80,28 +80,31 @@ export const TIER_PRICING: Record<VoiceTier, TierPricing> = {
   // Multilingual v2 rate, normalized to per-1M chars for symmetry with
   // Google. Source: elevenlabs.io/pricing (Pro plan = $0.30 per 1K chars
   // = $300 per 1M, verified 2026-05-25).
+  // displayLabel intentionally omits the provider — the voice card
+  // already shows the provider name as a separate metadata field, so
+  // appending "(ElevenLabs)" to the tier label is redundant.
   'multilingual-v2': {
     usdPerMillionChars: 300,
     freeMonthlyChars: 0,
-    displayLabel: 'Premium (ElevenLabs)',
+    displayLabel: 'Multilingual v2',
     qualityBand: 'premium',
   },
   'turbo-v2-5': {
     usdPerMillionChars: 150,
     freeMonthlyChars: 0,
-    displayLabel: 'Standard (ElevenLabs)',
+    displayLabel: 'Turbo v2.5',
     qualityBand: 'standard',
   },
   'turbo-v2': {
     usdPerMillionChars: 150,
     freeMonthlyChars: 0,
-    displayLabel: 'Standard (ElevenLabs)',
+    displayLabel: 'Turbo v2',
     qualityBand: 'standard',
   },
   'monolingual-v1': {
     usdPerMillionChars: 150,
     freeMonthlyChars: 0,
-    displayLabel: 'Standard (ElevenLabs)',
+    displayLabel: 'English v1',
     qualityBand: 'standard',
   },
 };

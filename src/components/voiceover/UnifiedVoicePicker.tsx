@@ -22,8 +22,8 @@
  * catalog UX" for the design rationale.
  */
 
-import { useMemo } from 'react';
-import type { VoiceCatalogEntry } from '@/lib/tts/types';
+import { useMemo, useState } from 'react';
+import type { TtsProviderId, VoiceCatalogEntry } from '@/lib/tts/types';
 import { TIER_PRICING, synthCostUsd } from '@/lib/tts/cost';
 import {
   BAND_LABELS,
@@ -32,6 +32,8 @@ import {
   groupVoicesByBand,
   type QualityBand,
 } from '@/lib/tts/voice-bands';
+
+type ProviderFilter = 'all' | TtsProviderId;
 
 interface UnifiedVoicePickerProps {
   /** ElevenLabs voices already converted to catalog-entry shape. Empty
@@ -113,6 +115,13 @@ export function UnifiedVoicePicker({
   onPreview,
   previewingVoiceId,
 }: UnifiedVoicePickerProps) {
+  // Provider filter — 'all' shows mixed, 'elevenlabs' or 'google' narrows
+  // the voice list to one provider while keeping the band tabs intact.
+  // Local-only state: doesn't persist across sessions — it's a transient
+  // browse aid, not a preference. The workspace settings' enabledProviders
+  // is the right place for a sticky disable.
+  const [providerFilter, setProviderFilter] = useState<ProviderFilter>('all');
+
   // Filter to selected language up front, then group.
   const allEntries = useMemo(() => {
     const langPrefix = languageCode.toLowerCase().slice(0, 2);
@@ -152,6 +161,33 @@ export function UnifiedVoicePicker({
   }, [showExpensiveTiers, selectedEntry, elevenLabsCategoryById]);
 
   const voicesInActiveBand = grouped.byBand[activeBand] ?? [];
+  const voicesInActiveBandFiltered = useMemo(
+    () =>
+      providerFilter === 'all'
+        ? voicesInActiveBand
+        : voicesInActiveBand.filter((v) => v.voice.providerId === providerFilter),
+    [voicesInActiveBand, providerFilter],
+  );
+
+  // Per-provider counts in the active band — drives the filter button
+  // labels and disables a button when its provider has no voices in
+  // the current band.
+  const providerCountsInBand = useMemo(() => {
+    let elevenlabs = 0;
+    let google = 0;
+    for (const v of voicesInActiveBand) {
+      if (v.voice.providerId === 'elevenlabs') elevenlabs++;
+      else if (v.voice.providerId === 'google') google++;
+    }
+    return { elevenlabs, google, all: voicesInActiveBand.length };
+  }, [voicesInActiveBand]);
+
+  // Show the filter row only when both providers actually have voices
+  // somewhere — otherwise the picker is effectively single-provider and
+  // the filter adds visual weight for no choice.
+  const elevenLabsAnywhere = elevenLabsEntries.length > 0;
+  const googleAnywhere = googleEntries.length > 0;
+  const showProviderFilter = elevenLabsAnywhere && googleAnywhere;
 
   return (
     <div
@@ -224,11 +260,52 @@ export function UnifiedVoicePicker({
           })}
         </div>
 
-        {/* Expensive-tiers toggle */}
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-            {googleAvailable ? 'Google + ElevenLabs mixed' : 'ElevenLabs only'}
-          </p>
+        {/* Provider filter + expensive-tiers toggle */}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          {showProviderFilter ? (
+            <div className="flex gap-1">
+              {(
+                [
+                  { id: 'all' as const, label: 'All', count: providerCountsInBand.all },
+                  { id: 'google' as const, label: 'Google', count: providerCountsInBand.google },
+                  {
+                    id: 'elevenlabs' as const,
+                    label: 'ElevenLabs',
+                    count: providerCountsInBand.elevenlabs,
+                  },
+                ] as const
+              ).map((opt) => {
+                const isActive = providerFilter === opt.id;
+                const disabled = opt.count === 0;
+                return (
+                  <button
+                    key={opt.id}
+                    onClick={() => setProviderFilter(opt.id)}
+                    disabled={disabled}
+                    className="px-1.5 py-0.5 rounded text-[11px] transition-all"
+                    style={{
+                      background: isActive ? 'rgba(124,58,237,0.2)' : 'var(--bg-secondary)',
+                      color: isActive
+                        ? 'var(--accent-purple-bright)'
+                        : disabled
+                          ? 'var(--text-muted)'
+                          : 'var(--text-secondary)',
+                      border: `1px solid ${isActive ? 'rgba(124,58,237,0.3)' : 'transparent'}`,
+                      opacity: disabled ? 0.4 : 1,
+                      cursor: disabled ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    {opt.label}{' '}
+                    <span style={{ opacity: 0.7 }}>({opt.count})</span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              {googleAnywhere ? 'Google only' : 'ElevenLabs only'}
+            </p>
+          )}
           <label
             className="flex items-center gap-1.5 cursor-pointer"
             style={{
@@ -273,13 +350,14 @@ export function UnifiedVoicePicker({
           </div>
         )}
 
-        {voicesInActiveBand.length === 0 ? (
+        {voicesInActiveBandFiltered.length === 0 ? (
           <div className="p-4 text-center text-xs" style={{ color: 'var(--text-muted)' }}>
-            No {BAND_LABELS[activeBand]} voices for{' '}
-            {LANGUAGE_OPTIONS.find((l) => l.code === languageCode)?.label ?? languageCode}.
+            {providerFilter !== 'all'
+              ? `No ${providerFilter === 'google' ? 'Google' : 'ElevenLabs'} ${BAND_LABELS[activeBand]} voices.`
+              : `No ${BAND_LABELS[activeBand]} voices for ${LANGUAGE_OPTIONS.find((l) => l.code === languageCode)?.label ?? languageCode}.`}
           </div>
         ) : (
-          voicesInActiveBand.map((entry) => {
+          voicesInActiveBandFiltered.map((entry) => {
             const isSelected =
               selectedEntry?.voice.providerId === entry.voice.providerId &&
               selectedEntry?.voice.voiceId === entry.voice.voiceId;
