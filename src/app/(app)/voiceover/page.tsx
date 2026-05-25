@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { useSearchParams } from 'next/navigation';
@@ -11,6 +11,10 @@ import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ScheduleLinkProvider, ScheduleSaverRegistration } from '@/components/ui/ScheduleLinkContext';
 import { ELEVENLABS_MODELS } from '@/lib/elevenlabs';
 import type { VoiceCatalogEntry, TtsProviderId } from '@/lib/tts/types';
+import { UnifiedVoicePicker } from '@/components/voiceover/UnifiedVoicePicker';
+import type { QualityBand } from '@/lib/tts/voice-bands';
+import { bandForVoice } from '@/lib/tts/voice-bands';
+import { synthCostUsd } from '@/lib/tts/cost';
 import { cleanScriptForVoiceover } from '@/lib/voiceover-presets';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
@@ -50,9 +54,13 @@ function VoiceoverStudio() {
   const [provider, setProvider] = useState<TtsProviderId>('elevenlabs');
   const [googleVoices, setGoogleVoices] = useState<VoiceCatalogEntry[]>([]);
   const [selectedGoogleVoice, setSelectedGoogleVoice] = useState<VoiceCatalogEntry | null>(null);
-  const [googleVoiceFilter, setGoogleVoiceFilter] = useState<{ language: string; tier: string }>(
-    { language: 'en-US', tier: 'chirp3-hd' },
-  );
+  // Canonical selection in the unified picker — either provider lives
+  // here. Generation logic still reads selectedVoice / selectedGoogleVoice
+  // for backward compatibility; selecting an entry below mirrors into
+  // both so existing call paths keep working.
+  const [selectedEntry, setSelectedEntry] = useState<VoiceCatalogEntry | null>(null);
+  const [activeBand, setActiveBand] = useState<QualityBand>('premium');
+  const [pickerLanguage, setPickerLanguage] = useState('en-US');
   const [googleAvailable, setGoogleAvailable] = useState(false);
   // Cost safety gate: Studio tier is $160/1M chars (5× Chirp 3 HD). Hidden
   // by default so a slip in the dropdown can't trigger a runaway bill —
@@ -68,13 +76,13 @@ function VoiceoverStudio() {
       'voiceover_show_expensive_tiers',
       showExpensiveTiers ? '1' : '0',
     );
-    // If the user toggles expensive tiers off while Studio is selected,
-    // bounce them back to Chirp 3 HD so the picker doesn't show an empty
-    // selection.
-    if (!showExpensiveTiers && googleVoiceFilter.tier === 'studio') {
-      setGoogleVoiceFilter((f) => ({ ...f, tier: 'chirp3-hd' }));
+    // If the user toggles expensive tiers off while sitting on the
+    // Top-tier band, bounce them back to Premium so the band tab strip
+    // doesn't lose the active tab when it hides Top-tier.
+    if (!showExpensiveTiers && activeBand === 'top-tier') {
+      setActiveBand('premium');
     }
-  }, [showExpensiveTiers, googleVoiceFilter.tier]);
+  }, [showExpensiveTiers, activeBand]);
   const [text, setText] = useState('');
   const [settings, setSettings] = useState<VoiceoverSettings>({
     stability: 0.5, similarity_boost: 0.75, style: 0.5, use_speaker_boost: true,
@@ -194,11 +202,67 @@ function VoiceoverStudio() {
       const data = await res.json();
       const all = (data.voices as VoiceCatalogEntry[]) || [];
       setGoogleVoices(all);
-      if (all.length > 0 && (!selectedGoogleVoice || selectedGoogleVoice.voice.languageCode !== languageCode)) {
-        const chirp = all.find((v) => v.voice.tier === 'chirp3-hd') ?? all[0];
-        setSelectedGoogleVoice(chirp);
-      }
     } catch {}
+  }
+
+  // Refetch Google voices when the picker language changes (Hebrew users
+  // hit this — switching he-IL pulls the Chirp 3 HD Hebrew voices).
+  useEffect(() => {
+    if (!googleAvailable) return;
+    loadGoogleVoicesForLanguage(pickerLanguage);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickerLanguage, googleAvailable]);
+
+  /**
+   * Adapter: turn raw ElevenLabs voices into VoiceCatalogEntry shape so
+   * the unified picker can render them next to Google's catalog entries.
+   * Tier defaults to multilingual-v2 (the band-grouper promotes
+   * professional / cloned voices to Top-tier via the category map).
+   */
+  const elevenLabsEntries: VoiceCatalogEntry[] = useMemo(
+    () =>
+      voices.map((v) => ({
+        voice: {
+          providerId: 'elevenlabs' as const,
+          voiceId: v.voice_id,
+          languageCode: 'en-US',
+          tier: 'multilingual-v2' as const,
+        },
+        displayName: v.name,
+        gender:
+          v.labels?.gender?.toLowerCase() === 'male'
+            ? ('male' as const)
+            : v.labels?.gender?.toLowerCase() === 'female'
+              ? ('female' as const)
+              : undefined,
+        previewUrl: v.preview_url,
+      })),
+    [voices],
+  );
+
+  /** ElevenLabs category map → drives Pro/cloned promotion to Top-tier. */
+  const elevenLabsCategoryById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const v of voices) m.set(v.voice_id, v.category);
+    return m;
+  }, [voices]);
+
+  function handleSelectEntry(entry: VoiceCatalogEntry) {
+    setSelectedEntry(entry);
+    // Mirror into legacy state so generation logic keeps working
+    // without a deeper refactor of generateVoiceover().
+    if (entry.voice.providerId === 'elevenlabs') {
+      setSelectedVoice(entry.voice.voiceId);
+      setProvider('elevenlabs');
+    } else {
+      setSelectedGoogleVoice(entry);
+      setProvider('google');
+    }
+    // Keep band state in sync when the user switches via the list
+    // (e.g. they clicked a Top-tier voice while the Standard tab was
+    // active in a previous render).
+    const band = bandForVoice(entry, elevenLabsCategoryById.get(entry.voice.voiceId));
+    setActiveBand(band);
   }
 
   async function loadVoices(key: string) {
@@ -445,36 +509,34 @@ function VoiceoverStudio() {
         </p>
       </div>
 
-      {/* Provider switcher — hidden when Google credentials aren't configured */}
-      {googleAvailable && (
-        <div className="mb-4 flex items-center gap-2">
-          <button
-            onClick={() => setProvider('elevenlabs')}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
-            style={{
-              background: provider === 'elevenlabs' ? 'rgba(124,58,237,0.2)' : 'var(--bg-secondary)',
-              color: provider === 'elevenlabs' ? 'var(--accent-purple-bright)' : 'var(--text-muted)',
-              border: `1px solid ${provider === 'elevenlabs' ? 'rgba(124,58,237,0.3)' : 'transparent'}`,
-            }}
-          >
-            ElevenLabs
-          </button>
-          <button
-            onClick={() => setProvider('google')}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
-            style={{
-              background: provider === 'google' ? 'rgba(124,58,237,0.2)' : 'var(--bg-secondary)',
-              color: provider === 'google' ? 'var(--accent-purple-bright)' : 'var(--text-muted)',
-              border: `1px solid ${provider === 'google' ? 'rgba(124,58,237,0.3)' : 'transparent'}`,
-            }}
-          >
-            Google Cloud
-          </button>
+      {/* Subscription char counter (ElevenLabs only) — small inline strip when connected */}
+      {apiKey && subscription && (
+        <div className="mb-3 flex items-center gap-3" style={{ maxWidth: 480 }}>
+          <div className="flex-1">
+            <div className="flex justify-between text-[11px] mb-0.5" style={{ color: 'var(--text-muted)' }}>
+              <span>ElevenLabs characters used</span>
+              <span>
+                {subscription.character_count.toLocaleString()} /{' '}
+                {subscription.character_limit.toLocaleString()}
+              </span>
+            </div>
+            <div className="progress-bar">
+              <div
+                className="progress-fill"
+                style={{
+                  width: `${(subscription.character_count / subscription.character_limit) * 100}%`,
+                }}
+              />
+            </div>
+          </div>
         </div>
       )}
 
-      {/* API Key connection — only for ElevenLabs. Google uses server-side env vars. */}
-      {provider === 'elevenlabs' && !apiKey ? (
+      {/* Soft gate: only block when no provider is usable at all. Otherwise
+         the unified picker handles Google immediately and surfaces an
+         inline "Connect ElevenLabs" CTA inside the Premium / Top-tier
+         bands when a key isn't connected. */}
+      {!apiKey && !googleAvailable ? (
         <div className="glass rounded-xl p-8 max-w-lg mx-auto text-center">
           <div className="text-4xl mb-4">🔑</div>
           <h2 className="text-lg font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>Connect ElevenLabs</h2>
@@ -500,206 +562,50 @@ function VoiceoverStudio() {
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-6">
-          {/* Voice Browser — branches by provider */}
-          {provider === 'google' ? (
-            <div className="glass rounded-xl overflow-hidden" style={{ maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
-              <div className="p-4" style={{ borderBottom: '1px solid var(--border)' }}>
-                <h2 className="text-sm font-semibold mb-3" style={{ color: 'var(--text-primary)' }}>
-                  Google Voice Library ({googleVoices.length})
-                </h2>
-                <div className="flex gap-2 mb-2">
-                  <select
-                    value={googleVoiceFilter.language}
-                    onChange={(e) => {
-                      const lang = e.target.value;
-                      setGoogleVoiceFilter((f) => ({ ...f, language: lang }));
-                      loadGoogleVoicesForLanguage(lang);
-                    }}
-                    className="input-field flex-1"
-                    style={{ padding: '6px 8px', fontSize: 12 }}
-                  >
-                    <option value="en-US">English (US)</option>
-                    <option value="en-GB">English (UK)</option>
-                    <option value="he-IL">Hebrew</option>
-                    <option value="es-ES">Spanish</option>
-                    <option value="fr-FR">French</option>
-                    <option value="de-DE">German</option>
-                    <option value="ar-XA">Arabic</option>
-                    <option value="ja-JP">Japanese</option>
-                  </select>
-                  <select
-                    value={googleVoiceFilter.tier}
-                    onChange={(e) => setGoogleVoiceFilter((f) => ({ ...f, tier: e.target.value }))}
-                    className="input-field flex-1"
-                    style={{ padding: '6px 8px', fontSize: 12 }}
-                  >
-                    <option value="chirp3-hd">Chirp 3 HD (premium)</option>
-                    <option value="neural2">Neural2</option>
-                    <option value="wavenet">WaveNet</option>
-                    <option value="standard">Standard</option>
-                    <option value="polyglot">Polyglot</option>
-                    {showExpensiveTiers && (
-                      <option value="studio">Studio (top-tier, $160/1M)</option>
-                    )}
-                  </select>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                    Server-side credentials — no API key needed in the browser
-                  </p>
-                  <label
-                    className="flex items-center gap-1.5 cursor-pointer"
-                    style={{ color: showExpensiveTiers ? 'var(--accent-purple-bright)' : 'var(--text-muted)' }}
-                    title="Studio tier costs $160 per 1M characters (5× Chirp 3 HD). Hidden by default to avoid surprise bills."
-                  >
-                    <input
-                      type="checkbox"
-                      checked={showExpensiveTiers}
-                      onChange={(e) => setShowExpensiveTiers(e.target.checked)}
-                      style={{ width: 11, height: 11, accentColor: 'var(--accent-purple)' }}
-                    />
-                    <span className="text-[11px]">Show expensive tiers</span>
-                  </label>
-                </div>
-              </div>
-              <div className="overflow-y-auto flex-1">
-                {googleVoices
-                  .filter((v) => v.voice.tier === googleVoiceFilter.tier)
-                  .map((entry) => {
-                    const isSelected = selectedGoogleVoice?.voice.voiceId === entry.voice.voiceId;
-                    return (
-                      <div
-                        key={entry.voice.voiceId}
-                        onClick={() => setSelectedGoogleVoice(entry)}
-                        className="flex items-center gap-3 px-4 py-3 cursor-pointer transition-all"
-                        style={{
-                          background: isSelected ? 'rgba(124,58,237,0.15)' : 'transparent',
-                          borderLeft: isSelected ? '2px solid var(--accent-purple)' : '2px solid transparent',
-                        }}
-                      >
-                        <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 text-sm"
-                          style={{ background: isSelected ? 'rgba(124,58,237,0.3)' : 'var(--bg-secondary)' }}>
-                          🎤
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium truncate" style={{ color: isSelected ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
-                            {entry.displayName}
-                          </p>
-                          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                            {entry.voice.tier}
-                            {entry.gender ? ` · ${entry.gender}` : ''}
-                            {' · '}
-                            {entry.voice.languageCode}
-                          </p>
-                        </div>
-                      </div>
-                    );
-                  })}
-                {googleVoices.filter((v) => v.voice.tier === googleVoiceFilter.tier).length === 0 && (
-                  <div className="p-4 text-center text-xs" style={{ color: 'var(--text-muted)' }}>
-                    No {googleVoiceFilter.tier} voices for {googleVoiceFilter.language}.
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : (
-          <div className="glass rounded-xl overflow-hidden" style={{ maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
-            <div className="p-4" style={{ borderBottom: '1px solid var(--border)' }}>
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-                  Voice Library ({filteredVoices.length})
-                </h2>
-                <button
-                  onClick={() => { localStorage.removeItem('elevenlabs_api_key'); setApiKey(''); setVoices([]); }}
-                  className="text-xs" style={{ color: 'var(--text-muted)' }}
-                >
-                  Disconnect
-                </button>
-              </div>
-              {subscription && (
-                <div className="mb-3">
-                  <div className="flex justify-between text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
-                    <span>Characters used</span>
-                    <span>{subscription.character_count.toLocaleString()} / {subscription.character_limit.toLocaleString()}</span>
-                  </div>
-                  <div className="progress-bar">
-                    <div className="progress-fill" style={{ width: `${(subscription.character_count / subscription.character_limit) * 100}%` }} />
-                  </div>
-                </div>
-              )}
-              <input
-                value={voiceSearch}
-                onChange={e => setVoiceSearch(e.target.value)}
-                placeholder="Search voices..."
-                className="input-field mb-2"
-                style={{ padding: '8px 12px', fontSize: 13 }}
-              />
-              <div className="flex gap-1 flex-wrap">
-                {categories.slice(0, 5).map(cat => (
-                  <button key={cat} onClick={() => setVoiceCategory(cat)}
-                    className="px-2 py-1 rounded text-xs capitalize transition-all"
-                    style={{
-                      background: voiceCategory === cat ? 'rgba(124,58,237,0.2)' : 'var(--bg-secondary)',
-                      color: voiceCategory === cat ? 'var(--accent-purple-bright)' : 'var(--text-muted)',
-                      border: `1px solid ${voiceCategory === cat ? 'rgba(124,58,237,0.3)' : 'transparent'}`,
-                    }}>
-                    {cat}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="overflow-y-auto flex-1">
-              {filteredVoices.map(voice => {
-                const isSelected = selectedVoice === voice.voice_id;
-                const isPreviewing = previewPlaying === voice.voice_id;
-                return (
-                  <div
-                    key={voice.voice_id}
-                    onClick={() => setSelectedVoice(voice.voice_id)}
-                    className="flex items-center gap-3 px-4 py-3 cursor-pointer transition-all"
-                    style={{
-                      background: isSelected ? 'rgba(124,58,237,0.15)' : 'transparent',
-                      borderLeft: isSelected ? '2px solid var(--accent-purple)' : '2px solid transparent',
-                    }}
-                    onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = 'var(--bg-card-hover)'; }}
-                    onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = 'transparent'; }}
-                  >
-                    <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 text-sm"
-                      style={{ background: isSelected ? 'rgba(124,58,237,0.3)' : 'var(--bg-secondary)' }}>
-                      🎤
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate" style={{ color: isSelected ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
-                        {voice.name}
-                      </p>
-                      <p className="text-xs capitalize" style={{ color: 'var(--text-muted)' }}>
-                        {voice.category}
-                        {voice.labels?.gender ? ` · ${voice.labels.gender}` : ''}
-                        {voice.labels?.age ? ` · ${voice.labels.age}` : ''}
-                      </p>
-                    </div>
-                    {voice.preview_url && (
-                      <button
-                        onClick={e => { e.stopPropagation(); playPreview(voice); }}
-                        className="p-1.5 rounded-lg shrink-0 transition-all"
-                        style={{
-                          background: isPreviewing ? 'rgba(124,58,237,0.2)' : 'var(--bg-secondary)',
-                          color: isPreviewing ? 'var(--accent-purple-bright)' : 'var(--text-muted)',
-                        }}
-                      >
-                        {isPreviewing ? (
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>
-                        ) : (
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
-                        )}
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-          )}
+          {/* Unified voice picker — quality-band-grouped, provider-invisible. */}
+          <UnifiedVoicePicker
+            elevenLabsEntries={elevenLabsEntries}
+            elevenLabsCategoryById={elevenLabsCategoryById}
+            googleEntries={googleVoices}
+            selectedEntry={selectedEntry}
+            onSelect={handleSelectEntry}
+            languageCode={pickerLanguage}
+            onLanguageChange={setPickerLanguage}
+            showExpensiveTiers={showExpensiveTiers}
+            onToggleExpensiveTiers={setShowExpensiveTiers}
+            activeBand={activeBand}
+            onBandChange={setActiveBand}
+            scriptCharCount={text.length}
+            elevenLabsConnected={Boolean(apiKey)}
+            googleAvailable={googleAvailable}
+            onConnectElevenLabs={() => {
+              const k = window.prompt('Paste your ElevenLabs API key (sk_…)');
+              if (k && k.trim()) {
+                const key = k.trim();
+                localStorage.setItem('elevenlabs_api_key', key);
+                setApiKey(key);
+                loadVoices(key);
+              }
+            }}
+            onDisconnectElevenLabs={() => {
+              localStorage.removeItem('elevenlabs_api_key');
+              setApiKey('');
+              setVoices([]);
+              setSubscription(null);
+              // If the currently selected voice came from ElevenLabs,
+              // clear the selection so the generate button doesn't try
+              // to fire against a now-missing voice.
+              if (selectedEntry?.voice.providerId === 'elevenlabs') {
+                setSelectedEntry(null);
+                setSelectedVoice('');
+              }
+            }}
+            onPreview={(entry) => {
+              const raw = voices.find((v) => v.voice_id === entry.voice.voiceId);
+              if (raw) playPreview(raw);
+            }}
+            previewingVoiceId={previewPlaying}
+          />
 
           {/* Generation panel */}
           <div className="space-y-4">
