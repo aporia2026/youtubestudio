@@ -1,7 +1,11 @@
 // Client-safe image-model registry for production-doc per-row image generation.
 //
-// Used by surfaces that turn a text prompt into an image. Two providers:
-//   - `kie`           → Kie.ai cloud, per-image cost (existing default)
+// Used by surfaces that turn a text prompt into an image. Three providers:
+//   - `kie`           → Kie.ai cloud, per-image cost (the existing default).
+//   - `atlas`         → Atlas Cloud (api.atlascloud.ai), only carries the
+//                       OpenAI GPT Image 2 family in this app for now.
+//                       ~73% cheaper per call than the equivalent Kie route.
+//                       See `_plans/2026-05-25-atlas-cloud-gpt-image-2.md`.
 //   - `comfyui-local` → ComfyUI on the user's PC, $0 per image, requires
 //                       LOCAL_STUDIO=1 in dev (Phase 4 of the local-broll
 //                       plan). Routes return 503 if the env flag is missing.
@@ -25,7 +29,16 @@
 // `resolution`, the builder throws at request time instead of silently
 // burning money. See `tests/image-models-1k-enforcement.test.ts`.
 
-export type ImageModelProvider = 'kie' | 'comfyui-local';
+export type ImageModelProvider = 'kie' | 'atlas' | 'comfyui-local';
+
+/** Mirrors `AtlasSize` in src/lib/atlas-cloud-images.ts. Inlined here to
+ *  keep this registry client-safe (the atlas module imports a server-only
+ *  logger). The union must stay in sync with Atlas's documented `size`
+ *  enum for GPT Image 2; only landscape ratios are practical for this
+ *  app's 16:9 pipeline (cropped post-generation in image-gen-dispatch.ts). */
+export type AtlasImageSize = '1024x1024' | '1024x1536' | '1536x1024';
+/** Mirrors `AtlasQuality` in src/lib/atlas-cloud-images.ts. */
+export type AtlasImageQuality = 'low' | 'medium' | 'high';
 
 export interface ImageModelSpec {
   /** Stable id used in URLs / API bodies / localStorage. */
@@ -37,6 +50,19 @@ export interface ImageModelSpec {
   /** Underlying Kie.ai `model` string sent to /api/v1/jobs/createTask.
    *  Required for `provider: 'kie'`, ignored otherwise. */
   kieModel?: string;
+  /** Underlying Atlas Cloud `model` string sent to
+   *  POST /api/v1/model/generateImage. Required for `provider: 'atlas'`,
+   *  ignored otherwise. Documentation only — the dispatcher knows which
+   *  Atlas helper to call from `provider` + this registry file being
+   *  t2i-only. Future entries pointing at other Atlas models would
+   *  need a dispatcher branch. */
+  atlasModel?: string;
+  /** Atlas `size` parameter. Default '1536x1024' (closest landscape to
+   *  16:9, which the dispatcher then center-crops to 1536×864). */
+  atlasSize?: AtlasImageSize;
+  /** Atlas `quality` tier. Default 'medium' to match Atlas's omitted-
+   *  default per their example payloads. */
+  atlasQuality?: AtlasImageQuality;
   /** Workflow id in src/lib/comfyui/workflows/ — `provider: 'comfyui-local'`
    *  only. The /api/generate/production-doc/image dispatch reads this. */
   localWorkflowId?: 'flux-schnell-t2i' | 'hidream-i1-dev-t2i' | 'qwen-image-t2i';
@@ -90,7 +116,22 @@ export const IMAGE_MODELS: ImageModelSpec[] = [
   // string changes to `nano-banana-2`. Same `image_input` refs field is
   // exposed by the i2i registry entry (max 14 refs).
   { value: 'nano-banana', label: 'Google NanoBanana 2', provider: 'kie', kieModel: 'nano-banana-2', hint: 'Gemini 3.1 Flash Image — fast, accurate text rendering, $0.04/image' },
-  { value: 'gpt-image-2-t2i', label: 'GPT Image 2', provider: 'kie', kieModel: 'gpt-image-2-text-to-image', hint: 'OpenAI image model via Kie.ai' },
+  // GPT Image 2 has two routes through this app: Atlas (~$0.009/image, the
+  // cheaper default — listed first so it surfaces at the top of the picker)
+  // and Kie (kept as a sibling option for fallback / parity comparison).
+  // Both call the same underlying OpenAI model; routing is purely about
+  // which vendor invoice picks up the cost. See
+  // `_plans/2026-05-25-atlas-cloud-gpt-image-2.md`.
+  {
+    value: 'gpt-image-2-atlas-t2i',
+    label: 'GPT Image 2 (Atlas, cheaper)',
+    provider: 'atlas',
+    atlasModel: 'openai/gpt-image-2/text-to-image',
+    atlasSize: '1536x1024',
+    atlasQuality: 'medium',
+    hint: 'Default GPT Image 2 (~$0.009/image, ~8s). Cheaper Atlas route to the same OpenAI model.',
+  },
+  { value: 'gpt-image-2-t2i', label: 'GPT Image 2 (Kie)', provider: 'kie', kieModel: 'gpt-image-2-text-to-image', hint: 'OpenAI image model via Kie.ai. Sibling of the Atlas variant above; pricier but kept for parity.' },
   // Ideogram v3 — best-in-class for rendering legible text inside the image
   // (signage, posters, hand-lettered captions). Caveat for the production-doc
   // flow: any text Ideogram renders will be warped by the downstream i2v
@@ -126,7 +167,7 @@ export function getImageModelSpec(value: string): ImageModelSpec | undefined {
  *  depth against future edits drifting from the upscale-everything policy). */
 export function buildKieImageInput(modelValue: string, prompt: string): Record<string, unknown> {
   const spec = getImageModelSpec(modelValue);
-  if (!spec || spec.provider === 'comfyui-local' || !spec.kieModel) {
+  if (!spec || spec.provider === 'comfyui-local' || spec.provider === 'atlas' || !spec.kieModel) {
     throw new Error(`buildKieImageInput called for non-Kie model '${modelValue}'`);
   }
   const kieModel = spec.kieModel;
