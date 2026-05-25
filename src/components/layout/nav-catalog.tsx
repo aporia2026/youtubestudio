@@ -53,16 +53,24 @@ export interface NavHub {
 
 export const TOP_NAV: NavItem[] = [
   {
-    label: 'Dashboard',
-    href: '/dashboard',
-    hint: 'Overview',
+    // Command Center — Wave 2 of the cross-feature redesign. Default
+    // landing as of 2026-05-26 (see src/app/page.tsx). Kanban of every
+    // in-flight video across channels for the current week.
+    label: 'This Week',
+    href: '/command-center',
+    hint: 'Command Center — kanban of in-flight videos',
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
-        <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
+        <rect x="3" y="3" width="5" height="18" rx="1" />
+        <rect x="10" y="3" width="5" height="12" rx="1" />
+        <rect x="17" y="3" width="4" height="7" rx="1" />
       </svg>
     ),
   },
+  // Dashboard was removed from TOP_NAV when /command-center became the
+  // default landing (Wave 2). The Dashboard route still exists; a small
+  // "Open legacy Dashboard" link in Settings → About is the escape hatch.
+  // If we want it back in the sidebar, restore this block.
   {
     label: 'Projects',
     href: '/projects',
