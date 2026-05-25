@@ -25,6 +25,7 @@
  * pricing.
  */
 import { buildKieImageInput, getImageModelSpec } from '../image-models';
+import { generateImageWithUpscale } from '../image-gen-dispatch';
 import { logger } from '../logger';
 import {
   getDownloadUrlForBucket,
@@ -75,10 +76,11 @@ export async function generateImageWithFallback(
   if (chain.length === 0) {
     throw new Error('generateImageWithFallback: empty chain');
   }
-  const apiKey = process.env.KIE_API_KEY;
-  if (!apiKey) {
-    throw new Error('KIE_API_KEY is not configured');
-  }
+  // KIE_API_KEY is checked lazily, only when a Kie spec actually fires.
+  // An Atlas-only chain runs without it. The check moved out of the
+  // top-of-function preflight on 2026-05-25 to support Phase 1.B of
+  // _plans/2026-05-25-atlas-cloud-gpt-image-2.md.
+  const kieApiKey = process.env.KIE_API_KEY;
   const trimmedPrompt = prompt.trim();
   if (!trimmedPrompt) {
     throw new Error('generateImageWithFallback: empty prompt');
@@ -99,29 +101,58 @@ export async function generateImageWithFallback(
     // Local ComfyUI models can't run in the auto-pipeline (no
     // LOCAL_STUDIO=1 + no ComfyUI in production cron). Skip them and
     // fall through to the next cloud model in the chain.
-    if (spec.provider === 'comfyui-local' || !spec.kieModel) {
-      logger.warn('auto-pipeline image-gen: skipping non-Kie model', {
+    if (spec.provider === 'comfyui-local') {
+      logger.warn('auto-pipeline image-gen: skipping local-only model', {
         model: modelValue,
         provider: spec.provider,
+      });
+      continue;
+    }
+    // Kie specs without a kieModel string are misconfigured registry
+    // entries — skip rather than fail the whole chain.
+    if (spec.provider !== 'atlas' && !spec.kieModel) {
+      logger.warn('auto-pipeline image-gen: kie spec missing kieModel, skipping', {
+        model: modelValue,
       });
       continue;
     }
 
     const t0 = Date.now();
     try {
-      const kieUrl = await callKie(spec.kieModel, spec.value, trimmedPrompt, apiKey);
-      // System-wide auto-upscale before re-host. Recraft Crisp Upscale
-      // (~4×, $0.0025/image). Skips kick in for outputs already
-      // >2000px or when AUTO_UPSCALE_ENABLED=false. See src/lib/upscale.ts.
-      const upscaleResult = await upscaleViaRecraft(kieUrl);
-      const hosted = await reHostToBlob(upscaleResult.url, opts.blobPathPrefix);
+      let imageUrl: string;
+      if (spec.provider === 'atlas') {
+        // Atlas branch goes through the shared dispatcher: generate +
+        // 16:9 crop + system upscale + R2 mirror in one call. The
+        // dispatcher's `r2KeyPrefix` slot replaces the per-route
+        // `blobPathPrefix` parameter for this branch — same final
+        // bucket prefix as the kie path when both are unset.
+        const result = await generateImageWithUpscale(spec, trimmedPrompt, {
+          r2KeyPrefix: opts.blobPathPrefix ?? 'pipeline-thumbnails',
+        });
+        imageUrl = result.url;
+      } else {
+        // Kie branch (legacy) — preserved verbatim from the original
+        // single-provider implementation. The lazy `kieApiKey` check
+        // here means an Atlas-only chain never trips this throw.
+        if (!kieApiKey) {
+          throw new Error('KIE_API_KEY is not configured');
+        }
+        const kieUrl = await callKie(spec.kieModel!, spec.value, trimmedPrompt, kieApiKey);
+        // System-wide auto-upscale before re-host. Recraft Crisp
+        // Upscale (~4×, $0.0025/image). Skips kick in for outputs
+        // already >2000px or when AUTO_UPSCALE_ENABLED=false. See
+        // src/lib/upscale.ts.
+        const upscaleResult = await upscaleViaRecraft(kieUrl);
+        imageUrl = await reHostToBlob(upscaleResult.url, opts.blobPathPrefix);
+      }
       attempts.push({ modelValue, durationMs: Date.now() - t0 });
       logger.info('auto-pipeline image-gen: succeeded', {
         model: modelValue,
+        provider: spec.provider ?? 'kie',
         attempt_count: attempts.length,
         duration_ms: Date.now() - t0,
       });
-      return { imageUrl: hosted, modelUsed: modelValue, attempts };
+      return { imageUrl, modelUsed: modelValue, attempts };
     } catch (err) {
       const failureClass = classifyImageFailure(err);
       const failureMessage = err instanceof Error ? err.message : String(err);

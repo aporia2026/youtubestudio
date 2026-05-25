@@ -5,6 +5,8 @@ import { domainErrorResponse } from '@/lib/route-helpers';
 import { createKieTask, pollKieResultThenUpscale } from '@/lib/kie-poll';
 import { generateImageOpenAI } from '@/lib/openai-images';
 import { uploadToBucket, getImagesBucket, getImagesDownloadUrl } from '@/lib/r2';
+import { generateImageWithUpscale } from '@/lib/image-gen-dispatch';
+import { getImageModelSpec } from '@/lib/image-models';
 
 export const maxDuration = 300;
 
@@ -32,7 +34,14 @@ type ModelConfig =
        *  to live alongside `model` instead of being inferred from it. */
       renderingSpeed?: 'QUALITY' | 'BALANCED' | 'TURBO';
     }
-  | { provider: 'openai'; type: 'text-to-image' | 'image-to-image' };
+  | { provider: 'openai'; type: 'text-to-image' | 'image-to-image' }
+  /** Atlas Cloud t2i. Goes through `generateImageWithUpscale`, which
+   *  reads the model + size + quality from the shared registry spec
+   *  in `src/lib/image-models.ts` (looked up by the request's `model`
+   *  id). Kept tagless beyond `provider` because the route doesn't
+   *  hand-roll the request shape — the dispatcher does. See
+   *  _plans/2026-05-25-atlas-cloud-gpt-image-2.md (Phase 1.B). */
+  | { provider: 'atlas'; type: 'text-to-image' };
 
 const MODEL_MAP: Record<string, ModelConfig> = {
   'grok-imagine-t2i': { provider: 'kie', model: 'grok-imagine/text-to-image', type: 'text-to-image' },
@@ -43,6 +52,10 @@ const MODEL_MAP: Record<string, ModelConfig> = {
   // id so existing thumbnail rows that picked it still resolve. Model
   // string changed from `google/nano-banana` → `nano-banana-2`.
   'nano-banana': { provider: 'kie', model: 'nano-banana-2', type: 'text-to-image' },
+  // GPT Image 2 has two routes through this app: Atlas (cheaper default,
+  // ~$0.009/image) and Kie (sibling fallback). Both call the same OpenAI
+  // model; routing is purely about which vendor invoice picks up the cost.
+  'gpt-image-2-atlas-t2i': { provider: 'atlas', type: 'text-to-image' },
   'gpt-image-2-t2i': { provider: 'kie', model: 'gpt-image-2-text-to-image', type: 'text-to-image' },
   // Ideogram v3 — single model string, tier via renderingSpeed. See
   // the input-building block below for the field translation.
@@ -106,6 +119,23 @@ export async function POST(req: NextRequest) {
       } catch {
         return NextResponse.json({ error: 'referenceImageUrl is not a valid URL' }, { status: 400 });
       }
+    }
+
+    if (config.provider === 'atlas') {
+      // Atlas branch: dispatcher reads atlasModel + size + quality from the
+      // shared registry spec. The route's MODEL_MAP only carries the
+      // provider tag for Atlas because the dispatcher owns the request
+      // shape (matching the dispatcher's contract for any future Atlas
+      // entries we add to the registry).
+      const spec = getImageModelSpec(model);
+      if (!spec || spec.provider !== 'atlas') {
+        return NextResponse.json(
+          { error: `Atlas model '${model}' is in the route map but missing from src/lib/image-models.ts registry` },
+          { status: 500 },
+        );
+      }
+      const result = await generateImageWithUpscale(spec, prompt, { r2KeyPrefix: 'thumbnails/freeform-atlas' });
+      return NextResponse.json({ imageUrl: result.url, taskId: null });
     }
 
     if (config.provider === 'openai') {

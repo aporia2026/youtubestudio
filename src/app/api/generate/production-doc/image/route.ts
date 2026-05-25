@@ -13,6 +13,7 @@ import {
 } from '@/lib/image-models-i2i';
 import { computeImageSaliency } from '@/lib/image-saliency';
 import { createKieTask, pollKieResultThenUpscale } from '@/lib/kie-poll';
+import { generateImageWithUpscale } from '@/lib/image-gen-dispatch';
 import {
   getDownloadUrlForBucket,
   getImagesBucket,
@@ -445,6 +446,28 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         });
       }
       const saliency = imageBuffer ? await computeImageSaliency(imageBuffer) : null;
+      return NextResponse.json({ imageUrl: result.url, saliency });
+    }
+
+    // ─── Atlas Cloud branch ─────────────────────────────────────────────
+    // The Atlas provider routes through `generateImageWithUpscale` which
+    // handles the full async create+poll, the 16:9 center-crop (Atlas's
+    // GPT Image 2 returns 3:2 at most), the system-wide auto-upscale, and
+    // the R2 mirror. Returns the bytes too so saliency runs without a
+    // second fetch. Falls through to the Kie path when provider is
+    // anything other than 'atlas'. See
+    // _plans/2026-05-25-atlas-cloud-gpt-image-2.md (Phase 1.B).
+    if (spec.provider === 'atlas') {
+      const result = await generateImageWithUpscale(spec, augmentedPrompt);
+      const saliencyStart = Date.now();
+      const saliency = result.bytes ? await computeImageSaliency(result.bytes) : null;
+      logger.info('[prodoc image-gen atlas] done', {
+        model: spec.value,
+        image_url_host: (() => { try { return new URL(result.url).hostname; } catch { return 'unknown'; } })(),
+        duration_ms: result.durationMs,
+        saliency_ms: Date.now() - saliencyStart,
+        has_saliency: Boolean(saliency),
+      });
       return NextResponse.json({ imageUrl: result.url, saliency });
     }
 
