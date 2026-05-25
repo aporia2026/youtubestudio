@@ -16,7 +16,8 @@
  */
 import { sql } from '@vercel/postgres';
 import { generateText } from './ai';
-import { generateVoiceover } from './elevenlabs';
+import { synthesize } from './tts/dispatch';
+import type { TtsProviderId, VoiceTier } from './tts/types';
 import {
   buildShortVoiceoverKey,
   getDownloadUrlForBucket,
@@ -232,7 +233,18 @@ export interface GenerateShortVoiceoverArgs {
   shortId: string;
   workspaceId: string;
   voiceId: string;
-  elevenLabsApiKey: string;
+  /** Defaults to 'elevenlabs' (backward-compatible). Pass 'google' to
+   *  synthesize via Google Cloud TTS — voiceId is then the Google voice
+   *  name (e.g. 'en-US-Chirp3-HD-Charon'). */
+  provider?: TtsProviderId;
+  /** Required when provider !== 'elevenlabs'. Defaults to 'multilingual-v2'
+   *  for ElevenLabs so existing callers keep working unchanged. */
+  tier?: VoiceTier;
+  /** BCP-47 language code. Defaults to 'en-US'. Required for Google. */
+  languageCode?: string;
+  /** Kept for backward compatibility — ignored after the dispatch
+   *  migration (server reads ELEVENLABS_API_KEY directly). */
+  elevenLabsApiKey?: string;
 }
 
 export async function generateShortVoiceover(args: GenerateShortVoiceoverArgs): Promise<{
@@ -254,11 +266,31 @@ export async function generateShortVoiceover(args: GenerateShortVoiceoverArgs): 
   // speakable lines. Keep [PAUSE] (some TTS engines render pauses).
   const speakable = row.short_script.replace(/\[VISUAL[^\]]*\]/g, '').replace(/\s+/g, ' ').trim();
 
-  const audioBuffer = await generateVoiceover(args.elevenLabsApiKey, {
+  const provider: TtsProviderId = args.provider ?? 'elevenlabs';
+  const tier: VoiceTier = args.tier ?? (provider === 'elevenlabs' ? 'multilingual-v2' : 'chirp3-hd');
+  const languageCode = args.languageCode ?? 'en-US';
+
+  const result = await synthesize({
+    voice: {
+      providerId: provider,
+      voiceId: args.voiceId,
+      languageCode,
+      tier,
+    },
     text: speakable,
-    voiceId: args.voiceId,
-    modelId: ELEVENLABS_MULTILINGUAL_MODEL,
+    options:
+      provider === 'elevenlabs'
+        ? {
+            providerId: 'elevenlabs',
+            modelId: ELEVENLABS_MULTILINGUAL_MODEL,
+            stability: 0.5,
+            similarity: 0.75,
+            style: 0.5,
+            useSpeakerBoost: true,
+          }
+        : { providerId: 'google' },
   });
+  const audioBuffer = result.audioBytes;
 
   // Upload to R2 narration bucket. Matches the ElevenLabs voiceover
   // migration: every audio path lives in R2, the Blob store doesn't

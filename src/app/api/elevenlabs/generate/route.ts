@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateVoiceover } from '@/lib/elevenlabs';
 import { sql } from '@/lib/db';
 import { logger } from '@/lib/logger';
 import {
@@ -7,56 +6,78 @@ import {
   getNarrationDownloadUrl,
   uploadToBucket,
 } from '@/lib/r2';
+import { synthesize } from '@/lib/tts/dispatch';
+import { TtsProviderError } from '@/lib/tts/types';
 
 export const maxDuration = 300;
 
 /**
  * POST /api/elevenlabs/generate
  *
- * Generate a voiceover via ElevenLabs and persist the bytes to the R2
- * narration bucket. Returns a stable URL the caller can store in
- * voiceover history and play back later.
+ * Legacy endpoint — kept for backward compatibility. New callers
+ * should target `/api/tts/generate` which carries the full dispatch-
+ * aware request shape. This route accepts the original
+ * `{ apiKey?, text, voiceId, voiceSettings?, modelId?, projectId? }`
+ * body and internally dispatches through `src/lib/tts/dispatch.ts`
+ * with a hard-coded `providerId: 'elevenlabs'`.
  *
- * Storage moved from Vercel Blob to R2 in 2026-05-14 to align with
- * every other audio + image path in the app, and so private-access
- * Blob stores don't break voiceover playback. The audio proxy
- * (`/api/voiceovers/[id]/audio`) keeps a Blob fallback so existing
- * voiceovers from before this migration still work.
- *
- * Two response paths:
- *   - With `projectId`: insert a `media_assets` row carrying the R2
- *     key, return the same-origin proxy URL the rest of the app uses.
- *   - Without `projectId`: return a 7-day presigned R2 GET URL so the
- *     standalone voiceover page can play back the result without a DB
- *     row to anchor the proxy URL on.
+ * The `apiKey` request field is now ignored — server-side
+ * `ELEVENLABS_API_KEY` is the only source. The previous client-side
+ * override path leaked the key into request payloads and never
+ * matched the rest-of-app convention; removed during the dispatch
+ * migration 2026-05-25.
  */
 export async function POST(req: NextRequest) {
   try {
-    const { apiKey: clientKey, text, voiceId, voiceSettings, modelId, projectId } = await req.json();
-    const apiKey = clientKey || process.env.ELEVENLABS_API_KEY || '';
+    const { text, voiceId, voiceSettings, modelId, projectId } = await req.json();
+    if (!text || !voiceId) {
+      return NextResponse.json({ error: 'text and voiceId required' }, { status: 400 });
+    }
 
-    if (!apiKey) return NextResponse.json({ error: 'ElevenLabs API key required' }, { status: 400 });
-    if (!text || !voiceId) return NextResponse.json({ error: 'text and voiceId required' }, { status: 400 });
+    const effectiveModelId =
+      typeof modelId === 'string' && modelId ? modelId : 'eleven_multilingual_v2';
+    const tier =
+      effectiveModelId === 'eleven_turbo_v2_5'
+        ? 'turbo-v2-5'
+        : effectiveModelId === 'eleven_turbo_v2'
+          ? 'turbo-v2'
+          : effectiveModelId === 'eleven_monolingual_v1'
+            ? 'monolingual-v1'
+            : 'multilingual-v2';
 
-    // Generate voiceover
-    const audioBuffer = await generateVoiceover(apiKey, {
+    const settings = (voiceSettings && typeof voiceSettings === 'object'
+      ? voiceSettings
+      : {}) as Record<string, unknown>;
+
+    const result = await synthesize({
+      voice: {
+        providerId: 'elevenlabs',
+        voiceId,
+        languageCode: 'en-US',
+        tier,
+      },
       text,
-      voiceId,
-      voiceSettings,
-      modelId: modelId || 'eleven_multilingual_v2',
+      options: {
+        providerId: 'elevenlabs',
+        modelId: effectiveModelId,
+        stability: typeof settings.stability === 'number' ? settings.stability : 0.5,
+        similarity:
+          typeof settings.similarity_boost === 'number' ? settings.similarity_boost : 0.75,
+        style: typeof settings.style === 'number' ? settings.style : 0.5,
+        useSpeakerBoost:
+          typeof settings.use_speaker_boost === 'boolean' ? settings.use_speaker_boost : true,
+      },
     });
 
-    // Upload to R2 narration bucket. Bytes are already in memory from
-    // the ElevenLabs response, so a direct server-side put is faster
-    // and cheaper than presigned-URL + browser-relay.
     const narrationBucket = process.env.R2_NARRATION_BUCKET_NAME || 'narration';
     const r2Key = buildElevenLabsVoiceoverKey(voiceId);
-    await uploadToBucket(narrationBucket, r2Key, Buffer.from(audioBuffer), 'audio/mpeg');
+    await uploadToBucket(
+      narrationBucket,
+      r2Key,
+      Buffer.from(result.audioBytes),
+      'audio/mpeg',
+    );
 
-    // Save to project if provided. workspace_id is NOT NULL on media_assets
-    // since migration 0013 — copy it from the parent project. The row
-    // carries r2_bucket + r2_key so the audio proxy streams through R2,
-    // and `url` is the same-origin proxy path the rest of the app reads.
     if (projectId) {
       const { rows } = await sql<{ id: string }>`
         INSERT INTO media_assets (
@@ -65,33 +86,49 @@ export async function POST(req: NextRequest) {
         )
         SELECT ${projectId}::uuid, 'voiceover', 'upload', ${`ElevenLabs - ${voiceId}`},
                ${''},
-               ${narrationBucket}, ${r2Key}, ${audioBuffer.byteLength},
-               ${JSON.stringify({ voiceId, modelId, generatedAt: new Date().toISOString() })}::jsonb,
+               ${narrationBucket}, ${r2Key}, ${result.audioBytes.byteLength},
+               ${JSON.stringify({
+                 provider: 'elevenlabs',
+                 voiceId,
+                 modelId: effectiveModelId,
+                 tier,
+                 languageCode: 'en-US',
+                 charCount: result.charCount,
+                 costUsd: result.costUsd,
+                 generatedAt: new Date().toISOString(),
+               })}::jsonb,
                p.workspace_id
           FROM projects p WHERE p.id = ${projectId}::uuid
         RETURNING id
       `;
       const mediaAssetId = rows[0]?.id;
       if (mediaAssetId) {
-        // Update the row's url to the proxy path now that we know the id.
-        // Done as a follow-up UPDATE so the INSERT doesn't need a CTE.
         const proxyUrl = `/api/voiceovers/${mediaAssetId}/audio`;
         await sql`UPDATE media_assets SET url = ${proxyUrl} WHERE id = ${mediaAssetId}::uuid`;
-        return NextResponse.json({ url: proxyUrl, size: audioBuffer.byteLength });
+        return NextResponse.json({ url: proxyUrl, size: result.audioBytes.byteLength });
       }
     }
 
-    // Standalone path — no project row, return a presigned R2 GET URL.
-    // Lives for 7 days (the helper's default), enough for the
-    // voiceover-history flow on the /voiceover page to find and replay
-    // it on a return visit.
     const downloadUrl = await getNarrationDownloadUrl(r2Key);
-    return NextResponse.json({ url: downloadUrl, size: audioBuffer.byteLength });
+    return NextResponse.json({ url: downloadUrl, size: result.audioBytes.byteLength });
   } catch (err: unknown) {
-    logger.error('ElevenLabs generation error', { detail: err instanceof Error ? err.message : String(err) });
+    if (err instanceof TtsProviderError) {
+      const status =
+        err.code === 'unauthorized'
+          ? 503
+          : err.code === 'rate_limited'
+            ? 429
+            : err.code === 'invalid_request'
+              ? 400
+              : 500;
+      return NextResponse.json({ error: err.message }, { status });
+    }
+    logger.error('ElevenLabs generation error', {
+      detail: err instanceof Error ? err.message : String(err),
+    });
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Generation failed' },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

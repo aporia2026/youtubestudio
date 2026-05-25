@@ -4,7 +4,8 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { EDITOR_V1_ENABLED } from '@/lib/feature-flags';
 import { sql } from '@/lib/db';
 import { logger } from '@/lib/logger';
-import { generateVoiceover } from '@/lib/elevenlabs';
+import { synthesize } from '@/lib/tts/dispatch';
+import { TtsProviderError, type TtsProviderId, type VoiceTier } from '@/lib/tts/types';
 import {
   buildElevenLabsVoiceoverKey,
   getNarrationDownloadUrl,
@@ -56,6 +57,13 @@ interface PostBody {
   voiceId?: unknown;
   modelId?: unknown;
   voiceSettings?: unknown;
+  /** 'elevenlabs' | 'google'. Defaults to 'elevenlabs' (back-compat). */
+  provider?: unknown;
+  /** Required when provider is 'google'. Defaults to 'multilingual-v2'
+   *  for ElevenLabs and 'chirp3-hd' for Google. */
+  tier?: unknown;
+  /** BCP-47, defaults to 'en-US'. */
+  languageCode?: unknown;
 }
 
 function isPlainObject(x: unknown): x is Record<string, unknown> {
@@ -92,11 +100,6 @@ export const POST = apiRoute.authed(async (
     );
   }
 
-  const apiKey = process.env.ELEVENLABS_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json({ error: 'ELEVENLABS_API_KEY is not configured' }, { status: 500 });
-  }
-
   const { projectId } = await ctx.params;
   if (!/^[0-9a-f-]{36}$/i.test(projectId)) {
     return NextResponse.json({ error: 'Invalid project id' }, { status: 400 });
@@ -116,6 +119,18 @@ export const POST = apiRoute.authed(async (
     ? body.modelId.trim()
     : DEFAULT_TTS_MODEL;
   const voiceSettings = isPlainObject(body.voiceSettings) ? body.voiceSettings : undefined;
+  const provider: TtsProviderId =
+    body.provider === 'google' ? 'google' : 'elevenlabs';
+  const tier: VoiceTier =
+    typeof body.tier === 'string' && body.tier
+      ? (body.tier as VoiceTier)
+      : provider === 'google'
+        ? 'chirp3-hd'
+        : 'multilingual-v2';
+  const languageCode =
+    typeof body.languageCode === 'string' && body.languageCode
+      ? body.languageCode
+      : 'en-US';
 
   // Load the saved doc server-side. We trust ONLY the persisted
   // payload's script text — not anything in the request — so the
@@ -156,17 +171,44 @@ export const POST = apiRoute.authed(async (
     );
   }
 
-  // Generate VO. ElevenLabs returns the MP3 bytes directly; we
-  // mirror to R2 (narration bucket) so the URL doesn't depend on
-  // ElevenLabs' CDN retention.
-  const audioBuffer = await generateVoiceover(apiKey, {
-    text: concatScript,
-    voiceId,
-    voiceSettings: isPlainObject(voiceSettings)
-      ? (voiceSettings as Parameters<typeof generateVoiceover>[1]['voiceSettings'])
-      : undefined,
-    modelId,
-  });
+  // Generate VO through the dispatch layer — provider-aware. For
+  // ElevenLabs this is the same flow as before; for Google it routes
+  // through @google-cloud/text-to-speech under the same contract.
+  let synthResult;
+  try {
+    const vs = isPlainObject(voiceSettings) ? voiceSettings : {};
+    synthResult = await synthesize({
+      voice: { providerId: provider, voiceId, languageCode, tier },
+      text: concatScript,
+      options:
+        provider === 'elevenlabs'
+          ? {
+              providerId: 'elevenlabs',
+              modelId,
+              stability: typeof vs.stability === 'number' ? vs.stability : 0.5,
+              similarity:
+                typeof vs.similarity_boost === 'number' ? vs.similarity_boost : 0.75,
+              style: typeof vs.style === 'number' ? vs.style : 0.5,
+              useSpeakerBoost:
+                typeof vs.use_speaker_boost === 'boolean' ? vs.use_speaker_boost : true,
+            }
+          : { providerId: 'google' },
+    });
+  } catch (err) {
+    if (err instanceof TtsProviderError) {
+      const status =
+        err.code === 'unauthorized'
+          ? 503
+          : err.code === 'rate_limited'
+            ? 429
+            : err.code === 'invalid_request'
+              ? 400
+              : 500;
+      return NextResponse.json({ error: err.message }, { status });
+    }
+    throw err;
+  }
+  const audioBuffer = synthResult.audioBytes;
 
   const narrationBucket = process.env.R2_NARRATION_BUCKET_NAME || 'narration';
   const r2Key = buildElevenLabsVoiceoverKey(voiceId);
@@ -183,11 +225,14 @@ export const POST = apiRoute.authed(async (
        SET payload = (payload || ${JSON.stringify({
          voiceoverUrl: downloadUrl,
          voiceoverProvider: {
-           provider: 'elevenlabs',
+           provider,
            voiceId,
-           modelId,
+           modelId: provider === 'elevenlabs' ? modelId : null,
+           tier,
+           languageCode,
+           costUsd: synthResult.costUsd,
            generatedAt: new Date().toISOString(),
-           charCount: concatScript.length,
+           charCount: synthResult.charCount,
          },
        })}::jsonb) - 'captions',
            version = version + 1
@@ -206,9 +251,13 @@ export const POST = apiRoute.authed(async (
 
   logger.info('[editor vo regen] success', {
     project_id: projectId,
+    provider,
     voice_id: voiceId,
-    model_id: modelId,
-    char_count: concatScript.length,
+    model_id: provider === 'elevenlabs' ? modelId : null,
+    tier,
+    language_code: languageCode,
+    char_count: synthResult.charCount,
+    cost_usd: synthResult.costUsd,
     audio_bytes: audioBuffer.byteLength,
     workspace_id: session.ws,
     new_version: newVersion,

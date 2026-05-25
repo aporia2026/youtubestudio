@@ -10,6 +10,7 @@ import { getScheduleLinkId, fetchScheduleItem, loadFullContextForItem } from '@/
 import { ScheduleLinkBanner } from '@/components/ui/ScheduleLinkBanner';
 import { ScheduleLinkProvider, ScheduleSaverRegistration } from '@/components/ui/ScheduleLinkContext';
 import { ELEVENLABS_MODELS } from '@/lib/elevenlabs';
+import type { VoiceCatalogEntry, TtsProviderId } from '@/lib/tts/types';
 import { cleanScriptForVoiceover } from '@/lib/voiceover-presets';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { SaveAsProject } from '@/components/ui/SaveAsProject';
@@ -43,6 +44,16 @@ function VoiceoverStudio() {
   const [keyInput, setKeyInput] = useState('');
   const [voices, setVoices] = useState<ElevenVoice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState('');
+  // Provider abstraction (added 2026-05-25). 'elevenlabs' preserves the
+  // existing flow; 'google' switches to Google Cloud TTS via
+  // /api/tts/generate. See _plans/2026-05-25-google-tts-voiceover-provider.md.
+  const [provider, setProvider] = useState<TtsProviderId>('elevenlabs');
+  const [googleVoices, setGoogleVoices] = useState<VoiceCatalogEntry[]>([]);
+  const [selectedGoogleVoice, setSelectedGoogleVoice] = useState<VoiceCatalogEntry | null>(null);
+  const [googleVoiceFilter, setGoogleVoiceFilter] = useState<{ language: string; tier: string }>(
+    { language: 'en-US', tier: 'chirp3-hd' },
+  );
+  const [googleAvailable, setGoogleAvailable] = useState(false);
   const [text, setText] = useState('');
   const [settings, setSettings] = useState<VoiceoverSettings>({
     stability: 0.5, similarity_boost: 0.75, style: 0.5, use_speaker_boost: true,
@@ -133,6 +144,42 @@ function VoiceoverStudio() {
     return () => { cancelled = true; };
   }, [scheduleItemId, schedulePrefilled]);
 
+  // Probe whether the server has Google TTS credentials so the provider
+  // tab strip can hide the Google tab entirely when it's not configured.
+  // See _plans/2026-05-25-google-tts-voiceover-provider.md.
+  useEffect(() => {
+    fetch('/api/tts/voices?provider=google&languageCode=en-US')
+      .then((r) => r.json())
+      .then((data) => {
+        const configured = Array.isArray(data.providers) && data.providers.includes('google');
+        setGoogleAvailable(configured);
+        if (configured && Array.isArray(data.voices) && data.voices.length > 0) {
+          setGoogleVoices(data.voices);
+          // Default to the first Chirp 3 HD voice we find (best quality
+          // per dollar — see plan §"Voice catalog UX").
+          const chirp = (data.voices as VoiceCatalogEntry[]).find(
+            (v) => v.voice.tier === 'chirp3-hd',
+          );
+          if (chirp) setSelectedGoogleVoice(chirp);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  async function loadGoogleVoicesForLanguage(languageCode: string) {
+    try {
+      const res = await fetch(`/api/tts/voices?provider=google&languageCode=${encodeURIComponent(languageCode)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const all = (data.voices as VoiceCatalogEntry[]) || [];
+      setGoogleVoices(all);
+      if (all.length > 0 && (!selectedGoogleVoice || selectedGoogleVoice.voice.languageCode !== languageCode)) {
+        const chirp = all.find((v) => v.voice.tier === 'chirp3-hd') ?? all[0];
+        setSelectedGoogleVoice(chirp);
+      }
+    } catch {}
+  }
+
   async function loadVoices(key: string) {
     try {
       const res = await fetch('/api/elevenlabs/voices', {
@@ -163,24 +210,45 @@ function VoiceoverStudio() {
 
   async function generateVoiceover() {
     if (!text.trim()) { toast.error('Enter text to convert'); return; }
-    if (!selectedVoice) { toast.error('Select a voice'); return; }
-    if (!apiKey) { toast.error('Connect your ElevenLabs API key first'); return; }
+    if (provider === 'google') {
+      if (!selectedGoogleVoice) { toast.error('Select a Google voice'); return; }
+    } else {
+      if (!selectedVoice) { toast.error('Select a voice'); return; }
+      if (!apiKey) { toast.error('Connect your ElevenLabs API key first'); return; }
+    }
     setGenerating(true);
     setAudioUrl('');
     setSavedToProject(false);
     try {
-      const res = await fetch('/api/elevenlabs/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          apiKey,
-          text,
-          voiceId: selectedVoice,
-          voiceSettings: settings,
-          modelId: settings.model_id,
-          projectId,
-        }),
-      });
+      let res: Response;
+      if (provider === 'google' && selectedGoogleVoice) {
+        // New dispatch-aware endpoint — accepts VoiceRef + provider options.
+        res = await fetch('/api/tts/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            voice: selectedGoogleVoice.voice,
+            text,
+            options: { providerId: 'google' },
+            projectId,
+          }),
+        });
+      } else {
+        // Legacy ElevenLabs endpoint — internally dispatches now but keeps
+        // the same external shape for backward compatibility.
+        res = await fetch('/api/elevenlabs/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            apiKey,
+            text,
+            voiceId: selectedVoice,
+            voiceSettings: settings,
+            modelId: settings.model_id,
+            projectId,
+          }),
+        });
+      }
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.error || 'Generation failed');
@@ -193,10 +261,17 @@ function VoiceoverStudio() {
       setAudioTextCharCount(text.length);
       // Save to history with the full text + settings so clicking a past entry
       // rehydrates everything (text, voice, sliders, model) — not just audio+preview.
-      const voiceName = voices.find(v => v.voice_id === selectedVoice)?.name || 'Unknown';
+      const voiceName =
+        provider === 'google' && selectedGoogleVoice
+          ? selectedGoogleVoice.displayName
+          : voices.find(v => v.voice_id === selectedVoice)?.name || 'Unknown';
+      const effectiveVoiceId =
+        provider === 'google' && selectedGoogleVoice
+          ? selectedGoogleVoice.voice.voiceId
+          : selectedVoice;
       const savedVo = await saveVoiceover({
         voiceName,
-        voiceId: selectedVoice,
+        voiceId: effectiveVoiceId,
         modelId: settings.model_id,
         textPreview: text.slice(0, 300),
         charCount: text.length,
@@ -337,16 +412,48 @@ function VoiceoverStudio() {
             style={{ background: 'linear-gradient(135deg, rgba(124,58,237,0.3), rgba(236,72,153,0.2))', border: '1px solid rgba(124,58,237,0.3)' }}>
             <span className="text-lg">🎙️</span>
           </div>
-          <span className="badge badge-purple">ElevenLabs Pro</span>
+          <span className="badge badge-purple">
+            {provider === 'google' ? 'Google Cloud TTS' : 'ElevenLabs Pro'}
+          </span>
         </div>
         <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>Voiceover Studio</h1>
         <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
-          Generate AI voiceovers with ElevenLabs Pro — choose voice, style, and preview before saving
+          {provider === 'google'
+            ? 'Generate AI voiceovers with Google Cloud — Chirp 3 HD for premium quality, WaveNet for budget'
+            : 'Generate AI voiceovers with ElevenLabs Pro — choose voice, style, and preview before saving'}
         </p>
       </div>
 
-      {/* API Key connection */}
-      {!apiKey ? (
+      {/* Provider switcher — hidden when Google credentials aren't configured */}
+      {googleAvailable && (
+        <div className="mb-4 flex items-center gap-2">
+          <button
+            onClick={() => setProvider('elevenlabs')}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+            style={{
+              background: provider === 'elevenlabs' ? 'rgba(124,58,237,0.2)' : 'var(--bg-secondary)',
+              color: provider === 'elevenlabs' ? 'var(--accent-purple-bright)' : 'var(--text-muted)',
+              border: `1px solid ${provider === 'elevenlabs' ? 'rgba(124,58,237,0.3)' : 'transparent'}`,
+            }}
+          >
+            ElevenLabs
+          </button>
+          <button
+            onClick={() => setProvider('google')}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+            style={{
+              background: provider === 'google' ? 'rgba(124,58,237,0.2)' : 'var(--bg-secondary)',
+              color: provider === 'google' ? 'var(--accent-purple-bright)' : 'var(--text-muted)',
+              border: `1px solid ${provider === 'google' ? 'rgba(124,58,237,0.3)' : 'transparent'}`,
+            }}
+          >
+            Google Cloud
+          </button>
+        </div>
+      )}
+
+      {/* API Key connection — only for ElevenLabs. Google uses server-side env vars. */}
+      {provider === 'elevenlabs' && !apiKey ? (
         <div className="glass rounded-xl p-8 max-w-lg mx-auto text-center">
           <div className="text-4xl mb-4">🔑</div>
           <h2 className="text-lg font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>Connect ElevenLabs</h2>
@@ -372,7 +479,92 @@ function VoiceoverStudio() {
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-6">
-          {/* Voice Browser */}
+          {/* Voice Browser — branches by provider */}
+          {provider === 'google' ? (
+            <div className="glass rounded-xl overflow-hidden" style={{ maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+              <div className="p-4" style={{ borderBottom: '1px solid var(--border)' }}>
+                <h2 className="text-sm font-semibold mb-3" style={{ color: 'var(--text-primary)' }}>
+                  Google Voice Library ({googleVoices.length})
+                </h2>
+                <div className="flex gap-2 mb-2">
+                  <select
+                    value={googleVoiceFilter.language}
+                    onChange={(e) => {
+                      const lang = e.target.value;
+                      setGoogleVoiceFilter((f) => ({ ...f, language: lang }));
+                      loadGoogleVoicesForLanguage(lang);
+                    }}
+                    className="input-field flex-1"
+                    style={{ padding: '6px 8px', fontSize: 12 }}
+                  >
+                    <option value="en-US">English (US)</option>
+                    <option value="en-GB">English (UK)</option>
+                    <option value="he-IL">Hebrew</option>
+                    <option value="es-ES">Spanish</option>
+                    <option value="fr-FR">French</option>
+                    <option value="de-DE">German</option>
+                    <option value="ar-XA">Arabic</option>
+                    <option value="ja-JP">Japanese</option>
+                  </select>
+                  <select
+                    value={googleVoiceFilter.tier}
+                    onChange={(e) => setGoogleVoiceFilter((f) => ({ ...f, tier: e.target.value }))}
+                    className="input-field flex-1"
+                    style={{ padding: '6px 8px', fontSize: 12 }}
+                  >
+                    <option value="chirp3-hd">Chirp 3 HD (premium)</option>
+                    <option value="neural2">Neural2</option>
+                    <option value="wavenet">WaveNet</option>
+                    <option value="standard">Standard</option>
+                    <option value="polyglot">Polyglot</option>
+                    <option value="studio">Studio (top-tier)</option>
+                  </select>
+                </div>
+                <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  Server-side credentials — no API key needed in the browser
+                </p>
+              </div>
+              <div className="overflow-y-auto flex-1">
+                {googleVoices
+                  .filter((v) => v.voice.tier === googleVoiceFilter.tier)
+                  .map((entry) => {
+                    const isSelected = selectedGoogleVoice?.voice.voiceId === entry.voice.voiceId;
+                    return (
+                      <div
+                        key={entry.voice.voiceId}
+                        onClick={() => setSelectedGoogleVoice(entry)}
+                        className="flex items-center gap-3 px-4 py-3 cursor-pointer transition-all"
+                        style={{
+                          background: isSelected ? 'rgba(124,58,237,0.15)' : 'transparent',
+                          borderLeft: isSelected ? '2px solid var(--accent-purple)' : '2px solid transparent',
+                        }}
+                      >
+                        <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 text-sm"
+                          style={{ background: isSelected ? 'rgba(124,58,237,0.3)' : 'var(--bg-secondary)' }}>
+                          🎤
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate" style={{ color: isSelected ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
+                            {entry.displayName}
+                          </p>
+                          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                            {entry.voice.tier}
+                            {entry.gender ? ` · ${entry.gender}` : ''}
+                            {' · '}
+                            {entry.voice.languageCode}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                {googleVoices.filter((v) => v.voice.tier === googleVoiceFilter.tier).length === 0 && (
+                  <div className="p-4 text-center text-xs" style={{ color: 'var(--text-muted)' }}>
+                    No {googleVoiceFilter.tier} voices for {googleVoiceFilter.language}.
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
           <div className="glass rounded-xl overflow-hidden" style={{ maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
             <div className="p-4" style={{ borderBottom: '1px solid var(--border)' }}>
               <div className="flex items-center justify-between mb-3">
@@ -469,6 +661,7 @@ function VoiceoverStudio() {
               })}
             </div>
           </div>
+          )}
 
           {/* Generation panel */}
           <div className="space-y-4">
