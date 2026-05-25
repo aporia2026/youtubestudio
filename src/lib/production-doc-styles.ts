@@ -219,6 +219,94 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
     allow_overlay_stock: true,
     origin: 'built-in',
   },
+  /**
+   * Doodle Explainer 2 — refined variant modelled on a specific set of
+   * reference YouTube videos (see `refs/`). Same hand-drawn family as
+   * `doodle_explainer` but tighter on three axes:
+   *
+   *   1. Persistent bold black hand-drawn title at the top of every frame.
+   *   2. Muted palette — black-on-white dominant, with pale blue / pale
+   *      yellow / light gray accents and only the occasional saturated
+   *      colour (red for danger). Not Doodle Explainer's "vibrant" feel.
+   *   3. Real-photo overlays render as inset rectangles with a thick
+   *      coloured border (orange / red / blue / black) — the framed-photo
+   *      treatment seen across all three source videos.
+   *
+   * Phase 1 of a 3-phase build (plan: `_plans/2026-05-25-doodle-explainer-2-built-in.md`):
+   *   - Phase 1 (this entry): style definition + bundled refs.
+   *   - Phase 2 (`_plans/2026-05-25-style-aware-overlay-text.md`): yellow
+   *     bubble-font rendering of `on_screen_text` when this style is
+   *     selected. Until Phase 2 lands, on_screen_text falls back to the
+   *     generic Remotion lower-third treatment.
+   *   - Phase 3 (`_plans/2026-05-25-near-static-variants.md`): true
+   *     near-static animation via grouped rows (one base image + N
+   *     micro-edited variants via Atlas Edit). Until Phase 3 lands, the
+   *     mixing rules still describe scenes well-suited to that pattern
+   *     so the base images carry the right composition.
+   */
+  {
+    id: 'doodle_explainer_2',
+    label: 'Doodle Explainer 2',
+    description:
+      'Tighter doodle aesthetic — bold black title at top, muted palette, framed real-photo overlays, yellow-bubble callouts. Modelled on specific reference videos.',
+    ai_image_suffix:
+      'minimalist hand-drawn cartoon illustration, thick uneven black outlines, simple circular heads on stick figures, dot eyes, plain pure white background (no gradient, no texture), flat shadowless lighting, muted accent palette (pale blue, pale yellow, light gray) with rare single saturated red for danger, centered subject with generous white space, hand-drawn aesthetic, 2D vector animation style, clean crisp outlines, NOT photorealistic, NOT a photograph',
+    built_in_refs: [
+      { filename: '01-composite-cartoon-book-with-framed-real-photo.jpg', mime_type: 'image/jpeg' },
+      { filename: '02-pure-illustration-cartoon-building-pale-blue.jpg',  mime_type: 'image/jpeg' },
+      { filename: '03-lone-stick-figure-frowning.jpg',                    mime_type: 'image/jpeg' },
+      { filename: '04-multi-stick-figures-doorway-scene.jpg',             mime_type: 'image/jpeg' },
+      { filename: '05-color-composition-globe-with-computer-callouts.jpg',mime_type: 'image/jpeg' },
+      { filename: '06-object-network-laptops-arrows.jpg',                 mime_type: 'image/jpeg' },
+      { filename: '07-icon-composition-tv-with-deleted-files-x.jpg',      mime_type: 'image/jpeg' },
+      { filename: '08-framed-real-photo-inside-cartoon-tv.jpg',           mime_type: 'image/jpeg' },
+      { filename: '09-yellow-bubble-text-standalone-within-hours.jpg',    mime_type: 'image/jpeg' },
+      { filename: '10-stick-figure-expression-base-pose.jpg',             mime_type: 'image/jpeg' },
+      { filename: '11-yellow-text-overlaid-on-globe-scene.jpg',           mime_type: 'image/jpeg' },
+      { filename: '12-stick-figure-single-red-accent.jpg',                mime_type: 'image/jpeg' },
+      { filename: '13-framed-real-photo-pure-centrifuges.jpg',            mime_type: 'image/jpeg' },
+      { filename: '14-close-up-character-face.jpg',                       mime_type: 'image/jpeg' },
+    ],
+    // Same i2i model as Doodle Explainer — nano-banana-2-i2i takes 14
+    // refs (vs Atlas I2I's 4-ref ceiling). Atlas is cheaper per image
+    // but the motif breadth here needs more than 4 anchors.
+    preferred_cloud_model: 'nano-banana-2-i2i',
+    mixing_rules: [
+      'This is a hand-drawn cartoon style with a very specific compositional grammar. Defaults for every row:',
+      '',
+      '  • visual_type defaults to "Animation".',
+      '  • ai_image_prompt describes a single centered subject on a pure white background, hand-drawn cartoon look with thick black outlines, generous white space, muted palette (pale blue / pale yellow / light gray accents only; saturated red ONLY for blood, danger, or alarm).',
+      '  • Compose scenes so the same composition could plausibly be re-drawn with a tiny brow / mouth / hand change. Aim for "single character or single object, clearly framed" over "busy multi-element scene". This is forward-looking groundwork for Phase 3 variant support; even today it produces cleaner images.',
+      '',
+      'ON-SCREEN TEXT (`on_screen_text`): populate it liberally — this style leans on yellow bubble-text callouts as a core motif. Use it for:',
+      '',
+      '  • Time markers ("In May 2017", "Within hours", "Three days later")',
+      '  • Statistics or quantities ("150 countries", "$4 billion", "Within 24h")',
+      '  • Foreign or technical terms being introduced ("Wannacrypt", "Stuxnet", "EternalBlue")',
+      '  • Short punchlines or emphasis fragments (3-5 words max)',
+      '',
+      'Leave `on_screen_text_mode` defaulting to "overlay" so the text is rendered by the player at video-build time. (Until Phase 2 lands the visual treatment is the generic lower-third; once Phase 2 ships, this style renders these callouts in the chunky yellow bubble font seen in the refs.) Use "bake" only when you specifically want the text painted INTO the AI image at a precise spot the prompt describes; expect occasional misspellings if you do.',
+      '',
+      'OVERLAY STOCK (`overlay_stock_terms`): when the script names a recognisable real-world subject, populate this so the editor can composite a real asset on top of the cartoon in post. Triggers:',
+      '',
+      '  • Named company / brand → overlay_stock_terms: "<brand> logo official PNG"',
+      '  • Named software, app, website, UI, or famous error screen → overlay_stock_terms: "<thing> screenshot"',
+      '  • Named real person (public figure) → overlay_stock_terms: "<name> photograph"',
+      '  • Named physical place / hardware / event with iconic imagery → overlay_stock_terms: "<thing> photograph"',
+      '',
+      'CRUCIAL — the framed-photo treatment. In this style, real photos and screenshots are NOT bare overlays; they appear as inset rectangles with a thick coloured border (orange, red, blue, or black, matching the scene mood). When you populate overlay_stock_terms, ALSO:',
+      '',
+      '  • Keep visual_type as "Animation" (or "Statistics" / "Cutaway"). Do NOT switch to "Screen Recording" or "B-Roll".',
+      '  • Write `ai_image_prompt` to describe a complete cartoon scene that includes an empty bordered rectangle as a deliberate placeholder. Examples: "stick figure points to a thick-black-bordered rectangle on the wall, rectangle is empty white inside" or "cartoon TV with a thick grey bezel, screen is a thick-black-bordered empty rectangle". DO NOT mention the real subject in the AI prompt — the AI image generator will hallucinate a stylised fake.',
+      '  • Add a short `notes` line telling the editor what to overlay, what border colour, and where. Example: "Composite: drop the real Windows XP wallpaper into the empty rectangle inside the cartoon TV; use a thick blue border to match the era."',
+      '',
+      'Otherwise (script talks about a generic concept, an unnamed character, an everyday object) — leave overlay_stock_terms empty and keep the row pure illustration.',
+      '',
+      'Aim for roughly 1 in 4 to 1 in 6 rows being a framed-photo composite. Too many breaks the cohesive cartoon feel; too few wastes the chance to ground the video in real evidence.',
+    ].join('\n'),
+    allow_overlay_stock: true,
+    origin: 'built-in',
+  },
 ]);
 
 const BUILT_IN_BY_ID = new Map<string, ResolvedStyle>(BUILT_IN_STYLES.map((s) => [s.id, s]));
