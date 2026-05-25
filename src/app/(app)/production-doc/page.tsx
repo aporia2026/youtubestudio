@@ -91,6 +91,7 @@ import {
   type ImageSaliencyMap,
 } from '@/remotion/utils';
 import type { EditorWriters } from '@/components/production-doc/editor/types';
+import { EditorView } from '@/components/production-doc/editor/EditorView';
 import { resolveOverlayPlacement } from '@/lib/overlay-placement';
 import { stripProductionMarkers } from '@/lib/script-markers';
 import { buildCanonicalScript, scriptDriftRatio } from '@/lib/voiceover-alignment';
@@ -1824,6 +1825,15 @@ function ProductionDocPage() {
   // Whether the local ComfyUI stack is wired up in this env (controls
   // visibility of the "Local (free)" image-model entries below).
   const localStudioEnabled = useLocalStudioEnabled();
+  // Phase 3 follow-up (2026-05-25) — opt-in toggle for the new
+  // multi-pane editor view (`src/components/production-doc/editor/`).
+  // Default off so existing grid-view workflows are unaffected.
+  // Initial state honors `?view=editor` in the URL for shareable links;
+  // user clicks of the header button flip it without touching the URL
+  // (kept simple — no router.replace) since the toggle is exploratory.
+  const [editorViewMode, setEditorViewMode] = useState<'grid' | 'editor'>(
+    search?.get('view') === 'editor' ? 'editor' : 'grid',
+  );
   const scheduleItemId = getScheduleLinkId(search);
   // Direct project handoff (e.g. from the project detail page's "Send to
   // Production Doc" button). Mirrors the schedule-item path but pulls the
@@ -3377,7 +3387,6 @@ function ProductionDocPage() {
    * delegates dialog opening to page.tsx; the close path stays
    * handled by each dialog's own onClose.
    */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const editorWriters: EditorWriters = useMemo(() => ({
     updateRow,
     applyTitleToRange,
@@ -6987,24 +6996,54 @@ function ProductionDocPage() {
             Generate a shot-by-shot breakdown with timecodes, visuals, auto-generated AI images, and Google Images links
           </p>
         </div>
-        {/* New session — explicit, confirmation-gated. The form inputs
-            (script, niche, topic, etc.) and the generated doc otherwise
-            persist across refreshes; this button is how the user opts
-            into a clean slate instead of getting one by accident. */}
-        <button
-          type="button"
-          onClick={resetSession}
-          className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
-          style={{
-            background: 'rgba(255,255,255,0.04)',
-            color: 'var(--text-secondary)',
-            border: '1px solid rgba(255,255,255,0.10)',
-            cursor: 'pointer',
-          }}
-          title="Clear the current form and generated doc to start fresh. Previous generations stay in the history sidebar."
-        >
-          🆕 New session
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Phase 3 follow-up — opt-in toggle for the new multi-pane
+              editor view. Hidden until a doc is loaded (the editor
+              view needs a doc to render anything meaningful). The
+              `editorWriters` bundle, EditorView component, and full
+              variant Inspector are all in git already; this button is
+              what actually mounts them in front of the user. */}
+          {doc && (
+            <button
+              type="button"
+              onClick={() => setEditorViewMode((m) => (m === 'editor' ? 'grid' : 'editor'))}
+              className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+              style={{
+                background: editorViewMode === 'editor'
+                  ? 'rgba(124,58,237,0.18)'
+                  : 'rgba(124,58,237,0.06)',
+                color: 'var(--accent-purple-bright)',
+                border: '1px solid rgba(124,58,237,0.35)',
+                cursor: 'pointer',
+              }}
+              title={
+                editorViewMode === 'editor'
+                  ? 'Switch back to the grid view (default).'
+                  : 'Try the new multi-pane editor view as a fullscreen overlay. The grid view stays untouched underneath.'
+              }
+            >
+              {editorViewMode === 'editor' ? '← Back to grid' : '🎬 Try new editor view'}
+            </button>
+          )}
+          {/* New session — explicit, confirmation-gated. The form inputs
+              (script, niche, topic, etc.) and the generated doc otherwise
+              persist across refreshes; this button is how the user opts
+              into a clean slate instead of getting one by accident. */}
+          <button
+            type="button"
+            onClick={resetSession}
+            className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+            style={{
+              background: 'rgba(255,255,255,0.04)',
+              color: 'var(--text-secondary)',
+              border: '1px solid rgba(255,255,255,0.10)',
+              cursor: 'pointer',
+            }}
+            title="Clear the current form and generated doc to start fresh. Previous generations stay in the history sidebar."
+          >
+            🆕 New session
+          </button>
+        </div>
       </div>
 
       {/* ── Input Panel */}
@@ -10319,6 +10358,83 @@ function ProductionDocPage() {
         );
       })()}
     </div>
+
+    {/* Phase 3 follow-up (2026-05-25) — Editor view toggle overlay.
+        When `editorViewMode === 'editor'` AND a doc is loaded, this
+        fullscreen overlay covers the grid view. The overlay pattern is
+        deliberate: it avoids touching the 3000+ lines of dense grid JSX
+        above (zero risk of mis-bracketing) and lets users return to the
+        grid via the header toggle button without losing scroll position
+        or in-flight form state. The doc itself is shared between views
+        via the same page-level state (doc, rowImages, rowVideoClips,
+        etc.) so any edit made in either surface persists in both.
+        See plan: `_plans/2026-05-25-editor-view-variant-inspector.md`. */}
+    {editorViewMode === 'editor' && doc && (() => {
+      // Derive rowLockedAsStill (boolean[]) from the signature-keyed
+      // state — same remap the projectPatch code does internally. The
+      // boolean[] shape is what EditorViewProps expects.
+      const rowLockedAsStill: boolean[] = doc.rows.map((row) => {
+        const sig = brollRowSignatureInput({
+          timecode: row.timecode,
+          visual_description: row.visual_description,
+        });
+        return Boolean(rowLockSignatures[sig]);
+      });
+      return (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 80,
+            background: 'var(--bg-primary, #0a0a0a)',
+            overflow: 'auto',
+          }}
+          role="dialog"
+          aria-label="Editor view"
+        >
+          <div className="p-6 max-w-full" style={{ minHeight: '100vh' }}>
+            <div className="mb-4 flex items-start justify-between gap-4 flex-wrap">
+              <div>
+                <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>
+                  Editor view
+                </h2>
+                <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+                  Multi-pane preview / inspector / section strip. Edits sync with the grid view underneath.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditorViewMode('grid')}
+                className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+                style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  color: 'var(--text-secondary)',
+                  border: '1px solid rgba(255,255,255,0.10)',
+                  cursor: 'pointer',
+                }}
+                title="Return to the standard grid view."
+              >
+                ← Back to grid
+              </button>
+            </div>
+            <EditorView
+              doc={doc}
+              rowImages={rowImages as Parameters<typeof EditorView>[0]['rowImages']}
+              rowVideoClips={rowVideoClips as Parameters<typeof EditorView>[0]['rowVideoClips']}
+              rowOverlays={rowOverlays}
+              rowLockedAsStill={rowLockedAsStill}
+              rowLockSignatures={rowLockSignatures}
+              voiceoverUrl={voiceoverUrl}
+              voiceoverAlignment={voiceoverAlignment}
+              brandKit={brandKit}
+              animateScenes={animateScenes}
+              suppressLowerThirds={suppressLowerThirds}
+              writers={editorWriters}
+            />
+          </div>
+        </div>
+      );
+    })()}
     </ScheduleLinkProvider>
   );
 }
