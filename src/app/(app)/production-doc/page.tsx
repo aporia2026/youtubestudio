@@ -1,6 +1,6 @@
 'use client';
 
-import React, { Suspense, useState, useEffect, useRef, useCallback } from 'react';
+import React, { Suspense, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
@@ -90,6 +90,7 @@ import {
   MAX_VARIANTS_PER_GROUP,
   type ImageSaliencyMap,
 } from '@/remotion/utils';
+import type { EditorWriters } from '@/components/production-doc/editor/types';
 import { resolveOverlayPlacement } from '@/lib/overlay-placement';
 import { stripProductionMarkers } from '@/lib/script-markers';
 import { buildCanonicalScript, scriptDriftRatio } from '@/lib/voiceover-alignment';
@@ -3349,6 +3350,87 @@ function ProductionDocPage() {
     },
     [doc],
   );
+
+  /**
+   * Phase 3 follow-up (2026-05-25) — pre-built `EditorWriters` bundle
+   * for the new multi-pane editor view (`src/components/production-doc/
+   * editor/EditorView.tsx`). Nothing in this file consumes the bundle
+   * today; it exists so that whoever wires `<EditorView>` to a route
+   * later can drop it in as a one-liner:
+   *
+   *     <EditorView ... writers={editorWriters} ... />
+   *
+   * Without this prebuilt bundle, the routing PR would have to hunt
+   * down all 23 callbacks scattered across the 9k-line page and bundle
+   * them inline — easy to miss one, and easy for a missed entry to
+   * silently degrade (e.g. the "Generate variant" button doing
+   * nothing because `generateVariantImage` wasn't bundled in).
+   *
+   * Async functions (`fetchOverlayForRow` et al.) are wrapped in
+   * void-returning lambdas because the EditorWriters interface
+   * specifies void return for those entries — the editor view doesn't
+   * await them, it just fires-and-forgets and reads progress via the
+   * sidecar state (`rowImages`, `rowOverlays`).
+   *
+   * State setters (`setEditPanelRow`, `setOverlayPositionRow`) are
+   * wrapped to match the `openXForRow` shape — the editor view
+   * delegates dialog opening to page.tsx; the close path stays
+   * handled by each dialog's own onClose.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const editorWriters: EditorWriters = useMemo(() => ({
+    updateRow,
+    applyTitleToRange,
+    applyPillarboxColorToAll,
+    clearPillarboxOverrides,
+    applyStripeLayoutToAll,
+    clearStripeLayoutOverrides,
+    applySceneZoomToAll,
+    clearSceneZoomOverrides,
+    applyRegionZoomPaddingToAll,
+    applyTitleCardAsSectionTitle,
+    // Async functions declared inside the component body — stable
+    // identity across renders (function declarations are hoisted +
+    // bound once per render closure). Wrapped in void-returning
+    // lambdas to satisfy the EditorWriters fire-and-forget contract.
+    fetchOverlayForRow: (rowIndex, terms) => { void fetchOverlayForRow(rowIndex, terms); },
+    generateImageForRow: (rowIndex, prompt, extra) => { void generateImageForRow(rowIndex, prompt, extra); },
+    uploadImageForRow: (rowIndex, file) => { void uploadImageForRow(rowIndex, file); },
+    importImageUrlForRow: (rowIndex, url) => { void importImageUrlForRow(rowIndex, url); },
+    // State-setter wrappers — opening these dialogs is page-owned.
+    openEditPanelForRow: (rowIndex) => setEditPanelRow(rowIndex),
+    openOverlayPositionEditorForRow: (rowIndex) => setOverlayPositionRow(rowIndex),
+    handleBrollClipChange,
+    toggleRowLock,
+    computeRowSceneDurationMs,
+    // Variant-group mutators added in Phase 3.3 + 3.7.
+    addVariantRow,
+    generateVariantImage,
+    deleteVariantRow,
+    moveVariantRow,
+  }), [
+    // useCallback identities — listed in deps so React recomputes the
+    // bundle when any underlying writer's closure rebinds. The async
+    // functions and state setters above are NOT in deps: function
+    // declarations and useState setters are stable across renders.
+    updateRow,
+    applyTitleToRange,
+    applyPillarboxColorToAll,
+    clearPillarboxOverrides,
+    applyStripeLayoutToAll,
+    clearStripeLayoutOverrides,
+    applySceneZoomToAll,
+    clearSceneZoomOverrides,
+    applyRegionZoomPaddingToAll,
+    applyTitleCardAsSectionTitle,
+    handleBrollClipChange,
+    toggleRowLock,
+    computeRowSceneDurationMs,
+    addVariantRow,
+    generateVariantImage,
+    deleteVariantRow,
+    moveVariantRow,
+  ]);
 
   // Shared batch driver: walks `plan` sequentially, kicks off a B-roll
   // generation per row, seeds the cell's adoption stub + the page's status
