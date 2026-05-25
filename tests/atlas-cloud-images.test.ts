@@ -60,7 +60,7 @@ afterEach(() => {
 });
 
 describe('generateAtlasT2I — request shape', () => {
-  it('POSTs the documented {model, input} envelope with bearer auth', async () => {
+  it('POSTs all fields at the top level (per OpenAPI schema) with bearer auth', async () => {
     const { mock, calls } = scriptedFetch([
       jsonResponse({ id: 'pred_abc' }),
       jsonResponse({
@@ -72,7 +72,7 @@ describe('generateAtlasT2I — request shape', () => {
     ]);
     vi.stubGlobal('fetch', mock);
 
-    const promise = generateAtlasT2I({ prompt: 'a sunny field', size: '1536x1024', quality: 'medium' });
+    const promise = generateAtlasT2I({ prompt: 'a sunny field', size: '2560x1440', quality: 'low' });
     await vi.runAllTimersAsync();
     const result = await promise;
 
@@ -80,7 +80,10 @@ describe('generateAtlasT2I — request shape', () => {
     expect(result.predictionId).toBe('pred_abc');
     expect(result.predictTimeMs).toBe(8300);
 
-    // First call: create.
+    // First call: create. Atlas's Input schema is FLAT — model + prompt +
+    // size + quality all live at the top level, not nested under an
+    // `input` key. Regression guard for the original bug that copied
+    // Kie's nested envelope shape.
     expect(calls[0].url).toBe(`${ATLAS_BASE}/generateImage`);
     expect(calls[0].init?.method).toBe('POST');
     const headers0 = calls[0].init?.headers as Record<string, string>;
@@ -89,34 +92,43 @@ describe('generateAtlasT2I — request shape', () => {
     const body = JSON.parse(calls[0].init?.body as string);
     expect(body).toEqual({
       model: 'openai/gpt-image-2/text-to-image',
-      input: { prompt: 'a sunny field', size: '1536x1024', quality: 'medium' },
+      prompt: 'a sunny field',
+      size: '2560x1440',
+      quality: 'low',
     });
+    // Explicit assertion that no `input` wrapper sneaks back in.
+    expect(body.input).toBeUndefined();
 
-    // Second call: poll.
-    expect(calls[1].url).toBe(`${ATLAS_BASE}/prediction/pred_abc`);
+    // Second call: poll. Path is `/result/{id}` per the OpenAPI schema,
+    // NOT `/prediction/{id}` (the docs prose's earlier name).
+    expect(calls[1].url).toBe(`${ATLAS_BASE}/result/pred_abc`);
     const headers1 = calls[1].init?.headers as Record<string, string>;
     expect(headers1.Authorization).toBe('Bearer test-atlas-key');
   });
 
-  it("omits `quality` from the input when caller doesn't pass it", async () => {
+  it("omits `quality` from the request when caller doesn't pass it", async () => {
     const { mock, calls } = scriptedFetch([
       jsonResponse({ id: 'pred_def' }),
-      jsonResponse({ id: 'pred_def', status: 'succeeded', outputs: ['https://cdn/y.png'] }),
+      jsonResponse({ id: 'pred_def', status: 'completed', outputs: ['https://cdn/y.png'] }),
     ]);
     vi.stubGlobal('fetch', mock);
     const promise = generateAtlasT2I({ prompt: 'minimal', size: '1024x1024' });
     await vi.runAllTimersAsync();
     await promise;
     const body = JSON.parse(calls[0].init?.body as string);
-    expect(body.input).toEqual({ prompt: 'minimal', size: '1024x1024' });
-    expect(body.input.quality).toBeUndefined();
+    expect(body).toEqual({
+      model: 'openai/gpt-image-2/text-to-image',
+      prompt: 'minimal',
+      size: '1024x1024',
+    });
+    expect(body.quality).toBeUndefined();
   });
 });
 
 describe('generateAtlasT2I — error paths', () => {
   it('throws when ATLAS_CLOUD_API_KEY is not set', async () => {
     delete process.env.ATLAS_CLOUD_API_KEY;
-    await expect(generateAtlasT2I({ prompt: 'x', size: '1536x1024' })).rejects.toThrow(
+    await expect(generateAtlasT2I({ prompt: 'x', size: '2560x1440' })).rejects.toThrow(
       /ATLAS_CLOUD_API_KEY is not configured/,
     );
   });
@@ -126,7 +138,7 @@ describe('generateAtlasT2I — error paths', () => {
       jsonResponse({ error: 'invalid_api_key' }, { status: 401 }),
     ]);
     vi.stubGlobal('fetch', mock);
-    const promise = generateAtlasT2I({ prompt: 'x', size: '1536x1024' });
+    const promise = generateAtlasT2I({ prompt: 'x', size: '2560x1440' });
     // Attach the rejection handler synchronously (via expect.rejects) so
     // Vitest doesn't flag an unhandled rejection while the create/poll
     // loop drains. Then advance timers, then await the assertion.
@@ -142,7 +154,7 @@ describe('generateAtlasT2I — error paths', () => {
       jsonResponse({ id: 'pred_retry', status: 'completed', outputs: ['https://cdn/z.png'] }),
     ]);
     vi.stubGlobal('fetch', mock);
-    const promise = generateAtlasT2I({ prompt: 'x', size: '1536x1024' });
+    const promise = generateAtlasT2I({ prompt: 'x', size: '2560x1440' });
     await vi.runAllTimersAsync();
     const result = await promise;
     expect(result.url).toBe('https://cdn/z.png');
@@ -156,7 +168,7 @@ describe('generateAtlasT2I — error paths', () => {
       jsonResponse({ id: 'pred_fail', status: 'failed', error: 'content policy violation' }),
     ]);
     vi.stubGlobal('fetch', mock);
-    const promise = generateAtlasT2I({ prompt: 'x', size: '1536x1024' });
+    const promise = generateAtlasT2I({ prompt: 'x', size: '2560x1440' });
     const assertion = expect(promise).rejects.toThrow(
       /prediction pred_fail failed: content policy violation/,
     );
@@ -170,7 +182,7 @@ describe('generateAtlasT2I — error paths', () => {
       jsonResponse({ id: 'pred_empty', status: 'completed', outputs: [] }),
     ]);
     vi.stubGlobal('fetch', mock);
-    const promise = generateAtlasT2I({ prompt: 'x', size: '1536x1024' });
+    const promise = generateAtlasT2I({ prompt: 'x', size: '2560x1440' });
     const assertion = expect(promise).rejects.toThrow(/completed without an output URL/);
     await vi.runAllTimersAsync();
     await assertion;
@@ -190,7 +202,7 @@ describe('generateAtlasEdit + generateAtlasI2I — input validation', () => {
     );
   });
 
-  it('generateAtlasEdit posts to the documented edit model with images field', async () => {
+  it('generateAtlasEdit posts to the documented edit model with images field at top level', async () => {
     const { mock, calls } = scriptedFetch([
       jsonResponse({ id: 'pred_edit' }),
       jsonResponse({
@@ -204,16 +216,16 @@ describe('generateAtlasEdit + generateAtlasI2I — input validation', () => {
     const promise = generateAtlasEdit({
       prompt: 'add a hat',
       images: ['https://r2/in1.jpg', 'https://r2/in2.jpg'],
-      size: '1536x1024',
+      size: '2560x1440',
     });
     await vi.runAllTimersAsync();
     const result = await promise;
     const body = JSON.parse(calls[0].init?.body as string);
-    expect(body.model).toBe('openai/gpt-image-2/edit');
-    expect(body.input).toEqual({
+    expect(body).toEqual({
+      model: 'openai/gpt-image-2/edit',
       prompt: 'add a hat',
       images: ['https://r2/in1.jpg', 'https://r2/in2.jpg'],
-      size: '1536x1024',
+      size: '2560x1440',
     });
     // Token telemetry surfaces for cost-true-up.
     expect(result.tokens).toEqual({ input: 100, output: 50, image: 1000 });
@@ -232,8 +244,8 @@ describe('generateAtlasEdit + generateAtlasI2I — input validation', () => {
     await vi.runAllTimersAsync();
     await promise;
     const body = JSON.parse(calls[0].init?.body as string);
-    expect(body.model).toBe('openai/gpt-image-2/image-to-image');
-    expect(body.input).toEqual({
+    expect(body).toEqual({
+      model: 'openai/gpt-image-2/image-to-image',
       prompt: 'in the style of these refs',
       images: ['https://r2/ref1.jpg'],
     });

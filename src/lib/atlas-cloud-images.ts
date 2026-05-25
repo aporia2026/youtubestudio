@@ -66,10 +66,13 @@ export type AtlasSize = '1024x1024' | '1024x1536' | '1536x1024' | '2560x1440';
  *  example payloads when omitted. */
 export type AtlasQuality = 'low' | 'medium' | 'high';
 
-/** Discriminated union of poll states Atlas can return. `'completed'`
- *  and `'succeeded'` are both treated as terminal-success because Atlas
- *  docs list both in different examples — defensive against either. */
-type AtlasPredictionStatus = 'processing' | 'completed' | 'succeeded' | 'failed';
+/** Atlas's documented poll states (OpenAPI schema verified 2026-05-25):
+ *  `created` and `processing` are intermediate, `completed` is the
+ *  terminal success, `failed` is the terminal error. The docs prose
+ *  earlier mentioned 'succeeded' but it's not in the schema — we treat
+ *  any unknown status as still-processing and let the 285 s ceiling
+ *  catch the case where it never converges. */
+type AtlasPredictionStatus = 'created' | 'processing' | 'completed' | 'failed';
 
 /** Atlas's response envelope on the poll endpoint, narrowed to the fields
  *  we actually read. `outputs` is documented as an array of URLs available
@@ -266,6 +269,12 @@ async function createAtlasPrediction(
   model: string,
   input: Record<string, unknown>,
 ): Promise<string> {
+  // Atlas's OpenAPI schema (verified 2026-05-25) puts every input field at
+  // the top level of the request body alongside `model` — NOT inside a
+  // nested `input` object the way Kie's createTask does. The earlier
+  // implementation copied Kie's shape by reflex and would have 4xx'd
+  // every Atlas call. The Input schema's required array is ["model",
+  // "prompt"]; size/quality/output_format/etc are optional siblings.
   let createRes!: Response;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) await new Promise((r) => setTimeout(r, 2000 * attempt));
@@ -275,7 +284,7 @@ async function createAtlasPrediction(
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ model, input }),
+      body: JSON.stringify({ model, ...input }),
     });
     if (createRes.status !== 502 && createRes.status !== 503 && createRes.status !== 504) break;
   }
@@ -302,10 +311,14 @@ async function createAtlasPrediction(
 }
 
 /**
- * Poll /api/v1/model/prediction/{id} until the prediction hits a terminal
+ * Poll /api/v1/model/result/{id} until the prediction hits a terminal
  * state. Mirrors pollKieResult's shape: fixed 3 s interval × 95 attempts =
  * 285 s ceiling. 429 responses are retried without consuming an attempt
  * slot (rare in practice).
+ *
+ * Endpoint verified against Atlas's OpenAPI schema 2026-05-25. The docs
+ * prose earlier referenced `/prediction/{id}` which was wrong — the
+ * canonical path is `/result/{request_id}`.
  */
 async function pollAtlasPrediction(
   apiKey: string,
@@ -315,7 +328,7 @@ async function pollAtlasPrediction(
   for (let i = 0; i < POLL_MAX_ATTEMPTS; i++) {
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
 
-    const res = await fetch(`${ATLAS_BASE}/prediction/${encodeURIComponent(predictionId)}`, {
+    const res = await fetch(`${ATLAS_BASE}/result/${encodeURIComponent(predictionId)}`, {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
     if (!res.ok) {
@@ -331,7 +344,7 @@ async function pollAtlasPrediction(
       continue;
     }
 
-    if (data.status === 'completed' || data.status === 'succeeded') {
+    if (data.status === 'completed') {
       return data;
     }
     if (data.status === 'failed') {
@@ -339,7 +352,7 @@ async function pollAtlasPrediction(
         `[atlas-images ${label}] prediction ${predictionId} failed: ${data.error ?? '(no error message)'}`,
       );
     }
-    // 'processing' — keep polling.
+    // 'created' / 'processing' / any unknown intermediate — keep polling.
   }
   throw new Error(`[atlas-images ${label}] prediction ${predictionId} timed out after 285 s`);
 }
