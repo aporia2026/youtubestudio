@@ -608,6 +608,15 @@ export interface ProductionRow {
    *  re-descriptions. The dispatcher prepends the base row's
    *  `ai_image_prompt` so the model has full scene context. */
   variant_edit_prompt?: string;
+
+  /** The base row's `image_url` captured at the moment this variant
+   *  was last generated. Lets the editor detect "the base has been
+   *  regenerated since this variant was made" — when the base's
+   *  CURRENT image_url no longer matches this snapshot, the variant
+   *  is "stale" (still valid as bytes, but derived from an older
+   *  base) and the UI shows a "Base changed — regenerate?" banner.
+   *  Only set on variant rows (variant_index > 0). Phase 3.7c. */
+  variant_base_image_at_generation?: string;
 }
 
 // ─── Phase 3 helpers ────────────────────────────────────────────────

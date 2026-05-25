@@ -328,6 +328,11 @@ interface ProductionRow {
   group_id?: string;
   variant_index?: number;
   variant_edit_prompt?: string;
+  /** Phase 3.7c — base image URL captured when this variant was
+   *  last generated. Mismatch with the current base image_url means
+   *  the variant is stale; the editor renders a "Base changed —
+   *  regenerate?" banner. Only set on variant rows. */
+  variant_base_image_at_generation?: string;
 }
 
 interface ProductionDoc {
@@ -2468,6 +2473,22 @@ function ProductionDocPage() {
           next[variantIndex] = { status: 'done', imageUrl: data.imageUrl!, source: 'generated' };
           return next;
         });
+        // Phase 3.7c — record the base image URL we generated
+        // against, so the editor can detect staleness later when
+        // the base is regenerated.
+        setDoc(prev => {
+          if (!prev) return prev;
+          const nextRows = prev.rows.map((r, i) =>
+            i === variantIndex
+              ? { ...r, variant_base_image_at_generation: baseImageUrl }
+              : r,
+          );
+          const nextDoc = { ...prev, rows: nextRows };
+          if (historyEntryId) {
+            updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+          }
+          return nextDoc;
+        });
         toast.success(`Variant ${variantRow.variant_index} generated`);
       } else {
         setRowImages(prev => {
@@ -2486,7 +2507,7 @@ function ProductionDocPage() {
       });
       toast.error(msg);
     }
-  }, [doc]);
+  }, [doc, historyEntryId]);
 
   /**
    * Phase 3.7a — Delete a variant row from its group.
@@ -8194,6 +8215,23 @@ function ProductionDocPage() {
                       ? getVariantGroup(doc, row.group_id).length
                       : 1;
                     const canAddVariant = groupSize < MAX_VARIANTS_PER_GROUP && !isVariant;
+                    // Phase 3.7c — staleness check. A variant is stale when
+                    // the base's CURRENT image_url no longer matches the
+                    // snapshot taken when the variant was last generated.
+                    // Requires three things to be true: the row is a
+                    // variant, it has a snapshot (otherwise it was never
+                    // generated), and the current base image differs.
+                    // Reading the base's image URL from rowImages keeps the
+                    // check live as the base is regenerated.
+                    let isVariantStale = false;
+                    if (isVariant && row.variant_base_image_at_generation && row.group_id) {
+                      const baseRow = getBaseRow(doc, row.group_id);
+                      const baseIdx = baseRow ? doc.rows.indexOf(baseRow) : -1;
+                      const currentBaseImageUrl = baseIdx >= 0 ? rowImages[baseIdx]?.imageUrl : undefined;
+                      if (currentBaseImageUrl && currentBaseImageUrl !== row.variant_base_image_at_generation) {
+                        isVariantStale = true;
+                      }
+                    }
                     return (
                       <tr
                         key={i}
@@ -8545,6 +8583,28 @@ function ProductionDocPage() {
                                     at MAX_VARIANTS_PER_GROUP. */}
                                 {isVariant ? (
                                   <div className="mt-1.5" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                    {/* Phase 3.7c — stale-on-base-change banner.
+                                        Shown only when this variant has a
+                                        snapshot of an OLDER base image. The
+                                        banner directs the user to regenerate;
+                                        clicking the Generate button below
+                                        replaces the snapshot in the same flow. */}
+                                    {isVariantStale && (
+                                      <div
+                                        className="text-[10px] px-2 py-1 rounded"
+                                        style={{
+                                          background: 'rgba(245,158,11,0.12)',
+                                          color: '#fbbf24',
+                                          border: '1px solid rgba(245,158,11,0.35)',
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          gap: 6,
+                                        }}
+                                        title="The base image was regenerated after this variant was created. The variant is still valid as bytes but is derived from an older base. Click Generate variant to redo it against the current base."
+                                      >
+                                        ⚠ Base changed — regenerate to match current base
+                                      </div>
+                                    )}
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                                       <span
                                         className="text-[10px] px-1.5 py-0.5 rounded"
