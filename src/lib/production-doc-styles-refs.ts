@@ -79,6 +79,7 @@ function synthesizeBuiltInRefs(styleId: string): StyleReferenceImage[] {
   // existing public/style-refs/Doodle-explainer/ directory.
   const dirMap: Record<string, string> = {
     doodle_explainer: 'Doodle-explainer',
+    doodle_explainer_2: 'Doodle-explainer-2',
   };
   const dir = dirMap[builtIn.id] ?? builtIn.id;
   const base = getPublicBaseUrl();

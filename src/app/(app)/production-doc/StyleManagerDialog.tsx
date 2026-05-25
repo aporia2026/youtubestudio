@@ -415,41 +415,63 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
     }
   }, []);
 
-  /** Fire a single test render against the active style. The endpoint
-   *  uses the style's preferred_cloud_model + currently-active refs
-   *  (rejected ones automatically excluded). On 409
-   *  REFERENCE_REJECTED, the offending refs have already been
-   *  flagged server-side — just reload refs so the UI updates.
+  /** Fire a single test render against the active style.
    *
-   *  Captures `draftStyleId` at submit time. A test render takes 60–
-   *  150s on cloud; the user can swap to a different style mid-flight.
-   *  On resolve we compare the captured id against the current one
-   *  and discard the result if the user has moved on — otherwise the
-   *  finished render would paint into the wrong style's gallery. */
-  const handleRunTest = useCallback(async () => {
-    if (!draftStyleId) {
-      toast.error('Upload at least one reference image first');
+   *  Two flavors, picked by `isBuiltInTarget`:
+   *
+   *   - Saved style: POSTs to `/api/production-doc/styles/<uuid>/test-render`,
+   *     persists into `style_test_renders`, reloads the gallery via GET.
+   *     On 409 REFERENCE_REJECTED the offending refs have already been
+   *     flagged server-side — we reload refs so the UI updates.
+   *
+   *   - Built-in: POSTs to `/api/production-doc/styles/built-in/<slug>/test-render`,
+   *     returns the result inline with no persistence (built-ins can't
+   *     be edited per-workspace, so persisted history adds storage cost
+   *     for no iteration value). We synthesize a TestRenderSummary
+   *     locally and prepend it to the in-memory gallery so the user
+   *     can compare prompts within the modal session.
+   *
+   *  Captures `targetId` at submit time. A test render takes 60–150s
+   *  on cloud; the user can swap to a different style mid-flight. On
+   *  resolve we compare the captured id against the current selection
+   *  and discard the result if they moved on — otherwise the finished
+   *  render would paint into the wrong style's gallery. */
+  const handleRunTest = useCallback(async (targetId: string, isBuiltInTarget: boolean) => {
+    if (!targetId) {
+      toast.error(isBuiltInTarget ? 'No built-in style selected' : 'Upload at least one reference image first');
       return;
     }
     if (!testPrompt.trim()) {
       toast.error('Enter a test prompt first');
       return;
     }
-    const startedFor = draftStyleId;
+    const url = isBuiltInTarget
+      ? `/api/production-doc/styles/built-in/${targetId}/test-render`
+      : `/api/production-doc/styles/${targetId}/test-render`;
+    // Swap-guard: built-ins use `editing`, saved styles use
+    // `draftStyleId`. Both are read inside the closure on resolve.
+    const startedFor = targetId;
     setTestRenderBusy(true);
     try {
-      const res = await fetch(`/api/production-doc/styles/${startedFor}/test-render`, {
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ test_prompt: testPrompt.trim() }),
       });
       const data = await res.json().catch(() => ({}));
-      // User swapped styles mid-flight — drop this result silently
-      // so it doesn't paint into the wrong gallery.
-      if (startedFor !== draftStyleId) return;
+      const stillOnSameTarget = isBuiltInTarget
+        ? editing === startedFor
+        : draftStyleId === startedFor;
+      if (!stillOnSameTarget) return;
       if (res.status === 409 && data?.code === 'REFERENCE_REJECTED') {
-        toast.error(`Provider rejected ${data.rejectedRefIds?.length ?? 'one or more'} refs — they've been flagged in the grid above. Click "Clear rejection" on a thumb to try it again.`);
-        await loadRefsFor(startedFor);
+        if (isBuiltInTarget) {
+          // Built-in refs are immutable per workspace — no flag to
+          // flip, no refresh to do. Just surface the refusal.
+          toast.error(data?.error || 'Provider refused the built-in refs for this prompt — try a different prompt or style.');
+        } else {
+          toast.error(`Provider rejected ${data.rejectedRefIds?.length ?? 'one or more'} refs — they've been flagged in the grid above. Click "Clear rejection" on a thumb to try it again.`);
+          await loadRefsFor(startedFor);
+        }
         return;
       }
       if (!res.ok) {
@@ -457,28 +479,49 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
         return;
       }
       toast.success(`Test render done in ${((data.render.duration_ms ?? 0) / 1000).toFixed(1)}s`);
-      await loadTestRendersFor(startedFor);
+      if (isBuiltInTarget) {
+        // No persisted gallery for built-ins — synthesize a row and
+        // prepend it locally so the user sees side-by-side renders
+        // within this modal session.
+        const synth: TestRenderSummary = {
+          id: (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+            ? crypto.randomUUID()
+            : `builtin-${Date.now()}`,
+          style_version: 1,
+          test_prompt: testPrompt.trim(),
+          output_url: data.render.output_url,
+          model_used: data.render.model_used,
+          duration_ms: data.render.duration_ms,
+          created_at: new Date().toISOString(),
+        };
+        setTestRenders((prev) => [synth, ...prev].slice(0, 6));
+      } else {
+        await loadTestRendersFor(startedFor);
+      }
     } catch (err) {
-      // Same swap-guard: silent drop if user moved on.
-      if (startedFor !== draftStyleId) return;
+      const stillOnSameTarget = isBuiltInTarget
+        ? editing === startedFor
+        : draftStyleId === startedFor;
+      if (!stillOnSameTarget) return;
       toast.error(err instanceof Error ? err.message : 'Test render failed');
     } finally {
-      // Only clear the busy state if we're still on the same style.
-      // Otherwise the new style's UI might appear in a "rendering…"
-      // state for no reason.
-      if (startedFor === draftStyleId) setTestRenderBusy(false);
+      const stillOnSameTarget = isBuiltInTarget
+        ? editing === startedFor
+        : draftStyleId === startedFor;
+      if (stillOnSameTarget) setTestRenderBusy(false);
     }
-  }, [draftStyleId, testPrompt, loadRefsFor, loadTestRendersFor]);
+  }, [draftStyleId, editing, testPrompt, loadRefsFor, loadTestRendersFor]);
 
-  // Load the gallery whenever the editor swaps onto an existing
-  // saved style (its draftStyleId is already known on the row).
+  // Clear the test-render panel on every target change so a previous
+  // target's renders never leak into the new panel. Then, for saved
+  // styles, hydrate from the persisted gallery. Built-ins have no
+  // persisted gallery — empty state is the right starting point.
   useEffect(() => {
+    setTestRenders([]);
     if (draftStyleId) {
       void loadTestRendersFor(draftStyleId);
-    } else {
-      setTestRenders([]);
     }
-  }, [draftStyleId, loadTestRendersFor]);
+  }, [draftStyleId, editing, loadTestRendersFor]);
 
   /** Clear a provider-rejection flag so the next generation attempt
    *  includes the ref again. Editor "Clear rejection" affordance. */
@@ -877,8 +920,19 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
                         already supports without a dedicated test path.
                         Cloud and local providers both supported via the
                         unified dispatcher in `image-gen-i2i.ts`. */}
-                    {!isBuiltIn && draftStyleId && refs.length > 0 && (() => {
-                      const pickedSpec = I2I_MODEL_OPTIONS.find((m) => m.value === draft.preferred_cloud_model);
+                    {/* Test render surface. Saved styles need a draft row
+                        (draftStyleId set on first ref upload). Built-ins
+                        use their slug id directly — no draft row, no
+                        gallery persistence; renders live in the modal
+                        session only. */}
+                    {(() => {
+                      const testTargetId = isBuiltIn ? (target?.id ?? '') : (draftStyleId ?? '');
+                      const canTest = Boolean(testTargetId) && refs.length > 0;
+                      if (!canTest) return null;
+                      // Built-ins always run cloud i2i (preferred_cloud_model
+                      // is set on the entry). Saved styles read draft.preferred_cloud_model.
+                      const modelValue = isBuiltIn ? (target?.preferred_cloud_model ?? '') : draft.preferred_cloud_model;
+                      const pickedSpec = I2I_MODEL_OPTIONS.find((m) => m.value === modelValue);
                       const isLocalPick = pickedSpec?.isLocal === true;
                       // Per-provider cost + speed hints. Local is free
                       // but requires LOCAL_STUDIO=1 + ComfyUI running.
@@ -888,10 +942,13 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
                       const busyHint = isLocalPick
                         ? 'Qwen-Image i2i typically takes 30–90 s.'
                         : 'NanoBanana Pro typically takes 60–150 s.';
+                      const fieldHint = isBuiltIn
+                        ? 'Generate a preview with this style\'s bundled refs + your prompt. Results live for the session only — built-ins don\'t keep a saved gallery.'
+                        : 'Generate one image with your refs + this prompt to see how the style behaves before saving.';
                       return (
                       <Field
                         label="Test render"
-                        hint="Generate one image with your refs + this prompt to see how the style behaves before saving."
+                        hint={fieldHint}
                       >
                         <div className="space-y-2">
                           <textarea
@@ -904,7 +961,7 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
                           />
                           <div className="flex items-center justify-between gap-2">
                             <button
-                              onClick={handleRunTest}
+                              onClick={() => handleRunTest(testTargetId, isBuiltIn)}
                               disabled={testRenderBusy || !testPrompt.trim()}
                               className="text-xs px-3 py-1.5 rounded-lg font-semibold"
                               style={{
