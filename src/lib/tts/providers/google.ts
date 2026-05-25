@@ -61,6 +61,31 @@ const PROVIDER_ID = 'google' as const;
 const SYNC_INPUT_BYTE_LIMIT = 5000;
 
 /**
+ * Gemini-TTS has tighter limits than Chirp 3 HD:
+ *   - text field alone: max 4,000 bytes
+ *   - text + prompt combined: max 8,000 bytes
+ * Source: docs.cloud.google.com/text-to-speech/docs/gemini-tts.
+ * The chunker takes a smaller maxBytes when the request targets a
+ * Gemini model so long-form synthesis stays in spec.
+ */
+const GEMINI_TEXT_BYTE_LIMIT = 4000;
+const GEMINI_COMBINED_BYTE_LIMIT = 8000;
+
+/**
+ * Map our tier enum to the Google model_name field. Tiers not in this
+ * map use Google's default model selection (driven by the voice name's
+ * prefix — e.g. en-US-Chirp3-HD-* → Chirp 3 HD).
+ */
+const TIER_TO_MODEL_NAME: Readonly<Partial<Record<string, string>>> = {
+  'gemini-25-flash-tts': 'gemini-2.5-flash-tts',
+  'gemini-31-flash-tts': 'gemini-3.1-flash-tts-preview',
+};
+
+function isGeminiTier(tier: string): boolean {
+  return tier === 'gemini-25-flash-tts' || tier === 'gemini-31-flash-tts';
+}
+
+/**
  * Parallelism cap for long-form chunked synthesis. Google's per-project
  * QPS quotas for TTS are generous (300/min default at writing) but
  * concurrent requests on Chirp 3 HD can throttle. 3 in-flight is a
@@ -111,7 +136,42 @@ class GoogleSynthesizer implements Synthesizer {
     const useSsml = Boolean(ssml);
     const payloadBytes = Buffer.byteLength(useSsml ? ssml! : text, 'utf8');
 
-    if (payloadBytes > SYNC_INPUT_BYTE_LIMIT) {
+    // Gemini-TTS has tighter limits than Chirp 3 HD. The chunker
+    // honors them when this is a Gemini request.
+    const isGemini = isGeminiTier(req.voice.tier);
+    const textByteLimit = isGemini ? GEMINI_TEXT_BYTE_LIMIT : SYNC_INPUT_BYTE_LIMIT;
+
+    // For Gemini, the prompt counts toward an 8KB combined cap.
+    // Validate before chunking so an oversized prompt fails loudly
+    // rather than splitting weirdly.
+    if (isGemini) {
+      const stylePrompt = (req.options.providerId === 'google' && req.options.stylePrompt) || '';
+      const promptBytes = Buffer.byteLength(stylePrompt, 'utf8');
+      if (promptBytes > GEMINI_TEXT_BYTE_LIMIT) {
+        throw new TtsProviderError(
+          `Gemini-TTS style prompt exceeds ${GEMINI_TEXT_BYTE_LIMIT}-byte limit (${promptBytes} bytes).`,
+          PROVIDER_ID,
+          'invalid_request',
+          false,
+        );
+      }
+      // Per-chunk text + prompt must stay under 8KB. Reserve the prompt
+      // size from each chunk so the combined call never overflows.
+      const perChunkTextBudget = Math.max(500, GEMINI_COMBINED_BYTE_LIMIT - promptBytes);
+      if (payloadBytes <= Math.min(textByteLimit, perChunkTextBudget)) {
+        // Fits in one request — fall through to the short-form path.
+      } else {
+        if (useSsml) {
+          throw new TtsProviderError(
+            `Gemini-TTS SSML input exceeds size limit. Pass plain text instead.`,
+            PROVIDER_ID,
+            'invalid_request',
+            false,
+          );
+        }
+        return this.synthesizeLongForm(req, Math.min(textByteLimit, perChunkTextBudget));
+      }
+    } else if (payloadBytes > SYNC_INPUT_BYTE_LIMIT) {
       if (useSsml) {
         // SSML can't be chunked safely — tags would slice across chunk
         // boundaries and produce broken markup. Callers passing SSML
@@ -151,18 +211,38 @@ class GoogleSynthesizer implements Synthesizer {
 
     const client = await getClient();
 
+    const geminiModelName = isGemini ? TIER_TO_MODEL_NAME[req.voice.tier] : undefined;
+    const stylePrompt =
+      isGemini && req.options.providerId === 'google' ? req.options.stylePrompt : undefined;
+
     const synthRequest: protos.google.cloud.texttospeech.v1.ISynthesizeSpeechRequest = {
-      input: useSsml ? { ssml } : { text },
+      input: useSsml
+        ? { ssml }
+        : isGemini && stylePrompt
+          ? // Gemini-TTS accepts a parallel `prompt` field carrying
+            // natural-language style instructions ("Read this in a
+            // conspiratorial whisper") alongside the literal text.
+            // Typed via 'as never' because the SDK's generated d.ts
+            // hasn't been updated yet to expose the Gemini-only prompt
+            // field; the API accepts it (verified 2026-05-26 against
+            // docs.cloud.google.com/text-to-speech/docs/gemini-tts).
+            ({ text, prompt: stylePrompt } as never)
+          : { text },
       voice: {
         languageCode: req.voice.languageCode,
         name: req.voice.voiceId,
+        // Set model_name only for Gemini tiers — for everything else
+        // Google infers the model from the voice name's prefix
+        // (en-US-Chirp3-HD-* → Chirp 3 HD, en-US-Studio-* → Studio).
+        ...(geminiModelName ? ({ modelName: geminiModelName } as never) : {}),
       },
       audioConfig: {
         // 'MP3' is accepted as the enum string form by the SDK — its
         // typed signature is `AudioEncoding | keyof typeof AudioEncoding | null`.
         audioEncoding: 'MP3',
-        // Chirp 3 HD ignores these — see jsdoc above.
-        ...(isChirp3Hd(req.voice.voiceId)
+        // Chirp 3 HD AND Gemini-TTS both ignore pitch/speakingRate —
+        // their expressive control comes from the prompt + audio tags.
+        ...(isChirp3Hd(req.voice.voiceId) || isGemini
           ? {}
           : {
               pitch: req.options.pitchSemitones,
@@ -229,6 +309,8 @@ class GoogleSynthesizer implements Synthesizer {
         tier: req.voice.tier,
         languageCode: req.voice.languageCode,
         ssml: useSsml,
+        ...(geminiModelName ? { modelName: geminiModelName } : {}),
+        ...(stylePrompt ? { stylePromptChars: stylePrompt.length } : {}),
       },
     };
   }
@@ -260,8 +342,13 @@ class GoogleSynthesizer implements Synthesizer {
    * partially return audio for a partially-failed batch, since the
    * caller would have no way to know which sentences were missing.
    */
-  private async synthesizeLongForm(req: SynthesizeRequest): Promise<SynthesizeResult> {
-    const chunks = chunkScriptForGoogle(req.text, DEFAULT_MAX_CHUNK_BYTES);
+  private async synthesizeLongForm(
+    req: SynthesizeRequest,
+    overrideMaxBytes?: number,
+  ): Promise<SynthesizeResult> {
+    // Gemini-TTS callers pass a smaller maxBytes to honor the
+    // 4KB-text + 8KB-combined limit minus the style prompt size.
+    const chunks = chunkScriptForGoogle(req.text, overrideMaxBytes ?? DEFAULT_MAX_CHUNK_BYTES);
     if (chunks.length === 0) {
       throw new TtsProviderError(
         'Google long-form synthesis received empty text after chunking.',

@@ -75,6 +75,26 @@ export const TIER_PRICING: Record<VoiceTier, TierPricing> = {
     displayLabel: 'Top-tier',
     qualityBand: 'top-tier',
   },
+  // Gemini-TTS (added 2026-05-26). Pricing translated from token-based
+  // billing into approximate $/1M chars at typical narration density.
+  // INPUT: $0.50/1M tokens (2.5) or $1.00/1M tokens (3.1), ~4 chars/token.
+  // OUTPUT: $10/1M audio tokens (2.5) or $20/1M (3.1), ~25 tokens/sec.
+  // For 1M chars (~18 hours of audio) the math lands at the headline
+  // numbers below. CAVEAT: secondary-source pricing; Google's official
+  // page kept timing out when we verified 2026-05-26. Reconcile against
+  // real GCP invoices before relying on these for billing.
+  'gemini-25-flash-tts': {
+    usdPerMillionChars: 16,
+    freeMonthlyChars: 0,
+    displayLabel: 'Gemini 2.5 (style-prompt)',
+    qualityBand: 'premium',
+  },
+  'gemini-31-flash-tts': {
+    usdPerMillionChars: 33,
+    freeMonthlyChars: 0,
+    displayLabel: 'Gemini 3.1 (style-prompt, preview)',
+    qualityBand: 'premium',
+  },
 
   // ElevenLabs — pricing here is per-character at the published
   // Multilingual v2 rate, normalized to per-1M chars for symmetry with

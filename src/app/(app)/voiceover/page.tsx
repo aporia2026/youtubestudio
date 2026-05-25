@@ -12,6 +12,7 @@ import { ScheduleLinkProvider, ScheduleSaverRegistration } from '@/components/ui
 import { ELEVENLABS_MODELS } from '@/lib/elevenlabs';
 import type { VoiceCatalogEntry, TtsProviderId } from '@/lib/tts/types';
 import { UnifiedVoicePicker } from '@/components/voiceover/UnifiedVoicePicker';
+import { GeminiStylePanel } from '@/components/voiceover/GeminiStylePanel';
 import type { QualityBand } from '@/lib/tts/voice-bands';
 import { bandForVoice } from '@/lib/tts/voice-bands';
 import { synthCostUsd } from '@/lib/tts/cost';
@@ -105,6 +106,12 @@ function VoiceoverStudio() {
   const [previewPlaying, setPreviewPlaying] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const previewRef = useRef<HTMLAudioElement>(null);
+  // Ref to the script textarea — used by the Gemini tag picker to
+  // splice an audio tag into the script at the current cursor position.
+  const scriptTextareaRef = useRef<HTMLTextAreaElement>(null);
+  // Gemini-TTS style instructions — sent as input.prompt alongside the
+  // script text. Only used when the selected voice is a Gemini variant.
+  const [stylePrompt, setStylePrompt] = useState('');
 
   // History — instant paint from cache, then refresh from server (migration 0049).
   const [voHistoryItems, setVoHistoryItems] = useState<VoiceoverHistoryEntry[]>(() => getVoiceoverHistoryCached());
@@ -393,13 +400,21 @@ function VoiceoverStudio() {
       let res: Response;
       if (provider === 'google' && selectedGoogleVoice) {
         // New dispatch-aware endpoint — accepts VoiceRef + provider options.
+        // Include stylePrompt only for Gemini-TTS voices; Chirp 3 HD and
+        // other tiers ignore it.
+        const isGemini =
+          selectedGoogleVoice.voice.tier === 'gemini-25-flash-tts' ||
+          selectedGoogleVoice.voice.tier === 'gemini-31-flash-tts';
         res = await fetch('/api/tts/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             voice: selectedGoogleVoice.voice,
             text,
-            options: { providerId: 'google' },
+            options: {
+              providerId: 'google',
+              ...(isGemini && stylePrompt.trim() ? { stylePrompt: stylePrompt.trim() } : {}),
+            },
             projectId,
           }),
         });
@@ -711,6 +726,7 @@ function VoiceoverStudio() {
                 </div>
               </div>
               <textarea
+                ref={scriptTextareaRef}
                 value={text}
                 onChange={e => setText(e.target.value)}
                 placeholder="Paste your script here, or type text to convert to speech..."
@@ -718,6 +734,49 @@ function VoiceoverStudio() {
                 style={{ minHeight: 160 }}
               />
             </div>
+
+            {/* Gemini-TTS style controls — only when selected voice is Gemini */}
+            {(selectedEntry?.voice.tier === 'gemini-25-flash-tts' ||
+              selectedEntry?.voice.tier === 'gemini-31-flash-tts') && (
+              <GeminiStylePanel
+                stylePrompt={stylePrompt}
+                onStylePromptChange={setStylePrompt}
+                geminiVariant={
+                  selectedEntry.voice.tier === 'gemini-31-flash-tts' ? '3.1' : '2.5'
+                }
+                onInsertTag={(insert) => {
+                  const ta = scriptTextareaRef.current;
+                  if (!ta) {
+                    // Fallback: append at end if the textarea isn't mounted.
+                    setText((prev) => `${prev} ${insert}`);
+                    return;
+                  }
+                  // Splice the tag at the current cursor position. A
+                  // single leading/trailing space keeps the surrounding
+                  // text legible. After insertion, restore focus and
+                  // place the cursor right after the inserted tag so
+                  // the user can keep typing.
+                  const start = ta.selectionStart;
+                  const end = ta.selectionEnd;
+                  const before = text.slice(0, start);
+                  const after = text.slice(end);
+                  const needLeadingSpace = before.length > 0 && !/\s$/.test(before);
+                  const needTrailingSpace = after.length > 0 && !/^\s/.test(after);
+                  const fragment =
+                    (needLeadingSpace ? ' ' : '') + insert + (needTrailingSpace ? ' ' : '');
+                  const next = before + fragment + after;
+                  setText(next);
+                  // setSelectionRange must run after React updates the
+                  // textarea value — defer to the next frame.
+                  requestAnimationFrame(() => {
+                    if (!scriptTextareaRef.current) return;
+                    const newPos = start + fragment.length;
+                    scriptTextareaRef.current.focus();
+                    scriptTextareaRef.current.setSelectionRange(newPos, newPos);
+                  });
+                }}
+              />
+            )}
 
             {/* Voice settings */}
             <div className="glass rounded-xl p-5">

@@ -358,9 +358,16 @@ export function UnifiedVoicePicker({
           </div>
         ) : (
           voicesInActiveBandFiltered.map((entry) => {
+            // Disambiguate by tier as well as voiceId because Chirp 3 HD
+            // and the Gemini-TTS variants share voiceId (the API uses
+            // the same voice catalog, the model differs via
+            // `voice.modelName`). Without the tier check, picking
+            // "Charon (Gemini 3.1)" would highlight all three Charon
+            // cards.
             const isSelected =
               selectedEntry?.voice.providerId === entry.voice.providerId &&
-              selectedEntry?.voice.voiceId === entry.voice.voiceId;
+              selectedEntry?.voice.voiceId === entry.voice.voiceId &&
+              selectedEntry?.voice.tier === entry.voice.tier;
             const isPreviewing =
               previewingVoiceId &&
               previewingVoiceId === entry.voice.voiceId;
@@ -368,7 +375,7 @@ export function UnifiedVoicePicker({
             const pricing = TIER_PRICING[entry.voice.tier];
             return (
               <div
-                key={`${entry.voice.providerId}-${entry.voice.voiceId}`}
+                key={`${entry.voice.providerId}-${entry.voice.voiceId}-${entry.voice.tier}`}
                 onClick={() => onSelect(entry)}
                 className="flex items-center gap-3 px-4 py-3 cursor-pointer transition-all"
                 style={{

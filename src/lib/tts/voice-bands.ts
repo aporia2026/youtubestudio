@@ -143,6 +143,6 @@ export function groupVoicesByBand(
 export const GOOGLE_TIERS_BY_BAND: Readonly<Record<QualityBand, GoogleVoiceTier[]>> = {
   draft: ['standard'],
   standard: ['wavenet', 'neural2', 'polyglot'],
-  premium: ['chirp3-hd'],
+  premium: ['chirp3-hd', 'gemini-25-flash-tts', 'gemini-31-flash-tts'],
   'top-tier': ['studio'],
 };

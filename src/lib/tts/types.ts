@@ -39,7 +39,16 @@ export type GoogleVoiceTier =
   | 'neural2'
   | 'polyglot'
   | 'chirp3-hd'
-  | 'studio';
+  | 'studio'
+  // Gemini-TTS models (added 2026-05-26). Reuse the Chirp voice names
+  // (Charon, Aoede, etc.) but synthesize through Gemini's controllable
+  // models — accepts a natural-language style prompt + inline audio
+  // tags like [laughs], [whispering]. See
+  // docs.cloud.google.com/text-to-speech/docs/gemini-tts. The catalog
+  // generates synthetic entries per Chirp voice × Gemini model so the
+  // unified picker shows each as its own card.
+  | 'gemini-25-flash-tts'
+  | 'gemini-31-flash-tts';
 
 /**
  * ElevenLabs "tier" maps onto the model used (multilingual vs turbo).
@@ -107,6 +116,12 @@ export interface GoogleSynthOptions {
     | 'large-home-entertainment-class-device'
     | 'large-automotive-class-device'
     | 'telephony-class-application';
+  /** Gemini-TTS only: natural-language style instructions sent in the
+   *  `input.prompt` field alongside `input.text`. Example:
+   *  "Read this conspiratorially, building to an excited reveal at the
+   *  end." Up to 4,000 bytes; combined with text must not exceed
+   *  8,000 bytes. Ignored when the voice is not a Gemini-TTS variant. */
+  stylePrompt?: string;
 }
 
 export type ProviderSpecificSynthOptions = ElevenLabsSynthOptions | GoogleSynthOptions;

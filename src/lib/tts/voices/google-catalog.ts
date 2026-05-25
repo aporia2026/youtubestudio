@@ -122,6 +122,14 @@ export async function listGoogleVoices(
       displayName: prettifyVoiceName(name),
       gender: mapGender(v.ssmlGender),
     });
+
+    // Synthesize Gemini-TTS variants for every Chirp 3 HD voice. The
+    // Gemini models reuse the same voice names but synthesize through
+    // the controllable Gemini path (input.prompt + inline audio tags).
+    // See _plans note 2026-05-26 + docs.cloud.google.com/text-to-speech/docs/gemini-tts.
+    if (tier === 'chirp3-hd') {
+      entries.push(...synthesizeGeminiVariants({ name, languageCode, gender: v.ssmlGender }));
+    }
   }
 
   cache.set(langKey, { fetchedAt: Date.now(), entries });
@@ -149,6 +157,52 @@ function prettifyVoiceName(raw: string): string {
     return segments.slice(2).join(' ');
   }
   return raw;
+}
+
+/**
+ * For each Chirp 3 HD voice we surface Gemini-TTS sibling entries — one
+ * per controllable model. The voiceId stays the same (Gemini-TTS reuses
+ * the Chirp voice catalog) but the tier shifts to a Gemini tier so the
+ * provider knows to set `voice.modelName` at synthesis time.
+ *
+ * Hebrew + Gemini 3.1 Flash TTS has a known empty-audio bug
+ * (discuss.ai.google.dev/t/.../144297). We omit the 3.1 entry for he-IL
+ * to keep the picker from offering a known-broken combo. The 2.5
+ * variant works in Hebrew.
+ */
+function synthesizeGeminiVariants(args: {
+  name: string;
+  languageCode: string;
+  gender?: string | number | null;
+}): VoiceCatalogEntry[] {
+  const chirpDisplay = prettifyVoiceName(args.name).replace(/ \(Chirp 3 HD\)$/, '');
+  const baseGender = mapGender(args.gender);
+  const out: VoiceCatalogEntry[] = [
+    {
+      voice: {
+        providerId: 'google',
+        voiceId: args.name,
+        languageCode: args.languageCode,
+        tier: 'gemini-25-flash-tts',
+      },
+      displayName: `${chirpDisplay} (Gemini 2.5)`,
+      gender: baseGender,
+    },
+  ];
+  const isHebrew = args.languageCode.toLowerCase().startsWith('he');
+  if (!isHebrew) {
+    out.push({
+      voice: {
+        providerId: 'google',
+        voiceId: args.name,
+        languageCode: args.languageCode,
+        tier: 'gemini-31-flash-tts',
+      },
+      displayName: `${chirpDisplay} (Gemini 3.1)`,
+      gender: baseGender,
+    });
+  }
+  return out;
 }
 
 function mapGender(

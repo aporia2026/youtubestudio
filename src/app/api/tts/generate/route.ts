@@ -297,6 +297,13 @@ function parseOptions(
         typeof r.audioProfile === 'string'
           ? (r.audioProfile as GoogleAudioProfile)
           : undefined,
+      // Gemini-TTS only — natural-language style instructions sent
+      // in the request's input.prompt field. Ignored by every other
+      // Google tier. See src/lib/tts/types.ts → GoogleSynthOptions.
+      stylePrompt:
+        typeof r.stylePrompt === 'string' && r.stylePrompt.trim()
+          ? r.stylePrompt
+          : undefined,
     },
   };
 }
