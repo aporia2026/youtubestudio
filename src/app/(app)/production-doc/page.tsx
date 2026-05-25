@@ -1480,7 +1480,7 @@ type EditResult =
   | { ok: true; imageUrl: string; saliency: ImageSaliencyMap | null }
   | { ok: false; error: string };
 
-function ImageCell({
+export function ImageCell({
   state,
   onRetry,
   onUpload,

@@ -1,0 +1,116 @@
+'use client';
+
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Player, type PlayerRef } from '@remotion/player';
+import { YouTubeVideo } from '@/remotion/compositions/YouTubeVideo';
+import { msToFrame, totalFrames } from '@/remotion/utils';
+import type { VideoConfig } from '@/remotion/types';
+
+/**
+ * Compute the start frame for a given section index using the
+ * VideoConfig's per-shot timing. Shots are produced 1:1 from rows in
+ * `productionDocToVideoConfig`, so `shots[i]` corresponds to
+ * `doc.rows[i]`. If the index is out of range (config not yet ready),
+ * we return null and the player stays at its current position.
+ */
+function sectionStartFrame(config: VideoConfig, sectionIndex: number): number | null {
+  const shot = config.shots[sectionIndex];
+  if (!shot) return null;
+  return msToFrame(shot.startMs, config.fps);
+}
+
+interface StageProps {
+  config: VideoConfig;
+  activeSection: number;
+  /** When true, replaces the player with a placeholder. Used when a
+   *  big inline editor (mask brush, region editor, overlay drag) takes
+   *  over the stage. Phase 1 always renders the player; takeover lands
+   *  in Phase 2. */
+  takeover?: React.ReactNode;
+}
+
+/**
+ * The editor's "Stage" pane — the always-visible live preview of the
+ * active section. Wraps a Remotion `<Player>` and seeks it to the
+ * section's start frame whenever the active section changes. Built-in
+ * Remotion controls handle play/pause/scrub.
+ *
+ * The bottom render-button + stats row from `VideoPlayer` is omitted
+ * here on purpose — the editor has its own chrome elsewhere.
+ */
+export const Stage: React.FC<StageProps> = ({ config, activeSection, takeover }) => {
+  const playerRef = useRef<PlayerRef>(null);
+  const frames = useMemo(() => totalFrames(config), [config]);
+  const [hasInitialSeek, setHasInitialSeek] = useState(false);
+
+  useEffect(() => {
+    if (!playerRef.current) return;
+    const target = sectionStartFrame(config, activeSection);
+    if (target == null) return;
+    playerRef.current.pause();
+    playerRef.current.seekTo(target);
+    setHasInitialSeek(true);
+  }, [activeSection, config]);
+
+  if (takeover) {
+    return (
+      <div
+        className="w-full rounded-xl overflow-hidden border"
+        style={{
+          aspectRatio: '16/9',
+          background: '#0a0a0a',
+          borderColor: 'var(--border)',
+        }}
+      >
+        {takeover}
+      </div>
+    );
+  }
+
+  if (frames <= 0 || config.shots.length === 0) {
+    return (
+      <div
+        className="w-full rounded-xl overflow-hidden border flex items-center justify-center"
+        style={{
+          aspectRatio: '16/9',
+          background: '#0a0a0a',
+          borderColor: 'var(--border)',
+          color: 'var(--text-muted)',
+          fontSize: 14,
+        }}
+      >
+        No shots to preview yet.
+      </div>
+    );
+  }
+
+  const initialFrame = hasInitialSeek
+    ? undefined
+    : Math.min(sectionStartFrame(config, activeSection) ?? 0, Math.max(0, frames - 1));
+
+  return (
+    <div
+      className="w-full rounded-xl overflow-hidden border shadow-xl"
+      style={{ borderColor: 'var(--border)' }}
+    >
+      <Player
+        ref={playerRef}
+        component={YouTubeVideo}
+        durationInFrames={frames}
+        fps={config.fps}
+        compositionWidth={config.width}
+        compositionHeight={config.height}
+        inputProps={{ config }}
+        style={{ width: '100%' }}
+        controls
+        showVolumeControls
+        clickToPlay
+        doubleClickToFullscreen
+        spaceKeyToPlayOrPause
+        loop={false}
+        acknowledgeRemotionLicense
+        {...(initialFrame != null ? { initialFrame } : {})}
+      />
+    </div>
+  );
+};
