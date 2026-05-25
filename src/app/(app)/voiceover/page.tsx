@@ -195,6 +195,33 @@ function VoiceoverStudio() {
       .catch(() => {});
   }, []);
 
+  // Pull workspace TTS settings (migration 0089). Honors:
+  //   - defaultLanguageCode → seeds the picker language
+  //   - allowStudioTier=false → forces showExpensiveTiers off (overrides
+  //     the per-user localStorage preference; the server is authoritative
+  //     and would reject Studio requests anyway)
+  //   - enabledProviders excluding google → hides the Google list entirely
+  useEffect(() => {
+    fetch('/api/workspace/tts-settings')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const eff = data?.effective;
+        if (!eff) return;
+        if (typeof eff.defaultLanguageCode === 'string') {
+          setPickerLanguage(eff.defaultLanguageCode);
+        }
+        if (eff.allowStudioTier === false) {
+          setShowExpensiveTiers(false);
+        }
+        if (Array.isArray(eff.enabledProviders) && !eff.enabledProviders.includes('google')) {
+          setGoogleAvailable(false);
+          setGoogleVoices([]);
+          setSelectedGoogleVoice(null);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   async function loadGoogleVoicesForLanguage(languageCode: string) {
     try {
       const res = await fetch(`/api/tts/voices?provider=google&languageCode=${encodeURIComponent(languageCode)}`);

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
 import { logger } from '@/lib/logger';
+import { apiRoute } from '@/lib/route-helpers';
 import {
   buildElevenLabsVoiceoverKey,
   getNarrationDownloadUrl,
@@ -15,6 +16,7 @@ import {
   type VoiceRef,
   type VoiceTier,
 } from '@/lib/tts/types';
+import { getEffectiveTtsSettings } from '@/lib/tts/workspace-settings';
 
 export const maxDuration = 300;
 
@@ -44,7 +46,7 @@ export const maxDuration = 300;
  * Response: same as the legacy route — `{ url, size }` for projectId
  * paths (proxy URL), `{ url, size }` for standalone paths (presigned R2 GET).
  */
-export async function POST(req: NextRequest) {
+export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   let body: unknown;
   try {
     body = await req.json();
@@ -57,6 +59,51 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: parsed.error }, { status: 400 });
   }
   const { synthReq, projectId } = parsed;
+
+  // Workspace-level guards: Studio tier opt-in + enabled-provider
+  // allowlist. Reads stored settings from workspaces.tts_settings
+  // (migration 0089). UI hides forbidden options but the server is
+  // authoritative — a hand-crafted POST can't bypass.
+  const workspaceSettings = await getEffectiveTtsSettings(session.ws);
+  if (!workspaceSettings.enabledProviders.includes(synthReq.voice.providerId)) {
+    return NextResponse.json(
+      {
+        error: `Provider '${synthReq.voice.providerId}' is disabled for this workspace.`,
+        code: 'provider_disabled',
+      },
+      { status: 403 },
+    );
+  }
+  if (synthReq.voice.tier === 'studio' && !workspaceSettings.allowStudioTier) {
+    return NextResponse.json(
+      {
+        error:
+          'Google Studio tier ($160/1M chars) is disabled for this workspace. ' +
+          'Enable it in Settings → Voiceover if you intend to use it.',
+        code: 'studio_tier_blocked',
+      },
+      { status: 403 },
+    );
+  }
+
+  // If a projectId was supplied, verify it belongs to this workspace
+  // before we let the synth write a media_assets row scoped to a
+  // foreign project. Without this check, a hand-crafted POST could
+  // insert a row anchored to someone else's project. The INSERT
+  // below derives workspace_id from the project, so a cross-workspace
+  // projectId would silently file the asset under the wrong tenant.
+  if (projectId) {
+    const ownerCheck = await sql<{ workspace_id: string }>`
+      SELECT workspace_id FROM projects WHERE id = ${projectId}::uuid LIMIT 1
+    `;
+    const ownerWs = ownerCheck.rows[0]?.workspace_id;
+    if (!ownerWs) {
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    }
+    if (ownerWs !== session.ws) {
+      return NextResponse.json({ error: 'Project not in this workspace' }, { status: 403 });
+    }
+  }
 
   try {
     const result = await synthesize(synthReq);
@@ -151,7 +198,7 @@ export async function POST(req: NextRequest) {
       { status: 500 },
     );
   }
-}
+});
 
 // ─── Request parsing ─────────────────────────────────────────────────────────
 
