@@ -69,11 +69,35 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     if (!row.r2_key || row.r2_bucket !== narrationBucket) {
       if (!row.url) return NextResponse.json({ error: 'No audio url' }, { status: 404 });
 
-      let urlHost = '';
+      let parsedUrl: URL;
       try {
-        urlHost = new URL(row.url).hostname;
+        parsedUrl = new URL(row.url);
       } catch {
+        logger.error('voiceovers/[id]/audio: URL parse failed', { id, urlSnippet: row.url.slice(0, 64) });
         return NextResponse.json({ error: 'Invalid audio url' }, { status: 502 });
+      }
+      const urlHost = parsedUrl.hostname;
+
+      // Stale presigned R2 narration URL — common on legacy rows where
+      // `r2_bucket`/`r2_key` weren't populated on insert. The path is
+      // the R2 key (virtual-hosted style: `<bucket>.<account>.r2.
+      // cloudflarestorage.com/<key>?X-Amz-...`), so re-stream through
+      // the SDK with current credentials and ignore the expired signature.
+      if (urlHost.startsWith(`${narrationBucket}.`) && urlHost.endsWith('.r2.cloudflarestorage.com')) {
+        const r2Key = parsedUrl.pathname.replace(/^\//, '');
+        if (!r2Key) {
+          return NextResponse.json({ error: 'Empty R2 key in audio url' }, { status: 502 });
+        }
+        const range = req.headers.get('range');
+        const r2 = await streamFromNarrationBucket(r2Key, range);
+        if (!r2.body) return NextResponse.json({ error: 'Audio not found in storage' }, { status: 404 });
+        const headers = new Headers();
+        headers.set('Content-Type', r2.contentType || 'audio/mpeg');
+        if (typeof r2.contentLength === 'number') headers.set('Content-Length', String(r2.contentLength));
+        if (r2.acceptRanges) headers.set('Accept-Ranges', r2.acceptRanges);
+        if (r2.contentRange) headers.set('Content-Range', r2.contentRange);
+        headers.set('Cache-Control', 'private, max-age=86400, immutable');
+        return new Response(r2.body, { status: r2.status, headers });
       }
 
       if (urlHost.endsWith('.blob.vercel-storage.com')) {
