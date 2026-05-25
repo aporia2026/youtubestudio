@@ -53,6 +53,7 @@ export type AppFeature =
   | 'video-composer'
   // Grow
   | 'channel-analyze'
+  | 'channel-description'
   | 'channel-naming'
   | 'competitor-analysis'
   | 'competitor-ideas'
@@ -110,6 +111,7 @@ export const APP_FEATURES: AppFeatureSpec[] = [
 
   // ─── Grow ────────────────────────────────────────────────────────────
   { id: 'channel-analyze', label: 'Channel Analyze', description: 'Analyzes a YouTube channel for positioning + opportunities', section: 'grow', defaultModelId: SONNET },
+  { id: 'channel-description', label: 'Channel Description', description: 'Generates the YouTube "About" description from a brief + brand-kit voice', section: 'grow', defaultModelId: HAIKU },
   { id: 'channel-naming', label: 'Channel Naming', description: 'Generates brandable channel names + @handles', section: 'grow', defaultModelId: SONNET },
   { id: 'competitor-analysis', label: 'Competitor Analysis', description: 'Deep competitor intelligence + content patterns', section: 'grow', defaultModelId: SONNET },
   { id: 'competitor-ideas', label: 'Competitor Ideas', description: 'Generates ideas inspired by a competitor channel', section: 'grow', defaultModelId: SONNET },

@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { formatNumber } from '@/lib/utils';
+import { GenerateDescriptionModal } from '@/components/channel/GenerateDescriptionModal';
 
 interface Channel {
   id: string;
@@ -60,6 +61,12 @@ export default function ChannelPage() {
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [loadingVideos, setLoadingVideos] = useState(false);
   const [uploadingThumbnail, setUploadingThumbnail] = useState<string | null>(null);
+  // Channel description + AI-generator state. Description is what gets
+  // persisted to channels.description on create; brief is what gets stored
+  // alongside it so the next regeneration prefills with the prior brief.
+  const [channelDescription, setChannelDescription] = useState('');
+  const [channelDescriptionBrief, setChannelDescriptionBrief] = useState('');
+  const [descModalOpen, setDescModalOpen] = useState(false);
 
   useEffect(() => {
     fetchChannels();
@@ -117,11 +124,15 @@ export default function ChannelPage() {
           accountEmail: accountEmail || undefined,
           accountColor,
           accountApiKey: accountApiKey || undefined,
+          // Optional — fall through to the YouTube-fetched About when blank.
+          description: channelDescription.trim() || undefined,
+          descriptionBrief: channelDescriptionBrief.trim() || undefined,
         }),
       });
       if (!res.ok) { const e = await res.json(); throw new Error(e.error); }
       toast.success('Channel added!');
       setChannelUrl(''); setChannelNiche(''); setAccountLabel(''); setAccountEmail(''); setAccountApiKey('');
+      setChannelDescription(''); setChannelDescriptionBrief('');
       fetchChannels();
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Failed to add channel');
@@ -337,6 +348,35 @@ export default function ChannelPage() {
               </div>
             </div>
           </div>
+          {/* Description (optional on add — falls back to the YouTube About if left blank) */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>
+                Description <span style={{ color: 'var(--text-muted)' }}>(optional — uses YouTube About if blank)</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => setDescModalOpen(true)}
+                disabled={!channelUrl.trim()}
+                className="text-xs flex items-center gap-1 transition-colors"
+                style={{
+                  color: channelUrl.trim() ? 'var(--accent-purple-bright)' : 'var(--text-muted)',
+                  cursor: channelUrl.trim() ? 'pointer' : 'not-allowed',
+                }}
+                title={channelUrl.trim() ? 'Generate with AI' : 'Add a YouTube URL or @handle first'}
+              >
+                ✨ Generate with AI
+              </button>
+            </div>
+            <textarea
+              value={channelDescription}
+              onChange={e => setChannelDescription(e.target.value)}
+              placeholder="Write or generate the channel's About copy. Leave blank to use the description from YouTube."
+              rows={4}
+              className="input-field"
+              style={{ resize: 'vertical' }}
+            />
+          </div>
         </div>
         <button
           onClick={addChannel}
@@ -500,6 +540,13 @@ export default function ChannelPage() {
                             📊 Analyze
                           </button>
                           <a
+                            href={`/channel/${channel.id}/description`}
+                            className="btn-secondary text-sm"
+                            title="Edit the YouTube About description — or regenerate it with AI"
+                          >
+                            ✨ Description
+                          </a>
+                          <a
                             href={`/channel/${channel.id}/brand-kit`}
                             className="btn-secondary text-sm"
                             title="Voice / tone / banned-phrase guidance auto-piped into script generation when this channel is active"
@@ -611,6 +658,24 @@ export default function ChannelPage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* AI description generator — shared with /channel/[id]/description.
+          Unconnected mode here (no channelId yet) so it uses the form's
+          current name (the URL doubles as the name until YouTube resolves
+          the real one server-side) and niche. */}
+      <GenerateDescriptionModal
+        open={descModalOpen}
+        onClose={() => setDescModalOpen(false)}
+        channelName={channelUrl}
+        channelNiche={channelNiche}
+        initialBrief={channelDescriptionBrief}
+        currentDescription={channelDescription || undefined}
+        onApply={({ description, brief }) => {
+          setChannelDescription(description);
+          setChannelDescriptionBrief(brief);
+          toast.success('Description applied — review then save');
+        }}
+      />
     </div>
   );
 }

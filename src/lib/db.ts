@@ -290,6 +290,7 @@ export async function initDatabase() {
   try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS account_color TEXT DEFAULT '#7c3aed'`; } catch {}
   try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS notes TEXT`; } catch {}
   try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS oauth_connected BOOLEAN DEFAULT false`; } catch {}
+  try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS description_brief TEXT`; } catch {}
 
   // OAuth tokens table (encrypted access + refresh tokens)
   await sql`
@@ -412,6 +413,7 @@ export async function ensureChannelsSchema() {
     try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS account_color TEXT DEFAULT '#7c3aed'`; } catch {}
     try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS notes TEXT`; } catch {}
     try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS oauth_connected BOOLEAN DEFAULT false`; } catch {}
+    try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS description_brief TEXT`; } catch {}
     channelsMigrated = true;
   } catch (err) {
     logger.error('ensureChannelsSchema error', { detail: err instanceof Error ? err.message : String(err) });
