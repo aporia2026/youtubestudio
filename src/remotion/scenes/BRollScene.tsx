@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { AbsoluteFill, Img, Loop, OffthreadVideo, useCurrentFrame, useVideoConfig, interpolate } from 'remotion';
 import { KenBurns } from '../components/KenBurns';
-import { LowerThird } from '../components/LowerThird';
+import { LowerThird, type LowerThirdVariant } from '../components/LowerThird';
 import { FloatingElement } from '../components/FloatingElement';
 import { SceneTransition } from '../components/SceneTransition';
 import { VideoShot, BrandKit } from '../types';
@@ -17,6 +17,11 @@ interface BRollSceneProps {
   /** When false, suppress the scene-to-scene cross fade (no opening
    *  fade-in from black, no closing fade-out). Defaults to `true`. */
   fadeEnabled?: boolean;
+  /** Glyph treatment for the LowerThird `onScreenText` overlay. Phase 2
+   *  of `_plans/2026-05-25-style-aware-overlay-text.md`. Defaults to
+   *  'default' so existing scenes render unchanged. SceneRouter sets
+   *  'doodle-yellow' when the doc's style is doodle_explainer_2. */
+  lowerThirdVariant?: LowerThirdVariant;
 }
 
 // Cycle Ken Burns directions based on shot index to avoid repetition
@@ -59,6 +64,7 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
   shotIndex = 0,
   suppressLowerThird = false,
   fadeEnabled = true,
+  lowerThirdVariant = 'default',
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -335,6 +341,7 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
           totalFrames={durationInFrames}
           delay={12}
           exitBeforeEnd={15}
+          variant={lowerThirdVariant}
         />
       )}
 

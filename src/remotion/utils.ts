@@ -1370,6 +1370,10 @@ export function productionDocToVideoConfig(
     sceneFadeEnabled: doc.scene_fade_enabled,
     captions: opts.captions,
     textOverlays: doc.text_overlays,
+    // Phase 2 of _plans/2026-05-25-style-aware-overlay-text.md: forward
+    // the doc's style preset so Remotion components can style-vary
+    // their rendering. Undefined ⇒ all components use their defaults.
+    styleId: doc.style_preset,
   };
 
   if (!opts.alignment) return config;

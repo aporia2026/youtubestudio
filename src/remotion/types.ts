@@ -353,6 +353,17 @@ export interface VideoConfig {
    *  overlays sit on top of any number of consecutive shots without
    *  being tied to a single row. */
   textOverlays?: TextOverlay[];
+  /** Production-doc style id pinned at the doc level (e.g.
+   *  `doodle_explainer_2`). Forwarded from `ProductionDoc.style_id`
+   *  so Remotion components can style-vary their rendering — Phase 2
+   *  of `_plans/2026-05-25-style-aware-overlay-text.md` uses this on
+   *  `<LowerThird>` + `<TextOverlayLayer>` to switch on-screen text
+   *  to the yellow bubble-font treatment for the doodle_explainer_2
+   *  built-in. Other components are free to read it via
+   *  `useVideoConfig()` when adding their own style-aware behavior.
+   *  Optional and unspecified ⇒ every component uses its default
+   *  rendering — no regression for any existing doc. */
+  styleId?: string;
 }
 
 /** A single doc-level text overlay. Identified by `id` so commands
