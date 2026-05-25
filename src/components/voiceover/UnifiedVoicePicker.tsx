@@ -33,7 +33,18 @@ import {
   type QualityBand,
 } from '@/lib/tts/voice-bands';
 
-type ProviderFilter = 'all' | TtsProviderId;
+/**
+ * Browse filters. Not strictly providers — 'gemini' is a capability
+ * filter (Gemini-TTS variants only, which accept input.prompt for
+ * natural-language style control). Surfaced alongside the provider
+ * options so the user can narrow to "voices I can give style
+ * instructions to" with one click.
+ */
+type ProviderFilter = 'all' | TtsProviderId | 'gemini';
+
+function isGeminiTier(tier: string): boolean {
+  return tier === 'gemini-25-flash-tts' || tier === 'gemini-31-flash-tts';
+}
 
 interface UnifiedVoicePickerProps {
   /** ElevenLabs voices already converted to catalog-entry shape. Empty
@@ -161,25 +172,28 @@ export function UnifiedVoicePicker({
   }, [showExpensiveTiers, selectedEntry, elevenLabsCategoryById]);
 
   const voicesInActiveBand = grouped.byBand[activeBand] ?? [];
-  const voicesInActiveBandFiltered = useMemo(
-    () =>
-      providerFilter === 'all'
-        ? voicesInActiveBand
-        : voicesInActiveBand.filter((v) => v.voice.providerId === providerFilter),
-    [voicesInActiveBand, providerFilter],
-  );
+  const voicesInActiveBandFiltered = useMemo(() => {
+    if (providerFilter === 'all') return voicesInActiveBand;
+    if (providerFilter === 'gemini') {
+      return voicesInActiveBand.filter((v) => isGeminiTier(v.voice.tier));
+    }
+    return voicesInActiveBand.filter((v) => v.voice.providerId === providerFilter);
+  }, [voicesInActiveBand, providerFilter]);
 
-  // Per-provider counts in the active band — drives the filter button
-  // labels and disables a button when its provider has no voices in
-  // the current band.
-  const providerCountsInBand = useMemo(() => {
+  // Per-filter counts in the active band — drives the button labels and
+  // disables a button when its filter would yield zero voices.
+  const filterCountsInBand = useMemo(() => {
     let elevenlabs = 0;
     let google = 0;
+    let gemini = 0;
     for (const v of voicesInActiveBand) {
       if (v.voice.providerId === 'elevenlabs') elevenlabs++;
-      else if (v.voice.providerId === 'google') google++;
+      else if (v.voice.providerId === 'google') {
+        google++;
+        if (isGeminiTier(v.voice.tier)) gemini++;
+      }
     }
-    return { elevenlabs, google, all: voicesInActiveBand.length };
+    return { elevenlabs, google, gemini, all: voicesInActiveBand.length };
   }, [voicesInActiveBand]);
 
   // Show the filter row only when both providers actually have voices
@@ -263,15 +277,23 @@ export function UnifiedVoicePicker({
         {/* Provider filter + expensive-tiers toggle */}
         <div className="flex items-center justify-between gap-2 flex-wrap">
           {showProviderFilter ? (
-            <div className="flex gap-1">
+            <div className="flex gap-1 flex-wrap">
               {(
                 [
-                  { id: 'all' as const, label: 'All', count: providerCountsInBand.all },
-                  { id: 'google' as const, label: 'Google', count: providerCountsInBand.google },
+                  { id: 'all' as const, label: 'All', count: filterCountsInBand.all, title: undefined },
+                  { id: 'google' as const, label: 'Google', count: filterCountsInBand.google, title: undefined },
                   {
                     id: 'elevenlabs' as const,
                     label: 'ElevenLabs',
-                    count: providerCountsInBand.elevenlabs,
+                    count: filterCountsInBand.elevenlabs,
+                    title: undefined,
+                  },
+                  {
+                    id: 'gemini' as const,
+                    label: 'Style-prompt',
+                    count: filterCountsInBand.gemini,
+                    title:
+                      'Voices that accept natural-language style instructions (Gemini 2.5 / 3.1 Flash TTS).',
                   },
                 ] as const
               ).map((opt) => {
@@ -282,6 +304,7 @@ export function UnifiedVoicePicker({
                     key={opt.id}
                     onClick={() => setProviderFilter(opt.id)}
                     disabled={disabled}
+                    title={opt.title}
                     className="px-1.5 py-0.5 rounded text-[11px] transition-all"
                     style={{
                       background: isActive ? 'rgba(124,58,237,0.2)' : 'var(--bg-secondary)',
@@ -352,9 +375,11 @@ export function UnifiedVoicePicker({
 
         {voicesInActiveBandFiltered.length === 0 ? (
           <div className="p-4 text-center text-xs" style={{ color: 'var(--text-muted)' }}>
-            {providerFilter !== 'all'
-              ? `No ${providerFilter === 'google' ? 'Google' : 'ElevenLabs'} ${BAND_LABELS[activeBand]} voices.`
-              : `No ${BAND_LABELS[activeBand]} voices for ${LANGUAGE_OPTIONS.find((l) => l.code === languageCode)?.label ?? languageCode}.`}
+            {providerFilter === 'all'
+              ? `No ${BAND_LABELS[activeBand]} voices for ${LANGUAGE_OPTIONS.find((l) => l.code === languageCode)?.label ?? languageCode}.`
+              : providerFilter === 'gemini'
+                ? `No style-prompt voices in ${BAND_LABELS[activeBand]} for this language.`
+                : `No ${providerFilter === 'google' ? 'Google' : 'ElevenLabs'} ${BAND_LABELS[activeBand]} voices.`}
           </div>
         ) : (
           voicesInActiveBandFiltered.map((entry) => {
