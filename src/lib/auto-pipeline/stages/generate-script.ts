@@ -26,7 +26,11 @@ import { scriptGenerationPrompt } from '../../prompts';
 import { generateTextWithFallback } from '../../ai';
 import { GenerateFailure } from '../../ai-fallback';
 import { resolveChain } from '../resolve-chain';
+import { persistArtefact } from '../db';
 import { countWords } from '../../utils';
+import { QA_PRE_CHECK_ENABLED } from '../../feature-flags';
+import { runPreQaSelfCheck } from '../../script-critics/pre-qa-self-check';
+import { logger } from '../../logger';
 import type { StageHandlerContext, StageOutcome } from '../types';
 
 export async function handleGenerateScript(ctx: StageHandlerContext): Promise<StageOutcome> {
@@ -148,10 +152,37 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
     throw err;
   }
 
+  // Pre-QA self-check (Lever B of the QA hardening plan). When the
+  // QA_PRE_CHECK_ENABLED flag is on, the generator self-criticizes the
+  // draft against the same nuclear-mode rubric the critic panel will
+  // apply, then rewrites the single weakest section. Resilient: any
+  // failure falls back to the original draft. Only runs on first-pass
+  // generation — qa_retry has the fix list from the prior verdict and
+  // a self-check there would compete with those directives.
+  let scriptText = result.text;
+  let selfCheckRan: 'kept' | 'rewrote' | 'skipped' | null = null;
+  let selfCheckSelfScore: number | null = null;
+  if (QA_PRE_CHECK_ENABLED) {
+    const selfCheck = await runPreQaSelfCheck({
+      scriptText,
+      niche,
+      modelId: result.modelUsed,
+      spend: { workspaceId: video.workspace_id, projectId, sourceScriptId: null },
+    });
+    selfCheckRan = selfCheck.decision;
+    selfCheckSelfScore = selfCheck.selfScore;
+    scriptText = selfCheck.scriptText;
+    logger.info('[qa pre-check] applied to pipeline', {
+      pipeline_video_id: video.id,
+      project_id: projectId,
+      decision: selfCheck.decision,
+      self_score: selfCheck.selfScore,
+    });
+  }
+
   // Spoken-word count via the canonical `countWords` helper (which
   // strips production cues internally — single source of truth
   // with the narrator portal so the gate's count is honest).
-  const scriptText = result.text;
   const spokenWordCount = countWords(scriptText);
   const estimatedDurationSeconds = Math.round((spokenWordCount / 140) * 60);
 
@@ -170,9 +201,33 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
       spokenWordCount,
       estimatedDurationSeconds,
       result.modelUsed,
-      JSON.stringify({ pipeline_run_video_id: video.id, fallback_attempts: result.attempts.length }),
+      JSON.stringify({
+        pipeline_run_video_id: video.id,
+        fallback_attempts: result.attempts.length,
+        pre_qa_self_check: selfCheckRan,
+        pre_qa_self_score: selfCheckSelfScore,
+      }),
     ],
   );
+
+  // Persist a per-attempt artefact when the self-check ran so the
+  // pipeline detail UI can show "self-check kept|rewrote draft" next
+  // to the script-generation step. Skipped/disabled cases are not
+  // logged as artefacts to keep the timeline focused on real actions.
+  if (selfCheckRan === 'kept' || selfCheckRan === 'rewrote') {
+    await persistArtefact({
+      pipelineRunVideoId: video.id,
+      stage: 'generating_script',
+      attemptNumber: 1,
+      artefactKind: 'pre_qa_self_check',
+      artefactId: sRows[0].id,
+      costUsd: 0,
+      metadata: {
+        decision: selfCheckRan,
+        self_score: selfCheckSelfScore,
+      },
+    });
+  }
 
   const nextStage = preset.script_gate_enabled ? 'awaiting_script_gate' : 'running_qa';
 

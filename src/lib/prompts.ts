@@ -2,6 +2,8 @@
 import { buildConstraintsPromptBlock, buildQAConstraintsPromptBlock, type ScriptConstraints } from './script-options';
 import { buildBrandKitPromptBlock, type ChannelBrandKit } from './channel-brand-kit';
 import { CHANNEL_DESCRIPTION_STYLES, type ChannelDescriptionStyle } from './channel-description-styles';
+import { QA_GENERATOR_V2_ENABLED } from './feature-flags';
+import { buildCriticRubricDigest } from './script-critics/generator-digest';
 
 // Re-export so existing callers that pull these from prompts.ts (server-side
 // API routes already wired in this file's neighbourhood) keep working.
@@ -249,7 +251,7 @@ If the user's brief contains a "USER DIRECTION" block at the top of the user mes
 - Spoken words = every word the narrator says out loud, EXCLUDING bracketed cues like [VISUAL CUE: ...], [PAUSE], [SFX: ...], [B-ROLL: ...] (these don't count toward duration)
 - Hitting the spoken word count is a HARD requirement, not a suggestion. Going short is worse than going long — a 6-minute script returned for a 15-minute slot is a complete failure regardless of quality
 - Do NOT pad with filler, repetition, or generic sentences to hit the target. Hit it through real substance: more specific examples, more concrete data points, deeper exploration of each angle, additional pattern interrupts, more sensory detail in stories
-- Plan the section budget BEFORE you start writing. If a section runs short, expand it with another concrete example or a deeper layer of insight — never with empty calories${brandKitBlock}`,
+- Plan the section budget BEFORE you start writing. If a section runs short, expand it with another concrete example or a deeper layer of insight — never with empty calories${brandKitBlock}${QA_GENERATOR_V2_ENABLED ? buildCriticRubricDigest() : ''}`,
 
     user: `Write a complete, publish-ready YouTube script that would score 85+ on a Nuclear QA review.
 ${additionalContext && additionalContext.trim() ? `

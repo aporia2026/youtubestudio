@@ -87,7 +87,25 @@ function loadSkillFile(filename: string): SkillSpec {
   return parseSkill(text, filename);
 }
 
-export const HOOK_COACH = loadSkillFile('hook-coach.md');
-export const SUBSTANCE_AUDITOR = loadSkillFile('substance-auditor.md');
-export const FLOW_CRITIC = loadSkillFile('flow-critic.md');
+/**
+ * V2 rubric switch (Lever A of the QA hardening plan). When
+ * QA_RUBRIC_V2_ENABLED=true, load the rebuilt rubrics with anchor
+ * examples, per-category deduction lists, and a self-criticism step.
+ * V1 stays in the repo as the rollback path. The flag is resolved
+ * here at module init (file reads are synchronous), so a redeploy is
+ * needed to flip it — the right granularity for a load-bearing change.
+ *
+ * Importing the flag inline (not at top of file) so this module's
+ * runtime side-effect (file reads) survives even if the flag module
+ * has its own initialisation order. The flag is read once; cached
+ * naturally by module evaluation.
+ */
+const v2Enabled = process.env.QA_RUBRIC_V2_ENABLED === 'true';
+const HOOK_FILE = v2Enabled ? 'hook-coach.v2.md' : 'hook-coach.md';
+const SUBSTANCE_FILE = v2Enabled ? 'substance-auditor.v2.md' : 'substance-auditor.md';
+const FLOW_FILE = v2Enabled ? 'flow-critic.v2.md' : 'flow-critic.md';
+
+export const HOOK_COACH = loadSkillFile(HOOK_FILE);
+export const SUBSTANCE_AUDITOR = loadSkillFile(SUBSTANCE_FILE);
+export const FLOW_CRITIC = loadSkillFile(FLOW_FILE);
 export const SCRIPT_CRITICS: SkillSpec[] = [HOOK_COACH, SUBSTANCE_AUDITOR, FLOW_CRITIC];

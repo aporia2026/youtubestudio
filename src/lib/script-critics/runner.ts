@@ -19,6 +19,8 @@
 
 import { generateText, getModelById } from '@/lib/ai';
 import { parseLlmJson } from '@/lib/parse-llm-json';
+import { getWorkspaceQaSettings } from '@/lib/qa-workspace-settings';
+import { logger } from '@/lib/logger';
 import type {
   ScriptCriticContext,
   ScriptCriticReport,
@@ -81,13 +83,59 @@ interface RunScriptPanelArgs extends ScriptCriticContext {
  *  Chair always defaults to Gemini 3.1 Pro with a fallback when that
  *  model isn't provisioned. */
 export async function runScriptPanel(args: RunScriptPanelArgs): Promise<RunScriptPanelResult> {
+  // Lever D: when ctx.aggressiveness === 'nuclear' AND the workspace
+  // has picked a nuclear-mode model in Settings → QA, override the
+  // critic-phase modelId to that model. Drafts + deliberation get the
+  // upgraded model; the Chair has its own model selection so it stays
+  // as-is.
+  //
+  // Source of truth: workspace_model_defaults table, scope
+  // 'qa_nuclear_model'. UI is at /settings → QA. No env var fallback —
+  // the workspace setting is the only way to enable the upgrade. If
+  // workspaceId is not available on this call (e.g. manual /critics
+  // page that didn't thread spend context through), the upgrade is
+  // skipped because there's no workspace to read the setting from.
+  //
+  // Standard and brutal aggressiveness modes are untouched.
+  let effectiveCriticModelId = args.modelId;
+  let nuclearUpgradeDecision: 'off' | 'upgraded' | 'no_workspace_in_context' | 'no_setting_for_workspace' = 'off';
+  if (args.aggressiveness === 'nuclear') {
+    const workspaceId = args.spend?.workspaceId ?? null;
+    if (!workspaceId) {
+      nuclearUpgradeDecision = 'no_workspace_in_context';
+    } else {
+      try {
+        const wsSettings = await getWorkspaceQaSettings(workspaceId);
+        if (wsSettings.nuclearModelId && getModelById(wsSettings.nuclearModelId)) {
+          effectiveCriticModelId = wsSettings.nuclearModelId;
+          nuclearUpgradeDecision = 'upgraded';
+        } else {
+          nuclearUpgradeDecision = 'no_setting_for_workspace';
+        }
+      } catch (err) {
+        // A DB hiccup here should never block QA — log and fall through
+        // to the caller's modelId. The next attempt may succeed.
+        logger.warn('[qa nuclear-upgrade] settings load failed', {
+          workspace_id: workspaceId,
+          detail: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    logger.info('[qa nuclear-upgrade]', {
+      decision: nuclearUpgradeDecision,
+      caller_model_id: args.modelId,
+      effective_critic_model_id: effectiveCriticModelId,
+      aggressiveness: args.aggressiveness,
+    });
+  }
+
   const ctx: ScriptCriticContext = {
     script: args.script,
     niche: args.niche,
     passNumber: args.passNumber,
     previousFeedback: args.previousFeedback,
     aggressiveness: args.aggressiveness,
-    modelId: args.modelId,
+    modelId: effectiveCriticModelId,
     spend: args.spend,
   };
 

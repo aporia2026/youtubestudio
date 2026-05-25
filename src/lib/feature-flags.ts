@@ -89,6 +89,77 @@ export const COLLAGE_TESTER_PUBLIC = process.env.NEXT_PUBLIC_COLLAGE_TESTER === 
 export const AUTO_UPSCALE_ENABLED = process.env.AUTO_UPSCALE_ENABLED !== 'false';
 
 /**
+ * Pre-QA self-check (Lever B of the QA hardening plan, see
+ * `_plans/2026-05-26-qa-hardening.md`).
+ *
+ * When enabled, every fresh script in the auto-pipeline goes through
+ * one self-criticism pass before the critic panel runs. The generator
+ * reads the same rubric the critics use, identifies the weakest
+ * section, and rewrites it. The critic panel then sees the
+ * self-improved draft.
+ *
+ * Default OFF for existing workspaces (preserves current cost + latency
+ * profile). Turn on by setting `QA_PRE_CHECK_ENABLED=true` in Vercel /
+ * `.env.local`. The self-check skips on qa-retry attempts because the
+ * fix list from the prior verdict already drives that revision — running
+ * a self-check on top would compete with the fix-list directives.
+ *
+ * Default-OFF pattern (`=== 'true'`): an unset env var evaluates to off
+ * so a fresh deploy keeps the current behavior without surprise.
+ */
+export const QA_PRE_CHECK_ENABLED = process.env.QA_PRE_CHECK_ENABLED === 'true';
+
+/**
+ * Critic rubric V2 (Lever A of the QA hardening plan).
+ *
+ * When enabled, the script-critic skills loader reads `hook-coach.v2.md`,
+ * `substance-auditor.v2.md`, and `flow-critic.v2.md` instead of the V1
+ * files. The V2 rubrics rebuild the structure with:
+ *   - Anchor examples at known score points (100, 70, 40) showing what
+ *     each looks like.
+ *   - Explicit "lose N points for X" deduction lists per category.
+ *   - A self-criticism step at the end where the critic re-reads its own
+ *     scoring and asks "would a harsher reviewer score this lower?"
+ *
+ * Default OFF so existing presets keep their current scoring distribution
+ * until you intentionally flip the switch (then watch `/qa-stats`).
+ * Setting `QA_RUBRIC_V2_ENABLED=true` in the environment activates V2.
+ *
+ * The V1 files stay in the repo as the rollback path. The loader resolves
+ * the flag at module-init time (file reads are synchronous), so flipping
+ * the flag requires a redeploy — which is the right granularity for a
+ * change this load-bearing.
+ */
+export const QA_RUBRIC_V2_ENABLED = process.env.QA_RUBRIC_V2_ENABLED === 'true';
+
+/**
+ * Stronger generator prompt (Lever C of the QA hardening plan).
+ *
+ * When enabled, the auto-pipeline's script generator inlines a short
+ * digest of the critic rubric (pulled from SCRIPT_CRITICS at runtime,
+ * so it tracks whichever rubric is loaded — V1 or V2) into its system
+ * prompt. The generator targets the criteria it knows it will be
+ * evaluated against, so the first draft already aims at 100.
+ *
+ * Pairs with QA_RUBRIC_V2_ENABLED: turning V2 on first means the digest
+ * surfaces V2's tighter rubric to the generator. Turning C on without A
+ * still helps (the generator sees the V1 rubric digest), but the gain
+ * is largest when A and C are both on.
+ *
+ * Default OFF. Set `QA_GENERATOR_V2_ENABLED=true` in the environment to
+ * enable. The recommended rollout sequence (see /qa-stats):
+ *   1. Lever B (QA_PRE_CHECK_ENABLED) first — cheapest, fastest signal.
+ *   2. Lever A (QA_RUBRIC_V2_ENABLED) — harsher grading.
+ *   3. Lever C (QA_GENERATOR_V2_ENABLED) — aim the generator at the new bar.
+ */
+export const QA_GENERATOR_V2_ENABLED = process.env.QA_GENERATOR_V2_ENABLED === 'true';
+
+// Lever D of the QA hardening plan (nuclear-mode critic model upgrade)
+// is configured per-workspace via Settings → QA, not via env vars. The
+// runner reads from workspace_model_defaults (scope: 'qa_nuclear_model').
+// See src/lib/qa-workspace-settings.ts.
+
+/**
  * Atlas Cloud vendor kill switch (see `src/lib/atlas-cloud-images.ts`
  * + `src/lib/image-gen-dispatch.ts`). Default-ON: any model whose
  * registry spec has `provider: 'atlas'` is reachable from the picker

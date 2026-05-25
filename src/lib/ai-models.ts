@@ -144,7 +144,12 @@ export function getFeatureSpec(id: AppFeature): AppFeatureSpec | undefined {
 
 export const AI_MODELS: AIModel[] = [
   // Anthropic
-  { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic', contextWindow: '1M', description: 'Most capable — best for complex analysis', tier: 'flagship', inputCostPerMTok: 15, outputCostPerMTok: 75 },
+  // Pricing for Opus 4.7 / 4.6 verified from platform.claude.com/docs/en/about-claude/pricing
+  // on 2026-05-26: $5/MTok input, $25/MTok output, $0.50/MTok cache reads, 1M context.
+  // (Earlier Opus tiers — 4.1, 4 — remained at $15/$75.) Added for Lever D of the QA
+  // hardening plan: critic drafts + deliberation can upgrade to Opus 4.7 in nuclear mode.
+  { id: 'claude-opus-4-7', name: 'Claude Opus 4.7', provider: 'anthropic', contextWindow: '1M', description: 'Anthropic flagship — strongest model for nuclear-mode QA critics', tier: 'flagship', inputCostPerMTok: 5, outputCostPerMTok: 25 },
+  { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic', contextWindow: '1M', description: 'Most capable — best for complex analysis', tier: 'flagship', inputCostPerMTok: 5, outputCostPerMTok: 25 },
   { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', provider: 'anthropic', contextWindow: '1M', description: 'Balanced speed & quality', tier: 'balanced', inputCostPerMTok: 3, outputCostPerMTok: 15 },
   { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', provider: 'anthropic', contextWindow: '1M', description: 'Fast & cost-effective', tier: 'fast', inputCostPerMTok: 1, outputCostPerMTok: 5 },
   // OpenAI — pricing from openai.com/api/pricing as of 2025-2026; verify per-call.

@@ -7,6 +7,7 @@ import { ModelDefaultsPanel } from '@/components/settings/ModelDefaultsPanel';
 import { TemplatesPanel } from '@/components/settings/TemplatesPanel';
 import { EditorPrefsPanel } from '@/components/settings/EditorPrefsPanel';
 import { VoiceoverSettingsPanel } from '@/components/settings/VoiceoverSettingsPanel';
+import { QaSettingsPanel } from '@/components/settings/QaSettingsPanel';
 
 interface Niche {
   id: string;
@@ -25,7 +26,7 @@ export default function SettingsPage() {
   const [newNicheDesc, setNewNicheDesc] = useState('');
   const [newNicheKeywords, setNewNicheKeywords] = useState('');
   const [addingNiche, setAddingNiche] = useState(false);
-  const [activeSection, setActiveSection] = useState<'niches' | 'api' | 'models' | 'templates' | 'editor' | 'voiceover' | 'notifications' | 'integrations' | 'about'>('niches');
+  const [activeSection, setActiveSection] = useState<'niches' | 'api' | 'models' | 'templates' | 'editor' | 'voiceover' | 'qa' | 'notifications' | 'integrations' | 'about'>('niches');
   const [keyStatus, setKeyStatus] = useState<KeyStatus>({});
   const [keyStatusLoading, setKeyStatusLoading] = useState(true);
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
@@ -250,6 +251,7 @@ export default function SettingsPage() {
     { id: 'templates' as const, label: '📋 Templates' },
     { id: 'editor' as const, label: '🎬 Editor' },
     { id: 'voiceover' as const, label: '🎙️ Voiceover' },
+    { id: 'qa' as const, label: '☢️ QA' },
     { id: 'notifications' as const, label: '📧 Notifications' },
     { id: 'integrations' as const, label: '🔌 Integrations & Usage' },
     { id: 'about' as const, label: 'ℹ️ About' },
@@ -599,6 +601,7 @@ export default function SettingsPage() {
           {activeSection === 'models' && <ModelDefaultsPanel />}
           {activeSection === 'editor' && <EditorPrefsPanel />}
           {activeSection === 'voiceover' && <VoiceoverSettingsPanel />}
+          {activeSection === 'qa' && <QaSettingsPanel />}
 
           {activeSection === 'notifications' && (
             <div className="space-y-4">
@@ -792,6 +795,22 @@ export default function SettingsPage() {
                 <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
                   Database and infrastructure can be managed in the API Keys tab.
                 </p>
+                {/* Legacy Dashboard escape hatch — Wave 2 made
+                    /command-center the default landing; this is the
+                    way back if you prefer the old surface for now. */}
+                <div className="p-3 rounded-lg" style={{ background: 'var(--bg-secondary)' }}>
+                  <p className="text-xs font-semibold mb-1" style={{ color: 'var(--text-muted)' }}>Legacy Dashboard</p>
+                  <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+                    The old dashboard surface is still available. Bookmark it directly if you prefer it over the Command Center.
+                  </p>
+                  <a
+                    href="/dashboard"
+                    className="text-xs px-2 py-1 rounded inline-block"
+                    style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+                  >
+                    Open legacy Dashboard →
+                  </a>
+                </div>
               </div>
             </div>
           )}
