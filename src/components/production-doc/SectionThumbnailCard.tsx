@@ -31,6 +31,14 @@ const MAX_FILE_SIZE = 5 * 1024 * 1024;
 interface SectionThumbnailCardProps {
   value?: VideoThumbnail;
   onChange: (next: VideoThumbnail | undefined) => void;
+  /**
+   * When `true`, render without the outer panel chrome (background, border,
+   * padding) and without the duplicate title/subtitle header. Used by
+   * `SectionThumbnailModal` so the card sits cleanly inside the modal's
+   * own panel + header instead of stacking translucent surfaces and
+   * washing out the inner content.
+   */
+  embedded?: boolean;
 }
 
 /**
@@ -47,7 +55,7 @@ function readImageDimensions(objectUrl: string): Promise<{ width: number; height
   });
 }
 
-export function SectionThumbnailCard({ value, onChange }: SectionThumbnailCardProps) {
+export function SectionThumbnailCard({ value, onChange, embedded = false }: SectionThumbnailCardProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -163,26 +171,58 @@ export function SectionThumbnailCard({ value, onChange }: SectionThumbnailCardPr
     if (!uploading && fileInputRef.current) fileInputRef.current.value = '';
   }, [uploading]);
 
+  // In embedded mode the host (e.g. SectionThumbnailModal) supplies its
+  // own panel + title, so we drop our outer chrome and the duplicate
+  // header. The `Remove` action still needs a home, so when embedded it
+  // floats above the preview/dropzone instead of in a card header.
   return (
     <div
-      style={{
-        background: 'rgba(255,255,255,0.04)',
-        border: `1px solid rgba(255,255,255,${dragOver ? 0.35 : 0.10})`,
-        borderRadius: 12,
-        padding: 16,
-        transition: 'border-color 120ms ease',
-      }}
+      style={
+        embedded
+          ? { transition: 'border-color 120ms ease' }
+          : {
+              background: 'rgba(255,255,255,0.04)',
+              border: `1px solid rgba(255,255,255,${dragOver ? 0.35 : 0.10})`,
+              borderRadius: 12,
+              padding: 16,
+              transition: 'border-color 120ms ease',
+            }
+      }
     >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-        <div>
-          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>
-            Section divider thumbnail
+      {!embedded && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>
+              Section divider thumbnail
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+              Composite image used as the cold-open and section dividers.
+            </div>
           </div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-            Composite image used as the cold-open and section dividers.
-          </div>
+          {value && (
+            <button
+              onClick={() => {
+                if (confirm('Remove the thumbnail and any region marks? This cannot be undone.')) {
+                  onChange(undefined);
+                }
+              }}
+              style={{
+                fontSize: 12,
+                padding: '4px 10px',
+                borderRadius: 6,
+                background: 'transparent',
+                color: 'var(--text-muted)',
+                border: '1px solid rgba(255,255,255,0.10)',
+                cursor: 'pointer',
+              }}
+            >
+              Remove
+            </button>
+          )}
         </div>
-        {value && (
+      )}
+      {embedded && value && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
           <button
             onClick={() => {
               if (confirm('Remove the thumbnail and any region marks? This cannot be undone.')) {
@@ -201,8 +241,8 @@ export function SectionThumbnailCard({ value, onChange }: SectionThumbnailCardPr
           >
             Remove
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
       <input
         ref={fileInputRef}

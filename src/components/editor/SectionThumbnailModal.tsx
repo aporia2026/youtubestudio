@@ -65,7 +65,7 @@ export function SectionThumbnailModal({
         </div>
 
         <div className="p-4">
-          <SectionThumbnailCard value={value} onChange={onChange} />
+          <SectionThumbnailCard value={value} onChange={onChange} embedded />
         </div>
       </div>
     </div>
