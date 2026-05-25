@@ -36,20 +36,42 @@ export type EditOptionId =
   | 'seedream-4.5-high'
   | 'seedream-v4'
   | 'flux-kontext-pro'
-  | 'flux-kontext-max';
+  | 'flux-kontext-max'
+  // Atlas Cloud — sibling to Kie's GPT Image 2 edit family at ~30%
+  // the cost. See _plans/2026-05-25-atlas-cloud-gpt-image-2.md.
+  | 'gpt-image-2-atlas-edit';
 
 /**
  * Dispatch hint for the API route. The route reads `backend.kind` and
- * builds the Kie input shape per the relevant docs page.
+ * builds the per-vendor input shape per the relevant docs page.
  *
  *   - `kie-standard`: POST /api/v1/jobs/createTask, model + input
  *   - `kie-gpt4o`:    POST /api/v1/gpt4o-image/generate (already wired)
  *   - `flux-kontext`: POST /api/v1/flux/kontext/generate
+ *   - `atlas`:        Atlas Cloud GPT Image 2 Edit
+ *                     (POST /api/v1/model/generateImage). Prompt-only;
+ *                     no mask field exposed by Atlas, so options with
+ *                     this backend MUST set `maskCapable: false`. See
+ *                     _plans/2026-05-25-atlas-cloud-gpt-image-2.md.
  */
 export type EditBackend =
   | { kind: 'kie-standard'; kieModel: string }
   | { kind: 'kie-gpt4o'; quality: 'low' | 'medium' | 'high' }
-  | { kind: 'flux-kontext'; kieModel: 'flux-kontext-pro' | 'flux-kontext-max' };
+  | { kind: 'flux-kontext'; kieModel: 'flux-kontext-pro' | 'flux-kontext-max' }
+  | {
+      kind: 'atlas';
+      /** Currently the only Atlas Edit model. Future Atlas-hosted edit
+       *  variants would each get their own row here. */
+      atlasModel: 'openai/gpt-image-2/edit';
+      /** Atlas `size` parameter. Optional. The dispatcher defaults to
+       *  '1536x1024' (closest landscape to 16:9). Atlas Edit preserves
+       *  input aspect, so 16:9 inputs come back at the input aspect
+       *  regardless of this hint — kept for explicitness + future edits
+       *  that synthesise from a smaller seed. */
+      atlasSize?: '1024x1024' | '1024x1536' | '1536x1024';
+      /** Atlas `quality` tier. Optional, defaults to 'medium'. */
+      atlasQuality?: 'low' | 'medium' | 'high';
+    };
 
 export interface EditOption {
   id: EditOptionId;
@@ -210,6 +232,22 @@ export const EDIT_OPTIONS: readonly EditOption[] = [
     maskCapable: false,
     pricePerImage: null,
     backend: { kind: 'flux-kontext', kieModel: 'flux-kontext-max' },
+  },
+  // Atlas Cloud GPT Image 2 Edit — added 2026-05-25 alongside the Atlas
+  // t2i entry in image-models.ts. Same OpenAI model the Kie GPT-4o path
+  // covers, routed through Atlas's cheaper invoice. Atlas Edit is
+  // token-billed (~$0.01/call estimate; the dispatcher logs the actual
+  // token counts so we can true up after a week of traffic). No mask
+  // support, so this option deliberately sits in the prompt-only group
+  // below — the eraser flow on /api/overlay/edit filters by
+  // `maskCapable: true` and won't surface this entry.
+  {
+    id: 'gpt-image-2-atlas-edit',
+    label: 'GPT Image 2 Edit (Atlas)',
+    tagline: 'Cheap prompt-only edit — Atlas Cloud, ~$0.01 token-billed',
+    maskCapable: false,
+    pricePerImage: 0.01,
+    backend: { kind: 'atlas', atlasModel: 'openai/gpt-image-2/edit' },
   },
 ];
 

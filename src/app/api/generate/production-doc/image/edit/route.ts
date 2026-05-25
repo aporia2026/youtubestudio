@@ -11,6 +11,8 @@ import {
   pollGpt4oImageResultThenUpscale,
   pollKieResultThenUpscale,
 } from '@/lib/kie-poll';
+import { generateAtlasEdit } from '@/lib/atlas-cloud-images';
+import { upscaleViaRecraft } from '@/lib/upscale';
 import { checkSafePublicUrl } from '@/lib/url-safety';
 import {
   getDownloadUrlForBucket,
@@ -174,8 +176,13 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
     maskUrl = body.mask.url;
   }
 
+  // KIE_API_KEY is required for every existing backend (kie-standard,
+  // kie-gpt4o, flux-kontext). The Atlas branch added 2026-05-25 needs
+  // ATLAS_CLOUD_API_KEY instead, which generateAtlasEdit checks itself.
+  // Gate the legacy check so an Atlas-only request doesn't 500 in
+  // installs that haven't set KIE_API_KEY.
   const apiKey = process.env.KIE_API_KEY;
-  if (!apiKey) {
+  if (option.backend.kind !== 'atlas' && !apiKey) {
     return NextResponse.json({ error: 'KIE_API_KEY is not configured' }, { status: 500 });
   }
 
@@ -195,19 +202,19 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
     switch (option.backend.kind) {
       case 'kie-standard': {
         const input = buildKieStandardInput(option, prompt, originalImageUrl, maskUrl);
-        const taskId = await createKieTask(apiKey, option.backend.kieModel, input);
+        const taskId = await createKieTask(apiKey!, option.backend.kieModel, input);
         console.info('[image-edit task]', { taskId, optionId: option.id, kind: 'kie-standard' });
         // System-wide auto-upscale runs after poll (skips if output is
         // already >2000px on the long edge — common for edits of
         // previously-upscaled images). See src/lib/upscale.ts.
-        resultUrl = await pollKieResultThenUpscale(taskId, apiKey);
+        resultUrl = await pollKieResultThenUpscale(taskId, apiKey!);
         break;
       }
       case 'kie-gpt4o': {
         // GPT-4o image edit. The endpoint only accepts 1:1 / 3:2 / 2:3
         // — 3:2 is the closest match to the 16:9 production-doc target,
         // and the renderer crops to 16:9 at compose time anyway.
-        const taskId = await createGpt4oImageTask(apiKey, {
+        const taskId = await createGpt4oImageTask(apiKey!, {
           prompt,
           filesUrl: [originalImageUrl],
           maskUrl,
@@ -216,11 +223,11 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
         });
         console.info('[image-edit task]', { taskId, optionId: option.id, kind: 'kie-gpt4o' });
         // System-wide auto-upscale: see src/lib/upscale.ts.
-        resultUrl = await pollGpt4oImageResultThenUpscale(taskId, apiKey);
+        resultUrl = await pollGpt4oImageResultThenUpscale(taskId, apiKey!);
         break;
       }
       case 'flux-kontext': {
-        const taskId = await createFluxKontextTask(apiKey, {
+        const taskId = await createFluxKontextTask(apiKey!, {
           prompt,
           inputImage: originalImageUrl,
           model: option.backend.kieModel,
@@ -229,7 +236,36 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
         });
         console.info('[image-edit task]', { taskId, optionId: option.id, kind: 'flux-kontext' });
         // System-wide auto-upscale: see src/lib/upscale.ts.
-        resultUrl = await pollFluxKontextResultThenUpscale(taskId, apiKey);
+        resultUrl = await pollFluxKontextResultThenUpscale(taskId, apiKey!);
+        break;
+      }
+      case 'atlas': {
+        // Atlas Cloud GPT Image 2 Edit. Prompt-only flow — masks are
+        // not exposed by Atlas, so this case never sees `maskUrl` (the
+        // catalog row has `maskCapable: false` and the mask validation
+        // above runs only when `option.maskCapable === true`). Atlas
+        // Edit preserves input aspect, so 16:9 inputs come back at
+        // 16:9 with no crop step required — `upscaleViaRecraft` takes
+        // the vendor URL directly. Token telemetry is logged so we can
+        // true up the $0.01/call estimate against real usage. See
+        // _plans/2026-05-25-atlas-cloud-gpt-image-2.md.
+        const atlasResult = await generateAtlasEdit({
+          prompt,
+          images: [originalImageUrl],
+          size: option.backend.atlasSize,
+          quality: option.backend.atlasQuality,
+        });
+        console.info('[image-edit task]', {
+          predictionId: atlasResult.predictionId,
+          optionId: option.id,
+          kind: 'atlas',
+          predictMs: atlasResult.predictTimeMs,
+          inputTokens: atlasResult.tokens?.input,
+          outputTokens: atlasResult.tokens?.output,
+          imageTokens: atlasResult.tokens?.image,
+        });
+        const upscale = await upscaleViaRecraft(atlasResult.url);
+        resultUrl = upscale.url;
         break;
       }
     }
