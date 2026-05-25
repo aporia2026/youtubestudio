@@ -8,6 +8,8 @@ import { AppTopBar, type AppTopBarUser } from './AppTopBar';
 import type { ChannelOption } from './ChannelSwitcher';
 import { FavoritesProvider } from './use-favorites';
 import { useRecentPagesTracker } from './use-recent-pages';
+import { VideoContextStrip } from '@/components/video-context/VideoContextStrip';
+import { VideoEmptyState } from '@/components/video-context/VideoEmptyState';
 
 export function AppLayout({
   children,
@@ -75,6 +77,14 @@ export function AppLayout({
             channels={channels}
             activeChannelId={activeChannelId}
           />
+          {/* VideoContextStrip + VideoEmptyState are global because every
+              Create-hub tool page needs one or the other. Both self-hide
+              based on pathname + ?videoId=, so non-tool pages (Dashboard,
+              Schedule, Team, etc.) see neither. Strip renders when videoId
+              is present; empty-state renders when it's absent AND the user
+              is on a known tool page. They are mutually exclusive. */}
+          <VideoContextStrip />
+          <VideoEmptyState />
           <main className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-primary)' }}>
             {children}
           </main>
