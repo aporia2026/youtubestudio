@@ -54,6 +54,27 @@ function VoiceoverStudio() {
     { language: 'en-US', tier: 'chirp3-hd' },
   );
   const [googleAvailable, setGoogleAvailable] = useState(false);
+  // Cost safety gate: Studio tier is $160/1M chars (5× Chirp 3 HD). Hidden
+  // by default so a slip in the dropdown can't trigger a runaway bill —
+  // per the LLM Council's loudest concern in the 2026-05-25 plan. Persists
+  // to localStorage so a power user opts in once and stays opted in.
+  const [showExpensiveTiers, setShowExpensiveTiers] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem('voiceover_show_expensive_tiers') === '1';
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      'voiceover_show_expensive_tiers',
+      showExpensiveTiers ? '1' : '0',
+    );
+    // If the user toggles expensive tiers off while Studio is selected,
+    // bounce them back to Chirp 3 HD so the picker doesn't show an empty
+    // selection.
+    if (!showExpensiveTiers && googleVoiceFilter.tier === 'studio') {
+      setGoogleVoiceFilter((f) => ({ ...f, tier: 'chirp3-hd' }));
+    }
+  }, [showExpensiveTiers, googleVoiceFilter.tier]);
   const [text, setText] = useState('');
   const [settings, setSettings] = useState<VoiceoverSettings>({
     stability: 0.5, similarity_boost: 0.75, style: 0.5, use_speaker_boost: true,
@@ -517,12 +538,29 @@ function VoiceoverStudio() {
                     <option value="wavenet">WaveNet</option>
                     <option value="standard">Standard</option>
                     <option value="polyglot">Polyglot</option>
-                    <option value="studio">Studio (top-tier)</option>
+                    {showExpensiveTiers && (
+                      <option value="studio">Studio (top-tier, $160/1M)</option>
+                    )}
                   </select>
                 </div>
-                <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                  Server-side credentials — no API key needed in the browser
-                </p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    Server-side credentials — no API key needed in the browser
+                  </p>
+                  <label
+                    className="flex items-center gap-1.5 cursor-pointer"
+                    style={{ color: showExpensiveTiers ? 'var(--accent-purple-bright)' : 'var(--text-muted)' }}
+                    title="Studio tier costs $160 per 1M characters (5× Chirp 3 HD). Hidden by default to avoid surprise bills."
+                  >
+                    <input
+                      type="checkbox"
+                      checked={showExpensiveTiers}
+                      onChange={(e) => setShowExpensiveTiers(e.target.checked)}
+                      style={{ width: 11, height: 11, accentColor: 'var(--accent-purple)' }}
+                    />
+                    <span className="text-[11px]">Show expensive tiers</span>
+                  </label>
+                </div>
               </div>
               <div className="overflow-y-auto flex-1">
                 {googleVoices
