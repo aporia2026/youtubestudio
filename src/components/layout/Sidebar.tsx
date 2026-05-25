@@ -261,9 +261,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       {/* Logo */}
       <div className="flex items-center h-16 px-4 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
         <Link
-          href="/dashboard"
+          href="/command-center"
           className="flex items-center min-w-0 rounded-md transition-colors hover:opacity-90 cursor-pointer"
-          title="Go to dashboard"
+          title="Go to Command Center (This Week)"
         >
           <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
             style={{ background: 'linear-gradient(135deg, #7c3aed, #06b6d4)' }}>

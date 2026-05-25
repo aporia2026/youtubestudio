@@ -235,7 +235,13 @@ export async function loadVideoContext(
   if (!row) return null;
 
   const pipelineStage: string | null = row.pipeline_stage ?? null;
-  const isAutoManaged = pipelineStage !== null && !TERMINAL_PIPELINE_STAGES.has(pipelineStage);
+  // A pipeline 'done' video is no longer auto-managed (the user is back in
+  // charge). Treated the same as terminal pipeline states; matches the
+  // logic in command-center.ts.
+  const isAutoManaged =
+    pipelineStage !== null
+    && pipelineStage !== 'done'
+    && !TERMINAL_PIPELINE_STAGES.has(pipelineStage);
 
   // Prefer the cached projects.current_stage column when populated. Falls
   // back to the legacy LATERAL-join resolution for any row that hasn't

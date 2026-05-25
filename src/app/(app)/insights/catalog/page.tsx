@@ -213,10 +213,10 @@ export default function CatalogPage() {
     <div style={{ padding: 24, maxWidth: 1400, margin: '0 auto' }}>
       <div style={{ marginBottom: 16 }}>
         <Link
-          href="/dashboard"
+          href="/command-center"
           style={{ fontSize: 12, color: 'var(--text-muted)', textDecoration: 'none' }}
         >
-          ← Dashboard
+          ← This Week
         </Link>
       </div>
 

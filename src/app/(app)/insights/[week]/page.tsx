@@ -29,8 +29,8 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export default async function InsightsWeekPage({ params }: PageProps) {
   const { week } = await params;
   if (!ISO_DATE_RE.test(week)) {
-    // Malformed slug — bounce to the latest digest if any, else /dashboard.
-    redirect('/dashboard');
+    // Malformed slug — bounce to the Command Center.
+    redirect('/command-center');
   }
   const session = await requireUser();
   const [digest, recent] = await Promise.all([
@@ -42,10 +42,10 @@ export default async function InsightsWeekPage({ params }: PageProps) {
     <div style={{ padding: 24, maxWidth: 800, margin: '0 auto' }}>
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Link
-          href="/dashboard"
+          href="/command-center"
           style={{ fontSize: 12, color: 'var(--text-muted)', textDecoration: 'none' }}
         >
-          ← Dashboard
+          ← This Week
         </Link>
         <Link
           href="/insights/catalog"
