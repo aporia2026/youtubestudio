@@ -1,6 +1,11 @@
 // All AI prompts for the YouTube Studio system
 import { buildConstraintsPromptBlock, buildQAConstraintsPromptBlock, type ScriptConstraints } from './script-options';
 import { buildBrandKitPromptBlock, type ChannelBrandKit } from './channel-brand-kit';
+import { CHANNEL_DESCRIPTION_STYLES, type ChannelDescriptionStyle } from './channel-description-styles';
+
+// Re-export so existing callers that pull these from prompts.ts (server-side
+// API routes already wired in this file's neighbourhood) keep working.
+export { CHANNEL_DESCRIPTION_STYLES, type ChannelDescriptionStyle };
 
 /** Words-per-minute baseline used everywhere we convert between script
  *  duration and word count. Matches `estimateDuration` in lib/utils.ts —
@@ -627,6 +632,9 @@ Return the complete rewritten script with these fixes applied. Nothing else — 
 
 export function ideaGenerationPrompt({
   niche,
+  nicheDescription,
+  nicheKeywords,
+  extraContext,
   count,
   audience,
   existingTitles,
@@ -636,6 +644,17 @@ export function ideaGenerationPrompt({
   videoType,
 }: {
   niche: string;
+  // Full free-text description of the niche (channel positioning, themes,
+  // tone, visual style, formats). When present, this is the load-bearing
+  // signal — the niche NAME alone is too generic to steer the LLM.
+  nicheDescription?: string;
+  // Optional keyword list saved on the niche. Used as a hint, not a hard
+  // filter — the LLM should treat them as topical anchors.
+  nicheKeywords?: string[];
+  // Ad-hoc, per-generation context from the user (mood, current campaign,
+  // specific angle they want explored). Takes priority over niche defaults
+  // when the two would conflict.
+  extraContext?: string;
   count: number;
   audience?: string;
   existingTitles?: string[];
@@ -663,12 +682,44 @@ export function ideaGenerationPrompt({
     ? `\n**Video Type:** ALL ideas MUST be formatted as: ${videoTypeLabels[videoType]}. Every idea should fit this format specifically.`
     : '';
 
+  const trimmedDescription = nicheDescription?.trim();
+  const trimmedKeywords = (nicheKeywords ?? []).map(k => k.trim()).filter(Boolean);
+  const trimmedExtraContext = extraContext?.trim();
+
+  // The niche NAME is intentionally NOT used as the sole steering signal —
+  // names like "General Explainer" mean nothing without the channel's
+  // actual positioning. When a description exists, it leads the system
+  // prompt and is repeated in the user prompt with a hard rule: every
+  // idea must fit it.
+  const nicheBriefForSystem = trimmedDescription
+    ? `the "${niche}" channel, which is defined by its operator as: "${trimmedDescription}". Treat this description as the AUTHORITATIVE definition of the channel — every idea you propose must fit it. The label "${niche}" alone is not enough; the description is the ground truth.`
+    : `the "${niche}" niche`;
+
+  const nicheBriefForUser = trimmedDescription
+    ? `**Niche:** ${niche}
+**Channel Definition (AUTHORITATIVE — every idea MUST fit this):**
+${trimmedDescription}
+
+This description overrides any assumption you might make from the niche label alone. If "${niche}" sounds generic to you, ignore that instinct and stay strictly inside the channel definition above.`
+    : `**Niche:** ${niche}`;
+
+  const keywordsBlock = trimmedKeywords.length
+    ? `\n**Topical Keywords / Anchors:** ${trimmedKeywords.join(', ')} — use these as topic anchors, not as a rigid filter.`
+    : '';
+
+  const extraContextBlock = trimmedExtraContext
+    ? `\n**Additional Context for THIS generation (from the user, takes priority over defaults when in conflict):**
+${trimmedExtraContext}`
+    : '';
+
   return {
-    system: `You are a viral YouTube content strategist with deep expertise in the "${niche}" niche. You have an uncanny ability to predict which video ideas will explode in views. You understand search intent, trending topics, audience psychology, and the YouTube algorithm intimately.`,
+    system: `You are a viral YouTube content strategist with deep expertise in ${nicheBriefForSystem} You have an uncanny ability to predict which video ideas will explode in views. You understand search intent, trending topics, audience psychology, and the YouTube algorithm intimately.`,
 
-    user: `Generate ${count} high-potential YouTube video ideas for the "${niche}" niche.
+    user: `Generate ${count} high-potential YouTube video ideas for the channel described below.
 
-**Target Audience:** ${audience || 'People interested in ' + niche}
+${nicheBriefForUser}${keywordsBlock}${extraContextBlock}
+
+**Target Audience:** ${audience || (trimmedDescription ? 'The audience implied by the channel definition above' : 'People interested in ' + niche)}
 **Focus Type:** ${focus || 'mixed'} content${videoTypeInstruction}
 ${existingTitles?.length ? `**Already Done (avoid overlap):**\n${existingTitles.slice(0, 10).map(t => `- ${t}`).join('\n')}` : ''}
 ${referenceContext ? `\n## REFERENCE VIDEO DEEP ANALYSIS (forensic breakdown of successful videos — use these as blueprints):
@@ -760,7 +811,9 @@ ${redditContext ? `- "from_reddit" MUST be a non-empty ARRAY for EVERY idea. Eac
 
 FAILURE TO INCLUDE DETAILED inspiration_sources FOR EVERY IDEA IS UNACCEPTABLE. This is the most important part of the output.
 ${redditContext ? `\nREDDIT IS CRITICAL: You were given real Reddit posts with URLs above. For EACH idea, you MUST include at least one "from_reddit" entry with the actual post_title and post_url copied from the Reddit data. The user specifically enabled Reddit research to see how Reddit discussions influenced each idea. If you skip from_reddit, the output is considered FAILED.` : ''}` : ''}
-Return ONLY valid JSON. Generate ideas that are genuinely different from each other in format, angle, and audience segment.`,
+Return ONLY valid JSON. Generate ideas that are genuinely different from each other in format, angle, and audience segment.${trimmedDescription ? `
+
+FINAL CHECK BEFORE YOU RETURN: re-read the **Channel Definition** above. For each idea, ask: "Would this video plausibly appear on a channel whose own operator described it that way?" If the answer is no — even slightly — replace the idea. Do not drift toward the most common interpretation of the niche label; stay inside the channel definition.` : ''}`,
   };
 }
 
@@ -2349,4 +2402,188 @@ ${script.length > 8000 ? script.slice(0, 8000) + '\n\n[…script truncated for l
 
 Now write the description. Output ONLY the description body, ready to paste into YouTube. Remember: zero em-dashes, zero AI cliché phrases, zero "in this video" openers.`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Channel description (YouTube "About" copy)
+//
+// Generates the channel-level "About" description (NOT per-video — that's
+// youtubeDescriptionPrompt above). Pulls voice + tone from the channel's
+// brand-kit so the About text reads in the same register as the channel's
+// scripts. Honors a user-picked output style preset so the same channel can
+// have a short-bio variant for one purpose and an SEO-heavy variant for
+// another without re-typing the brief.
+// ---------------------------------------------------------------------------
+
+/** Per-style override rules. Returned as a snippet appended to the system
+ *  prompt so the model gets concrete length + structure guidance without
+ *  the caller having to switch on the style themselves. */
+function channelDescriptionStyleRules(style: ChannelDescriptionStyle): string {
+  switch (style) {
+    case 'short-bio':
+      return `# OUTPUT STYLE: SHORT BIO
+- Target length: 50–80 words. Three sentences max. Punchy.
+- Structure: who this channel is for, what they get, what makes you different. In that order.
+- No section headers. No timestamps. No bullet lists. Just prose.
+- The first sentence has to do the heavy lifting — assume the reader bounces after it.`;
+    case 'seo-heavy':
+      return `# OUTPUT STYLE: SEO-HEAVY
+- Target length: 200–350 words.
+- The primary niche keyword appears in the first sentence, plus 2–3 more times naturally across the body.
+- Work in 4–6 supporting keywords the niche audience actually searches.
+- Structure: hook paragraph, then a "What you'll find here" section (3–5 short lines, dash-prefixed, not bulleted), then a soft CTA line.
+- End with 3–5 lowercase hashtags on their own line. No # marks inside the body.`;
+    case 'with-chapters':
+      return `# OUTPUT STYLE: WITH SECTIONS
+- Target length: 200–300 words.
+- Use these section headers in this order, each on its own line: "What you'll find here", "Upload schedule", "Connect".
+- Header lines have no markdown — plain capitalized text followed by a colon, then the body on the next line.
+- "What you'll find here" gets 3–5 short dash-prefixed lines describing recurring formats. No timestamps (that's for per-video descriptions, not the channel About).
+- "Upload schedule" is one line. If the brief doesn't mention cadence, write a sensible default like "New videos most weeks" rather than fabricating a day.
+- "Connect" is one line with where to find the creator (newsletter / social handle / email). Use placeholders like "[your-link]" if the brief doesn't say.`;
+    case 'story-driven':
+      return `# OUTPUT STYLE: STORY-DRIVEN
+- Target length: 180–280 words.
+- First person ("I", "we" if a team) throughout.
+- Open with the moment / problem / question that started this channel — concrete, not abstract.
+- Middle paragraph: what the channel does now and who it helps.
+- Closing paragraph: an invitation, not a demand. One soft CTA.
+- No headers, no bullets, no timestamps. Pure narrative.`;
+    case 'authority':
+      return `# OUTPUT STYLE: AUTHORITY
+- Target length: 150–250 words.
+- Third-person tone is fine, but don't pretend to be a press release. "[Creator name] covers X" reads stronger than "We are excited to share...".
+- Lead with the credential or specific expertise (years in field, what they built, what they've shipped). If the brief is thin, infer from niche but never fabricate a specific credential.
+- Middle: the audience this expertise serves and the kind of work shown on the channel.
+- Closing: a single line on how to follow / where else to find them.
+- No bullets. No hashtags.`;
+  }
+}
+
+/**
+ * Brand-kit fields the channel-description prompt actually reads. Pass `null`
+ * if no brand kit is set yet — the prompt then falls back to generic guidance.
+ */
+export interface ChannelDescriptionBrandKitInput {
+  tone?: string;
+  vocabulary_level?: 'casual' | 'conversational' | 'professional' | 'technical';
+  sentence_length?: 'short' | 'medium' | 'long' | 'mixed';
+  voice_examples?: string[];
+  banned_phrases?: string[];
+  required_phrases?: string[];
+  hook_style?: string;
+  brand_keywords?: string[];
+}
+
+export function channelDescriptionPrompt({
+  brief,
+  name,
+  niche,
+  notes,
+  brandKit,
+  style,
+}: {
+  /** Free-form positioning brief the user typed into the generator. */
+  brief: string;
+  /** Channel display name. Used as a signal AND embedded in the output for
+   *  styles that name the creator (authority, story-driven). */
+  name: string;
+  niche?: string | null;
+  /** Internal channel notes from the channels.notes column — optional context
+   *  the user already maintains about this channel. */
+  notes?: string | null;
+  brandKit: ChannelDescriptionBrandKitInput | null;
+  style: ChannelDescriptionStyle;
+}): { system: string; user: string } {
+  const brandKitBlock = brandKit ? buildBrandKitBlock(brandKit) : '';
+
+  return {
+    system: `You write YouTube channel "About" descriptions — the copy that lives on the channel's About tab and is the first thing a new viewer reads when deciding whether to subscribe. NOT per-video descriptions; this is the channel-level positioning copy.
+
+# YOUR JOB
+Produce ONE complete, publish-ready About description for the channel below. Output ONLY the description body — no preamble, no explanation, no markdown code fences. It must be ready to paste directly into YouTube's channel description field.
+
+# UNIVERSAL RULES (apply to every style)
+- The first sentence has to make a new viewer want to keep reading. No throat-clearing, no "Welcome to my channel" openers.
+- Match the channel's voice from the brand kit when provided. If voice examples are given, write IN that voice — same rhythm, same vocabulary level, same register.
+- Honor banned phrases — never use them. Work in required phrases naturally if any are listed (do not just sprinkle them; place them where they sound like the creator's own words).
+- Anchor every claim in the brief or the channel signals provided. Do NOT fabricate specific credentials, stats, dates, named guests, or partnerships that aren't in the inputs.
+- If the niche or brief is vague, write a description that's strong on positioning and voice but stays honest about what's there. Do not invent specifics.
+
+# HUMAN-VOICE RULES (HARD — these are the dead giveaways of AI text)
+- ABSOLUTELY NO em-dashes (—) or en-dashes (–). Use commas, periods, parentheses, or " - " (hyphen with spaces).
+- NO smart quotes (" " ' '). Straight quotes only (" ' ).
+- NO of these phrases or close variants:
+  • "welcome to my channel" / "welcome to the channel"
+  • "in this channel" / "on this channel you'll find"
+  • "let's dive in" / "without further ado"
+  • "join me on this journey" / "this journey"
+  • "the truth is" / "here's the thing"
+  • "in conclusion" / "ultimately" / "at the end of the day"
+  • "navigate" / "leverage" / "delve" / "unpack" / "robust" / "seamless" / "elevate"
+  • "passionate about" (cliché — show the passion in specifics instead)
+  • "more than just" / "not just X, but Y"
+- NO tricolons ("X, Y, and Z" rhythms) repeated across consecutive sentences. Vary structure.
+- Contractions are fine and encouraged when matching a casual or conversational voice.
+- Sentence fragments are fine for emphasis. Some sentences should be short. Like that.
+- One genuine voice quirk (an aside, a specific number, a self-aware line) is good; templated copy is bad.
+
+${channelDescriptionStyleRules(style)}
+
+# WHAT YOU WILL RECEIVE
+- A free-form BRIEF from the creator — the most important signal. Honor it.
+- Channel signals: name, niche, internal notes.
+- Optional BRAND KIT: voice / tone / banned phrases / etc. When present, treat it as binding.
+- A target STYLE preset (already baked into the rules above).
+
+# SELF-CHECK BEFORE YOU RESPOND
+1. Did you write any em-dash, en-dash, or smart quote? Replace it.
+2. Did you use any banned phrase from the universal list or the brand kit? Rewrite that sentence.
+3. Is the first 150 characters actually compelling? If not, rewrite the opener.
+4. Did you fabricate any credential, stat, or specific that's not in the inputs? Remove it.
+5. Does the length match the style preset's target? Adjust if not.`,
+
+    user: `# Channel signals
+**Name:** ${name}
+${niche ? `**Niche:** ${niche}` : '**Niche:** (not specified)'}
+${notes && notes.trim() ? `**Internal notes (creator's own context):**\n${notes.trim()}` : ''}
+
+# Brief from the creator
+${brief.trim() || '(no brief provided — write a strong, generic description grounded in the channel signals above; do not invent specifics)'}
+
+${brandKitBlock}
+
+# Output style
+${style}
+
+---
+
+Now write the channel About description. Output ONLY the description body, ready to paste into YouTube's About field. Zero em-dashes. Zero AI cliché phrases. Zero invented specifics.`,
+  };
+}
+
+/** Format the brand-kit fields the prompt actually uses into a labeled block.
+ *  Returns an empty string when no field is set so the user prompt stays
+ *  compact — the LLM doesn't need a "(no brand kit set)" line. */
+function buildBrandKitBlock(kit: ChannelDescriptionBrandKitInput): string {
+  const lines: string[] = [];
+  if (kit.tone) lines.push(`- Tone: ${kit.tone}`);
+  if (kit.vocabulary_level) lines.push(`- Vocabulary level: ${kit.vocabulary_level}`);
+  if (kit.sentence_length) lines.push(`- Sentence length: ${kit.sentence_length}`);
+  if (kit.hook_style) lines.push(`- Hook style: ${kit.hook_style}`);
+  if (kit.voice_examples && kit.voice_examples.length > 0) {
+    const examples = kit.voice_examples.slice(0, 5).map((e, i) => `  ${i + 1}. ${e}`).join('\n');
+    lines.push(`- Voice examples (write IN this voice):\n${examples}`);
+  }
+  if (kit.banned_phrases && kit.banned_phrases.length > 0) {
+    lines.push(`- Banned phrases (never use): ${kit.banned_phrases.slice(0, 20).join(', ')}`);
+  }
+  if (kit.required_phrases && kit.required_phrases.length > 0) {
+    lines.push(`- Required phrases (work in naturally): ${kit.required_phrases.slice(0, 10).join(', ')}`);
+  }
+  if (kit.brand_keywords && kit.brand_keywords.length > 0) {
+    lines.push(`- Brand / SEO keywords: ${kit.brand_keywords.slice(0, 15).join(', ')}`);
+  }
+  if (lines.length === 0) return '';
+  return `# Brand kit (binding voice + style guidance)\n${lines.join('\n')}\n`;
 }

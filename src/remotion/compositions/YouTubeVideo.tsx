@@ -333,6 +333,7 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
             text={run.title}
             brand={config.brand}
             heightFraction={config.thumbnail?.stripeHeightFraction}
+            variant={config.styleId === 'doodle_explainer_2' ? 'doodle-bold' : 'default'}
           />
         </Sequence>
       ))}
@@ -341,7 +342,10 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
           captions in z-order — overlays can decorate the video,
           captions sit on top of them so dialogue stays readable. */}
       {config.textOverlays && config.textOverlays.length > 0 && (
-        <TextOverlayLayer overlays={config.textOverlays} />
+        <TextOverlayLayer
+          overlays={config.textOverlays}
+          variant={config.styleId === 'doodle_explainer_2' ? 'doodle-yellow' : 'default'}
+        />
       )}
 
       {/* Burned-in captions — Phase 4 of the shot-graph editor plan.
@@ -431,6 +435,12 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
     });
   }
   const props = { shot, durationInFrames, brand, fadeEnabled };
+  // Phase 2 of _plans/2026-05-25-style-aware-overlay-text.md — map
+  // the doc-level style id to the LowerThird's glyph variant. The
+  // mapping lives here (one site, one mapping table) rather than
+  // inside each scene component so adding a future built-in with its
+  // own on-screen-text treatment is a single-line change.
+  const lowerThirdVariant = config.styleId === 'doodle_explainer_2' ? 'doodle-yellow' : 'default';
   switch (shot.sceneType) {
     case 'title-card':
       return <TitleCardScene {...props} />;
@@ -439,12 +449,25 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
     case 'icon-scene':
       return <IconScene {...props} />;
     case 'screen-mockup':
-      return <ScreenMockupScene {...props} suppressLowerThird={shot.suppressLowerThird ?? suppressLowerThirds} />;
+      return (
+        <ScreenMockupScene
+          {...props}
+          suppressLowerThird={shot.suppressLowerThird ?? suppressLowerThirds}
+          lowerThirdVariant={lowerThirdVariant}
+        />
+      );
     case 'outro':
       return <OutroScene {...props} />;
     case 'b-roll':
     case 'split-scene':
     default:
-      return <BRollScene {...props} shotIndex={shotIndex} suppressLowerThird={shot.suppressLowerThird ?? suppressLowerThirds} />;
+      return (
+        <BRollScene
+          {...props}
+          shotIndex={shotIndex}
+          suppressLowerThird={shot.suppressLowerThird ?? suppressLowerThirds}
+          lowerThirdVariant={lowerThirdVariant}
+        />
+      );
   }
 };

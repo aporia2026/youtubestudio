@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureScheduleSchema, ensureSeriesSchema } from '@/lib/db';
 import { expandRecurrence, type RecurrenceRule } from '@/lib/schedule';
 import { UNASSIGNED_CHANNEL_ID } from '@/lib/schedule-constants';
+import { apiRoute } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
 
 /** Escape `%`, `_`, and `\` so a search term's literal wildcards don't
@@ -102,7 +103,7 @@ export async function GET(req: NextRequest) {
 }
 
 /** POST /api/schedule — create one item, or expand a recurrence into many. */
-export async function POST(req: NextRequest) {
+export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   try {
     await ensureScheduleSchema();
     const body = await req.json();
@@ -152,12 +153,12 @@ export async function POST(req: NextRequest) {
     if (recurrence && scheduled_for) {
       const dates = expandRecurrence(new Date(scheduled_for), recurrence);
       const parent = await sql`
-        INSERT INTO schedule_items (title, scheduled_for, status, notes, tags, custom_fields, idea_id, project_id, script_id, recurrence, series_id, part_number)
+        INSERT INTO schedule_items (title, scheduled_for, status, notes, tags, custom_fields, idea_id, project_id, script_id, recurrence, series_id, part_number, workspace_id)
         VALUES (${resolvedTitle}, ${dates[0] ?? scheduled_for}, ${status}, ${notes},
                 ${JSON.stringify(tags)}, ${JSON.stringify(custom_fields)},
                 ${resolvedIdeaId}, ${project_id}, ${script_id},
                 ${JSON.stringify(recurrence)},
-                ${series_id}::uuid, ${part_number})
+                ${series_id}::uuid, ${part_number}, ${session.ws}::uuid)
         RETURNING id
       `;
       const parentId = parent.rows[0].id as string;
@@ -165,9 +166,9 @@ export async function POST(req: NextRequest) {
       // Children (skip the first date — that's the parent)
       for (const iso of dates.slice(1)) {
         const child = await sql`
-          INSERT INTO schedule_items (title, scheduled_for, status, notes, tags, custom_fields, recurrence_parent_id)
+          INSERT INTO schedule_items (title, scheduled_for, status, notes, tags, custom_fields, recurrence_parent_id, workspace_id)
           VALUES (${resolvedTitle}, ${iso}, ${status}, ${notes},
-                  ${JSON.stringify(tags)}, ${JSON.stringify(custom_fields)}, ${parentId})
+                  ${JSON.stringify(tags)}, ${JSON.stringify(custom_fields)}, ${parentId}, ${session.ws}::uuid)
           RETURNING id
         `;
         await attachChannels(child.rows[0].id as string, channel_ids);
@@ -176,11 +177,11 @@ export async function POST(req: NextRequest) {
     }
 
     const result = await sql`
-      INSERT INTO schedule_items (title, scheduled_for, status, notes, tags, custom_fields, idea_id, project_id, script_id, series_id, part_number, pillar)
+      INSERT INTO schedule_items (title, scheduled_for, status, notes, tags, custom_fields, idea_id, project_id, script_id, series_id, part_number, pillar, workspace_id)
       VALUES (${resolvedTitle}, ${scheduled_for}, ${status}, ${notes},
               ${JSON.stringify(tags)}, ${JSON.stringify(custom_fields)},
               ${resolvedIdeaId}, ${project_id}, ${script_id},
-              ${series_id}::uuid, ${part_number}, ${pillar})
+              ${series_id}::uuid, ${part_number}, ${pillar}, ${session.ws}::uuid)
       RETURNING *
     `;
     const itemId = result.rows[0].id as string;
@@ -190,4 +191,4 @@ export async function POST(req: NextRequest) {
     logger.error('POST /api/schedule error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
-}
+});

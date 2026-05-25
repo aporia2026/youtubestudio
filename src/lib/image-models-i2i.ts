@@ -41,7 +41,16 @@
  * the call logs a warning and falls back to `DEFAULT_CLOUD_I2I_MODEL`.
  */
 
-export type I2IProvider = 'kie' | 'comfyui-local';
+export type I2IProvider = 'kie' | 'atlas' | 'comfyui-local';
+
+/** Mirrors `AtlasSize` in src/lib/atlas-cloud-images.ts. Inlined here
+ *  to keep this i2i registry independent of the server-only helper
+ *  module (the dispatcher imports both). `'2560x1440'` is the native
+ *  16:9 (2K) option — preferred for ref-driven generation in this app
+ *  because it bypasses the post-generation 16:9 crop. */
+export type AtlasImageSize = '1024x1024' | '1024x1536' | '1536x1024' | '2560x1440';
+/** Mirrors `AtlasQuality` in src/lib/atlas-cloud-images.ts. */
+export type AtlasImageQuality = 'low' | 'medium' | 'high';
 
 /** Workflow ids for local i2i models. Matches the LocalImageWorkflowId
  *  union in `src/lib/comfyui/style-mapping.ts` — the comfyui-local
@@ -71,6 +80,17 @@ export interface I2IModelSpec {
   /** Underlying Kie.ai `model` string sent to /api/v1/jobs/createTask.
    *  Required for `provider: 'kie'`. */
   kieModel?: string;
+  /** Underlying Atlas Cloud `model` string sent to
+   *  POST /api/v1/model/generateImage. Required for `provider: 'atlas'`,
+   *  ignored otherwise. Currently only `'openai/gpt-image-2/image-to-image'`
+   *  is in the catalog; future Atlas i2i variants would each get
+   *  their own row. See _plans/2026-05-25-atlas-cloud-gpt-image-2.md. */
+  atlasModel?: string;
+  /** Atlas `size` parameter. Default '1536x1024' (closest landscape to
+   *  16:9; the dispatcher then center-crops to 1536×864). */
+  atlasSize?: AtlasImageSize;
+  /** Atlas `quality` tier. Default 'medium'. */
+  atlasQuality?: AtlasImageQuality;
   /** ComfyUI workflow id — `provider: 'comfyui-local'` only. The
    *  ComfyUILocalGenerator auto-swaps to the i2i variant of this
    *  workflow when a refImageFilename is supplied. */
@@ -121,14 +141,36 @@ export const I2I_MODELS: readonly I2IModelSpec[] = Object.freeze([
   },
   {
     value: 'gpt-image-2-i2i',
-    label: 'Reference-driven (GPT Image 2)',
+    label: 'Reference-driven (GPT Image 2 via Kie)',
     provider: 'kie',
     kieModel: 'gpt-image-2-image-to-image',
     refsField: 'input_urls',
     maxRefs: 16,
     extraInput: { aspect_ratio: '16:9', resolution: '1K' },
-    hint: 'Highest ref capacity (16). ~$0.05/image, slower at ~170s.',
+    hint: 'Highest ref capacity (16). ~$0.05/image, slower at ~170s. Sibling of the Atlas variant.',
     costUsdPerImage: 0.05,
+  },
+  // Atlas Cloud GPT Image 2 i2i — added 2026-05-25 alongside the t2i +
+  // edit Atlas entries. Cheaper invoice for the same underlying OpenAI
+  // model. Cap intentionally conservative at 4 refs for v1; Atlas's
+  // i2i docs are sparse on the upper bound. The Edit endpoint docs
+  // say "one or more" inputs — `scripts/atlas-i2i-ref-cap-probe.ts`
+  // (run-once during implementation, NOT in CI) confirms the actual
+  // upper limit before we widen this. If 4 fails the probe, drop to 2
+  // and update both this cap and the picker label. The dispatcher
+  // center-crops 1536×1024 → 1536×864 (16:9), same as the t2i path.
+  {
+    value: 'gpt-image-2-atlas-i2i',
+    label: 'Reference-driven (GPT Image 2 via Atlas, cheaper)',
+    provider: 'atlas',
+    atlasModel: 'openai/gpt-image-2/image-to-image',
+    // 2K native 16:9 at low quality — same defaults as the t2i sibling.
+    // Skips crop + Recraft upscale (source is already at pipeline target).
+    atlasSize: '2560x1440',
+    atlasQuality: 'low',
+    maxRefs: 4,
+    hint: 'Cheaper Atlas route for ref-driven GPT Image 2. Native 16:9 at 2K, ~$0.011/image, up to 4 refs.',
+    costUsdPerImage: 0.011,
   },
   {
     value: 'flux2-pro-i2i',

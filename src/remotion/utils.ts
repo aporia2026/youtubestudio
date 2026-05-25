@@ -571,6 +571,221 @@ export interface ProductionRow {
    *  Range [-3600, 3600] — stored unbounded so spins can be
    *  represented; the renderer applies modulo as needed. */
   image_rotation_deg?: number;
+  // ─── Phase 3 (2026-05-25): variant groups for near-static animation ──
+  //
+  // A variant group is N consecutive rows that share a `group_id` and
+  // depict the same visual composition with subtle expression / pose
+  // changes (a brow shift, a mouth open, a hand raise). The row with
+  // `variant_index = 0` is the BASE — its image is generated normally
+  // via the t2i/i2i path. Rows with `variant_index > 0` derive their
+  // image from the base via Atlas GPT Image 2 Edit at $0.011/call.
+  // Each variant keeps its own timecode, duration, and narration —
+  // they're ordinary rows in the timeline, just visually anchored to
+  // the same composition.
+  //
+  // Three rules enforced in app code (not via DB constraints — the
+  // doc is JSONB):
+  //
+  //   1. Exactly one row per group has `variant_index = 0`.
+  //   2. Variants are contiguous in the row list.
+  //   3. Cap of 4 rows per group (1 base + 3 edits) to bound spend.
+  //
+  // Absence of `group_id` ⇒ standalone row (today's behavior).
+  // See `_plans/2026-05-25-near-static-variants.md`.
+
+  /** Group id — all rows in a variant group share this UUID. When set,
+   *  `variant_index` is also set. Absence = standalone row. */
+  group_id?: string;
+
+  /** 0-based index within the group. `0` = base image (generated
+   *  normally). `1..3` = edited variants derived from the base. */
+  variant_index?: number;
+
+  /** Short edit instruction for this variant. Only meaningful when
+   *  `variant_index > 0`. Examples: "raise the right eyebrow", "open
+   *  the mouth into an O shape", "lift the waving arm a few degrees".
+   *  Keep it short — Atlas Edit is best at deltas, weak at full scene
+   *  re-descriptions. The dispatcher prepends the base row's
+   *  `ai_image_prompt` so the model has full scene context. */
+  variant_edit_prompt?: string;
+
+  /** The base row's `image_url` captured at the moment this variant
+   *  was last generated. Lets the editor detect "the base has been
+   *  regenerated since this variant was made" — when the base's
+   *  CURRENT image_url no longer matches this snapshot, the variant
+   *  is "stale" (still valid as bytes, but derived from an older
+   *  base) and the UI shows a "Base changed — regenerate?" banner.
+   *  Only set on variant rows (variant_index > 0). Phase 3.7c. */
+  variant_base_image_at_generation?: string;
+}
+
+// ─── Phase 3 helpers ────────────────────────────────────────────────
+//
+// Pure functions, no IO. Use these instead of ad-hoc filter+sort calls
+// at the row-level — keeps the variant-group semantics in one place
+// and lets future changes (e.g. cap tweaks, ordering rules) land in
+// one file.
+
+/** Hard cap on rows per variant group — 1 base + 3 edits. Defined
+ *  here so dispatcher routes, editor UI, and any new caller all
+ *  enforce the same limit. */
+export const MAX_VARIANTS_PER_GROUP = 4;
+
+/** All rows in `doc` belonging to `groupId`, ordered ascending by
+ *  `variant_index`. Returns an empty array when no rows match. */
+export function getVariantGroup(doc: ProductionDoc, groupId: string): ProductionRow[] {
+  if (!groupId) return [];
+  return doc.rows
+    .filter((r) => r.group_id === groupId)
+    .slice()
+    .sort((a, b) => (a.variant_index ?? 0) - (b.variant_index ?? 0));
+}
+
+/** The base row (`variant_index === 0`) of a group, or undefined when
+ *  the group has no base. Callers that need the base specifically
+ *  (the dispatcher, the "regenerate variants" UI) hit this so they
+ *  don't accidentally consume a variant as the base. */
+export function getBaseRow(doc: ProductionDoc, groupId: string): ProductionRow | undefined {
+  if (!groupId) return undefined;
+  return doc.rows.find((r) => r.group_id === groupId && (r.variant_index ?? 0) === 0);
+}
+
+/** True when `row` is part of a variant group (has both fields set).
+ *  Treats malformed rows (group_id without variant_index, or vice
+ *  versa) as standalone so the renderer doesn't crash on bad data. */
+export function isVariantRow(row: ProductionRow): boolean {
+  return typeof row.group_id === 'string' && typeof row.variant_index === 'number';
+}
+
+/** Body shape accepted by `POST /api/generate/production-doc/image/edit`
+ *  for the variant-generation path. Exported so callers don't have to
+ *  re-derive the field set and the route can keep evolving without
+ *  callers drifting out of sync. */
+export interface VariantEditRequest {
+  originalImageUrl: string;
+  prompt: string;
+  optionId: 'gpt-image-2-atlas-edit';
+}
+
+/** Outcome of `composeVariantEditRequest` — either a ready-to-POST body
+ *  for the existing edit route, or a typed failure the editor can map
+ *  to a user-facing message without parsing strings. */
+export type VariantEditPreparation =
+  | { kind: 'ready'; request: VariantEditRequest; costUsd: 0.011; baseRowIndex: number; baseImageUrl: string }
+  | { kind: 'error'; code: 'NOT_A_VARIANT' | 'BASE_NOT_FOUND' | 'BASE_NOT_GENERATED' | 'MISSING_EDIT_PROMPT'; message: string };
+
+/** Prepare the request body for generating a variant row's image.
+ *
+ * The user-approved flow (2026-05-25): variants reuse the existing
+ * `/api/generate/production-doc/image/edit` route with the Atlas
+ * GPT Image 2 Edit option (`gpt-image-2-atlas-edit`, $0.011 / image).
+ * No new backend route. The editor calls this helper to validate the
+ * variant→base relationship and compose the edit prompt before POSTing.
+ *
+ * Prompt composition (user-locked decision): prepend the base row's
+ * `ai_image_prompt` so the model has full scene context, then append
+ * the variant's `variant_edit_prompt` after a clear delimiter. Risks
+ * of drifting away from the base composition drop sharply with the
+ * full context vs sending only the edit instruction in isolation.
+ *
+ * `baseImageUrl` is passed in by the caller rather than read off the
+ * row because the production-doc image state lives in a sidecar map
+ * (the editor's `rowImages[baseRowIndex].url`) — not directly on the
+ * `ProductionRow`. The caller has it handy and knows the freshest
+ * value (post-regenerate); reading off a row field would risk staleness.
+ * Pass empty string when the base hasn't generated yet — the helper
+ * returns the `BASE_NOT_GENERATED` error for that case.
+ *
+ * Returns a `{ kind: 'ready', ... }` for happy-path POSTs or a
+ * `{ kind: 'error', code }` the UI can branch on:
+ *
+ *   NOT_A_VARIANT        — row isn't part of a variant group, or it IS
+ *                          the base (variant_index === 0). Caller used
+ *                          the wrong helper — use the regular image-gen
+ *                          path for the base.
+ *   BASE_NOT_FOUND       — row claims a group_id but no row with
+ *                          variant_index === 0 exists in that group.
+ *                          Data corruption — repair the doc.
+ *   BASE_NOT_GENERATED   — base row exists but `baseImageUrl` is empty.
+ *                          UX should be: "Generate the base image
+ *                          first." Common during initial variant
+ *                          authoring.
+ *   MISSING_EDIT_PROMPT  — variant row has no variant_edit_prompt set.
+ *                          UX should be: "Describe what changes from
+ *                          the base."
+ */
+export function composeVariantEditRequest(
+  doc: ProductionDoc,
+  variantRow: ProductionRow,
+  baseImageUrl: string,
+): VariantEditPreparation {
+  if (!isVariantRow(variantRow) || (variantRow.variant_index ?? 0) === 0) {
+    return {
+      kind: 'error',
+      code: 'NOT_A_VARIANT',
+      message: 'composeVariantEditRequest expects a variant row (variant_index > 0). Use the regular image-gen path for the base.',
+    };
+  }
+
+  const groupId = variantRow.group_id!;
+  const base = getBaseRow(doc, groupId);
+  if (!base) {
+    return {
+      kind: 'error',
+      code: 'BASE_NOT_FOUND',
+      message: `No base row (variant_index = 0) in group ${groupId}.`,
+    };
+  }
+
+  const trimmedBaseUrl = baseImageUrl.trim();
+  if (!trimmedBaseUrl) {
+    return {
+      kind: 'error',
+      code: 'BASE_NOT_GENERATED',
+      message: 'Generate the base image first — variants edit it.',
+    };
+  }
+
+  const editInstruction = variantRow.variant_edit_prompt?.trim();
+  if (!editInstruction) {
+    return {
+      kind: 'error',
+      code: 'MISSING_EDIT_PROMPT',
+      message: 'Describe what changes from the base (e.g. "raise the right eyebrow").',
+    };
+  }
+
+  // Prompt composition: base scene context + clear delimiter + the
+  // smallest possible edit instruction. The delimiter wording is
+  // deliberate — "EDIT:" anchors the model on "apply this delta to
+  // the input image" rather than "draw a new scene that includes
+  // these elements". Verified pattern across other edit-model
+  // callers in this repo.
+  const basePrompt = (base.ai_image_prompt || '').trim();
+  const composedPrompt = basePrompt
+    ? `${basePrompt}\n\nEDIT (apply this change to the input image, keep everything else identical): ${editInstruction}`
+    : `EDIT (apply this change to the input image): ${editInstruction}`;
+
+  // Defensive truncation — the /api/.../edit route caps prompts to
+  // its own limit; trimming here gives a clearer error than a
+  // downstream 400 from the model.
+  const MAX_PROMPT = 2000;
+  const finalPrompt = composedPrompt.length > MAX_PROMPT
+    ? composedPrompt.slice(0, MAX_PROMPT)
+    : composedPrompt;
+
+  const baseRowIndex = doc.rows.indexOf(base);
+  return {
+    kind: 'ready',
+    request: {
+      originalImageUrl: trimmedBaseUrl,
+      prompt: finalPrompt,
+      optionId: 'gpt-image-2-atlas-edit',
+    },
+    costUsd: 0.011,
+    baseRowIndex,
+    baseImageUrl: trimmedBaseUrl,
+  };
 }
 
 export interface ProductionDoc {
@@ -1370,6 +1585,10 @@ export function productionDocToVideoConfig(
     sceneFadeEnabled: doc.scene_fade_enabled,
     captions: opts.captions,
     textOverlays: doc.text_overlays,
+    // Phase 2 of _plans/2026-05-25-style-aware-overlay-text.md: forward
+    // the doc's style preset so Remotion components can style-vary
+    // their rendering. Undefined ⇒ all components use their defaults.
+    styleId: doc.style_preset,
   };
 
   if (!opts.alignment) return config;

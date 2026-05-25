@@ -33,7 +33,20 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
       );
     }
 
-    const { modelId, niche, count, audience, focus, videoType, referenceContext, redditContext, existingTitles } = await req.json();
+    const {
+      modelId,
+      niche,
+      nicheDescription,
+      nicheKeywords,
+      extraContext,
+      count,
+      audience,
+      focus,
+      videoType,
+      referenceContext,
+      redditContext,
+      existingTitles,
+    } = await req.json();
 
     if (!niche) {
       return NextResponse.json({ error: 'niche is required' }, { status: 400 });
@@ -64,6 +77,9 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
       ].filter(Boolean);
       const { system, user } = ideaGenerationPrompt({
         niche,
+        nicheDescription: typeof nicheDescription === 'string' ? nicheDescription : undefined,
+        nicheKeywords: Array.isArray(nicheKeywords) ? nicheKeywords : undefined,
+        extraContext: typeof extraContext === 'string' ? extraContext : undefined,
         count: targetCount - collected.length + 3, // ask for a few extra so dedupe doesn't leave us short
         audience,
         focus,

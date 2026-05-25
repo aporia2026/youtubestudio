@@ -1,6 +1,6 @@
 'use client';
 
-import React, { Suspense, useState, useEffect, useRef, useCallback } from 'react';
+import React, { Suspense, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
@@ -81,8 +81,17 @@ import {
   MIN_SCENE_MS_BOUNDS,
   TAIL_BUFFER_MS_BOUNDS,
   clampSceneTiming,
+  // Phase 3 (2026-05-25) — variant-group helpers. See
+  // _plans/2026-05-25-near-static-variants.md.
+  isVariantRow,
+  getVariantGroup,
+  getBaseRow,
+  composeVariantEditRequest,
+  MAX_VARIANTS_PER_GROUP,
   type ImageSaliencyMap,
 } from '@/remotion/utils';
+import type { EditorWriters } from '@/components/production-doc/editor/types';
+import { EditorView } from '@/components/production-doc/editor/EditorView';
 import { resolveOverlayPlacement } from '@/lib/overlay-placement';
 import { stripProductionMarkers } from '@/lib/script-markers';
 import { buildCanonicalScript, scriptDriftRatio } from '@/lib/voiceover-alignment';
@@ -314,6 +323,18 @@ interface ProductionRow {
    *  is set. See
    *  `_plans/2026-05-20-render-config-drop-zoom-padding-region-import.md`. */
   region_zoom_padding_pct?: number;
+  // Phase 3 (2026-05-25) — variant-group fields. Optional / JSONB-stored,
+  // so old docs are back-compat (group_id = undefined ⇒ standalone row).
+  // Mirrors the canonical definition in src/remotion/utils.ts. See
+  // _plans/2026-05-25-near-static-variants.md.
+  group_id?: string;
+  variant_index?: number;
+  variant_edit_prompt?: string;
+  /** Phase 3.7c — base image URL captured when this variant was
+   *  last generated. Mismatch with the current base image_url means
+   *  the variant is stale; the editor renders a "Base changed —
+   *  regenerate?" banner. Only set on variant rows. */
+  variant_base_image_at_generation?: string;
 }
 
 interface ProductionDoc {
@@ -1461,7 +1482,7 @@ type EditResult =
   | { ok: true; imageUrl: string; saliency: ImageSaliencyMap | null }
   | { ok: false; error: string };
 
-function ImageCell({
+export function ImageCell({
   state,
   onRetry,
   onUpload,
@@ -1804,6 +1825,15 @@ function ProductionDocPage() {
   // Whether the local ComfyUI stack is wired up in this env (controls
   // visibility of the "Local (free)" image-model entries below).
   const localStudioEnabled = useLocalStudioEnabled();
+  // Phase 3 follow-up (2026-05-25) — opt-in toggle for the new
+  // multi-pane editor view (`src/components/production-doc/editor/`).
+  // Default off so existing grid-view workflows are unaffected.
+  // Initial state honors `?view=editor` in the URL for shareable links;
+  // user clicks of the header button flip it without touching the URL
+  // (kept simple — no router.replace) since the toggle is exploratory.
+  const [editorViewMode, setEditorViewMode] = useState<'grid' | 'editor'>(
+    search?.get('view') === 'editor' ? 'editor' : 'grid',
+  );
   const scheduleItemId = getScheduleLinkId(search);
   // Direct project handoff (e.g. from the project detail page's "Send to
   // Production Doc" button). Mirrors the schedule-item path but pulls the
@@ -2266,6 +2296,334 @@ function ProductionDocPage() {
       if (historyEntryId) {
         updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
       }
+      return nextDoc;
+    });
+  }, [historyEntryId]);
+
+  /**
+   * Phase 3.3 — Add a variant row anchored to the row at `baseIndex`.
+   *
+   * Behavior:
+   *
+   *   - If the base row doesn't already belong to a group, auto-promote
+   *     it by assigning a fresh `group_id` and `variant_index = 0`.
+   *   - The new variant lands immediately after the last existing
+   *     row in the group (so variants stay contiguous).
+   *   - `ai_image_prompt`, `visual_type`, `visual_description` are
+   *     cloned from the base so the variant inherits the scene context.
+   *     `script_text`, `on_screen_text`, `timecode` start empty —
+   *     each variant has its own narration beat.
+   *   - Caps at `MAX_VARIANTS_PER_GROUP` (4: 1 base + 3 edits). When
+   *     the cap is hit, toasts and no-ops.
+   *
+   * Autosave fires through the same `updateProductionDocEntry` path
+   * `updateRow` uses, so the new row persists immediately. `rowImages`
+   * gets a parallel empty slot inserted at the same index so the
+   * sidecar stays aligned with `doc.rows`.
+   */
+  const addVariantRow = useCallback((baseIndex: number) => {
+    setDoc(prev => {
+      if (!prev) return prev;
+      const baseRow = prev.rows[baseIndex];
+      if (!baseRow) return prev;
+
+      // Determine the group id — reuse if already grouped, mint
+      // otherwise. UUID generation prefers crypto.randomUUID (Edge +
+      // modern browsers); falls back to a timestamp+random string for
+      // the rare older runtime.
+      const existingGroupId = baseRow.group_id;
+      const groupId = existingGroupId
+        ?? (typeof crypto !== 'undefined' && 'randomUUID' in crypto
+              ? crypto.randomUUID()
+              : `g-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+
+      const groupRows = prev.rows.filter(r => r.group_id === groupId);
+      const currentSize = existingGroupId ? groupRows.length : 1; // base counts even when un-grouped before this call
+      if (currentSize >= MAX_VARIANTS_PER_GROUP) {
+        toast.error(`Variant group is at the cap of ${MAX_VARIANTS_PER_GROUP} rows (1 base + ${MAX_VARIANTS_PER_GROUP - 1} variants).`);
+        return prev;
+      }
+
+      const nextVariantIndex = existingGroupId
+        ? Math.max(...groupRows.map(r => r.variant_index ?? 0)) + 1
+        : 1;
+
+      // Promote the base if needed.
+      const rowsWithBasePromoted = existingGroupId
+        ? prev.rows
+        : prev.rows.map((r, i) =>
+            i === baseIndex
+              ? { ...r, group_id: groupId, variant_index: 0 }
+              : r,
+          );
+
+      // Find insertion index — right after the LAST row in the group.
+      let lastGroupIndex = baseIndex;
+      for (let i = baseIndex + 1; i < rowsWithBasePromoted.length; i++) {
+        if (rowsWithBasePromoted[i]?.group_id === groupId) {
+          lastGroupIndex = i;
+        } else {
+          break; // variants are contiguous; first non-group row terminates the run
+        }
+      }
+      const insertAt = lastGroupIndex + 1;
+
+      const newRow: ProductionRow = {
+        timecode: '',
+        script_text: '',
+        // Cloned scene-context fields from the base.
+        visual_type: baseRow.visual_type,
+        visual_description: baseRow.visual_description,
+        stock_search_terms: baseRow.stock_search_terms,
+        // ai_image_prompt is intentionally left empty on the variant
+        // itself — the dispatcher composes the base prompt with the
+        // edit instruction. Storing the base's prompt here would
+        // double-bake context if anyone reads the row directly.
+        ai_image_prompt: '',
+        on_screen_text: '',
+        notes: '',
+        group_id: groupId,
+        variant_index: nextVariantIndex,
+        variant_edit_prompt: '',
+      };
+
+      const nextRows = [
+        ...rowsWithBasePromoted.slice(0, insertAt),
+        newRow,
+        ...rowsWithBasePromoted.slice(insertAt),
+      ];
+      const nextDoc = { ...prev, rows: nextRows };
+      if (historyEntryId) {
+        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+      }
+      // Keep `rowImages` aligned with `doc.rows` by inserting a parallel
+      // empty slot. Without this every row at index > insertAt would
+      // look up the WRONG image until the next full reload.
+      setRowImages(prev => {
+        const next = [...prev];
+        next.splice(insertAt, 0, { status: 'idle' });
+        return next;
+      });
+      return nextDoc;
+    });
+  }, [historyEntryId]);
+
+  /**
+   * Phase 3.3 — Generate the image for a variant row by POSTing the
+   * composed Atlas-Edit request to the existing
+   * `/api/generate/production-doc/image/edit` route.
+   *
+   * Routes through `composeVariantEditRequest` so the dispatcher
+   * receives the base scene context + the variant's edit instruction
+   * in the canonical shape (per `_plans/2026-05-25-near-static-variants.md`).
+   *
+   * Surfaces typed errors as toasts so the user gets actionable
+   * messages instead of a generic 500:
+   *
+   *   BASE_NOT_GENERATED   → "Generate the base image first."
+   *   MISSING_EDIT_PROMPT  → "Describe what changes from the base."
+   *   NOT_A_VARIANT, BASE_NOT_FOUND → "Row isn't a valid variant."
+   *
+   * Atlas Edit costs $0.011/call (vs $0.04 for a base i2i generation),
+   * so a 3-variant group total is ~$0.073 — surfaced inline on the
+   * Generate button label.
+   */
+  const generateVariantImage = useCallback(async (variantIndex: number) => {
+    if (!doc) return;
+    const variantRow = doc.rows[variantIndex];
+    if (!variantRow) return;
+    const groupId = variantRow.group_id;
+    if (!groupId) {
+      toast.error('Row is not part of a variant group.');
+      return;
+    }
+    // Resolve the base's image URL from the rowImages sidecar — that's
+    // where the editor stores generated image state. Falls back to
+    // empty (which becomes BASE_NOT_GENERATED below).
+    const base = getBaseRow(doc, groupId);
+    if (!base) {
+      toast.error('Base row not found for this variant group.');
+      return;
+    }
+    const baseRowIndex = doc.rows.indexOf(base);
+    // Snapshot rowImages via the setState callback. The state is
+    // declared LATER in the file (`rowImages` lives in a useState
+    // ~200 lines below the writers block), so referring to it in a
+    // useCallback dep array would be a use-before-declaration. The
+    // functional-setter callback runs synchronously with the freshest
+    // state and lets us read without a textual reference up here.
+    let snapshot: RowImageState[] = [];
+    setRowImages(prev => {
+      snapshot = prev;
+      return prev;
+    });
+    const baseImageUrl = snapshot[baseRowIndex]?.imageUrl ?? '';
+
+    const prepared = composeVariantEditRequest(doc, variantRow, baseImageUrl);
+    if (prepared.kind === 'error') {
+      toast.error(prepared.message);
+      return;
+    }
+
+    setRowImages(prev => {
+      const next = [...prev];
+      next[variantIndex] = { ...(next[variantIndex] || { status: 'idle' }), status: 'loading' };
+      return next;
+    });
+
+    try {
+      const res = await fetch('/api/generate/production-doc/image/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(prepared.request),
+      });
+      const data = await res.json() as { imageUrl?: string; error?: string };
+      if (res.ok && data.imageUrl) {
+        setRowImages(prev => {
+          const next = [...prev];
+          next[variantIndex] = { status: 'done', imageUrl: data.imageUrl!, source: 'generated' };
+          return next;
+        });
+        // Phase 3.7c — record the base image URL we generated
+        // against, so the editor can detect staleness later when
+        // the base is regenerated.
+        setDoc(prev => {
+          if (!prev) return prev;
+          const nextRows = prev.rows.map((r, i) =>
+            i === variantIndex
+              ? { ...r, variant_base_image_at_generation: baseImageUrl }
+              : r,
+          );
+          const nextDoc = { ...prev, rows: nextRows };
+          if (historyEntryId) {
+            updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+          }
+          return nextDoc;
+        });
+        toast.success(`Variant ${variantRow.variant_index} generated`);
+      } else {
+        setRowImages(prev => {
+          const next = [...prev];
+          next[variantIndex] = { status: 'error', error: data.error ?? `HTTP ${res.status}` };
+          return next;
+        });
+        toast.error(data.error || `Generation failed (HTTP ${res.status})`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Generation failed';
+      setRowImages(prev => {
+        const next = [...prev];
+        next[variantIndex] = { status: 'error', error: msg };
+        return next;
+      });
+      toast.error(msg);
+    }
+  }, [doc, historyEntryId]);
+
+  /**
+   * Phase 3.7a — Delete a variant row from its group.
+   *
+   * Only operates on variant rows (variant_index > 0). Deleting the
+   * BASE of a group is intentionally not supported here — that's a
+   * full row-delete and should go through whatever the regular row-
+   * delete affordance is. If the user wants to break up a group,
+   * they delete each variant and the base becomes a standalone row
+   * by virtue of being the only one left with that group_id (which
+   * the renderer treats indistinguishably from a true standalone).
+   *
+   * After deletion, the remaining variants in the group are
+   * re-indexed so variant_index stays contiguous (0, 1, 2, ...).
+   * Keeps the rowImages sidecar aligned by splicing the same index.
+   */
+  const deleteVariantRow = useCallback((variantIndex: number) => {
+    setDoc(prev => {
+      if (!prev) return prev;
+      const target = prev.rows[variantIndex];
+      if (!target) return prev;
+      const groupId = target.group_id;
+      if (!groupId || (target.variant_index ?? 0) === 0) {
+        toast.error('Use the regular delete for non-variant rows.');
+        return prev;
+      }
+      // Remove the row and re-index remaining variants in the same
+      // group so indices stay 0..N-1 with no gaps.
+      const without = prev.rows.filter((_, i) => i !== variantIndex);
+      let seen = 0;
+      const reindexed = without.map(r => {
+        if (r.group_id !== groupId) return r;
+        if ((r.variant_index ?? 0) === 0) return r; // base stays at 0
+        seen += 1;
+        return { ...r, variant_index: seen };
+      });
+      const nextDoc = { ...prev, rows: reindexed };
+      if (historyEntryId) {
+        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+      }
+      setRowImages(prev => {
+        const next = [...prev];
+        next.splice(variantIndex, 1);
+        return next;
+      });
+      return nextDoc;
+    });
+  }, [historyEntryId]);
+
+  /**
+   * Phase 3.7b — Reorder variants within a group via move-up /
+   * move-down. (Drag-to-reorder would need @dnd-kit which isn't
+   * installed; these buttons cover the common case with no new dep.)
+   *
+   * Direction `'up'` moves the variant one slot earlier in the row
+   * list AND swaps variant_index with the previous variant — so the
+   * timeline order and the variant numbering stay in sync. Variants
+   * can only swap with OTHER VARIANTS IN THE SAME GROUP; cannot
+   * move past the base (variant_index 0) and cannot move past the
+   * last variant in the group.
+   */
+  const moveVariantRow = useCallback((variantIndex: number, direction: 'up' | 'down') => {
+    setDoc(prev => {
+      if (!prev) return prev;
+      const target = prev.rows[variantIndex];
+      if (!target) return prev;
+      const groupId = target.group_id;
+      const targetVariantIdx = target.variant_index ?? 0;
+      if (!groupId || targetVariantIdx === 0) {
+        return prev; // base / standalone can't be reordered by this helper
+      }
+
+      // Find the sibling variant we'd swap with — the one whose
+      // variant_index is targetVariantIdx ± 1 in the same group.
+      const swapVariantIdx = direction === 'up' ? targetVariantIdx - 1 : targetVariantIdx + 1;
+      if (swapVariantIdx < 1) return prev; // can't move past the base
+      const swapRowIndex = prev.rows.findIndex(
+        r => r.group_id === groupId && (r.variant_index ?? 0) === swapVariantIdx,
+      );
+      if (swapRowIndex < 0) return prev; // no sibling at that index — boundary
+
+      // Swap both the row positions in `rows` and the variant_index
+      // values, so both timeline order and the numbering stay
+      // consistent. Doing both is important — the dispatcher reads
+      // variant_index for ordering, and the editor reads the row
+      // position for display.
+      const nextRows = prev.rows.slice();
+      const a = { ...nextRows[variantIndex], variant_index: swapVariantIdx };
+      const b = { ...nextRows[swapRowIndex], variant_index: targetVariantIdx };
+      nextRows[variantIndex] = b;
+      nextRows[swapRowIndex] = a;
+
+      const nextDoc = { ...prev, rows: nextRows };
+      if (historyEntryId) {
+        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+      }
+      // Mirror the row swap on rowImages so each row's image stays
+      // bound to its (now reordered) row position.
+      setRowImages(prev => {
+        const next = [...prev];
+        const tmp = next[variantIndex];
+        next[variantIndex] = next[swapRowIndex];
+        next[swapRowIndex] = tmp;
+        return next;
+      });
       return nextDoc;
     });
   }, [historyEntryId]);
@@ -3002,6 +3360,86 @@ function ProductionDocPage() {
     },
     [doc],
   );
+
+  /**
+   * Phase 3 follow-up (2026-05-25) — pre-built `EditorWriters` bundle
+   * for the new multi-pane editor view (`src/components/production-doc/
+   * editor/EditorView.tsx`). Nothing in this file consumes the bundle
+   * today; it exists so that whoever wires `<EditorView>` to a route
+   * later can drop it in as a one-liner:
+   *
+   *     <EditorView ... writers={editorWriters} ... />
+   *
+   * Without this prebuilt bundle, the routing PR would have to hunt
+   * down all 23 callbacks scattered across the 9k-line page and bundle
+   * them inline — easy to miss one, and easy for a missed entry to
+   * silently degrade (e.g. the "Generate variant" button doing
+   * nothing because `generateVariantImage` wasn't bundled in).
+   *
+   * Async functions (`fetchOverlayForRow` et al.) are wrapped in
+   * void-returning lambdas because the EditorWriters interface
+   * specifies void return for those entries — the editor view doesn't
+   * await them, it just fires-and-forgets and reads progress via the
+   * sidecar state (`rowImages`, `rowOverlays`).
+   *
+   * State setters (`setEditPanelRow`, `setOverlayPositionRow`) are
+   * wrapped to match the `openXForRow` shape — the editor view
+   * delegates dialog opening to page.tsx; the close path stays
+   * handled by each dialog's own onClose.
+   */
+  const editorWriters: EditorWriters = useMemo(() => ({
+    updateRow,
+    applyTitleToRange,
+    applyPillarboxColorToAll,
+    clearPillarboxOverrides,
+    applyStripeLayoutToAll,
+    clearStripeLayoutOverrides,
+    applySceneZoomToAll,
+    clearSceneZoomOverrides,
+    applyRegionZoomPaddingToAll,
+    applyTitleCardAsSectionTitle,
+    // Async functions declared inside the component body — stable
+    // identity across renders (function declarations are hoisted +
+    // bound once per render closure). Wrapped in void-returning
+    // lambdas to satisfy the EditorWriters fire-and-forget contract.
+    fetchOverlayForRow: (rowIndex, terms) => { void fetchOverlayForRow(rowIndex, terms); },
+    generateImageForRow: (rowIndex, prompt, extra) => { void generateImageForRow(rowIndex, prompt, extra); },
+    uploadImageForRow: (rowIndex, file) => { void uploadImageForRow(rowIndex, file); },
+    importImageUrlForRow: (rowIndex, url) => { void importImageUrlForRow(rowIndex, url); },
+    // State-setter wrappers — opening these dialogs is page-owned.
+    openEditPanelForRow: (rowIndex) => setEditPanelRow(rowIndex),
+    openOverlayPositionEditorForRow: (rowIndex) => setOverlayPositionRow(rowIndex),
+    handleBrollClipChange,
+    toggleRowLock,
+    computeRowSceneDurationMs,
+    // Variant-group mutators added in Phase 3.3 + 3.7.
+    addVariantRow,
+    generateVariantImage,
+    deleteVariantRow,
+    moveVariantRow,
+  }), [
+    // useCallback identities — listed in deps so React recomputes the
+    // bundle when any underlying writer's closure rebinds. The async
+    // functions and state setters above are NOT in deps: function
+    // declarations and useState setters are stable across renders.
+    updateRow,
+    applyTitleToRange,
+    applyPillarboxColorToAll,
+    clearPillarboxOverrides,
+    applyStripeLayoutToAll,
+    clearStripeLayoutOverrides,
+    applySceneZoomToAll,
+    clearSceneZoomOverrides,
+    applyRegionZoomPaddingToAll,
+    applyTitleCardAsSectionTitle,
+    handleBrollClipChange,
+    toggleRowLock,
+    computeRowSceneDurationMs,
+    addVariantRow,
+    generateVariantImage,
+    deleteVariantRow,
+    moveVariantRow,
+  ]);
 
   // Shared batch driver: walks `plan` sequentially, kicks off a B-roll
   // generation per row, seeds the cell's adoption stub + the page's status
@@ -6558,24 +6996,54 @@ function ProductionDocPage() {
             Generate a shot-by-shot breakdown with timecodes, visuals, auto-generated AI images, and Google Images links
           </p>
         </div>
-        {/* New session — explicit, confirmation-gated. The form inputs
-            (script, niche, topic, etc.) and the generated doc otherwise
-            persist across refreshes; this button is how the user opts
-            into a clean slate instead of getting one by accident. */}
-        <button
-          type="button"
-          onClick={resetSession}
-          className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
-          style={{
-            background: 'rgba(255,255,255,0.04)',
-            color: 'var(--text-secondary)',
-            border: '1px solid rgba(255,255,255,0.10)',
-            cursor: 'pointer',
-          }}
-          title="Clear the current form and generated doc to start fresh. Previous generations stay in the history sidebar."
-        >
-          🆕 New session
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Phase 3 follow-up — opt-in toggle for the new multi-pane
+              editor view. Hidden until a doc is loaded (the editor
+              view needs a doc to render anything meaningful). The
+              `editorWriters` bundle, EditorView component, and full
+              variant Inspector are all in git already; this button is
+              what actually mounts them in front of the user. */}
+          {doc && (
+            <button
+              type="button"
+              onClick={() => setEditorViewMode((m) => (m === 'editor' ? 'grid' : 'editor'))}
+              className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+              style={{
+                background: editorViewMode === 'editor'
+                  ? 'rgba(124,58,237,0.18)'
+                  : 'rgba(124,58,237,0.06)',
+                color: 'var(--accent-purple-bright)',
+                border: '1px solid rgba(124,58,237,0.35)',
+                cursor: 'pointer',
+              }}
+              title={
+                editorViewMode === 'editor'
+                  ? 'Switch back to the grid view (default).'
+                  : 'Try the new multi-pane editor view as a fullscreen overlay. The grid view stays untouched underneath.'
+              }
+            >
+              {editorViewMode === 'editor' ? '← Back to grid' : '🎬 Try new editor view'}
+            </button>
+          )}
+          {/* New session — explicit, confirmation-gated. The form inputs
+              (script, niche, topic, etc.) and the generated doc otherwise
+              persist across refreshes; this button is how the user opts
+              into a clean slate instead of getting one by accident. */}
+          <button
+            type="button"
+            onClick={resetSession}
+            className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+            style={{
+              background: 'rgba(255,255,255,0.04)',
+              color: 'var(--text-secondary)',
+              border: '1px solid rgba(255,255,255,0.10)',
+              cursor: 'pointer',
+            }}
+            title="Clear the current form and generated doc to start fresh. Previous generations stay in the history sidebar."
+          >
+            🆕 New session
+          </button>
+        </div>
       </div>
 
       {/* ── Input Panel */}
@@ -7857,12 +8325,49 @@ function ProductionDocPage() {
                     }
                     const vt = VISUAL_TYPE_COLORS[row.visual_type] || VISUAL_TYPE_COLORS['B-Roll'];
                     const imgState = rowImages[i] || { status: 'idle' };
+                    // Phase 3.3 — variant-group awareness for this row.
+                    // `isInGroup` covers BOTH the base (variant_index=0) and
+                    // variants (>0); `isVariant` is true for variants only.
+                    // Used to drive the row's left-border accent and the
+                    // "+ Add variant" vs "Generate variant" affordance.
+                    const isInGroup = isVariantRow(row);
+                    const isVariant = isInGroup && (row.variant_index ?? 0) > 0;
+                    const groupSize = isInGroup && row.group_id
+                      ? getVariantGroup(doc, row.group_id).length
+                      : 1;
+                    const canAddVariant = groupSize < MAX_VARIANTS_PER_GROUP && !isVariant;
+                    // Phase 3.7c — staleness check. A variant is stale when
+                    // the base's CURRENT image_url no longer matches the
+                    // snapshot taken when the variant was last generated.
+                    // Requires three things to be true: the row is a
+                    // variant, it has a snapshot (otherwise it was never
+                    // generated), and the current base image differs.
+                    // Reading the base's image URL from rowImages keeps the
+                    // check live as the base is regenerated.
+                    let isVariantStale = false;
+                    if (isVariant && row.variant_base_image_at_generation && row.group_id) {
+                      const baseRow = getBaseRow(doc, row.group_id);
+                      const baseIdx = baseRow ? doc.rows.indexOf(baseRow) : -1;
+                      const currentBaseImageUrl = baseIdx >= 0 ? rowImages[baseIdx]?.imageUrl : undefined;
+                      if (currentBaseImageUrl && currentBaseImageUrl !== row.variant_base_image_at_generation) {
+                        isVariantStale = true;
+                      }
+                    }
                     return (
                       <tr
                         key={i}
                         style={{
                           borderBottom: '1px solid var(--border)',
                           background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)',
+                          // Phase 3.3 — left-border accent indicates a row
+                          // is part of a variant group. Base rows get a
+                          // solid accent, variants get a softer one so the
+                          // base reads as "the anchor".
+                          ...(isInGroup ? {
+                            borderLeft: isVariant
+                              ? '3px solid rgba(34,211,238,0.45)'
+                              : '3px solid rgba(34,211,238,0.85)',
+                          } : {}),
                         }}
                       >
                         {/* # */}
@@ -8181,6 +8686,198 @@ function ProductionDocPage() {
                                     </button>
                                   </div>
                                 ) : null}
+                                {/* Phase 3.3 — variant-group controls. See
+                                    _plans/2026-05-25-near-static-variants.md.
+                                    Three branches:
+                                      1. Variant row (variant_index > 0): show
+                                         the "variant N of M" chip, the
+                                         edit-prompt input, the Generate
+                                         button ($0.011 Atlas Edit), and
+                                         a small Delete affordance.
+                                      2. Base row (variant_index === 0):
+                                         show a "base — N variants" chip
+                                         and the "+ Add variant" button.
+                                      3. Standalone row (no group): show
+                                         only "+ Add variant" so the user
+                                         can promote the row into a group.
+                                    The button is hidden when the group is
+                                    at MAX_VARIANTS_PER_GROUP. */}
+                                {isVariant ? (
+                                  <div className="mt-1.5" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                    {/* Phase 3.7c — stale-on-base-change banner.
+                                        Shown only when this variant has a
+                                        snapshot of an OLDER base image. The
+                                        banner directs the user to regenerate;
+                                        clicking the Generate button below
+                                        replaces the snapshot in the same flow. */}
+                                    {isVariantStale && (
+                                      <div
+                                        className="text-[10px] px-2 py-1 rounded"
+                                        style={{
+                                          background: 'rgba(245,158,11,0.12)',
+                                          color: '#fbbf24',
+                                          border: '1px solid rgba(245,158,11,0.35)',
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          gap: 6,
+                                        }}
+                                        title="The base image was regenerated after this variant was created. The variant is still valid as bytes but is derived from an older base. Click Generate variant to redo it against the current base."
+                                      >
+                                        ⚠ Base changed — regenerate to match current base
+                                      </div>
+                                    )}
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                      <span
+                                        className="text-[10px] px-1.5 py-0.5 rounded"
+                                        style={{
+                                          background: 'rgba(34,211,238,0.12)',
+                                          color: '#22d3ee',
+                                          border: '1px solid rgba(34,211,238,0.35)',
+                                          fontWeight: 600,
+                                        }}
+                                        title={`Variant ${row.variant_index} of ${groupSize - 1}. Image is derived from the base row's image via Atlas GPT Image 2 Edit ($0.011/call).`}
+                                      >
+                                        ⟜ variant {row.variant_index}/{groupSize - 1}
+                                      </span>
+                                      {/* Phase 3.7b — move up / move down within the
+                                          group. Disabled at boundaries. */}
+                                      <button
+                                        type="button"
+                                        onClick={() => moveVariantRow(i, 'up')}
+                                        disabled={(row.variant_index ?? 0) <= 1}
+                                        className="text-[10px] px-1.5 py-0.5 rounded"
+                                        style={{
+                                          background: 'rgba(255,255,255,0.04)',
+                                          color: 'var(--text-secondary)',
+                                          border: '1px solid var(--border)',
+                                          cursor: (row.variant_index ?? 0) <= 1 ? 'not-allowed' : 'pointer',
+                                          opacity: (row.variant_index ?? 0) <= 1 ? 0.4 : 1,
+                                        }}
+                                        title="Move this variant earlier in the sequence"
+                                      >
+                                        ↑
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => moveVariantRow(i, 'down')}
+                                        disabled={(row.variant_index ?? 0) >= groupSize - 1}
+                                        className="text-[10px] px-1.5 py-0.5 rounded"
+                                        style={{
+                                          background: 'rgba(255,255,255,0.04)',
+                                          color: 'var(--text-secondary)',
+                                          border: '1px solid var(--border)',
+                                          cursor: (row.variant_index ?? 0) >= groupSize - 1 ? 'not-allowed' : 'pointer',
+                                          opacity: (row.variant_index ?? 0) >= groupSize - 1 ? 0.4 : 1,
+                                        }}
+                                        title="Move this variant later in the sequence"
+                                      >
+                                        ↓
+                                      </button>
+                                      {/* Phase 3.7a — delete this variant. Confirms
+                                          before destroying. */}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (window.confirm(`Delete variant ${row.variant_index}?`)) {
+                                            deleteVariantRow(i);
+                                          }
+                                        }}
+                                        className="text-[10px] px-1.5 py-0.5 rounded"
+                                        style={{
+                                          background: 'rgba(239,68,68,0.08)',
+                                          color: '#f87171',
+                                          border: '1px solid rgba(239,68,68,0.3)',
+                                          cursor: 'pointer',
+                                        }}
+                                        title="Delete this variant. Remaining variants in the group renumber automatically."
+                                      >
+                                        🗑
+                                      </button>
+                                    </div>
+                                    <textarea
+                                      value={row.variant_edit_prompt ?? ''}
+                                      onChange={(e) => updateRow(i, { variant_edit_prompt: e.target.value })}
+                                      placeholder="What changes from the base? e.g. raise the right eyebrow"
+                                      className="text-[10px] w-full"
+                                      style={{
+                                        minHeight: 38,
+                                        resize: 'vertical',
+                                        background: 'var(--bg-tertiary)',
+                                        color: 'var(--text-primary)',
+                                        border: '1px solid var(--border)',
+                                        borderRadius: 4,
+                                        padding: '4px 6px',
+                                      }}
+                                      maxLength={400}
+                                    />
+                                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                                      <button
+                                        type="button"
+                                        onClick={() => generateVariantImage(i)}
+                                        disabled={imgState.status === 'loading' || !row.variant_edit_prompt?.trim()}
+                                        className="text-[10px] px-2 py-0.5 rounded"
+                                        style={{
+                                          background: 'rgba(124,58,237,0.15)',
+                                          color: 'var(--accent-purple-bright)',
+                                          border: '1px solid rgba(124,58,237,0.35)',
+                                          cursor: imgState.status === 'loading' || !row.variant_edit_prompt?.trim() ? 'not-allowed' : 'pointer',
+                                          opacity: imgState.status === 'loading' || !row.variant_edit_prompt?.trim() ? 0.5 : 1,
+                                        }}
+                                        title="Generate this variant by editing the base image with your prompt. ~$0.011 via Atlas GPT Image 2 Edit."
+                                      >
+                                        {imgState.status === 'loading' ? 'Generating…' : '✨ Generate variant (~$0.011)'}
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : isInGroup ? (
+                                  <div className="mt-1.5" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                    <span
+                                      className="text-[10px] px-1.5 py-0.5 rounded"
+                                      style={{
+                                        background: 'rgba(34,211,238,0.18)',
+                                        color: '#22d3ee',
+                                        border: '1px solid rgba(34,211,238,0.4)',
+                                        fontWeight: 600,
+                                      }}
+                                      title="This is the BASE of a variant group. Generate this row's image normally; variants are derived from it."
+                                    >
+                                      ⏺ base · {groupSize - 1} variant{groupSize - 1 === 1 ? '' : 's'}
+                                    </span>
+                                    {canAddVariant && (
+                                      <button
+                                        type="button"
+                                        onClick={() => addVariantRow(i)}
+                                        className="text-[10px] px-2 py-0.5 rounded"
+                                        style={{
+                                          background: 'rgba(34,211,238,0.12)',
+                                          color: '#22d3ee',
+                                          border: '1px solid rgba(34,211,238,0.35)',
+                                          cursor: 'pointer',
+                                        }}
+                                        title={`Add another variant of this row. Max ${MAX_VARIANTS_PER_GROUP} per group (1 base + ${MAX_VARIANTS_PER_GROUP - 1} variants).`}
+                                      >
+                                        + Add variant
+                                      </button>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="mt-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => addVariantRow(i)}
+                                      className="text-[10px] px-2 py-0.5 rounded"
+                                      style={{
+                                        background: 'rgba(34,211,238,0.08)',
+                                        color: '#22d3ee',
+                                        border: '1px dashed rgba(34,211,238,0.4)',
+                                        cursor: 'pointer',
+                                      }}
+                                      title="Promote this row into a variant group and add the first variant. Variants share the same composition; each one is a small edit of the base image (Atlas GPT Image 2 Edit, ~$0.011/call)."
+                                    >
+                                      + Add variant
+                                    </button>
+                                  </div>
+                                )}
                               </>
                             );
                           })()}
@@ -9661,6 +10358,83 @@ function ProductionDocPage() {
         );
       })()}
     </div>
+
+    {/* Phase 3 follow-up (2026-05-25) — Editor view toggle overlay.
+        When `editorViewMode === 'editor'` AND a doc is loaded, this
+        fullscreen overlay covers the grid view. The overlay pattern is
+        deliberate: it avoids touching the 3000+ lines of dense grid JSX
+        above (zero risk of mis-bracketing) and lets users return to the
+        grid via the header toggle button without losing scroll position
+        or in-flight form state. The doc itself is shared between views
+        via the same page-level state (doc, rowImages, rowVideoClips,
+        etc.) so any edit made in either surface persists in both.
+        See plan: `_plans/2026-05-25-editor-view-variant-inspector.md`. */}
+    {editorViewMode === 'editor' && doc && (() => {
+      // Derive rowLockedAsStill (boolean[]) from the signature-keyed
+      // state — same remap the projectPatch code does internally. The
+      // boolean[] shape is what EditorViewProps expects.
+      const rowLockedAsStill: boolean[] = doc.rows.map((row) => {
+        const sig = brollRowSignatureInput({
+          timecode: row.timecode,
+          visual_description: row.visual_description,
+        });
+        return Boolean(rowLockSignatures[sig]);
+      });
+      return (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 80,
+            background: 'var(--bg-primary, #0a0a0a)',
+            overflow: 'auto',
+          }}
+          role="dialog"
+          aria-label="Editor view"
+        >
+          <div className="p-6 max-w-full" style={{ minHeight: '100vh' }}>
+            <div className="mb-4 flex items-start justify-between gap-4 flex-wrap">
+              <div>
+                <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>
+                  Editor view
+                </h2>
+                <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+                  Multi-pane preview / inspector / section strip. Edits sync with the grid view underneath.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditorViewMode('grid')}
+                className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+                style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  color: 'var(--text-secondary)',
+                  border: '1px solid rgba(255,255,255,0.10)',
+                  cursor: 'pointer',
+                }}
+                title="Return to the standard grid view."
+              >
+                ← Back to grid
+              </button>
+            </div>
+            <EditorView
+              doc={doc}
+              rowImages={rowImages as Parameters<typeof EditorView>[0]['rowImages']}
+              rowVideoClips={rowVideoClips as Parameters<typeof EditorView>[0]['rowVideoClips']}
+              rowOverlays={rowOverlays}
+              rowLockedAsStill={rowLockedAsStill}
+              rowLockSignatures={rowLockSignatures}
+              voiceoverUrl={voiceoverUrl}
+              voiceoverAlignment={voiceoverAlignment}
+              brandKit={brandKit}
+              animateScenes={animateScenes}
+              suppressLowerThirds={suppressLowerThirds}
+              writers={editorWriters}
+            />
+          </div>
+        </div>
+      );
+    })()}
     </ScheduleLinkProvider>
   );
 }

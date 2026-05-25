@@ -43,7 +43,11 @@
  */
 import { sql } from '@vercel/postgres';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import * as path from 'path';
+import { promises as fs } from 'fs';
 import { getBuiltInStyle } from './production-doc-styles';
+import { getImagesBucket, uploadToBucket, getDownloadUrlForBucket } from './r2';
+import { logger } from './logger';
 
 /** v3 (2026-05-22): Synthesize a StyleReferenceImage[] for a built-in
  *  style that ships with `built_in_refs`. No DB rows, no R2 — refs
@@ -79,6 +83,7 @@ function synthesizeBuiltInRefs(styleId: string): StyleReferenceImage[] {
   // existing public/style-refs/Doodle-explainer/ directory.
   const dirMap: Record<string, string> = {
     doodle_explainer: 'Doodle-explainer',
+    doodle_explainer_2: 'Doodle-explainer-2',
   };
   const dir = dirMap[builtIn.id] ?? builtIn.id;
   const base = getPublicBaseUrl();
@@ -114,6 +119,139 @@ function synthesizeBuiltInRefs(styleId: string): StyleReferenceImage[] {
       content_validated_at: now,
       public_url: publicUrl,
     };
+  });
+}
+
+/**
+ * Mirror a built-in style's bundled refs into R2 so the i2i dispatcher
+ * can hand Kie (or any other provider) a presigned absolute URL
+ * instead of a `/style-refs/<dir>/<file>` path served from the Vercel
+ * deploy.
+ *
+ * Why this matters: even after the proxy allowlist for `/style-refs/*`
+ * was added, requests for built-in refs still went through Vercel's
+ * routing layer. Preview deploys have deployment-protection auth, the
+ * `VERCEL_URL` env var points at a deploy-specific subdomain whose
+ * routes change every push, and our own Next middleware sits in the
+ * path. Each of those is a potential reason for Kie's image-fetcher
+ * to land somewhere other than the image bytes — and the resulting
+ * upstream failure surfaces as the opaque "Models task execute
+ * failed" the dispatcher returns. R2 presigned GETs cut every one of
+ * those failure modes out of the loop.
+ *
+ * Idempotent: each call PUTs the file, overwriting any prior copy. We
+ * also keep an in-process Set so a warm Vercel instance only uploads
+ * each (style, file) pair once. Cold instances re-upload, which is
+ * fine — the PUT is small (~30–60 KB per ref).
+ *
+ * Returns the presigned GET URL ready to drop into an i2i provider
+ * input. Throws if R2 isn't configured or the bundled file can't be
+ * read from disk.
+ */
+const _mirroredBuiltInKeys = new Set<string>();
+
+export async function mirrorBuiltInRefToR2(input: {
+  /** Built-in style id (e.g. `doodle_explainer_2`). Forms part of the
+   *  R2 key so refs from different built-ins can't collide. */
+  styleId: string;
+  /** Filesystem-relative ref filename as registered on the built-in
+   *  spec (e.g. `01-composite-cartoon-book-with-framed-real-photo.jpg`). */
+  filename: string;
+  /** Declared MIME type for the upload. Defaults to image/jpeg. */
+  mimeType?: string;
+}): Promise<string> {
+  const bucket = getImagesBucket();
+  // Namespaced key — `style-refs-builtin/<styleId>/<filename>` keeps
+  // these mirrors clearly distinguishable from saved-style refs (which
+  // land under different prefixes per workspace) and easy to bulk-
+  // delete if a built-in is ever retired.
+  const key = `style-refs-builtin/${input.styleId}/${input.filename}`;
+  if (_mirroredBuiltInKeys.has(key)) {
+    // Warm-instance fast path: presign without re-upload.
+    return getDownloadUrlForBucket(bucket, key, undefined);
+  }
+
+  // Resolve the bundled file on the Vercel function filesystem.
+  // public/ is included in the function package and accessible at
+  // `process.cwd()/public/style-refs/<Dir>/<filename>`. The dir name
+  // mapping mirrors `synthesizeBuiltInRefs` above.
+  const builtIn = getBuiltInStyle(input.styleId);
+  const dirMap: Record<string, string> = {
+    doodle_explainer: 'Doodle-explainer',
+    doodle_explainer_2: 'Doodle-explainer-2',
+  };
+  const dir = dirMap[input.styleId] ?? builtIn?.id ?? input.styleId;
+  const filePath = path.join(process.cwd(), 'public', 'style-refs', dir, input.filename);
+
+  let buffer: Buffer;
+  try {
+    buffer = await fs.readFile(filePath);
+  } catch (err) {
+    logger.error('[style-refs builtin-mirror read failed]', {
+      style_id: input.styleId,
+      filename: input.filename,
+      path: filePath,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+    throw new Error(
+      `Failed to read built-in ref '${input.styleId}/${input.filename}' from deploy filesystem`,
+    );
+  }
+
+  const mimeType = input.mimeType ?? 'image/jpeg';
+  try {
+    await uploadToBucket(bucket, key, buffer, mimeType);
+  } catch (err) {
+    logger.error('[style-refs builtin-mirror upload failed]', {
+      style_id: input.styleId,
+      filename: input.filename,
+      key,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+
+  _mirroredBuiltInKeys.add(key);
+  logger.info('[style-refs builtin-mirror uploaded]', {
+    style_id: input.styleId,
+    filename: input.filename,
+    key,
+    bytes: buffer.length,
+  });
+  return getDownloadUrlForBucket(bucket, key, undefined);
+}
+
+/**
+ * Convenience: given a synthesized built-in `StyleReferenceImage`
+ * (i.e. one with `public_url` set and `r2_key` empty), mirror its
+ * underlying file into R2 and return the presigned URL. The
+ * dispatcher calls this in place of consuming `public_url` verbatim.
+ *
+ * The filename is recovered from `public_url`'s final path segment
+ * — synthesized URLs always end in `/style-refs/<dir>/<filename>`
+ * regardless of whether the URL is absolute (VERCEL_URL prefix) or
+ * relative.
+ */
+export async function mirrorPublicUrlRefToR2(
+  ref: StyleReferenceImage,
+): Promise<string> {
+  if (!ref.public_url) {
+    throw new Error('mirrorPublicUrlRefToR2: ref has no public_url');
+  }
+  // Strip query / fragment defensively. URL parsing handles both
+  // absolute and relative paths once we wrap relative URLs in a
+  // dummy base.
+  const u = ref.public_url.startsWith('http')
+    ? new URL(ref.public_url)
+    : new URL(ref.public_url, 'http://placeholder.invalid');
+  const filename = u.pathname.split('/').filter(Boolean).pop();
+  if (!filename) {
+    throw new Error(`mirrorPublicUrlRefToR2: could not extract filename from '${ref.public_url}'`);
+  }
+  return mirrorBuiltInRefToR2({
+    styleId: ref.style_id,
+    filename,
+    mimeType: ref.mime_type,
   });
 }
 

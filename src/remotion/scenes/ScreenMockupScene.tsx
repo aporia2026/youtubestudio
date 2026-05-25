@@ -1,7 +1,7 @@
 import React from 'react';
 import { AbsoluteFill, useCurrentFrame, useVideoConfig, spring, interpolate, Img } from 'remotion';
 import { KenBurns } from '../components/KenBurns';
-import { LowerThird } from '../components/LowerThird';
+import { LowerThird, type LowerThirdVariant } from '../components/LowerThird';
 import { SceneTransition } from '../components/SceneTransition';
 import { SPRING_SMOOTH } from '../animations/spring-presets';
 import { VideoShot, BrandKit } from '../types';
@@ -15,6 +15,9 @@ interface ScreenMockupSceneProps {
   suppressLowerThird?: boolean;
   /** When false, suppress the scene-to-scene cross fade. Defaults `true`. */
   fadeEnabled?: boolean;
+  /** Glyph treatment for the LowerThird `onScreenText` overlay. See
+   *  the same prop on BRollScene + Phase 2 plan. Defaults to 'default'. */
+  lowerThirdVariant?: LowerThirdVariant;
 }
 
 /**
@@ -27,6 +30,7 @@ export const ScreenMockupScene: React.FC<ScreenMockupSceneProps> = ({
   brand,
   suppressLowerThird = false,
   fadeEnabled = true,
+  lowerThirdVariant = 'default',
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -152,6 +156,7 @@ export const ScreenMockupScene: React.FC<ScreenMockupSceneProps> = ({
           totalFrames={durationInFrames}
           delay={18}
           exitBeforeEnd={15}
+          variant={lowerThirdVariant}
         />
       )}
 

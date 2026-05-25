@@ -66,8 +66,15 @@ export const GET = apiRoute.authed(async (session) => {
   // /api/production-doc/styles/[id]/refs as before. Dir-mapping
   // convention (id → directory under public/style-refs/) lives here
   // and only here.
+  // Mirrors the same map in src/lib/production-doc-styles-refs.ts.
+  // Both lists need an entry per built-in that ships refs — this one
+  // resolves the dialog's <img src>, the other resolves the
+  // dispatcher's ref-fetch URL. Forgetting to update both is exactly
+  // the bug that left doodle_explainer_2 thumbnails broken even after
+  // the dispatcher-side map was fixed.
   const builtInDirMap: Record<string, string> = {
     doodle_explainer: 'Doodle-explainer',
+    doodle_explainer_2: 'Doodle-explainer-2',
   };
   const enriched = styles.map((s) => {
     if (s.origin !== 'built-in' || !s.built_in_refs?.length) return s;

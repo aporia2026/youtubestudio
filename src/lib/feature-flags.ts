@@ -87,3 +87,23 @@ export const COLLAGE_TESTER_PUBLIC = process.env.NEXT_PUBLIC_COLLAGE_TESTER === 
  * everywhere.
  */
 export const AUTO_UPSCALE_ENABLED = process.env.AUTO_UPSCALE_ENABLED !== 'false';
+
+/**
+ * Atlas Cloud vendor kill switch (see `src/lib/atlas-cloud-images.ts`
+ * + `src/lib/image-gen-dispatch.ts`). Default-ON: any model whose
+ * registry spec has `provider: 'atlas'` is reachable from the picker
+ * unless this is explicitly set to `'false'`. When off, the picker
+ * filters out Atlas options at registry-load time so a vendor outage
+ * doesn't surface as a generation failure mid-flow.
+ *
+ * Pairs with `process.env.ATLAS_CLOUD_API_KEY` — if the key is unset,
+ * the dispatcher throws at request time regardless of this flag. The
+ * picker also filters Atlas out when the key is unset (UX), so the
+ * thrown path is defense in depth for direct API hits.
+ *
+ * Default-ON pattern: `!== 'false'`, same convention as
+ * AUTO_UPSCALE_ENABLED. Setting `ATLAS_CLOUD_ENABLED=false` in Vercel
+ * lets us triage an Atlas outage in seconds without a redeploy. See
+ * `_plans/2026-05-25-atlas-cloud-gpt-image-2.md`.
+ */
+export const ATLAS_CLOUD_ENABLED = process.env.ATLAS_CLOUD_ENABLED !== 'false';

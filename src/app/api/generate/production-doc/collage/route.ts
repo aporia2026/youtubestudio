@@ -8,6 +8,9 @@ import {
   IMAGE_MODELS,
 } from '@/lib/image-models';
 import { createKieTask, pollKieResultThenUpscale } from '@/lib/kie-poll';
+import { generateAtlasT2I } from '@/lib/atlas-cloud-images';
+import { cropTo16x9AndUpload } from '@/lib/image-gen-dispatch';
+import { upscaleViaRecraft } from '@/lib/upscale';
 import { computeImageSaliency } from '@/lib/image-saliency';
 import type { ImageSaliencyMap } from '@/remotion/utils';
 import { sliceCollage } from '@/lib/collage-slicer';
@@ -105,17 +108,37 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         { status: 400 },
       );
     }
-    if (spec.provider !== 'kie' || !spec.kieModel) {
-      // Local ComfyUI not eligible for collage v1 — no upscale path on
-      // the local generator, and a 540×960 quadrant would be unusable.
+    // Atlas Cloud joined the collage path on 2026-05-25 — same OpenAI
+    // GPT Image 2 model the Kie variant hits, cheaper invoice. See
+    // _plans/2026-05-25-atlas-cloud-gpt-image-2.md (Phase 4). Local
+    // ComfyUI stays excluded for the same reason as before: no upscale
+    // path on the local generator means quadrants would land at
+    // ~540×360 after slicing, unusable for the production-doc shots.
+    if (spec.provider !== 'kie' && spec.provider !== 'atlas') {
       return NextResponse.json(
-        { error: `Collage mode is cloud-only. Model '${modelValue}' is not a Kie cloud model.` },
+        { error: `Collage mode is cloud-only. Model '${modelValue}' is not a Kie or Atlas cloud model.` },
         { status: 400 },
       );
     }
+    if (spec.provider === 'kie' && !spec.kieModel) {
+      return NextResponse.json(
+        { error: `Kie model '${modelValue}' is missing its kieModel mapping.` },
+        { status: 500 },
+      );
+    }
+    if (spec.provider === 'atlas' && !spec.atlasModel) {
+      return NextResponse.json(
+        { error: `Atlas model '${modelValue}' is missing its atlasModel mapping.` },
+        { status: 500 },
+      );
+    }
 
+    // KIE_API_KEY only required when the chosen model dispatches through
+    // Kie. Atlas-only collage runs against ATLAS_CLOUD_API_KEY (checked
+    // inside generateAtlasT2I); a missing key surfaces as a clean
+    // "[atlas-images]" error from the helper.
     const apiKey = process.env.KIE_API_KEY;
-    if (!apiKey) {
+    if (spec.provider === 'kie' && !apiKey) {
       return NextResponse.json({ error: 'KIE_API_KEY is not configured' }, { status: 500 });
     }
 
@@ -134,15 +157,49 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         logger.info('[collage generate] start', {
           attempt,
           model: spec.value,
-          kie_model: spec.kieModel,
+          provider: spec.provider,
+          vendor_model: spec.provider === 'atlas' ? spec.atlasModel : spec.kieModel,
           prompt_chars: composedPrompt.length,
         });
-        const taskId = await createKieTask(
-          apiKey,
-          spec.kieModel,
-          buildKieImageInput(spec.value, composedPrompt),
-        );
-        const url = await pollKieResultThenUpscale(taskId, apiKey);
+        let url: string;
+        if (spec.provider === 'atlas') {
+          // Atlas collage: HARDCODED to 1536×1024 (3:2) → crop to 1536×864
+          // (16:9) → Recraft 4× upscale → ~6144×3456 → 4 quadrants of
+          // ~3072×1728 each (~3K per shot, matches the Kie collage path).
+          //
+          // We deliberately override the registry's `atlasSize` here even
+          // when the user picked the 2560×1440 default for single-shot
+          // generation. The reason is geometry: a 2560×1440 collage
+          // sliced into 4 quadrants yields only 1280×720 per shot
+          // (720p), well below the pipeline's per-shot resolution target.
+          // The user locked this trade-off 2026-05-25 ("collage must
+          // upscale") — single-shot stays at 2K skip-upscale, collage
+          // takes the upscale hit so each quadrant lands at usable
+          // resolution. Quality stays on the spec's default ('low' per
+          // the registry) because Recraft will sharpen.
+          const atlasResult = await generateAtlasT2I({
+            prompt: composedPrompt,
+            size: '1536x1024',
+            quality: spec.atlasQuality ?? 'low',
+          });
+          logger.info('[collage atlas-generate] vendor done', {
+            attempt,
+            prediction_id: atlasResult.predictionId,
+            predict_ms: atlasResult.predictTimeMs,
+            forced_size: '1536x1024',
+            spec_size: spec.atlasSize,
+          });
+          const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, 'prodoc-images-atlas-crop');
+          const upscaleResult = await upscaleViaRecraft(croppedUrl);
+          url = upscaleResult.url;
+        } else {
+          const taskId = await createKieTask(
+            apiKey!,
+            spec.kieModel!,
+            buildKieImageInput(spec.value, composedPrompt),
+          );
+          url = await pollKieResultThenUpscale(taskId, apiKey!);
+        }
         const fetchRes = await fetch(url);
         if (!fetchRes.ok) {
           throw new Error(`Failed to fetch generated collage: HTTP ${fetchRes.status}`);

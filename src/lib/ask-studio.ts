@@ -1,11 +1,18 @@
 /**
  * "Ask Studio" — natural-language Q&A over the workspace's own data.
  *
- * The model runs an Anthropic native tool-use loop over a curated catalog
- * of read-only queries (channels, video_analytics, schedule_items, projects,
- * ab_tests, etc.). Every tool executor takes the workspaceId as an
- * implicit first argument that the model cannot override — so no matter
- * what the model tries, queries are always tenancy-scoped.
+ * The model runs a tool-use loop over a curated catalog of read-only
+ * queries (channels, video_analytics, schedule_items, projects, ab_tests,
+ * etc.). Every tool executor takes the workspaceId as an implicit first
+ * argument that the model cannot override — so no matter what the model
+ * tries, queries are always tenancy-scoped.
+ *
+ * Multi-provider: the loop dispatches to one of four runners based on the
+ * model's provider + Kie endpoint type. The protocol detail lives in
+ * `resolveAskStudioProtocol()`; the runners themselves are below
+ * `runToolCall`. Adding a model to the registry without wiring its
+ * protocol here will surface a clean 400 from the route validator instead
+ * of a 502 from a mismatched SDK call.
  *
  * Hard limits:
  *   - MAX_TOOL_ITERATIONS caps the loop so a confused model can't burn
@@ -23,9 +30,20 @@
 import { sql } from '@vercel/postgres';
 import { logger } from './logger';
 import { getEffectiveModelId } from './model-defaults';
+import {
+  AI_MODELS,
+  KIE_MODEL_MAP,
+  getModelById,
+  isAskStudioSupportedModel,
+  type AIModel,
+  type KieEndpointType,
+} from './ai-models';
 
 const MAX_TOOL_ITERATIONS = 6;
 const ROW_LIMIT_PER_TOOL_CALL = 50;
+const MAX_TOKENS_PER_ITERATION = 2000;
+const TEMPERATURE = 0.2;
+const KIE_BASE = 'https://api.kie.ai';
 
 // ---------------------------------------------------------------------------
 // Tool catalog
@@ -425,7 +443,121 @@ export async function runToolCall(
 }
 
 // ---------------------------------------------------------------------------
-// Agent loop
+// Tool schema converters — TOOL_CATALOG is the source of truth, each
+// provider gets its own shape derived from it.
+// ---------------------------------------------------------------------------
+
+interface OpenAITool {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+interface GeminiFunctionDeclaration {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+function toOpenAITools(catalog: ToolSchema[]): OpenAITool[] {
+  return catalog.map((t) => ({
+    type: 'function',
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.input_schema as unknown as Record<string, unknown>,
+    },
+  }));
+}
+
+/**
+ * Convert a JSON-Schema-style object (which is what TOOL_CATALOG uses,
+ * matching Anthropic + OpenAI conventions) into Gemini's Schema form.
+ *
+ * The @google/generative-ai SDK accepts `type` as either an uppercase
+ * string ('OBJECT', 'STRING', …) or the `SchemaType` enum. Lowercase
+ * 'object' / 'string' silently fails on some SDK versions — the request
+ * goes through but the model sees an empty parameter object and ignores
+ * the call. Normalising up-front keeps the contract sturdy.
+ */
+function geminifyType(t: unknown): unknown {
+  if (typeof t !== 'string') return t;
+  return t.toUpperCase();
+}
+
+function geminifySchema(node: unknown): unknown {
+  if (!node || typeof node !== 'object') return node;
+  if (Array.isArray(node)) return node.map(geminifySchema);
+  const obj = node as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (k === 'type') out[k] = geminifyType(v);
+    else if (k === 'properties' && v && typeof v === 'object') {
+      const props: Record<string, unknown> = {};
+      for (const [pk, pv] of Object.entries(v as Record<string, unknown>)) {
+        props[pk] = geminifySchema(pv);
+      }
+      out[k] = props;
+    } else if (k === 'items') {
+      out[k] = geminifySchema(v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function toGeminiFunctionDeclarations(catalog: ToolSchema[]): GeminiFunctionDeclaration[] {
+  return catalog.map((t) => ({
+    name: t.name,
+    description: t.description,
+    parameters: geminifySchema(t.input_schema) as Record<string, unknown>,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Provider routing
+// ---------------------------------------------------------------------------
+//
+// Five protocols cover the entire supported set. The dispatcher inspects
+// the model registry to pick one; unsupported models are rejected by the
+// route validator before they reach this code path.
+
+export type AskStudioProtocol =
+  | 'anthropic-native'   // direct Anthropic Messages API
+  | 'kie-claude'         // Kie's /claude/v1/messages — same wire shape as Anthropic
+  | 'openai-chat'        // direct OpenAI chat completions with tool_calls
+  | 'kie-openai-chat'    // Kie's /{model}/v1/chat/completions — OpenAI-compatible
+  | 'gemini-native';     // direct Google Gemini with functionDeclarations
+
+export function resolveAskStudioProtocol(modelId: string): AskStudioProtocol | null {
+  const m = getModelById(modelId);
+  if (!m) return null;
+  if (!isAskStudioSupportedModel(modelId)) return null;
+  switch (m.provider) {
+    case 'anthropic':
+      return 'anthropic-native';
+    case 'openai':
+      return 'openai-chat';
+    case 'google':
+      return 'gemini-native';
+    case 'kie': {
+      const cfg = KIE_MODEL_MAP[m.id];
+      if (!cfg) return null;
+      if (cfg.endpointType === 'claude') return 'kie-claude';
+      if (cfg.endpointType === 'gemini') return 'kie-openai-chat';
+      return null;
+    }
+    case 'perplexity':
+      return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Agent loop — shared types
 // ---------------------------------------------------------------------------
 
 interface PersistedToolStep {
@@ -443,6 +575,27 @@ export interface AskStudioAnswer {
   duration_ms: number;
 }
 
+interface RunnerArgs {
+  workspaceId: string;
+  modelId: string;
+  question: string;
+  /** Prior turns in the thread, oldest first. Each turn becomes a
+   *  (user, assistant) message pair prepended to the runner's message
+   *  array so the model sees the full conversation. Tool traces are NOT
+   *  replayed — the prior assistant answers already summarise what was
+   *  found, and re-replaying tool_use blocks would force every runner
+   *  to know the original provider's wire format. If the model needs
+   *  the data again, it'll just re-call the tool. */
+  priorTurns?: Array<{ question: string; answer: string }>;
+}
+
+interface RunnerResult {
+  finalAnswer: string;
+  trace: PersistedToolStep[];
+  inputTokens: number;
+  outputTokens: number;
+}
+
 const SYSTEM_PROMPT = `You are "Ask Studio", an analyst that answers questions about a YouTube creator's own channels and projects. You have a small catalog of read-only tools that query their workspace database — every result is automatically scoped to their workspace, you cannot see other users' data even if you tried.
 
 Strict rules for every answer:
@@ -455,158 +608,589 @@ Strict rules for every answer:
 
 End every answer with a single one-line "next step?" suggestion that's a question they could ask next.`;
 
-interface AnthropicTool {
-  name: string;
-  description: string;
-  input_schema: {
-    type: 'object';
-    properties: Record<string, unknown>;
-    required?: string[];
+// Anthropic SDK content blocks are a discriminated union (text | tool_use |
+// tool_result | …). The runtime contract is what we care about; the SDK
+// type surface is loose enough that working through `any` for blocks keeps
+// the loop readable.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MessageContentBlock = any;
+
+// ---------------------------------------------------------------------------
+// Runner: anthropic-native + kie-claude (shared wire format)
+// ---------------------------------------------------------------------------
+//
+// Kie's /claude/v1/messages is a faithful Anthropic Messages API
+// passthrough. The only differences are the base URL and auth header;
+// everything inside the loop (tool_use blocks, tool_result blocks,
+// stop_reason handling, usage shape) is bit-identical. We therefore route
+// both through the Anthropic SDK with a custom `baseURL`, which gets us
+// proper TypeScript types and exhaustive content-block handling for free.
+
+async function runAnthropicCompatibleLoop(
+  args: RunnerArgs,
+  opts: { baseURL?: string; apiKey: string; modelOverride?: string },
+): Promise<RunnerResult> {
+  const Anthropic = (await import('@anthropic-ai/sdk')).default;
+  const client = new Anthropic({
+    apiKey: opts.apiKey,
+    ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
+  });
+
+  const tools = TOOL_CATALOG.map((t) => ({
+    name: t.name,
+    description: t.description,
+    input_schema: t.input_schema,
+  }));
+
+  const messages: Array<{ role: 'user' | 'assistant'; content: MessageContentBlock }> = [];
+  for (const turn of args.priorTurns ?? []) {
+    messages.push({ role: 'user', content: turn.question });
+    messages.push({ role: 'assistant', content: turn.answer });
+  }
+  messages.push({ role: 'user', content: args.question.trim() });
+
+  const trace: PersistedToolStep[] = [];
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let finalAnswer = '';
+  let iteration = 0;
+
+  while (iteration < MAX_TOOL_ITERATIONS) {
+    iteration += 1;
+
+    const response = await client.messages.create({
+      model: opts.modelOverride ?? args.modelId,
+      max_tokens: MAX_TOKENS_PER_ITERATION,
+      temperature: TEMPERATURE,
+      system: SYSTEM_PROMPT,
+      tools,
+      messages,
+    });
+    inputTokens += response.usage.input_tokens;
+    outputTokens += response.usage.output_tokens;
+
+    messages.push({ role: 'assistant', content: response.content });
+
+    const toolUses: Array<{ id: string; name: string; input: unknown }> = [];
+    const textBlocks: string[] = [];
+    for (const block of response.content as MessageContentBlock[]) {
+      if (block.type === 'tool_use') {
+        toolUses.push({ id: block.id as string, name: block.name as string, input: block.input });
+      } else if (block.type === 'text') {
+        textBlocks.push(block.text as string);
+      }
+    }
+
+    if (toolUses.length === 0) {
+      finalAnswer = textBlocks.join('\n').trim();
+      if (!finalAnswer) {
+        finalAnswer = 'The model returned no text and no tool calls. Try rephrasing the question.';
+      }
+      break;
+    }
+
+    const toolResultBlocks: MessageContentBlock[] = [];
+    for (const tu of toolUses) {
+      const result = await runToolCall({ workspaceId: args.workspaceId }, tu.name, tu.input);
+      trace.push({ iteration, tool_name: tu.name, input: tu.input, result });
+      toolResultBlocks.push({
+        type: 'tool_result',
+        tool_use_id: tu.id,
+        content: JSON.stringify(result.ok ? result.data : { error: result.error }).slice(0, 60_000),
+        is_error: !result.ok,
+      });
+    }
+    messages.push({ role: 'user', content: toolResultBlocks });
+  }
+
+  return {
+    finalAnswer: finalAnswer || 'I ran out of tool-call budget before producing an answer. Try a simpler question or break it into parts.',
+    trace,
+    inputTokens,
+    outputTokens,
   };
 }
 
-// Anthropic SDK types are loose enough that we work with `any` for the
-// message blocks — the runtime contract is what matters and it's stable.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type MessageContentBlock = any;
+// ---------------------------------------------------------------------------
+// Runner: openai-chat + kie-openai-chat (shared wire format)
+// ---------------------------------------------------------------------------
+//
+// OpenAI chat completions returns `message.tool_calls[]` when the model
+// wants to invoke a tool. Each call carries an id, function name, and a
+// JSON-encoded arguments string. We execute the tool, push the assistant
+// message back as-is, then add one `role:'tool'` message per call carrying
+// the JSON result. Repeat until the model returns a message with no
+// tool_calls — that's the final answer in `message.content`.
+//
+// Kie's `/{model}/v1/chat/completions` is OpenAI-compatible; same loop,
+// different base URL and auth. We use the OpenAI SDK with `baseURL` set
+// for Kie variants — saves us hand-rolling SSE handling and gives us the
+// SDK's type system for free.
+
+interface OpenAIChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content?: string | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  tool_calls?: any[];
+  tool_call_id?: string;
+}
+
+async function runOpenAIChatLoop(
+  args: RunnerArgs,
+  opts: { baseURL?: string; apiKey: string; modelOverride?: string },
+): Promise<RunnerResult> {
+  const OpenAI = (await import('openai')).default;
+  const client = new OpenAI({
+    apiKey: opts.apiKey,
+    ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
+  });
+
+  const tools = toOpenAITools(TOOL_CATALOG);
+  const messages: OpenAIChatMessage[] = [{ role: 'system', content: SYSTEM_PROMPT }];
+  for (const turn of args.priorTurns ?? []) {
+    messages.push({ role: 'user', content: turn.question });
+    messages.push({ role: 'assistant', content: turn.answer });
+  }
+  messages.push({ role: 'user', content: args.question.trim() });
+
+  const trace: PersistedToolStep[] = [];
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let finalAnswer = '';
+  let iteration = 0;
+
+  while (iteration < MAX_TOOL_ITERATIONS) {
+    iteration += 1;
+
+    // gpt-5 family and o-series want `max_completion_tokens` instead of
+    // `max_tokens`. ai.ts has the same branching for non-tool calls;
+    // mirroring it here keeps the picker working across every OpenAI tier.
+    const modelForApi = opts.modelOverride ?? args.modelId;
+    const useCompletionTokens = modelForApi.startsWith('gpt-5') || /^o[0-9]/.test(modelForApi);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const params: any = {
+      model: modelForApi,
+      messages,
+      tools,
+      tool_choice: 'auto',
+      temperature: TEMPERATURE,
+    };
+    if (useCompletionTokens) params.max_completion_tokens = MAX_TOKENS_PER_ITERATION;
+    else params.max_tokens = MAX_TOKENS_PER_ITERATION;
+
+    const response = await client.chat.completions.create(params);
+    const usage = response.usage as
+      | { prompt_tokens?: number; completion_tokens?: number }
+      | undefined;
+    inputTokens += usage?.prompt_tokens ?? 0;
+    outputTokens += usage?.completion_tokens ?? 0;
+
+    const msg = response.choices[0]?.message;
+    if (!msg) {
+      finalAnswer = 'Model returned an empty response. Try rephrasing the question.';
+      break;
+    }
+
+    // Append the assistant turn verbatim (including tool_calls). The next
+    // tool messages must reference these ids.
+    messages.push({
+      role: 'assistant',
+      content: msg.content ?? null,
+      tool_calls: msg.tool_calls,
+    });
+
+    const toolCalls = msg.tool_calls ?? [];
+    if (toolCalls.length === 0) {
+      finalAnswer = (msg.content ?? '').trim();
+      if (!finalAnswer) {
+        finalAnswer = 'The model returned no text and no tool calls. Try rephrasing the question.';
+      }
+      break;
+    }
+
+    for (const tc of toolCalls) {
+      // Defensive: OpenAI guarantees `function` on tool_calls; treat
+      // missing fields as a tool error so the loop can recover instead of
+      // crashing the request.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const fn = (tc as any).function;
+      if (!fn || typeof fn.name !== 'string') {
+        trace.push({
+          iteration,
+          tool_name: '<malformed>',
+          input: tc,
+          result: { ok: false, error: 'Model returned a tool_call without a function name' },
+        });
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error: 'Malformed tool_call' }),
+        });
+        continue;
+      }
+      let parsedInput: unknown = {};
+      try {
+        parsedInput = fn.arguments ? JSON.parse(fn.arguments) : {};
+      } catch {
+        parsedInput = { _raw: fn.arguments };
+      }
+      const result = await runToolCall({ workspaceId: args.workspaceId }, fn.name, parsedInput);
+      trace.push({ iteration, tool_name: fn.name, input: parsedInput, result });
+      messages.push({
+        role: 'tool',
+        tool_call_id: tc.id,
+        content: JSON.stringify(result.ok ? result.data : { error: result.error }).slice(0, 60_000),
+      });
+    }
+  }
+
+  return {
+    finalAnswer: finalAnswer || 'I ran out of tool-call budget before producing an answer. Try a simpler question or break it into parts.',
+    trace,
+    inputTokens,
+    outputTokens,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Runner: gemini-native (direct Google)
+// ---------------------------------------------------------------------------
+//
+// The @google/generative-ai SDK exposes tool use via `tools:
+// [{ functionDeclarations: [...] }]` on the model. Responses carry parts
+// inside `response.candidates[].content.parts[]`, where a part is either a
+// text block or `{ functionCall: { name, args } }`. We send results back
+// as `{ functionResponse: { name, response: {…} } }` parts in the next
+// turn's user message.
+//
+// Uses the chat session (`startChat`) so message history is managed by
+// the SDK — saves us hand-stitching a content array across turns. Note
+// the SDK is officially deprecated as of 2025-12-16 in favour of
+// `@google/genai`; the migration is out of scope here and the legacy
+// package still functions.
+
+async function runGeminiLoop(args: RunnerArgs): Promise<RunnerResult> {
+  if (!process.env.GOOGLE_AI_API_KEY) {
+    throw new Error('GOOGLE_AI_API_KEY is not configured');
+  }
+  const { GoogleGenerativeAI } = await import('@google/generative-ai');
+  const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
+  const model = genAI.getGenerativeModel({
+    model: args.modelId,
+    systemInstruction: SYSTEM_PROMPT,
+    generationConfig: { temperature: TEMPERATURE, maxOutputTokens: MAX_TOKENS_PER_ITERATION },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    tools: [{ functionDeclarations: toGeminiFunctionDeclarations(TOOL_CATALOG) as any }],
+  });
+
+  // Gemini's chat session lets us seed prior turns via the `history`
+  // option — role is 'model' for assistant turns (not 'assistant').
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const history: any[] = [];
+  for (const turn of args.priorTurns ?? []) {
+    history.push({ role: 'user', parts: [{ text: turn.question }] });
+    history.push({ role: 'model', parts: [{ text: turn.answer }] });
+  }
+  const chat = model.startChat({ history });
+  const trace: PersistedToolStep[] = [];
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let finalAnswer = '';
+  let iteration = 0;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let nextMessage: any = args.question.trim();
+
+  while (iteration < MAX_TOOL_ITERATIONS) {
+    iteration += 1;
+
+    const result = await chat.sendMessage(nextMessage);
+    const usage = (result.response as unknown as {
+      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+    }).usageMetadata;
+    inputTokens += usage?.promptTokenCount ?? 0;
+    outputTokens += usage?.candidatesTokenCount ?? 0;
+
+    // The SDK exposes functionCalls() but it sometimes returns undefined
+    // even when text + a single function call coexist in the same
+    // response. Walk parts directly to be safe.
+    const candidate = result.response.candidates?.[0];
+    const parts = candidate?.content?.parts ?? [];
+    const toolUses: Array<{ name: string; args: unknown }> = [];
+    const textParts: string[] = [];
+    for (const part of parts) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = part as any;
+      if (p.functionCall && typeof p.functionCall.name === 'string') {
+        toolUses.push({ name: p.functionCall.name, args: p.functionCall.args ?? {} });
+      } else if (typeof p.text === 'string') {
+        textParts.push(p.text);
+      }
+    }
+
+    if (toolUses.length === 0) {
+      // Fall back to result.response.text() for cases where parts is empty
+      // but the SDK still synthesises a string answer.
+      const textJoined = textParts.join('').trim();
+      finalAnswer = textJoined || (() => {
+        try {
+          return result.response.text().trim();
+        } catch {
+          return '';
+        }
+      })();
+      if (!finalAnswer) {
+        finalAnswer = 'The model returned no text and no tool calls. Try rephrasing the question.';
+      }
+      break;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const functionResponseParts: any[] = [];
+    for (const tu of toolUses) {
+      const toolResult = await runToolCall({ workspaceId: args.workspaceId }, tu.name, tu.args);
+      trace.push({ iteration, tool_name: tu.name, input: tu.args, result: toolResult });
+      functionResponseParts.push({
+        functionResponse: {
+          name: tu.name,
+          response: toolResult.ok
+            ? { result: toolResult.data }
+            : { error: toolResult.error },
+        },
+      });
+    }
+    nextMessage = functionResponseParts;
+  }
+
+  return {
+    finalAnswer: finalAnswer || 'I ran out of tool-call budget before producing an answer. Try a simpler question or break it into parts.',
+    trace,
+    inputTokens,
+    outputTokens,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Dispatcher
+// ---------------------------------------------------------------------------
+
+async function runAgentLoop(args: RunnerArgs): Promise<RunnerResult> {
+  const protocol = resolveAskStudioProtocol(args.modelId);
+  if (!protocol) {
+    throw new Error(
+      `Model "${args.modelId}" isn't supported by Ask Studio. Pick another model from the dropdown.`,
+    );
+  }
+
+  switch (protocol) {
+    case 'anthropic-native': {
+      if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not configured');
+      return runAnthropicCompatibleLoop(args, { apiKey: process.env.ANTHROPIC_API_KEY });
+    }
+    case 'kie-claude': {
+      const apiKey = process.env.KIE_API_KEY;
+      if (!apiKey) throw new Error('KIE_API_KEY is not configured');
+      const cfg = KIE_MODEL_MAP[args.modelId];
+      if (!cfg) throw new Error(`Kie model not registered: ${args.modelId}`);
+      return runAnthropicCompatibleLoop(args, {
+        apiKey,
+        baseURL: `${KIE_BASE}/claude`,
+        modelOverride: cfg.kieModelId,
+      });
+    }
+    case 'openai-chat': {
+      if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured');
+      return runOpenAIChatLoop(args, { apiKey: process.env.OPENAI_API_KEY });
+    }
+    case 'kie-openai-chat': {
+      const apiKey = process.env.KIE_API_KEY;
+      if (!apiKey) throw new Error('KIE_API_KEY is not configured');
+      const cfg = KIE_MODEL_MAP[args.modelId];
+      if (!cfg) throw new Error(`Kie model not registered: ${args.modelId}`);
+      // Kie's chat-completions endpoint is per-model: /{model}/v1/chat/completions.
+      // The OpenAI SDK appends `/chat/completions` to baseURL, so we end the
+      // base at the model id.
+      return runOpenAIChatLoop(args, {
+        apiKey,
+        baseURL: `${KIE_BASE}/${cfg.kieModelId}/v1`,
+        modelOverride: cfg.kieModelId,
+      });
+    }
+    case 'gemini-native': {
+      return runGeminiLoop(args);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public entry — askStudio() owns DB persistence and error wrapping
+// ---------------------------------------------------------------------------
 
 export interface AskStudioRunArgs {
   workspaceId: string;
   collaboratorId: string | null;
   question: string;
   modelId?: string;
+  /** When set, the new turn is a reply within the thread that this id
+   *  belongs to. The runner walks ancestors to gather prior (user,
+   *  assistant) turns, locks the model to the root turn's `ai_model`
+   *  (so a thread doesn't change voice mid-stream), and persists the
+   *  new row with `parent_id = parentId`. */
+  parentId?: string;
+}
+
+/** Pre-flight validation surfaced by the POST route as a 400, before any
+ *  DB row is inserted. Centralises the "unsupported model" check so the
+ *  route catch block doesn't have to special-case it. */
+export class AskStudioModelNotSupported extends Error {
+  readonly modelId: string;
+  constructor(modelId: string) {
+    const m = getModelById(modelId);
+    const name = m ? `${m.name} (${m.provider})` : modelId;
+    super(
+      `Ask Studio doesn't support ${name} yet. Pick a different model from the dropdown — Claude, GPT, and Gemini families are supported.`,
+    );
+    this.name = 'AskStudioModelNotSupported';
+    this.modelId = modelId;
+  }
+}
+
+export class AskStudioParentNotFound extends Error {
+  constructor(parentId: string) {
+    super(`Parent question ${parentId} not found in this workspace.`);
+    this.name = 'AskStudioParentNotFound';
+  }
+}
+
+/** Fetch the linked-list of ancestors (oldest first) for a given turn,
+ *  bounded by workspace. Used both for thread context assembly during a
+ *  reply AND to look up the root's locked model id. */
+async function fetchAncestors(
+  turnId: string,
+  workspaceId: string,
+): Promise<AskStudioQuestionRow[]> {
+  const { rows } = await sql<AskStudioQuestionRow>`
+    WITH RECURSIVE ancestors AS (
+      SELECT id, workspace_id, asked_by_collaborator_id,
+             question, answer, error_message,
+             tool_trace, tool_call_count, ai_model,
+             input_tokens, output_tokens, duration_ms,
+             created_at, completed_at, parent_id
+        FROM ask_studio_questions
+       WHERE id = ${turnId}::uuid
+         AND workspace_id = ${workspaceId}::uuid
+      UNION ALL
+      SELECT q.id, q.workspace_id, q.asked_by_collaborator_id,
+             q.question, q.answer, q.error_message,
+             q.tool_trace, q.tool_call_count, q.ai_model,
+             q.input_tokens, q.output_tokens, q.duration_ms,
+             q.created_at, q.completed_at, q.parent_id
+        FROM ask_studio_questions q
+        JOIN ancestors a ON q.id = a.parent_id
+       WHERE q.workspace_id = ${workspaceId}::uuid
+    )
+    SELECT id, workspace_id, asked_by_collaborator_id,
+           question, answer, error_message,
+           tool_trace, tool_call_count, ai_model,
+           input_tokens, output_tokens, duration_ms,
+           created_at::text AS created_at,
+           completed_at::text AS completed_at,
+           parent_id
+      FROM ancestors
+     ORDER BY created_at ASC
+  `;
+  return rows;
 }
 
 export async function askStudio(args: AskStudioRunArgs): Promise<{ id: string; answer: AskStudioAnswer }> {
   if (!args.question.trim()) {
     throw new Error('question is required');
   }
-  const modelId = args.modelId || (await getEffectiveModelId(args.workspaceId, 'ask-studio'));
+
+  // Thread setup: if this is a reply, walk ancestors to find the root and
+  // gather prior turns. The root's model is "sticky" so the thread doesn't
+  // change voice mid-stream — the user's per-question picker only applies
+  // to brand-new threads.
+  let priorTurns: Array<{ question: string; answer: string }> = [];
+  let lockedModelId: string | null = null;
+  if (args.parentId) {
+    const ancestors = await fetchAncestors(args.parentId, args.workspaceId);
+    if (ancestors.length === 0) throw new AskStudioParentNotFound(args.parentId);
+    // Recursive CTE walks UP, then we sort ASC by created_at, so [0] is the
+    // root of the thread.
+    const root = ancestors[0];
+    lockedModelId = root.ai_model;
+    // Skip errored or still-pending turns from the conversation history —
+    // sending the model a "question with no answer" wastes tokens and
+    // can confuse it into restating the error.
+    priorTurns = ancestors
+      .filter((a) => a.answer && !a.error_message)
+      .map((a) => ({ question: a.question, answer: a.answer! }));
+  }
+
+  const modelId =
+    lockedModelId ?? args.modelId ?? (await getEffectiveModelId(args.workspaceId, 'ask-studio'));
+
+  // Validate the model BEFORE inserting the placeholder row so an
+  // unsupported-model 400 doesn't leave an orphan errored row in history.
+  if (!isAskStudioSupportedModel(modelId)) {
+    throw new AskStudioModelNotSupported(modelId);
+  }
 
   // Insert a placeholder row immediately so the question is durable even
   // if the agent loop crashes mid-flight.
   const insert = await sql<{ id: string }>`
     INSERT INTO ask_studio_questions (
-      workspace_id, asked_by_collaborator_id, question, ai_model
+      workspace_id, asked_by_collaborator_id, question, ai_model, parent_id
     ) VALUES (
       ${args.workspaceId}::uuid,
       ${args.collaboratorId}::uuid,
       ${args.question.trim()},
-      ${modelId}
+      ${modelId},
+      ${args.parentId ?? null}
     )
     RETURNING id
   `;
   const id = insert.rows[0]!.id;
 
   const startedAt = Date.now();
-  let inputTokens = 0;
-  let outputTokens = 0;
-  const trace: PersistedToolStep[] = [];
 
   try {
-    const Anthropic = (await import('@anthropic-ai/sdk')).default;
-    if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not configured');
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-    const tools: AnthropicTool[] = TOOL_CATALOG;
-    const messages: Array<{ role: 'user' | 'assistant'; content: MessageContentBlock }> = [
-      { role: 'user', content: args.question.trim() },
-    ];
-
-    let finalAnswer = '';
-    let iteration = 0;
-
-    while (iteration < MAX_TOOL_ITERATIONS) {
-      iteration += 1;
-
-      const response = await client.messages.create({
-        model: modelId,
-        max_tokens: 2000,
-        temperature: 0.2,
-        system: SYSTEM_PROMPT,
-        tools,
-        messages,
-      });
-      inputTokens += response.usage.input_tokens;
-      outputTokens += response.usage.output_tokens;
-
-      // Append the assistant's full response (text + tool_use blocks) to
-      // the conversation so the model can continue reasoning over its
-      // own tool calls in the next iteration.
-      messages.push({ role: 'assistant', content: response.content });
-
-      // Walk the content blocks. The Anthropic SDK types these as a
-      // discriminated union ({ type: 'text', ... } | { type: 'tool_use',
-      // id, name, input } | ...). We cast each block to the loose shape
-      // we care about so the loop reads cleanly without a chain of
-      // `block.type === 'tool_use'` narrowings every line.
-      const toolUses: Array<{ id: string; name: string; input: unknown }> = [];
-      const textBlocks: string[] = [];
-      for (const block of response.content as MessageContentBlock[]) {
-        if (block.type === 'tool_use') {
-          toolUses.push({ id: block.id as string, name: block.name as string, input: block.input });
-        } else if (block.type === 'text') {
-          textBlocks.push(block.text as string);
-        }
-      }
-
-      if (toolUses.length === 0) {
-        finalAnswer = textBlocks.join('\n').trim();
-        if (!finalAnswer) {
-          finalAnswer = 'No textual answer was produced. Try rephrasing the question.';
-        }
-        break;
-      }
-
-      // Execute each tool call and build tool_result blocks for the next turn.
-      const toolResultBlocks: MessageContentBlock[] = [];
-      for (const tu of toolUses) {
-        const result = await runToolCall(
-          { workspaceId: args.workspaceId },
-          tu.name,
-          tu.input,
-        );
-        trace.push({ iteration, tool_name: tu.name, input: tu.input, result });
-        toolResultBlocks.push({
-          type: 'tool_result',
-          tool_use_id: tu.id,
-          content: JSON.stringify(result.ok ? result.data : { error: result.error }).slice(0, 60_000),
-          is_error: !result.ok,
-        });
-      }
-      messages.push({ role: 'user', content: toolResultBlocks });
-    }
-
-    if (!finalAnswer) {
-      finalAnswer = 'I ran out of tool-call budget before producing an answer. Try a simpler question or break it into parts.';
-    }
+    const runner = await runAgentLoop({
+      workspaceId: args.workspaceId,
+      modelId,
+      question: args.question.trim(),
+      priorTurns,
+    });
 
     const duration = Date.now() - startedAt;
     await sql`
       UPDATE ask_studio_questions
-         SET answer = ${finalAnswer},
-             tool_trace = ${JSON.stringify(trace)}::jsonb,
-             tool_call_count = ${trace.length},
-             input_tokens = ${inputTokens},
-             output_tokens = ${outputTokens},
+         SET answer = ${runner.finalAnswer},
+             tool_trace = ${JSON.stringify(runner.trace)}::jsonb,
+             tool_call_count = ${runner.trace.length},
+             input_tokens = ${runner.inputTokens},
+             output_tokens = ${runner.outputTokens},
              duration_ms = ${duration},
              completed_at = NOW()
        WHERE id = ${id}::uuid AND workspace_id = ${args.workspaceId}::uuid
     `;
     return {
       id,
-      answer: { answer: finalAnswer, tool_trace: trace, input_tokens: inputTokens, output_tokens: outputTokens, duration_ms: duration },
+      answer: {
+        answer: runner.finalAnswer,
+        tool_trace: runner.trace,
+        input_tokens: runner.inputTokens,
+        output_tokens: runner.outputTokens,
+        duration_ms: duration,
+      },
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.error('ask-studio: agent loop threw', { id, detail: msg });
+    logger.error('ask-studio: agent loop threw', { id, model_id: modelId, detail: msg });
     await sql`
       UPDATE ask_studio_questions
          SET error_message = ${msg.slice(0, 1000)},
-             tool_trace = ${JSON.stringify(trace)}::jsonb,
-             tool_call_count = ${trace.length},
-             input_tokens = ${inputTokens},
-             output_tokens = ${outputTokens},
              completed_at = NOW()
        WHERE id = ${id}::uuid AND workspace_id = ${args.workspaceId}::uuid
     `;
@@ -633,6 +1217,9 @@ export interface AskStudioQuestionRow {
   duration_ms: number | null;
   created_at: string;
   completed_at: string | null;
+  /** Null for thread roots (top-level questions). For replies, points at
+   *  the immediate prior turn so the thread is a linked list. */
+  parent_id: string | null;
 }
 
 export async function getAskStudioQuestion(
@@ -645,7 +1232,8 @@ export async function getAskStudioQuestion(
            tool_trace, tool_call_count, ai_model,
            input_tokens, output_tokens, duration_ms,
            created_at::text AS created_at,
-           completed_at::text AS completed_at
+           completed_at::text AS completed_at,
+           parent_id
       FROM ask_studio_questions
      WHERE id = ${id}::uuid AND workspace_id = ${workspaceId}::uuid
      LIMIT 1
@@ -653,6 +1241,11 @@ export async function getAskStudioQuestion(
   return rows[0] ?? null;
 }
 
+/**
+ * History list — returns thread ROOTS only, newest first. Replies are
+ * fetched on-demand via `getAskStudioThread` when the user expands a
+ * card, so the list query stays cheap regardless of average thread depth.
+ */
 export async function listAskStudioQuestions(
   workspaceId: string,
   opts: { limit?: number } = {},
@@ -664,11 +1257,56 @@ export async function listAskStudioQuestions(
            tool_trace, tool_call_count, ai_model,
            input_tokens, output_tokens, duration_ms,
            created_at::text AS created_at,
-           completed_at::text AS completed_at
+           completed_at::text AS completed_at,
+           parent_id
       FROM ask_studio_questions
      WHERE workspace_id = ${workspaceId}::uuid
+       AND parent_id IS NULL
      ORDER BY created_at DESC
      LIMIT ${limit}
+  `;
+  return rows;
+}
+
+/**
+ * Fetch every turn in a thread (root + all descendants), oldest first.
+ * `rootId` MUST be the id of the thread root — pass a non-root id and
+ * you'll get back only that subtree, which is probably not what you want.
+ * Use this in the UI when the user expands a card.
+ */
+export async function getAskStudioThread(
+  rootId: string,
+  workspaceId: string,
+): Promise<AskStudioQuestionRow[]> {
+  const { rows } = await sql<AskStudioQuestionRow>`
+    WITH RECURSIVE thread AS (
+      SELECT id, workspace_id, asked_by_collaborator_id,
+             question, answer, error_message,
+             tool_trace, tool_call_count, ai_model,
+             input_tokens, output_tokens, duration_ms,
+             created_at, completed_at, parent_id
+        FROM ask_studio_questions
+       WHERE id = ${rootId}::uuid
+         AND workspace_id = ${workspaceId}::uuid
+      UNION ALL
+      SELECT q.id, q.workspace_id, q.asked_by_collaborator_id,
+             q.question, q.answer, q.error_message,
+             q.tool_trace, q.tool_call_count, q.ai_model,
+             q.input_tokens, q.output_tokens, q.duration_ms,
+             q.created_at, q.completed_at, q.parent_id
+        FROM ask_studio_questions q
+        JOIN thread t ON q.parent_id = t.id
+       WHERE q.workspace_id = ${workspaceId}::uuid
+    )
+    SELECT id, workspace_id, asked_by_collaborator_id,
+           question, answer, error_message,
+           tool_trace, tool_call_count, ai_model,
+           input_tokens, output_tokens, duration_ms,
+           created_at::text AS created_at,
+           completed_at::text AS completed_at,
+           parent_id
+      FROM thread
+     ORDER BY created_at ASC
   `;
   return rows;
 }
@@ -680,3 +1318,9 @@ export async function deleteAskStudioQuestion(id: string, workspaceId: string): 
   `;
   return (result.rowCount ?? 0) > 0;
 }
+
+// Re-export catalog types referenced by the registry helpers above so
+// downstream code can `import { type AIModel } from '@/lib/ask-studio'`
+// without separately reaching into ai-models.
+export type { AIModel, KieEndpointType };
+export { AI_MODELS };

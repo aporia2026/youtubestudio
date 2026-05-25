@@ -1,5 +1,5 @@
 import { SignJWT, jwtVerify } from 'jose';
-import { sql } from '@/lib/db';
+import { sql, ensureOAuthTokensSchema } from '@/lib/db';
 import { encrypt, decrypt } from '@/lib/crypto';
 import { logger } from '@/lib/logger';
 
@@ -181,6 +181,10 @@ export async function getValidAccessToken(
   channelDbId: string,
   includeScopes?: true,
 ): Promise<string | { token: string; scopes: string[] } | null> {
+  // Self-heal the schema before reading. Databases bootstrapped via the
+  // migration runner alone may not have oauth_tokens until migration 0088
+  // runs; this keeps OAuth-aware routes working in that gap.
+  await ensureOAuthTokensSchema();
   const result = await sql`
     SELECT access_token_encrypted, refresh_token_encrypted, token_expiry, scopes
     FROM oauth_tokens

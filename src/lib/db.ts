@@ -290,6 +290,7 @@ export async function initDatabase() {
   try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS account_color TEXT DEFAULT '#7c3aed'`; } catch {}
   try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS notes TEXT`; } catch {}
   try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS oauth_connected BOOLEAN DEFAULT false`; } catch {}
+  try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS description_brief TEXT`; } catch {}
 
   // OAuth tokens table (encrypted access + refresh tokens)
   await sql`
@@ -308,14 +309,20 @@ export async function initDatabase() {
     )
   `;
 
-  // Niches table (for flexible niche management)
+  // Niches table (for flexible niche management). Uniqueness is workspace-
+  // scoped via migration 0087's `niches_workspace_name_unique` constraint —
+  // a global UNIQUE on `name` would leak across tenants, so it's deliberately
+  // not declared inline here. `workspace_id` is added by the generic 0011
+  // rollout on existing DBs; declared inline so fresh installs don't depend
+  // on a subsequent ALTER pass to gain the column.
   await sql`
     CREATE TABLE IF NOT EXISTS niches (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      name TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
       description TEXT,
       keywords JSONB DEFAULT '[]',
       is_active BOOLEAN DEFAULT true,
+      workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `;
@@ -372,14 +379,22 @@ export async function initDatabase() {
   try { await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS video_analyzed_at TIMESTAMPTZ`; } catch {}
   try { await sql`ALTER TABLE competitor_videos ADD COLUMN IF NOT EXISTS video_analysis_model TEXT`; } catch {}
 
-  // Seed default niches if empty
-  await sql`
-    INSERT INTO niches (name, description, keywords)
-    VALUES
-      ('Cybersecurity & Antivirus', 'Explainer videos about cybersecurity, antivirus software, digital safety', '["antivirus", "cybersecurity", "malware", "vpn", "privacy", "hacking", "firewall", "ransomware"]'),
-      ('General Tech', 'Technology reviews, tutorials and explainers', '["tech", "software", "hardware", "review", "tutorial"]')
-    ON CONFLICT (name) DO NOTHING
+  // Seed default niches into the bootstrap workspace if it exists. Skip the
+  // seed on a workspace-less DB rather than crashing — initDatabase is
+  // sometimes invoked before migration 0005 has run.
+  const bootstrapWs = await sql`
+    SELECT id FROM workspaces ORDER BY created_at ASC, id ASC LIMIT 1
   `;
+  const bootstrapWsId = bootstrapWs.rows[0]?.id as string | undefined;
+  if (bootstrapWsId) {
+    await sql`
+      INSERT INTO niches (name, description, keywords, workspace_id)
+      VALUES
+        ('Cybersecurity & Antivirus', 'Explainer videos about cybersecurity, antivirus software, digital safety', '["antivirus", "cybersecurity", "malware", "vpn", "privacy", "hacking", "firewall", "ransomware"]', ${bootstrapWsId}::uuid),
+        ('General Tech', 'Technology reviews, tutorials and explainers', '["tech", "software", "hardware", "review", "tutorial"]', ${bootstrapWsId}::uuid)
+      ON CONFLICT (workspace_id, name) DO NOTHING
+    `;
+  }
 }
 
 /** Idempotent setup for the channels table + per-account columns. */
@@ -412,9 +427,46 @@ export async function ensureChannelsSchema() {
     try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS account_color TEXT DEFAULT '#7c3aed'`; } catch {}
     try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS notes TEXT`; } catch {}
     try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS oauth_connected BOOLEAN DEFAULT false`; } catch {}
+    try { await sql`ALTER TABLE channels ADD COLUMN IF NOT EXISTS description_brief TEXT`; } catch {}
     channelsMigrated = true;
   } catch (err) {
     logger.error('ensureChannelsSchema error', { detail: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+/** Idempotent setup for oauth_tokens. Mirrors migration 0088 so hot
+ *  deploys self-heal before the migration runner has fired. The table
+ *  was originally created only inside `initDatabase()` (manual-only),
+ *  so databases bootstrapped via the migration runner alone lacked it
+ *  and every getValidAccessToken call 500-d with
+ *  "relation oauth_tokens does not exist". */
+let oauthTokensMigrated = false;
+export async function ensureOAuthTokensSchema() {
+  if (oauthTokensMigrated) return;
+  try {
+    await sql`
+      CREATE TABLE IF NOT EXISTS oauth_tokens (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        channel_id UUID REFERENCES channels(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL DEFAULT 'google',
+        access_token_encrypted TEXT NOT NULL,
+        refresh_token_encrypted TEXT,
+        token_expiry TIMESTAMPTZ NOT NULL,
+        scopes TEXT[] NOT NULL DEFAULT '{}',
+        google_email TEXT,
+        workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(channel_id, provider)
+      )
+    `;
+    try { await sql`ALTER TABLE oauth_tokens ADD COLUMN IF NOT EXISTS google_email TEXT`; } catch {}
+    try { await sql`ALTER TABLE oauth_tokens ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE`; } catch {}
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_oauth_tokens_channel_provider ON oauth_tokens(channel_id, provider)`; } catch {}
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_oauth_tokens_workspace ON oauth_tokens(workspace_id) WHERE workspace_id IS NOT NULL`; } catch {}
+    oauthTokensMigrated = true;
+  } catch (err) {
+    logger.error('ensureOAuthTokensSchema error', { detail: err instanceof Error ? err.message : String(err) });
   }
 }
 

@@ -28,14 +28,22 @@
  * each i2i model takes refs in a different field name and the
  * caller usually picks a single model deliberately.
  */
-import { buildKieI2IInput, getI2IModelSpec, isKieI2ISpec } from './image-models-i2i';
+import {
+  buildKieI2IInput,
+  getI2IModelSpec,
+  isKieI2ISpec,
+  type I2IModelSpec,
+} from './image-models-i2i';
 import { createKieTask, pollKieResultThenUpscale } from './kie-poll';
+import { generateAtlasI2I } from './atlas-cloud-images';
+import { cropTo16x9AndUpload, ATLAS_NATIVE_16X9_SIZES } from './image-gen-dispatch';
+import { upscaleViaRecraft } from './upscale';
 import {
   getDownloadUrlForBucket,
   getImagesBucket,
   uploadToBucket,
 } from './r2';
-import type { StyleReferenceImage } from './production-doc-styles-refs';
+import { mirrorPublicUrlRefToR2, type StyleReferenceImage } from './production-doc-styles-refs';
 import { logger } from './logger';
 
 /**
@@ -178,6 +186,18 @@ export async function generateImageWithRefs(
   if (spec.provider === 'comfyui-local') {
     return generateImageWithRefsLocal(modelValue, prompt, refs, opts);
   }
+  // Atlas Cloud branch — GPT Image 2 i2i. Cheaper invoice than Kie's
+  // gpt-image-2-image-to-image for the same underlying OpenAI model.
+  // Atlas's i2i returns the configured size (1536×1024 = 3:2 by
+  // default) so we run the same 16:9 center-crop the t2i path uses
+  // before handing off to Recraft for the system-wide upscale. Atlas
+  // does not emit per-ref refusal signals, so there's no
+  // `ReferenceRejectedError` classification on this path — transient
+  // failures bubble up as plain Errors. See
+  // _plans/2026-05-25-atlas-cloud-gpt-image-2.md (Phase 3).
+  if (spec.provider === 'atlas') {
+    return generateImageWithRefsAtlas(modelValue, spec, prompt, refs, opts);
+  }
   if (!isKieI2ISpec(spec)) {
     throw new Error(`generateImageWithRefs: '${modelValue}' has provider='${spec.provider}' but no i2i dispatch path`);
   }
@@ -197,14 +217,19 @@ export async function generateImageWithRefs(
   // the URL's signed validity window. Council pattern — see Contrarian
   // unnamed-failure-mode flag in the council verdict.
   //
-  // v3 (2026-05-22): built-in refs carry a `public_url` field with an
-  // already-absolute URL pointing to a `/style-refs/...` static asset.
-  // Use it directly — no R2 presign is possible (these refs aren't in
-  // R2). DB-backed saved-style refs still go through the presign path.
+  // v3.1 (2026-05-25): built-in refs used to be handed to Kie as raw
+  // `/style-refs/...` URLs served from the Vercel deploy. That route
+  // had too many fragile dependencies — proxy middleware, deployment
+  // protection on preview deploys, CDN cache, deploy-specific
+  // hostnames — and "Models task execute failed" started showing up
+  // with no useful detail. We now mirror built-in refs into R2 the
+  // first time they're needed (lazy, idempotent, ~30–60 KB per file)
+  // and hand Kie a presigned R2 GET URL, same shape as the saved-
+  // style path. DB-backed saved-style refs still presign directly.
   const refUrls: string[] = await Promise.all(
     refs.map((r) =>
       r.public_url
-        ? Promise.resolve(r.public_url)
+        ? mirrorPublicUrlRefToR2(r)
         : getDownloadUrlForBucket(r.r2_bucket, r.r2_key, undefined),
     ),
   );
@@ -477,8 +502,13 @@ export async function generateImageWithRefsLocal(
   const refsToUpload = refs.slice(0, spec.maxRefs);
   const refImageFilenames: string[] = await Promise.all(
     refsToUpload.map(async (r) => {
+      // v3.1 (2026-05-25): built-in refs flow through the R2 mirror
+      // for the same reasons documented on the Kie path above —
+      // ComfyUI fetches the URL from the local PC and the R2 URL is
+      // reliably reachable while a `/style-refs/...` URL would
+      // require the user's frontend host to be reachable too.
       const url = r.public_url
-        ? r.public_url
+        ? await mirrorPublicUrlRefToR2(r)
         : await getDownloadUrlForBucket(r.r2_bucket, r.r2_key, undefined);
       return uploadUrlToComfyInput(url, {
         filenamePrefix: `style-ref-${r.style_id.slice(0, 8)}-${r.position}`,
@@ -569,6 +599,131 @@ export async function generateImageWithRefsLocal(
     modelUsed: modelValue,
     durationMs,
     refsSent: refImageFilenames.length,
+  };
+}
+
+/**
+ * Atlas Cloud i2i. Same multi-image input shape as Atlas Edit; the
+ * caller's `refs` array becomes the `images` field in the Atlas
+ * request (capped at `spec.maxRefs`, conservative 4 for v1). Atlas
+ * I2I returns the requested size (1536×1024 default = 3:2), so this
+ * helper:
+ *
+ *   1. Generates via Atlas → vendor URL at 3:2.
+ *   2. Crops to 16:9 via `cropTo16x9AndUpload` → intermediate R2 URL
+ *      (1536×864).
+ *   3. Hands the cropped URL to `upscaleViaRecraft` → Recraft CDN URL
+ *      at ~4×.
+ *   4. Mirrors the final upscaled bytes to R2 under `i2i-results/...`
+ *      so the URL outlives Recraft's CDN retention.
+ *
+ * No `ReferenceRejectedError` path — Atlas does not emit per-ref
+ * refusal signals the way Kie does, so a generic refusal surfaces as
+ * a plain `Error`. The bisection wrapper above won't engage for this
+ * provider because no rejection is ever thrown to catch.
+ */
+async function generateImageWithRefsAtlas(
+  modelValue: string,
+  spec: I2IModelSpec,
+  prompt: string,
+  refs: readonly StyleReferenceImage[],
+  opts: GenerateImageWithRefsOptions,
+): Promise<GenerateImageWithRefsResult> {
+  const trimmedPrompt = prompt.trim();
+  if (!trimmedPrompt) throw new Error('generateImageWithRefs: empty prompt');
+  if (trimmedPrompt.length > 2000) {
+    throw new Error('generateImageWithRefs: prompt > 2000 chars');
+  }
+
+  // Mint URLs for refs. v3.1 (2026-05-25): built-in refs are mirrored
+  // into R2 on first use and handed to Atlas as presigned R2 GETs —
+  // see the long-form rationale on the Kie path above. DB-backed
+  // saved-style refs still presign directly.
+  const refUrls: string[] = await Promise.all(
+    refs.map((r) =>
+      r.public_url
+        ? mirrorPublicUrlRefToR2(r)
+        : getDownloadUrlForBucket(r.r2_bucket, r.r2_key, undefined),
+    ),
+  );
+  const refsSent = Math.min(refUrls.length, spec.maxRefs);
+  const cappedRefUrls = refUrls.slice(0, refsSent);
+
+  const started = Date.now();
+  logger.info('[image-gen atlas-i2i submit]', {
+    model: modelValue,
+    atlas_model: spec.atlasModel,
+    refs_sent: refsSent,
+    prompt_slice: trimmedPrompt.slice(0, 80),
+  });
+
+  const size = spec.atlasSize ?? '2560x1440';
+  const quality = spec.atlasQuality ?? 'low';
+  const atlasResult = await generateAtlasI2I({
+    prompt: trimmedPrompt,
+    images: cappedRefUrls,
+    size,
+    quality,
+  });
+
+  // Native-16:9 fast path mirrors the t2i dispatcher: skip BOTH the
+  // crop step and the Recraft upscale when Atlas returned a 16:9
+  // source already (2K is the pipeline target — see the comment in
+  // image-gen-dispatch.ts). For smaller Atlas sizes (square / 3:2),
+  // the crop+upscale path runs as before.
+  let preMirrorUrl: string;
+  if (ATLAS_NATIVE_16X9_SIZES.has(size)) {
+    logger.info('[image-gen atlas-i2i native-16x9 skip-upscale]', {
+      size,
+      model: modelValue,
+    });
+    preMirrorUrl = atlasResult.url;
+  } else {
+    const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, 'i2i-results-atlas-crop');
+    const upscale = await upscaleViaRecraft(croppedUrl);
+    preMirrorUrl = upscale.url;
+  }
+
+  // Final mirror — same shape as the kie i2i path so the result
+  // record's `r2Key` / `imageUrl` semantics line up.
+  let imageUrl = preMirrorUrl;
+  let mirroredR2Key: string | undefined;
+  try {
+    const res = await fetch(preMirrorUrl);
+    if (res.ok) {
+      const buffer = Buffer.from(await res.arrayBuffer());
+      const contentType = res.headers.get('content-type') ?? 'image/jpeg';
+      const ext = contentType.includes('png') ? 'png' : 'jpg';
+      const prefix = opts.r2KeyPrefix ?? 'i2i-results';
+      const randomSuffix = Math.random().toString(36).slice(2, 10);
+      const r2Key = `${prefix}/${Date.now()}-${randomSuffix}.${ext}`;
+      const bucket = getImagesBucket();
+      await uploadToBucket(bucket, r2Key, buffer, contentType);
+      imageUrl = await getDownloadUrlForBucket(bucket, r2Key, process.env.R2_IMAGES_PUBLIC_URL);
+      mirroredR2Key = r2Key;
+    }
+  } catch (rehostErr) {
+    logger.warn('[image-gen atlas-i2i rehost failed]', {
+      detail: rehostErr instanceof Error ? rehostErr.message : String(rehostErr),
+    });
+  }
+
+  const durationMs = Date.now() - started;
+  logger.info('[image-gen atlas-i2i complete]', {
+    model: modelValue,
+    duration_ms: durationMs,
+    prediction_id: atlasResult.predictionId,
+    predict_ms: atlasResult.predictTimeMs,
+    refs_sent: refsSent,
+    has_r2_mirror: Boolean(mirroredR2Key),
+  });
+
+  return {
+    imageUrl,
+    r2Key: mirroredR2Key,
+    modelUsed: modelValue,
+    durationMs,
+    refsSent,
   };
 }
 

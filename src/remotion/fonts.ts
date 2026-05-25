@@ -32,6 +32,7 @@ import { loadFont as loadArchivoBlack } from '@remotion/google-fonts/ArchivoBlac
 import { loadFont as loadCaveat } from '@remotion/google-fonts/Caveat';
 import { loadFont as loadSourceSerif4 } from '@remotion/google-fonts/SourceSerif4';
 import { loadFont as loadJetBrainsMono } from '@remotion/google-fonts/JetBrainsMono';
+import { loadFont as loadLilitaOne } from '@remotion/google-fonts/LilitaOne';
 
 export {
   INTER_FAMILY,
@@ -42,6 +43,7 @@ export {
   CAVEAT_FAMILY,
   SOURCE_SERIF_4_FAMILY,
   JETBRAINS_MONO_FAMILY,
+  LILITA_ONE_FAMILY,
   FONT_REGISTRY,
   ALLOWED_FONT_FAMILIES,
   resolveFontStack,
@@ -129,4 +131,12 @@ loadGated(
 loadGated(
   'JetBrains Mono',
   loadJetBrainsMono('normal', { weights: ['400', '700'], subsets: ['latin'] }),
+);
+
+// ─── Lilita One (chunky rounded display for the doodle_explainer_2 ──────────
+// yellow-bubble on-screen text treatment — single weight upstream).
+
+loadGated(
+  'Lilita One',
+  loadLilitaOne('normal', { weights: ['400'], subsets: ['latin'] }),
 );

@@ -53,6 +53,7 @@ export type AppFeature =
   | 'video-composer'
   // Grow
   | 'channel-analyze'
+  | 'channel-description'
   | 'channel-naming'
   | 'competitor-analysis'
   | 'competitor-ideas'
@@ -110,6 +111,7 @@ export const APP_FEATURES: AppFeatureSpec[] = [
 
   // ─── Grow ────────────────────────────────────────────────────────────
   { id: 'channel-analyze', label: 'Channel Analyze', description: 'Analyzes a YouTube channel for positioning + opportunities', section: 'grow', defaultModelId: SONNET },
+  { id: 'channel-description', label: 'Channel Description', description: 'Generates the YouTube "About" description from a brief + brand-kit voice', section: 'grow', defaultModelId: HAIKU },
   { id: 'channel-naming', label: 'Channel Naming', description: 'Generates brandable channel names + @handles', section: 'grow', defaultModelId: SONNET },
   { id: 'competitor-analysis', label: 'Competitor Analysis', description: 'Deep competitor intelligence + content patterns', section: 'grow', defaultModelId: SONNET },
   { id: 'competitor-ideas', label: 'Competitor Ideas', description: 'Generates ideas inspired by a competitor channel', section: 'grow', defaultModelId: SONNET },
@@ -325,6 +327,66 @@ export function getDefaultModel(): AIModel {
 
 export function getModelById(id: string): AIModel | undefined {
   return AI_MODELS.find(m => m.id === id);
+}
+
+// ---------------------------------------------------------------------------
+// Ask Studio — which models support the native tool-use loop
+// ---------------------------------------------------------------------------
+//
+// Ask Studio is the only feature in the app that drives a tool-use agent
+// loop (model emits tool calls → server executes → results fed back). Each
+// provider has its own tool-use wire format; this helper lists the subset
+// of `AI_MODELS` whose protocol the Ask Studio runner currently implements.
+//
+// Excluded (no protocol support yet):
+//   - Perplexity Sonar models — these are web-search-grounded chat with no
+//     general tool-use surface.
+//   - Kie GPT 5.4 / 5.5 + all Kie GPT Codex variants — route through Kie's
+//     `/codex/v1/responses` or `/api/v1/responses` endpoints whose tool-use
+//     shape differs from chat completions; not wired yet.
+//   - OpenAI o-series reasoning models (o3, o3-mini, o4-mini) — tool use
+//     on these flows through the Responses API, not chat completions; not
+//     wired yet.
+//   - Gemini 3.x direct (`gemini-3-flash`, `gemini-3-pro`, `gemini-3.1-pro`)
+//     — already marked "unverified" on direct Google because Google hasn't
+//     shipped them to v1beta. Use the kie-* counterparts instead.
+//
+// Adding a model here without also wiring its provider into `ask-studio.ts`
+// will surface a clean 400 from the route validator, not a 502.
+const ASK_STUDIO_UNSUPPORTED_DIRECT_OPENAI = new Set<string>([
+  'o3', 'o3-mini', 'o4-mini',
+]);
+
+const ASK_STUDIO_UNSUPPORTED_DIRECT_GOOGLE = new Set<string>([
+  'gemini-3-flash', 'gemini-3-pro', 'gemini-3.1-pro',
+]);
+
+const ASK_STUDIO_UNSUPPORTED_KIE_ENDPOINT_TYPES = new Set<KieEndpointType>([
+  'gpt-responses', 'codex-responses',
+]);
+
+export function isAskStudioSupportedModel(modelId: string): boolean {
+  const m = getModelById(modelId);
+  if (!m) return false;
+  switch (m.provider) {
+    case 'anthropic':
+      return true;
+    case 'openai':
+      return !ASK_STUDIO_UNSUPPORTED_DIRECT_OPENAI.has(m.id);
+    case 'google':
+      return !ASK_STUDIO_UNSUPPORTED_DIRECT_GOOGLE.has(m.id);
+    case 'kie': {
+      const cfg = KIE_MODEL_MAP[m.id];
+      if (!cfg) return false;
+      return !ASK_STUDIO_UNSUPPORTED_KIE_ENDPOINT_TYPES.has(cfg.endpointType);
+    }
+    case 'perplexity':
+      return false;
+  }
+}
+
+export function getAskStudioSupportedModels(): AIModel[] {
+  return AI_MODELS.filter((m) => isAskStudioSupportedModel(m.id));
 }
 
 /** Format a model's pricing as a short, human-readable string. */

@@ -33,6 +33,11 @@ export const ARCHIVO_BLACK_FAMILY = 'Archivo Black';
 export const CAVEAT_FAMILY = 'Caveat';
 export const SOURCE_SERIF_4_FAMILY = 'Source Serif 4';
 export const JETBRAINS_MONO_FAMILY = 'JetBrains Mono';
+// Added 2026-05-25 for the doodle_explainer_2 yellow-bubble on-screen
+// text treatment (Phase 2 of _plans/2026-05-25-style-aware-overlay-text.md).
+// Chunky rounded bold display face, single weight (400), best Google
+// Fonts match for the marker-bubble look in the reference videos.
+export const LILITA_ONE_FAMILY = 'Lilita One';
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
 //
@@ -53,6 +58,7 @@ export const FONT_REGISTRY = {
   Caveat: { fontFamily: CAVEAT_FAMILY, fallback: `${CAVEAT_FAMILY}, "Comic Sans MS", cursive` },
   'Source Serif 4': { fontFamily: SOURCE_SERIF_4_FAMILY, fallback: `${SOURCE_SERIF_4_FAMILY}, Georgia, serif` },
   'JetBrains Mono': { fontFamily: JETBRAINS_MONO_FAMILY, fallback: `${JETBRAINS_MONO_FAMILY}, "Courier New", monospace` },
+  'Lilita One': { fontFamily: LILITA_ONE_FAMILY, fallback: `${LILITA_ONE_FAMILY}, "Impact", "Arial Black", sans-serif` },
 } as const;
 
 export type FontFamilyName = keyof typeof FONT_REGISTRY;

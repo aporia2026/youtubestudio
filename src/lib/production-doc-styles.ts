@@ -219,6 +219,159 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
     allow_overlay_stock: true,
     origin: 'built-in',
   },
+  /**
+   * Doodle Explainer 2 — refined variant modelled on a specific set of
+   * reference YouTube videos (see `refs/`). Same hand-drawn family as
+   * `doodle_explainer` but tighter on three axes:
+   *
+   *   1. Persistent bold black hand-drawn title at the top of every frame.
+   *   2. Muted palette — black-on-white dominant, with pale blue / pale
+   *      yellow / light gray accents and only the occasional saturated
+   *      colour (red for danger). Not Doodle Explainer's "vibrant" feel.
+   *   3. Real-photo overlays render as inset rectangles with a thick
+   *      coloured border (orange / red / blue / black) — the framed-photo
+   *      treatment seen across all three source videos.
+   *
+   * Phase 1 of a 3-phase build (plan: `_plans/2026-05-25-doodle-explainer-2-built-in.md`):
+   *   - Phase 1 (this entry): style definition + bundled refs.
+   *   - Phase 2 (`_plans/2026-05-25-style-aware-overlay-text.md`): yellow
+   *     bubble-font rendering of `on_screen_text` when this style is
+   *     selected. Until Phase 2 lands, on_screen_text falls back to the
+   *     generic Remotion lower-third treatment.
+   *   - Phase 3 (`_plans/2026-05-25-near-static-variants.md`): true
+   *     near-static animation via grouped rows (one base image + N
+   *     micro-edited variants via Atlas Edit). Until Phase 3 lands, the
+   *     mixing rules still describe scenes well-suited to that pattern
+   *     so the base images carry the right composition.
+   */
+  {
+    id: 'doodle_explainer_2',
+    label: 'Doodle Explainer 2',
+    description:
+      'Tighter doodle aesthetic — bold black title at top, muted palette, framed real-photo overlays, yellow-bubble callouts. Modelled on specific reference videos.',
+    ai_image_suffix:
+      'extremely minimalist stick figure cartoon in the style of a child\'s freehand drawing, thin uneven hand-drawn black ink lines on plain pure white background, asdfmovie / Cyanide & Happiness aesthetic. CRITICAL ARM RULE: every arm is exactly one thin black line from shoulder to a clean dead-end tip — like a single chopstick. The arm has NO hand at the end. NO fingers, NO palm, NO thumb, NO wrist, NO knuckles, NO five-fingered hand, NO open hand, NO mitten, NO fist, NO defined hand of any kind. When the character is waving, the waving arm is JUST A LINE pointing up and to the side — the tip is a clean pencil stroke ending, nothing more. Same rule for pointing, gesturing, expressing emotion, standing, walking. The ONLY exception is when the action absolutely requires gripping a specific object that\'s visible in the same scene (typing on a keyboard the hand sits on, holding a tool, gripping a steering wheel) — in those cases draw the smallest possible nub, never anatomical. CHARACTERS: head is an empty circle outline with WHITE INTERIOR (no fill color, never yellow, never tinted), two small black dots for eyes (or two small black rectangles for glasses), tiny optional mouth as a dot or short curve, body and legs are thin single-stroke lines, legs end in clean line tips with NO feet. LINES are wobbly, imperfect, slightly wonky, freehand, NOT clean vector, NOT polished, NOT smooth. NO shading, NO gradients, NO drop shadows. Pure black ink only on the figure itself. Color (a single saturated red, or a pale blue / pale yellow / light gray fill) appears ONLY on specific scene props like a red skull, a blue book cover, a yellow building — NEVER on the character\'s body or head. NOT photorealistic, NOT 3D, NOT a photograph, NOT anime, NOT manga.',
+    built_in_refs: [
+      { filename: '01-composite-cartoon-book-with-framed-real-photo.jpg', mime_type: 'image/jpeg' },
+      { filename: '02-pure-illustration-cartoon-building-pale-blue.jpg',  mime_type: 'image/jpeg' },
+      { filename: '03-lone-stick-figure-frowning.jpg',                    mime_type: 'image/jpeg' },
+      // #04 + #10 swapped 2026-05-25 from generic character poses to
+      // raised-arm-no-hand frames after the first test render produced
+      // a giant detailed waving hand. The model's prior for "waving =
+      // anatomical hand" overrode the text negatives — only a visual
+      // ref of the no-hand pose actually overrides it.
+      { filename: '04-stick-figure-raised-arm-no-hand-angry.jpg',         mime_type: 'image/jpeg' },
+      { filename: '05-color-composition-globe-with-computer-callouts.jpg',mime_type: 'image/jpeg' },
+      { filename: '06-object-network-laptops-arrows.jpg',                 mime_type: 'image/jpeg' },
+      { filename: '07-icon-composition-tv-with-deleted-files-x.jpg',      mime_type: 'image/jpeg' },
+      { filename: '08-framed-real-photo-inside-cartoon-tv.jpg',           mime_type: 'image/jpeg' },
+      { filename: '09-yellow-bubble-text-standalone-within-hours.jpg',    mime_type: 'image/jpeg' },
+      { filename: '10-stick-figure-raised-arm-no-hand-calm.jpg',          mime_type: 'image/jpeg' },
+      { filename: '11-yellow-text-overlaid-on-globe-scene.jpg',           mime_type: 'image/jpeg' },
+      { filename: '12-stick-figure-single-red-accent.jpg',                mime_type: 'image/jpeg' },
+      { filename: '13-framed-real-photo-pure-centrifuges.jpg',            mime_type: 'image/jpeg' },
+      { filename: '14-close-up-character-face.jpg',                       mime_type: 'image/jpeg' },
+    ],
+    // Same i2i model as Doodle Explainer — nano-banana-2-i2i takes 14
+    // refs (vs Atlas I2I's 4-ref ceiling). Atlas is cheaper per image
+    // but the motif breadth here needs more than 4 anchors.
+    preferred_cloud_model: 'nano-banana-2-i2i',
+    mixing_rules: [
+      'This is a hand-drawn cartoon style with a very specific compositional grammar. Defaults for every row:',
+      '',
+      '  • visual_type defaults to "Animation".',
+      '  • ai_image_prompt describes a single centered subject on a pure white background, hand-drawn cartoon look with thick black outlines, generous white space, muted palette (pale blue / pale yellow / light gray accents only; saturated red ONLY for blood, danger, or alarm).',
+      '  • Compose scenes so the same composition could plausibly be re-drawn with a tiny brow / mouth / hand change. Aim for "single character or single object, clearly framed" over "busy multi-element scene". This is forward-looking groundwork for Phase 3 variant support; even today it produces cleaner images.',
+      '',
+      'ON-SCREEN TEXT (`on_screen_text`): populate it liberally — this style leans on yellow bubble-text callouts as a core motif. Use it for:',
+      '',
+      '  • Time markers ("In May 2017", "Within hours", "Three days later")',
+      '  • Statistics or quantities ("150 countries", "$4 billion", "Within 24h")',
+      '  • Foreign or technical terms being introduced ("Wannacrypt", "Stuxnet", "EternalBlue")',
+      '  • Short punchlines or emphasis fragments (3-5 words max)',
+      '',
+      'CRITICAL — `on_screen_text_mode` MUST be "overlay" (or undefined, which inherits the doc default of "overlay"). NEVER set it to "bake" for this style. The yellow bubble overlay IS the visual treatment for these callouts — baking text into the AI image would paint it in the wrong slot (the top of the frame, where the SECTION TITLE belongs) and collide with the section title rendering. Two separate concepts, two separate render slots:',
+      '',
+      '  • The SECTION TITLE (set on title-card rows via `section_title` and inherited by every subsequent row in that section) renders as a bold black hand-drawn label at the TOP of every frame in that section — like "Wannacry" persisting across every shot in the Wannacry section of the source videos. The player renders this; the AI image generator should NOT include it.',
+      '  • The PER-ROW on_screen_text is the yellow bubble callout (mid-frame). Always overlay, never bake.',
+      '',
+      'Do NOT put time markers / stats / terms into the `ai_image_prompt` and do NOT ask the AI to render any text inside the image — the player composites all on-screen text + the section title on top of clean illustrations. AI-baked text in this style produces misspellings AND collides with the section-title slot.',
+      '',
+      'OVERLAY STOCK (`overlay_stock_terms`): when the script names a recognisable real-world subject, populate this so the editor can composite a real asset on top of the cartoon in post. Triggers:',
+      '',
+      '  • Named company / brand → overlay_stock_terms: "<brand> logo official PNG"',
+      '  • Named software, app, website, UI, or famous error screen → overlay_stock_terms: "<thing> screenshot"',
+      '  • Named real person (public figure) → overlay_stock_terms: "<name> photograph"',
+      '  • Named physical place / hardware / event with iconic imagery → overlay_stock_terms: "<thing> photograph"',
+      '',
+      'CRUCIAL — the framed-photo treatment. In this style, real photos and screenshots are NOT bare overlays; they appear as inset rectangles with a thick coloured border (orange, red, blue, or black, matching the scene mood). When you populate overlay_stock_terms, ALSO:',
+      '',
+      '  • Keep visual_type as "Animation" (or "Statistics" / "Cutaway"). Do NOT switch to "Screen Recording" or "B-Roll".',
+      '  • Write `ai_image_prompt` to describe a complete cartoon scene that includes an empty bordered rectangle as a deliberate placeholder. Examples: "stick figure points to a thick-black-bordered rectangle on the wall, rectangle is empty white inside" or "cartoon TV with a thick grey bezel, screen is a thick-black-bordered empty rectangle". DO NOT mention the real subject in the AI prompt — the AI image generator will hallucinate a stylised fake.',
+      '  • Add a short `notes` line telling the editor what to overlay, what border colour, and where. Example: "Composite: drop the real Windows XP wallpaper into the empty rectangle inside the cartoon TV; use a thick blue border to match the era."',
+      '',
+      'Otherwise (script talks about a generic concept, an unnamed character, an everyday object) — leave overlay_stock_terms empty and keep the row pure illustration.',
+      '',
+      'Aim for roughly 1 in 4 to 1 in 6 rows being a framed-photo composite. Too many breaks the cohesive cartoon feel; too few wastes the chance to ground the video in real evidence.',
+      '',
+      'VARIANT GROUPS (`group_id` + `variant_index` + `variant_edit_prompt`) — when to use:',
+      '',
+      'Use a variant group when the script has a sequence of short narration beats that all happen WITHIN ONE VISUAL MOMENT — e.g. "She paused. Her eyes widened. Then a frown." That\'s ONE visual moment (a character reacting) with three narration beats. The reference videos lean on this constantly: same composition for 2–4 short consecutive shots with only a brow / mouth / hand-position change between them, creating a "near-static animation" feel.',
+      '',
+      'How to emit a variant group in the JSON:',
+      '',
+      '  • Pick a fresh `group_id` (any short stable string — the system replaces it with a UUID downstream if missing). Use the SAME `group_id` on every row in the group.',
+      '  • The BASE row of the group: `variant_index: 0`. Populate `ai_image_prompt` normally with the full scene description at rest (the character\'s neutral pose for that moment). The base image gets generated through the regular i2i path against the bundled style refs.',
+      '  • Variant rows: `variant_index: 1`, `2`, `3` (cap at 3 variants per group, so 4 rows total including the base). LEAVE `ai_image_prompt` EMPTY on variant rows — the editor derives the variant image from the base via Atlas GPT Image 2 Edit using the variant\'s `variant_edit_prompt`. The dispatcher composes "base prompt + EDIT: <variant_edit_prompt>" so the model has the full scene context plus the delta.',
+      '  • Populate `variant_edit_prompt` with the SMALLEST POSSIBLE edit instruction. Good examples: "raise the right eyebrow slightly", "open the mouth into a small O shape", "lift the right arm a few degrees", "narrow the eyes into a glare". Bad examples: re-describing the whole scene, asking for layout changes, asking for new objects — those drift away from the base composition.',
+      '  • Each variant row keeps its OWN `script_text` (one beat of narration), its own short `timecode`, and its own on-screen text (yellow callout if any). Variants are ordinary rows in the timeline — they just visually anchor to the same composition.',
+      '  • Variant rows MUST be contiguous in the row list — no other rows interleaved between rows of the same group.',
+      '',
+      'When NOT to use a variant group: the script moves between distinct scenes (different subjects, different settings, different actions). Those are standalone rows. A reaction-shot pattern is the only typical trigger for a group.',
+      '',
+      'Typical frequency: 1 variant group per 8–15 standalone rows in a video with reactive characters. Don\'t force them — only when the script genuinely has multiple narration beats hitting one visual moment.',
+      '',
+      'Concrete JSON shape for a 3-row variant group (1 base + 2 variants). All other row fields (visual_type, overlay_*, on_screen_text, etc.) work normally on each row:',
+      '',
+      '```json',
+      '{',
+      '  "timecode": "0:24",',
+      '  "script_text": "She paused.",',
+      '  "visual_type": "Animation",',
+      '  "visual_description": "Close-up stick figure character standing still, arms by sides.",',
+      '  "ai_image_prompt": "Close-up of a hand-drawn stick figure character facing the camera, arms by sides, neutral expression — small dot eyes, tiny mouth, head is an empty circle outline. Plain white background. [style suffix appended automatically.]",',
+      '  "group_id": "rxn-pause-1",',
+      '  "variant_index": 0',
+      '}',
+      ',',
+      '{',
+      '  "timecode": "0:25",',
+      '  "script_text": "Her eyes widened.",',
+      '  "visual_type": "Animation",',
+      '  "visual_description": "Same composition as base; only the eyes change shape.",',
+      '  "ai_image_prompt": "",',
+      '  "group_id": "rxn-pause-1",',
+      '  "variant_index": 1,',
+      '  "variant_edit_prompt": "open the eyes wider into surprised oval shapes, keep everything else identical"',
+      '}',
+      ',',
+      '{',
+      '  "timecode": "0:26",',
+      '  "script_text": "Then a frown.",',
+      '  "visual_type": "Animation",',
+      '  "visual_description": "Same composition; only the brows + mouth change.",',
+      '  "ai_image_prompt": "",',
+      '  "group_id": "rxn-pause-1",',
+      '  "variant_index": 2,',
+      '  "variant_edit_prompt": "drop the eyebrows downward in a frown and turn the mouth into a small downturned curve, keep everything else identical"',
+      '}',
+      '```',
+      '',
+      'Notice: only the BASE has a populated `ai_image_prompt`. Variant rows leave it empty and instead populate `variant_edit_prompt`. The editor\'s variant dispatcher composes the final prompt for the Atlas Edit model from both — you don\'t need to repeat scene description on variant rows.',
+    ].join('\n'),
+    allow_overlay_stock: true,
+    origin: 'built-in',
+  },
 ]);
 
 const BUILT_IN_BY_ID = new Map<string, ResolvedStyle>(BUILT_IN_STYLES.map((s) => [s.id, s]));

@@ -1,10 +1,11 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { sql, ensureSeriesSchema } from '@/lib/db';
+import { apiRoute } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
 
 // Bulk-insert a batch of generated ideas so they are persisted immediately
 // without requiring the user to manually click "Save" on each one.
-export async function POST(req: NextRequest) {
+export const POST = apiRoute.authed(async (session, req) => {
   try {
     const { ideas, niche, seriesId, partNumber } = await req.json();
     if (!Array.isArray(ideas) || ideas.length === 0) {
@@ -27,7 +28,7 @@ export async function POST(req: NextRequest) {
           INSERT INTO video_ideas (
             niche, title, hook, description, target_audience,
             estimated_views_potential, trend_relevance, difficulty,
-            tags, is_saved, series_id, part_number
+            tags, is_saved, series_id, part_number, workspace_id
           )
           VALUES (
             ${niche || idea.niche || ''},
@@ -41,7 +42,8 @@ export async function POST(req: NextRequest) {
             ${JSON.stringify(idea.tags || [])},
             true,
             ${seriesId || null}::uuid,
-            ${perIdeaPart}
+            ${perIdeaPart},
+            ${session.ws}::uuid
           )
           RETURNING id, title
         `;
@@ -56,4 +58,4 @@ export async function POST(req: NextRequest) {
     logger.error('POST /api/ideas/batch error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Batch save failed' }, { status: 500 });
   }
-}
+});
