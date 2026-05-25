@@ -63,13 +63,16 @@ export type EditBackend =
       /** Currently the only Atlas Edit model. Future Atlas-hosted edit
        *  variants would each get their own row here. */
       atlasModel: 'openai/gpt-image-2/edit';
-      /** Atlas `size` parameter. Optional. The dispatcher defaults to
-       *  '1536x1024' (closest landscape to 16:9). Atlas Edit preserves
-       *  input aspect, so 16:9 inputs come back at the input aspect
-       *  regardless of this hint — kept for explicitness + future edits
-       *  that synthesise from a smaller seed. */
-      atlasSize?: '1024x1024' | '1024x1536' | '1536x1024';
-      /** Atlas `quality` tier. Optional, defaults to 'medium'. */
+      /** Atlas `size` parameter. Optional. The edit route defaults to
+       *  '2560x1440' (native 16:9 at 2K) so the result matches our
+       *  pipeline without a post-process crop. Atlas Edit preserves
+       *  input aspect, so this hint matters only when synthesising
+       *  from a smaller seed image. */
+      atlasSize?: '1024x1024' | '1024x1536' | '1536x1024' | '2560x1440';
+      /** Atlas `quality` tier. Optional, defaults to 'low' because every
+       *  cloud image flows through Recraft Crisp Upscale downstream
+       *  anyway — paying for medium/high at the source wastes money
+       *  the upscaler would have spent for free. */
       atlasQuality?: 'low' | 'medium' | 'high';
     };
 
@@ -244,10 +247,21 @@ export const EDIT_OPTIONS: readonly EditOption[] = [
   {
     id: 'gpt-image-2-atlas-edit',
     label: 'GPT Image 2 Edit (Atlas)',
-    tagline: 'Cheap prompt-only edit — Atlas Cloud, ~$0.01 token-billed',
+    tagline: 'Cheap prompt-only edit — Atlas Cloud, ~$0.011 at 2K + low',
     maskCapable: false,
-    pricePerImage: 0.01,
-    backend: { kind: 'atlas', atlasModel: 'openai/gpt-image-2/edit' },
+    pricePerImage: 0.011,
+    backend: {
+      kind: 'atlas',
+      atlasModel: 'openai/gpt-image-2/edit',
+      // Match the t2i + i2i defaults: native 16:9 at 2K + low quality.
+      // Atlas Edit preserves input aspect, so when the input is already
+      // 16:9 (the common case for editing pipeline outputs) the size
+      // hint mainly governs upscale eligibility. Atlas Edit also runs
+      // through upscaleViaRecraft in the route's switch — the >2000px
+      // guard handles the no-op skip when inputs are already 2K.
+      atlasSize: '2560x1440',
+      atlasQuality: 'low',
+    },
   },
 ];
 

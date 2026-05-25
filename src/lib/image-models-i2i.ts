@@ -45,9 +45,10 @@ export type I2IProvider = 'kie' | 'atlas' | 'comfyui-local';
 
 /** Mirrors `AtlasSize` in src/lib/atlas-cloud-images.ts. Inlined here
  *  to keep this i2i registry independent of the server-only helper
- *  module (the dispatcher imports both). Must stay in sync with
- *  Atlas's documented `size` enum for GPT Image 2. */
-export type AtlasImageSize = '1024x1024' | '1024x1536' | '1536x1024';
+ *  module (the dispatcher imports both). `'2560x1440'` is the native
+ *  16:9 (2K) option — preferred for ref-driven generation in this app
+ *  because it bypasses the post-generation 16:9 crop. */
+export type AtlasImageSize = '1024x1024' | '1024x1536' | '1536x1024' | '2560x1440';
 /** Mirrors `AtlasQuality` in src/lib/atlas-cloud-images.ts. */
 export type AtlasImageQuality = 'low' | 'medium' | 'high';
 
@@ -163,11 +164,13 @@ export const I2I_MODELS: readonly I2IModelSpec[] = Object.freeze([
     label: 'Reference-driven (GPT Image 2 via Atlas, cheaper)',
     provider: 'atlas',
     atlasModel: 'openai/gpt-image-2/image-to-image',
-    atlasSize: '1536x1024',
-    atlasQuality: 'medium',
+    // 2K native 16:9 at low quality — same defaults as the t2i sibling.
+    // Skips crop + Recraft upscale (source is already at pipeline target).
+    atlasSize: '2560x1440',
+    atlasQuality: 'low',
     maxRefs: 4,
-    hint: 'Cheaper Atlas route for ref-driven GPT Image 2. ~$0.009/image, up to 4 refs.',
-    costUsdPerImage: 0.009,
+    hint: 'Cheaper Atlas route for ref-driven GPT Image 2. Native 16:9 at 2K, ~$0.011/image, up to 4 refs.',
+    costUsdPerImage: 0.011,
   },
   {
     value: 'flux2-pro-i2i',

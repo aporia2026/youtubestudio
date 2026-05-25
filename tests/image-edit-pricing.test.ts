@@ -108,18 +108,31 @@ describe('Atlas Cloud edit entry', () => {
     expect(opt!.maskCapable).toBe(false);
   });
 
-  it('Atlas Edit advertises the token-billed estimate at $0.01/image', () => {
-    // Atlas Edit is actually token-billed; $0.01 is the marketing
-    // estimate. The route logs per-call token counts so we can true
-    // up against real usage after a week of traffic.
+  it('Atlas Edit advertises the playground price at $0.011/image (2K + low)', () => {
+    // $0.011 verified via the Atlas playground 2026-05-25 at low
+    // quality + 2560×1440. Atlas Edit is actually token-billed; this
+    // is the playground's quoted run cost at our default settings.
+    // The route logs per-call token counts so we can true up.
     const opt = getEditOption('gpt-image-2-atlas-edit');
-    expect(opt!.pricePerImage).toBe(0.01);
+    expect(opt!.pricePerImage).toBe(0.011);
   });
 
-  it('formatted label includes the cheap-price marker', () => {
+  it('formatted label includes the verified playground price', () => {
     const opt = getEditOption('gpt-image-2-atlas-edit')!;
     const label = formatEditOptionLabel(opt);
-    expect(label).toBe('GPT Image 2 Edit (Atlas) — $0.01');
+    expect(label).toBe('GPT Image 2 Edit (Atlas) — $0.011');
+  });
+
+  it('Atlas Edit backend defaults to 2560x1440 native 16:9 at low quality', () => {
+    // Same defaults as the t2i + i2i Atlas entries: 2K native 16:9 +
+    // low quality. Atlas Edit preserves input aspect, so the size
+    // hint mostly governs the upscale-eligibility downstream
+    // (>2000px skips Recraft). Locked with user 2026-05-25.
+    const opt = getEditOption('gpt-image-2-atlas-edit')!;
+    if (opt.backend.kind === 'atlas') {
+      expect(opt.backend.atlasSize).toBe('2560x1440');
+      expect(opt.backend.atlasQuality).toBe('low');
+    }
   });
 });
 

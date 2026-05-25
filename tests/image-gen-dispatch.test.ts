@@ -180,6 +180,101 @@ describe('generateImageWithUpscale — Atlas branch', () => {
   });
 });
 
+describe('generateImageWithUpscale — Atlas native 16:9 fast path', () => {
+  it('SKIPS both the crop step and the Recraft upscale when atlasSize is 2560x1440', async () => {
+    // Native 16:9 path locked by the user 2026-05-25: 2560×1440 source
+    // is already the pipeline-target resolution, so the dispatcher
+    // skips cropTo16x9AndUpload (no R2 intermediate) AND
+    // upscaleViaRecraft (no Recraft call). The vendor URL goes
+    // straight to the final R2 mirror.
+    const upscaledBytes = await syntheticPng(2560, 1440);
+    mockedGenerateAtlasT2I.mockResolvedValue({
+      url: 'https://atlas-cdn.example/native16x9.png',
+      predictionId: 'pred_native',
+    });
+
+    const fetchMock = vi.fn(async (url: string | URL | Request): Promise<Response> => {
+      if (String(url) === 'https://atlas-cdn.example/native16x9.png') {
+        return new Response(bytesBody(upscaledBytes), { headers: { 'content-type': 'image/png' } });
+      }
+      throw new Error(`unexpected fetch URL: ${String(url)}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const spec: ImageModelSpec = {
+      value: 'gpt-image-2-atlas-t2i',
+      label: 'GPT Image 2 (Atlas)',
+      provider: 'atlas',
+      atlasSize: '2560x1440',
+      atlasQuality: 'low',
+    };
+    const result = await generateImageWithUpscale(spec, 'native 16:9 prompt');
+
+    expect(result.providerUsed).toBe('atlas');
+    expect(result.url).toMatch(/^https:\/\/r2-test\.example\/prodoc-images\//);
+
+    // Atlas helper called with the 2K size + low quality.
+    expect(mockedGenerateAtlasT2I).toHaveBeenCalledExactlyOnceWith({
+      prompt: 'native 16:9 prompt',
+      size: '2560x1440',
+      quality: 'low',
+    });
+    // CRITICAL: Recraft must NOT have been called. The skip rule in
+    // upscale.ts would also skip (>2000px), but the dispatcher's
+    // explicit branch fires first and never even tries.
+    expect(mockedUpscaleViaRecraft).not.toHaveBeenCalled();
+    // Only one R2 upload (the final mirror) — no intermediate crop upload.
+    expect(mockedUploadToBucket).toHaveBeenCalledOnce();
+    const uploadedKeys = mockedUploadToBucket.mock.calls.map((c) => c[1]);
+    expect(uploadedKeys.some((k) => k.startsWith('prodoc-images-atlas-crop/'))).toBe(false);
+  });
+
+  it('still uses crop + upscale path when atlasSize is a non-16:9 size (e.g. 1536x1024)', async () => {
+    // Regression guard for the fallback path. If a future Atlas size
+    // gets added to the catalog without being added to the native
+    // 16:9 set, this branch keeps it safe — the crop+upscale runs as
+    // before so the output still lands at 16:9 at upscale-resolution.
+    const atlasBytes = await syntheticPng(1536, 1024);
+    const upscaledBytes = await syntheticPng(640, 360);
+    mockedGenerateAtlasT2I.mockResolvedValue({
+      url: 'https://atlas-cdn.example/threeby2.png',
+      predictionId: 'pred_3x2',
+    });
+    mockedUpscaleViaRecraft.mockResolvedValue({
+      url: 'https://recraft-cdn.example/upscaled.png',
+      reason: 'upscaled',
+      totalMs: 1,
+      attempts: 1,
+    });
+    const fetchMock = vi.fn(async (url: string | URL | Request): Promise<Response> => {
+      const u = String(url);
+      if (u === 'https://atlas-cdn.example/threeby2.png') {
+        return new Response(bytesBody(atlasBytes), { headers: { 'content-type': 'image/png' } });
+      }
+      if (u === 'https://recraft-cdn.example/upscaled.png') {
+        return new Response(bytesBody(upscaledBytes), { headers: { 'content-type': 'image/png' } });
+      }
+      throw new Error(`unexpected fetch URL: ${u}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const spec: ImageModelSpec = {
+      value: 'gpt-image-2-atlas-t2i-small',
+      label: 'Atlas test',
+      provider: 'atlas',
+      atlasSize: '1536x1024',
+      atlasQuality: 'low',
+    };
+    await generateImageWithUpscale(spec, 'prompt');
+    expect(mockedUpscaleViaRecraft).toHaveBeenCalledOnce();
+    const uploadedKeys = mockedUploadToBucket.mock.calls.map((c) => c[1]);
+    // Both the intermediate crop upload + the final mirror — same as
+    // the original Phase 1.A path.
+    expect(uploadedKeys.some((k) => k.startsWith('prodoc-images-atlas-crop/'))).toBe(true);
+    expect(uploadedKeys.some((k) => k.startsWith('prodoc-images/'))).toBe(true);
+  });
+});
+
 describe('generateImageWithUpscale — Kie branch', () => {
   it('routes a Kie spec through createKieTask + pollKieResultThenUpscale + R2 mirror', async () => {
     mockedCreateKieTask.mockResolvedValue('task_abc');

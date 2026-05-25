@@ -151,16 +151,21 @@ describe('Atlas Cloud entries (2026-05-25)', () => {
     expect(atlasIdx).toBeLessThan(kieIdx);
   });
 
-  it('Atlas t2i spec carries the documented model id + landscape size', () => {
+  it('Atlas t2i spec carries the documented model id + native 16:9 size at low quality', () => {
     const spec = getImageModelSpec('gpt-image-2-atlas-t2i');
     expect(spec).toBeDefined();
     expect(spec!.provider).toBe('atlas');
     expect(spec!.atlasModel).toBe('openai/gpt-image-2/text-to-image');
-    // 1536×1024 is the closest landscape Atlas's GPT Image 2 accepts;
-    // the dispatcher then center-crops to 1536×864 for 16:9. Changing
-    // this to a square or portrait would silently break every 16:9
-    // surface that picks Atlas.
-    expect(spec!.atlasSize).toBe('1536x1024');
+    // 2560×1440 is Atlas's native 16:9 size (2K). Picking this lets the
+    // dispatcher skip the post-generation crop AND the Recraft upscale
+    // (the source is already at pipeline target). Changing this default
+    // would re-introduce the crop overhead OR trigger an unintended
+    // upscale, depending on direction.
+    expect(spec!.atlasSize).toBe('2560x1440');
+    // Low quality is the deliberate cost choice (locked with user
+    // 2026-05-25). Bumping to medium/high without context is a real
+    // cost regression — see _plans/2026-05-25-atlas-cloud-gpt-image-2.md.
+    expect(spec!.atlasQuality).toBe('low');
   });
 
   it('buildKieImageInput throws when called with the Atlas spec', () => {
@@ -182,7 +187,10 @@ describe('Atlas Cloud entries (2026-05-25)', () => {
     // confirms Atlas accepts more (or less) than 4, BOTH this number
     // and the registry hint copy need updating.
     expect(spec!.maxRefs).toBe(4);
-    expect(spec!.atlasSize).toBe('1536x1024');
+    // 2560×1440 native 16:9 at low quality — same defaults as the t2i
+    // sibling. Skips crop + Recraft upscale.
+    expect(spec!.atlasSize).toBe('2560x1440');
+    expect(spec!.atlasQuality).toBe('low');
   });
 
   it('Atlas i2i entry has NO refsField (it does not flow through buildKieI2IInput)', () => {

@@ -23,6 +23,71 @@ The existing app has a clean chokepoint for "generate → upscale → R2 mirror"
 
 The user explicitly chose **no automatic Kie failover** when Atlas errors, so failure surfaces match the rest of the app: clean error message, regenerate button. That keeps vendor problems visible to the operator rather than hidden behind silent failover that inflates spend.
 
+## Implementation discovery (2026-05-25, post-launch): 2K native 16:9
+
+After Phase 4 shipped, the user opened the Atlas playground and pointed
+out that the size dropdown exposes a fourth option, `16:9 2560×1440`,
+that the docs page does NOT list. Verified via screenshot. The
+playground also confirmed the actual cost: `low` quality at 2560×1440
+runs at **$0.011/image** (vs the $0.009 estimate for medium at 1536×1024
+that the docs quoted).
+
+This changed three load-bearing decisions:
+
+1. **No crop needed for the default path.** A 2560×1440 source is
+   already 16:9. The `cropTo16x9AndUpload` helper stays in place but
+   only fires for non-16:9 fallback sizes (square / portrait, hypothetical
+   future use). The dispatcher checks `ATLAS_NATIVE_16X9_SIZES.has(size)`
+   and skips both the crop AND the final Recraft upscale when the size
+   is already 16:9 native.
+
+2. **Upscale deliberately skipped for single-shot Atlas at 2K.** Recraft's
+   `>2000px` guard would skip anyway, but the dispatcher's branch makes
+   the skip intentional and provider-specific so a future global
+   threshold bump doesn't accidentally start sending Atlas 2K through
+   to 10K upscales. User-locked trade-off: `low` quality at 2K source
+   = $0.011 with NO upscale cost vs `medium` at 1.5K + crop + upscale
+   = ~$0.0115 with the upscale overhead.
+
+3. **Collage explicitly opts back IN to upscale.** A 2560×1440 collage
+   sliced into 4 quadrants yields only 1280×720 per shot (720p) — well
+   below the per-shot resolution target. The collage route HARDCODES
+   `size: '1536x1024'` for Atlas (overriding the registry's 2560×1440
+   default) so the crop + upscale path fires and each quadrant lands
+   at ~3072×1728 (~3K per shot), matching the Kie collage path's
+   per-cell resolution. Quality stays `low` because Recraft will
+   sharpen.
+
+Defaults locked 2026-05-25:
+- `gpt-image-2-atlas-t2i`: 2560×1440, low quality, skip upscale.
+- `gpt-image-2-atlas-i2i`: 2560×1440, low quality, skip upscale, 4-ref cap.
+- `gpt-image-2-atlas-edit`: 2560×1440, low quality. Atlas Edit
+  preserves input aspect; upscale fires when the input is small enough
+  (the >2000px guard handles the no-op skip).
+- Collage with any Atlas spec: forced 1536×1024, crop, upscale fires.
+
+Updated cost picture per call (replaces the projections below):
+
+| Surface | Source | Crop | Upscale | Effective per-call cost |
+|---|---|---|---|---|
+| T2I single-shot | 2560×1440 low | no | no (skipped) | ~$0.011 |
+| I2I (refs) single-shot | 2560×1440 low | no | no (skipped) | ~$0.011 |
+| Edit (full image, prompt-only) | 2560×1440 low | no | conditional | $0.011 + 0 or $0.0025 |
+| Collage (per group of 4 shots) | 1536×1024 low | yes | yes | ~$0.0095 = $0.0070 atlas est + $0.0025 recraft |
+
+Per-call delta vs Kie's GPT Image 2 (estimated ~$0.04 base + $0.0025 upscale = ~$0.0425):
+- Single-shot: ~74% cheaper (was ~73% in the original projection — net wash).
+- Collage: ~78% cheaper (was ~73%; small win from the lower-quality source).
+
+The 2560×1440 string format is a best-guess match for the playground's
+size selection — Atlas docs still don't document this size. If the API
+rejects it ([atlas-images] error with `invalid size`), fall back to
+1536×1024 + crop + upscale by changing the registry's `atlasSize` field
+back. The `cropTo16x9AndUpload` helper and the dispatcher's fallback
+branch are kept specifically for this contingency.
+
+---
+
 ## Discovered constraints (verified against Atlas docs, 2026-05-25)
 
 These shape the implementation; flagging because two of them are not obvious from the user's framing.

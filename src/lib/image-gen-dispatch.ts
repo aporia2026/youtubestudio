@@ -46,17 +46,29 @@ import { upscaleViaRecraft } from './upscale';
 import { getDownloadUrlForBucket, getImagesBucket, uploadToBucket } from './r2';
 import { logger } from './logger';
 
-/** Default size we ask Atlas for. Closest landscape to 16:9 their GPT
- *  Image 2 supports. Cropped to 1536×864 by `cropTo16x9` before upscale. */
-const DEFAULT_ATLAS_SIZE: AtlasSize = '1536x1024';
-/** Default quality tier. `'medium'` matches Atlas's omitted-default per
- *  their example payloads. Bumping to `'high'` raises Edit token cost
- *  measurably; keep low until the cost telemetry shows it's worth it. */
-const DEFAULT_ATLAS_QUALITY: AtlasQuality = 'medium';
+/** Default size we ask Atlas for. `'2560x1440'` is the native 16:9 (2K)
+ *  option exposed by the Atlas playground (verified via user screenshot
+ *  2026-05-25). Picking it lets us skip the post-generation 16:9 crop
+ *  step entirely — see ATLAS_NATIVE_16X9_SIZES below. */
+const DEFAULT_ATLAS_SIZE: AtlasSize = '2560x1440';
+/** Default quality tier. `'low'` because every cloud image flows through
+ *  Recraft Crisp Upscale (Phase 2 of the 2026-05-24 upscale plan), so
+ *  paying for medium/high at the source wastes money the upscaler would
+ *  have spent for free. The user locked this directive 2026-05-25 when
+ *  the 16:9 size was discovered. */
+const DEFAULT_ATLAS_QUALITY: AtlasQuality = 'low';
 
-/** R2 prefix for the intermediate Atlas-cropped image. Distinct from the
- *  final image prefix so R2 bucket metrics can show how often the Atlas
- *  path runs without conflating with the final image volume. */
+/** Atlas sizes that already match the pipeline's 16:9 aspect. When the
+ *  spec asks for one of these, the dispatcher skips `cropTo16x9AndUpload`
+ *  and hands the vendor URL straight to Recraft — saves one R2 round-
+ *  trip + sharp processing per generation. Used by the t2i dispatcher,
+ *  the i2i helper, and the collage route's Atlas branch. */
+export const ATLAS_NATIVE_16X9_SIZES: ReadonlySet<AtlasSize> = new Set(['2560x1440']);
+
+/** R2 prefix for the intermediate Atlas-cropped image. Only used when
+ *  the spec requests a non-16:9 size and the crop step actually fires.
+ *  Distinct from the final image prefix so R2 metrics can show how
+ *  often the crop fallback path runs vs. the native 16:9 path. */
 const ATLAS_CROP_KEY_PREFIX = 'prodoc-images-atlas-crop';
 /** Default R2 prefix for the final mirrored image. Matches the prefix the
  *  production-doc image route used previously so historical telemetry +
@@ -115,13 +127,32 @@ export async function generateImageWithUpscale(
     const size: AtlasSize = spec.atlasSize ?? DEFAULT_ATLAS_SIZE;
     const quality: AtlasQuality = spec.atlasQuality ?? DEFAULT_ATLAS_QUALITY;
     const atlasResult = await generateAtlasT2I({ prompt, size, quality });
-    // Crop to 16:9 BEFORE upscale. Recraft 4× of a cropped image gives a
-    // perfectly 16:9 result; cropping AFTER upscale would waste upscaled
-    // detail in the trim. The intermediate R2 hop is unavoidable because
-    // Recraft takes URLs only.
-    const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, ATLAS_CROP_KEY_PREFIX);
-    const upscale = await upscaleViaRecraft(croppedUrl);
-    postUpscaleUrl = upscale.url;
+    if (ATLAS_NATIVE_16X9_SIZES.has(size)) {
+      // Native 16:9 path (the user-locked default at 2560×1440, 2026-05-25):
+      // skip BOTH the crop step AND the Recraft upscale. The crop is a
+      // no-op because the source is already 16:9; the upscale is
+      // deliberately skipped because:
+      //   1. Recraft's >2000px guard in upscale.ts would skip anyway
+      //      (2560 > 2000), so making the skip explicit + provider-
+      //      specific keeps the behaviour pinned even if the global
+      //      threshold ever moves.
+      //   2. 4× upscale of 2560×1440 lands at ~10K, which is overkill
+      //      for the 1080p/2K render targets and wastes the $0.0025
+      //      Recraft call. The user paid for "low quality at 2K, no
+      //      upscale" knowing the source is already pipeline-sized.
+      //   3. Removes a Recraft round-trip + sharp probe per generation.
+      // For smaller Atlas sizes (square / 3:2), the crop+upscale path
+      // below runs as designed.
+      logger.info('[image-dispatch] atlas native-16x9 skip-upscale', {
+        size,
+        model: spec.value,
+      });
+      postUpscaleUrl = atlasResult.url;
+    } else {
+      const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, ATLAS_CROP_KEY_PREFIX);
+      const upscale = await upscaleViaRecraft(croppedUrl);
+      postUpscaleUrl = upscale.url;
+    }
   } else if (spec.provider === 'kie' || spec.provider === undefined) {
     // `provider === undefined` is the back-compat path — older registry
     // entries that pre-date the explicit discriminator default to kie.

@@ -33,10 +33,10 @@ export type ImageModelProvider = 'kie' | 'atlas' | 'comfyui-local';
 
 /** Mirrors `AtlasSize` in src/lib/atlas-cloud-images.ts. Inlined here to
  *  keep this registry client-safe (the atlas module imports a server-only
- *  logger). The union must stay in sync with Atlas's documented `size`
- *  enum for GPT Image 2; only landscape ratios are practical for this
- *  app's 16:9 pipeline (cropped post-generation in image-gen-dispatch.ts). */
-export type AtlasImageSize = '1024x1024' | '1024x1536' | '1536x1024';
+ *  logger). The union must stay in sync with the canonical AtlasSize.
+ *  `'2560x1440'` is the native 16:9 option (2K) — preferred for this
+ *  app's pipeline because it bypasses the post-generation crop step. */
+export type AtlasImageSize = '1024x1024' | '1024x1536' | '1536x1024' | '2560x1440';
 /** Mirrors `AtlasQuality` in src/lib/atlas-cloud-images.ts. */
 export type AtlasImageQuality = 'low' | 'medium' | 'high';
 
@@ -127,9 +127,14 @@ export const IMAGE_MODELS: ImageModelSpec[] = [
     label: 'GPT Image 2 (Atlas, cheaper)',
     provider: 'atlas',
     atlasModel: 'openai/gpt-image-2/text-to-image',
-    atlasSize: '1536x1024',
-    atlasQuality: 'medium',
-    hint: 'Default GPT Image 2 (~$0.009/image, ~8s). Cheaper Atlas route to the same OpenAI model.',
+    // 2K native 16:9 at low quality. Skips the post-generation 16:9
+    // crop AND the Recraft upscale (already large) — the 2560×1440
+    // source IS the pipeline-target resolution. The collage route
+    // overrides to 1536×1024 so it can still upscale + slice to
+    // ~3K per quadrant. See _plans/2026-05-25-atlas-cloud-gpt-image-2.md.
+    atlasSize: '2560x1440',
+    atlasQuality: 'low',
+    hint: 'Default GPT Image 2. Native 16:9 at 2K, ~$0.011/image, no upscale needed. Cheaper Atlas route to the same OpenAI model.',
   },
   { value: 'gpt-image-2-t2i', label: 'GPT Image 2 (Kie)', provider: 'kie', kieModel: 'gpt-image-2-text-to-image', hint: 'OpenAI image model via Kie.ai. Sibling of the Atlas variant above; pricier but kept for parity.' },
   // Ideogram v3 — best-in-class for rendering legible text inside the image

@@ -47,11 +47,20 @@ const ATLAS_BASE = 'https://api.atlascloud.ai/api/v1/model';
 const POLL_INTERVAL_MS = 3000;
 const POLL_MAX_ATTEMPTS = 95;
 
-/** Atlas's documented `size` enum for the GPT Image 2 family. Source:
- *  atlascloud.ai/models/openai/gpt-image-2/text-to-image. Surfaces an
- *  enum union so callers (the dispatcher + registry extraInput) can
- *  only pass one of the three accepted shapes. */
-export type AtlasSize = '1024x1024' | '1024x1536' | '1536x1024';
+/** Atlas's `size` enum for the GPT Image 2 family. Three are documented
+ *  on atlascloud.ai/models/openai/gpt-image-2/text-to-image; `'2560x1440'`
+ *  is exposed by the Atlas playground (verified via user screenshot
+ *  2026-05-25) but not yet in the docs page. The playground sends the
+ *  same WxH string format, so it accepts here too. Using 2560x1440 lets
+ *  us bypass the 16:9 center-crop step entirely (see ATLAS_NATIVE_16X9_SIZES
+ *  in image-gen-dispatch.ts) since the output is already 16:9.
+ *
+ *  If Atlas tightens validation and rejects 2560x1440 in the future, the
+ *  vendor error surfaces as a clean `[atlas-images]` message and we can
+ *  fall back to 1536x1024 + crop. The smaller sizes are kept in the
+ *  union so future-non-16:9 use cases (square thumbnails, portrait
+ *  collages) can opt in. */
+export type AtlasSize = '1024x1024' | '1024x1536' | '1536x1024' | '2560x1440';
 
 /** Atlas's documented `quality` tiers. Default is `'medium'` per their
  *  example payloads when omitted. */

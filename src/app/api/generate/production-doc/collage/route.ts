@@ -163,20 +163,31 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         });
         let url: string;
         if (spec.provider === 'atlas') {
-          // Atlas: generate (1536×1024 = 3:2) → 16:9 center-crop
-          // (1536×864) → Recraft 4× upscale. The 1536×864 collage
-          // composes naturally to 4 quadrants of 768×432 → ~3K per
-          // quadrant after upscale, on par with the Kie path's
-          // post-upscale per-cell resolution.
+          // Atlas collage: HARDCODED to 1536×1024 (3:2) → crop to 1536×864
+          // (16:9) → Recraft 4× upscale → ~6144×3456 → 4 quadrants of
+          // ~3072×1728 each (~3K per shot, matches the Kie collage path).
+          //
+          // We deliberately override the registry's `atlasSize` here even
+          // when the user picked the 2560×1440 default for single-shot
+          // generation. The reason is geometry: a 2560×1440 collage
+          // sliced into 4 quadrants yields only 1280×720 per shot
+          // (720p), well below the pipeline's per-shot resolution target.
+          // The user locked this trade-off 2026-05-25 ("collage must
+          // upscale") — single-shot stays at 2K skip-upscale, collage
+          // takes the upscale hit so each quadrant lands at usable
+          // resolution. Quality stays on the spec's default ('low' per
+          // the registry) because Recraft will sharpen.
           const atlasResult = await generateAtlasT2I({
             prompt: composedPrompt,
-            size: spec.atlasSize ?? '1536x1024',
-            quality: spec.atlasQuality ?? 'medium',
+            size: '1536x1024',
+            quality: spec.atlasQuality ?? 'low',
           });
           logger.info('[collage atlas-generate] vendor done', {
             attempt,
             prediction_id: atlasResult.predictionId,
             predict_ms: atlasResult.predictTimeMs,
+            forced_size: '1536x1024',
+            spec_size: spec.atlasSize,
           });
           const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, 'prodoc-images-atlas-crop');
           const upscaleResult = await upscaleViaRecraft(croppedUrl);

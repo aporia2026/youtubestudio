@@ -36,7 +36,7 @@ import {
 } from './image-models-i2i';
 import { createKieTask, pollKieResultThenUpscale } from './kie-poll';
 import { generateAtlasI2I } from './atlas-cloud-images';
-import { cropTo16x9AndUpload } from './image-gen-dispatch';
+import { cropTo16x9AndUpload, ATLAS_NATIVE_16X9_SIZES } from './image-gen-dispatch';
 import { upscaleViaRecraft } from './upscale';
 import {
   getDownloadUrlForBucket,
@@ -646,26 +646,39 @@ async function generateImageWithRefsAtlas(
     prompt_slice: trimmedPrompt.slice(0, 80),
   });
 
+  const size = spec.atlasSize ?? '2560x1440';
+  const quality = spec.atlasQuality ?? 'low';
   const atlasResult = await generateAtlasI2I({
     prompt: trimmedPrompt,
     images: cappedRefUrls,
-    size: spec.atlasSize ?? '1536x1024',
-    quality: spec.atlasQuality ?? 'medium',
+    size,
+    quality,
   });
 
-  // 16:9 center-crop before upscale — matches the t2i dispatcher's
-  // ordering so each cropped quadrant of upscale-time pixels is
-  // genuinely 16:9 instead of trimmed afterward. Intermediate R2 hop
-  // is unavoidable because Recraft accepts URLs only.
-  const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, 'i2i-results-atlas-crop');
-  const upscale = await upscaleViaRecraft(croppedUrl);
+  // Native-16:9 fast path mirrors the t2i dispatcher: skip BOTH the
+  // crop step and the Recraft upscale when Atlas returned a 16:9
+  // source already (2K is the pipeline target — see the comment in
+  // image-gen-dispatch.ts). For smaller Atlas sizes (square / 3:2),
+  // the crop+upscale path runs as before.
+  let preMirrorUrl: string;
+  if (ATLAS_NATIVE_16X9_SIZES.has(size)) {
+    logger.info('[image-gen atlas-i2i native-16x9 skip-upscale]', {
+      size,
+      model: modelValue,
+    });
+    preMirrorUrl = atlasResult.url;
+  } else {
+    const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, 'i2i-results-atlas-crop');
+    const upscale = await upscaleViaRecraft(croppedUrl);
+    preMirrorUrl = upscale.url;
+  }
 
   // Final mirror — same shape as the kie i2i path so the result
   // record's `r2Key` / `imageUrl` semantics line up.
-  let imageUrl = upscale.url;
+  let imageUrl = preMirrorUrl;
   let mirroredR2Key: string | undefined;
   try {
-    const res = await fetch(upscale.url);
+    const res = await fetch(preMirrorUrl);
     if (res.ok) {
       const buffer = Buffer.from(await res.arrayBuffer());
       const contentType = res.headers.get('content-type') ?? 'image/jpeg';
