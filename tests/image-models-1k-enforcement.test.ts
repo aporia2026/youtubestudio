@@ -138,3 +138,66 @@ describe('DEFAULT_IMAGE_MODEL still resolves', () => {
     expect(spec!.value).toBe(DEFAULT_IMAGE_MODEL);
   });
 });
+
+describe('Atlas Cloud entries (2026-05-25)', () => {
+  it('t2i registry exposes gpt-image-2-atlas-t2i above the Kie variant', () => {
+    const atlasIdx = IMAGE_MODELS.findIndex((m) => m.value === 'gpt-image-2-atlas-t2i');
+    const kieIdx = IMAGE_MODELS.findIndex((m) => m.value === 'gpt-image-2-t2i');
+    expect(atlasIdx).toBeGreaterThanOrEqual(0);
+    expect(kieIdx).toBeGreaterThanOrEqual(0);
+    // Order matters — picker copy makes Atlas the default GPT Image 2
+    // variant. Listing it before the Kie sibling means it surfaces
+    // first in any UI that renders IMAGE_MODELS in array order.
+    expect(atlasIdx).toBeLessThan(kieIdx);
+  });
+
+  it('Atlas t2i spec carries the documented model id + landscape size', () => {
+    const spec = getImageModelSpec('gpt-image-2-atlas-t2i');
+    expect(spec).toBeDefined();
+    expect(spec!.provider).toBe('atlas');
+    expect(spec!.atlasModel).toBe('openai/gpt-image-2/text-to-image');
+    // 1536×1024 is the closest landscape Atlas's GPT Image 2 accepts;
+    // the dispatcher then center-crops to 1536×864 for 16:9. Changing
+    // this to a square or portrait would silently break every 16:9
+    // surface that picks Atlas.
+    expect(spec!.atlasSize).toBe('1536x1024');
+  });
+
+  it('buildKieImageInput throws when called with the Atlas spec', () => {
+    // Defense in depth — the dispatcher routes Atlas specs through the
+    // Atlas helper before reaching buildKieImageInput, so this throw
+    // only fires if a future change forgets the new branch. Failing
+    // loud is better than sending Atlas fields to Kie's createTask.
+    expect(() => buildKieImageInput('gpt-image-2-atlas-t2i', 'prompt')).toThrow(
+      /non-Kie model 'gpt-image-2-atlas-t2i'/,
+    );
+  });
+
+  it('i2i registry exposes gpt-image-2-atlas-i2i with provider=atlas and 4-ref cap', () => {
+    const spec = I2I_MODELS.find((m) => m.value === 'gpt-image-2-atlas-i2i');
+    expect(spec).toBeDefined();
+    expect(spec!.provider).toBe('atlas');
+    expect(spec!.atlasModel).toBe('openai/gpt-image-2/image-to-image');
+    // Conservative cap pending the one-shot probe script. If the probe
+    // confirms Atlas accepts more (or less) than 4, BOTH this number
+    // and the registry hint copy need updating.
+    expect(spec!.maxRefs).toBe(4);
+    expect(spec!.atlasSize).toBe('1536x1024');
+  });
+
+  it('Atlas i2i entry has NO refsField (it does not flow through buildKieI2IInput)', () => {
+    // buildKieI2IInput keys off `refsField` to pick the field name in
+    // the Kie createTask body. Atlas's helper uses a fixed `images`
+    // field that doesn't go through that path, so the spec must NOT
+    // declare a refsField — otherwise isKieI2ISpec would narrow it as
+    // a Kie spec and the dispatcher's Atlas branch would never fire.
+    const spec = I2I_MODELS.find((m) => m.value === 'gpt-image-2-atlas-i2i');
+    expect(spec!.refsField).toBeUndefined();
+  });
+
+  it('buildKieI2IInput throws when called with the Atlas i2i spec', () => {
+    expect(() =>
+      buildKieI2IInput('gpt-image-2-atlas-i2i', 'prompt', ['https://r2/r1.png']),
+    ).toThrow(/non-Kie-i2i model 'gpt-image-2-atlas-i2i'/);
+  });
+});

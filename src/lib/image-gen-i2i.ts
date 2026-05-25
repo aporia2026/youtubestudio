@@ -28,8 +28,16 @@
  * each i2i model takes refs in a different field name and the
  * caller usually picks a single model deliberately.
  */
-import { buildKieI2IInput, getI2IModelSpec, isKieI2ISpec } from './image-models-i2i';
+import {
+  buildKieI2IInput,
+  getI2IModelSpec,
+  isKieI2ISpec,
+  type I2IModelSpec,
+} from './image-models-i2i';
 import { createKieTask, pollKieResultThenUpscale } from './kie-poll';
+import { generateAtlasI2I } from './atlas-cloud-images';
+import { cropTo16x9AndUpload } from './image-gen-dispatch';
+import { upscaleViaRecraft } from './upscale';
 import {
   getDownloadUrlForBucket,
   getImagesBucket,
@@ -177,6 +185,18 @@ export async function generateImageWithRefs(
   // models accept up to 8 or 16 refs depending on the variant.
   if (spec.provider === 'comfyui-local') {
     return generateImageWithRefsLocal(modelValue, prompt, refs, opts);
+  }
+  // Atlas Cloud branch — GPT Image 2 i2i. Cheaper invoice than Kie's
+  // gpt-image-2-image-to-image for the same underlying OpenAI model.
+  // Atlas's i2i returns the configured size (1536×1024 = 3:2 by
+  // default) so we run the same 16:9 center-crop the t2i path uses
+  // before handing off to Recraft for the system-wide upscale. Atlas
+  // does not emit per-ref refusal signals, so there's no
+  // `ReferenceRejectedError` classification on this path — transient
+  // failures bubble up as plain Errors. See
+  // _plans/2026-05-25-atlas-cloud-gpt-image-2.md (Phase 3).
+  if (spec.provider === 'atlas') {
+    return generateImageWithRefsAtlas(modelValue, spec, prompt, refs, opts);
   }
   if (!isKieI2ISpec(spec)) {
     throw new Error(`generateImageWithRefs: '${modelValue}' has provider='${spec.provider}' but no i2i dispatch path`);
@@ -569,6 +589,117 @@ export async function generateImageWithRefsLocal(
     modelUsed: modelValue,
     durationMs,
     refsSent: refImageFilenames.length,
+  };
+}
+
+/**
+ * Atlas Cloud i2i. Same multi-image input shape as Atlas Edit; the
+ * caller's `refs` array becomes the `images` field in the Atlas
+ * request (capped at `spec.maxRefs`, conservative 4 for v1). Atlas
+ * I2I returns the requested size (1536×1024 default = 3:2), so this
+ * helper:
+ *
+ *   1. Generates via Atlas → vendor URL at 3:2.
+ *   2. Crops to 16:9 via `cropTo16x9AndUpload` → intermediate R2 URL
+ *      (1536×864).
+ *   3. Hands the cropped URL to `upscaleViaRecraft` → Recraft CDN URL
+ *      at ~4×.
+ *   4. Mirrors the final upscaled bytes to R2 under `i2i-results/...`
+ *      so the URL outlives Recraft's CDN retention.
+ *
+ * No `ReferenceRejectedError` path — Atlas does not emit per-ref
+ * refusal signals the way Kie does, so a generic refusal surfaces as
+ * a plain `Error`. The bisection wrapper above won't engage for this
+ * provider because no rejection is ever thrown to catch.
+ */
+async function generateImageWithRefsAtlas(
+  modelValue: string,
+  spec: I2IModelSpec,
+  prompt: string,
+  refs: readonly StyleReferenceImage[],
+  opts: GenerateImageWithRefsOptions,
+): Promise<GenerateImageWithRefsResult> {
+  const trimmedPrompt = prompt.trim();
+  if (!trimmedPrompt) throw new Error('generateImageWithRefs: empty prompt');
+  if (trimmedPrompt.length > 2000) {
+    throw new Error('generateImageWithRefs: prompt > 2000 chars');
+  }
+
+  // Mint URLs for refs. Built-in refs (per the v3 2026-05-22 shim)
+  // carry a `public_url` to a static asset; DB-backed refs get a
+  // freshly presigned R2 GET.
+  const refUrls: string[] = await Promise.all(
+    refs.map((r) =>
+      r.public_url
+        ? Promise.resolve(r.public_url)
+        : getDownloadUrlForBucket(r.r2_bucket, r.r2_key, undefined),
+    ),
+  );
+  const refsSent = Math.min(refUrls.length, spec.maxRefs);
+  const cappedRefUrls = refUrls.slice(0, refsSent);
+
+  const started = Date.now();
+  logger.info('[image-gen atlas-i2i submit]', {
+    model: modelValue,
+    atlas_model: spec.atlasModel,
+    refs_sent: refsSent,
+    prompt_slice: trimmedPrompt.slice(0, 80),
+  });
+
+  const atlasResult = await generateAtlasI2I({
+    prompt: trimmedPrompt,
+    images: cappedRefUrls,
+    size: spec.atlasSize ?? '1536x1024',
+    quality: spec.atlasQuality ?? 'medium',
+  });
+
+  // 16:9 center-crop before upscale — matches the t2i dispatcher's
+  // ordering so each cropped quadrant of upscale-time pixels is
+  // genuinely 16:9 instead of trimmed afterward. Intermediate R2 hop
+  // is unavoidable because Recraft accepts URLs only.
+  const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, 'i2i-results-atlas-crop');
+  const upscale = await upscaleViaRecraft(croppedUrl);
+
+  // Final mirror — same shape as the kie i2i path so the result
+  // record's `r2Key` / `imageUrl` semantics line up.
+  let imageUrl = upscale.url;
+  let mirroredR2Key: string | undefined;
+  try {
+    const res = await fetch(upscale.url);
+    if (res.ok) {
+      const buffer = Buffer.from(await res.arrayBuffer());
+      const contentType = res.headers.get('content-type') ?? 'image/jpeg';
+      const ext = contentType.includes('png') ? 'png' : 'jpg';
+      const prefix = opts.r2KeyPrefix ?? 'i2i-results';
+      const randomSuffix = Math.random().toString(36).slice(2, 10);
+      const r2Key = `${prefix}/${Date.now()}-${randomSuffix}.${ext}`;
+      const bucket = getImagesBucket();
+      await uploadToBucket(bucket, r2Key, buffer, contentType);
+      imageUrl = await getDownloadUrlForBucket(bucket, r2Key, process.env.R2_IMAGES_PUBLIC_URL);
+      mirroredR2Key = r2Key;
+    }
+  } catch (rehostErr) {
+    logger.warn('[image-gen atlas-i2i rehost failed]', {
+      detail: rehostErr instanceof Error ? rehostErr.message : String(rehostErr),
+    });
+  }
+
+  const durationMs = Date.now() - started;
+  logger.info('[image-gen atlas-i2i complete]', {
+    model: modelValue,
+    duration_ms: durationMs,
+    prediction_id: atlasResult.predictionId,
+    predict_ms: atlasResult.predictTimeMs,
+    refs_sent: refsSent,
+    has_r2_mirror: Boolean(mirroredR2Key),
+  });
+
+  return {
+    imageUrl,
+    r2Key: mirroredR2Key,
+    modelUsed: modelValue,
+    durationMs,
+    refsSent,
   };
 }
 
