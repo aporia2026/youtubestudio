@@ -43,7 +43,7 @@ import {
   getImagesBucket,
   uploadToBucket,
 } from './r2';
-import type { StyleReferenceImage } from './production-doc-styles-refs';
+import { mirrorPublicUrlRefToR2, type StyleReferenceImage } from './production-doc-styles-refs';
 import { logger } from './logger';
 
 /**
@@ -217,14 +217,19 @@ export async function generateImageWithRefs(
   // the URL's signed validity window. Council pattern — see Contrarian
   // unnamed-failure-mode flag in the council verdict.
   //
-  // v3 (2026-05-22): built-in refs carry a `public_url` field with an
-  // already-absolute URL pointing to a `/style-refs/...` static asset.
-  // Use it directly — no R2 presign is possible (these refs aren't in
-  // R2). DB-backed saved-style refs still go through the presign path.
+  // v3.1 (2026-05-25): built-in refs used to be handed to Kie as raw
+  // `/style-refs/...` URLs served from the Vercel deploy. That route
+  // had too many fragile dependencies — proxy middleware, deployment
+  // protection on preview deploys, CDN cache, deploy-specific
+  // hostnames — and "Models task execute failed" started showing up
+  // with no useful detail. We now mirror built-in refs into R2 the
+  // first time they're needed (lazy, idempotent, ~30–60 KB per file)
+  // and hand Kie a presigned R2 GET URL, same shape as the saved-
+  // style path. DB-backed saved-style refs still presign directly.
   const refUrls: string[] = await Promise.all(
     refs.map((r) =>
       r.public_url
-        ? Promise.resolve(r.public_url)
+        ? mirrorPublicUrlRefToR2(r)
         : getDownloadUrlForBucket(r.r2_bucket, r.r2_key, undefined),
     ),
   );
@@ -497,8 +502,13 @@ export async function generateImageWithRefsLocal(
   const refsToUpload = refs.slice(0, spec.maxRefs);
   const refImageFilenames: string[] = await Promise.all(
     refsToUpload.map(async (r) => {
+      // v3.1 (2026-05-25): built-in refs flow through the R2 mirror
+      // for the same reasons documented on the Kie path above —
+      // ComfyUI fetches the URL from the local PC and the R2 URL is
+      // reliably reachable while a `/style-refs/...` URL would
+      // require the user's frontend host to be reachable too.
       const url = r.public_url
-        ? r.public_url
+        ? await mirrorPublicUrlRefToR2(r)
         : await getDownloadUrlForBucket(r.r2_bucket, r.r2_key, undefined);
       return uploadUrlToComfyInput(url, {
         filenamePrefix: `style-ref-${r.style_id.slice(0, 8)}-${r.position}`,
@@ -625,13 +635,14 @@ async function generateImageWithRefsAtlas(
     throw new Error('generateImageWithRefs: prompt > 2000 chars');
   }
 
-  // Mint URLs for refs. Built-in refs (per the v3 2026-05-22 shim)
-  // carry a `public_url` to a static asset; DB-backed refs get a
-  // freshly presigned R2 GET.
+  // Mint URLs for refs. v3.1 (2026-05-25): built-in refs are mirrored
+  // into R2 on first use and handed to Atlas as presigned R2 GETs —
+  // see the long-form rationale on the Kie path above. DB-backed
+  // saved-style refs still presign directly.
   const refUrls: string[] = await Promise.all(
     refs.map((r) =>
       r.public_url
-        ? Promise.resolve(r.public_url)
+        ? mirrorPublicUrlRefToR2(r)
         : getDownloadUrlForBucket(r.r2_bucket, r.r2_key, undefined),
     ),
   );
