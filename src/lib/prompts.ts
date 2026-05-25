@@ -632,6 +632,9 @@ Return the complete rewritten script with these fixes applied. Nothing else — 
 
 export function ideaGenerationPrompt({
   niche,
+  nicheDescription,
+  nicheKeywords,
+  extraContext,
   count,
   audience,
   existingTitles,
@@ -641,6 +644,17 @@ export function ideaGenerationPrompt({
   videoType,
 }: {
   niche: string;
+  // Full free-text description of the niche (channel positioning, themes,
+  // tone, visual style, formats). When present, this is the load-bearing
+  // signal — the niche NAME alone is too generic to steer the LLM.
+  nicheDescription?: string;
+  // Optional keyword list saved on the niche. Used as a hint, not a hard
+  // filter — the LLM should treat them as topical anchors.
+  nicheKeywords?: string[];
+  // Ad-hoc, per-generation context from the user (mood, current campaign,
+  // specific angle they want explored). Takes priority over niche defaults
+  // when the two would conflict.
+  extraContext?: string;
   count: number;
   audience?: string;
   existingTitles?: string[];
@@ -668,12 +682,44 @@ export function ideaGenerationPrompt({
     ? `\n**Video Type:** ALL ideas MUST be formatted as: ${videoTypeLabels[videoType]}. Every idea should fit this format specifically.`
     : '';
 
+  const trimmedDescription = nicheDescription?.trim();
+  const trimmedKeywords = (nicheKeywords ?? []).map(k => k.trim()).filter(Boolean);
+  const trimmedExtraContext = extraContext?.trim();
+
+  // The niche NAME is intentionally NOT used as the sole steering signal —
+  // names like "General Explainer" mean nothing without the channel's
+  // actual positioning. When a description exists, it leads the system
+  // prompt and is repeated in the user prompt with a hard rule: every
+  // idea must fit it.
+  const nicheBriefForSystem = trimmedDescription
+    ? `the "${niche}" channel, which is defined by its operator as: "${trimmedDescription}". Treat this description as the AUTHORITATIVE definition of the channel — every idea you propose must fit it. The label "${niche}" alone is not enough; the description is the ground truth.`
+    : `the "${niche}" niche`;
+
+  const nicheBriefForUser = trimmedDescription
+    ? `**Niche:** ${niche}
+**Channel Definition (AUTHORITATIVE — every idea MUST fit this):**
+${trimmedDescription}
+
+This description overrides any assumption you might make from the niche label alone. If "${niche}" sounds generic to you, ignore that instinct and stay strictly inside the channel definition above.`
+    : `**Niche:** ${niche}`;
+
+  const keywordsBlock = trimmedKeywords.length
+    ? `\n**Topical Keywords / Anchors:** ${trimmedKeywords.join(', ')} — use these as topic anchors, not as a rigid filter.`
+    : '';
+
+  const extraContextBlock = trimmedExtraContext
+    ? `\n**Additional Context for THIS generation (from the user, takes priority over defaults when in conflict):**
+${trimmedExtraContext}`
+    : '';
+
   return {
-    system: `You are a viral YouTube content strategist with deep expertise in the "${niche}" niche. You have an uncanny ability to predict which video ideas will explode in views. You understand search intent, trending topics, audience psychology, and the YouTube algorithm intimately.`,
+    system: `You are a viral YouTube content strategist with deep expertise in ${nicheBriefForSystem} You have an uncanny ability to predict which video ideas will explode in views. You understand search intent, trending topics, audience psychology, and the YouTube algorithm intimately.`,
 
-    user: `Generate ${count} high-potential YouTube video ideas for the "${niche}" niche.
+    user: `Generate ${count} high-potential YouTube video ideas for the channel described below.
 
-**Target Audience:** ${audience || 'People interested in ' + niche}
+${nicheBriefForUser}${keywordsBlock}${extraContextBlock}
+
+**Target Audience:** ${audience || (trimmedDescription ? 'The audience implied by the channel definition above' : 'People interested in ' + niche)}
 **Focus Type:** ${focus || 'mixed'} content${videoTypeInstruction}
 ${existingTitles?.length ? `**Already Done (avoid overlap):**\n${existingTitles.slice(0, 10).map(t => `- ${t}`).join('\n')}` : ''}
 ${referenceContext ? `\n## REFERENCE VIDEO DEEP ANALYSIS (forensic breakdown of successful videos — use these as blueprints):
@@ -765,7 +811,9 @@ ${redditContext ? `- "from_reddit" MUST be a non-empty ARRAY for EVERY idea. Eac
 
 FAILURE TO INCLUDE DETAILED inspiration_sources FOR EVERY IDEA IS UNACCEPTABLE. This is the most important part of the output.
 ${redditContext ? `\nREDDIT IS CRITICAL: You were given real Reddit posts with URLs above. For EACH idea, you MUST include at least one "from_reddit" entry with the actual post_title and post_url copied from the Reddit data. The user specifically enabled Reddit research to see how Reddit discussions influenced each idea. If you skip from_reddit, the output is considered FAILED.` : ''}` : ''}
-Return ONLY valid JSON. Generate ideas that are genuinely different from each other in format, angle, and audience segment.`,
+Return ONLY valid JSON. Generate ideas that are genuinely different from each other in format, angle, and audience segment.${trimmedDescription ? `
+
+FINAL CHECK BEFORE YOU RETURN: re-read the **Channel Definition** above. For each idea, ask: "Would this video plausibly appear on a channel whose own operator described it that way?" If the answer is no — even slightly — replace the idea. Do not drift toward the most common interpretation of the niche label; stay inside the channel definition.` : ''}`,
   };
 }
 

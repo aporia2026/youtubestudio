@@ -145,9 +145,18 @@ function IdeasPage() {
 
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('idea-generator'));
   const [niche, setNiche] = useState('');
-  const [niches, setNiches] = useState<{ id: string; name: string }[]>([]);
+  // Full niche rows — description and keywords are load-bearing for prompting.
+  // The previous narrow shape (just id+name) silently discarded them, which is
+  // why the generator behaved as if every niche meant the same thing.
+  const [niches, setNiches] = useState<{ id: string; name: string; description?: string | null; keywords?: string[] | null }[]>([]);
   const [count, setCount] = useState(10);
   const [audience, setAudience] = useState('');
+  // Per-generation free-text context (does not persist across refresh by design —
+  // see the "Context box" question in the design discussion).
+  const [extraContext, setExtraContext] = useState('');
+  // Toggle whether the saved niche description is injected into the prompt.
+  // Default on: the user set the description for a reason.
+  const [useNicheDescription, setUseNicheDescription] = useState(true);
   const [focus, setFocus] = useState('mixed');
   const [videoType, setVideoType] = useState('any');
   const [showAllTypes, setShowAllTypes] = useState(false);
@@ -538,12 +547,27 @@ function IdeasPage() {
       // already generated (across the full history, this niche AND others)
       // so the LLM never repeats. Server post-filters too as a safety net.
       const existingTitles = collectAllPreviousTitles(ideasHistoryItems);
+      // Resolve the saved description/keywords for the currently selected
+      // niche row. Match by name (the value in the <select>). When the
+      // user disabled "Use niche description", we still pass keywords —
+      // they are weaker signals and useful even when the description is
+      // intentionally suppressed.
+      const selectedNiche = niches.find(n => n.name === niche);
+      const resolvedNicheDescription = useNicheDescription
+        ? (selectedNiche?.description?.trim() || undefined)
+        : undefined;
+      const resolvedNicheKeywords = Array.isArray(selectedNiche?.keywords) && selectedNiche!.keywords!.length
+        ? selectedNiche!.keywords!
+        : undefined;
       setGenStep('Generating ideas from all sources...');
       const res = await fetch('/api/generate/ideas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           modelId, niche, count, audience, focus,
+          nicheDescription: resolvedNicheDescription,
+          nicheKeywords: resolvedNicheKeywords,
+          extraContext: extraContext.trim() || undefined,
           videoType: videoType !== 'any' ? videoType : undefined,
           referenceContext: refContext || undefined,
           redditContext,
@@ -831,6 +855,28 @@ function IdeasPage() {
             <select value={niche} onChange={e => setNiche(e.target.value)} className="input-field" style={{ appearance: 'none' }}>
               {niches.map(n => <option key={n.id} value={n.name}>{n.name}</option>)}
             </select>
+            {(() => {
+              const selected = niches.find(n => n.name === niche);
+              const desc = selected?.description?.trim();
+              if (!desc) return null;
+              return (
+                <div className="mt-2 flex items-start gap-2">
+                  <input
+                    id="use-niche-description"
+                    type="checkbox"
+                    checked={useNicheDescription}
+                    onChange={e => setUseNicheDescription(e.target.checked)}
+                    className="mt-0.5 shrink-0 cursor-pointer"
+                  />
+                  <label htmlFor="use-niche-description" className="text-xs cursor-pointer" style={{ color: 'var(--text-muted)' }}>
+                    Use the saved niche description to steer the model
+                    <span className="block mt-1 italic" style={{ color: useNicheDescription ? 'var(--text-secondary)' : 'var(--text-muted)', opacity: useNicheDescription ? 1 : 0.6 }}>
+                      &quot;{desc.length > 180 ? desc.slice(0, 180) + '...' : desc}&quot;
+                    </span>
+                  </label>
+                </div>
+              );
+            })()}
           </div>
 
           <div>
@@ -920,6 +966,25 @@ function IdeasPage() {
             <input value={audience} onChange={e => setAudience(e.target.value)}
               placeholder="e.g. small business owners, beginners..."
               className="input-field" />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
+              Extra Context <span style={{ color: 'var(--text-muted)' }}>(optional, this run only)</span>
+            </label>
+            <textarea
+              value={extraContext}
+              onChange={e => setExtraContext(e.target.value)}
+              placeholder="Anything else the model should know for THIS batch: a specific angle, a current event to tie into, a mood, a campaign you're running. Takes priority over the niche description when they conflict."
+              rows={4}
+              className="input-field"
+              style={{ resize: 'vertical', minHeight: 90, fontFamily: 'inherit', lineHeight: 1.5 }}
+            />
+            {extraContext.trim() && (
+              <p className="text-xs mt-1" style={{ color: 'var(--accent-cyan-bright)' }}>
+                {extraContext.trim().length} characters will be sent with this generation
+              </p>
+            )}
           </div>
 
           {/* Reference Videos */}
