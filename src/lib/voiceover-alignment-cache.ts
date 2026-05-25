@@ -37,6 +37,7 @@ import { logger } from './logger';
 import { align as dispatchAlign } from './tts/dispatch';
 import type { AlignResult, VoiceRef } from './tts/types';
 import { TtsProviderError } from './tts/types';
+import type { ForcedAlignmentResponse } from './elevenlabs';
 
 // ─── Tunables ─────────────────────────────────────────────────────────────────
 
@@ -113,7 +114,7 @@ export function deriveCacheKey(
 export type EnsureAlignmentResult =
   | {
       status: 'ready';
-      alignment: AlignResultShape;
+      alignment: ForcedAlignmentResponse;
       durationMs: number;
       cacheKey: string;
       cached: boolean;
@@ -125,18 +126,6 @@ export type EnsureAlignmentResult =
       reason: string;
       cacheKey: string;
     };
-
-/**
- * Storage shape we persist in `voiceover_alignments.alignment_json`.
- * Backward-compat with the pre-dispatch JSON shape (words: [{text,
- * start, end}]) — kept identical so the production-doc renderer and
- * existing cached rows continue to parse without a migration.
- */
-export interface AlignResultShape {
-  words: Array<{ text: string; start: number; end: number }>;
-  characters?: unknown;
-  loss?: number;
-}
 
 // ─── Public entry point ───────────────────────────────────────────────────────
 
@@ -267,7 +256,10 @@ export async function ensureAlignmentForVoiceover(
 
   // Persist in the legacy alignment_json shape: words: [{text, start, end}]
   // — same fields the renderer + existing cached rows expect.
-  const alignmentForCache: AlignResultShape = {
+  // `characters` is intentionally omitted: the dispatcher's AlignResult
+  // is word-level only (Google STT doesn't return char-level), and the
+  // downstream renderer + alignRowsToWords only consult `words`.
+  const alignmentForCache: ForcedAlignmentResponse = {
     words: alignResult.words.map((w) => ({ text: w.text, start: w.startSec, end: w.endSec })),
   };
 
@@ -312,13 +304,13 @@ export { buildCanonicalScript };
 // ─── DB helpers (kept private — go through `ensureAlignmentForVoiceover`) ─────
 
 interface CacheRow {
-  alignment_json: AlignResultShape;
+  alignment_json: ForcedAlignmentResponse;
   duration_ms: number;
 }
 
 async function readCachedAlignment(
   cacheKey: string,
-): Promise<{ alignment: AlignResultShape; durationMs: number } | null> {
+): Promise<{ alignment: ForcedAlignmentResponse; durationMs: number } | null> {
   const result = await sql<CacheRow>`
     SELECT alignment_json, duration_ms
     FROM voiceover_alignments
@@ -334,7 +326,7 @@ async function readCachedAlignment(
 
 async function writeCachedAlignment(args: {
   cacheKey: string;
-  alignment: AlignResultShape;
+  alignment: ForcedAlignmentResponse;
   durationMs: number;
   cost: number;
 }): Promise<void> {
