@@ -121,10 +121,16 @@ export async function advanceVideo(input: AdvanceVideoInput): Promise<AdvanceVid
     return { ok: false, code: 'gated', reason: blocker };
   }
 
-  // For Wave 1, manual transitions only ever write to the telemetry
-  // table. The strip's "Next" stamps the new stage and the next
-  // loadVideoContext() call picks it up via the latest_transition_to_stage
-  // join. Wave 3 will additionally write projects.current_stage here.
+  // Wave 1: write the telemetry row.
+  // Wave 3: also dual-write projects.current_stage so the
+  // Command Center and the Wave 1 strip can read a cached value
+  // without re-running the LATERAL-joined resolution every time.
+  //
+  // Both writes are best-effort with respect to each other: the
+  // telemetry row is the authoritative audit log, and the cached
+  // column is a projection. If the column write fails, the
+  // telemetry row still landed and the next backfill / read will
+  // reconcile. We log both outcomes.
   const inserted = await sql`
     INSERT INTO video_stage_transitions
       (workspace_id, project_id, from_stage, to_stage, source, actor_user_id, actor_label, note)
@@ -135,6 +141,27 @@ export async function advanceVideo(input: AdvanceVideoInput): Promise<AdvanceVid
     RETURNING id
   `;
   const transitionId = inserted.rows[0]?.id as string;
+
+  try {
+    await sql`
+      UPDATE projects
+         SET current_stage = ${input.toStage},
+             updated_at    = NOW()
+       WHERE id = ${input.videoId}::uuid
+         AND workspace_id = ${input.workspaceId}::uuid
+    `;
+  } catch (err) {
+    // Cached projection write failed. Telemetry is still authoritative;
+    // the next backfill sweep or the legacy LATERAL-join code path will
+    // produce the correct stage on read. Log loudly so we notice if
+    // this fails consistently.
+    logger.warn('[advance-video] projects.current_stage write failed (telemetry row still saved)', {
+      video_id: input.videoId,
+      to_stage: input.toStage,
+      transition_id: transitionId,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   logger.info('[advance-video] ok', {
     video_id: input.videoId,

@@ -130,6 +130,7 @@ export async function loadVideoContext(
       p.niche,
       p.topic,
       p.status                     AS project_status,
+      p.current_stage              AS cached_current_stage,
       p.created_at,
       p.updated_at,
       -- Channel (first link in project_channels, if any)
@@ -236,12 +237,18 @@ export async function loadVideoContext(
   const pipelineStage: string | null = row.pipeline_stage ?? null;
   const isAutoManaged = pipelineStage !== null && !TERMINAL_PIPELINE_STAGES.has(pipelineStage);
 
-  const currentStage = resolveStage({
-    pipelineStage,
-    latestTransitionToStage: (row.latest_transition_to_stage as string | null) ?? null,
-    scheduleStatus: (row.schedule_status as string | null) ?? null,
-    projectStatus: (row.project_status as string | null) ?? null,
-  });
+  // Prefer the cached projects.current_stage column when populated. Falls
+  // back to the legacy LATERAL-join resolution for any row that hasn't
+  // been touched by advanceVideo() yet.
+  const cached = (row.cached_current_stage as string | null) ?? null;
+  const currentStage: VideoStageId = (cached && isVideoStageId(cached))
+    ? cached
+    : resolveStage({
+        pipelineStage,
+        latestTransitionToStage: (row.latest_transition_to_stage as string | null) ?? null,
+        scheduleStatus: (row.schedule_status as string | null) ?? null,
+        projectStatus: (row.project_status as string | null) ?? null,
+      });
 
   const stageDef = getStageDef(currentStage);
 

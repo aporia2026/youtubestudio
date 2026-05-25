@@ -102,6 +102,7 @@ export async function loadCommandCenterCards(
       p.title,
       p.niche,
       p.status                    AS project_status,
+      p.current_stage             AS cached_current_stage,
       p.created_at,
       p.updated_at,
       -- Channel chip
@@ -270,6 +271,7 @@ interface RawRow {
   title: string;
   niche: string;
   project_status: string | null;
+  cached_current_stage: string | null;
   created_at: string;
   updated_at: string;
   channel_id: string | null;
@@ -296,12 +298,19 @@ function rowToCard(raw: Record<string, unknown>): CommandCenterCard {
   const row = raw as unknown as RawRow;
   const pipelineStage = row.pipeline_stage ?? null;
   const isAutoManaged = pipelineStage !== null && !TERMINAL_PIPELINE_STAGES.has(pipelineStage) && pipelineStage !== 'done';
-  const currentStage = resolveStage({
-    pipelineStage,
-    latestTransitionToStage: row.latest_transition_to_stage,
-    scheduleStatus: row.schedule_status,
-    projectStatus: row.project_status,
-  });
+  // Prefer the cached projects.current_stage column when populated (Wave 3
+  // dual-write). Falls back to the legacy LATERAL-join resolution for any
+  // row that hasn't been touched by advanceVideo() yet — the backfill
+  // script populates the column once on first run, after which the cache
+  // is the fast path.
+  const currentStage = (row.cached_current_stage && isVideoStageId(row.cached_current_stage))
+    ? row.cached_current_stage
+    : resolveStage({
+        pipelineStage,
+        latestTransitionToStage: row.latest_transition_to_stage,
+        scheduleStatus: row.schedule_status,
+        projectStatus: row.project_status,
+      });
   return {
     id: row.id,
     title: row.title ?? 'Untitled',
