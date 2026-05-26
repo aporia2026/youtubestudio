@@ -29,6 +29,7 @@ import { toast } from 'sonner';
 import type { AnalyzedVideo, AnalysisStage } from '@/lib/analyzer/types';
 import { StylePackCard } from './StylePackCard';
 import { StrategicReportPanel } from './StrategicReportPanel';
+import { MakeVideoButton } from '@/components/video-context/MakeVideoButton';
 
 export type { AnalysisStage };
 
@@ -217,6 +218,16 @@ export function AnalyzeResultClient({ initial }: Props): React.ReactElement {
           </a>
           <span> · model: {snap.modelId}</span>
         </div>
+        {snap.stage === 'done' && snap.videoTitle && (
+          <div style={{ marginTop: 8 }}>
+            <MakeVideoButton
+              title={snap.videoTitle}
+              from="Video Analyzer"
+              label="+ Make video inspired by this"
+              compact
+            />
+          </div>
+        )}
         {snap.stale && (
           <div
             style={{

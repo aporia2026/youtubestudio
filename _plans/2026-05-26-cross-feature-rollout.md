@@ -32,23 +32,45 @@ The button:
 **Where it already lives:**
 - [src/app/(app)/insights/niches/[slug]/page.tsx](src/app/(app)/insights/niches/[slug]/page.tsx) — per-niche deep dive.
 - [src/app/(app)/competitors/dashboard/page.tsx](src/app/(app)/competitors/dashboard/page.tsx) — BreakoutCard footer.
+- [src/app/(app)/analyze/[id]/AnalyzeResultClient.tsx](src/app/(app)/analyze/[id]/AnalyzeResultClient.tsx) — Video Analyzer result header (only when stage === 'done' AND videoTitle is set).
 - [src/app/(app)/command-center/CommandCenterClient.tsx](src/app/(app)/command-center/CommandCenterClient.tsx) — top-bar "+ New video" button (via `NewVideoDialog`).
 
 ## 2. Untouched features — incremental rollout
 
 Apply the pattern above. Each row is one targeted edit; total surface across all of them is small. The pages are large, so use **read-before-edit** discipline (rule 2) to find the right injection point.
 
-| Feature | Where to inject | Title to seed | Niche to seed |
-|---|---|---|---|
-| `/ideas` (Ideas Generator) | Existing "Make video" button already exists. **No change needed** — but optionally swap its `window.location.href` hack for `MakeVideoButton` for consistency. |
-| `/insights/niches` (list view) | Per-niche row → small button next to "Open deep dive" | row.name | row.name |
-| `/insights/niches/watchlist` | Per-watchlist-row → small button | row.name | row.name |
-| `/competitors` (channel list) | Per-channel row → button on hover | "Competitor of {channel.name}" | (none) |
-| `/analyze/[id]` (Video Analyzer detail) | After the analysis renders → "+ Make a video inspired by this" | analysis.original_title | analysis.niche |
-| `/channel-naming` | Per-suggested-name row | row.name | (none) |
-| `/insights/catalog` | Per-video row | row.title | row.niche |
+| Feature | Where to inject | Title to seed | Niche to seed | Status |
+|---|---|---|---|---|
+| `/ideas` (Ideas Generator) | Existing "Make video" button already exists. **No change needed** — but optionally swap its `window.location.href` hack for `MakeVideoButton` for consistency. | — | — | **Done — coexists** |
+| `/insights/niches/[slug]` (per-niche deep-dive) | Action bar next to "Generate ideas" | report.name | report.name | **Done** |
+| `/insights/niches` (list view, 1415 lines) | Per-niche search-result row → small button. The file is a large discover-style UI; read first, find the result-row component, inject in its action footer. | row.name | row.name | Deferred (size risk) |
+| `/insights/niches/watchlist` | Per-watchlist-row → small button | row.name | row.name | Deferred |
+| `/competitors/dashboard` (BreakoutCard) | Footer of each breakout card | breakout.video_title | (none) | **Done** |
+| `/competitors` (channel list, 2232 lines) | Per-channel row → button on hover | "Competitor of {channel.name}" | (none) | Deferred (size risk) |
+| `/analyze` (entry) | **Skip** — `?videoId=` already used for YouTube ids on this page. Param collision. | — | — | **Skipped** |
+| `/analyze/[id]` (Video Analyzer detail) | After the analysis renders → "+ Make video inspired by this" | snap.videoTitle | (none) | **Done** |
+| `/channel-naming` (1160 lines) | Per-suggested-name row | row.name | (none) | Deferred (size risk) |
+| `/insights/catalog` | Per-video row | row.title | row.niche | Deferred |
 
 These are all **`compact` variant** integrations. No layout changes needed beyond dropping the button in.
+
+### Strip pattern via TOOL_PATH_TO_LABEL
+
+The VideoContextStrip auto-mounts on any URL with `?videoId=` (it's in `AppLayout`). The VideoEmptyState component also mounts globally and uses `TOOL_PATH_TO_LABEL` to know which routes are "tool pages" where the strip is relevant. As of this commit, the map covers:
+
+- The 10 canonical stage paths (idea / script / qa / voiceover / production-doc / thumbnail / edit / seo / scheduled / published).
+- Ancillary tool paths: `/critics`, `/shorts`, `/dub`, `/retention`, `/ab-tests`, `/fix-the-dip`, `/comments`, `/cannibalization`.
+
+What this gets you:
+- A user arriving at any of those pages without a `?videoId=` sees the empty-state hint pointing them at the schedule.
+- A link from elsewhere (kanban, strip overflow menu) can route to those pages with `?videoId=` and the strip will greet them.
+
+What's still per-page work:
+- Each of those ancillary pages doesn't yet **read** the `?videoId=` and prefill its data with the project's script / metadata. That's a per-page integration. The plan section 4 (next-up after a week of using what's shipped) is where this lands once we know which pages users actually want context on.
+
+### /pipeline/[id] integration
+
+The auto-pipeline batch detail page (`/pipeline/[id]`) was Wave 2's "cross-link only" surface. As of this commit it also surfaces an **"Open in Command Center →"** link at the top so the user can jump from the batch view to the kanban view of every in-flight video. The VideoCard component inside the batch detail (694 lines, complex per-stage UI) was deliberately not modified — it remains the canonical per-batch monitor. If you want each video card in a batch to carry an "Open in tool" button per completed stage, that lives in [src/app/(app)/pipeline/[id]/VideoCard.tsx](src/app/(app)/pipeline/[id]/VideoCard.tsx); insert near the existing stage-detail toggles, using `getStageDef(stage).toolPath + '?videoId=' + video.project_id`.
 
 **Deliberately NOT in this list** (analytical features that don't produce new video ideas):
 - `/retention` (Retention Predictor) — analyses an existing script, doesn't seed new ones.

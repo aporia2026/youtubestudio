@@ -27,13 +27,34 @@ import { STAGE_CHAIN } from '@/lib/video-stages';
 // Some stages share a path ('scheduled' and 'published' both point at
 // /schedule); the first match wins, which is the better phrasing for
 // the empty state anyway.
-const TOOL_PATH_TO_LABEL: Record<string, string> = STAGE_CHAIN.reduce(
-  (acc, stage) => {
-    if (!acc[stage.toolPath]) acc[stage.toolPath] = stage.label;
-    return acc;
-  },
-  {} as Record<string, string>,
-);
+//
+// Ancillary tool paths (entries below STAGE_CHAIN) are pages that ALSO
+// operate on a specific video but aren't a stage in the canonical
+// 10-stage chain. They get the empty-state hint when no ?videoId= is
+// present; the strip itself works on them automatically via the global
+// AppLayout mount. Per-page prefill of the video context is per-page
+// work (see _plans/2026-05-26-cross-feature-rollout.md).
+const TOOL_PATH_TO_LABEL: Record<string, string> = (() => {
+  const map: Record<string, string> = {};
+  for (const stage of STAGE_CHAIN) {
+    if (!map[stage.toolPath]) map[stage.toolPath] = stage.label;
+  }
+  // Ancillary tool pages — extend the strip's reach.
+  const ancillary: Array<[string, string]> = [
+    ['/critics', 'Critic panel'],
+    ['/shorts', 'Shorts extract'],
+    ['/dub', 'Auto-dub'],
+    ['/retention', 'Retention predictor'],
+    ['/ab-tests', 'A/B test'],
+    ['/fix-the-dip', 'Retention dip fix'],
+    ['/comments', 'Comment triage'],
+    ['/cannibalization', 'Cannibalization check'],
+  ];
+  for (const [path, label] of ancillary) {
+    if (!map[path]) map[path] = label;
+  }
+  return map;
+})();
 
 export function VideoEmptyState(): React.ReactElement | null {
   const search = useSearchParams();

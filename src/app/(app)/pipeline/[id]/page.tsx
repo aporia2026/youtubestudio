@@ -104,13 +104,28 @@ export default function PipelineDetailPage({ params }: { params: Promise<{ id: s
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-5xl">
-      <Link
-        href="/pipeline"
-        className="text-sm hover:underline"
-        style={{ color: 'var(--text-muted)' }}
-      >
-        ← All batches
-      </Link>
+      <div className="flex items-center gap-3 flex-wrap">
+        <Link
+          href="/pipeline"
+          className="text-sm hover:underline"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          ← All batches
+        </Link>
+        <span style={{ color: 'var(--text-muted)' }}>·</span>
+        {/* Cross-link to the Command Center kanban. Wave 2 made
+            /command-center the home; this batch monitor stays as the
+            canonical view for one run but the kanban is where the user
+            sees all in-flight work across batches. */}
+        <Link
+          href="/command-center"
+          className="text-sm hover:underline"
+          style={{ color: 'var(--accent-purple-bright)' }}
+          title="View every in-flight video across batches"
+        >
+          Open in Command Center →
+        </Link>
+      </div>
       <div className="flex items-baseline justify-between mt-2 gap-3 flex-wrap">
         <h1 className="text-2xl font-bold gradient-text">{run.preset_name}</h1>
         <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
