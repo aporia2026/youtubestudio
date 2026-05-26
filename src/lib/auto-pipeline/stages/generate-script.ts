@@ -193,13 +193,17 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
   const spokenWordCount = countWords(scriptText);
   const estimatedDurationSeconds = Math.round((spokenWordCount / 140) * 60);
 
-  // Persist the script. version = 1 for now (qa_retry will bump
-  // this in Friday's retry-loop work).
+  // Persist the script. version = 1 for now (qa_retry bumps this on
+  // every regeneration). workspace_id is NOT NULL on scripts since
+  // the multi-tenant rollout (migration 0011/0012); inserting without
+  // it surfaced as "null value in column workspace_id violates
+  // not-null constraint" once the orchestrator started reporting
+  // handler crashes instead of silently releasing claims.
   const { rows: sRows } = await sql.query<{ id: string }>(
     `
     INSERT INTO scripts
-      (project_id, version, content, word_count, estimated_duration_seconds, ai_model, generation_params, is_active)
-    VALUES ($1::uuid, 1, $2, $3, $4, $5, $6::jsonb, true)
+      (project_id, version, content, word_count, estimated_duration_seconds, ai_model, generation_params, is_active, workspace_id)
+    VALUES ($1::uuid, 1, $2, $3, $4, $5, $6::jsonb, true, $7::uuid)
     RETURNING id::text AS id
     `,
     [
@@ -214,6 +218,7 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
         pre_qa_self_check: selfCheckRan,
         pre_qa_self_score: selfCheckSelfScore,
       }),
+      video.workspace_id,
     ],
   );
 
