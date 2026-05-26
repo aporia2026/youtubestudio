@@ -19,7 +19,7 @@
  * filtered out at the claim level via ACTIVE_STAGES.
  */
 import { randomUUID } from 'node:crypto';
-import { claimNextVideo, advanceStage, failStage, releaseClaim } from './db';
+import { claimNextVideo, advanceStage, failStage } from './db';
 import { handleGenerateIdea } from './stages/generate-idea';
 import { handleGenerateScript } from './stages/generate-script';
 import { handleRunCriticPanel } from './stages/run-critic-panel';
@@ -33,6 +33,7 @@ import { logger } from '../logger';
 import type {
   PipelineRunVideoRow,
   PipelinePreset,
+  PipelineStage,
   StageHandler,
   StageOutcome,
 } from './types';
@@ -86,8 +87,12 @@ export function getStageHandler(stage: string): StageHandler | null {
  *     loop to drain the next.
  *   - `'no_work'` — no eligible row found. Caller exits the drain
  *     loop and returns 200.
- *   - `'released'` — a row was claimed but the handler threw
- *     unexpectedly; claim released so the next tick retries.
+ *   - `'released'` — kept in the return union for backward
+ *     compatibility with the cron route's switch, but no code path
+ *     produces this value after the 2026-05-26 change that converts
+ *     uncaught handler throws into terminal failures (so the actual
+ *     error message lands in `failure_message` and surfaces in the
+ *     UI). The cron will count this branch as zero forever.
  */
 export async function processNextVideo(): Promise<'advanced' | 'no_work' | 'released'> {
   const tickId = randomUUID();
@@ -102,7 +107,7 @@ export async function processNextVideo(): Promise<'advanced' | 'no_work' | 'rele
     // claim and dispatch we don't want to crash.
     await failStage(
       video.id,
-      'production_doc_failed',
+      mapStageToFailureTerminal(video.stage),
       'invariant_violation',
       `Stage "${video.stage}" is not active but was claimed.`,
       0,
@@ -118,7 +123,7 @@ export async function processNextVideo(): Promise<'advanced' | 'no_work' | 'rele
     });
     await failStage(
       video.id,
-      'production_doc_failed',
+      mapStageToFailureTerminal(video.stage),
       'unknown_stage',
       `No handler registered for stage "${video.stage}".`,
       0,
@@ -130,19 +135,34 @@ export async function processNextVideo(): Promise<'advanced' | 'no_work' | 'rele
   try {
     outcome = await handler({ video, preset, tickId });
   } catch (err) {
-    // Unexpected handler throw (something not caught at the
-    // handler boundary). Release the claim — next tick retries.
-    // We don't auto-fail because a transient infra blip
-    // (DB connection, timeout outside generateTextWithFallback)
-    // shouldn't terminate a video on the first hiccup.
-    logger.error('auto-pipeline: handler threw, releasing claim', {
+    // Unexpected handler throw — something the handler's own try/catch
+    // didn't wrap (DB error, prompt builder bug, missing env var that
+    // surfaces below the per-attempt classifier, etc.).
+    //
+    // Pre-2026-05-26 behavior: silently release the claim and let the
+    // cron retry next tick. That hid the actual error from the UI
+    // forever — the row would sit in an "advanced 0, released N"
+    // loop with no terminal state and no failure_message, and the
+    // user had no way to diagnose without server logs. See the
+    // _plans/2026-05-26-* discussion.
+    //
+    // New behavior: surface the error as a terminal failure with the
+    // actual message persisted onto failure_message. The Retry button
+    // can revive it from the UI. If the failure really was a
+    // transient blip, one click brings it back; if it's a deterministic
+    // bug, the user sees what broke instead of staring at "Generating
+    // script · updated 5m ago" forever.
+    const message = err instanceof Error ? err.message : String(err);
+    const terminal = mapStageToFailureTerminal(video.stage);
+    logger.error('auto-pipeline: handler threw, marking failed', {
       stage: video.stage,
+      terminal_stage: terminal,
       pipeline_video_id: video.id,
       tick_id: tickId,
-      detail: err instanceof Error ? err.message : String(err),
+      detail: message,
     });
-    await releaseClaim(video.id);
-    return 'released';
+    await failStage(video.id, terminal, 'unhandled_handler_error', message, 0);
+    return 'advanced';
   }
 
   if (outcome.kind === 'advance') {
@@ -171,6 +191,45 @@ export async function processNextVideo(): Promise<'advanced' | 'no_work' | 'rele
   }
 
   return 'advanced';
+}
+
+/**
+ * Map a current pipeline stage to the terminal failure stage that
+ * best represents "this stage's handler crashed." Used by the
+ * orchestrator's safety net (`processNextVideo`'s catch block) so the
+ * Retry button knows where to reset to.
+ *
+ * Pairs with `TERMINAL_RETRY_TARGET` in `actions.ts`: every value
+ * returned here must be a key of that map so Retry can revive the
+ * row from a one-click action. Keep the two in sync when adding a
+ * new failure terminal.
+ */
+function mapStageToFailureTerminal(stage: string): PipelineStage {
+  switch (stage) {
+    case 'queued':
+    case 'generating_idea':
+      return 'idea_generation_failed';
+    case 'generating_script':
+      return 'script_generation_failed';
+    case 'running_qa':
+    case 'qa_retry':
+      return 'qa_failed_after_max_retries';
+    case 'narration_complete':
+    case 'generating_production_doc':
+      return 'production_doc_failed';
+    case 'generating_thumbnail':
+      return 'thumbnail_failed';
+    case 'assigning_to_editor':
+      return 'editor_assignment_failed';
+    case 'generating_seo':
+      return 'seo_failed';
+    // Anything else (waiting / unknown / terminal stages we shouldn't
+    // be claiming anyway) lands in production-doc-failed as a generic
+    // catch-all. The orchestrator's outer guards (isActiveStage) should
+    // make this branch unreachable in practice.
+    default:
+      return 'production_doc_failed';
+  }
 }
 
 // Re-export so cron route can pin the handler set under one import.
