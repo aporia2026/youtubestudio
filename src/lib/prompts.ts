@@ -2339,8 +2339,27 @@ ${overlaysDisabled ? `**OVERLAY MODE: OFF for this doc.** The user has disabled 
 }
 \`\`\`
 
+### OPTIONAL — variant-group fields
+
+When the chosen style's mixing_rules ABOVE describe variant groups (a base + N derived edits sharing one composition), add these THREE optional fields to grouped rows. Omit them entirely on standalone rows.
+
+\`\`\`json
+{
+  "...": "all the core fields above",
+  "group_id": "rxn-pause-1",
+  "variant_index": 0,
+  "variant_edit_prompt": ""
+}
+\`\`\`
+
+  - \`group_id\` — any short string. Use the SAME group_id on every row in the variant group. Standalone rows omit it.
+  - \`variant_index\` — 0 for the BASE row of the group; 1, 2, 3 for derived edits in order. Cap at 4 rows per group.
+  - \`variant_edit_prompt\` — REQUIRED on derived rows (variant_index > 0): the smallest possible delta from the base ("raise the right eyebrow", "open the mouth into an O shape"). LEAVE \`ai_image_prompt\` EMPTY on derived rows — the server composes the final prompt from the base's ai_image_prompt + this delta. The BASE row keeps the full ai_image_prompt and omits variant_edit_prompt.
+
+Only emit variant groups when the chosen style's mixing_rules explicitly permit them AND the script has multiple consecutive narration beats hitting one visual moment. Default = no group_id, no variant_index, no variant_edit_prompt.
+
 ABSOLUTE RULES:
-- Every row has all ${allowOverlay ? '11' : '8'} fields
+- Every row has all ${allowOverlay ? '11' : '8'} core fields (variant fields are OPTIONAL and only appear on grouped rows — they're additive, never replace core fields)
 - script_text is verbatim from the script — never paraphrase
 - ai_image_prompt is 35–55 words (the scene body only) for every non-Talking Head / non-Screen Recording / non-Title-Card row
 - Do NOT append the style suffix to ai_image_prompt — it is attached automatically by the server after generation
