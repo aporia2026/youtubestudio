@@ -63,9 +63,16 @@ const BLACK = '#000000';
 
 /** Square-mode illustration region fraction (top portion of the cell). */
 const SQUARE_ILLUSTRATION_FRAC = 0.8;
-/** Square-mode cell border thickness in canvas pixels. Matches the prompt's
- *  "2-3 px solid black border" instruction. */
-const SQUARE_BORDER_PX = 3;
+/**
+ * Square-mode cell border thickness in canvas pixels. Scales with cell
+ * width so a 4K render (cells ~1200 px wide) gets a ~7 px border that's
+ * visible against full-bleed photos — a fixed 3 px disappeared at high
+ * resolution and made the uploaded image look like it overflowed the
+ * border. Floor of 3 px so tiny test canvases keep a hairline border.
+ */
+function squareBorderPx(cellW: number): number {
+  return Math.max(3, Math.round(cellW * 0.006));
+}
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
@@ -223,62 +230,154 @@ export function escapePangoText(s: string): string {
 export async function buildSquareCellChrome(cellW: number, cellH: number): Promise<Buffer> {
   const illustrationH = Math.round(cellH * SQUARE_ILLUSTRATION_FRAC);
   const labelH = cellH - illustrationH;
+  const borderPx = squareBorderPx(cellW);
+  const halfBorder = borderPx / 2;
   // SVG with: a white rect covering everything (forms the label strip
   // background — we'll overpaint the illustration area with the image),
-  // a 3px black border around the whole cell, and a 1px hairline divider
-  // between the illustration region and the label band.
+  // a scaled black border around the whole cell, and a thin hairline
+  // divider between the illustration region and the label band.
+  // The border rect is inset by half its stroke width so the stroke
+  // stays fully within the cell instead of clipping off the canvas edge.
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${cellW}" height="${cellH}">
     <rect x="0" y="${illustrationH}" width="${cellW}" height="${labelH}" fill="white"/>
-    <rect x="0.5" y="0.5" width="${cellW - 1}" height="${cellH - 1}" fill="none" stroke="${BLACK}" stroke-width="${SQUARE_BORDER_PX}"/>
-    <line x1="0" y1="${illustrationH}" x2="${cellW}" y2="${illustrationH}" stroke="${BLACK}" stroke-width="1"/>
+    <rect x="${halfBorder}" y="${halfBorder}" width="${cellW - borderPx}" height="${cellH - borderPx}" fill="none" stroke="${BLACK}" stroke-width="${borderPx}"/>
+    <line x1="0" y1="${illustrationH}" x2="${cellW}" y2="${illustrationH}" stroke="${BLACK}" stroke-width="${Math.max(1, Math.round(borderPx / 3))}"/>
   </svg>`;
   return await sharp(Buffer.from(svg)).png().toBuffer();
+}
+
+/**
+ * Square-mode label-band-only overlay. Used for cells that DON'T have a
+ * user upload — we still want to overpaint the AI's label band so the
+ * label is rendered at the composite's deterministic font size (matching
+ * every other cell), instead of the AI's per-cell auto-scaling that
+ * blows up short labels like "UVB-76" to twice the size of longer ones.
+ *
+ * The returned PNG is `cellW × labelH` (bottom strip only). Caller
+ * composites it at `(cell.x, cell.y + illustrationH)` so the AI's
+ * illustration region is left untouched.
+ */
+export async function buildSquareLabelBandOverlay(
+  label: string,
+  cellW: number,
+  cellH: number,
+): Promise<{ overlay: Buffer; topOffset: number }> {
+  const illustrationH = Math.round(cellH * SQUARE_ILLUSTRATION_FRAC);
+  const labelH = cellH - illustrationH;
+  const borderPx = squareBorderPx(cellW);
+  const halfBorder = borderPx / 2;
+  // White rect covering the band, plus the bottom + left + right sides
+  // of the cell's outer border (the top hairline is drawn separately so
+  // it sits exactly on the illustration/label seam). The band PNG is
+  // composited at the cell's labelTop, so its origin (0,0) corresponds
+  // to (cell.x, cell.y + illustrationH) in canvas coords.
+  const bandSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${cellW}" height="${labelH}">
+    <rect x="0" y="0" width="${cellW}" height="${labelH}" fill="white"/>
+    <rect x="${halfBorder}" y="0" width="${cellW - borderPx}" height="${labelH - halfBorder}" fill="none" stroke="${BLACK}" stroke-width="${borderPx}"/>
+    <line x1="0" y1="0" x2="${cellW}" y2="0" stroke="${BLACK}" stroke-width="${Math.max(1, Math.round(borderPx / 3))}"/>
+  </svg>`;
+  const labelPad = Math.max(2, Math.round(cellW * 0.04));
+  const labelPngRaw = await renderLabelPng(label, cellW - 2 * labelPad, Math.max(8, labelH - 2));
+  // renderLabelPng floors its text-box height at 16 px (pango requirement),
+  // so for very small cells the produced PNG can exceed the band height
+  // and sharp's composite call errors with "must have same dimensions or
+  // smaller". Resize-inside the label PNG to fit the band — only shrinks
+  // when needed, so production-size cells get the original pixels back.
+  const rawMeta = await sharp(labelPngRaw).metadata();
+  const rawW = rawMeta.width ?? 1;
+  const rawH = rawMeta.height ?? 1;
+  const maxLabelH = Math.max(1, labelH - 2);
+  const maxLabelW = Math.max(1, cellW - 2 * labelPad);
+  const labelPng = rawH > maxLabelH || rawW > maxLabelW
+    ? await sharp(labelPngRaw).resize({ width: maxLabelW, height: maxLabelH, fit: 'inside' }).png().toBuffer()
+    : labelPngRaw;
+  const finalLabelMeta = await sharp(labelPng).metadata();
+  const labelW = finalLabelMeta.width ?? 1;
+  const labelTextH = finalLabelMeta.height ?? 1;
+  const labelLeft = Math.max(0, Math.round((cellW - labelW) / 2));
+  const labelTop = Math.max(0, Math.round((labelH - labelTextH) / 2));
+  const overlay = await sharp({
+    create: { width: cellW, height: labelH, channels: 4, background: WHITE },
+  })
+    .composite([
+      { input: Buffer.from(bandSvg), top: 0, left: 0 },
+      { input: labelPng, top: labelTop, left: labelLeft },
+    ])
+    .png()
+    .toBuffer();
+  return { overlay, topOffset: illustrationH };
 }
 
 // ─── Top-level ──────────────────────────────────────────────────────────────
 
 /**
- * Composite uploaded images over the AI-generated base. Returns the final
- * PNG buffer ready to upload to R2. If `uploads` is empty, returns the
- * base as-is (re-encoded to PNG for output consistency).
+ * Composite uploaded images and uniform-style labels over the AI-generated
+ * base. Returns the final PNG buffer ready to upload to R2.
  *
- * Pipeline per upload:
- *  1. Resolve the cell rect from `layout` + `cardIndex`.
- *  2. Build a per-cell overlay sized to the cell rect:
- *      - Square: white BG + black border + hairline + label band, with the
- *        uploaded image cover-fit into the top 80%, label rendered into
- *        the bottom 20%.
- *      - Circle: white BG covers the whole cell (wiping any AI content),
- *        the uploaded image is cover-fit into a square equal to the disc
- *        diameter, masked to a circle, and pasted at the disc's centre.
- *        The label is rendered in the bottom strip beneath the disc.
- *  3. Composite the overlay onto the base at `(cell.x, cell.y)`.
+ * Two overlay kinds run per cell:
+ *  - Uploaded cells get a full-cell overlay (image cover-fit + chrome +
+ *    composite label). Square mode paints the white background, black
+ *    border, illustration/label hairline; circle mode paints a white
+ *    canvas + masked disc + label strip beneath. Wipes whatever the AI
+ *    drew there entirely.
+ *  - Cells WITHOUT uploads get a label-band-only overlay (square mode)
+ *    that wipes just the bottom 20% of the cell and paints the composite
+ *    label there at the deterministic font size. The AI's illustration
+ *    stays intact, but its label is replaced. This stops the AI's
+ *    per-cell font autoscaling from blowing up short labels like
+ *    "UVB-76" to ~1.5× the size of longer labels — every cell ends up
+ *    with the same label size as the uploaded cells, matching the
+ *    bundled reference's clean uniform look.
  *
- * The whole pipeline runs through one sharp instance for the base, with
- * one `.composite([...])` call accumulating all overlays — fewer encode
- * round-trips and lower memory than chained `.toBuffer()` between cells.
+ * If `uploads` is empty AND `cards` is empty we still re-encode to PNG so
+ * the caller has a consistent output format. Circle-mode label
+ * uniformisation for non-upload cells is NOT implemented yet — circle
+ * mode is rarer and the existing AI label rendering on white canvas
+ * works tolerably; revisit if a similar complaint shows up there.
+ *
+ * All overlays accumulate into one `.composite([...])` call so the
+ * pipeline does a single decode + single encode of the (potentially 4K)
+ * base, regardless of cell count.
  */
 export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Buffer> {
   const { baseImage, layout, cards, cardShape, uploads } = input;
-  if (!uploads.length) {
-    // Still re-encode to PNG so the caller has a consistent output format
-    // regardless of the AI provider's source encoding.
-    return await sharp(baseImage, { limitInputPixels: SHARP_INPUT_PIXEL_CAP }).png().toBuffer();
-  }
 
   const cardByIndex = new Map<number, TopicCard>();
   for (const c of cards) cardByIndex.set(c.index, c);
+  const uploadByIndex = new Map<number, Buffer>();
+  for (const up of uploads) uploadByIndex.set(up.cardIndex, up.bytes);
 
   const overlays: sharp.OverlayOptions[] = [];
-  for (const up of uploads) {
-    const card = cardByIndex.get(up.cardIndex);
-    const label = card?.label ?? `Card ${up.cardIndex}`;
-    const rect = cellRect(layout, up.cardIndex);
-    const overlay =
-      cardShape === 'circle'
-        ? await buildCircleCellOverlay(up.bytes, label, rect.w, rect.h)
-        : await buildSquareCellOverlay(up.bytes, label, rect.w, rect.h);
-    overlays.push({ input: overlay, top: rect.y, left: rect.x });
+
+  // Iterate every card in reading order. Upload presence picks between
+  // full-cell overlay (wipes the AI render at that cell) and label-only
+  // overlay (keeps the AI illustration, only overpaints the label band).
+  for (const card of cards) {
+    const rect = cellRect(layout, card.index);
+    const uploadedBytes = uploadByIndex.get(card.index);
+
+    if (uploadedBytes) {
+      const overlay =
+        cardShape === 'circle'
+          ? await buildCircleCellOverlay(uploadedBytes, card.label, rect.w, rect.h)
+          : await buildSquareCellOverlay(uploadedBytes, card.label, rect.w, rect.h);
+      overlays.push({ input: overlay, top: rect.y, left: rect.x });
+      continue;
+    }
+
+    // Non-upload cells: only paint a uniform-style label band in square
+    // mode. Skip for circle mode — the AI renders labels beneath the
+    // disc on white canvas and overpainting risks blanking the disc if
+    // the layout-derived band misses by a few pixels (the reference
+    // sample size for circle mode is small).
+    if (cardShape === 'square') {
+      const { overlay, topOffset } = await buildSquareLabelBandOverlay(card.label, rect.w, rect.h);
+      overlays.push({ input: overlay, top: rect.y + topOffset, left: rect.x });
+    }
+  }
+
+  if (overlays.length === 0) {
+    return await sharp(baseImage, { limitInputPixels: SHARP_INPUT_PIXEL_CAP }).png().toBuffer();
   }
 
   return await sharp(baseImage, { limitInputPixels: SHARP_INPUT_PIXEL_CAP })

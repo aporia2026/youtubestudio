@@ -451,22 +451,23 @@ export async function POST(req: NextRequest) {
       regions_count: regions.length,
     });
 
-    // Composite step — runs only when the user attached at least one
-    // per-cell image. Fetches each upload's bytes with the same SSRF +
-    // size guards the reference path uses, then hands them to the pure
-    // module that paints them over the AI render. When no uploads are
-    // present the composite call short-circuits to a no-op (just a PNG
-    // re-encode), so callers without uploads pay no extra latency.
-    let finalBytes = aiBytes;
-    let compositorMs = 0;
-    let uploadsApplied = 0;
+    // Composite step — ALWAYS runs in square mode so every cell gets
+    // a deterministic label rendered at the same font size, regardless
+    // of whether the user attached an upload for it. AI's per-cell
+    // label autoscaling was blowing short labels (e.g. "UVB-76") up to
+    // ~1.5× the size of longer labels in the same grid; the composite
+    // overpaints the AI's label band with a uniform-sized label and
+    // leaves the AI's illustration intact for non-upload cells.
+    //
+    // Circle mode currently skips non-upload label uniformisation —
+    // see applyCellUploads. Uploaded cells still get composited in both
+    // shapes.
+    const cellUploads: CellUpload[] = [];
     if (uploadRequests.length > 0) {
-      const compositeStart = Date.now();
-      logger.info('[thumb-format-grid image] composite start', {
+      logger.info('[thumb-format-grid image] composite uploads fetch start', {
         cell_count: uploadRequests.length,
         card_shape: cardShape,
       });
-      const cellUploads: CellUpload[] = [];
       for (const req of uploadRequests) {
         const upRes = await fetch(req.safeUrl);
         if (!upRes.ok) {
@@ -488,21 +489,25 @@ export async function POST(req: NextRequest) {
         }
         cellUploads.push({ cardIndex: req.cardIndex, bytes: Buffer.from(upArrayBuf) });
       }
-      finalBytes = await applyCellUploads({
-        baseImage: aiBytes,
-        layout,
-        cards,
-        cardShape,
-        uploads: cellUploads,
-      });
-      compositorMs = Date.now() - compositeStart;
-      uploadsApplied = cellUploads.length;
-      logger.info('[thumb-format-grid image] composite done', {
-        duration_ms: compositorMs,
-        cell_count: uploadsApplied,
-        output_bytes: finalBytes.byteLength,
-      });
     }
+    const compositeStart = Date.now();
+    const finalBytes = await applyCellUploads({
+      baseImage: aiBytes,
+      layout,
+      cards,
+      cardShape,
+      uploads: cellUploads,
+    });
+    const compositorMs = Date.now() - compositeStart;
+    const uploadsApplied = cellUploads.length;
+    const labelsUniformized = cardShape === 'square' ? cards.length : cellUploads.length;
+    logger.info('[thumb-format-grid image] composite done', {
+      duration_ms: compositorMs,
+      uploads_applied: uploadsApplied,
+      labels_uniformized: labelsUniformized,
+      card_shape: cardShape,
+      output_bytes: finalBytes.byteLength,
+    });
 
     // Single R2 upload — prefix records the AI provider and whether the
     // composite step ran so a future audit can tell the AI's raw output

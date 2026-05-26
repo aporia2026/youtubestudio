@@ -139,7 +139,11 @@ describe('applyCellUploads', () => {
     { index: 4, label: 'D', icon_concept: 'USER_UPLOADED_IMAGE' },
   ];
 
-  it('returns the base unchanged (re-encoded to PNG) when no uploads', async () => {
+  it('paints uniform label bands on every cell even with no uploads (square mode)', async () => {
+    // Square mode always uniformises labels so AI's per-cell font
+    // autoscaling can't blow up short labels (e.g. "UVB-76") relative to
+    // long ones in the same grid. Cells without uploads keep their AI
+    // illustration but get their label band overpainted in white.
     const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 0, g: 0, b: 0 });
     const layout = makeDefaultLayout(2, 2, CANVAS_W, CANVAS_H);
     const out = await applyCellUploads({
@@ -152,8 +156,42 @@ describe('applyCellUploads', () => {
     const meta = await sharp(out).metadata();
     expect(meta.width).toBe(CANVAS_W);
     expect(meta.height).toBe(CANVAS_H);
-    // Centre of the canvas should still be black (untouched).
-    const [r, g, b] = await pixelAt(out, CANVAS_W / 2, CANVAS_H / 2);
+    // Gutter between rows = still untouched black.
+    const [gr, gg, gb] = await pixelAt(out, CANVAS_W / 2, CANVAS_H / 2);
+    expect(gr).toBe(0);
+    expect(gg).toBe(0);
+    expect(gb).toBe(0);
+    // Illustration area of each cell = still black (AI render preserved).
+    const r1 = cellRect(layout, 1);
+    const [ir, ig, ib] = await pixelAt(out, r1.x + r1.w / 2, r1.y + r1.h * 0.3);
+    expect(ir).toBe(0);
+    expect(ig).toBe(0);
+    expect(ib).toBe(0);
+    // Bottom-centre of each cell's label band = white (overpainted).
+    // Sample at 92% down the cell so we're inside the white band but
+    // away from the border stroke at the very bottom edge.
+    const [br, bg, bb] = await pixelAt(out, r1.x + r1.w / 2, r1.y + r1.h * 0.92);
+    expect(br).toBeGreaterThan(200);
+    expect(bg).toBeGreaterThan(200);
+    expect(bb).toBeGreaterThan(200);
+  });
+
+  it('leaves the base untouched in circle mode when there are no uploads', async () => {
+    // Circle mode skips non-upload label uniformisation — applyCellUploads
+    // only paints label bands in square mode. Keep this test guarding the
+    // skip so a future change that flips on circle-mode bands doesn't
+    // silently break the AI's existing circle label rendering.
+    const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 0, g: 0, b: 0 });
+    const layout = makeDefaultLayout(2, 2, CANVAS_W, CANVAS_H, 'circle');
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards,
+      cardShape: 'circle',
+      uploads: [],
+    });
+    const r1 = cellRect(layout, 1);
+    const [r, g, b] = await pixelAt(out, r1.x + r1.w / 2, r1.y + r1.h * 0.92);
     expect(r).toBe(0);
     expect(g).toBe(0);
     expect(b).toBe(0);
