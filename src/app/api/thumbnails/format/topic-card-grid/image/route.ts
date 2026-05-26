@@ -19,8 +19,10 @@ import {
 } from '@/lib/thumbnail-formats/topic-card-grid';
 import {
   applyCellUploads,
+  SHARP_INPUT_PIXEL_CAP,
   type CellUpload,
 } from '@/lib/thumbnail-formats/topic-card-grid-composite';
+import sharp from 'sharp';
 import { assertSafePublicUrl } from '@/lib/url-safety';
 import type { ThumbnailRegion } from '@/remotion/types';
 
@@ -288,23 +290,19 @@ export async function POST(req: NextRequest) {
     }
     const uploadedCellIndexes = uploadRequests.map((u) => u.cardIndex).sort((a, b) => a - b);
 
-    // Compute regions deterministically from the layout BEFORE the image
-    // call so they're returned even if the model itself drifts. Region
-    // shape follows `cardShape` so callers (production-doc, the panel's
-    // overlay) get the right bounding box for each cell.
-    const outputWidth = Number.isInteger(body.outputWidth) ? Number(body.outputWidth) : DEFAULT_CANVAS.width;
-    const outputHeight = Number.isInteger(body.outputHeight) ? Number(body.outputHeight) : DEFAULT_CANVAS.height;
-    const layout = makeDefaultLayout(gridRows, gridCols, outputWidth, outputHeight, cardShape);
+    // Layout + regions are computed AFTER the AI image lands so they're
+    // keyed off the actual canvas dimensions of `aiBytes`, not the
+    // 1280×720 default. Kie upscales to ~4K; OpenAI returns 2048×1152.
+    // If we computed layout against DEFAULT_CANVAS and then composited
+    // onto the (much larger) AI image, every overlay would land in the
+    // top-left quadrant at miniature size — which is the
+    // "uploads-not-where-they-should-be" bug 2026-05-26. `outputWidth`/
+    // `outputHeight` from the body are kept as DEFAULTS for the rare
+    // case the AI image lacks readable dimensions; the actual probe
+    // overrides them downstream.
+    const fallbackOutputWidth = Number.isInteger(body.outputWidth) ? Number(body.outputWidth) : DEFAULT_CANVAS.width;
+    const fallbackOutputHeight = Number.isInteger(body.outputHeight) ? Number(body.outputHeight) : DEFAULT_CANVAS.height;
     const labels = cards.map((c) => c.label);
-    const regions: ThumbnailRegion[] = computeRegionsFor(layout, labels, () => randomUUID(), cardShape);
-    logger.info('[thumb-format-grid image] regions computed', {
-      regions_count: regions.length,
-      outer_margin: layout.outerMargin,
-      gutter: layout.gutter,
-      card_w: regions[0]?.w,
-      card_h: regions[0]?.h,
-      card_shape: cardShape,
-    });
 
     const prompt = topicCardGridImagePrompt({
       cards,
@@ -428,6 +426,30 @@ export async function POST(req: NextRequest) {
         revised_prompt_chars: result.revisedPrompt?.length ?? 0,
       };
     }
+
+    // Probe the actual AI image dimensions so the layout we use for
+    // composite + regions matches the pixel grid of `aiBytes`. Kie's
+    // post-upscale output lands around 4K; OpenAI returns 2048×1152;
+    // the 1280×720 DEFAULT_CANVAS guess is essentially never right.
+    // sharp.metadata is cheap (<10ms) — no decode of the full image.
+    const aiMeta = await sharp(aiBytes, { limitInputPixels: SHARP_INPUT_PIXEL_CAP }).metadata();
+    const canvasW = aiMeta.width && aiMeta.width > 0 ? aiMeta.width : fallbackOutputWidth;
+    const canvasH = aiMeta.height && aiMeta.height > 0 ? aiMeta.height : fallbackOutputHeight;
+    const layout = makeDefaultLayout(gridRows, gridCols, canvasW, canvasH, cardShape);
+    const regions: ThumbnailRegion[] = computeRegionsFor(layout, labels, () => randomUUID(), cardShape);
+    logger.info('[thumb-format-grid image] layout from ai dims', {
+      ai_width: aiMeta.width,
+      ai_height: aiMeta.height,
+      canvas_w: canvasW,
+      canvas_h: canvasH,
+      fallback_used: !(aiMeta.width && aiMeta.height),
+      outer_margin: layout.outerMargin,
+      gutter: layout.gutter,
+      card_w: regions[0]?.w,
+      card_h: regions[0]?.h,
+      card_shape: cardShape,
+      regions_count: regions.length,
+    });
 
     // Composite step — runs only when the user attached at least one
     // per-cell image. Fetches each upload's bytes with the same SSRF +
