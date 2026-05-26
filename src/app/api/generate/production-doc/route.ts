@@ -12,6 +12,7 @@ import {
   validateAndSplitOverlongRows,
   type ProductionDocRowLike,
 } from '@/lib/production-doc-postprocess';
+import { autoGroupVariants } from '@/lib/auto-group-variants';
 import { extractScriptTitles, TITLE_SENTINEL_LEAK_RE } from '@/lib/script-titles';
 import { preprocessSsmlForProductionDoc } from '@/lib/ssml-production-doc';
 
@@ -317,6 +318,29 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       logger.info('[production-doc ost-mode-default]', {
         styleId: resolved.id,
         mode: resolved.default_on_screen_text_mode,
+      });
+    }
+  }
+
+  // Auto-group consecutive similar rows into variant groups for styles
+  // whose mixing_rules describe the additive frame-by-frame pattern. The
+  // LLM is instructed to emit variant groups directly but its compliance
+  // is unreliable — this post-pass detects "consecutive rows with very
+  // similar ai_image_prompts" and rewrites them in place to use
+  // group_id / variant_index / variant_edit_prompt so the existing Atlas
+  // Edit dispatcher (composeVariantEditRequest → /image/edit) generates
+  // the derivative frames from a shared base image instead of from
+  // scratch with different seeds. Gated on doodle_explainer_2 for now
+  // because it's the only style that has variant_groups in its
+  // mixing_rules. See `_plans/2026-05-25-near-static-variants.md`.
+  if (Array.isArray(result.rows) && resolved?.id === 'doodle_explainer_2') {
+    const grouped = autoGroupVariants(result.rows);
+    if (grouped.groupCount > 0) {
+      logger.info('[production-doc auto-group-variants]', {
+        styleId: resolved.id,
+        rowCount: result.rows.length,
+        groupCount: grouped.groupCount,
+        mergedRowCount: grouped.mergedRowCount,
       });
     }
   }
