@@ -22,6 +22,7 @@ import { ScoreChip } from '@/components/niche-finder/ScoreChip';
 import { RegenerateButton } from '@/components/niche-finder/RegenerateButton';
 import { SaveToWatchlistButton } from '@/components/niche-finder/SaveToWatchlistButton';
 import { GenerateIdeasButton } from '@/components/niche-finder/GenerateIdeasButton';
+import { MakeVideoButton } from '@/components/video-context/MakeVideoButton';
 
 interface PageProps {
   params: Promise<{ slug: string }>;
@@ -50,6 +51,12 @@ export default async function NicheDeepDivePage({ params }: PageProps) {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <SaveToWatchlistButton slug={report.slug} name={report.name} />
             <GenerateIdeasButton nicheName={report.name} clusters={report.clusters} />
+            <MakeVideoButton
+              title={report.name}
+              niche={report.name}
+              from="Niche Finder"
+              compact
+            />
             <RegenerateButton nicheText={report.name} />
           </div>
         )}

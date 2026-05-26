@@ -28,8 +28,9 @@ import { GenerateFailure } from '../../ai-fallback';
 import { resolveChain } from '../resolve-chain';
 import { persistArtefact } from '../db';
 import { countWords } from '../../utils';
-import { QA_PRE_CHECK_ENABLED } from '../../feature-flags';
+import { QA_PRE_CHECK_ENABLED, QA_GENERATOR_V2_ENABLED } from '../../feature-flags';
 import { runPreQaSelfCheck } from '../../script-critics/pre-qa-self-check';
+import { getWorkspaceQaSettings, resolveToggle } from '../../qa-workspace-settings';
 import { logger } from '../../logger';
 import type { StageHandlerContext, StageOutcome } from '../types';
 
@@ -113,6 +114,11 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
 
   const chain = await resolveChain('script-generator', preset);
 
+  // Resolve QA-hardening toggles once: workspace setting overrides env var.
+  const qaSettings = await getWorkspaceQaSettings(video.workspace_id).catch(() => null);
+  const generatorV2Enabled = resolveToggle(qaSettings?.generatorV2 ?? 'inherit', QA_GENERATOR_V2_ENABLED);
+  const preCheckEnabled = resolveToggle(qaSettings?.preCheck ?? 'inherit', QA_PRE_CHECK_ENABLED);
+
   let result: Awaited<ReturnType<typeof generateTextWithFallback>>;
   try {
     result = await generateTextWithFallback(chain, (modelId) => {
@@ -126,6 +132,7 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
         additionalContext: rules.additionalContext,
         referenceContext: rules.referenceContext,
         constraints: rules.constraints as never,
+        generatorV2Enabled,
       });
       return {
         modelId,
@@ -162,7 +169,7 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
   let scriptText = result.text;
   let selfCheckRan: 'kept' | 'rewrote' | 'skipped' | null = null;
   let selfCheckSelfScore: number | null = null;
-  if (QA_PRE_CHECK_ENABLED) {
+  if (preCheckEnabled) {
     const selfCheck = await runPreQaSelfCheck({
       scriptText,
       niche,

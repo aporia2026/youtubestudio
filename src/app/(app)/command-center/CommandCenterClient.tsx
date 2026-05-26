@@ -23,12 +23,14 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
+  defaultDropAnimationSideEffects,
   useSensor,
   useSensors,
   useDraggable,
   useDroppable,
   type DragEndEvent,
   type DragStartEvent,
+  type DropAnimation,
 } from '@dnd-kit/core';
 import { STAGE_CHAIN, getStageDef, type VideoStageId } from '@/lib/video-stages';
 import {
@@ -39,6 +41,7 @@ import {
   type PerChannelWeekSummary,
 } from '@/lib/command-center';
 import { NewVideoDialog } from './NewVideoDialog';
+import { usePresenceSnapshot } from '@/components/video-context/use-presence';
 
 interface ChannelOption {
   id: string;
@@ -48,14 +51,21 @@ interface ChannelOption {
 
 interface Props {
   initialCards: CommandCenterCard[];
+  /** True when the workspace has more non-archived projects than the
+   *  loader returned. Renders a "Showing X of Y" hint in the footer. */
+  truncated: boolean;
+  /** Total non-archived projects in the workspace. */
+  totalProjects: number;
   channels: ChannelOption[];
   initialWeek: IsoWeek;
   /** Hours since last stage change before a video shows in the Stuck
    *  panel. Comes from the workspace's QA settings (default 48h). */
   stuckThresholdHours: number;
+  /** Soft per-stage WIP limit. Stages not in the map are unlimited. */
+  wipLimits: Record<string, number>;
 }
 
-export function CommandCenterClient({ initialCards, channels, initialWeek, stuckThresholdHours }: Props) {
+export function CommandCenterClient({ initialCards, truncated, totalProjects, channels, initialWeek, stuckThresholdHours, wipLimits }: Props) {
   const router = useRouter();
   const [cards, setCards] = useState<CommandCenterCard[]>(initialCards);
   const [channelFilter, setChannelFilter] = useState<Set<string>>(new Set(channels.map(c => c.id)));
@@ -65,6 +75,11 @@ export function CommandCenterClient({ initialCards, channels, initialWeek, stuck
   const [newVideoOpen, setNewVideoOpen] = useState(false);
   const [draggingCardId, setDraggingCardId] = useState<string | null>(null);
   const [, startTransition] = useTransition();
+  // Workspace-wide presence snapshot, polled every 20s. The kanban
+  // doesn't heartbeat itself (no one is "open" on the kanban — it's a
+  // viewer). Cards render a tiny presence dot when teammates have the
+  // video open.
+  const presenceSnapshot = usePresenceSnapshot();
 
   // Keep local state in sync with server snapshots. router.refresh()
   // after a successful advance reruns the server page and pushes a new
@@ -73,6 +88,34 @@ export function CommandCenterClient({ initialCards, channels, initialWeek, stuck
   useEffect(() => {
     setCards(initialCards);
   }, [initialCards]);
+
+  // Real-time polling: every 30s, fetch a fresh cards snapshot so
+  // changes from the cron, narrator/editor portals, or other teammates
+  // appear without the user reloading. Skipped while a drag is
+  // in-flight so we don't clobber the optimistic state.
+  useEffect(() => {
+    let cancelled = false;
+    const POLL_MS = 30_000;
+    async function pull() {
+      if (draggingCardId !== null) return; // don't fight an in-flight drag
+      try {
+        const res = await fetch('/api/command-center/cards');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        if (Array.isArray(data?.cards)) {
+          setCards(data.cards);
+        }
+      } catch {
+        // silent — polling is best-effort
+      }
+    }
+    const timer = setInterval(pull, POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [draggingCardId]);
 
   const week = useMemo(() => shiftIsoWeek(initialWeek, weekOffset), [initialWeek, weekOffset]);
 
@@ -109,6 +152,20 @@ export function CommandCenterClient({ initialCards, channels, initialWeek, stuck
   }, [filteredCards]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  // Smooth drop animation: 220ms ease, with the original card dimming
+  // back to 100% as the overlay settles into place. Matches the dnd-kit
+  // default behaviour but with a hint shorter duration so rapid drags
+  // feel snappy.
+  const dropAnimation: DropAnimation = useMemo(
+    () => ({
+      duration: 220,
+      easing: 'cubic-bezier(0.18, 0.67, 0.6, 1.22)',
+      sideEffects: defaultDropAnimationSideEffects({
+        styles: { active: { opacity: '0.25' } },
+      }),
+    }),
+    [],
+  );
 
   function handleDragStart(event: DragStartEvent) {
     setDraggingCardId(String(event.active.id));
@@ -297,11 +354,13 @@ export function CommandCenterClient({ initialCards, channels, initialWeek, stuck
                     stageId={stage.id}
                     label={stage.label}
                     cards={cardsByStage.get(stage.id) ?? []}
+                    presenceSnapshot={presenceSnapshot}
+                    wipLimit={wipLimits[stage.id] ?? null}
                   />
                 ))}
               </div>
             </div>
-            <DragOverlay dropAnimation={null}>
+            <DragOverlay dropAnimation={dropAnimation}>
               {draggingCardId
                 ? (() => {
                     const c = cards.find(x => x.id === draggingCardId);
@@ -313,6 +372,18 @@ export function CommandCenterClient({ initialCards, channels, initialWeek, stuck
 
           {/* Stuck panel */}
           <StuckPanel stuck={stuck} thresholdHours={stuckThresholdHours} />
+
+          {truncated && (
+            <div
+              className="border-t px-4 py-2 text-xs flex items-center justify-between"
+              style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+            >
+              <span>
+                Showing <strong style={{ color: 'var(--text-primary)' }}>{cards.length}</strong> of <strong style={{ color: 'var(--text-primary)' }}>{totalProjects}</strong> projects.
+                Older or archived projects are not displayed.
+              </span>
+            </div>
+          )}
         </main>
       </div>
     </div>
@@ -363,8 +434,9 @@ function SummaryRow({ s, isActive, onClick }: { s: PerChannelWeekSummary; isActi
   );
 }
 
-function KanbanColumn({ stageId, label, cards }: { stageId: VideoStageId; label: string; cards: CommandCenterCard[] }) {
+function KanbanColumn({ stageId, label, cards, presenceSnapshot, wipLimit }: { stageId: VideoStageId; label: string; cards: CommandCenterCard[]; presenceSnapshot: Record<string, Array<{ userId: string; name: string | null }>>; wipLimit: number | null }) {
   const { isOver, setNodeRef } = useDroppable({ id: stageId });
+  const overLimit = wipLimit !== null && cards.length > wipLimit;
   return (
     <div
       ref={setNodeRef}
@@ -377,22 +449,39 @@ function KanbanColumn({ stageId, label, cards }: { stageId: VideoStageId; label:
       }}
     >
       <header className="px-3 py-2 border-b sticky top-0" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-primary)' }}>{label}</span>
-          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{cards.length}</span>
+          <span
+            className="text-xs px-1.5 py-0.5 rounded"
+            style={{
+              color: overLimit ? 'white' : 'var(--text-muted)',
+              background: overLimit ? 'var(--accent-pink)' : 'transparent',
+            }}
+            title={
+              wipLimit !== null
+                ? overLimit
+                  ? `Over WIP limit (${cards.length}/${wipLimit}). Clear some cards before adding more.`
+                  : `WIP limit ${wipLimit}`
+                : undefined
+            }
+          >
+            {cards.length}{wipLimit !== null ? `/${wipLimit}` : ''}
+          </span>
         </div>
       </header>
       <div className="flex-1 overflow-y-auto p-2 space-y-2">
         {cards.length === 0 && (
           <div className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>—</div>
         )}
-        {cards.map(card => <KanbanCard key={card.id} card={card} />)}
+        {cards.map(card => (
+          <KanbanCard key={card.id} card={card} presence={presenceSnapshot[card.id] ?? []} />
+        ))}
       </div>
     </div>
   );
 }
 
-function KanbanCard({ card }: { card: CommandCenterCard }) {
+function KanbanCard({ card, presence }: { card: CommandCenterCard; presence: Array<{ userId: string; name: string | null }> }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: card.id });
   const accent = card.channel?.account_color ?? 'var(--accent-purple)';
   const toolPath = getStageDef(card.current_stage).toolPath;
@@ -422,6 +511,15 @@ function KanbanCard({ card }: { card: CommandCenterCard }) {
         {card.is_auto_managed && (
           <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ background: 'var(--accent-cyan)22', color: 'var(--accent-cyan-bright)' }} title="Auto-pipeline">
             AP
+          </span>
+        )}
+        {presence.length > 0 && (
+          <span
+            className="inline-flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold"
+            style={{ background: 'var(--accent-cyan)', color: 'white' }}
+            title={presence.map(p => p.name ?? 'Teammate').join(', ') + ' has this open'}
+          >
+            {presence.length}
           </span>
         )}
         {card.scheduled_for && (

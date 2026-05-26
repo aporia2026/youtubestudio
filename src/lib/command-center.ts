@@ -87,6 +87,26 @@ const TERMINAL_PIPELINE_STAGES = new Set<string>([
  */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Default page-size for the Command Center kanban. Raised from 500
+ * (Wave 2 initial cap) to 2000 to comfortably cover a multi-channel
+ * workspace at 20 videos/week across many weeks of history. Above
+ * 2000 we still cap silently AND the page surfaces a truncation
+ * notice so the user knows they're not seeing everything.
+ */
+export const COMMAND_CENTER_DEFAULT_LIMIT = 2000;
+export const COMMAND_CENTER_MAX_LIMIT = 5000;
+
+export interface LoadCardsResult {
+  cards: CommandCenterCard[];
+  /** True when the workspace has MORE projects than the query returned.
+   *  The page surfaces a "Showing X of Y" hint when this is true. */
+  truncated: boolean;
+  /** Total non-archived projects in the workspace (capped at a separate
+   *  COUNT query so we can report truncation accurately). */
+  total: number;
+}
+
 export async function loadCommandCenterCards(
   workspaceId: string,
   opts: { limit?: number } = {},
@@ -94,7 +114,7 @@ export async function loadCommandCenterCards(
   // UUID guard up front: a typo'd id should be an empty result, not a
   // Postgres syntax error that bubbles up as a 500 to the user.
   if (!UUID_RE.test(workspaceId)) return [];
-  const limit = opts.limit ?? 500;
+  const limit = Math.min(opts.limit ?? COMMAND_CENTER_DEFAULT_LIMIT, COMMAND_CENTER_MAX_LIMIT);
 
   const result = await sql`
     SELECT
@@ -203,6 +223,32 @@ export async function loadCommandCenterCards(
     // keeps the kanban focused on active work without filtering legit
     // brand-new projects out.
     .filter(card => card.current_stage !== 'published');
+}
+
+/**
+ * Same as loadCommandCenterCards but also returns the total project
+ * count and a truncation flag. Used by the Command Center page so the
+ * footer can show "Showing X of Y."
+ */
+export async function loadCommandCenterCardsWithCount(
+  workspaceId: string,
+  opts: { limit?: number } = {},
+): Promise<LoadCardsResult> {
+  if (!UUID_RE.test(workspaceId)) {
+    return { cards: [], truncated: false, total: 0 };
+  }
+  const limit = Math.min(opts.limit ?? COMMAND_CENTER_DEFAULT_LIMIT, COMMAND_CENTER_MAX_LIMIT);
+  const [cards, countRes] = await Promise.all([
+    loadCommandCenterCards(workspaceId, { limit }),
+    sql<{ total: string }>`
+      SELECT COUNT(*)::text AS total
+      FROM projects
+      WHERE workspace_id = ${workspaceId}::uuid
+        AND COALESCE(status, '') NOT IN ('cancelled', 'archived')
+    `,
+  ]);
+  const total = Number(countRes.rows[0]?.total) || 0;
+  return { cards, truncated: total > cards.length, total };
 }
 
 /**

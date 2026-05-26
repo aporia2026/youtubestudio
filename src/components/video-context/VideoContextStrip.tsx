@@ -31,6 +31,7 @@ import { useRouter, useSearchParams, usePathname } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import type { VideoStageId } from '@/lib/video-stages';
+import { usePresenceHeartbeat } from './use-presence';
 
 interface ChannelChip {
   id: string;
@@ -73,6 +74,11 @@ export function VideoContextStrip(): React.ReactElement | null {
   const [data, setData] = useState<VideoStripData | null>(null);
   const [loading, setLoading] = useState(false);
   const [advancing, setAdvancing] = useState(false);
+  // Presence heartbeat: pulse every 20s while this video is open.
+  // Returns the full workspace snapshot; we pluck out the entry for
+  // the current video to render the "who else has it open" badge.
+  const presenceSnapshot = usePresenceHeartbeat(videoId);
+  const presenceForThisVideo = (videoId && presenceSnapshot[videoId]) || [];
 
   const refresh = useCallback(async () => {
     if (!videoId) return;
@@ -315,6 +321,31 @@ export function VideoContextStrip(): React.ReactElement | null {
         >
           QA {data.latest_qa_score}/100
         </span>
+      )}
+
+      {/* Who else has this video open. Excludes the current user so
+          the badge only shows "others." Avatars are first-letter initials
+          in a colored circle — small, glanceable, no extra data fetched. */}
+      {presenceForThisVideo.filter(p => p.userId).length > 1 && (
+        <div className="flex items-center gap-0.5" title="Other teammates have this video open">
+          {presenceForThisVideo
+            .slice(0, 4)
+            .map(p => (
+              <span
+                key={p.userId}
+                className="w-5 h-5 rounded-full inline-flex items-center justify-center text-[10px] font-semibold"
+                style={{
+                  background: p.color || 'var(--accent-cyan)',
+                  color: 'white',
+                  border: '1px solid var(--bg-secondary)',
+                  marginLeft: -4,
+                }}
+                title={p.name ?? 'Teammate'}
+              >
+                {(p.name ?? '?').charAt(0).toUpperCase()}
+              </span>
+            ))}
+        </div>
       )}
 
       {/* Auto-managed badge — sets expectation that Next is gated. */}

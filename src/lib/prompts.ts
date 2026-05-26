@@ -129,6 +129,7 @@ export function scriptGenerationPrompt({
   constraints,
   brandKit,
   stylePreset,
+  generatorV2Enabled,
 }: {
   topic: string;
   niche: string;
@@ -149,6 +150,12 @@ export function scriptGenerationPrompt({
    *  prompt as a STYLE PRESET block. When absent, the prompt is
    *  byte-identical to the pre-preset version — backwards compat. */
   stylePreset?: ScriptStylePreset | null;
+  /** Lever C of the QA hardening plan. When true, the system prompt
+   *  appends a rubric digest derived from SCRIPT_CRITICS so the
+   *  generator targets the criteria it will be evaluated against.
+   *  Defaults to the env-flag QA_GENERATOR_V2_ENABLED, which preserves
+   *  the prior behavior when callers don't pass anything. */
+  generatorV2Enabled?: boolean;
 }): { system: string; user: string } {
   const wordsPerMinute = SCRIPT_WPM;
   const targetWords = targetDurationMinutes * wordsPerMinute;
@@ -251,7 +258,7 @@ If the user's brief contains a "USER DIRECTION" block at the top of the user mes
 - Spoken words = every word the narrator says out loud, EXCLUDING bracketed cues like [VISUAL CUE: ...], [PAUSE], [SFX: ...], [B-ROLL: ...] (these don't count toward duration)
 - Hitting the spoken word count is a HARD requirement, not a suggestion. Going short is worse than going long — a 6-minute script returned for a 15-minute slot is a complete failure regardless of quality
 - Do NOT pad with filler, repetition, or generic sentences to hit the target. Hit it through real substance: more specific examples, more concrete data points, deeper exploration of each angle, additional pattern interrupts, more sensory detail in stories
-- Plan the section budget BEFORE you start writing. If a section runs short, expand it with another concrete example or a deeper layer of insight — never with empty calories${brandKitBlock}${QA_GENERATOR_V2_ENABLED ? buildCriticRubricDigest() : ''}`,
+- Plan the section budget BEFORE you start writing. If a section runs short, expand it with another concrete example or a deeper layer of insight — never with empty calories${brandKitBlock}${(generatorV2Enabled ?? QA_GENERATOR_V2_ENABLED) ? buildCriticRubricDigest() : ''}`,
 
     user: `Write a complete, publish-ready YouTube script that would score 85+ on a Nuclear QA review.
 ${additionalContext && additionalContext.trim() ? `

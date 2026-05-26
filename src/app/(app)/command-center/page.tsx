@@ -14,7 +14,7 @@ import { redirect } from 'next/navigation';
 import { sql } from '@vercel/postgres';
 import { getSession } from '@/lib/session';
 import {
-  loadCommandCenterCards,
+  loadCommandCenterCardsWithCount,
   currentIsoWeek,
   type CommandCenterCard,
 } from '@/lib/command-center';
@@ -34,8 +34,8 @@ export default async function CommandCenterPage() {
   if (!session) redirect('/login');
 
   // Independent queries — parallelise.
-  const [cards, channelsRes, qaSettings] = await Promise.all([
-    loadCommandCenterCards(session.ws),
+  const [cardsResult, channelsRes, qaSettings] = await Promise.all([
+    loadCommandCenterCardsWithCount(session.ws),
     sql<ChannelOption>`
       SELECT id, name, account_color
         FROM channels
@@ -48,10 +48,13 @@ export default async function CommandCenterPage() {
   const week = currentIsoWeek();
   return (
     <CommandCenterClient
-      initialCards={cards}
+      initialCards={cardsResult.cards}
+      truncated={cardsResult.truncated}
+      totalProjects={cardsResult.total}
       channels={channelsRes.rows}
       initialWeek={week}
       stuckThresholdHours={qaSettings.stuckThresholdHours}
+      wipLimits={qaSettings.wipLimits}
     />
   );
 }

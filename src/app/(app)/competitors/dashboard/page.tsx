@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { MakeVideoButton } from '@/components/video-context/MakeVideoButton';
 import {
   classifyOutlier,
   type CompetitorChannelSummary,
@@ -188,11 +189,12 @@ function Kpi({ label, value, accent }: { label: string; value: number | string; 
 function BreakoutCard({ breakout }: { breakout: RecentBreakout }) {
   const sev = classifyOutlier(breakout.vs_median_factor);
   const accent = sev === 'viral' ? '#f87171' : sev === 'breakout' ? '#fb923c' : 'var(--text-muted)';
+  // Card is no longer the YouTube anchor — instead the title becomes a
+  // YouTube link and a "Make video inspired by this" button lives next
+  // to it. Nested anchors/buttons aren't valid HTML, and we want both
+  // actions to be obvious and unambiguous (rule 16: UI must be clear).
   return (
-    <a
-      href={`https://www.youtube.com/watch?v=${breakout.video_id}`}
-      target="_blank"
-      rel="noopener noreferrer"
+    <div
       className="glass rounded-xl overflow-hidden flex flex-col"
       style={{ borderLeft: `3px solid ${accent}` }}
     >
@@ -208,18 +210,33 @@ function BreakoutCard({ breakout }: { breakout: RecentBreakout }) {
         <div className="text-xs mb-1 truncate" style={{ color: 'var(--text-muted)' }}>
           {breakout.competitor_title}
         </div>
-        <div className="text-sm font-medium mb-2 leading-snug" style={{ color: 'var(--text-primary)' }}>
-          {breakout.video_title}
-        </div>
-        <div className="mt-auto text-[10px] flex items-center justify-between" style={{ color: 'var(--text-muted)' }}>
+        <a
+          href={`https://www.youtube.com/watch?v=${breakout.video_id}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-sm font-medium mb-2 leading-snug hover:underline"
+          style={{ color: 'var(--text-primary)' }}
+        >
+          {breakout.video_title} <span style={{ color: 'var(--text-muted)' }}>↗</span>
+        </a>
+        <div className="text-[10px] flex items-center justify-between mb-2" style={{ color: 'var(--text-muted)' }}>
           <span>{fmtBig(breakout.view_count)} views</span>
           <span style={{ color: accent }}>
             {breakout.vs_median_factor !== null ? `${breakout.vs_median_factor.toFixed(1)}× median` : `${breakout.outlier_score.toFixed(1)}× outlier`}
           </span>
           {breakout.published_at && <span>{daysAgo(breakout.published_at)}d ago</span>}
         </div>
+        <div className="mt-auto">
+          <MakeVideoButton
+            title={breakout.video_title}
+            from="Competitors breakout"
+            label="+ Make video inspired by this"
+            compact
+            className="w-full"
+          />
+        </div>
       </div>
-    </a>
+    </div>
   );
 }
 

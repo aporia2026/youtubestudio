@@ -23,11 +23,27 @@ import { getModelById } from './ai-models';
 import { logger } from './logger';
 
 const SCOPE_NUCLEAR_MODEL = 'qa_nuclear_model';
-/** Second scope on the same table — repurposed for a non-model setting
- *  by encoding the hours as the "model_id" text. workspace_model_defaults
- *  has a freeform model_id TEXT column, no migration needed to extend. */
+/** Prefix for per-stage WIP limit scopes. The full scope id is
+ *  'qa_wip_limit_<stageId>' (e.g. 'qa_wip_limit_qa'). */
+const SCOPE_WIP_PREFIX = 'qa_wip_limit_';
+/** Scopes that repurpose the freeform model_id TEXT column to carry
+ *  non-model settings. The column is TEXT so we encode booleans as
+ *  'on' / 'off' and numbers as their stringified form. */
 const SCOPE_STUCK_HOURS = 'qa_stuck_hours';
+const SCOPE_PRE_CHECK = 'qa_pre_check_enabled';
+const SCOPE_RUBRIC_V2 = 'qa_rubric_v2_enabled';
+const SCOPE_GENERATOR_V2 = 'qa_generator_v2_enabled';
 const DEFAULT_STUCK_HOURS = 48;
+
+/**
+ * Tri-state for each QA toggle:
+ *   'on'        — workspace explicitly turned it on (overrides env).
+ *   'off'       — workspace explicitly turned it off (overrides env).
+ *   'inherit'   — no row stored; the env var (if any) decides.
+ *
+ * This lets a workspace opt out even when the env flag is set globally.
+ */
+export type QaToggleState = 'on' | 'off' | 'inherit';
 
 export interface WorkspaceQaSettings {
   /** Model id the workspace has chosen for nuclear-mode critic passes,
@@ -36,6 +52,15 @@ export interface WorkspaceQaSettings {
   /** Hours after which a video that has not moved stage shows up in
    *  the Command Center's Stuck panel. Defaults to 48 when unset. */
   stuckThresholdHours: number;
+  /** Per-workspace overrides for the QA hardening levers. 'inherit'
+   *  means "use whatever the env flag says." */
+  preCheck: QaToggleState;
+  rubricV2: QaToggleState;
+  generatorV2: QaToggleState;
+  /** Soft WIP limit per stage. A stage with a number set here shows a
+   *  warning in the kanban when its column count exceeds the limit.
+   *  Stages not in the map are unlimited. */
+  wipLimits: Record<string, number>;
 }
 
 /**
@@ -47,18 +72,41 @@ export interface WorkspaceQaSettings {
  * and surfaced as null.
  */
 export async function getWorkspaceQaSettings(workspaceId: string): Promise<WorkspaceQaSettings> {
-  // One query covers both scopes — workspace_model_defaults is indexed
-  // on workspace_id so this stays cheap even if more scopes are added
-  // here later.
-  const result = await sql<{ scope: string; model_id: string }>`
+  // One query covers every scope — workspace_model_defaults is indexed
+  // on workspace_id so this stays cheap.
+  // Pull every scope this workspace has: fixed scopes + any per-stage
+  // WIP limit scopes that share the qa_wip_limit_ prefix. One query.
+  const result = await sql.query<{ scope: string; model_id: string }>(
+    `
     SELECT scope, model_id
       FROM workspace_model_defaults
-     WHERE workspace_id = ${workspaceId}::uuid
-       AND scope = ANY(ARRAY[${SCOPE_NUCLEAR_MODEL}, ${SCOPE_STUCK_HOURS}]::text[])
-  `;
+     WHERE workspace_id = $1::uuid
+       AND (
+         scope = ANY($2::text[])
+         OR scope LIKE $3
+       )
+    `,
+    [
+      workspaceId,
+      [SCOPE_NUCLEAR_MODEL, SCOPE_STUCK_HOURS, SCOPE_PRE_CHECK, SCOPE_RUBRIC_V2, SCOPE_GENERATOR_V2],
+      `${SCOPE_WIP_PREFIX}%`,
+    ],
+  );
   let nuclearModelId: string | null = null;
   let stuckThresholdHours = DEFAULT_STUCK_HOURS;
+  let preCheck: QaToggleState = 'inherit';
+  let rubricV2: QaToggleState = 'inherit';
+  let generatorV2: QaToggleState = 'inherit';
+  const wipLimits: Record<string, number> = {};
   for (const row of result.rows) {
+    if (row.scope.startsWith(SCOPE_WIP_PREFIX)) {
+      const stageId = row.scope.slice(SCOPE_WIP_PREFIX.length);
+      const limit = Number(row.model_id);
+      if (Number.isFinite(limit) && limit >= 1 && limit <= 1000) {
+        wipLimits[stageId] = Math.round(limit);
+      }
+      continue;
+    }
     if (row.scope === SCOPE_NUCLEAR_MODEL) {
       if (row.model_id && getModelById(row.model_id)) {
         nuclearModelId = row.model_id;
@@ -73,9 +121,64 @@ export async function getWorkspaceQaSettings(workspaceId: string): Promise<Works
       if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 720) {
         stuckThresholdHours = Math.round(parsed);
       }
+    } else if (row.scope === SCOPE_PRE_CHECK) {
+      preCheck = parseToggle(row.model_id);
+    } else if (row.scope === SCOPE_RUBRIC_V2) {
+      rubricV2 = parseToggle(row.model_id);
+    } else if (row.scope === SCOPE_GENERATOR_V2) {
+      generatorV2 = parseToggle(row.model_id);
     }
   }
-  return { nuclearModelId, stuckThresholdHours };
+  return { nuclearModelId, stuckThresholdHours, preCheck, rubricV2, generatorV2, wipLimits };
+}
+
+/**
+ * Set a per-stage WIP limit. Pass null to clear it. The stage id is
+ * a VideoStageId (validated by the caller; this helper trusts the input).
+ */
+export async function setWorkspaceWipLimit(
+  workspaceId: string,
+  stageId: string,
+  limit: number | null,
+): Promise<WorkspaceQaSettings> {
+  const scope = `${SCOPE_WIP_PREFIX}${stageId}`;
+  if (limit === null) {
+    await sql`
+      DELETE FROM workspace_model_defaults
+       WHERE workspace_id = ${workspaceId}::uuid
+         AND scope = ${scope}
+    `;
+  } else {
+    if (!Number.isFinite(limit) || limit < 1 || limit > 1000) {
+      throw new Error('WIP limit must be between 1 and 1000.');
+    }
+    const rounded = Math.round(limit);
+    await sql`
+      INSERT INTO workspace_model_defaults (workspace_id, scope, model_id, updated_at)
+      VALUES (${workspaceId}::uuid, ${scope}, ${String(rounded)}, NOW())
+      ON CONFLICT (workspace_id, scope) DO UPDATE
+        SET model_id = EXCLUDED.model_id,
+            updated_at = NOW()
+    `;
+  }
+  return getWorkspaceQaSettings(workspaceId);
+}
+
+function parseToggle(s: string | null | undefined): QaToggleState {
+  if (s === 'on' || s === 'off') return s;
+  return 'inherit';
+}
+
+/**
+ * Resolve a tri-state toggle against the env-var default. The
+ * workspace-level setting takes precedence; 'inherit' falls back to
+ * the env flag. Use this in code paths that check whether a lever is
+ * active for a given workspace.
+ */
+export function resolveToggle(state: QaToggleState, envEnabled: boolean): boolean {
+  if (state === 'on') return true;
+  if (state === 'off') return false;
+  return envEnabled;
 }
 
 /**
@@ -113,6 +216,49 @@ export async function setWorkspaceNuclearModel(
     `;
     logger.info('[qa workspace-settings] nuclear-model cleared (no upgrade)', {
       workspace_id: workspaceId,
+    });
+  }
+  return getWorkspaceQaSettings(workspaceId);
+}
+
+/**
+ * Set a tri-state toggle (preCheck / rubricV2 / generatorV2). Pass
+ * 'inherit' to delete the row (back to env-var default).
+ */
+export async function setWorkspaceToggle(
+  workspaceId: string,
+  flag: 'preCheck' | 'rubricV2' | 'generatorV2',
+  state: QaToggleState,
+): Promise<WorkspaceQaSettings> {
+  const scope =
+    flag === 'preCheck'
+      ? SCOPE_PRE_CHECK
+      : flag === 'rubricV2'
+        ? SCOPE_RUBRIC_V2
+        : SCOPE_GENERATOR_V2;
+
+  if (state === 'inherit') {
+    await sql`
+      DELETE FROM workspace_model_defaults
+       WHERE workspace_id = ${workspaceId}::uuid
+         AND scope = ${scope}
+    `;
+    logger.info('[qa workspace-settings] toggle cleared (inherit env)', {
+      workspace_id: workspaceId,
+      flag,
+    });
+  } else {
+    await sql`
+      INSERT INTO workspace_model_defaults (workspace_id, scope, model_id, updated_at)
+      VALUES (${workspaceId}::uuid, ${scope}, ${state}, NOW())
+      ON CONFLICT (workspace_id, scope) DO UPDATE
+        SET model_id = EXCLUDED.model_id,
+            updated_at = NOW()
+    `;
+    logger.info('[qa workspace-settings] toggle set', {
+      workspace_id: workspaceId,
+      flag,
+      state,
     });
   }
   return getWorkspaceQaSettings(workspaceId);

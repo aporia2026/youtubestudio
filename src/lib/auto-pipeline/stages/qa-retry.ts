@@ -29,6 +29,8 @@ import { resolveChain } from '../resolve-chain';
 import { persistArtefact } from '../db';
 import { countWords } from '../../utils';
 import { flattenVerdictToFixes, buildPromptAugmentFromFixes } from '../fix-list';
+import { QA_GENERATOR_V2_ENABLED } from '../../feature-flags';
+import { getWorkspaceQaSettings, resolveToggle } from '../../qa-workspace-settings';
 import { logger } from '../../logger';
 import type { StageHandlerContext, StageOutcome } from '../types';
 import type { ScriptPanelVerdict } from '../../script-critics/types';
@@ -127,6 +129,11 @@ export async function handleQaRetry(ctx: StageHandlerContext): Promise<StageOutc
 
   const chain = await resolveChain('script-generator', preset);
 
+  // Same generator-V2 toggle resolution as in generate-script.ts so the
+  // retry pass aims at the same rubric the panel will grade against.
+  const qaSettings = await getWorkspaceQaSettings(video.workspace_id).catch(() => null);
+  const generatorV2Enabled = resolveToggle(qaSettings?.generatorV2 ?? 'inherit', QA_GENERATOR_V2_ENABLED);
+
   let result: Awaited<ReturnType<typeof generateTextWithFallback>>;
   try {
     result = await generateTextWithFallback(chain, (modelId) => {
@@ -140,6 +147,7 @@ export async function handleQaRetry(ctx: StageHandlerContext): Promise<StageOutc
         additionalContext,
         referenceContext: rules.referenceContext,
         constraints: rules.constraints as never,
+        generatorV2Enabled,
       });
       return {
         modelId,
