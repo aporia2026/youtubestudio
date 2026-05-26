@@ -288,6 +288,16 @@ ${referenceContext}
 - If multiple references are provided, synthesize the best elements from each` : ''}
 ${styleNote}${stylePresetBlock}
 
+## SECTION HEADINGS — MANDATORY FORMAT
+Every section heading in your output (HOOK, INTRO, each MAIN CONTENT section, OUTRO, and any in-script titles like "Chapter One" or topic names) MUST be on its own line with a leading \`## \` (two hash marks + one space). Example:
+
+\`\`\`
+## The Vanishing
+In February 1959, nine hikers died...
+\`\`\`
+
+Why this matters: a downstream production-doc generator extracts headings from \`##\` markers and turns each into a Title Card scene. Headings without \`##\` are treated as regular narration, silently dropping the section structure. **No exceptions** — even when the section count or section names change for this specific video, every section's title still gets the \`## \` prefix.
+
 ## Structure (follow precisely — word counts are SPOKEN words, excluding [VISUAL CUE: ...] / [PAUSE] / [SFX: ...]):
 
 ${constraints?.skipHook
