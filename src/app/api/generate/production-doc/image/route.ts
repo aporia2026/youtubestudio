@@ -26,6 +26,7 @@ import { apiRoute } from '@/lib/route-helpers';
 import { resolveStyle } from '@/lib/production-doc-styles';
 import { loadStyleReferences, markReferenceRejected } from '@/lib/production-doc-styles-refs';
 import { generateImageWithRefs, ReferenceRejectedError } from '@/lib/image-gen-i2i';
+import { augmentCellPrompt, SINGLE_SHOT_PROMPT_CAP } from '@/lib/prompt-augmentation';
 
 export const maxDuration = 300;
 
@@ -106,86 +107,36 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       sectionTitleLayout: normalizedLayout,
     });
 
-    // Safe-top scene bias — only useful when the stripe will overlay the
-    // image (covering its top). When the stripe is letterboxed, we now
-    // generate at the exact visible canvas, so biasing the prompt is
-    // redundant and only crowds the input. Phrased as plain scene
-    // description, not imperative meta-instruction: directives like
-    // "LAYOUT CONSTRAINT — Leave the top 13% as negative space, do NOT
-    // place faces…" get rendered verbatim into the image by diffusion
-    // models, which can't distinguish rules-to-follow from text-to-draw.
-    const hasSectionStripe = Boolean(sectionTitle?.trim());
-    const needsSafeTopBias = hasSectionStripe && normalizedLayout === 'overlay';
-    const safeTopDirective = needsSafeTopBias
-      ? `Wide composition with an empty open sky or plain low-detail background across the upper portion of the frame. All characters, faces, objects, and key details sit in the lower portion.\n\n`
-      : '';
-
-    // OST baking. Sanitise stray newlines and cap at 120 chars so a
-    // malformed string can't smuggle other directives into the prompt.
-    // Phrased as a short scene element ("Hand-lettered text 'X' drawn
-    // in bold marker style") rather than an imperative ("INCLUDE THE
-    // WORDS — do NOT abbreviate…"). The imperative version was being
-    // rendered verbatim into the output image alongside the actual
-    // words. The phrase is repeated, terse, at the end of the prompt
-    // because image models weight late tokens heavily for "what must
-    // appear in the image".
-    // When mode is 'overlay' or 'none', the LowerThird (or nothing) renders
-    // the text at composition time — we deliberately keep the underlying
-    // image clean of in-prompt text so the diffusion model can't garble it.
-    // Sanitisation still happens up-front so the same safeOnScreenText
-    // value is available for downstream logging if needed in future.
-    const safeOnScreenText = (onScreenText ?? '').trim().replace(/[\r\n]+/g, ' ').slice(0, 120);
-    const escapedOst = safeOnScreenText.replace(/"/g, '\\"');
-    const shouldBakeOst = normalizedOstMode === 'bake' && safeOnScreenText.length > 0;
-    // OST sits below the stripe only when the stripe overlays the image.
-    // Letterbox layout already crops the canvas so OST can land anywhere.
-    const ostPosition = needsSafeTopBias
-      ? 'in the lower portion of the frame'
-      : 'within the scene';
-    const ostLeadingDirective = shouldBakeOst
-      ? `Hand-lettered text "${escapedOst}" drawn large in bold marker style ${ostPosition}, in the illustration's own style.\n\n`
-      : '';
-    const ostTrailingDirective = shouldBakeOst
-      ? `\n\nText shown: "${escapedOst}".`
-      : '';
-
-    // Phase 7: cloud-Kie chaining. Kie models can't accept a reference image
-    // for style conditioning, so we append the doc's textual sheet
-    // description to the prompt as a hint. Sanitised + capped before
-    // injection — same belt-and-braces as the OST sanitiser above.
-    const safeSheetDesc = (styleSheetDescription ?? '').trim().replace(/[\r\n]+/g, ' ').slice(0, 240);
-    const sheetDescDirective = safeSheetDesc
-      ? `\n\nMaintain visual continuity with the established style: ${safeSheetDesc}.`
-      : '';
-
-    // Length cap is on the augmented prompt — what we ACTUALLY send to Kie.
+    // Per-cell prompt augmentation. The augmentation logic itself lives
+    // in `src/lib/prompt-augmentation.ts` so the collage route applies
+    // the same directives per cell and produces byte-identical output
+    // for matching inputs. Changing the augmentation surface here means
+    // changing it there too — keep the helper as the single source of
+    // truth and only edit this call site for new directive *inputs*.
+    //
     // The body's `prompt` contains the LLM's scene description plus the
-    // style suffix appended server-side (see attachStyleSuffixToRows). For
-    // verbose styles (doodle_explainer_2's suffix is 1.9 kB on its own)
-    // the augmented total can exceed the cap. Rather than 400ing — which
-    // halts the whole batch and frustrates the user — we truncate the
-    // `prompt` portion from the tail so the most-important leading text
-    // (the scene body + the critical first rules of the style suffix) is
-    // preserved. Refs (when present via the i2i path below) carry the
-    // visual style independently, so the trailing suffix detail being
-    // dropped is acceptable degradation. Image models also weight late
-    // tokens heavily for "what must appear" — the OST + sheet-desc
-    // directives sit AFTER the truncated body, so they're never lost.
-    const PROMPT_CAP = 2000;
-    const fixedOverhead = safeTopDirective.length + ostLeadingDirective.length + ostTrailingDirective.length + sheetDescDirective.length;
-    const promptBudget = Math.max(200, PROMPT_CAP - fixedOverhead - 4);
-    let safePrompt = prompt.trim();
-    if (safePrompt.length > promptBudget) {
-      const original = safePrompt.length;
-      safePrompt = safePrompt.slice(0, promptBudget).replace(/\s+\S*$/, '').trimEnd();
-      logger.info('[prodoc image-gen prompt-truncated]', {
-        originalLen: original,
-        truncatedLen: safePrompt.length,
-        budget: promptBudget,
-        fixedOverhead,
-      });
-    }
-    const augmentedPrompt = `${safeTopDirective}${ostLeadingDirective}${safePrompt}${ostTrailingDirective}${sheetDescDirective}`;
+    // style suffix appended server-side (see attachStyleSuffixToRows).
+    // For verbose styles (doodle_explainer_2's suffix is 1.9 kB on its
+    // own) the augmented total can exceed the cap. The helper truncates
+    // the `prompt` portion from the tail so the most-important leading
+    // text (the scene body + the critical first rules of the style
+    // suffix) is preserved. Refs (when present via the i2i path below)
+    // carry the visual style independently, so the trailing suffix
+    // detail being dropped is acceptable degradation. Image models also
+    // weight late tokens heavily for "what must appear" — the OST +
+    // sheet-desc directives sit AFTER the truncated body, so they're
+    // never lost.
+    const augmented = augmentCellPrompt({
+      prompt,
+      onScreenText,
+      onScreenTextMode: normalizedOstMode,
+      sectionTitle,
+      sectionTitleLayout: normalizedLayout,
+      styleSheetDescription,
+      promptCap: SINGLE_SHOT_PROMPT_CAP,
+      source: 'prodoc-single-shot',
+    });
+    const augmentedPrompt = augmented.prompt;
 
     // ─── v2 ref-bearing i2i dispatch (Phase 4 of the May 21 plan) ────
     //
@@ -425,16 +376,17 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         }
       }
 
+      const hasSectionStripe = Boolean(sectionTitle?.trim());
       logger.info('[prodoc image-gen] canvas resolved', {
         model: spec.value,
         width: canvas.width,
         height: canvas.height,
         letterboxed: canvas.letterboxed,
         stripe_height_px: canvas.stripeHeightPx,
-        section_title: Boolean(sectionTitle?.trim()),
+        section_title: hasSectionStripe,
         layout: hasSectionStripe ? normalizedLayout : 'none',
         ost_mode: normalizedOstMode,
-        ost_baked: shouldBakeOst,
+        ost_baked: augmented.ostBaked,
         chained_to_sheet: Boolean(refImageFilename),
       });
       const result = await generator.generateImage(augmentedPrompt, {

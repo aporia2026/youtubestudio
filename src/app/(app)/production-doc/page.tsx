@@ -4019,7 +4019,10 @@ function ProductionDocPage() {
     if (retryingImages || imagesGenerating) return;
     if (emptyImagePlan.length === 0) return;
 
-    const collageOn = doc?.collage_mode === true;
+    // Default: ON. Only an explicit `false` (set via the settings
+    // toggle) opts out. Existing docs with no `collage_mode` field
+    // automatically run collage after the 2026-05-26 flip.
+    const collageOn = doc?.collage_mode !== false;
     const chunkCount = collageOn ? Math.floor(emptyImagePlan.length / 4) : 0;
     const tailCount = emptyImagePlan.length - chunkCount * 4;
     const confirmMsg = collageOn
@@ -4058,7 +4061,19 @@ function ProductionDocPage() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              prompts: chunk.map((c) => c.prompt),
+              // `cells` carries the per-row metadata so the collage
+              // route's `augmentCellPrompt` produces the same per-cell
+              // OST baking + safe-top bias + sheet-description hint
+              // that the single-shot route would have applied. See
+              // _plans/2026-05-26-collage-default-on-with-per-cell-augmentation.md.
+              cells: chunk.map((c) => ({
+                prompt: c.prompt,
+                onScreenText: c.onScreenText,
+                onScreenTextMode: c.onScreenTextMode,
+                sectionTitle: c.sectionTitle,
+                sectionTitleLayout: c.sectionTitleLayout,
+                styleSheetDescription: c.styleSheetDescription,
+              })),
               model: imageModel,
             }),
           });
@@ -7839,31 +7854,41 @@ function ProductionDocPage() {
               which has its own server-side flag (defence in depth). */}
           {COLLAGE_TESTER_PUBLIC && <CollageTesterPanel />}
 
-          {/* Collage batch mode — when on, "Generate empty" groups 4
-              consecutive shots into a single 2×2 collage call + 1
-              upscale (~75% cheaper than 4 single calls). Per-shot
+          {/* Collage batch mode — when on (default), "Generate empty"
+              groups 4 consecutive shots into a single 2×2 collage call
+              + 1 upscale (~75% cheaper than 4 single calls). Per-cell
+              OST baking, safe-top, and sheet description are applied
+              per cell — behaviour matches single-shot mode. Per-shot
               Regenerate stays single-image regardless. Falls back to
-              single shots automatically on per-chunk failure. v1
-              limitations: no per-cell OST baking, no style-ref i2i. */}
+              single shots automatically on per-chunk failure or
+              ineligible groups (mixed model, i2i, <4 shots). Default
+              flipped to ON 2026-05-26 with augmentation parity. */}
           <div
             className="flex items-center gap-2 mb-4 px-3 py-2 rounded text-xs"
             style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}
           >
             <label
               className="flex items-center gap-2 cursor-pointer"
-              title='Group every 4 shots into a single 2×2 collage call. The server upscales the collage and crops it into 4 per-shot images. ~75% cheaper than 4 single calls. Limitations: no per-cell on-screen-text baking. Per-shot Regenerate always stays single-image.'
+              title='Group every 4 shots into a single 2×2 collage call. The server upscales the collage once and crops it into 4 per-shot images. ~75% cheaper than 4 single calls, with byte-identical per-cell OST/safe-top/sheet-description augmentation. Default: ON. Per-shot Regenerate always stays single-image.'
             >
               <input
                 type="checkbox"
-                checked={doc.collage_mode === true}
+                checked={doc.collage_mode !== false}
                 onChange={(e) => {
                   const next: ProductionDoc = { ...doc };
                   if (e.target.checked) {
-                    next.collage_mode = true;
-                  } else {
+                    // Default is ON — clearing the field reverts to the
+                    // default. Storing `true` explicitly would also work
+                    // but `delete` keeps the persisted doc smaller for
+                    // the common case.
                     delete next.collage_mode;
+                  } else {
+                    // Explicit `false` is required to override the
+                    // default-on behaviour; `undefined` and `true` both
+                    // mean "collage on" after the 2026-05-26 flip.
+                    next.collage_mode = false;
                   }
-                  console.info('[collage-mode] doc-level toggle', { collage_mode: next.collage_mode === true });
+                  console.info('[collage-mode] doc-level toggle', { collage_mode: next.collage_mode !== false });
                   setDoc(next);
                   if (historyEntryId) {
                     updateProductionDocEntry(historyEntryId, { doc: next }).catch(() => {});
@@ -7876,8 +7901,8 @@ function ProductionDocPage() {
               </span>
             </label>
             <span style={{ color: 'var(--text-muted)' }}>
-              {doc.collage_mode === true
-                ? 'on: ~75% cheaper, slight quality tradeoff, no per-cell text baking'
+              {doc.collage_mode !== false
+                ? 'on (default): ~75% cheaper, per-cell text baking matches single-shot'
                 : 'off: each shot is its own generation call'}
             </span>
           </div>

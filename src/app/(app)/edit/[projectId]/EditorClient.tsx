@@ -700,7 +700,10 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     // project_assets, but our queue holds raw numeric indices.
     const lockedRowCount = stateRef.current.doc.rows.length;
     const docModelDefault = stateRef.current.doc.image_model_default;
-    const collageOn = stateRef.current.doc.collage_mode === true;
+    // Default: ON. Only an explicit `false` (set via the production-doc
+    // settings toggle) opts out. Existing docs with no `collage_mode`
+    // field automatically run collage after the 2026-05-26 flip.
+    const collageOn = stateRef.current.doc.collage_mode !== false;
     const modelLabel =
       getImageModelSpec(docModelDefault ?? DEFAULT_IMAGE_MODEL)?.label ??
       'the default image model';
@@ -817,11 +820,22 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         for (const i of stillBlank) await generateOne(i);
         return;
       }
-      const prompts = stillBlank.map((i) => {
+      // Build `cells` per row so the collage route's augmentCellPrompt
+      // produces the same per-cell OST baking + safe-top bias that the
+      // editor's single-shot path applies. Only `onScreenText` and
+      // `sectionTitle` are sent from the editor (matching the single-
+      // shot call's body shape) — mode and layout default server-side
+      // to 'bake' and 'letterbox' respectively. See
+      // _plans/2026-05-26-collage-default-on-with-per-cell-augmentation.md.
+      const cells = stillBlank.map((i) => {
         const row = liveState.doc.rows[i];
-        return row?.ai_image_prompt?.trim() || row?.visual_description?.trim() || '';
+        return {
+          prompt: row?.ai_image_prompt?.trim() || row?.visual_description?.trim() || '',
+          onScreenText: row?.on_screen_text ?? '',
+          sectionTitle: row?.section_title ?? '',
+        };
       });
-      if (prompts.some((p) => p.length === 0)) {
+      if (cells.some((c) => c.prompt.length === 0)) {
         // At least one shot has no usable prompt — fall back to
         // singles so generateOne can mark the empty ones as failed
         // individually (the collage route would 400 the whole chunk).
@@ -832,7 +846,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         const res = await fetch('/api/generate/production-doc/collage', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompts, model: docModelDefault }),
+          body: JSON.stringify({ cells, model: docModelDefault }),
           signal: controller.signal,
         });
         const data = (await res.json().catch(() => ({}))) as {

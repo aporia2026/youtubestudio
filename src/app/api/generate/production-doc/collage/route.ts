@@ -16,6 +16,7 @@ import type { ImageSaliencyMap } from '@/remotion/utils';
 import { sliceCollage } from '@/lib/collage-slicer';
 import { detectMalformedCollage } from '@/lib/collage-detect';
 import { composeCollagePrompt } from '@/lib/collage-prompt';
+import { augmentCellPrompt, COLLAGE_CELL_PROMPT_CAP } from '@/lib/prompt-augmentation';
 import { apiRoute } from '@/lib/route-helpers';
 
 export const maxDuration = 300;
@@ -26,9 +27,10 @@ export const maxDuration = 300;
  * upscale call vs. four of each).
  *
  * Pipeline:
- *   1. Compose the 4 caller prompts into a 2×2 prompt template asking
- *      the model for 4 distinct 16:9 scenes separated by a thin
- *      neutral border.
+ *   1. Augment each of the 4 caller cells per-cell (OST baking,
+ *      safe-top bias, sheet-description hint) via the shared helper.
+ *      Then compose into a 2×2 prompt template asking the model for 4
+ *      distinct 16:9 scenes separated by a thin neutral border.
  *   2. Create the kie task with the chosen image model. Auto-upscale
  *      via Recraft Crisp Upscale (~4×) runs inside the poller.
  *   3. Fetch the upscaled bytes once. Run histogram + Sobel detection
@@ -41,18 +43,34 @@ export const maxDuration = 300;
  *      compute saliency for each. Return the 4 URLs + saliency in shot
  *      order.
  *
+ * Request body shape:
+ *   - Preferred: `cells: Array<{ prompt, onScreenText?, onScreenTextMode?,
+ *     sectionTitle?, sectionTitleLayout?, styleSheetDescription? }>` — 4
+ *     entries. Each cell goes through `augmentCellPrompt` before
+ *     composition so the per-cell prompt that reaches the model is
+ *     byte-identical to what `/image` would have sent for the same
+ *     cell.
+ *   - Legacy: `prompts: string[]` — 4 entries, sent verbatim with no
+ *     augmentation. Preserved for the dev tester endpoint and any
+ *     caller that hasn't migrated yet. The production callers all
+ *     send `cells`.
+ *
  * Eligibility (client-enforced — this route doesn't second-guess):
  *   - All 4 shots must use the same image model (collage model = single
  *     model call). Mixed-model groups break out as single shots.
  *   - All 4 must be t2i (no per-shot style refs). i2i is single-shot.
- *   - This route doesn't apply the OST/safe-top/section-title
- *     augmentation that /image does — the cell-prompts are sent
- *     verbatim. Caller is responsible for any per-cell augmentation
- *     (or for not enabling collage on shots that need it).
  *
  * Rate limits mirror the single-shot route at the same key shape, so
  * one route taking ~75% of the spend can't sneak past the limiter.
  */
+interface CollageCellInput {
+  prompt: string;
+  onScreenText?: string;
+  onScreenTextMode?: 'bake' | 'overlay' | 'none';
+  sectionTitle?: string;
+  sectionTitleLayout?: 'overlay' | 'letterbox';
+  styleSheetDescription?: string;
+}
 export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   try {
     const ipLimit = checkRateLimit(`prodoc-img:${getClientIP(req)}`, 30, 60_000);
@@ -67,6 +85,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
 
     let body: {
       prompts?: string[];
+      cells?: CollageCellInput[];
       model?: string;
     };
     try {
@@ -75,27 +94,43 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
     }
 
-    const prompts = body.prompts;
-    if (!Array.isArray(prompts) || prompts.length !== 4) {
+    // Accept either the new `cells` shape (preferred) or the legacy
+    // `prompts` shape. `cells` carries the per-row metadata needed to
+    // run augmentCellPrompt per cell; `prompts` is augmentation-free
+    // and stays around for the dev tester + back-compat.
+    let cells: CollageCellInput[];
+    if (Array.isArray(body.cells)) {
+      cells = body.cells;
+    } else if (Array.isArray(body.prompts)) {
+      cells = body.prompts.map((prompt) => ({ prompt: typeof prompt === 'string' ? prompt : '' }));
+    } else {
       return NextResponse.json(
-        { error: '`prompts` must be an array of exactly 4 strings' },
+        { error: '`cells` or `prompts` must be an array of exactly 4 entries' },
         { status: 400 },
       );
     }
-    const trimmed = prompts.map((p) => (typeof p === 'string' ? p.trim() : ''));
-    if (trimmed.some((p) => p.length === 0)) {
+    if (cells.length !== 4) {
       return NextResponse.json(
-        { error: 'Every prompt must be a non-empty string' },
+        { error: 'Exactly 4 cells are required' },
         { status: 400 },
       );
     }
-    // Per-cell cap. The composed collage prompt adds ~250 chars of
-    // template overhead on top of the 4 cell prompts. Keep each cell at
-    // most 400 chars so the total stays under the 2000-char budget the
-    // single-shot route uses.
-    if (trimmed.some((p) => p.length > 400)) {
+    if (cells.some((c) => typeof c?.prompt !== 'string' || c.prompt.trim().length === 0)) {
       return NextResponse.json(
-        { error: 'Each prompt must be at most 400 characters' },
+        { error: 'Every cell must have a non-empty `prompt` string' },
+        { status: 400 },
+      );
+    }
+    // Raw per-cell cap is 400 chars on the input prompt. augmentCellPrompt
+    // is allowed to push the final augmented cell up to
+    // COLLAGE_CELL_PROMPT_CAP (600), accommodating directive overhead.
+    // The input cap stays at 400 because that's what the historical
+    // contract has been; bumping it would let a single misbehaving
+    // caller push the composed prompt past 2000 chars and into Kie's
+    // hard limit.
+    if (cells.some((c) => c.prompt.trim().length > 400)) {
+      return NextResponse.json(
+        { error: 'Each cell prompt must be at most 400 characters' },
         { status: 400 },
       );
     }
@@ -149,9 +184,41 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     let malformedIndices: number[] = [];
     let lastError = '';
 
+    // Per-cell augmentation runs once (the directives don't change
+    // between attempts; only the composed scaffolding does on the
+    // reinforced retry). Captured here so we can log the per-cell
+    // augmentation state before the loop and avoid double-logging on
+    // the retry.
+    const augmented = cells.map((cell, index) => {
+      const result = augmentCellPrompt({
+        prompt: cell.prompt,
+        onScreenText: cell.onScreenText,
+        onScreenTextMode: cell.onScreenTextMode,
+        sectionTitle: cell.sectionTitle,
+        sectionTitleLayout: cell.sectionTitleLayout,
+        styleSheetDescription: cell.styleSheetDescription,
+        promptCap: COLLAGE_CELL_PROMPT_CAP,
+        source: `collage-cell-${index}`,
+      });
+      return result;
+    });
+    logger.info('[collage generate] cells composed', {
+      model: spec.value,
+      provider: spec.provider,
+      cells: augmented.map((a, i) => ({
+        index: i,
+        ost_baked: a.ostBaked,
+        safe_top: a.safeTop,
+        sheet_desc: a.sheetDesc,
+        truncated: a.truncated,
+        augmented_len: a.prompt.length,
+      })),
+    });
+    const augmentedPrompts = augmented.map((a) => a.prompt);
+
     for (let attempt = 1; attempt <= 2; attempt++) {
       attemptCount = attempt;
-      const composedPrompt = composeCollagePrompt(trimmed, attempt === 2);
+      const composedPrompt = composeCollagePrompt(augmentedPrompts, attempt === 2);
       const t0 = Date.now();
       try {
         logger.info('[collage generate] start', {
