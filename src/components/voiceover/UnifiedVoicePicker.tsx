@@ -132,6 +132,9 @@ export function UnifiedVoicePicker({
   // browse aid, not a preference. The workspace settings' enabledProviders
   // is the right place for a sticky disable.
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>('all');
+  // Gender filter — narrows the voice list to a single gender. Local
+  // state for the same reason as the provider filter: pure browse aid.
+  const [genderFilter, setGenderFilter] = useState<'all' | 'male' | 'female' | 'neutral'>('all');
 
   // Filter to selected language up front, then group.
   const allEntries = useMemo(() => {
@@ -173,12 +176,17 @@ export function UnifiedVoicePicker({
 
   const voicesInActiveBand = grouped.byBand[activeBand] ?? [];
   const voicesInActiveBandFiltered = useMemo(() => {
-    if (providerFilter === 'all') return voicesInActiveBand;
+    let list = voicesInActiveBand;
     if (providerFilter === 'gemini') {
-      return voicesInActiveBand.filter((v) => isGeminiTier(v.voice.tier));
+      list = list.filter((v) => isGeminiTier(v.voice.tier));
+    } else if (providerFilter !== 'all') {
+      list = list.filter((v) => v.voice.providerId === providerFilter);
     }
-    return voicesInActiveBand.filter((v) => v.voice.providerId === providerFilter);
-  }, [voicesInActiveBand, providerFilter]);
+    if (genderFilter !== 'all') {
+      list = list.filter((v) => v.gender === genderFilter);
+    }
+    return list;
+  }, [voicesInActiveBand, providerFilter, genderFilter]);
 
   // Per-filter counts in the active band — drives the button labels and
   // disables a button when its filter would yield zero voices.
@@ -195,6 +203,26 @@ export function UnifiedVoicePicker({
     }
     return { elevenlabs, google, gemini, all: voicesInActiveBand.length };
   }, [voicesInActiveBand]);
+
+  // Per-gender counts respect the active provider filter so the gender
+  // buttons reflect what's visible once both filters are applied.
+  const genderCountsInBand = useMemo(() => {
+    let male = 0;
+    let female = 0;
+    let neutral = 0;
+    const list =
+      providerFilter === 'all'
+        ? voicesInActiveBand
+        : providerFilter === 'gemini'
+          ? voicesInActiveBand.filter((v) => isGeminiTier(v.voice.tier))
+          : voicesInActiveBand.filter((v) => v.voice.providerId === providerFilter);
+    for (const v of list) {
+      if (v.gender === 'male') male++;
+      else if (v.gender === 'female') female++;
+      else if (v.gender === 'neutral') neutral++;
+    }
+    return { male, female, neutral, all: list.length };
+  }, [voicesInActiveBand, providerFilter]);
 
   // Show the filter row only when both providers actually have voices
   // somewhere — otherwise the picker is effectively single-provider and
@@ -347,6 +375,49 @@ export function UnifiedVoicePicker({
             <span className="text-[11px]">Show Top-tier</span>
           </label>
         </div>
+
+        {/* Gender filter — appears when more than one gender is present
+            in the current view. Counts respect the provider filter so
+            "Male (12)" updates when you toggle ElevenLabs / Google. */}
+        {(genderCountsInBand.male + genderCountsInBand.female + genderCountsInBand.neutral) > 0 && (
+          <div className="flex gap-1 mt-2 flex-wrap">
+            {(
+              [
+                { id: 'all' as const, label: 'Any gender', count: genderCountsInBand.all },
+                { id: 'male' as const, label: 'Male', count: genderCountsInBand.male },
+                { id: 'female' as const, label: 'Female', count: genderCountsInBand.female },
+                { id: 'neutral' as const, label: 'Neutral', count: genderCountsInBand.neutral },
+              ] as const
+            ).map((opt) => {
+              const isActive = genderFilter === opt.id;
+              const disabled = opt.id !== 'all' && opt.count === 0;
+              return (
+                <button
+                  key={opt.id}
+                  onClick={() => setGenderFilter(opt.id)}
+                  disabled={disabled}
+                  className="px-1.5 py-0.5 rounded text-[11px] transition-all"
+                  style={{
+                    background: isActive ? 'rgba(124,58,237,0.2)' : 'var(--bg-secondary)',
+                    color: isActive
+                      ? 'var(--accent-purple-bright)'
+                      : disabled
+                        ? 'var(--text-muted)'
+                        : 'var(--text-secondary)',
+                    border: `1px solid ${isActive ? 'rgba(124,58,237,0.3)' : 'transparent'}`,
+                    opacity: disabled ? 0.4 : 1,
+                    cursor: disabled ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {opt.label}
+                  {opt.id !== 'all' && (
+                    <span style={{ opacity: 0.7 }}> ({opt.count})</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Voice list */}
@@ -393,9 +464,12 @@ export function UnifiedVoicePicker({
               selectedEntry?.voice.providerId === entry.voice.providerId &&
               selectedEntry?.voice.voiceId === entry.voice.voiceId &&
               selectedEntry?.voice.tier === entry.voice.tier;
-            const isPreviewing =
-              previewingVoiceId &&
-              previewingVoiceId === entry.voice.voiceId;
+            // The parent identifies the currently-playing preview by a
+            // composite key (provider|voiceId|tier) so the Chirp +
+            // Gemini variants of the same voice don't all light up when
+            // one plays. Picker computes the same key for each card.
+            const elemKey = `${entry.voice.providerId}|${entry.voice.voiceId}|${entry.voice.tier}`;
+            const isPreviewing = previewingVoiceId === elemKey;
             const cost = synthCostUsd(entry.voice.tier, scriptCharCount);
             const pricing = TIER_PRICING[entry.voice.tier];
             return (
@@ -441,7 +515,12 @@ export function UnifiedVoicePicker({
                     {scriptCharCount > 0 && ` · ${formatCost(cost)}`}
                   </p>
                 </div>
-                {entry.previewUrl && onPreview && (
+                {/* Play button shows for every voice. ElevenLabs voices
+                    use entry.previewUrl directly; Google voices fetch a
+                    sample from /api/tts/preview on first click (cached
+                    server-side after the first generation). The parent
+                    onPreview callback owns the dispatch. */}
+                {onPreview && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();

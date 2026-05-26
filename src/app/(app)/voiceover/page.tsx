@@ -526,6 +526,63 @@ function VoiceoverStudio() {
     }
   }
 
+  // Session cache of Google preview URLs. The server-side endpoint
+  // also caches per function instance + persists to R2, but the
+  // client-side map avoids the round-trip on repeat clicks.
+  const googlePreviewCacheRef = useRef<Map<string, string>>(new Map());
+
+  /**
+   * Generic preview handler — takes a VoiceCatalogEntry and dispatches:
+   *   - ElevenLabs voices use the previewUrl from /v1/voices
+   *   - Google voices fetch /api/tts/preview (synthesizes a short
+   *     sample, caches in R2 + memory, returns a URL)
+   * The playback element + previewPlaying state machine is shared so
+   * clicking a second voice stops the first.
+   */
+  async function playPreviewEntry(entry: VoiceCatalogEntry) {
+    const elemKey = `${entry.voice.providerId}|${entry.voice.voiceId}|${entry.voice.tier}`;
+    // Toggle off when clicking the currently-playing voice.
+    if (previewPlaying === elemKey) {
+      previewRef.current?.pause();
+      setPreviewPlaying(null);
+      return;
+    }
+
+    let url: string | undefined;
+    if (entry.voice.providerId === 'elevenlabs' && entry.previewUrl) {
+      url = entry.previewUrl;
+    } else if (entry.voice.providerId === 'google') {
+      const cacheKey = `${entry.voice.voiceId}|${entry.voice.tier}|${entry.voice.languageCode}`;
+      url = googlePreviewCacheRef.current.get(cacheKey);
+      if (!url) {
+        try {
+          const res = await fetch(
+            `/api/tts/preview?provider=google&voiceId=${encodeURIComponent(entry.voice.voiceId)}` +
+              `&tier=${encodeURIComponent(entry.voice.tier)}` +
+              `&languageCode=${encodeURIComponent(entry.voice.languageCode)}`,
+          );
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            toast.error(err.error || 'Preview unavailable');
+            return;
+          }
+          const data = await res.json();
+          url = data.url;
+          if (url) googlePreviewCacheRef.current.set(cacheKey, url);
+        } catch {
+          toast.error('Preview fetch failed');
+          return;
+        }
+      }
+    }
+
+    if (!url || !previewRef.current) return;
+    previewRef.current.src = url;
+    previewRef.current.play().catch(() => {});
+    setPreviewPlaying(elemKey);
+    previewRef.current.onended = () => setPreviewPlaying(null);
+  }
+
   const categories = ['all', ...Array.from(new Set(voices.map(v => v.category)))];
   const filteredVoices = voices.filter(v => {
     const matchSearch = !voiceSearch || v.name.toLowerCase().includes(voiceSearch.toLowerCase());
@@ -700,10 +757,7 @@ function VoiceoverStudio() {
                 setSelectedVoice('');
               }
             }}
-            onPreview={(entry) => {
-              const raw = voices.find((v) => v.voice_id === entry.voice.voiceId);
-              if (raw) playPreview(raw);
-            }}
+            onPreview={(entry) => playPreviewEntry(entry)}
             previewingVoiceId={previewPlaying}
           />
 
