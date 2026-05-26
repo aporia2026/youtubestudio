@@ -39,6 +39,7 @@ import {
   type ProductionDocHistoryEntry,
 } from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
+import { NichePicker } from '@/components/ui/NichePicker';
 import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { StyleManagerDialog, type StyleSummary } from './StyleManagerDialog';
@@ -7142,11 +7143,12 @@ function ProductionDocPage() {
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <div>
             <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>Niche *</label>
-            <AutocompleteInput
+            <NichePicker
               value={niche}
               onChange={setNiche}
               suggestions={nicheHints}
               placeholder="e.g. Cybersecurity & Antivirus"
+              required
             />
           </div>
           <div>

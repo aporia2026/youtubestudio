@@ -75,8 +75,11 @@ export default function SeoPageWrapper() {
 function SeoPage() {
   const search = useSearchParams();
   const scheduleItemId = getScheduleLinkId(search);
+  // Wave 1 ?videoId= handoff from the Command Center kanban + strip.
+  const videoIdParam = search.get('videoId');
   const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
   const [schedulePrefilled, setSchedulePrefilled] = useState(false);
+  const [videoPrefilled, setVideoPrefilled] = useState(false);
 
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('seo-optimizer'));
   const [topic, setTopic] = useState('');
@@ -131,8 +134,45 @@ function SeoPage() {
       toast.message(`Loaded context from "${item.title || 'schedule item'}"`);
     })();
     return () => { cancelled = true; };
-     
+
   }, [scheduleItemId, schedulePrefilled]);
+
+  // Wave 1 ?videoId= prefill — pulls topic + niche + existing title +
+  // active script body. Skips when ?scheduleItemId= is set so the
+  // schedule path keeps richer context (freeform tag seed).
+  useEffect(() => {
+    if (!videoIdParam || videoPrefilled || scheduleItemId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/videos/${videoIdParam}`);
+        if (cancelled || !res.ok) return;
+        const data = await res.json();
+        const video: { title?: string; niche?: string; topic?: string | null } | undefined = data?.video;
+        if (!video) return;
+        setVideoPrefilled(true);
+        const t = (video.title || video.topic || '').trim();
+        const n = (video.niche || '').trim();
+        if (t) {
+          setTopic(curr => curr || t);
+          setExistingTitle(curr => curr || t);
+        }
+        if (n) setNiche(curr => curr || n);
+        const scriptsRes = await fetch(`/api/projects/${videoIdParam}/scripts`);
+        if (!cancelled && scriptsRes.ok) {
+          const scriptsData = await scriptsRes.json();
+          type ScriptRow = { content?: string; is_active?: boolean };
+          const list: ScriptRow[] = Array.isArray(scriptsData?.scripts) ? scriptsData.scripts : [];
+          const active = list.find(s => s.is_active) ?? list[0];
+          if (active?.content) setScript(prev => prev || active.content!);
+        }
+        if (t) toast.message(`Loaded context from video "${t}"`);
+      } catch {
+        // best-effort
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [videoIdParam, videoPrefilled, scheduleItemId]);
 
   useEffect(() => {
     setTopicHints(getRecentTopics());

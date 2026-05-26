@@ -62,6 +62,13 @@ const IMAGE_MODELS = [
   { value: 'flux2-flex-i2i', label: 'Flux2 Flex (Image-to-Image)' },
   { value: 'gpt-image-2-i2i', label: 'GPT Image 2 (Image-to-Image)' },
   { value: 'gpt-image-2-openai-i2i', label: 'GPT Image 2 via OpenAI (Image-to-Image, faster)' },
+  // Atlas Cloud — Baidu ERNIE-Image-Turbo. Free tier ($0/image). Same
+  // auto-upscale path as every Kie model. Surfaces here so the
+  // free-form thumbnail flow can opt into it when the cost matters.
+  // Keep the value aligned with the registry entry in
+  // src/lib/image-models.ts and the MODEL_MAP in
+  // src/app/api/thumbnails/image/route.ts.
+  { value: 'ernie-image-turbo-atlas', label: 'Baidu ERNIE Image Turbo — Free (Text-to-Image, Atlas Cloud)' },
 ];
 
 /**
@@ -209,8 +216,11 @@ export default function ThumbnailsPageWrapper() {
 function ThumbnailsPage() {
   const search = useSearchParams();
   const scheduleItemId = getScheduleLinkId(search);
+  // Wave 1 ?videoId= handoff from the Command Center kanban + strip.
+  const videoIdParam = search.get('videoId');
   const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
   const [schedulePrefilled, setSchedulePrefilled] = useState(false);
+  const [videoPrefilled, setVideoPrefilled] = useState(false);
 
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('script-generator'));
   const [niche, setNiche] = useState('');
@@ -600,6 +610,39 @@ function ThumbnailsPage() {
     })();
     return () => { cancelled = true; };
   }, [scheduleItemId, schedulePrefilled]);
+
+  // Wave 1 ?videoId= prefill — pulls title + niche + active script
+  // body. Skips when ?scheduleItemId= is in the URL (richer context).
+  useEffect(() => {
+    if (!videoIdParam || videoPrefilled || scheduleItemId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/videos/${videoIdParam}`);
+        if (cancelled || !res.ok) return;
+        const data = await res.json();
+        const video: { title?: string; niche?: string; topic?: string | null } | undefined = data?.video;
+        if (!video) return;
+        setVideoPrefilled(true);
+        const t = (video.title || video.topic || '').trim();
+        const n = (video.niche || '').trim();
+        if (t) setTitle(curr => curr || t);
+        if (n) setNiche(curr => curr || n);
+        const scriptsRes = await fetch(`/api/projects/${videoIdParam}/scripts`);
+        if (!cancelled && scriptsRes.ok) {
+          const scriptsData = await scriptsRes.json();
+          type ScriptRow = { content?: string; is_active?: boolean };
+          const list: ScriptRow[] = Array.isArray(scriptsData?.scripts) ? scriptsData.scripts : [];
+          const active = list.find(s => s.is_active) ?? list[0];
+          if (active?.content) setScript(prev => prev || active.content!);
+        }
+        if (t) toast.message(`Loaded context from video "${t}"`);
+      } catch {
+        // best-effort
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [videoIdParam, videoPrefilled, scheduleItemId]);
 
   async function generateConcepts() {
     if (!title.trim()) { toast.error('Please enter a video title'); return; }
