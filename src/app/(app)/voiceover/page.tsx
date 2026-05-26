@@ -55,6 +55,28 @@ function formatHmsDuration(seconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+/**
+ * Parse a user-typed duration string back into seconds. Accepts the
+ * same forms `formatHmsDuration` emits — `M:SS`, `MM:SS`, `H:MM:SS` —
+ * plus a few forgiving variants: `9` → 9 minutes, `9:5` → 9m5s,
+ * `1:09:14` → 1h9m14s. Returns null on anything we can't parse so the
+ * caller can show a toast instead of silently picking a wrong value.
+ */
+function parseHmsDuration(input: string): number | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const parts = trimmed.split(':').map((p) => p.trim());
+  if (parts.some((p) => !/^\d+(\.\d+)?$/.test(p))) return null;
+  const nums = parts.map(Number);
+  if (nums.some((n) => !Number.isFinite(n) || n < 0)) return null;
+  // Bare number = minutes (e.g., user types "9" for nine minutes).
+  // Lets the lazy reader hit one digit and Enter instead of "9:00".
+  if (nums.length === 1) return nums[0] * 60;
+  if (nums.length === 2) return nums[0] * 60 + nums[1];
+  if (nums.length === 3) return nums[0] * 3600 + nums[1] * 60 + nums[2];
+  return null;
+}
+
 function VoiceoverStudio() {
   const searchParams = useSearchParams();
   const projectId = searchParams.get('projectId');
@@ -142,6 +164,42 @@ function VoiceoverStudio() {
   // whenever the source URL changes; the new clip re-emits metadata.
   const [audioDuration, setAudioDuration] = useState<number | null>(null);
   useEffect(() => { setAudioDuration(null); }, [audioUrl]);
+  // Reverse-direction control: the user types a target length and the
+  // slider snaps to the rate that hits it. Kept as a string so we can
+  // tolerate partial typing without aggressive reformatting. Synced
+  // *from* speedRate so dragging the slider updates the visible
+  // target field too — keeping the two views coherent.
+  const [targetLengthInput, setTargetLengthInput] = useState('');
+  useEffect(() => {
+    if (audioDuration === null) { setTargetLengthInput(''); return; }
+    setTargetLengthInput(formatHmsDuration(audioDuration / speedRate));
+  }, [speedRate, audioDuration]);
+
+  function commitTargetLength() {
+    if (audioDuration === null) return;
+    const parsed = parseHmsDuration(targetLengthInput);
+    if (parsed === null || parsed <= 0) {
+      toast.error('Use M:SS or H:MM:SS — for example 9:14');
+      setTargetLengthInput(formatHmsDuration(audioDuration / speedRate));
+      return;
+    }
+    // rate = original / target. Clamp to the slider's [0.5, 2.0] range.
+    // If we clamp, the resulting duration won't match what the user typed —
+    // surface that explicitly so they aren't confused why the field
+    // "didn't take" their value.
+    const requestedRate = audioDuration / parsed;
+    const clamped = Math.max(0.5, Math.min(2.0, requestedRate));
+    if (Math.abs(clamped - requestedRate) > 0.005) {
+      const minPossible = audioDuration / 2.0;
+      const maxPossible = audioDuration / 0.5;
+      toast.info(
+        `Out of range. Achievable lengths: ${formatHmsDuration(minPossible)} – ${formatHmsDuration(maxPossible)}.`,
+      );
+    }
+    // Snap to slider precision (step=0.05) so the visible rate matches
+    // the slider thumb position exactly.
+    setSpeedRate(Math.round(clamped * 20) / 20);
+  }
   useEffect(() => {
     const el = audioRef.current;
     if (!el) return;
@@ -1123,6 +1181,43 @@ function VoiceoverStudio() {
                       </button>
                       <span>2×</span>
                     </div>
+
+                    {/* Reverse control: type a target length, the slider
+                        back-solves for the rate. Commits on blur or Enter
+                        so partial typing doesn't fight the user. */}
+                    {audioDuration !== null && (
+                      <div className="flex items-center gap-2 mt-2 text-xs">
+                        <label htmlFor="vo-target-length" style={{ color: 'var(--text-secondary)' }}>
+                          Fit to length:
+                        </label>
+                        <input
+                          id="vo-target-length"
+                          type="text"
+                          inputMode="numeric"
+                          value={targetLengthInput}
+                          onChange={(e) => setTargetLengthInput(e.target.value)}
+                          onBlur={commitTargetLength}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+                            if (e.key === 'Escape') {
+                              setTargetLengthInput(formatHmsDuration(audioDuration / speedRate));
+                              (e.currentTarget as HTMLInputElement).blur();
+                            }
+                          }}
+                          placeholder="M:SS"
+                          className="rounded px-2 py-1 tabular-nums"
+                          style={{
+                            width: '72px',
+                            background: 'rgba(255,255,255,0.04)',
+                            border: '1px solid var(--border-default)',
+                            color: 'var(--text-primary)',
+                          }}
+                        />
+                        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                          range: {formatHmsDuration(audioDuration / 2)} – {formatHmsDuration(audioDuration / 0.5)}
+                        </span>
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex gap-3">
