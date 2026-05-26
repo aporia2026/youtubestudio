@@ -39,6 +39,7 @@ import type { protos } from '@google-cloud/text-to-speech';
 import { logger } from '../../logger';
 import { synthCostUsd } from '../cost';
 import { chunkScriptForGoogle, DEFAULT_MAX_CHUNK_BYTES } from '../chunker';
+import { chunkSsmlForGoogle, isSsml } from '../ssml-chunker';
 import { assertGoogleCredentialsValid, loadGoogleCredentials } from '../google-env';
 import { listGoogleVoices } from '../voices/google-catalog';
 import {
@@ -177,8 +178,26 @@ class GoogleSynthesizer implements Synthesizer {
       );
     }
 
-    const text = req.text;
-    const ssml = req.ssml;
+    // Auto-detect SSML in the text field. Users often paste SSML
+    // (`<speak>...<break time="2s"/>...</speak>`) into the script
+    // textarea expecting it to "just work". Without detection, the
+    // long-form chunker splits at sentence boundaries and cuts the
+    // <speak> wrapper across chunks — Chirp 3 HD gets malformed SSML
+    // in every chunk after the first, producing the "starts good,
+    // gets worse" volume/quality drift users have reported.
+    //
+    // Promote SSML-looking text into req.ssml so all downstream
+    // logic (size check, long-form routing, chunker selection) does
+    // the right thing.
+    let text = req.text;
+    let ssml = req.ssml;
+    if (!ssml && text && isSsml(text)) {
+      logger.info('[tts google synth] auto-detected SSML in text field', {
+        bytes: Buffer.byteLength(text, 'utf8'),
+      });
+      ssml = text;
+      text = '';
+    }
     const useSsml = Boolean(ssml);
     const payloadBytes = Buffer.byteLength(useSsml ? ssml! : text, 'utf8');
 
@@ -214,19 +233,16 @@ class GoogleSynthesizer implements Synthesizer {
         return this.synthesizeLongForm(req, Math.min(textByteLimit, perChunkTextBudget));
       }
     } else if (payloadBytes > SYNC_INPUT_BYTE_LIMIT) {
-      if (useSsml) {
-        throw new TtsProviderError(
-          `Google SSML input exceeds ${SYNC_INPUT_BYTE_LIMIT}-byte limit ` +
-            `(${payloadBytes} bytes). Chunking SSML is not supported because ` +
-            `tags would break across boundaries. Pass plain text instead, or ` +
-            `chunk the SSML caller-side at safe tag boundaries.`,
-          PROVIDER_ID,
-          'invalid_request',
-          false,
-        );
-      }
-      return this.synthesizeLongForm(req);
+      // Long-form path — SSML now supported via the SSML-aware
+      // chunker (splits on <break> tag boundaries, preserves tag
+      // balance per chunk). Pass the normalized req with the
+      // resolved ssml/text fields so synthesizeLongForm sees what
+      // we detected.
+      return this.synthesizeLongForm({ ...req, text, ssml });
     }
+
+    // Update req for the short-form path if we promoted text→ssml.
+    req = { ...req, text, ssml };
 
     // Single-chunk path: LINEAR16 for maximum quality.
     //
@@ -416,12 +432,23 @@ class GoogleSynthesizer implements Synthesizer {
     req: SynthesizeRequest,
     overrideMaxBytes?: number,
   ): Promise<SynthesizeResult> {
-    // Gemini-TTS callers pass a smaller maxBytes to honor the
-    // 4KB-text + 8KB-combined limit minus the style prompt size.
-    const chunks = chunkScriptForGoogle(req.text, overrideMaxBytes ?? DEFAULT_MAX_CHUNK_BYTES);
+    // SSML vs plain text branch. The SSML path is critical: splitting
+    // SSML at sentence boundaries (the plain-text behavior) leaves
+    // `<speak>...</speak>` unbalanced across chunks, which Chirp 3 HD
+    // either errors on or — worse — silently degrades. The SSML
+    // chunker splits at `<break>` boundaries and re-wraps each chunk.
+    const useSsml = Boolean(req.ssml);
+    const sourcePayload = useSsml ? req.ssml! : req.text;
+    const maxBytes = overrideMaxBytes ?? DEFAULT_MAX_CHUNK_BYTES;
+    // Each chunk's content (the string passed to Google) — plain text
+    // for the text path, full `<speak>...</speak>` documents for SSML.
+    const chunks: string[] = useSsml
+      ? chunkSsmlForGoogle(sourcePayload, maxBytes)
+      : chunkScriptForGoogle(sourcePayload, maxBytes);
+
     if (chunks.length === 0) {
       throw new TtsProviderError(
-        'Google long-form synthesis received empty text after chunking.',
+        'Google long-form synthesis received empty input after chunking.',
         PROVIDER_ID,
         'invalid_request',
         false,
@@ -432,10 +459,11 @@ class GoogleSynthesizer implements Synthesizer {
       voiceId: req.voice.voiceId,
       tier: req.voice.tier,
       languageCode: req.voice.languageCode,
-      totalChars: req.text.length,
-      totalBytes: Buffer.byteLength(req.text, 'utf8'),
+      totalChars: sourcePayload.length,
+      totalBytes: Buffer.byteLength(sourcePayload, 'utf8'),
       chunkCount: chunks.length,
       concurrency: LONG_FORM_CONCURRENCY,
+      inputType: useSsml ? 'ssml' : 'text',
     });
 
     const startedAt = Date.now();
@@ -456,9 +484,14 @@ class GoogleSynthesizer implements Synthesizer {
       // public synthesize() entry which would otherwise loop back
       // into another long-form check for inputs already under limit.
       const results = await Promise.all(
-        wave.map((chunkText) =>
+        wave.map((chunkPayload) =>
           this.synthesizeOnce(
-            { ...req, text: chunkText, ssml: undefined },
+            useSsml
+              ? // SSML chunk: each chunkPayload is a complete
+                // `<speak>...</speak>` document. Route to the ssml
+                // field; clear text so synthesizeOnce uses ssml.
+                { ...req, text: '', ssml: chunkPayload }
+              : { ...req, text: chunkPayload, ssml: undefined },
             'MP3',
           ),
         ),
