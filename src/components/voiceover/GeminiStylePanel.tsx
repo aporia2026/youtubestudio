@@ -55,17 +55,7 @@ export function GeminiStylePanel({
       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
         <div>
           <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-            Style instructions {geminiVariant === '3.1' && (
-              <span
-                className="ml-1 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide"
-                style={{
-                  background: 'rgba(124,58,237,0.15)',
-                  color: 'var(--accent-purple-bright)',
-                }}
-              >
-                preview
-              </span>
-            )}
+            Style instructions
           </h2>
           <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
             Tell Gemini how to deliver the script. Optional. Audio tags go in the script itself.

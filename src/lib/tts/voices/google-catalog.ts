@@ -185,6 +185,7 @@ function synthesizeGeminiVariants(args: {
         languageCode: args.languageCode,
         tier: 'gemini-25-flash-tts',
       },
+      // Gemini 2.5 Flash TTS is generally available — no preview tag.
       displayName: `${chirpDisplay} (Gemini 2.5)`,
       gender: baseGender,
     },
@@ -198,7 +199,11 @@ function synthesizeGeminiVariants(args: {
         languageCode: args.languageCode,
         tier: 'gemini-31-flash-tts',
       },
-      displayName: `${chirpDisplay} (Gemini 3.1)`,
+      // Gemini 3.1 Flash TTS is in Preview per Google's docs — surface
+      // that on the voice card so users see it before picking, not on
+      // the style-instructions panel where it was misleadingly attached
+      // to the feature instead of the model.
+      displayName: `${chirpDisplay} (Gemini 3.1, preview)`,
       gender: baseGender,
     });
   }
