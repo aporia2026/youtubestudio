@@ -468,7 +468,7 @@ function ProgressStrip({
         setBatchMessage('Cron is already running. Try again in a moment.');
       } else {
         setBatchMessage(
-          `Tick complete: advanced ${data.advanced}, released ${data.released}` +
+          `Tick complete: advanced ${data.advanced}` +
             (data.drained_to_empty ? ' (queue empty)' : ''),
         );
       }

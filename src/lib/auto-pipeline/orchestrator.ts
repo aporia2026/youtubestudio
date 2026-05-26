@@ -87,14 +87,13 @@ export function getStageHandler(stage: string): StageHandler | null {
  *     loop to drain the next.
  *   - `'no_work'` — no eligible row found. Caller exits the drain
  *     loop and returns 200.
- *   - `'released'` — kept in the return union for backward
- *     compatibility with the cron route's switch, but no code path
- *     produces this value after the 2026-05-26 change that converts
- *     uncaught handler throws into terminal failures (so the actual
- *     error message lands in `failure_message` and surfaces in the
- *     UI). The cron will count this branch as zero forever.
+ *
+ * Note: prior versions had a third `'released'` outcome for uncaught
+ * handler throws; the 2026-05-26 change converts those to terminal
+ * failures so the error message lands in `failure_message` and
+ * surfaces in the UI. The union is now just advanced/no_work.
  */
-export async function processNextVideo(): Promise<'advanced' | 'no_work' | 'released'> {
+export async function processNextVideo(): Promise<'advanced' | 'no_work'> {
   const tickId = randomUUID();
 
   const claim = await claimNextVideo(tickId);

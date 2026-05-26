@@ -20,8 +20,13 @@ async function attachChannels(itemId: string, channelIds: string[]): Promise<voi
   );
 }
 
-/** GET /api/schedule?channel_id=&from=&to=&status=&search=&series_id= */
-export async function GET(req: NextRequest) {
+/** GET /api/schedule?channel_id=&from=&to=&status=&search=&series_id=
+ *
+ *  Workspace-scoped per the multi-tenant invariant (added 2026-05-26
+ *  after a tenancy audit found this endpoint returning rows across
+ *  workspaces). The `apiRoute.authed` wrapper supplies the session
+ *  and the WHERE clause anchors on `si.workspace_id`. */
+export const GET = apiRoute.authed(async (session, req: NextRequest) => {
   try {
     await ensureScheduleSchema();
     await ensureSeriesSchema();
@@ -34,9 +39,11 @@ export async function GET(req: NextRequest) {
     const seriesId = searchParams.get('series_id');
 
     // Compose with query builder since @vercel/postgres `sql` tag doesn't interpolate clauses.
-    const clauses: string[] = [];
-    const values: unknown[] = [];
-    let idx = 1;
+    // Workspace anchor is always first param so the rest of the filter
+    // composition stays unchanged.
+    const clauses: string[] = ['si.workspace_id = $1::uuid'];
+    const values: unknown[] = [session.ws];
+    let idx = 2;
     if (channelId === UNASSIGNED_CHANNEL_ID) {
       // Items with no channel rows in the join table — orphaned entries that
       // the per-channel tabs would otherwise hide.
@@ -67,6 +74,9 @@ export async function GET(req: NextRequest) {
       values.push(seriesId); idx++;
     }
 
+    // clauses always has at least the workspace anchor; keep the
+    // `clauses.length ? …` shape so the SQL composition is identical
+    // to the prior code path apart from the anchor.
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const { rows } = await sql.query(
       `SELECT si.*,
@@ -100,7 +110,7 @@ export async function GET(req: NextRequest) {
     logger.error('GET /api/schedule error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ items: [], error: 'Failed' }, { status: 500 });
   }
-}
+});
 
 /** POST /api/schedule — create one item, or expand a recurrence into many. */
 export const POST = apiRoute.authed(async (session, req: NextRequest) => {

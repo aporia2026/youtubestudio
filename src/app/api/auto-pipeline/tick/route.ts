@@ -39,19 +39,21 @@ export const POST = apiRoute.authed(async (session) => {
 
   try {
     const outcome = await withCronLock(CRON_LOCK_KEYS.pipelineRunner, async () => {
+      // processNextVideo always either advances (success or terminal
+      // failure — both count) or reports no_work; the old 'released'
+      // path is gone since uncaught handler throws now mark the row
+      // failed instead of silently re-queueing.
       let advanced = 0;
-      let released = 0;
       let noWork = false;
       for (let i = 0; i < MANUAL_DRAIN_PER_CALL; i++) {
         const result = await processNextVideo();
         if (result === 'advanced') advanced++;
-        else if (result === 'released') released++;
         else {
           noWork = true;
           break;
         }
       }
-      return { advanced, released, drained_to_empty: noWork };
+      return { advanced, drained_to_empty: noWork };
     });
 
     if (!outcome.ran) {
