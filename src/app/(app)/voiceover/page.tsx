@@ -39,6 +39,22 @@ interface VoiceoverSettings {
   model_id: string;
 }
 
+/**
+ * Format a duration in seconds as either `M:SS` or `H:MM:SS`, picking the
+ * shorter form when the clip is under an hour. Used by the speed slider's
+ * "12:00 → 9:14" live preview — short voiceovers stay compact, long ones
+ * (20k-word scripts can exceed 2h) still read cleanly.
+ */
+function formatHmsDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
+  const total = Math.round(seconds);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
 function VoiceoverStudio() {
   const searchParams = useSearchParams();
   const projectId = searchParams.get('projectId');
@@ -119,6 +135,13 @@ function VoiceoverStudio() {
   // time-stretcher, and writes the result to a WAV blob.
   const [speedRate, setSpeedRate] = useState(1.0);
   const [renderingSpeed, setRenderingSpeed] = useState(false);
+  // Original-clip duration in seconds, captured from the <audio>
+  // element's loadedmetadata event. Drives the "12:00 → 9:14"
+  // preview next to the speed slider so the user can see, live,
+  // how long the audio will be at the picked rate. Reset to null
+  // whenever the source URL changes; the new clip re-emits metadata.
+  const [audioDuration, setAudioDuration] = useState<number | null>(null);
+  useEffect(() => { setAudioDuration(null); }, [audioUrl]);
   useEffect(() => {
     const el = audioRef.current;
     if (!el) return;
@@ -1029,7 +1052,19 @@ function VoiceoverStudio() {
                     </h3>
                     <span className="badge badge-green text-xs">Ready</span>
                   </div>
-                  <audio ref={audioRef} controls src={audioUrl} className="w-full mb-3" />
+                  <audio
+                    ref={audioRef}
+                    controls
+                    src={audioUrl}
+                    className="w-full mb-3"
+                    onLoadedMetadata={(e) => {
+                      const d = e.currentTarget.duration;
+                      // Some browsers report Infinity for streamed sources
+                      // before the full clip is buffered. Ignore those —
+                      // we'll pick up the real number on a later event.
+                      if (Number.isFinite(d) && d > 0) setAudioDuration(d);
+                    }}
+                  />
 
                   {/* Speed / Speaking Rate slider. Live preview via
                       HTMLAudioElement.playbackRate + preservesPitch
@@ -1041,8 +1076,30 @@ function VoiceoverStudio() {
                       <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
                         Playback speed
                       </label>
-                      <span className="text-xs tabular-nums" style={{ color: speedRate === 1 ? 'var(--text-muted)' : 'var(--accent-purple-bright)' }}>
-                        {speedRate.toFixed(2)}×
+                      <span className="text-xs tabular-nums flex items-center gap-1.5">
+                        <span style={{ color: speedRate === 1 ? 'var(--text-muted)' : 'var(--accent-purple-bright)' }}>
+                          {speedRate.toFixed(2)}×
+                        </span>
+                        {audioDuration !== null && (
+                          <>
+                            <span style={{ color: 'var(--text-muted)' }}>·</span>
+                            {speedRate === 1 ? (
+                              <span style={{ color: 'var(--text-muted)' }}>
+                                {formatHmsDuration(audioDuration)}
+                              </span>
+                            ) : (
+                              <span style={{ color: 'var(--text-muted)' }}>
+                                <span style={{ textDecoration: 'line-through' }}>
+                                  {formatHmsDuration(audioDuration)}
+                                </span>
+                                {' → '}
+                                <span style={{ color: 'var(--accent-purple-bright)', fontWeight: 600 }}>
+                                  {formatHmsDuration(audioDuration / speedRate)}
+                                </span>
+                              </span>
+                            )}
+                          </>
+                        )}
                       </span>
                     </div>
                     <input
