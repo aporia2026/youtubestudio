@@ -39,6 +39,7 @@ import type { protos } from '@google-cloud/text-to-speech';
 import { logger } from '../../logger';
 import { synthCostUsd } from '../cost';
 import { chunkScriptForGoogle, DEFAULT_MAX_CHUNK_BYTES } from '../chunker';
+import { concatWavFiles } from '../wav-concat';
 import { assertGoogleCredentialsValid, loadGoogleCredentials } from '../google-env';
 import { listGoogleVoices } from '../voices/google-catalog';
 import {
@@ -404,6 +405,7 @@ class GoogleSynthesizer implements Synthesizer {
     const audioBuffers: Uint8Array[] = [];
     let totalCharCount = 0;
     let totalCostUsd = 0;
+    let chunkMimeType: 'audio/mpeg' | 'audio/wav' = 'audio/wav';
 
     for (let i = 0; i < chunks.length; i += LONG_FORM_CONCURRENCY) {
       const wave = chunks.slice(i, i + LONG_FORM_CONCURRENCY);
@@ -424,15 +426,27 @@ class GoogleSynthesizer implements Synthesizer {
         audioBuffers.push(r.audioBytes);
         totalCharCount += r.charCount;
         totalCostUsd += r.costUsd;
+        chunkMimeType = r.mimeType;
       }
     }
 
-    const totalBytes = audioBuffers.reduce((sum, b) => sum + b.byteLength, 0);
-    const merged = new Uint8Array(totalBytes);
-    let offset = 0;
-    for (const buf of audioBuffers) {
-      merged.set(buf, offset);
-      offset += buf.byteLength;
+    // Format-aware concatenation. MP3 frames are self-contained so
+    // naive byte concat works; WAV files start with a RIFF/WAVE
+    // header that would land mid-stream and break playback. The
+    // wav-concat helper parses each chunk, pulls out the PCM payload,
+    // and emits a single new WAV with one header. See its module
+    // jsdoc for the underlying bug this fixes.
+    let merged: Uint8Array;
+    if (chunkMimeType === 'audio/wav') {
+      merged = concatWavFiles(audioBuffers);
+    } else {
+      const totalBytes = audioBuffers.reduce((sum, b) => sum + b.byteLength, 0);
+      merged = new Uint8Array(totalBytes);
+      let offset = 0;
+      for (const buf of audioBuffers) {
+        merged.set(buf, offset);
+        offset += buf.byteLength;
+      }
     }
 
     const durationSeconds = Math.max(1, totalCharCount / 15);
@@ -440,16 +454,17 @@ class GoogleSynthesizer implements Synthesizer {
     logger.info('[tts google synth long-form] ok', {
       voiceId: req.voice.voiceId,
       chunkCount: chunks.length,
-      totalBytes,
+      totalBytes: merged.byteLength,
       totalCharCount,
       totalCostUsd,
+      mimeType: chunkMimeType,
       durationMs: Date.now() - startedAt,
       estimatedDurationSec: durationSeconds,
     });
 
     return {
       audioBytes: merged,
-      mimeType: 'audio/wav',
+      mimeType: chunkMimeType,
       durationSeconds,
       charCount: totalCharCount,
       costUsd: totalCostUsd,
