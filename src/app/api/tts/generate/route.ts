@@ -210,6 +210,8 @@ const VOICE_TIERS: ReadonlySet<VoiceTier> = new Set([
   'polyglot',
   'chirp3-hd',
   'studio',
+  'gemini-25-flash-tts',
+  'gemini-31-flash-tts',
   'multilingual-v2',
   'turbo-v2-5',
   'turbo-v2',
