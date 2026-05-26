@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import type { VideoSummary } from './page';
+import { formatAgo } from './page';
 
 interface FlatFix {
   id: string;
@@ -63,6 +64,36 @@ const STAGE_LABEL: Record<string, string> = {
   seo_failed: 'SEO step failed',
   cancelled_by_user: 'Cancelled',
   cost_cap_exceeded: 'Cost cap exceeded',
+};
+
+/**
+ * Plain-language explanation of what the orchestrator does at each
+ * active stage. Shown in the expanded "What's happening now" panel
+ * for in-flight videos that have no other artifact to display yet.
+ * Honesty matters: every sentence here describes a real call the
+ * cron handler makes.
+ */
+const STAGE_EXPLANATION: Record<string, string> = {
+  queued:
+    'This video is in the queue. The cron tick (runs every 60s) will claim it and kick off idea generation on its next pass.',
+  generating_idea:
+    'The orchestrator is calling an LLM to brainstorm an idea (title, hook, description) for this video. Typically takes 10-30 seconds.',
+  generating_script:
+    'The orchestrator is calling an LLM to write the full script. The result gets persisted with a word count, then the video advances to either the script gate (if enabled) or the AI script review. Typically takes 30s-3min depending on length.',
+  running_qa:
+    'A panel of critic agents is scoring the script across multiple axes (hook, retention, payoff, etc.). Each critic is a separate LLM call. Typically takes 1-3 minutes.',
+  qa_retry:
+    'The script scored below the QA threshold. The orchestrator is calling an LLM to apply the critic fixes and produce a revised script, then it re-runs the QA pass.',
+  narration_complete:
+    'Narration audio has been uploaded. The orchestrator is updating downstream metadata before kicking off the production doc.',
+  generating_production_doc:
+    'The orchestrator is generating the shot-by-shot production doc (B-roll prompts, on-screen text, timing) from the script. This is the longest stage — typically 2-5 minutes — because it makes per-row LLM calls.',
+  generating_thumbnail:
+    'The orchestrator is generating thumbnail candidates by calling an image model. Typically takes 30s-2min depending on provider.',
+  assigning_to_editor:
+    'The orchestrator is creating an editor assignment, attaching the script + production doc + thumbnail, and dispatching a notification to the assigned editor.',
+  generating_seo:
+    'The orchestrator is calling an LLM to generate YouTube SEO metadata (titles, description, tags, chapters) from the final script.',
 };
 
 const TERMINAL: ReadonlySet<string> = new Set([
@@ -147,6 +178,11 @@ export default function VideoCard({
   const isTerminal = TERMINAL.has(video.stage);
   const isOverdue = video.stage === 'narration_overdue';
   const isAwaitingGate = video.stage === 'awaiting_script_gate';
+  const isWaiting = video.stage === 'waiting_narration' || isOverdue || isAwaitingGate;
+  // "live now" = the orchestrator literally has this row checked out.
+  // No animation key — claimed_at is a real DB field that's only set
+  // while a stage handler is mid-execution.
+  const isLive = video.claimed_at != null;
 
   const borderColor = isFailed
     ? 'rgba(239,68,68,0.4)'
@@ -184,6 +220,19 @@ export default function VideoCard({
             >
               {STAGE_LABEL[video.stage] ?? video.stage}
             </span>
+            {isLive && (
+              <span
+                className="px-1.5 py-0.5 rounded font-semibold"
+                style={{
+                  background: 'rgba(16,185,129,0.10)',
+                  color: '#10b981',
+                  border: '1px solid rgba(16,185,129,0.35)',
+                }}
+                title={`Cron has the row claimed since ${new Date(video.claimed_at!).toLocaleTimeString()}. The stage handler is executing right now.`}
+              >
+                ● live · {formatAgo(video.claimed_at!)}
+              </span>
+            )}
             {video.script_word_count != null && (
               <span style={{ color: 'var(--text-muted)' }}>{video.script_word_count} spoken words</span>
             )}
@@ -194,6 +243,9 @@ export default function VideoCard({
               <span style={{ color: 'var(--text-muted)' }}>{video.retry_count} retry/retries</span>
             )}
             <span style={{ color: 'var(--text-muted)' }}>${Number(video.cost_usd).toFixed(2)}</span>
+            <span style={{ color: 'var(--text-muted)' }} title={`Last stage transition at ${new Date(video.updated_at).toLocaleString()}`}>
+              · updated {formatAgo(video.updated_at)}
+            </span>
           </div>
         </div>
         <span className="shrink-0" style={{ color: 'var(--text-muted)' }}>
@@ -219,6 +271,10 @@ export default function VideoCard({
                     {video.failure_message}
                   </div>
                 </div>
+              )}
+
+              {!isTerminal && !isWaiting && (
+                <ActivityPanel video={video} />
               )}
 
               {isAwaitingGate && (
@@ -352,6 +408,93 @@ export default function VideoCard({
               )}
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Real-time activity panel for in-flight, non-waiting stages. Shows
+ * only what the DB actually says — no fake animations, no fabricated
+ * progress, no spinning wheels that lie. The three signals here are
+ * concrete:
+ *   1. STAGE_EXPLANATION  — what the orchestrator does at this stage.
+ *   2. claimed_at         — whether the cron is mid-execution right now.
+ *   3. updated_at         — when the last stage transition happened.
+ * If `updated_at` is old AND `claimed_at` is null, the panel shows
+ * the wait honestly ("waiting for next cron tick"). If it's been
+ * many minutes with no movement, the panel says so plainly so the
+ * user knows to investigate, not assume things are humming.
+ */
+function ActivityPanel({ video }: { video: VideoSummary }) {
+  const explanation = STAGE_EXPLANATION[video.stage] ?? null;
+  const isLive = video.claimed_at != null;
+  const updatedMs = new Date(video.updated_at).getTime();
+  const sinceUpdateSec = Math.max(0, Math.floor((Date.now() - updatedMs) / 1000));
+  // Surface a "looks stuck" warning if the cron hasn't touched the
+  // row in > 5 minutes and isn't currently claiming it. 5 min is the
+  // 99th-percentile upper bound on any single active stage; beyond
+  // that something likely broke (LLM timeout, cron paused, etc.).
+  const looksStuck = !isLive && sinceUpdateSec > 5 * 60;
+
+  return (
+    <div
+      className="rounded-lg p-4"
+      style={{
+        background: looksStuck ? 'rgba(239,68,68,0.05)' : 'var(--bg-card)',
+        border: `1px solid ${looksStuck ? 'rgba(239,68,68,0.35)' : 'var(--border)'}`,
+      }}
+    >
+      <div className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--text-secondary)' }}>
+        What&apos;s happening now
+      </div>
+
+      {explanation && (
+        <p className="text-sm mb-3" style={{ color: 'var(--text-primary)' }}>
+          {explanation}
+        </p>
+      )}
+
+      <dl className="text-xs grid grid-cols-1 sm:grid-cols-2 gap-y-1.5 gap-x-4">
+        <div>
+          <dt className="inline" style={{ color: 'var(--text-muted)' }}>Stage: </dt>
+          <dd className="inline font-medium" style={{ color: 'var(--text-primary)' }}>{STAGE_LABEL[video.stage] ?? video.stage}</dd>
+        </div>
+        <div>
+          <dt className="inline" style={{ color: 'var(--text-muted)' }}>Last transition: </dt>
+          <dd className="inline" style={{ color: 'var(--text-primary)' }}>
+            {formatAgo(video.updated_at)}
+            <span style={{ color: 'var(--text-muted)' }}> ({new Date(video.updated_at).toLocaleTimeString()})</span>
+          </dd>
+        </div>
+        <div>
+          <dt className="inline" style={{ color: 'var(--text-muted)' }}>Cron status: </dt>
+          <dd className="inline" style={{ color: isLive ? '#10b981' : 'var(--text-primary)' }}>
+            {isLive
+              ? <>● Active (claimed {formatAgo(video.claimed_at!)})</>
+              : <>○ Idle — next tick within 60s</>}
+          </dd>
+        </div>
+        <div>
+          <dt className="inline" style={{ color: 'var(--text-muted)' }}>Retries: </dt>
+          <dd className="inline" style={{ color: 'var(--text-primary)' }}>{video.retry_count}</dd>
+        </div>
+        <div>
+          <dt className="inline" style={{ color: 'var(--text-muted)' }}>Cost so far: </dt>
+          <dd className="inline" style={{ color: 'var(--text-primary)' }}>${Number(video.cost_usd).toFixed(4)}</dd>
+        </div>
+      </dl>
+
+      {looksStuck && (
+        <div
+          className="mt-3 p-2 rounded text-xs"
+          style={{ background: 'rgba(239,68,68,0.10)', color: '#f87171' }}
+        >
+          No movement in {Math.floor(sinceUpdateSec / 60)}m and the cron isn&apos;t
+          currently claiming this row. The orchestrator may have crashed mid-handler
+          or the LLM call may be timing out. Check server logs or kill the video and
+          retry from a fresh batch.
         </div>
       )}
     </div>
