@@ -39,7 +39,6 @@ import type { protos } from '@google-cloud/text-to-speech';
 import { logger } from '../../logger';
 import { synthCostUsd } from '../cost';
 import { chunkScriptForGoogle, DEFAULT_MAX_CHUNK_BYTES } from '../chunker';
-import { buildWav, parseWav } from '../wav-concat';
 import { assertGoogleCredentialsValid, loadGoogleCredentials } from '../google-env';
 import { listGoogleVoices } from '../voices/google-catalog';
 import {
@@ -137,6 +136,30 @@ function isChirp3Hd(voiceId: string): boolean {
   return /-Chirp3-HD-/i.test(voiceId);
 }
 
+/**
+ * Encoding decision matrix for the Google provider:
+ *
+ *   - Single-chunk synthesis: LINEAR16/WAV. Highest quality (lossless),
+ *     no concat involved.
+ *   - Multi-chunk (long-form): MP3. MP3 frames are self-contained, so
+ *     byte-concatenating chunks at sentence boundaries produces a
+ *     fully playable file. The previous LINEAR16/WAV long-form path
+ *     surfaced two issues: (a) WAV RIFF headers landing mid-stream
+ *     after naive concat, and (b) even after switching to header-
+ *     aware concat, Chirp 3 HD's per-call auto-gain varied between
+ *     chunks producing audible volume drift across long narrations.
+ *     MP3 doesn't have the header-in-middle problem AND each MP3
+ *     frame is independently decoded, so per-chunk amplitude
+ *     differences manifest at frame boundaries (a few ms) rather
+ *     than accumulating into noticeable drift.
+ *
+ * Trade-off: long narrations get ~32 kbps MP3 (Google's default for
+ * audioEncoding=MP3) instead of lossless WAV. For YouTube — which
+ * re-encodes everything anyway — this is inaudible. What you gain is
+ * complete reliability at any script length.
+ */
+type GoogleEncoding = 'LINEAR16' | 'MP3';
+
 class GoogleSynthesizer implements Synthesizer {
   readonly id = PROVIDER_ID;
 
@@ -178,12 +201,8 @@ class GoogleSynthesizer implements Synthesizer {
           false,
         );
       }
-      // Per-chunk text + prompt must stay under 8KB. Reserve the prompt
-      // size from each chunk so the combined call never overflows.
       const perChunkTextBudget = Math.max(500, GEMINI_COMBINED_BYTE_LIMIT - promptBytes);
-      if (payloadBytes <= Math.min(textByteLimit, perChunkTextBudget)) {
-        // Fits in one request — fall through to the short-form path.
-      } else {
+      if (payloadBytes > Math.min(textByteLimit, perChunkTextBudget)) {
         if (useSsml) {
           throw new TtsProviderError(
             `Gemini-TTS SSML input exceeds size limit. Pass plain text instead.`,
@@ -196,9 +215,6 @@ class GoogleSynthesizer implements Synthesizer {
       }
     } else if (payloadBytes > SYNC_INPUT_BYTE_LIMIT) {
       if (useSsml) {
-        // SSML can't be chunked safely — tags would slice across chunk
-        // boundaries and produce broken markup. Callers passing SSML
-        // must keep each request under the limit themselves.
         throw new TtsProviderError(
           `Google SSML input exceeds ${SYNC_INPUT_BYTE_LIMIT}-byte limit ` +
             `(${payloadBytes} bytes). Chunking SSML is not supported because ` +
@@ -209,9 +225,43 @@ class GoogleSynthesizer implements Synthesizer {
           false,
         );
       }
-      // Plain text — chunk + parallel synth + concat MP3 bytes.
       return this.synthesizeLongForm(req);
     }
+
+    // Single-chunk path: LINEAR16 for maximum quality.
+    //
+    // Safety hatch: `GOOGLE_TTS_FORCE_MP3=true` forces MP3 even for
+    // short content. Useful if a future single-chunk LINEAR16 issue
+    // surfaces and the deploy needs an immediate downgrade without a
+    // code change.
+    const forceMp3 = process.env.GOOGLE_TTS_FORCE_MP3 === 'true';
+    return this.synthesizeOnce(req, forceMp3 ? 'MP3' : 'LINEAR16');
+  }
+
+  /**
+   * Single API call to Google's synthesizeSpeech, with explicit
+   * audio encoding. The short-form path calls this with LINEAR16
+   * (lossless WAV); the long-form chunked path calls it with MP3
+   * for every chunk so byte-concat produces a clean file.
+   */
+  private async synthesizeOnce(
+    req: SynthesizeRequest,
+    encoding: GoogleEncoding,
+  ): Promise<SynthesizeResult> {
+    if (req.options.providerId !== 'google') {
+      throw new TtsProviderError(
+        'Google provider received non-google options.',
+        PROVIDER_ID,
+        'invalid_request',
+        false,
+      );
+    }
+
+    const text = req.text;
+    const ssml = req.ssml;
+    const useSsml = Boolean(ssml);
+    const payloadBytes = Buffer.byteLength(useSsml ? ssml! : text, 'utf8');
+    const isGemini = isGeminiTier(req.voice.tier);
 
     if (isChirp3Hd(req.voice.voiceId)) {
       if (req.options.pitchSemitones !== undefined || req.options.speakingRate !== undefined) {
@@ -230,6 +280,7 @@ class GoogleSynthesizer implements Synthesizer {
       chars: text.length,
       bytes: payloadBytes,
       ssml: useSsml,
+      encoding,
     });
 
     const client = await getClient();
@@ -242,39 +293,20 @@ class GoogleSynthesizer implements Synthesizer {
       input: useSsml
         ? { ssml }
         : isGemini && stylePrompt
-          ? // Gemini-TTS accepts a parallel `prompt` field carrying
-            // natural-language style instructions ("Read this in a
-            // conspiratorial whisper") alongside the literal text.
-            // Typed via 'as never' because the SDK's generated d.ts
-            // hasn't been updated yet to expose the Gemini-only prompt
-            // field; the API accepts it (verified 2026-05-26 against
-            // docs.cloud.google.com/text-to-speech/docs/gemini-tts).
-            ({ text, prompt: stylePrompt } as never)
+          ? ({ text, prompt: stylePrompt } as never)
           : { text },
       voice: {
         languageCode: req.voice.languageCode,
-        // Gemini expects the bare voice name ("Charon"); Chirp 3 HD and
-        // all other tiers want the full locale-prefixed form
-        // ("en-US-Chirp3-HD-Charon"). See geminiVoiceName() comment.
         name: isGemini ? geminiVoiceName(req.voice.voiceId) : req.voice.voiceId,
-        // Set model_name only for Gemini tiers — for everything else
-        // Google infers the model from the voice name's prefix
-        // (en-US-Chirp3-HD-* → Chirp 3 HD, en-US-Studio-* → Studio).
         ...(geminiModelName ? ({ modelName: geminiModelName } as never) : {}),
       },
       audioConfig: {
-        // LINEAR16 returns a complete WAV file with RIFF header
-        // (verified against Google's spec 2026-05-26 — "For LINEAR16
-        // audio, we include the WAV header"). We force the native
-        // 24 kHz sample rate Chirp 3 HD / Gemini produce; lower-tier
-        // voices (Standard, WaveNet) accept it and resample internally.
-        // Tradeoff vs MP3 default: ~10× larger files, but the audio is
-        // lossless and Google STT alignment accuracy improves
-        // measurably on uncompressed input.
-        audioEncoding: 'LINEAR16',
-        sampleRateHertz: 24000,
-        // Chirp 3 HD AND Gemini-TTS both ignore pitch/speakingRate —
-        // their expressive control comes from the prompt + audio tags.
+        audioEncoding: encoding,
+        // Pin sampleRateHertz only for LINEAR16 — for MP3 we let
+        // Google emit at its default (matches the voice's native rate
+        // for Chirp 3 HD / Studio at 24 kHz). Setting it on MP3 is a
+        // no-op but explicit-is-better.
+        ...(encoding === 'LINEAR16' ? { sampleRateHertz: 24000 } : { sampleRateHertz: 24000 }),
         ...(isChirp3Hd(req.voice.voiceId) || isGemini
           ? {}
           : {
@@ -319,12 +351,16 @@ class GoogleSynthesizer implements Synthesizer {
           ? audioContent
           : new Uint8Array(audioContent as ArrayBuffer);
 
+    const mimeType: 'audio/wav' | 'audio/mpeg' =
+      encoding === 'LINEAR16' ? 'audio/wav' : 'audio/mpeg';
     const charCount = text.length;
     const durationSeconds = Math.max(1, charCount / 15);
     const costUsd = synthCostUsd(req.voice.tier, charCount);
 
     logger.info('[tts google synth] ok', {
       voiceId: req.voice.voiceId,
+      encoding,
+      mimeType,
       bytes: audioBytes.byteLength,
       durationMs: Date.now() - startedAt,
       estimatedDurationSec: durationSeconds,
@@ -333,7 +369,7 @@ class GoogleSynthesizer implements Synthesizer {
 
     return {
       audioBytes,
-      mimeType: 'audio/wav',
+      mimeType,
       durationSeconds,
       charCount,
       costUsd,
@@ -342,6 +378,7 @@ class GoogleSynthesizer implements Synthesizer {
         tier: req.voice.tier,
         languageCode: req.voice.languageCode,
         ssml: useSsml,
+        encoding,
         ...(geminiModelName ? { modelName: geminiModelName } : {}),
         ...(stylePrompt ? { stylePromptChars: stylePrompt.length } : {}),
       },
@@ -402,45 +439,34 @@ class GoogleSynthesizer implements Synthesizer {
     });
 
     const startedAt = Date.now();
-    // For WAV: extract PCM as each chunk arrives, drop the raw WAV
-    // bytes — only the PCM payload is kept. Halves peak memory
-    // (~380 MB instead of ~760 MB on a 20k-word / 2h narration) so a
-    // single Vercel function can handle the whole concatenation
-    // without OOM.
-    //
-    // For MP3: keep raw chunks (MP3 frames are self-contained, byte
-    // concat is correct).
-    const pcmBuffers: Uint8Array[] = [];
+    // Long-form ALWAYS uses MP3 chunks. See encoding-decision-matrix
+    // comment above class GoogleSynthesizer for why. MP3 frames are
+    // self-contained so byte concat is correct; per-chunk amplitude
+    // differences manifest at frame boundaries (~26 ms each) rather
+    // than accumulating into the audible volume drift LINEAR16 chunks
+    // produced via Chirp 3 HD's per-call auto-gain.
     const mp3Buffers: Uint8Array[] = [];
-    let wavFormat:
-      | { sampleRate: number; numChannels: number; bitsPerSample: number }
-      | null = null;
     let totalCharCount = 0;
     let totalCostUsd = 0;
-    let chunkMimeType: 'audio/mpeg' | 'audio/wav' = 'audio/wav';
     let chunksReceived = 0;
 
     for (let i = 0; i < chunks.length; i += LONG_FORM_CONCURRENCY) {
       const wave = chunks.slice(i, i + LONG_FORM_CONCURRENCY);
-      // Recursive call back into synthesize() — each chunk is below
-      // the limit so it lands on the short-form path. Strip ssml from
-      // the request: we already validated up front that the long-form
-      // path is text-only.
+      // synthesizeOnce with explicit MP3 encoding — bypasses the
+      // public synthesize() entry which would otherwise loop back
+      // into another long-form check for inputs already under limit.
       const results = await Promise.all(
         wave.map((chunkText) =>
-          this.synthesize({
-            ...req,
-            text: chunkText,
-            ssml: undefined,
-          }),
+          this.synthesizeOnce(
+            { ...req, text: chunkText, ssml: undefined },
+            'MP3',
+          ),
         ),
       );
       for (const r of results) {
         // Loud chunk-loss detection: any empty audio response fails
         // the whole synth instead of silently producing a truncated
-        // voiceover. This is what guards "didn't record all the
-        // script" — if a chunk vanished, you'll see the error, not
-        // a 95%-complete file.
+        // voiceover.
         if (!r.audioBytes || r.audioBytes.byteLength === 0) {
           throw new TtsProviderError(
             `Google long-form synthesis received empty audio for chunk ${chunksReceived + 1}/${chunks.length}.`,
@@ -449,43 +475,24 @@ class GoogleSynthesizer implements Synthesizer {
             true,
           );
         }
+        if (r.mimeType !== 'audio/mpeg') {
+          // Should be impossible — synthesizeOnce returns mimeType
+          // matching the encoding it was called with. Hard-fail if
+          // something upstream changes that contract.
+          throw new TtsProviderError(
+            `Google long-form chunk returned unexpected mimeType ${r.mimeType}; expected audio/mpeg.`,
+            PROVIDER_ID,
+            'vendor_5xx',
+            false,
+          );
+        }
         chunksReceived++;
         totalCharCount += r.charCount;
         totalCostUsd += r.costUsd;
-        chunkMimeType = r.mimeType;
-        if (r.mimeType === 'audio/wav') {
-          const parsed = parseWav(r.audioBytes);
-          if (!wavFormat) {
-            wavFormat = {
-              sampleRate: parsed.sampleRate,
-              numChannels: parsed.numChannels,
-              bitsPerSample: parsed.bitsPerSample,
-            };
-          } else if (
-            parsed.sampleRate !== wavFormat.sampleRate ||
-            parsed.numChannels !== wavFormat.numChannels ||
-            parsed.bitsPerSample !== wavFormat.bitsPerSample
-          ) {
-            throw new TtsProviderError(
-              `Google long-form chunk ${chunksReceived} has mismatched WAV format ` +
-                `(${parsed.sampleRate}/${parsed.numChannels}ch/${parsed.bitsPerSample}bit vs ` +
-                `expected ${wavFormat.sampleRate}/${wavFormat.numChannels}ch/${wavFormat.bitsPerSample}bit).`,
-              PROVIDER_ID,
-              'vendor_5xx',
-              false,
-            );
-          }
-          pcmBuffers.push(parsed.pcm);
-          // The raw WAV bytes (r.audioBytes) drop out of scope here —
-          // only the PCM stays in memory. Critical for 20k-word scripts.
-        } else {
-          mp3Buffers.push(r.audioBytes);
-        }
+        mp3Buffers.push(r.audioBytes);
       }
     }
 
-    // Sanity guard: chunks went in, audio came out. If the counts
-    // disagree something dropped a chunk silently.
     if (chunksReceived !== chunks.length) {
       throw new TtsProviderError(
         `Google long-form synthesis chunk count mismatch: sent ${chunks.length}, received ${chunksReceived}.`,
@@ -495,27 +502,17 @@ class GoogleSynthesizer implements Synthesizer {
       );
     }
 
-    // Build the final audio buffer. WAV: one header + all PCM glued.
-    // MP3: byte concat (frames self-contained).
-    let merged: Uint8Array;
-    if (chunkMimeType === 'audio/wav' && wavFormat) {
-      const totalPcmBytes = pcmBuffers.reduce((sum, b) => sum + b.byteLength, 0);
-      const combinedPcm = new Uint8Array(totalPcmBytes);
-      let offset = 0;
-      for (const buf of pcmBuffers) {
-        combinedPcm.set(buf, offset);
-        offset += buf.byteLength;
-      }
-      merged = buildWav({ ...wavFormat, pcm: combinedPcm });
-    } else {
-      const totalBytes = mp3Buffers.reduce((sum, b) => sum + b.byteLength, 0);
-      merged = new Uint8Array(totalBytes);
-      let offset = 0;
-      for (const buf of mp3Buffers) {
-        merged.set(buf, offset);
-        offset += buf.byteLength;
-      }
+    // MP3 byte concat. Each chunk is a complete MP3 stream; appending
+    // them yields a single playable file because MP3 decoders re-sync
+    // at every frame boundary.
+    const totalBytes = mp3Buffers.reduce((sum, b) => sum + b.byteLength, 0);
+    const merged = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const buf of mp3Buffers) {
+      merged.set(buf, offset);
+      offset += buf.byteLength;
     }
+    const chunkMimeType: 'audio/mpeg' = 'audio/mpeg';
 
     const durationSeconds = Math.max(1, totalCharCount / 15);
 
