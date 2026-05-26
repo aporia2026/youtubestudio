@@ -4,7 +4,10 @@ import {
   estimateRowSeconds,
   PRODUCTION_DOC_MAX_SECONDS_PER_ROW,
   shiftTimecodeBySeconds,
+  splitScriptAtAnyBoundary,
+  splitScriptAtClauseBoundary,
   splitScriptAtSentenceBoundary,
+  splitScriptAtWordBoundary,
   validateAndSplitOverlongRows,
 } from '@/lib/production-doc-postprocess';
 
@@ -69,6 +72,115 @@ describe('splitScriptAtSentenceBoundary', () => {
   });
 });
 
+describe('splitScriptAtClauseBoundary — tier 2 of the cascade', () => {
+  it('splits at a comma followed by whitespace + lowercase word', () => {
+    const text = 'We arrived just before noon, but the gates were already locked tight.';
+    const out = splitScriptAtClauseBoundary(text);
+    expect(out).not.toBeNull();
+    expect(out!.first.endsWith(',')).toBe(true);
+    expect(out!.second.startsWith('but')).toBe(true);
+  });
+
+  it('splits at a coordinating conjunction surrounded by whitespace', () => {
+    const text = 'The data looked clean and the experiments all ran to completion as designed.';
+    const out = splitScriptAtClauseBoundary(text);
+    expect(out).not.toBeNull();
+    // Split lands BEFORE the conjunction so the second half opens with it.
+    expect(out!.second.startsWith('and')).toBe(true);
+  });
+
+  it('splits at an em dash', () => {
+    const text = 'We waited for the results — they took far longer than anyone had predicted.';
+    const out = splitScriptAtClauseBoundary(text);
+    expect(out).not.toBeNull();
+    expect(out!.second.startsWith('—')).toBe(true);
+  });
+
+  it('does NOT split numeric literals like "1,000"', () => {
+    expect(splitScriptAtClauseBoundary('The total came to 1,000 dollars exactly')).toBeNull();
+  });
+
+  it('does NOT split date forms like "December 25, 2023"', () => {
+    // Comma followed by space + DIGIT — the regex requires a letter after.
+    expect(splitScriptAtClauseBoundary('The launch happened on December 25, 2023')).toBeNull();
+  });
+
+  it('returns null when no comma/conjunction/dash exists', () => {
+    expect(
+      splitScriptAtClauseBoundary('Just one long uninterrupted clause with nothing to split on inside'),
+    ).toBeNull();
+  });
+
+  it('picks the candidate closest to the midpoint when multiple exist', () => {
+    const text = 'First clause, second clause, third clause, fourth clause finishes the sentence.';
+    const out = splitScriptAtClauseBoundary(text);
+    expect(out).not.toBeNull();
+    // Text is 80 chars (midpoint 40); comma after "third clause," sits
+    // at char 42 — closest to midpoint of the three internal commas.
+    expect(out!.first).toMatch(/third clause,$/);
+    expect(out!.second).toMatch(/^fourth clause/);
+  });
+});
+
+describe('splitScriptAtWordBoundary — tier 3 of the cascade', () => {
+  it('splits any multi-word string at the word boundary closest to the midpoint', () => {
+    const text = 'one two three four five six seven eight nine ten';
+    const out = splitScriptAtWordBoundary(text);
+    expect(out).not.toBeNull();
+    // Midpoint by chars; expect roughly half the words in each side.
+    expect(out!.first.split(/\s+/).length).toBeGreaterThanOrEqual(4);
+    expect(out!.second.split(/\s+/).length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('returns null for a single-token input', () => {
+    expect(splitScriptAtWordBoundary('SingleToken')).toBeNull();
+    expect(splitScriptAtWordBoundary('   indented   ')).toBeNull();
+  });
+
+  it('returns null for empty / whitespace-only input', () => {
+    expect(splitScriptAtWordBoundary('')).toBeNull();
+    expect(splitScriptAtWordBoundary('   ')).toBeNull();
+  });
+
+  it('always succeeds for >=2-word inputs even with weird punctuation', () => {
+    // Slashes, numbers, all-caps — the splitter operates on whitespace only.
+    expect(splitScriptAtWordBoundary('UNIT/1A 47% 2026 hello world')).not.toBeNull();
+  });
+});
+
+describe('splitScriptAtAnyBoundary — the three-tier cascade', () => {
+  it('prefers sentence boundary (tier 1) when present', () => {
+    const text = 'First sentence here. Second sentence following on naturally.';
+    const out = splitScriptAtAnyBoundary(text);
+    expect(out).not.toBeNull();
+    expect(out!.first.endsWith('.')).toBe(true);
+    expect(out!.second.startsWith('Second')).toBe(true);
+  });
+
+  it('falls through to clause boundary (tier 2) when no sentence boundary', () => {
+    const text = 'We waited for the results, but the verdict took much longer to land';
+    const out = splitScriptAtAnyBoundary(text);
+    expect(out).not.toBeNull();
+    expect(out!.first.endsWith(',')).toBe(true);
+    expect(out!.second.startsWith('but')).toBe(true);
+  });
+
+  it('falls through to word boundary (tier 3) when no punctuation at all', () => {
+    const text = 'A truly enormous sentence that runs without any internal sentence boundaries';
+    const out = splitScriptAtAnyBoundary(text);
+    expect(out).not.toBeNull();
+    expect(out!.first.length).toBeGreaterThan(0);
+    expect(out!.second.length).toBeGreaterThan(0);
+    // No punctuation was added; the join preserves the original tokens.
+    expect((out!.first + ' ' + out!.second).split(/\s+/).length).toBe(text.split(/\s+/).length);
+  });
+
+  it('returns null only for a single token', () => {
+    expect(splitScriptAtAnyBoundary('OneWord')).toBeNull();
+    expect(splitScriptAtAnyBoundary('')).toBeNull();
+  });
+});
+
 describe('shiftTimecodeBySeconds', () => {
   it('adds seconds and rolls over minutes', () => {
     expect(shiftTimecodeBySeconds('0:00', 6)).toBe('0:06');
@@ -123,19 +235,36 @@ describe('validateAndSplitOverlongRows', () => {
     expect(result.rows[1].visual_description).toBe('desc-0:00');
   });
 
-  it('warns but does not split when the long row is a single unsplittable sentence', () => {
-    // ~21 words ≈ 9.3s, one sentence with no internal punctuation.
+  it('splits a long no-punctuation sentence at a word boundary (cascade tier 3)', () => {
+    // ~21 words ≈ 9.3s, one sentence with no internal punctuation. The
+    // three-tier cascade falls through to word-boundary splitting, so
+    // this case now produces a clean split rather than a freeze warning.
     const sentence =
       'A truly enormous sentence that runs without any internal sentence boundaries for far too many words to fit cleanly';
     const input = [row('0:00', sentence)];
     const result = validateAndSplitOverlongRows(input, WPM);
 
-    expect(result.rows).toHaveLength(1);
-    expect(result.rows[0].script_text).toBe(sentence);
+    expect(result.rows.length).toBeGreaterThanOrEqual(2);
+    expect(result.overlongRowCount).toBe(1);
+    expect(result.splitCount).toBeGreaterThanOrEqual(1);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toMatch(/split into/i);
+    // No "freeze last frame" wording any more for word-boundary splits.
+    expect(result.warnings[0]).not.toMatch(/freeze the last frame/i);
+  });
+
+  it('only emits the single-token freeze warning when the row is literally one word', () => {
+    // A single token that somehow exceeds the cap is the only case the
+    // cascade can\'t split. Realistically this never happens (one word
+    // is well under 7s at any wpm) — pin the behavior by forcing a
+    // 0.5s cap so a 3-word row triggers the unsplittable branch when
+    // it\'s reduced to one token.
+    const input = [row('0:00', 'Antidisestablishmentarianism')];
+    const result = validateAndSplitOverlongRows(input, WPM, { maxSecondsPerRow: 0.01 });
     expect(result.overlongRowCount).toBe(1);
     expect(result.splitCount).toBe(0);
-    expect(result.warnings).toHaveLength(1);
-    expect(result.warnings[0]).toMatch(/no internal sentence boundary/i);
+    expect(result.rows).toHaveLength(1);
+    expect(result.warnings[0]).toMatch(/single unbroken token/i);
   });
 
   it('does not split Title Card rows even if they exceed the cap', () => {

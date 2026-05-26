@@ -91,9 +91,13 @@ export function validateAndSplitOverlongRows<R extends ProductionDocRowLike>(
         `Row at ${row.timecode} (${seconds.toFixed(1)}s narration) was split into ${splits.rows.length} rows to keep each scene under ${cap}s. The split rows share the same visual description — edit one of them before animating for a distinct second shot.`,
       );
     } else {
+      // With the three-tier cascade in splitScriptAtAnyBoundary
+      // (sentence → clause → word), this branch fires only when the
+      // row is a single token — vanishingly rare in practice, since a
+      // single word can't exceed the duration cap at any realistic wpm.
       out.push(row);
       warnings.push(
-        `Row at ${row.timecode} is ${seconds.toFixed(1)}s of narration but has no internal sentence boundary to split on. The animation will freeze the last frame after ${cap}s — consider rewriting this sentence in the script.`,
+        `Row at ${row.timecode} is ${seconds.toFixed(1)}s of narration but is a single unbroken token — no word boundary exists to split on. The animation will freeze the last frame after ${cap}s.`,
       );
     }
   }
@@ -102,8 +106,10 @@ export function validateAndSplitOverlongRows<R extends ProductionDocRowLike>(
 }
 
 /** Recursive splitter. Returns `{ kind: 'split', rows }` on success, or
- *  `{ kind: 'unsplittable' }` if the row has no usable sentence boundary
- *  and we've already passed the cap. */
+ *  `{ kind: 'unsplittable' }` if the row is a single word (so even the
+ *  word-boundary fallback can't help). With the three-tier cascade in
+ *  `splitScriptAtAnyBoundary`, unsplittable is now exceedingly rare —
+ *  almost every multi-word row gets split. */
 function splitRowRecursively<R extends ProductionDocRowLike>(
   row: R,
   wpm: number,
@@ -116,7 +122,7 @@ function splitRowRecursively<R extends ProductionDocRowLike>(
   const seconds = estimateRowSeconds(row.script_text, wpm);
   if (seconds <= cap) return { kind: 'split', rows: [row] };
 
-  const split = splitScriptAtSentenceBoundary(row.script_text);
+  const split = splitScriptAtAnyBoundary(row.script_text);
   if (!split) return { kind: 'unsplittable' };
 
   const firstRow = { ...row, script_text: split.first } as R;
@@ -179,6 +185,147 @@ export function splitScriptAtSentenceBoundary(
   }
   const first = trimmed.slice(0, bestIndex).trim();
   const second = trimmed.slice(bestIndex).trim();
+  if (!first || !second) return null;
+  return { first, second };
+}
+
+/** Three-tier cascade splitter. Tries each tier in order and returns the
+ *  first successful split. Designed so that real-world multi-word rows
+ *  practically always succeed — only a literal single word fails.
+ *
+ *  Tier 1 — sentence boundary (`splitScriptAtSentenceBoundary`).
+ *    Period / question mark / exclamation followed by a capital letter.
+ *    Best-quality split: the two halves are independent sentences.
+ *
+ *  Tier 2 — clause boundary (`splitScriptAtClauseBoundary`).
+ *    Comma followed by whitespace + lowercase word, a standalone
+ *    coordinating conjunction (and / but / so / because / however /
+ *    although / while / yet / or) surrounded by whitespace, or an em
+ *    dash. The halves are sub-sentences; reads cleanly when the audio
+ *    is played continuous.
+ *
+ *  Tier 3 — word boundary (`splitScriptAtWordBoundary`).
+ *    Any whitespace-delimited break. The halves are mid-clause but the
+ *    voiceover plays continuously across the boundary — only the visual
+ *    cut lands at the unusual point. Directors mid-clause-cut routinely
+ *    (the Verite cut), so a viewer doesn't notice.
+ *
+ *  Returns null only when `text` is a single token (no internal whitespace).
+ */
+export function splitScriptAtAnyBoundary(
+  text: string,
+): { first: string; second: string } | null {
+  return (
+    splitScriptAtSentenceBoundary(text) ??
+    splitScriptAtClauseBoundary(text) ??
+    splitScriptAtWordBoundary(text)
+  );
+}
+
+/** Tier 2 — clause boundary. Finds the candidate closest to the midpoint
+ *  among:
+ *    - commas followed by whitespace + a letter (avoids splitting numeric
+ *      literals like "1,000" and date forms like "December 25, 2023")
+ *    - coordinating conjunctions surrounded by whitespace ("and", "but",
+ *      "so", "because", "however", "although", "while", "yet", "or") —
+ *      the split lands JUST BEFORE the conjunction so the second half
+ *      starts with it ("…we waited, but then…" → first ends with "waited",
+ *      second starts with "but")
+ *    - em dashes (real " — " or hyphenated " -- ")
+ *
+ *  Returns null if none of those exist in the text.
+ */
+export function splitScriptAtClauseBoundary(
+  text: string,
+): { first: string; second: string } | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  const candidates: number[] = [];
+
+  // Commas followed by whitespace + a letter. The character index AFTER
+  // the comma is the split point — first half keeps the comma, second
+  // half begins with the next clause.
+  const commaRegex = /,(?=\s+[A-Za-z])/g;
+  let m: RegExpExecArray | null;
+  while ((m = commaRegex.exec(trimmed)) !== null) {
+    candidates.push(m.index + 1);
+  }
+
+  // Coordinating conjunctions. Match whitespace + conjunction + whitespace
+  // and place the split BEFORE the conjunction (at the leading whitespace).
+  const conjunctionRegex = /\s+(?:and|but|so|because|however|although|while|yet|or)\s+/gi;
+  while ((m = conjunctionRegex.exec(trimmed)) !== null) {
+    candidates.push(m.index);
+  }
+
+  // Em dashes / double hyphens with surrounding whitespace. Split BEFORE
+  // the dash so the second half starts with it (matches the conjunction
+  // convention).
+  const dashRegex = /\s+(?:—|--|–)\s+/g;
+  while ((m = dashRegex.exec(trimmed)) !== null) {
+    candidates.push(m.index);
+  }
+
+  if (candidates.length === 0) return null;
+
+  const midpoint = trimmed.length / 2;
+  let bestIndex = candidates[0];
+  let bestDistance = Math.abs(candidates[0] - midpoint);
+  for (const c of candidates) {
+    const d = Math.abs(c - midpoint);
+    if (d < bestDistance) {
+      bestDistance = d;
+      bestIndex = c;
+    }
+  }
+  const first = trimmed.slice(0, bestIndex).trim();
+  const second = trimmed.slice(bestIndex).trim();
+  if (!first || !second) return null;
+  return { first, second };
+}
+
+/** Tier 3 — word boundary. Splits at the whitespace gap closest to the
+ *  midpoint of the text. Always succeeds for ≥2-word inputs. Returns
+ *  null only for a single token (a one-word row, which is too short to
+ *  ever exceed the timing cap anyway).
+ *
+ *  Why this is acceptable: the doc's `script_text` is the verbatim
+ *  voiceover; the narrator reads the script continuously regardless of
+ *  row boundaries. A row boundary is a VISUAL cut point only. Cutting
+ *  visually mid-clause while audio runs through is a standard editing
+ *  technique (Verite cut, "L-cut") and viewers don't perceive it as
+ *  jarring — the alternative (a frozen last frame on an overlong row)
+ *  IS visually jarring.
+ */
+export function splitScriptAtWordBoundary(
+  text: string,
+): { first: string; second: string } | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const tokens = trimmed.split(/\s+/);
+  if (tokens.length < 2) return null;
+
+  // Walk the character positions of each inter-word gap and pick the
+  // one closest to the textual midpoint. `charPos` after the loop body
+  // equals the END of token i; the split point is AT that position
+  // (whitespace after gets trimmed when assigning halves).
+  const midpoint = trimmed.length / 2;
+  let charPos = 0;
+  let bestSplit = tokens[0].length;
+  let bestDistance = Math.abs(bestSplit - midpoint);
+  for (let i = 0; i < tokens.length - 1; i++) {
+    charPos += tokens[i].length;
+    const d = Math.abs(charPos - midpoint);
+    if (d < bestDistance) {
+      bestDistance = d;
+      bestSplit = charPos;
+    }
+    charPos += 1; // account for the single whitespace between tokens
+  }
+
+  const first = trimmed.slice(0, bestSplit).trim();
+  const second = trimmed.slice(bestSplit).trim();
   if (!first || !second) return null;
   return { first, second };
 }
