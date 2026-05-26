@@ -139,7 +139,8 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
-  const { overlayUrl, prompt } = body;
+  const { overlayUrl } = body;
+  let prompt = body.prompt;
   const mode = (body.mode || 'smart') as EditMode;
   if (!ALLOWED_MODES.includes(mode)) {
     return NextResponse.json(
@@ -150,8 +151,19 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   if (!overlayUrl?.trim() || !prompt?.trim()) {
     return NextResponse.json({ error: 'overlayUrl + prompt required' }, { status: 400 });
   }
-  if (prompt.length > 2000) {
-    return NextResponse.json({ error: 'Prompt too long (max 2000 chars)' }, { status: 400 });
+  // Truncate rather than 400 — when the caller passes the row's
+  // `ai_image_prompt` (which now reliably carries the chosen style's
+  // full suffix), verbose-suffix styles bust the 2000-char limit on
+  // their own. Trimming the tail preserves the scene body and the
+  // suffix's leading rules. Symmetric with the main /image route.
+  const PROMPT_CAP = 2000;
+  if (prompt.length > PROMPT_CAP) {
+    const original = prompt.length;
+    prompt = prompt.slice(0, PROMPT_CAP).replace(/\s+\S*$/, '').trimEnd();
+    logger.info('[overlay-edit prompt-truncated]', {
+      originalLen: original,
+      truncatedLen: prompt.length,
+    });
   }
 
   // R2 public host derived from R2_IMAGES_PUBLIC_URL — used to pin

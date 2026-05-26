@@ -158,14 +158,34 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       ? `\n\nMaintain visual continuity with the established style: ${safeSheetDesc}.`
       : '';
 
-    const augmentedPrompt = `${safeTopDirective}${ostLeadingDirective}${prompt.trim()}${ostTrailingDirective}${sheetDescDirective}`;
-
-    // Length cap applies to what we ACTUALLY send to Kie — the augmented
-    // prompt — not the original. Raised to 2000 to leave room for the
-    // OST directive overhead (~150 chars) on top of the existing budget.
-    if (augmentedPrompt.length > 2000) {
-      return NextResponse.json({ error: 'Prompt too long — maximum 2000 characters' }, { status: 400 });
+    // Length cap is on the augmented prompt — what we ACTUALLY send to Kie.
+    // The body's `prompt` contains the LLM's scene description plus the
+    // style suffix appended server-side (see attachStyleSuffixToRows). For
+    // verbose styles (doodle_explainer_2's suffix is 1.9 kB on its own)
+    // the augmented total can exceed the cap. Rather than 400ing — which
+    // halts the whole batch and frustrates the user — we truncate the
+    // `prompt` portion from the tail so the most-important leading text
+    // (the scene body + the critical first rules of the style suffix) is
+    // preserved. Refs (when present via the i2i path below) carry the
+    // visual style independently, so the trailing suffix detail being
+    // dropped is acceptable degradation. Image models also weight late
+    // tokens heavily for "what must appear" — the OST + sheet-desc
+    // directives sit AFTER the truncated body, so they're never lost.
+    const PROMPT_CAP = 2000;
+    const fixedOverhead = safeTopDirective.length + ostLeadingDirective.length + ostTrailingDirective.length + sheetDescDirective.length;
+    const promptBudget = Math.max(200, PROMPT_CAP - fixedOverhead - 4);
+    let safePrompt = prompt.trim();
+    if (safePrompt.length > promptBudget) {
+      const original = safePrompt.length;
+      safePrompt = safePrompt.slice(0, promptBudget).replace(/\s+\S*$/, '').trimEnd();
+      logger.info('[prodoc image-gen prompt-truncated]', {
+        originalLen: original,
+        truncatedLen: safePrompt.length,
+        budget: promptBudget,
+        fixedOverhead,
+      });
     }
+    const augmentedPrompt = `${safeTopDirective}${ostLeadingDirective}${safePrompt}${ostTrailingDirective}${sheetDescDirective}`;
 
     // ─── v2 ref-bearing i2i dispatch (Phase 4 of the May 21 plan) ────
     //
