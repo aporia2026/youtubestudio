@@ -3,6 +3,7 @@ import { logger } from '@/lib/logger';
 import { apiRoute } from '@/lib/route-helpers';
 import {
   getNarrationDownloadUrl,
+  mimeTypeToExt,
   uploadToBucket,
 } from '@/lib/r2';
 import { synthesize } from '@/lib/tts/dispatch';
@@ -108,8 +109,9 @@ export const GET = apiRoute.authed(async (_session, req: NextRequest) => {
 
     const bucket = process.env.R2_NARRATION_BUCKET_NAME || 'narration';
     const safeVoiceId = voiceId.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const r2Key = `voice-previews/google/${safeVoiceId}__${tier}__${languageCode}.mp3`;
-    await uploadToBucket(bucket, r2Key, Buffer.from(result.audioBytes), 'audio/mpeg');
+    const ext = mimeTypeToExt(result.mimeType);
+    const r2Key = `voice-previews/google/${safeVoiceId}__${tier}__${languageCode}.${ext}`;
+    await uploadToBucket(bucket, r2Key, Buffer.from(result.audioBytes), result.mimeType);
     const audioUrl = await getNarrationDownloadUrl(r2Key);
 
     previewUrlCache.set(cacheKey, audioUrl);

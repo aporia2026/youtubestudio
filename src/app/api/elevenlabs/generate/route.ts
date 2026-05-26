@@ -4,6 +4,7 @@ import { logger } from '@/lib/logger';
 import {
   buildElevenLabsVoiceoverKey,
   getNarrationDownloadUrl,
+  mimeTypeToExt,
   uploadToBucket,
 } from '@/lib/r2';
 import { synthesize } from '@/lib/tts/dispatch';
@@ -70,12 +71,13 @@ export async function POST(req: NextRequest) {
     });
 
     const narrationBucket = process.env.R2_NARRATION_BUCKET_NAME || 'narration';
-    const r2Key = buildElevenLabsVoiceoverKey(voiceId);
+    const ext = mimeTypeToExt(result.mimeType);
+    const r2Key = buildElevenLabsVoiceoverKey(voiceId, ext);
     await uploadToBucket(
       narrationBucket,
       r2Key,
       Buffer.from(result.audioBytes),
-      'audio/mpeg',
+      result.mimeType,
     );
 
     if (projectId) {

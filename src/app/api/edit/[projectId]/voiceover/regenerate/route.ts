@@ -9,6 +9,7 @@ import { TtsProviderError, type TtsProviderId, type VoiceTier } from '@/lib/tts/
 import {
   buildElevenLabsVoiceoverKey,
   getNarrationDownloadUrl,
+  mimeTypeToExt,
   uploadToBucket,
 } from '@/lib/r2';
 import type { ProductionDoc } from '@/remotion/utils';
@@ -211,8 +212,9 @@ export const POST = apiRoute.authed(async (
   const audioBuffer = synthResult.audioBytes;
 
   const narrationBucket = process.env.R2_NARRATION_BUCKET_NAME || 'narration';
-  const r2Key = buildElevenLabsVoiceoverKey(voiceId);
-  await uploadToBucket(narrationBucket, r2Key, Buffer.from(audioBuffer), 'audio/mpeg');
+  const ext = mimeTypeToExt(synthResult.mimeType);
+  const r2Key = buildElevenLabsVoiceoverKey(voiceId, ext);
+  await uploadToBucket(narrationBucket, r2Key, Buffer.from(audioBuffer), synthResult.mimeType);
   const downloadUrl = await getNarrationDownloadUrl(r2Key);
 
   // JSONB-merge the new voiceoverUrl + bump version. Captions are

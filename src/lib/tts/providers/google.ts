@@ -262,9 +262,16 @@ class GoogleSynthesizer implements Synthesizer {
         ...(geminiModelName ? ({ modelName: geminiModelName } as never) : {}),
       },
       audioConfig: {
-        // 'MP3' is accepted as the enum string form by the SDK — its
-        // typed signature is `AudioEncoding | keyof typeof AudioEncoding | null`.
-        audioEncoding: 'MP3',
+        // LINEAR16 returns a complete WAV file with RIFF header
+        // (verified against Google's spec 2026-05-26 — "For LINEAR16
+        // audio, we include the WAV header"). We force the native
+        // 24 kHz sample rate Chirp 3 HD / Gemini produce; lower-tier
+        // voices (Standard, WaveNet) accept it and resample internally.
+        // Tradeoff vs MP3 default: ~10× larger files, but the audio is
+        // lossless and Google STT alignment accuracy improves
+        // measurably on uncompressed input.
+        audioEncoding: 'LINEAR16',
+        sampleRateHertz: 24000,
         // Chirp 3 HD AND Gemini-TTS both ignore pitch/speakingRate —
         // their expressive control comes from the prompt + audio tags.
         ...(isChirp3Hd(req.voice.voiceId) || isGemini
@@ -325,7 +332,7 @@ class GoogleSynthesizer implements Synthesizer {
 
     return {
       audioBytes,
-      mimeType: 'audio/mpeg',
+      mimeType: 'audio/wav',
       durationSeconds,
       charCount,
       costUsd,
@@ -442,7 +449,7 @@ class GoogleSynthesizer implements Synthesizer {
 
     return {
       audioBytes: merged,
-      mimeType: 'audio/mpeg',
+      mimeType: 'audio/wav',
       durationSeconds,
       charCount: totalCharCount,
       costUsd: totalCostUsd,

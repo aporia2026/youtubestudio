@@ -86,8 +86,13 @@ class GoogleSttAligner implements Aligner {
         content: Buffer.from(req.audio).toString('base64'),
       },
       config: {
-        // 'MP3' is accepted as the enum string form by the SDK.
-        encoding: 'MP3',
+        // Encoding follows the audio mimeType the caller supplied. We
+        // produce WAV (LINEAR16 with header) for Google voices now —
+        // STT accepts that via encoding=LINEAR16 + the matching sample
+        // rate. ElevenLabs audio comes through as MP3 still.
+        ...(req.mimeType === 'audio/wav'
+          ? { encoding: 'LINEAR16' as const, sampleRateHertz: 24000 }
+          : { encoding: 'MP3' as const }),
         languageCode: req.languageCode,
         enableWordTimeOffsets: true,
         // Picking the latest_long model — better word-time accuracy for

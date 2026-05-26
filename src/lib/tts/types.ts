@@ -144,7 +144,7 @@ export interface SynthesizeResult {
    *  internally if their native format differs (Google can emit MP3
    *  directly via `audioEncoding: 'MP3'`). */
   audioBytes: Uint8Array;
-  mimeType: 'audio/mpeg';
+  mimeType: 'audio/mpeg' | 'audio/wav';
   /** Spoken duration in seconds, parsed from the audio header on the
    *  server (not provider metadata) so the value is consistent across
    *  providers. */
@@ -202,7 +202,7 @@ export interface AlignRequest {
    *  Google → Google STT). */
   voice: VoiceRef;
   audio: Uint8Array;
-  mimeType: 'audio/mpeg';
+  mimeType: 'audio/mpeg' | 'audio/wav';
   /** Known script text. Forced alignment locks recognition to this
    *  text — accuracy is much higher on proper nouns and brand names
    *  than free-form ASR. Strip production cues / stage directions

@@ -22,6 +22,7 @@ import {
   buildShortVoiceoverKey,
   getDownloadUrlForBucket,
   getNarrationBucket,
+  mimeTypeToExt,
   uploadToBucket,
 } from './r2';
 import { parseLlmJson } from './parse-llm-json';
@@ -296,8 +297,9 @@ export async function generateShortVoiceover(args: GenerateShortVoiceoverArgs): 
   // migration: every audio path lives in R2, the Blob store doesn't
   // matter for storage decisions anymore.
   const bucket = getNarrationBucket();
-  const r2Key = buildShortVoiceoverKey(args.shortId, args.voiceId);
-  await uploadToBucket(bucket, r2Key, Buffer.from(audioBuffer), 'audio/mpeg');
+  const ext = mimeTypeToExt(result.mimeType);
+  const r2Key = buildShortVoiceoverKey(args.shortId, args.voiceId, ext);
+  await uploadToBucket(bucket, r2Key, Buffer.from(audioBuffer), result.mimeType);
   const audioUrl = await getDownloadUrlForBucket(bucket, r2Key, process.env.R2_NARRATION_PUBLIC_URL);
 
   const durationSeconds = estimateShortDurationSeconds(

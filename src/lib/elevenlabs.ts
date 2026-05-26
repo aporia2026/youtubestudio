@@ -53,31 +53,82 @@ export async function getVoices(apiKey: string): Promise<ElevenLabsVoice[]> {
   return data.voices || [];
 }
 
+/**
+ * Output format strings supported by ElevenLabs `/v1/text-to-speech`.
+ * The `output_format` query parameter gates the higher-quality options
+ * by subscription plan — `mp3_44100_192` requires Pro, `pcm_*` requires
+ * Creator+. `mp3_44100_128` is the cross-plan default.
+ *
+ * We default to `mp3_44100_192` for quality and fall back to the
+ * default if ElevenLabs returns 422 plan_not_authorized. Override via
+ * `ELEVENLABS_OUTPUT_FORMAT` env if you want to pin a different
+ * default deploy-wide.
+ */
+export type ElevenLabsOutputFormat =
+  | 'mp3_22050_32'
+  | 'mp3_44100_32'
+  | 'mp3_44100_64'
+  | 'mp3_44100_96'
+  | 'mp3_44100_128'
+  | 'mp3_44100_192'
+  | 'pcm_16000'
+  | 'pcm_22050'
+  | 'pcm_24000'
+  | 'pcm_44100';
+
+function getDefaultOutputFormat(): ElevenLabsOutputFormat {
+  const raw = process.env.ELEVENLABS_OUTPUT_FORMAT;
+  if (raw && /^(mp3|pcm)_/.test(raw)) return raw as ElevenLabsOutputFormat;
+  return 'mp3_44100_192';
+}
+
 export async function generateVoiceover(
   apiKey: string,
-  opts: GenerateVoiceoverOptions
+  opts: GenerateVoiceoverOptions & { outputFormat?: ElevenLabsOutputFormat }
 ): Promise<ArrayBuffer> {
   const settings: VoiceSettings = {
     ...DEFAULT_VOICE_SETTINGS,
     ...opts.voiceSettings,
   };
 
-  const res = await fetch(
-    `https://api.elevenlabs.io/v1/text-to-speech/${opts.voiceId}`,
-    {
-      method: 'POST',
-      headers: {
-        'xi-api-key': apiKey,
-        'Content-Type': 'application/json',
-        'Accept': 'audio/mpeg',
-      },
-      body: JSON.stringify({
-        text: opts.text,
-        model_id: opts.modelId || 'eleven_multilingual_v2',
-        voice_settings: settings,
-      }),
+  const desiredFormat = opts.outputFormat || getDefaultOutputFormat();
+  // First attempt: requested (or default) high-quality format. Fall
+  // back to the universal 128 kbps default on a plan-limit 422 so
+  // free-tier ElevenLabs keys keep working without configuration.
+  const tryOnce = async (fmt: ElevenLabsOutputFormat) => {
+    const res = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${opts.voiceId}?output_format=${fmt}`,
+      {
+        method: 'POST',
+        headers: {
+          'xi-api-key': apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          text: opts.text,
+          model_id: opts.modelId || 'eleven_multilingual_v2',
+          voice_settings: settings,
+        }),
+      }
+    );
+    return res;
+  };
+
+  let res = await tryOnce(desiredFormat);
+  if (res.status === 422 && desiredFormat !== 'mp3_44100_128') {
+    const body = await res.text().catch(() => '');
+    if (/output_format|plan|tier|not_authorized|invalid/i.test(body)) {
+      // Plan doesn't allow the requested format — retry with the
+      // universal default. Log so a deploy admin can see the downgrade.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[elevenlabs] output_format=${desiredFormat} rejected (likely plan limit); falling back to mp3_44100_128.`,
+      );
+      res = await tryOnce('mp3_44100_128');
+    } else {
+      throw new Error(`ElevenLabs generation failed: ${body}`);
     }
-  );
+  }
 
   if (!res.ok) {
     const err = await res.text();

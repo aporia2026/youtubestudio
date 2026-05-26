@@ -319,19 +319,33 @@ export function buildNarrationKey(assignmentId: string, sectionId: string, takeN
  * directory listing groups AI-generated voiceovers separately from
  * human narrator takes (`assignments/...`).
  */
-export function buildElevenLabsVoiceoverKey(voiceId: string): string {
+/**
+ * Map a TTS audio mimeType to the file extension we use in R2 keys.
+ * Centralized so every route writes consistent keys. ElevenLabs always
+ * returns audio/mpeg; Google returns audio/wav since the 2026-05-26
+ * LINEAR16 quality bump.
+ */
+export function mimeTypeToExt(mime: string): 'mp3' | 'wav' {
+  return mime === 'audio/wav' ? 'wav' : 'mp3';
+}
+
+export function buildElevenLabsVoiceoverKey(voiceId: string, ext: 'mp3' | 'wav' = 'mp3'): string {
   const sanitized = voiceId.replace(/[^a-zA-Z0-9._-]/g, '_');
-  return `elevenlabs/${Date.now()}-${sanitized}.mp3`;
+  return `elevenlabs/${Date.now()}-${sanitized}.${ext}`;
 }
 
 /**
  * Build an R2 key for a Shorts voiceover. Distinct prefix from long-form
  * narration so the bucket listing separates the two formats.
  */
-export function buildShortVoiceoverKey(shortId: string, voiceId: string): string {
+export function buildShortVoiceoverKey(
+  shortId: string,
+  voiceId: string,
+  ext: 'mp3' | 'wav' = 'mp3',
+): string {
   const safeShort = shortId.replace(/[^a-zA-Z0-9._-]/g, '_');
   const safeVoice = voiceId.replace(/[^a-zA-Z0-9._-]/g, '_');
-  return `shorts/${safeShort}/voiceover-${Date.now()}-${safeVoice}.mp3`;
+  return `shorts/${safeShort}/voiceover-${Date.now()}-${safeVoice}.${ext}`;
 }
 
 /**
