@@ -2146,6 +2146,15 @@ export function productionDocPrompt({
   const totalSecs = chunkDurationSeconds % 60;
   const totalDuration = `${totalMins}:${String(totalSecs).padStart(2, '0')}`;
 
+  // Per-row word budgets derived from the speaking pace. LLMs respect
+  // concrete word counts far better than abstract time bounds — at 135
+  // wpm the 4–6 s sweet spot is just 9–14 words, which is shorter than
+  // the model's default sentence length and needs to be stated as a
+  // hard number, not a duration the model has to convert.
+  const minWordsPerRow = Math.max(1, Math.round((4 * speakingPaceWpm) / 60));
+  const maxWordsPerRow = Math.round((6 * speakingPaceWpm) / 60);
+  const ceilingWordsPerRow = Math.round((7 * speakingPaceWpm) / 60);
+
   const styleSuffix = style?.ai_image_suffix ?? null;
   const mixingRules = style?.mixing_rules?.trim() ?? '';
   // Overlay stock terms are offered to the LLM only when (a) the style
@@ -2186,24 +2195,32 @@ ${mandatoryStyleBlock}
 ## YOUR TASK
 Break the provided script into timed production rows. Each row = one visual shot or scene change. Aim for **4–6 seconds of narration per row**, and NEVER let a row exceed 7 seconds. Short, punchy scenes feel intentional; long scenes drag and any single image-to-video clip starts to freeze on its last frame past ~10s. Shorter scenes are non-negotiable.
 
-## TIMING RULES
-- Speaking pace is ${speakingPaceWpm} words per minute
-- **Target: 4–6 seconds of spoken content per row.**
-- **Hard ceiling: 7 seconds.** If a sentence alone would exceed this, break the sentence between two rows at a natural pause (comma, conjunction, clause boundary) so each row stays within the cap. The two rows share continuous narration but show DIFFERENT visuals — pick distinct visual moments to keep the screen alive.
-- A row may run shorter than 4 seconds if the content truly calls for a quick cut (one-line punchline, beat shift, sudden pivot) — short is fine, long is not.
-- Timecodes for THIS segment start at **${startTimecode}** and end at **${endTimecode}**
-- First row timecode MUST be "${startTimecode}" — increment from there based on word count
+## TIMING RULES — COUNT THE WORDS BEFORE YOU EMIT EACH ROW
+- Speaking pace is ${speakingPaceWpm} words per minute.
+- **Per-row word budget at this pace:**
+  - Target: **${minWordsPerRow}–${maxWordsPerRow} words** of \`script_text\` per row (the 4–6s sweet spot).
+  - Hard ceiling: **${ceilingWordsPerRow} words** per row. Above this the row exceeds 7s and the renderer freezes the last frame for the rest of the take.
+- These numbers are derived from the speaking pace. Count the words in each \`script_text\` you write — if a row would exceed ${ceilingWordsPerRow} words, SPLIT IT before emitting. Do not emit it and hope the post-processor handles it: not every long sentence has an internal comma the splitter can use, and those rows freeze on the rendered video.
+- Splitting rules: if a single source sentence runs longer than ${ceilingWordsPerRow} words, break it between two rows at a natural pause — preferring a **comma**, then a **conjunction (and / but / so / because / however / although / while)**, then any **clause boundary**. The two halves keep continuous narration (read back-to-back the listener hears one sentence) but show DIFFERENT visuals — pick distinct visual moments to keep the screen alive.
+- A row may run shorter than ${minWordsPerRow} words if the content truly calls for a quick cut (one-line punchline, beat shift, sudden pivot) — short is fine, long is not.
+- Timecodes for THIS segment start at **${startTimecode}** and end at **${endTimecode}**.
+- First row timecode MUST be "${startTimecode}" — increment from there based on word count.
+
+### FAIL CRITERIA
+Any row whose \`script_text\` exceeds ${ceilingWordsPerRow} words at ${speakingPaceWpm} wpm will be auto-split by the server's deterministic post-pass. If that pass finds no internal comma/conjunction to split on, the row is left intact AND surfaces a warning to the user, AND the rendered scene will freeze its last frame after 7s. Either outcome is a failure. Split long rows yourself, in the prompt output, before this happens.
 
 ### Worked example — splitting a long sentence across two rows
 
-If the script contains a single 16-second sentence at ${speakingPaceWpm} wpm (around 36 words), do NOT produce one 16s row. Produce two:
+If the script contains a single 36-word sentence (~16 s at ${speakingPaceWpm} wpm), do NOT produce one big row. Split it at the comma:
 
 \`\`\`
-Row A: timecode "0:00", script_text "When we first looked at the data we expected a clear pattern, something obvious that would explain everything we had been seeing for months,", visual: wide-shot of analyst at desk staring at screens, expression of focus
-Row B: timecode "0:06", script_text "but what we actually found was so strange that we had to run the entire experiment three more times just to believe it.", visual: close-up insert of the surprising chart on the screen, dramatic
+Row A: timecode "0:00", script_text "When we first looked at the data we expected a clear pattern, something obvious that would explain everything we had been seeing for months,", visual_description: "wide-shot of analyst at desk staring at screens, expression of focus"
+Row B: timecode "0:06", script_text "but what we actually found was so strange that we had to run the entire experiment three more times just to believe it.", visual_description: "close-up insert of the surprising chart on the screen, dramatic"
 \`\`\`
 
-Each row is ~5–6 s. The narration flows continuously when the two voiceover lines are read back-to-back, but the editor cuts to a new visual mid-sentence — exactly what good documentary editing does.
+Row A is 23 words (~10 s — still over budget, would itself need another split at "pattern, something" → 14 words + 9 words). Row B is 22 words (~10 s — split again at "strange that" → 14 + 8). Real result: 4 rows of ~9–14 words each, all under the ${ceilingWordsPerRow}-word ceiling. The narration flows continuously when the four voiceover lines are read back-to-back, but the editor cuts to a new visual at every break — exactly what good documentary editing does.
+
+The bigger lesson: any source sentence over ~${ceilingWordsPerRow} words almost always needs to be split TWICE, not once. Count words before you emit.
 
 ## COLUMN DEFINITIONS
 
