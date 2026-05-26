@@ -86,6 +86,28 @@ function isGeminiTier(tier: string): boolean {
 }
 
 /**
+ * Gemini-TTS reuses the Chirp voice catalog but expects the BARE voice
+ * name in the synthesis request — not the locale-prefixed form.
+ *
+ *   Chirp 3 HD sync:  voice.name = "en-US-Chirp3-HD-Charon"
+ *   Gemini-TTS:       voice.name = "Charon"  + voice.modelName = "gemini-3.1-flash-tts-preview"
+ *
+ * Passing the full Chirp name to Gemini throws:
+ *   "Gemini models cannot be used with non-Gemini voices."
+ *
+ * Our catalog stores the full Chirp name as voiceId so re-renders
+ * stay deterministic against media_assets.metadata.voiceId — this
+ * helper strips the locale + Chirp3-HD prefix to recover the bare
+ * name at synthesis time. Falls back to the raw voiceId if the
+ * pattern doesn't match (defensive — non-Chirp voice names won't
+ * have the prefix in the first place).
+ */
+function geminiVoiceName(voiceId: string): string {
+  const match = voiceId.match(/Chirp3-HD-(.+)$/i);
+  return match ? match[1] : voiceId;
+}
+
+/**
  * Parallelism cap for long-form chunked synthesis. Google's per-project
  * QPS quotas for TTS are generous (300/min default at writing) but
  * concurrent requests on Chirp 3 HD can throttle. 3 in-flight is a
@@ -230,7 +252,10 @@ class GoogleSynthesizer implements Synthesizer {
           : { text },
       voice: {
         languageCode: req.voice.languageCode,
-        name: req.voice.voiceId,
+        // Gemini expects the bare voice name ("Charon"); Chirp 3 HD and
+        // all other tiers want the full locale-prefixed form
+        // ("en-US-Chirp3-HD-Charon"). See geminiVoiceName() comment.
+        name: isGemini ? geminiVoiceName(req.voice.voiceId) : req.voice.voiceId,
         // Set model_name only for Gemini tiers — for everything else
         // Google infers the model from the voice name's prefix
         // (en-US-Chirp3-HD-* → Chirp 3 HD, en-US-Studio-* → Studio).
