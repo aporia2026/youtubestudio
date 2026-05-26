@@ -138,6 +138,13 @@ interface ReqBody {
   mode?: 'review' | 'pre-fill' | 'one-shot';
   prefilledLabels?: string[];
   referenceImageUrl?: string;
+  cardShape?: 'square' | 'circle';
+  /** 1-based indexes of cells the user has already attached an image to.
+   *  The prompt nudges the LLM to emit a `USER_UPLOADED_IMAGE` sentinel
+   *  for those cells and focus on the label only — the composite step
+   *  paints the user's bytes regardless. See plan
+   *  `_plans/2026-05-19-topic-card-grid-circles-and-uploads.md`. */
+  uploadedCellIndexes?: number[];
 }
 
 export async function POST(req: NextRequest) {
@@ -196,6 +203,27 @@ export async function POST(req: NextRequest) {
     const prefilledLabels = Array.isArray(body.prefilledLabels)
       ? body.prefilledLabels.map((s) => String(s || '').trim()).filter((s) => s.length > 0)
       : undefined;
+
+    const cardShape: 'square' | 'circle' =
+      body.cardShape === 'circle' ? 'circle' : 'square';
+
+    // Sanitise uploadedCellIndexes server-side. Clamp to the valid range
+    // (1..totalCards) and de-dup so a stale client can't smuggle in
+    // out-of-range indexes that downstream prompt builders would otherwise
+    // accept and pass through verbatim.
+    const uploadedCellIndexes: number[] = [];
+    if (Array.isArray(body.uploadedCellIndexes)) {
+      const seen = new Set<number>();
+      for (const raw of body.uploadedCellIndexes) {
+        const n = Number(raw);
+        if (Number.isInteger(n) && n >= 1 && n <= totalCards && !seen.has(n)) {
+          seen.add(n);
+          uploadedCellIndexes.push(n);
+        }
+      }
+      uploadedCellIndexes.sort((a, b) => a - b);
+    }
+
     if (mode === 'pre-fill') {
       if (!prefilledLabels || prefilledLabels.length !== totalCards) {
         return NextResponse.json(
@@ -294,6 +322,8 @@ export async function POST(req: NextRequest) {
       mode,
       has_user_reference: !!referenceImageUrl,
       prefilled_count: prefilledLabels?.length ?? 0,
+      card_shape: cardShape,
+      uploaded_indexes: uploadedCellIndexes,
     });
 
     const promptInput: LlmPromptInput = {
@@ -304,6 +334,8 @@ export async function POST(req: NextRequest) {
       gridRows,
       gridCols,
       prefilledLabels: mode === 'pre-fill' ? prefilledLabels : undefined,
+      cardShape,
+      uploadedCellIndexes: uploadedCellIndexes.length > 0 ? uploadedCellIndexes : undefined,
     };
     const { system, user } = topicCardGridLlmPrompt(promptInput);
 

@@ -79,7 +79,16 @@ export interface GridLayout {
   outerMargin: number;
   /** White gutter between cards in pixels (uniform horizontal + vertical). */
   gutter: number;
+  /** Visual card shape. `'square'` keeps the original layout: a black-bordered
+   *  rectangle split into an illustration region (top) and a white label
+   *  strip (bottom). `'circle'` renders each card as a borderless disc with
+   *  the label centred in the gutter below. Defaults to `'square'` when
+   *  omitted so older history entries hydrate cleanly. */
+  cardShape?: CardShape;
 }
+
+/** Visual shape of each card. See `GridLayout.cardShape` for the contract. */
+export type CardShape = 'square' | 'circle';
 
 // ─── Layout math ────────────────────────────────────────────────────────────
 
@@ -97,9 +106,15 @@ export function defaultGutter(width: number): number {
   return Math.max(8, Math.round(width * 0.011));
 }
 
-export function makeDefaultLayout(rows: number, cols: number, width: number = DEFAULT_CANVAS.width, height: number = DEFAULT_CANVAS.height): GridLayout {
+export function makeDefaultLayout(
+  rows: number,
+  cols: number,
+  width: number = DEFAULT_CANVAS.width,
+  height: number = DEFAULT_CANVAS.height,
+  cardShape: CardShape = 'square',
+): GridLayout {
   const g = defaultGutter(width);
-  return { width, height, rows, cols, outerMargin: g, gutter: g };
+  return { width, height, rows, cols, outerMargin: g, gutter: g, cardShape };
 }
 
 /**
@@ -137,6 +152,138 @@ export function computeRegions(
     }
   }
   return regions;
+}
+
+// ─── Circle-mode geometry ───────────────────────────────────────────────────
+
+/**
+ * Geometry for a single circular card. The disc occupies the top portion of
+ * the cell rectangle; the label band sits beneath it inside the same cell.
+ *
+ * Returned values are floats so callers (the composite module, the region
+ * builder) can decide where rounding lands — rounding too eagerly here would
+ * leave the disc subtly off-centre.
+ */
+export interface CircleCellGeometry {
+  /** Cell bounding box — left edge x in canvas pixels. */
+  cellX: number;
+  /** Cell bounding box — top edge y in canvas pixels. */
+  cellY: number;
+  /** Cell width in canvas pixels. */
+  cellW: number;
+  /** Cell height in canvas pixels. */
+  cellH: number;
+  /** Disc centre x in canvas pixels. */
+  discCx: number;
+  /** Disc centre y in canvas pixels. */
+  discCy: number;
+  /** Disc diameter in canvas pixels. */
+  discD: number;
+  /** Label band left edge x in canvas pixels. */
+  labelX: number;
+  /** Label band top edge y in canvas pixels. */
+  labelY: number;
+  /** Label band width in canvas pixels. */
+  labelW: number;
+  /** Label band height in canvas pixels. */
+  labelH: number;
+}
+
+/** Fraction of the smaller cell dimension the disc diameter targets.
+ *  `cardW * 0.9` and `cardH * 0.7` together leave a small breathing margin
+ *  around the disc and a ~25% strip below for the label. The plan calls these
+ *  out explicitly — see `_plans/2026-05-19-topic-card-grid-circles-and-uploads.md`. */
+const DISC_W_FRAC = 0.9;
+const DISC_H_FRAC = 0.7;
+const DISC_TOP_PAD_FRAC = 0.04; // 4% of cellH between the cell top and the disc top.
+
+/**
+ * Compute the disc + label band geometry for a single cell. Exported so the
+ * composite module can paint discs / labels at exactly the positions
+ * `computeCircleRegions` reports.
+ */
+export function circleCellGeometry(
+  cellX: number,
+  cellY: number,
+  cellW: number,
+  cellH: number,
+): CircleCellGeometry {
+  const discD = Math.min(cellW * DISC_W_FRAC, cellH * DISC_H_FRAC);
+  const topPad = cellH * DISC_TOP_PAD_FRAC;
+  const discCx = cellX + cellW / 2;
+  const discCy = cellY + topPad + discD / 2;
+  const labelY = cellY + topPad + discD;
+  const labelH = cellH - (topPad + discD);
+  const labelX = cellX + cellW * 0.025;
+  const labelW = cellW * 0.95;
+  return {
+    cellX,
+    cellY,
+    cellW,
+    cellH,
+    discCx,
+    discCy,
+    discD,
+    labelX,
+    labelY,
+    labelW,
+    labelH,
+  };
+}
+
+/**
+ * Circle-mode region rectangles. Each region's `x/y/w/h` is the disc's
+ * bounding box — production-doc consumes rect regions and doesn't need to
+ * know the visual is circular. Label band is intentionally not in the
+ * region (consistent with the square-mode behaviour where the label strip
+ * is also excluded).
+ */
+export function computeCircleRegions(
+  layout: GridLayout,
+  labels: string[],
+  mkId: () => string,
+): ThumbnailRegion[] {
+  const { width, height, rows, cols, outerMargin: om, gutter: g } = layout;
+  const cardW = (width - 2 * om - (cols - 1) * g) / cols;
+  const cardH = (height - 2 * om - (rows - 1) * g) / rows;
+  const regions: ThumbnailRegion[] = [];
+  let i = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const cellX = om + c * (cardW + g);
+      const cellY = om + r * (cardH + g);
+      const geom = circleCellGeometry(cellX, cellY, cardW, cardH);
+      const discLeft = geom.discCx - geom.discD / 2;
+      const discTop = geom.discCy - geom.discD / 2;
+      regions.push({
+        id: mkId(),
+        label: labels[i] ?? `Card ${i + 1}`,
+        x: Math.round(discLeft),
+        y: Math.round(discTop),
+        w: Math.round(geom.discD),
+        h: Math.round(geom.discD),
+      });
+      i++;
+    }
+  }
+  return regions;
+}
+
+/**
+ * Shape-aware region builder. Dispatches to the rectangle math
+ * (`computeRegions`) for square cards and the disc bounding-box math
+ * (`computeCircleRegions`) for circle cards. Callers should prefer this
+ * over the per-shape helpers so adding new shapes later stays a one-line
+ * change at the dispatch site.
+ */
+export function computeRegionsFor(
+  layout: GridLayout,
+  labels: string[],
+  mkId: () => string,
+  shape: CardShape = layout.cardShape ?? 'square',
+): ThumbnailRegion[] {
+  if (shape === 'circle') return computeCircleRegions(layout, labels, mkId);
+  return computeRegions(layout, labels, mkId);
 }
 
 // ─── Validation ─────────────────────────────────────────────────────────────
@@ -244,6 +391,18 @@ export interface LlmPromptInput {
   /** Pre-filled labels for "Pre-fill" mode. If present, the LLM only fills in
    *  the `icon_concept` per provided label and keeps the labels verbatim. */
   prefilledLabels?: string[];
+  /** Visual card shape. Defaults to `'square'` if omitted. Influences the
+   *  prompt's stylistic guidance — circles tend to suit simpler, single-
+   *  subject icons that read cleanly inside a disc. */
+  cardShape?: CardShape;
+  /** 1-based cell indexes the user has already uploaded an image for. For
+   *  each listed cell, the LLM is told to emit a `USER_UPLOADED_IMAGE`
+   *  sentinel as the icon_concept and produce a label only. The composite
+   *  step (server-side, post-image-gen) paints the user's image into the
+   *  cell deterministically, so the AI's rendering of that cell doesn't
+   *  matter — the prompt nudge just keeps the model from wasting tokens
+   *  inventing an icon that will be overpainted. */
+  uploadedCellIndexes?: number[];
 }
 
 /**
@@ -252,9 +411,29 @@ export interface LlmPromptInput {
  * `generateText({ image })`; this prompt just refers to it.
  */
 export function topicCardGridLlmPrompt(input: LlmPromptInput): { system: string; user: string } {
-  const { title, niche, script, description, gridRows, gridCols, prefilledLabels } = input;
+  const {
+    title,
+    niche,
+    script,
+    description,
+    gridRows,
+    gridCols,
+    prefilledLabels,
+    cardShape = 'square',
+    uploadedCellIndexes,
+  } = input;
   const total = gridRows * gridCols;
   const usingPrefilled = !!prefilledLabels && prefilledLabels.length === total;
+  // Dedup + clamp uploaded indexes server-side. The route also validates,
+  // but defending against a stale client is cheap here and keeps the prompt
+  // builder useful in tests.
+  const uploadedIdxSet = new Set<number>();
+  if (uploadedCellIndexes) {
+    for (const n of uploadedCellIndexes) {
+      if (Number.isInteger(n) && n >= 1 && n <= total) uploadedIdxSet.add(n);
+    }
+  }
+  const uploadedIdxList = [...uploadedIdxSet].sort((a, b) => a - b);
 
   const system = `You are designing a YouTube thumbnail in the "Topic Card Grid" format. The thumbnail is an N×M grid of cards. Each card has an illustration region on top and a white label strip on the bottom. The grid is informational: it previews the video's content at a glance with each card showing one of the things the video covers.
 
@@ -370,6 +549,29 @@ The cards array MUST contain EXACTLY ${total} entries. The global_palette is opt
     );
   }
 
+  // Card-shape guidance. Square mode keeps the original behaviour; circle
+  // mode adds a sentence biasing the model toward simpler single-subject
+  // icons that read cleanly inside a disc (where corner detail gets clipped
+  // by the circular mask the composite applies).
+  if (cardShape === 'circle') {
+    userParts.push(
+      `**Card shape:** circle. Each card will render as a disc with the label centred beneath it. Detail in the corners of any illustration is CLIPPED by the circular mask — so frame every icon_concept as a single bold subject centred in its frame, with breathing room around the edges. Avoid wide horizontal compositions, edge-of-frame text, or anything that depends on the corners being visible.`,
+    );
+  }
+
+  // Per-cell upload nudges. For each listed cell, the model is told to emit
+  // the `USER_UPLOADED_IMAGE` sentinel as the icon_concept and produce a
+  // label only. Downstream the composite paints the user's bytes over that
+  // cell regardless, so non-compliance is safe; this just stops the model
+  // from wasting tokens on an icon nobody will see.
+  if (uploadedIdxList.length > 0) {
+    userParts.push(
+      `**User-uploaded cells (the user has attached an image to these card slots; you do NOT need to design an icon for them — set icon_concept to the literal string \`USER_UPLOADED_IMAGE\` for these and focus only on a good label):**\n${uploadedIdxList
+        .map((n) => `- Card ${n}`)
+        .join('\n')}`,
+    );
+  }
+
   return { system, user: userParts.join('\n\n') };
 }
 
@@ -379,6 +581,15 @@ export interface ImagePromptInput {
   gridRows: number;
   gridCols: number;
   notesForImageModel?: string;
+  /** Visual card shape. Defaults to `'square'`. Drives the layout block of
+   *  the prompt. Square mode keeps the original rectangle-with-label-strip
+   *  contract; circle mode swaps in a discs-on-white-canvas contract. */
+  cardShape?: CardShape;
+  /** 1-based indexes of cells the user has uploaded an image for. The prompt
+   *  instructs the model to leave each listed cell as a clean pure-white
+   *  background with no illustration. The composite step overpaints these
+   *  cells regardless, so AI non-compliance is safe. */
+  uploadedCellIndexes?: number[];
 }
 
 /**
@@ -392,22 +603,58 @@ export interface ImagePromptInput {
  * conflicting instructions.
  */
 export function topicCardGridImagePrompt(input: ImagePromptInput): string {
-  const { cards, gridRows, gridCols, notesForImageModel } = input;
+  const {
+    cards,
+    gridRows,
+    gridCols,
+    notesForImageModel,
+    cardShape = 'square',
+    uploadedCellIndexes,
+  } = input;
   const total = gridRows * gridCols;
   const safeNotes = notesForImageModel ? sanitizeForPrompt(notesForImageModel, 300) : '';
+
+  const uploadedIdxSet = new Set<number>();
+  if (uploadedCellIndexes) {
+    for (const n of uploadedCellIndexes) {
+      if (Number.isInteger(n) && n >= 1 && n <= total) uploadedIdxSet.add(n);
+    }
+  }
 
   const cardLines = cards
     .map((c) => {
       const label = sanitizeForPrompt(c.label, 60);
+      // Uploaded cells: drop the icon_concept and tell the model to leave
+      // the cell as a clean white background, no illustration. Composite
+      // overpaints regardless, but the prompt nudge stops the model from
+      // wasting capacity inventing an icon nobody will see — and reduces
+      // the chance of bleed-through if the overpaint mask is off by a
+      // pixel at the cell edge.
+      if (uploadedIdxSet.has(c.index)) {
+        return `${c.index}. Label: "${label}" — Illustration: BLANK — render this cell's illustration area as a clean pure-white background with no icon, no text, no detail. Only the label band below carries content.`;
+      }
       const concept = sanitizeForPrompt(c.icon_concept, 250);
       const accent = c.accent_color ? ` (accent hint: ${sanitizeForPrompt(c.accent_color, 16)})` : '';
       return `${c.index}. Label: "${label}" — Illustration: ${concept}${accent}`;
     })
     .join('\n');
 
-  return `Create a YouTube thumbnail in the "Topic Card Grid" format, 16:9.
-
-LAYOUT (strict):
+  // Layout block diverges by shape. Square mode is the original contract;
+  // circle mode swaps in a discs-on-white-canvas contract. Keeping the
+  // strings inline (rather than a per-shape helper) makes it easier to
+  // diff this prompt against image gen outputs when debugging drift.
+  const layoutBlock =
+    cardShape === 'circle'
+      ? `LAYOUT (strict):
+- A WHITE canvas with an evenly-spaced ${gridRows} rows × ${gridCols} columns grid of ${total} discs (circles) total.
+- WHITE outer margin around the entire grid on all four sides (top, bottom, left, right) — same width as the gutters between discs.
+- Each disc sits in its own equal-size cell. The disc fills most of the cell width and the top ~75% of the cell height; the bottom strip of the cell holds the label.
+- NO rectangular borders around the cells. NO black frame around each disc. NO hairline divider. The discs sit directly on the white canvas; the label sits in the white canvas beneath each disc.
+- Each disc's edge is a single clean circular outline (no shadow, no bevel) — or the disc is borderless if its illustration's natural background bleeds to the disc edge.
+- Each disc is split into two regions:
+  • The disc itself (top ~75% of the cell): the illustration, framed by the circular crop. Anything in the corners of the source illustration is CLIPPED by the disc — frame each subject centred and tight.
+  • A short label strip BELOW the disc (bottom ~25% of the cell): white background, label text centred.`
+      : `LAYOUT (strict):
 - An evenly-spaced ${gridRows} rows × ${gridCols} columns grid of identical-size cards = ${total} cards total.
 - A WHITE outer margin around the entire grid on all four sides of the canvas (top, bottom, left, right) — same width as the inter-card gutter.
 - WHITE gutters of uniform width separating every card from its neighbours.
@@ -415,7 +662,11 @@ LAYOUT (strict):
 - Each card is split into two stacked regions:
   • Top region (~80% of card height): the illustration.
   • Bottom region (~20% of card height): a pure white horizontal strip containing the card's label.
-- A 1 px black hairline separates the illustration region from the white label strip.
+- A 1 px black hairline separates the illustration region from the white label strip.`;
+
+  return `Create a YouTube thumbnail in the "Topic Card Grid" format, 16:9.
+
+${layoutBlock}
 
 PER-CARD ILLUSTRATION RULES:
 - Depict each subject in its MOST RECOGNISABLE form. Brand logos rendered on a clean background, real virus/software screens, real product photos, real characters, real news photos — whatever is most immediately identifiable for that specific subject. This is fair use under YouTube's policy and is what the user wants.
@@ -441,22 +692,35 @@ CATEGORY vs. SPECIFIC RULE (important — most common failure mode):
 - For ABSTRACT CATEGORIES of attack / feature / concept ("fake virus warnings", "phishing emails", "fake scanners", "bundled software", "ransomware protection", "password manager", "data breach", etc.): STRONGLY PREFER one bold iconic symbol over a detail-faithful UI / dialog / inbox / wizard / scanner-table mockup. Categories don't have a canonical visual, so a realistic mockup degenerates into a text-heavy panel unreadable at thumbnail size.
   A LITTLE text is fine when it's iconic (a one-word stamp like "VIRUS!", a wordmark). What's NOT OK on a category card: multi-line dialog body copy, rows of fake detection entries, multi-field email mocks, installer wizards with body paragraphs and multiple buttons. Iconic, not example.
 
-LABEL STRIP RULES (strict):
+${
+  cardShape === 'circle'
+    ? `LABEL RULES (strict):
+- Each label sits in the white canvas BELOW its disc, centred horizontally.
+- Rendered in the SAME hand-drawn humanist font as the attached reference image's typography (friendly weight, slight slope, NOT a system sans-serif).
+- Label color: solid black. No box, no underline, no background tint — text sits directly on the white canvas.
+- Labels go ONLY beneath each disc — they NEVER appear inside the disc except as part of the subject's authentic visual identity.`
+    : `LABEL STRIP RULES (strict):
 - Pure white background.
 - Card label rendered in the SAME hand-drawn humanist font as the attached reference image's typography (friendly weight, slight slope, NOT a system sans-serif).
 - Label color: solid black.
 - Centred horizontally and vertically in the strip.
-- Labels go ONLY in the white strip — they NEVER appear in the illustration except as part of the subject's authentic visual identity.
+- Labels go ONLY in the white strip — they NEVER appear in the illustration except as part of the subject's authentic visual identity.`
+}
 
-CARDS (render exactly these ${total} cards, in this order, reading left-to-right then top-to-bottom):
+CARDS (render exactly these ${total} ${cardShape === 'circle' ? 'discs' : 'cards'}, in this order, reading left-to-right then top-to-bottom):
 
 ${cardLines}
 
 ABSOLUTE REQUIREMENTS — DO NOT VIOLATE:
-- The grid MUST contain EXACTLY ${total} cards. Not one more, not one fewer.
-- One focal subject per card — no multi-subject collages within a single card.
+- The grid MUST contain EXACTLY ${total} ${cardShape === 'circle' ? 'discs' : 'cards'}. Not one more, not one fewer.
+- One focal subject per ${cardShape === 'circle' ? 'disc' : 'card'} — no multi-subject collages within a single ${cardShape === 'circle' ? 'disc' : 'card'}.
 - Do NOT add a master title, watermark, channel logo, or any text outside the grid.
-- Match the LAYOUT (grid + gutters + outer margin) and the LABEL TYPOGRAPHY of the attached reference image precisely. Do NOT inherit the reference's specific palette or per-card content — those are dictated by THIS card list, not by the reference's topic.
+- Match the LAYOUT (grid + gutters + outer margin) and the LABEL TYPOGRAPHY of the attached reference image precisely. Do NOT inherit the reference's specific palette or per-card content — those are dictated by THIS card list, not by the reference's topic.${
+  uploadedIdxSet.size > 0
+    ? `
+- The following cells are USER-RESERVED (the user is attaching their own image post-render). Leave each one as a clean pure-white illustration area with no icon, no text, no detail — only the label band below carries content: ${[...uploadedIdxSet].sort((a, b) => a - b).join(', ')}.`
+    : ''
+}
 
 ${safeNotes ? `STYLE NOTE: ${safeNotes}` : ''}`.trim();
 }

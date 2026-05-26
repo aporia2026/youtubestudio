@@ -454,6 +454,15 @@ export function buildThumbnailReferenceKey(fileName: string): string {
   return `thumbnail-refs/${Date.now()}-${sanitized}`;
 }
 
+/** Build an R2 key for a per-cell user upload inside the Topic Card Grid
+ *  format. Lives under its own prefix so the format-grid cell uploads can
+ *  be audited / lifecycle-managed independently of reference images. No
+ *  project scoping — uploads happen from the standalone thumbnails page. */
+export function buildTopicCardGridCellUploadKey(fileName: string): string {
+  const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return `thumbnails/format-grid-cell-upload/${Date.now()}-${sanitized}`;
+}
+
 /** Build an R2 key for an uploaded production-doc attachment (PDF/DOCX/XLSX/
  *  CSV/TXT/JSON). Lives in the images bucket under a prod-docs/ prefix —
  *  treats that bucket as a generic static-asset store rather than spinning
