@@ -6111,8 +6111,12 @@ function ProductionDocPage() {
       appendLog(`Script: ${totalWords} words · Style: ${stylePreset}${analyzedCount > 0 ? ` · ${analyzedCount} visual ref(s) analyzed` : ''}`);
 
       // ── Chunked generation — split long scripts to avoid 504 timeouts ──────────
-      // 700 words ≈ 35–50 rows per chunk, comfortably within the API's 16k output cap.
-      const MAX_CHUNK_WORDS = 700;
+      // 450 words ≈ 22–30 rows per chunk. The prior 700-word cap was tuned
+      // for short ai_image_prompts and hit the 16k output token cap on
+      // styles with verbose suffixes (e.g. doodle_explainer_2). 450 keeps
+      // each chunk's JSON well under any current model's output cap, at
+      // the cost of one extra request per ~1k-word script.
+      const MAX_CHUNK_WORDS = 450;
       const chunks = splitScriptIntoChunks(script.trim(), MAX_CHUNK_WORDS);
       const isMultiChunk = chunks.length > 1;
       if (isMultiChunk) {
