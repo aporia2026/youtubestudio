@@ -225,6 +225,8 @@ export default function PipelineDetailPage({ params }: { params: Promise<{ id: s
           lastRefreshedAt={lastRefreshedAt}
           refreshing={refreshing}
           onRefresh={() => void refresh()}
+          runId={runId}
+          onRunAction={() => void refresh()}
         />
       )}
 
@@ -387,18 +389,95 @@ function ProgressStrip({
   lastRefreshedAt,
   refreshing,
   onRefresh,
+  runId,
+  onRunAction,
 }: {
   videos: VideoSummary[];
   lastRefreshedAt: number | null;
   refreshing: boolean;
   onRefresh: () => void;
+  runId: string;
+  onRunAction: () => void;
 }) {
   const total = videos.length;
   const counts = { done: 0, in_flight: 0, waiting: 0, failed: 0 };
   for (const v of videos) counts[categorize(v.stage)]++;
   const liveNow = videos.filter((v) => v.claimed_at != null).length;
+  const nonTerminal = counts.in_flight + counts.waiting;
+  // "Stuck or failed" = anything Retry would meaningfully act on:
+  // failures we can reset, plus in-flight rows that haven't moved in
+  // >5min (the same threshold the per-video panel uses for the red
+  // warning). Counted client-side so the button shows the count.
+  const now = Date.now();
+  const stuckOrFailed = videos.filter((v) => {
+    if (v.stage === 'narration_abandoned') return false; // unretryable
+    if (categorize(v.stage) === 'failed') return true;
+    const ageSec = Math.floor((now - new Date(v.updated_at).getTime()) / 1000);
+    return v.claimed_at == null && categorize(v.stage) === 'in_flight' && ageSec > 5 * 60;
+  }).length;
 
   const refreshedAgo = lastRefreshedAt != null ? formatAgo(lastRefreshedAt) : null;
+  const [batchBusy, setBatchBusy] = useState<string | null>(null);
+  const [batchMessage, setBatchMessage] = useState<string | null>(null);
+
+  async function postRunAction(action: 'retry_stuck' | 'stop_all', confirmText?: string) {
+    if (confirmText && !confirm(confirmText)) return;
+    setBatchBusy(action);
+    setBatchMessage(null);
+    console.info('[pipeline detail] run_action_start', { runId, action });
+    try {
+      const res = await fetch(`/api/auto-pipeline/runs/${runId}/actions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setBatchMessage(
+        action === 'retry_stuck'
+          ? `Reset ${data.changed} of ${data.scanned} videos. Triggering cron…`
+          : `Stopped ${data.changed} of ${data.scanned} videos.`,
+      );
+      console.info('[pipeline detail] run_action_ok', { runId, action, ...data });
+      // After retry, immediately kick the manual tick so the user
+      // doesn't sit around waiting up to 60s for the cron.
+      if (action === 'retry_stuck') await triggerTick();
+      onRunAction();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Run action failed';
+      console.info('[pipeline detail] run_action_error', { runId, action, error: msg });
+      setBatchMessage(msg);
+    } finally {
+      setBatchBusy(null);
+    }
+  }
+
+  async function triggerTick() {
+    setBatchBusy('tick');
+    setBatchMessage(null);
+    console.info('[pipeline detail] manual_tick_start', { runId });
+    try {
+      const res = await fetch('/api/auto-pipeline/tick', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (data.ran === false) {
+        setBatchMessage('Cron is already running. Try again in a moment.');
+      } else {
+        setBatchMessage(
+          `Tick complete: advanced ${data.advanced}, released ${data.released}` +
+            (data.drained_to_empty ? ' (queue empty)' : ''),
+        );
+      }
+      console.info('[pipeline detail] manual_tick_ok', { runId, ...data });
+      onRunAction();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Tick failed';
+      console.info('[pipeline detail] manual_tick_error', { runId, error: msg });
+      setBatchMessage(msg);
+    } finally {
+      setBatchBusy(null);
+    }
+  }
 
   return (
     <div
@@ -465,15 +544,108 @@ function ProgressStrip({
             ? <>Last refreshed {refreshedAgo} · auto every {POLL_SECONDS}s · cron tick every {CRON_TICK_SECONDS}s</>
             : <>Waiting for first refresh…</>}
         </div>
-        <button
-          onClick={onRefresh}
-          disabled={refreshing}
-          className="hover:underline disabled:opacity-50"
-          style={{ color: 'var(--accent-purple-bright)' }}
-        >
-          {refreshing ? 'Refreshing…' : 'Refresh now'}
-        </button>
+        <div className="flex items-center gap-3 flex-wrap">
+          <button
+            onClick={() => void triggerTick()}
+            disabled={batchBusy !== null}
+            className="hover:underline disabled:opacity-50"
+            style={{ color: 'var(--text-secondary)' }}
+            title="Manually run one cron drain. Useful in local dev (where Vercel cron doesn't fire) and when a row is sitting idle waiting for the next scheduled tick."
+          >
+            {batchBusy === 'tick' ? 'Ticking…' : 'Run cron tick now'}
+          </button>
+          {stuckOrFailed > 0 && (
+            <button
+              onClick={() => void postRunAction('retry_stuck')}
+              disabled={batchBusy !== null}
+              className="hover:underline disabled:opacity-50 font-medium"
+              style={{ color: '#fbbf24' }}
+              title="Reset every failed video and clear every zombie claim, then trigger a manual cron tick."
+            >
+              {batchBusy === 'retry_stuck' ? 'Retrying…' : `Retry ${stuckOrFailed} stuck/failed`}
+            </button>
+          )}
+          {nonTerminal > 0 && (
+            <button
+              onClick={() => void postRunAction('stop_all', `Stop all ${nonTerminal} non-terminal videos in this run?`)}
+              disabled={batchBusy !== null}
+              className="hover:underline disabled:opacity-50 font-medium"
+              style={{ color: '#f87171' }}
+              title="Cancel every non-terminal video in this run."
+            >
+              {batchBusy === 'stop_all' ? 'Stopping…' : `Stop all (${nonTerminal})`}
+            </button>
+          )}
+          <button
+            onClick={onRefresh}
+            disabled={refreshing || batchBusy !== null}
+            className="hover:underline disabled:opacity-50"
+            style={{ color: 'var(--accent-purple-bright)' }}
+          >
+            {refreshing ? 'Refreshing…' : 'Refresh now'}
+          </button>
+        </div>
       </div>
+
+      {/*
+        Dev-mode hint. If the run was created more than CRON_TICK_SECONDS*2
+        ago AND no video in the run has any movement past its initial
+        creation AND nothing is currently claimed, the most likely
+        explanation is "the cron simply isn't firing" — which on local
+        dev is expected (Vercel cron only runs in production). Surface
+        the fix instead of letting the user guess.
+      */}
+      {(() => {
+        const oldestUpdate = videos.reduce<number | null>((acc, v) => {
+          const t = new Date(v.updated_at).getTime();
+          return acc == null || t < acc ? t : acc;
+        }, null);
+        const nothingClaimedEver = videos.every((v) => v.claimed_at == null);
+        const allStuckSinceStart =
+          oldestUpdate != null &&
+          (Date.now() - oldestUpdate) / 1000 > CRON_TICK_SECONDS * 2 &&
+          videos.every((v) => {
+            // "Nothing happened" = stage is still queued / generating_script
+            // (the two initial states), no claim history, no cost incurred.
+            return (
+              (v.stage === 'queued' || v.stage === 'generating_script') &&
+              Number(v.cost_usd) === 0 &&
+              v.retry_count === 0
+            );
+          });
+        if (!allStuckSinceStart || !nothingClaimedEver) return null;
+        return (
+          <div
+            className="mt-3 p-3 rounded text-xs"
+            style={{ background: 'rgba(251,191,36,0.10)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.35)' }}
+          >
+            <div className="font-semibold mb-1">Cron doesn&apos;t appear to be running.</div>
+            <p style={{ color: 'var(--text-secondary)' }}>
+              No video in this run has been claimed yet and the queue has sat untouched for
+              {' '}{Math.floor((Date.now() - (oldestUpdate ?? Date.now())) / 60000)}m. Vercel cron only
+              fires on production deployments, not on <code>npm run dev</code>. Click{' '}
+              <strong>Run cron tick now</strong> above to drain the queue manually, or deploy to
+              Vercel to get the every-60s schedule.
+            </p>
+          </div>
+        );
+      })()}
+
+      {batchMessage && (
+        <div
+          className="mt-3 p-2 rounded text-xs"
+          style={{
+            background: batchMessage.toLowerCase().includes('fail') || batchMessage.toLowerCase().includes('error')
+              ? 'rgba(239,68,68,0.10)'
+              : 'rgba(16,185,129,0.10)',
+            color: batchMessage.toLowerCase().includes('fail') || batchMessage.toLowerCase().includes('error')
+              ? '#f87171'
+              : '#10b981',
+          }}
+        >
+          {batchMessage}
+        </div>
+      )}
     </div>
   );
 }

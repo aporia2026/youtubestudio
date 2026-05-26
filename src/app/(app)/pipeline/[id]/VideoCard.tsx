@@ -381,22 +381,16 @@ export default function VideoCard({
                 />
               )}
 
-              {!isTerminal && !isAwaitingGate && (
-                <div className="pt-2" style={{ borderTop: '1px solid var(--border)' }}>
-                  <button
-                    onClick={() => {
-                      if (confirm('Kill this video? It will be marked cancelled and no further work runs.')) {
-                        void callAction({ action: 'kill' });
-                      }
-                    }}
-                    disabled={!!busyAction}
-                    className="text-xs hover:underline disabled:opacity-50"
-                    style={{ color: '#f87171' }}
-                  >
-                    Kill this video
-                  </button>
-                </div>
-              )}
+              <CardActions
+                video={video}
+                busyAction={busyAction}
+                onRetry={() => callAction({ action: 'retry' })}
+                onStop={() => {
+                  if (confirm('Stop this video? It will be marked cancelled and no further work runs.')) {
+                    void callAction({ action: 'kill' });
+                  }
+                }}
+              />
 
               {actionError && (
                 <div
@@ -409,6 +403,84 @@ export default function VideoCard({
             </div>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Bottom-of-card action row. Three real possibilities:
+ *
+ *   - Retry: visible when the row is in a retry-able terminal failure
+ *     OR is stuck (no claim + no movement > 5min). Hidden for
+ *     `narration_abandoned` (unretryable via this path) and for healthy
+ *     in-flight rows (the cron will pick them up on its next tick;
+ *     showing Retry there would lie about what it does).
+ *
+ *   - Stop: visible whenever the row isn't already terminal and isn't
+ *     awaiting human input at the script gate (the script gate has its
+ *     own Kill button in the gate panel).
+ *
+ *   - Nothing: hides the whole strip if neither action applies (e.g.
+ *     terminal `done` with nothing to do).
+ */
+function CardActions({
+  video,
+  busyAction,
+  onRetry,
+  onStop,
+}: {
+  video: VideoSummary;
+  busyAction: string | null;
+  onRetry: () => void;
+  onStop: () => void;
+}) {
+  const isTerminal = TERMINAL.has(video.stage);
+  const isAwaitingGate = video.stage === 'awaiting_script_gate';
+  const isUnretryable = video.stage === 'narration_abandoned';
+  const sinceUpdateSec = Math.max(
+    0,
+    Math.floor((Date.now() - new Date(video.updated_at).getTime()) / 1000),
+  );
+  const isStuck =
+    !isTerminal &&
+    video.claimed_at == null &&
+    sinceUpdateSec > 5 * 60 &&
+    video.stage !== 'awaiting_script_gate' &&
+    video.stage !== 'waiting_narration' &&
+    video.stage !== 'narration_overdue';
+
+  const showRetry = !isUnretryable && (FAILED.has(video.stage) || video.stage === 'cancelled_by_user' || isStuck);
+  const showStop = !isTerminal && !isAwaitingGate;
+
+  if (!showRetry && !showStop) return null;
+
+  return (
+    <div className="pt-2 flex items-center gap-4" style={{ borderTop: '1px solid var(--border)' }}>
+      {showRetry && (
+        <button
+          onClick={onRetry}
+          disabled={!!busyAction}
+          className="text-xs hover:underline disabled:opacity-50 font-medium"
+          style={{ color: '#fbbf24' }}
+          title={
+            FAILED.has(video.stage)
+              ? 'Reset this video to the stage that retries the failed step, clear the failure metadata, and bump retry_count.'
+              : 'Clear the stale claim (if any) so the cron picks this row up on its next tick.'
+          }
+        >
+          Retry
+        </button>
+      )}
+      {showStop && (
+        <button
+          onClick={onStop}
+          disabled={!!busyAction}
+          className="text-xs hover:underline disabled:opacity-50"
+          style={{ color: '#f87171' }}
+        >
+          Stop this video
+        </button>
       )}
     </div>
   );

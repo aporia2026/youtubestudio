@@ -6,6 +6,7 @@ import {
   markNarrationComplete,
   extendNarrationDeadline,
   abandonNarration,
+  retryVideo,
   PipelineActionError,
   type ScriptGateDecision,
 } from '@/lib/auto-pipeline/actions';
@@ -61,6 +62,10 @@ export const POST = apiRoute.authed<{ id: string }>(async (session, req: NextReq
       }
       case 'abandon': {
         const result = await abandonNarration({ workspaceId: session.ws, videoId });
+        return NextResponse.json(result);
+      }
+      case 'retry': {
+        const result = await retryVideo({ workspaceId: session.ws, videoId });
         return NextResponse.json(result);
       }
       default:
