@@ -115,28 +115,21 @@ const IMAGE_MODEL_PREF_KEY = 'topic_card_grid_default_image_model';
 const CARD_SHAPE_PREF_KEY = 'topic_card_grid_default_card_shape';
 
 /**
- * Style block for the auto-growing review-card textareas. `field-sizing:
- * content` is the modern CSS property that resizes a form control to fit
- * its own content — so long labels wrap onto a second line and long icon
- * concepts grow vertically instead of being clipped by a fixed-width
- * single-line input. On browsers without the property the `rows`
- * attribute provides the fallback (a small minimum height); the user can
- * still drag the resize handle.
- *
- * Cast through `Record<string, unknown>` because `fieldSizing` is only in
- * the very latest `@types/react`; this avoids a compile error on older
- * type bundles while staying readable.
+ * Style block for the icon_concept textarea on each review-card row.
+ * Fixed 3-row preview with an inner scrollbar for longer text and a
+ * vertical drag handle. We do NOT use `field-sizing: content` here —
+ * at narrow column widths it ballooned rows to 10+ lines, which made
+ * the review state unusable. The `rows={3}` JSX prop sets the visible
+ * height; this style only handles the scroll + resize behaviour and
+ * the disabled dim-out.
  */
-const AUTOSIZE_TEXTAREA_STYLE = {
-  fieldSizing: 'content',
-  resize: 'vertical',
-  overflow: 'hidden',
-} as unknown as CSSProperties;
-
-const AUTOSIZE_TEXTAREA_DISABLED_STYLE = {
-  ...AUTOSIZE_TEXTAREA_STYLE,
-  opacity: 0.55,
-} as CSSProperties;
+function ICON_CONCEPT_TEXTAREA_STYLE(disabled: boolean): CSSProperties {
+  return {
+    resize: 'vertical',
+    overflowY: 'auto',
+    opacity: disabled ? 0.55 : undefined,
+  };
+}
 
 /** Hard cap on per-cell upload size. Mirrors the presign route's cap so
  *  the browser surfaces the error before the round trip — the route is
@@ -1075,22 +1068,22 @@ function CardTableState(props: CardTableProps) {
             className="p-2 rounded-lg space-y-1.5"
             style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
           >
-            <div className="flex items-start gap-2">
-              <span className="text-xs font-mono w-6 text-right pt-1.5" style={{ color: 'var(--text-muted)' }}>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-mono w-6 text-right" style={{ color: 'var(--text-muted)' }}>
                 {card.index}
               </span>
-              <textarea
+              <input
                 className="input-field flex-1 text-xs font-medium"
                 placeholder="Card label"
+                // Labels are 1-4 words by spec (max 60 chars). Stay
+                // single-line so the row height matches the buttons next
+                // to it, and surface the full text via the native tooltip
+                // for the narrow-column case where the label doesn't fit
+                // visually.
+                title={card.label}
                 value={card.label}
-                onChange={(e) => props.onUpdate(i, { label: e.target.value.replace(/\s*\n+\s*/g, ' ') })}
+                onChange={(e) => props.onUpdate(i, { label: e.target.value })}
                 maxLength={60}
-                rows={1}
-                // `field-sizing: content` auto-grows the textarea to fit
-                // its text, so long labels wrap onto a second line instead
-                // of being cropped by a fixed-width input. Falls back to
-                // the `rows={1}` minimum on browsers without the property.
-                style={AUTOSIZE_TEXTAREA_STYLE}
               />
               {card.accent_color ? (
                 <div className="flex items-center gap-1">
@@ -1165,8 +1158,14 @@ function CardTableState(props: CardTableProps) {
                     onChange={(e) => props.onUpdate(i, { icon_concept: e.target.value })}
                     maxLength={200}
                     disabled={conceptDisabled}
-                    rows={2}
-                    style={conceptDisabled ? AUTOSIZE_TEXTAREA_DISABLED_STYLE : AUTOSIZE_TEXTAREA_STYLE}
+                    rows={3}
+                    // Fixed 3-row preview (covers most icon concepts) with
+                    // an inner scrollbar for longer text, and a vertical
+                    // resize grip so the user can drag taller when they
+                    // need to read all 200 chars at once. Avoids the
+                    // `field-sizing: content` trap where narrow columns
+                    // would balloon the row to 10+ lines.
+                    style={ICON_CONCEPT_TEXTAREA_STYLE(conceptDisabled)}
                   />
                   <CellUploadControl
                     cardIndex={card.index}
