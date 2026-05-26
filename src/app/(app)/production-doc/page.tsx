@@ -4178,17 +4178,51 @@ function ProductionDocPage() {
     }
 
     setRetryingImages(null);
+
+    // After base rows finish, generate any variant rows in the doc via
+    // Atlas Edit on their base's image. Variant rows have an empty
+    // `ai_image_prompt` by design (the auto-grouping post-pass in
+    // src/lib/auto-group-variants.ts clears it; the dispatcher composes
+    // the final prompt from base.ai_image_prompt + variant_edit_prompt),
+    // so they're skipped by the bulk plan above. Without this phase,
+    // the user would have to click "Generate variant" on every variant
+    // row by hand — defeating the purpose of auto-grouping. Done
+    // sequentially because each Atlas Edit call is independent but
+    // they all hit the same Kie endpoint and rate-limiting parallel
+    // calls would be friction the user shouldn't have to think about.
+    const variantRowIndices = doc?.rows
+      ? doc.rows
+          .map((row, idx) => ({ row, idx }))
+          .filter(({ row }) => {
+            const vidx = (row as unknown as Record<string, unknown>).variant_index;
+            return typeof vidx === 'number' && vidx > 0;
+          })
+          .map(({ idx }) => idx)
+      : [];
+
+    if (variantRowIndices.length > 0) {
+      appendLog(
+        `Generating ${variantRowIndices.length} variant frame${variantRowIndices.length === 1 ? '' : 's'} from base images via Atlas Edit (~$${(variantRowIndices.length * 0.011).toFixed(2)})...`,
+      );
+      for (const idx of variantRowIndices) {
+        await generateVariantImage(idx);
+      }
+    }
+
+    const variantSummary = variantRowIndices.length > 0
+      ? ` + ${variantRowIndices.length} variant${variantRowIndices.length === 1 ? '' : 's'} via Atlas Edit`
+      : '';
     toast.success(
       collageOn
-        ? `Generated ${emptyImagePlan.length} image${emptyImagePlan.length === 1 ? '' : 's'} (${chunkCount} collage group${chunkCount === 1 ? '' : 's'}).`
-        : `Generated ${emptyImagePlan.length} image${emptyImagePlan.length === 1 ? '' : 's'}.`,
+        ? `Generated ${emptyImagePlan.length} image${emptyImagePlan.length === 1 ? '' : 's'} (${chunkCount} collage group${chunkCount === 1 ? '' : 's'})${variantSummary}.`
+        : `Generated ${emptyImagePlan.length} image${emptyImagePlan.length === 1 ? '' : 's'}${variantSummary}.`,
     );
     // Same deps justification as runRetryFailedImages above. `imageModel`
     // and `doc.collage_mode` are read inside but stable enough at the
     // batch's scope that we don't need to refire the callback when they
     // change mid-batch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [retryingImages, imagesGenerating, emptyImagePlan, doc?.collage_mode, imageModel]);
+  }, [retryingImages, imagesGenerating, emptyImagePlan, doc?.collage_mode, imageModel, doc?.rows, generateVariantImage]);
 
   const runRetryFailedVideos = useCallback(async () => {
     if (animatingAll || retryingVideos) return;
@@ -5998,9 +6032,22 @@ function ProductionDocPage() {
       .map((r, i) => ({ row: r, idx: i }))
       .filter(({ row }) => row.ai_image_prompt?.trim());
 
-    // Initialise all row states immediately
+    // Initialise all row states immediately. Variant rows (variant_index
+    // > 0) intentionally carry an empty `ai_image_prompt` — their image
+    // is derived from the base via the per-row "Generate variant" button
+    // through Atlas Edit, NOT via stock search. Without this carve-out,
+    // every variant row would falsely surface a "Search Images" button
+    // in the image column alongside its real "Generate variant" CTA,
+    // which the user reported as confusing. Variants get 'pending' (the
+    // `•••` waiting indicator) so the Generate variant button is the
+    // unambiguous next action.
     const initialStates: RowImageState[] = rows.map(r => {
-      if (!r.ai_image_prompt?.trim()) {
+      const rBag = r as unknown as Record<string, unknown>;
+      const variantIndex = typeof rBag.variant_index === 'number'
+        ? (rBag.variant_index as number)
+        : -1;
+      const isDerivedVariant = variantIndex > 0;
+      if (!r.ai_image_prompt?.trim() && !isDerivedVariant) {
         const q = r.stock_search_terms || r.visual_description || r.visual_type;
         return {
           status: 'search',
@@ -6018,43 +6065,60 @@ function ProductionDocPage() {
     let doneCount = 0;
     const CONCURRENCY = 2;
 
-    for (let i = 0; i < aiRows.length; i += CONCURRENCY) {
-      if (signal?.aborted) break;
-      const batch = aiRows.slice(i, i + CONCURRENCY);
-      await Promise.all(
-        batch.map(async ({ row, idx }) => {
-          if (signal?.aborted) return;
-          // Read meta from the `rows` argument, not React `doc` state — see
-          // generateImageForRow header for why.
-          const skipOverlay = typeof row.skip_overlay === 'boolean'
-            ? row.skip_overlay
-            : (docOverlaysDisabled === true);
-          const sheetRef = doc ? resolveSheetReference(row, doc) : { referenceImageUrl: undefined, styleSheetDescription: undefined };
-          await generateImageForRow(
-            idx,
-            row.ai_image_prompt,
-            {
-              onScreenText: row.on_screen_text,
-              onScreenTextMode: row.on_screen_text_mode ?? doc?.on_screen_text_mode_default,
-              sectionTitle: row.section_title,
-              sectionTitleLayout: row.section_title_layout ?? doc?.section_title_layout_default,
-              referenceImageUrl: sheetRef.referenceImageUrl,
-              styleSheetDescription: sheetRef.styleSheetDescription,
-              overlayStockTerms: row.overlay_stock_terms,
-              skipOverlay,
-            },
-            signal,
-          );
-          doneCount++;
-          setImageProgress({ done: doneCount, total: aiRows.length });
-          appendLog(`Image ${doneCount}/${aiRows.length} — shot ${idx + 1} (${row.visual_type})`);
-        }),
-      );
-    }
+    try {
+      for (let i = 0; i < aiRows.length; i += CONCURRENCY) {
+        if (signal?.aborted) break;
+        const batch = aiRows.slice(i, i + CONCURRENCY);
+        await Promise.all(
+          batch.map(async ({ row, idx }) => {
+            if (signal?.aborted) return;
+            // Read meta from the `rows` argument, not React `doc` state — see
+            // generateImageForRow header for why.
+            const skipOverlay = typeof row.skip_overlay === 'boolean'
+              ? row.skip_overlay
+              : (docOverlaysDisabled === true);
+            const sheetRef = doc ? resolveSheetReference(row, doc) : { referenceImageUrl: undefined, styleSheetDescription: undefined };
+            await generateImageForRow(
+              idx,
+              row.ai_image_prompt,
+              {
+                onScreenText: row.on_screen_text,
+                onScreenTextMode: row.on_screen_text_mode ?? doc?.on_screen_text_mode_default,
+                sectionTitle: row.section_title,
+                sectionTitleLayout: row.section_title_layout ?? doc?.section_title_layout_default,
+                referenceImageUrl: sheetRef.referenceImageUrl,
+                styleSheetDescription: sheetRef.styleSheetDescription,
+                overlayStockTerms: row.overlay_stock_terms,
+                skipOverlay,
+              },
+              signal,
+            );
+            // Don't tick progress for rows that aborted mid-fetch — the
+            // fetch rejects with AbortError, generateImageForRow marks the
+            // row 'error', but we shouldn't count it as "done" or log
+            // "Image N/M shot K" past the user's cancel.
+            if (signal?.aborted) return;
+            doneCount++;
+            setImageProgress({ done: doneCount, total: aiRows.length });
+            appendLog(`Image ${doneCount}/${aiRows.length} — shot ${idx + 1} (${row.visual_type})`);
+          }),
+        );
+      }
 
-    setImagesGenerating(false);
-    appendLog(`✓ All ${aiRows.length} images complete`);
-    toast.success(`${aiRows.length} images generated`);
+      if (signal?.aborted) {
+        appendLog(`⊘ Image generation cancelled at ${doneCount}/${aiRows.length}`);
+        toast.info(`Image generation cancelled (${doneCount}/${aiRows.length} done)`);
+      } else {
+        appendLog(`✓ All ${aiRows.length} images complete`);
+        toast.success(`${aiRows.length} images generated`);
+      }
+    } finally {
+      setImagesGenerating(false);
+      // Now that no more in-flight work is bound to this controller, clear
+      // it so the next generate() run starts fresh. (generate()'s own
+      // finally deliberately no longer nulls — see comment there.)
+      abortControllerRef.current = null;
+    }
   }
 
   // ── Main generation
@@ -6075,7 +6139,24 @@ function ProductionDocPage() {
   }, []);
 
   function cancelGeneration() {
-    abortControllerRef.current?.abort();
+    const controller = abortControllerRef.current;
+    console.info('[prodoc cancel] Stop clicked', {
+      hasController: Boolean(controller),
+      alreadyAborted: controller?.signal.aborted ?? null,
+      generating,
+      imagesGenerating,
+      imageProgress,
+    });
+    if (!controller) {
+      // Pre-fix this branch was the silent failure: generate()'s finally
+      // nulled the ref while generateImages kept running fire-and-forget,
+      // so Stop became a no-op once the doc had returned. Kept as a
+      // defensive log in case a future code path re-introduces it.
+      appendLog('⚠ Stop pressed but no in-flight generation is registered');
+      return;
+    }
+    controller.abort();
+    appendLog('⊘ Stop requested — cancelling in-flight work…');
   }
 
   async function generate() {
@@ -6331,7 +6412,12 @@ function ProductionDocPage() {
       }
     } finally {
       setGenerating(false);
-      abortControllerRef.current = null;
+      // Do NOT null abortControllerRef here. generateImages above is
+      // fire-and-forget and may still be running for the next ~30–60 s ×
+      // (rows / concurrency). The image-progress UI still exposes a Stop
+      // button bound to the same controller, so the ref must stay live
+      // until generateImages finishes (it clears the ref itself on exit).
+      // Nulling here previously made Stop a silent no-op during image gen.
     }
   }
 
