@@ -92,12 +92,17 @@ const KIE_GEMINI_FLASH = 'kie-gemini-2.5-flash';
 
 export const APP_FEATURES: AppFeatureSpec[] = [
   // ─── Create ──────────────────────────────────────────────────────────
-  { id: 'script-generator', label: 'Script Generator', description: 'Drafts YouTube scripts from a brief', section: 'create', defaultModelId: SONNET },
+  // The five pipeline features below default to gpt-5.4-mini per the
+  // user's 2026-05-26 decision. The chains in DEFAULT_FALLBACK_CHAINS
+  // take precedence; this `defaultModelId` only kicks in if the chain
+  // is empty / unresolved. Keeping it in sync so the Settings UI shows
+  // the same primary the runtime actually uses.
+  { id: 'script-generator', label: 'Script Generator', description: 'Drafts YouTube scripts from a brief', section: 'create', defaultModelId: 'gpt-5.4-mini' },
   { id: 'qa-engine', label: 'QA Engine', description: 'Single-model script quality analysis', section: 'create', defaultModelId: SONNET },
-  { id: 'critic-panel', label: 'Critic Panel', description: 'Multi-critic deliberative script review (charter → drafts → deliberation → chair)', section: 'create', defaultModelId: SONNET },
-  { id: 'idea-generator', label: 'Idea Generator', description: 'Brainstorms video ideas for a niche', section: 'create', defaultModelId: SONNET },
-  { id: 'production-doc', label: 'Production Document', description: 'Shot-by-shot production plan from a script', section: 'create', defaultModelId: SONNET },
-  { id: 'seo-optimizer', label: 'SEO Optimizer', description: 'Optimizes titles, descriptions, and tags', section: 'create', defaultModelId: SONNET },
+  { id: 'critic-panel', label: 'Critic Panel', description: 'Multi-critic deliberative script review (charter → drafts → deliberation → chair)', section: 'create', defaultModelId: 'gpt-5.4-mini' },
+  { id: 'idea-generator', label: 'Idea Generator', description: 'Brainstorms video ideas for a niche', section: 'create', defaultModelId: 'gpt-5.4-mini' },
+  { id: 'production-doc', label: 'Production Document', description: 'Shot-by-shot production plan from a script', section: 'create', defaultModelId: 'gpt-5.4-mini' },
+  { id: 'seo-optimizer', label: 'SEO Optimizer', description: 'Optimizes titles, descriptions, and tags', section: 'create', defaultModelId: 'gpt-5.4-mini' },
   { id: 'youtube-description', label: 'YouTube Description', description: 'Generates the description / chapter list / tags for a script', section: 'create', defaultModelId: HAIKU },
   { id: 'thumbnail-generate', label: 'Thumbnail Generator', description: 'Drafts thumbnail concepts + copy variants', section: 'create', defaultModelId: SONNET },
   { id: 'thumbnail-format-grid', label: 'Thumbnail Format — Topic Card Grid', description: 'LLM step for the Topic Card Grid format (card list + global palette)', section: 'create', defaultModelId: 'kie-gemini-2.5-pro' },
@@ -291,32 +296,16 @@ export const KIE_MODEL_MAP: Record<string, KieModelConfig> = {
  * via `getModelById` before each attempt and skips unknown entries.
  */
 export const DEFAULT_FALLBACK_CHAINS: Partial<Record<AppFeature, string[]>> = {
-  // Idea brainstorming: needs decent capability but fires N times per
-  // batch; Haiku as last-resort fallback keeps cost bounded when both
-  // flagship providers are down.
-  'idea-generator': ['claude-sonnet-4-6', 'gpt-5.5-mini', 'claude-haiku-4-5-20251001'],
-
-  // Script gen: the most quality-sensitive call. Cross-provider
-  // backup, then same Sonnet via Kie as alternate route. No Haiku
-  // tier — a degraded script defeats the point of QA-looping it.
-  'script-generator': ['claude-sonnet-4-6', 'gpt-5.5', 'kie-claude-sonnet-4-6'],
-
-  // Critic panel: multi-call deliberation. Same chain as script-gen —
-  // critics scoring against a Haiku-grade script would skew low and
-  // burn the QA loop on noise.
-  'critic-panel': ['claude-sonnet-4-6', 'gpt-5.5', 'kie-claude-sonnet-4-6'],
-
-  // Production doc: structured JSON output, cost-sensitive when each
-  // row is its own call. Same flagship chain — Haiku-tier models
-  // routinely break the row schema.
-  'production-doc': ['claude-sonnet-4-6', 'gpt-5.5', 'kie-claude-sonnet-4-6'],
-
-  // SEO optimizer: produces titles + description + tags + chapters
-  // in a single JSON pass. Mid-pipeline, runs after the editor
-  // handoff. Same flagship chain — title quality is the gatekeeper
-  // metric and Haiku-tier models routinely emit shorter / less
-  // optimised candidates.
-  'seo-optimizer': ['claude-sonnet-4-6', 'gpt-5.5', 'kie-claude-sonnet-4-6'],
+  // User-picked default (2026-05-26): OpenAI GPT-5.4 family across
+  // every pipeline feature. gpt-5.4-mini primary for cost; gpt-5.4
+  // flagship as the only fallback. The user owns model choices in
+  // this project — see memory/feedback_model_defaults_user_owned.md.
+  // Do not "improve" these chains without asking them first.
+  'idea-generator':   ['gpt-5.4-mini', 'gpt-5.4'],
+  'script-generator': ['gpt-5.4-mini', 'gpt-5.4'],
+  'critic-panel':     ['gpt-5.4-mini', 'gpt-5.4'],
+  'production-doc':   ['gpt-5.4-mini', 'gpt-5.4'],
+  'seo-optimizer':    ['gpt-5.4-mini', 'gpt-5.4'],
 };
 
 /** Lookup the configured fallback chain for a feature, or `null` when
