@@ -12,6 +12,7 @@ import {
   type ProductionDocRowLike,
 } from '@/lib/production-doc-postprocess';
 import { extractScriptTitles, TITLE_SENTINEL_LEAK_RE } from '@/lib/script-titles';
+import { preprocessSsmlForProductionDoc } from '@/lib/ssml-production-doc';
 
 export const maxDuration = 300;
 
@@ -74,6 +75,22 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       }
     : null;
 
+  // SSML preprocessor. Auto-detects scripts pasted as SSML (e.g.
+  // <speak>...<break time="2s"/>...) and converts them into clean
+  // plain text plus an ordered list of section bodies. The sections
+  // become authoritative row-boundary hints for the LLM — no more
+  // guessing where one beat ends and the next begins when the user
+  // has already marked it. Plain-text input passes through unchanged.
+  const ssmlPre = preprocessSsmlForProductionDoc(script);
+  if (ssmlPre.wasSsml) {
+    logger.info('[production-doc ssml-detected]', {
+      inputBytes: Buffer.byteLength(script, 'utf8'),
+      cleanScriptChars: ssmlPre.cleanScript.length,
+      sectionCount: ssmlPre.sections.length,
+    });
+  }
+  const scriptForPipeline = ssmlPre.wasSsml ? ssmlPre.cleanScript : script;
+
   // Deterministic title pre-pass. The LLM used to detect `##Heading` markers
   // itself, which was unreliable: a 6-title script could come back missing
   // titles silently. Now we extract them server-side per chunk and replace
@@ -81,9 +98,9 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   // The prompt then instructs the model to emit one Title Card row per
   // sentinel. Per-chunk scoping is automatic because the chunk's own text
   // is what gets parsed — no risk of titles from other chunks leaking in.
-  const extracted = extractScriptTitles(script);
+  const extracted = extractScriptTitles(scriptForPipeline);
   logger.info('[production-doc title-extract]', {
-    inputScriptChars: script.length,
+    inputScriptChars: scriptForPipeline.length,
     strippedScriptChars: extracted.stripped.length,
     titleCount: extracted.titles.length,
     titles: extracted.titles.map(t => t.text),
@@ -94,6 +111,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   const { system, user } = productionDocPrompt({
     script: extracted.stripped,
     titles: extracted.titles,
+    ssmlSections: ssmlPre.wasSsml ? ssmlPre.sections : undefined,
     niche, topic, speakingPaceWpm, style, creativeBrief,
     startTimecodeSeconds: typeof startTimecodeSeconds === 'number' ? startTimecodeSeconds : 0,
     overlaysDisabled: overlaysDisabled === true,

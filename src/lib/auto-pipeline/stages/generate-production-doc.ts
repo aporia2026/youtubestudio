@@ -20,6 +20,7 @@
 import { sql } from '@vercel/postgres';
 import { productionDocPrompt } from '../../prompts';
 import { extractScriptTitles } from '../../script-titles';
+import { preprocessSsmlForProductionDoc } from '../../ssml-production-doc';
 import { generateTextWithFallback } from '../../ai';
 import { GenerateFailure } from '../../ai-fallback';
 import { resolveChain } from '../resolve-chain';
@@ -80,10 +81,17 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
 
   const chain = await resolveChain('production-doc', preset);
 
+  // SSML preprocessor — same logic as the user-facing route. Auto-
+  // detects SSML scripts (<speak>...<break time="2s"/>...) and
+  // extracts authoritative section boundaries so the LLM honors the
+  // user's authored beat structure instead of inferring it.
+  const ssmlPre = preprocessSsmlForProductionDoc(script);
+  const scriptForPipeline = ssmlPre.wasSsml ? ssmlPre.cleanScript : script;
+
   // Same deterministic title pre-pass as the user-facing routes — strip
   // `##Heading` lines into sentinel tokens server-side so the LLM doesn't
   // have to detect them itself.
-  const extracted = extractScriptTitles(script);
+  const extracted = extractScriptTitles(scriptForPipeline);
 
   let result: Awaited<ReturnType<typeof generateTextWithFallback>>;
   try {
@@ -91,6 +99,7 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
       const prompt = productionDocPrompt({
         script: extracted.stripped,
         titles: extracted.titles,
+        ssmlSections: ssmlPre.wasSsml ? ssmlPre.sections : undefined,
         niche,
         topic,
         style: style

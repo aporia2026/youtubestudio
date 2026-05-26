@@ -2095,6 +2095,7 @@ export function productionDocPrompt({
   startTimecodeSeconds = 0,
   overlaysDisabled = false,
   titles = [],
+  ssmlSections,
 }: {
   script: string;
   niche: string;
@@ -2116,6 +2117,13 @@ export function productionDocPrompt({
    *  replaced by its sentinel (`<<TITLE_N>>`); this list tells the LLM
    *  what each sentinel maps to. Empty when the chunk contains no headings. */
   titles?: ReadonlyArray<{ text: string; sentinel: string }>;
+  /** Ordered section bodies extracted from SSML input via
+   *  `preprocessSsmlForProductionDoc`. When provided, the prompt
+   *  instructs the LLM to treat these as authoritative section
+   *  boundaries — one logical beat per entry — instead of inferring
+   *  beats from the prose itself. Undefined when the input was plain
+   *  text. */
+  ssmlSections?: string[];
 }): { system: string; user: string } {
   const wordCount = script.trim().split(/\s+/).length;
   const chunkDurationSeconds = Math.round((wordCount / speakingPaceWpm) * 60);
@@ -2219,6 +2227,16 @@ For EACH sentinel in the script (in the order they appear), emit ONE standalone 
 The sentinel itself NEVER appears in any row's \`script_text\` — only the title text does. The narrator speaks the title aloud (~1–2 s), which gives the title-card scene its natural duration.
 
 Then the narration that FOLLOWS the sentinel becomes one or more subsequent rows with appropriate non-Title-Card \`visual_type\` (Animation / B-Roll / etc.).` : 'This chunk contains NO title sentinels. Do not emit any Title Card rows.'}
+
+${ssmlSections && ssmlSections.length > 0 ? `## AUTHORED SECTION BOUNDARIES (from SSML \`<break time="2s"/>\` markers)
+
+The user's input was an SSML script with ${ssmlSections.length} explicit section breaks. Treat these as AUTHORITATIVE beat boundaries — do not merge content across sections, and do not split a section into "before-the-break / after-the-break" rows that lose the gap. Every row's \`script_text\` must come from EXACTLY ONE section below; never let a single row span content from two different sections.
+
+The ${ssmlSections.length} sections, in order:
+
+${ssmlSections.map((s, i) => `### Section ${i + 1}\n${s.length > 280 ? s.slice(0, 280) + '…' : s}`).join('\n\n')}
+
+For each section: emit one OR MORE rows. A short section (≤ 7 seconds at the speaking pace) becomes a single row. A longer section is split into multiple rows on sentence boundaries WITHIN that section. Do not pull content forward from the next section to "fill" a short row. The user authored these breaks deliberately to separate beats; preserve that structure verbatim.` : ''}
 
 **visual_description** — Specific and actionable for the editor. Include: subject, action, shot type (wide/medium/close), lighting/mood. Match the chosen visual style precisely.
 
