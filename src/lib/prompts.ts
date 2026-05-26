@@ -2248,14 +2248,14 @@ ${ssmlSections.map((s, i) => `### Section ${i + 1}\n${s.length > 280 ? s.slice(0
 
 For each section: emit one OR MORE rows. A short section (≤ 7 seconds at the speaking pace) becomes a single row. A longer section is split into multiple rows on sentence boundaries WITHIN that section. Do not pull content forward from the next section to "fill" a short row. The user authored these breaks deliberately to separate beats; preserve that structure verbatim.` : ''}
 
-**visual_description** — Specific and actionable for the editor. Include: subject, action, shot type (wide/medium/close), lighting/mood. Match the chosen visual style precisely.
+**visual_description** — Specific and actionable for the editor. **15–25 words.** Include: subject, action, shot type (wide/medium/close), lighting/mood. Match the chosen visual style precisely. Do not restate the style suffix — that lives in ai_image_prompt only.
 
 **stock_search_terms** — 2–4 comma-separated keywords for stock image/footage search. For animation rows, describe what the scene depicts (e.g. "cartoon character thinking, 2D animation").
 
-**ai_image_prompt** — A complete, detailed prompt for AI image generation. Minimum 40 words. Must be usable as-is.
+**ai_image_prompt** — A scene prompt for AI image generation. **35–55 words MAX for the scene body**, then append the mandatory style suffix verbatim. Hard ceiling — going over makes the doc's JSON output exceed model token caps mid-stream on long scripts.
 - For "Talking Head" and "Screen Recording" rows: set to "" (empty — these use stock search instead)
-- For ALL other rows: write a full scene prompt, then append the mandatory style suffix verbatim${styleSuffix ? ` ("${styleSuffix}")` : ''}
-- The prompt must describe the exact scene: subject, action, environment, lighting, camera angle — then the style suffix
+- For ALL other rows: write a focused scene description (35–55 words), then append the mandatory style suffix verbatim${styleSuffix ? ` ("${styleSuffix}")` : ''}
+- The scene body must describe: subject, action, environment, lighting, camera angle — concise, no decorative adjectives stacked on each noun. Then the style suffix carries the look.
 
 ${allowOverlay ? `**overlay_stock_terms** — OPTIONAL. 2–4 comma-separated keywords for a real-world asset (logo, screenshot, photo) the editor will composite on top of the AI-generated visual in post. ONLY populate this when the Mixing Rules above explicitly call for it. Leave as "" otherwise. When set:
   - visual_type STAYS as Animation (or whatever the doodle scene calls for) — do NOT switch to "Screen Recording" or "B-Roll"
