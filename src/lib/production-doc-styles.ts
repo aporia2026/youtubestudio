@@ -259,27 +259,45 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
     description:
       'Tighter doodle aesthetic — bold black title at top, muted palette, framed real-photo overlays, yellow-bubble callouts. Modelled on specific reference videos.',
     ai_image_suffix:
-      // ABSOLUTE RULE — applied at the FRONT because image models weight
-      // early tokens heaviest. The reference frames in built_in_refs
-      // include label-with-arrow callouts (#05 globe-with-computer-callouts,
-      // #06 object-network-laptops-arrows, #11 yellow-text-overlaid-on-globe),
-      // and without explicit negation the i2i model learns "this style
-      // includes labeled diagrams" and bakes text into every output. That
-      // produces the busy "Avalanche Danger" diagram look (multiple figures
-      // + labeled arrows pointing at parts of the scene) instead of the
-      // clean single-subject illustrations the user wants. All textual
-      // content (callouts, time stamps, statistics, term-introductions)
-      // is rendered SEPARATELY by the player as a yellow-bubble overlay
-      // on top — the AI image must be wordless so the overlay reads cleanly.
-      'ABSOLUTELY NO TEXT IN THE IMAGE. No words, no letters, no captions, no labels, no titles, no headlines, no subtitles, no arrows pointing to labels, no callouts, no typography, no chart-style annotations, no handwritten signs. The image is a pure wordless illustration. If the scene description mentions a "label", "callout", "title", "arrow pointing to X", "text reading", or any other text content, IGNORE that instruction — the picture must be 100% wordless. Text is composited separately by downstream rendering. ' +
-      // SINGLE-SUBJECT framing rule — also a HARD prior up front. Without
-      // this the model defaults to busy multi-element diagrammatic scenes
-      // (the reference style's "explanatory illustration" vibe). The user
-      // wants ONE focal element per row, with the rest implied or left
-      // empty.
-      'SINGLE FOCAL SUBJECT ONLY — one stick figure OR one prop OR one object, centered, with generous white space around it. Not a diagrammatic multi-element scene. Not a wide shot containing multiple separate subjects and props arranged together. If the scene description suggests multiple elements, render only the SINGLE most important one and leave the rest as empty white space. ' +
-      // The original character/line rules — now after the two new priors.
-      'Extremely minimalist stick figure cartoon in the style of a child\'s freehand drawing, thin uneven hand-drawn black ink lines on plain pure white background, asdfmovie / Cyanide & Happiness aesthetic. CRITICAL ARM RULE: every arm is exactly one thin black line from shoulder to a clean dead-end tip — like a single chopstick. The arm has NO hand at the end. NO fingers, NO palm, NO thumb, NO wrist, NO knuckles, NO five-fingered hand, NO open hand, NO mitten, NO fist, NO defined hand of any kind. When the character is waving, the waving arm is JUST A LINE pointing up and to the side — the tip is a clean pencil stroke ending, nothing more. Same rule for pointing, gesturing, expressing emotion, standing, walking. The ONLY exception is when the action absolutely requires gripping a specific object that\'s visible in the same scene (typing on a keyboard the hand sits on, holding a tool, gripping a steering wheel) — in those cases draw the smallest possible nub, never anatomical. CHARACTERS: head is an empty circle outline with WHITE INTERIOR (no fill color, never yellow, never tinted), two small black dots for eyes (or two small black rectangles for glasses), tiny optional mouth as a dot or short curve, body and legs are thin single-stroke lines, legs end in clean line tips with NO feet. LINES are wobbly, imperfect, slightly wonky, freehand, NOT clean vector, NOT polished, NOT smooth. NO shading, NO gradients, NO drop shadows. Pure black ink only on the figure itself. Color (a single saturated red, or a pale blue / pale yellow / light gray fill) appears ONLY on specific scene props like a red skull, a blue book cover, a yellow building — NEVER on the character\'s body or head. NOT photorealistic, NOT 3D, NOT a photograph, NOT anime, NOT manga.',
+      // Style derived from the Paint Explainer reference video — see
+      // hiccup-analysis/paint-ref/ for the frame samples that this prompt
+      // was reverse-engineered from. The style is NOT "wordless single-
+      // subject minimalist doodle" (an earlier, wrong revision of this
+      // suffix). The reference is closer to a low-effort hand-drawn
+      // children's storybook page: stick-figure-style characters with
+      // light clothing detail, multi-element scenes when the narrative
+      // calls for them, varied backgrounds (white default but also blue
+      // sky / gray sky / starry space / real photographs as backdrops),
+      // and many color accents (orange fire, yellow stars, red exclam,
+      // blue clothing, green virus, brown paper, gray clouds).
+      //
+      // The ONE thing that IS forbidden: textbook-style labeled diagrams
+      // with arrows pointing to written labels of scene parts. That's
+      // what made the prior Avalanche-Danger output look like an
+      // infographic. Speech bubbles and incidental text on props (book
+      // titles, scroll squiggles, etc.) are FINE — they're part of the
+      // scene, not annotation.
+      'Hand-drawn cartoon doodle in the style of the Paint Explainer reference video — thin black ink outlines on a varied background (often white, sometimes a colored sky, sometimes a real photograph as a backdrop, sometimes a simple gradient). Stick-figure-style characters with light clothing detail: lab coats with soft gray or pale-color fill, ties in blue or red, beards / hair in gray, round glasses with thin frames, defined eyebrows and small expressive mouths. Multiple characters and props can share the frame when the narrative needs them — this is storybook composition, not a single-subject minimalist study. ' +
+      // The character anatomy rule — preserved from the original because
+      // it's the most reliable visual fingerprint of the style. The
+      // refs include a few explicit no-hand frames so the model has both
+      // text negation + visual examples to lean on.
+      'CHARACTER ANATOMY: heads are slightly imperfect circles (often with a soft cream / pale gray interior fill, not pure white), eyes can be small dots OR small rectangles for glasses lenses, eyebrows are short curved strokes (calm, raised in surprise, or downturned in anger), mouths range from a single line to a wide O of surprise to gritted teeth. Body is a thin single-stroke line down to feet. Arms END IN A LINE TIP — no anatomical hand, no fingers, no palm, no fist. The ONLY time a hand is drawn is when the character is gripping a specific visible object (holding a scroll, a quill, a magnifying glass) — then draw the smallest nub of a hand needed to grip it, never anatomical. Lines are wobbly, slightly imperfect, freehand — NOT clean vector, NOT polished. ' +
+      // Color guidance — extracted from real frames: oranges and reds
+      // for fire/danger; yellows for stars, sun, callout-bubble accents;
+      // blues for sky / ties / books; greens for biological / nature;
+      // grays for clouds / clothing / hair; pinks/browns for props.
+      'COLOR: this style uses MANY accent colors, applied to props, clothing, and atmospheric elements. Common palette: saturated orange/red (fire, danger, exclamation, blood), warm yellow (stars, sun, energy, light), pale yellow (callout bubbles), pale-to-saturated blue (sky backgrounds, clothing, water, technology), soft green (nature, biology, virus, fungi), gray (clouds, smoke, hair, beard, lab coat fill, stone walls), brown / tan (paper, scrolls, ground, wood), pink (accent props like magnifying glass handles). Characters CAN have lightly-colored clothing — a gray lab coat with a blue or red tie, a brown robe, a gray beard. Use color liberally — black-on-white only is too monotonous and not faithful to the reference. ' +
+      // Backgrounds — many options. Plain white is the default for
+      // character-focused beats; colored backgrounds and real-photo
+      // backgrounds are common for atmospheric / location / historical
+      // beats.
+      'BACKGROUND: vary by content. Default = clean white space for character close-ups and dialogue beats. Use a SOFT BLUE SKY + GREEN OR BROWN GROUND for outdoor scenes. Use DARK BLUE WITH STARS for space / night scenes. Use GRAY CLOUDS for danger / atmosphere. The reference also occasionally uses a real photograph (a map, a portrait, a landscape) as a backdrop with cartoon elements drawn on top — a powerful storytelling device. ' +
+      // The hard NO: labeled-diagram style. This is the one thing the
+      // image model defaults to (because the built-in refs #05 and #06
+      // contain labeled diagrams) and the one thing that makes the
+      // output look like a textbook instead of a storybook.
+      'FORBIDDEN: textbook-style labeled diagrams — do NOT draw arrows pointing to written labels that name parts of the scene ("Huge Slab of Snow", "Dangerous Slope", "Unsuspecting Campers"). That kind of annotation is a chart, not a story panel. Captions, scene labels, and time stamps are rendered SEPARATELY on top by the player as yellow bubble overlays — the picture itself should not contain those annotations. Speech bubbles for character dialogue ARE allowed (e.g. a character saying "Fascinating" in a cartoon balloon). NOT photorealistic, NOT 3D rendered, NOT anime, NOT manga.',
     built_in_refs: [
       { filename: '01-composite-cartoon-book-with-framed-real-photo.jpg', mime_type: 'image/jpeg' },
       { filename: '02-pure-illustration-cartoon-building-pale-blue.jpg',  mime_type: 'image/jpeg' },
@@ -306,109 +324,144 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
     // but the motif breadth here needs more than 4 anchors.
     preferred_cloud_model: 'nano-banana-2-i2i',
     mixing_rules: [
-      '== COMPOSITIONAL GRAMMAR — NON-NEGOTIABLE ==',
+      '== STYLE REFERENCE: PAINT EXPLAINER ==',
       '',
-      'This style is "ONE focal subject per row, generous white space" — NOT "explanatory multi-element diagram". Picture each row as a single panel from a children\'s storybook, not a textbook illustration with labels and arrows pointing at things. visual_type defaults to "Animation".',
+      'Frame samples from the reference video live in hiccup-analysis/paint-ref/. Every rule below is reverse-engineered from those frames — not theoretical. visual_type defaults to "Animation".',
       '',
-      'GOOD framings (use these):',
-      '  • ONE stick figure standing alone, centered, facing camera',
-      '  • ONE stick figure pointing off-frame (the thing being pointed at is OFF-SCREEN, implied)',
-      '  • ONE prop centered — a single book, a single building, a single computer, a single TV',
-      '  • ONE cartoon TV / picture frame with a thick border, screen empty inside (placeholder for an overlay)',
-      '  • ONE close-up character face filling the frame',
-      '  • A tight cluster of 2-3 IDENTICAL figures grouped as a single "crowd" element (the cluster counts as one subject)',
+      '== COMPOSITION — STORYBOOK PANELS, NOT TEXTBOOK DIAGRAMS ==',
       '',
-      'BAD framings (NEVER do these):',
-      '  • Wide shot with a mountain on one side AND figures on the other AND a tent AND a cloud — that\'s four separate elements arranged like a diagram. WRONG. Pick the most important ONE and split the rest into other rows.',
-      '  • Two unrelated subjects side by side ("character" + "object" both visible together) — split into two rows.',
-      '  • A "scene" drawn like a movie storyboard with multiple props arranged in space.',
-      '  • Anything that looks like a chart, schematic, infographic, or labeled diagram.',
+      'Each row is a panel from a hand-drawn children\'s storybook — the picture tells the beat. Multi-element scenes are GOOD when the elements belong together in the same narrative moment. The wrong end is a textbook page with arrows pointing to written labels of scene parts.',
       '',
-      'If the script content suggests multiple visual elements happening together, SPLIT INTO MULTIPLE ROWS — one element per row, each with its own narration beat. The reference video does this constantly: 5 short rows showing 5 single subjects in sequence, not 1 row showing 5 subjects together.',
+      'GOOD framings (commonly seen in the reference):',
+      '  • One character close-up filling the frame, often with a speech bubble (e.g. "Fascinating" in a cartoon balloon)',
+      '  • Character on one side + the thing they\'re reacting to on the other (character + virus, character + meteor in the sky, character + open book sitting on a map)',
+      '  • A landscape with multiple characters in it (3 figures looking up at a yellow meteor across a blue sky over green ground)',
+      '  • A real-photograph backdrop with cartoon elements drawn on top (real map of Europe with a cartoon book sitting on it)',
+      '  • An atmospheric environment shot with NO character (orange meteor pieces falling through gray clouds, a corner of a gray room with a magnifying glass)',
+      '  • A grid recap of 4-6 small real-photo panels with short black captions under each',
       '',
-      '== AI_IMAGE_PROMPT — FORBIDDEN PHRASES ==',
+      'BAD framings (NEVER do these — this is what made the "Avalanche Danger" output look like an infographic):',
+      '  • A diagram with handwritten labels and arrows pointing to parts of the picture ("Huge Slab of Snow ↗", "Dangerous Slope ↘", "Unsuspecting Campers ↗"). That\'s a chart, not a story panel.',
+      '  • An "infographic" or "schematic" layout — anything that looks like a textbook explanation.',
+      '  • Bare callout text floating in the picture pointing to a labeled scene part. Callout text is rendered SEPARATELY by the player as a yellow bubble overlay; the picture itself should not contain it.',
       '',
-      'NEVER write ANY of these phrases inside `ai_image_prompt`. They tell the image model to bake text / labels / arrows INTO the picture, which destroys the style:',
+      'Single-character vs multi-element framing — let the beat decide. A reactive close-up is single-character; an atmospheric establish or "people reacting" beat is multi-element. Both are valid.',
       '',
-      '  • "labeled", "with a label", "with the label", "with labels"',
-      '  • "with the words", "with text reading", "text that says", "the word"',
-      '  • "captioned", "with a caption"',
+      '== AI_IMAGE_PROMPT — FORBIDDEN PHRASES (PREVENT LABELED-DIAGRAM OUTPUT) ==',
+      '',
+      'NEVER write ANY of these phrases inside `ai_image_prompt`:',
+      '',
+      '  • "labeled", "with a label", "with labels"',
       '  • "with an arrow pointing to", "arrows pointing to", "with arrows labeled"',
-      '  • "title at the top", "title across the top", "heading at the top", "header"',
-      '  • "diagram", "explanatory diagram", "infographic", "schematic"',
-      '  • "annotation", "annotated", "callout label", "tooltip"',
+      '  • "text reading X", "with the words", "captioned with"',
+      '  • "title at the top of the image", "heading inside the image" (the section title is rendered separately by the player)',
+      '  • "diagram", "infographic", "schematic", "explanatory chart"',
+      '  • "annotation", "annotated", "callout label pointing to"',
       '',
-      'If the script content suggests something label-y like "AVALANCHE DANGER", "DANGEROUS SLOPE", "SUSPICIOUS BEHAVIOR" — route that text to `on_screen_text` (rendered as a yellow bubble overlay by the player on top of a CLEAN illustration). NEVER put it inside `ai_image_prompt`.',
+      'Callout-style text (time markers, statistics, names, emphasis phrases, scene labels like "AVALANCHE DANGER") goes to `on_screen_text` — the player renders it as a yellow bubble overlay ON TOP of the AI image. The AI image must not contain that text inside the picture.',
       '',
-      'Also forbidden inside `ai_image_prompt`: describing labels, captions, signs, billboards, written messages, or any other surface that the AI would interpret as "draw text here". The picture must be 100% wordless. The wordless picture + the player\'s yellow-bubble overlay = the Paint Explainer look.',
+      'ALLOWED inside the picture: character speech bubbles (cartoon balloon with a short word like "Fascinating" or "Oh no") — these are scene content, not annotations. Incidental writing on props is fine too (squiggly mock-writing on a scroll, the colored cover of a book without a readable title). Real photographs that contain real text (a map with city names, a book cover) are also fine when used as a backdrop.',
       '',
-      '== ON_SCREEN_TEXT — TARGET ~50% OF NON-TITLE ROWS ==',
+      '== CHARACTER VARIETY ==',
       '',
-      'This style LEANS HARD on yellow-bubble callouts as a core motif. Aim to populate `on_screen_text` on ROUGHLY HALF of non-Title-Card rows (target 40-60%). The Paint Explainer aesthetic without these callouts looks bare and incomplete — it\'s the difference between a children\'s book illustration (the style we want) and a blank doodle (what we get without callouts).',
+      'Don\'t default every character to the same generic stick figure. The reference video uses a CAST of recurring character types — pick the one that fits the beat:',
       '',
-      'Populate `on_screen_text` whenever the script content includes ANY of:',
-      '  • A specific time / date / duration ("In May 2017", "Within hours", "3 days later", "72 seconds")',
-      '  • A number / quantity / statistic ("$4 billion", "150 countries", "47%", "9 hikers")',
-      '  • A name / brand / technical term being introduced ("WannaCry", "Stuxnet", "Tesla", "Dyatlov Pass", "Mount Otorten")',
-      '  • An emphasis phrase (3-5 words tops, ALL CAPS reads stronger: "NO WARNING", "SOLD OUT", "DANGEROUS SLOPE", "AVALANCHE DANGER")',
-      '  • A short summary label for what\'s on screen ("Slab Avalanche", "The Slope", "Camp Site")',
-      '  • A foreign or scientific term needing visual reinforcement ("Subzero", "Hypothermia")',
+      '  • The Scientist / Narrator — stick figure with a soft-gray-fill lab coat, blue or red tie, round glasses with thin frames, defined eyebrows. Use for explanatory beats, dialogue beats, "fascinating" reactions.',
+      '  • The Historian / Witness — older stick figure with gray hair and gray beard, holding a scroll or quill, sometimes in a brown robe. Use for historical-account beats.',
+      '  • Generic Bystander — plain stick figure, no clothing detail, no facial accessories. Use for crowds, anonymous groups, "unsuspecting people" reactions.',
+      '  • The Astronaut / Specialist — stick figure with a simple white spacesuit, fishbowl helmet outline, blue or red badges. Use for space / aerospace beats.',
+      '  • The Patient / Subject — stick figure in a gown, often in a context (hospital bed, lab table). Use for medical / experimental beats.',
       '',
-      'Keep `on_screen_text` content to ≤ 6 words. Shorter is stronger. ALL CAPS reads as confident bubble-text.',
+      'Characters can have lightly-colored clothing (gray, blue, brown, red). Heads are doodle circles with a soft cream / pale gray interior fill — not pure white. Arms still END IN A LINE TIP, no anatomical hand (the reference keeps this rule even on detailed characters).',
       '',
-      'CRITICAL — leave `on_screen_text_mode` undefined (which inherits the doc default of "overlay"). NEVER set it to "bake" for this style. The yellow bubble overlay IS the visual treatment — baking text into the AI image gives small black corner text in the wrong slot AND looks ugly.',
+      'Multiple characters in one frame is fine when the beat needs it — e.g. three bystanders looking up at the sky together. Group them spatially (a tight cluster, not spread across the frame).',
+      '',
+      '== BACKGROUND — VARY BY CONTENT ==',
+      '',
+      'Pure white is the DEFAULT for character-focused or dialogue beats. Other backgrounds are required for atmospheric / location / historical beats:',
+      '',
+      '  • Soft blue sky + green or brown ground — outdoor day scenes, anyone-on-Earth moments',
+      '  • Dark blue with stars — space, night, distant astronomical events',
+      '  • Gray clouds — danger, foreboding, atmospheric tension',
+      '  • Gray walls / interior — corporate spaces, ISS interiors, sterile rooms',
+      '  • Tan / brown — historical, paper, ancient',
+      '  • A REAL PHOTOGRAPH as backdrop — a map, a portrait, a landscape — with cartoon elements drawn on top. Describe this in `ai_image_prompt` as e.g. "a real photograph of a medieval map of Europe fills the background, with a hand-drawn cartoon book sitting on top".',
+      '',
+      'Don\'t force every shot to pure white — monotonous pure-white outputs are the most common visual failure mode. The reference varies backgrounds heavily.',
+      '',
+      '== COLOR PALETTE — USE MULTIPLE COLORS PER FRAME ==',
+      '',
+      'Black-on-white only is NOT the style. The reference uses many colors at once:',
+      '',
+      '  • Saturated orange and red — fire, meteor trails, lava, blood, exclamation, danger',
+      '  • Warm yellow — stars, sun rays, energy, light beams',
+      '  • Pale-to-saturated blue — sky, water, ties, technology, cold',
+      '  • Soft green — virus, plant, nature, biological',
+      '  • Gray — clouds, smoke, hair, beard, lab-coat fill, walls, asphalt',
+      '  • Brown / tan — paper, scrolls, ground, wood, ancient',
+      '  • Pink — accent props (a magnifying glass handle, a feather quill)',
+      '',
+      'A typical reference frame uses 3-5 colors at once. Black ink is the OUTLINE; colors fill specific elements. Don\'t restrict to "one accent per row" — that\'s too austere.',
+      '',
+      '== ON_SCREEN_TEXT — TARGET ~35-45% OF NON-TITLE ROWS ==',
+      '',
+      'Yellow-bubble callouts are a core motif but not on every frame. Roughly 35-45% of non-title frames in the reference carry a yellow callout; the rest are pure illustration with just the section title at the top.',
+      '',
+      'Populate `on_screen_text` when the script content includes:',
+      '  • A specific name being introduced ("Gervase of Canterbury", "Coronal Mass Ejection", "WannaCry")',
+      '  • A specific time / date / duration ("In May 2017", "Within hours", "1054 AD")',
+      '  • A number / quantity / statistic ("$4 billion", "9 hikers", "72 seconds")',
+      '  • A short emphasis phrase (3-5 words tops, can be ALL CAPS: "NO WARNING", "SOLD OUT")',
+      '  • A foreign / technical term needing reinforcement ("Subzero", "Hypothermia", "Stuxnet")',
+      '',
+      'Leave `on_screen_text` empty when the picture already tells the story — character-only reactions, atmospheric environment shots, recap grids. Yellow bubbles on every frame becomes wallpaper; selective use makes them land.',
+      '',
+      'Leave `on_screen_text_mode` undefined (it inherits the doc default of "overlay"). NEVER set it to "bake".',
       '',
       '== SECTION TITLE vs PER-ROW OST — DIFFERENT SLOTS ==',
       '',
       '  • The SECTION TITLE (set on title-card rows via `section_title` and inherited by every subsequent row in that section) renders as a bold black hand-drawn label at the TOP of every frame — like "WANNACRY" persisting across every shot in the WannaCry section. The player renders this; the AI image generator should NEVER include it.',
       '  • The PER-ROW `on_screen_text` is the YELLOW BUBBLE callout (mid-frame). Always overlay, never bake.',
       '',
-      '== OVERLAY_STOCK_TERMS — POPULATE WHENEVER SCRIPT NAMES A REAL ENTITY ==',
+      '== OVERLAY_STOCK_TERMS — ~30% OF NON-TITLE ROWS ==',
       '',
-      'Target ~1 in 3 non-Title rows being a framed-photo composite. The reference video grounds doodle storytelling in REAL evidence — real photos of locations, products, people, events — composited inside cartoon picture frames. Too few of these and the video feels untethered; too many and the cohesive cartoon feel breaks.',
+      'The reference video grounds storytelling in REAL evidence — actual photographs of locations, people, products, events — used in THREE patterns:',
       '',
-      'Populate `overlay_stock_terms` whenever the script content mentions:',
-      '  • Real public figure → "<name> photograph" (e.g. "Elon Musk photograph", "Igor Dyatlov photograph")',
-      '  • Real brand or product → "<brand> logo official PNG" or "<product> photograph" (e.g. "Apple logo official PNG", "iPhone 15 photograph")',
-      '  • Real specific location → "<place> photograph" (e.g. "Dyatlov Pass mountains photograph", "Mount Everest photograph", "Ural mountains photograph")',
-      '  • Real software, app, website, UI → "<thing> screenshot" (e.g. "Windows XP screenshot", "macOS Finder screenshot")',
-      '  • Real famous event with iconic imagery → "<event> photograph" (e.g. "Hindenburg disaster photograph")',
+      '  Pattern A: real photo as the FULL BACKGROUND, cartoon elements drawn on top. Use for historical / geographical context (a medieval map of Europe with a cartoon book on it, a real space photograph behind a cartoon scientist). Powerful for grounding a beat in a real place / time.',
       '',
-      'CRUCIAL — the framed-photo treatment. When `overlay_stock_terms` is populated:',
-      '  • Keep `visual_type` as "Animation" (or "Statistics" / "Cutaway"). Do NOT switch to "Screen Recording" or "B-Roll".',
-      '  • Write `ai_image_prompt` to describe a CARTOON scene with an EMPTY BORDERED RECTANGLE as the overlay placeholder — the picture stays a wordless doodle, the photo gets composited on top later. Examples:',
-      '      "Single stick figure pointing at a thick-black-bordered rectangle on the wall, rectangle is empty white inside, plain white background."',
-      '      "Cartoon TV with a thick grey bezel, screen is a thick-black-bordered empty rectangle, plain white background."',
-      '      "Cartoon picture frame with thick orange border, frame interior is empty white, single stick figure standing next to it gesturing."',
-      '  • DO NOT mention the real subject inside `ai_image_prompt` — the AI image generator will hallucinate a stylised fake instead of leaving the rectangle empty for the real photo.',
-      '  • Add a short `notes` line for the editor: e.g. "Composite: drop the real Dyatlov Pass mountain photograph into the empty bordered rectangle; black border."',
+      '  Pattern B: real photo inset inside a cartoon picture frame — a thick-bordered rectangle in a cartoon scene with the real photo composited inside. Use for "here\'s what that actually looked like" moments.',
       '',
-      'For scripts that talk about generic concepts (unnamed character, everyday object), leave `overlay_stock_terms` empty — keep the row a pure illustration.',
+      '  Pattern C: a grid of 4-6 real-photo thumbnails with short black captions under each. Use for recap shots ("the unsolved cases we covered").',
       '',
-      '== COLOR ACCENTS — USE THEM ==',
+      'Populate `overlay_stock_terms` (target ~1 in 3 non-title rows) for:',
+      '  • Real public figure → "<name> photograph" (e.g. "Gervase of Canterbury photograph", "Igor Dyatlov photograph")',
+      '  • Real brand or product → "<brand> logo official PNG" or "<product> photograph"',
+      '  • Real specific location → "<place> photograph" (e.g. "Dyatlov Pass mountains photograph", "Ural mountains photograph")',
+      '  • Real software, app, website, UI → "<thing> screenshot"',
+      '  • Real famous event with iconic imagery → "<event> photograph"',
+      '  • Historical document / map / artifact → "<thing> photograph" (e.g. "medieval map of Europe")',
       '',
-      'Pure black-on-white doodles every shot get monotonous. Use a SINGLE COLORED ACCENT on roughly 1 in 4 rows to break up the rhythm. The accent goes on a SPECIFIC PROP, never on the character\'s body / head / lines. Color options:',
-      '  • Saturated red — for danger, alarm, blood, urgency, fire (red exclamation mark, red X, red skull, red lightning bolt)',
-      '  • Pale yellow — for warnings, ideas, light (yellow lightbulb, yellow warning triangle, yellow sun)',
-      '  • Pale blue — for cold, water, technology, calm (blue book cover, blue laptop screen, blue snowflake)',
-      '  • Light gray — for shadow, smoke, fog, time (gray cloud, gray smoke trail)',
-      '  • Saturated orange — for warmth, energy, alert (orange flame, orange traffic cone)',
+      'When `overlay_stock_terms` is populated, the `ai_image_prompt` should leave room for the real photo to land:',
+      '  • For Pattern A: "[cartoon foreground description], with a real photograph of [thing] filling the background". The editor composites the real photo behind the cartoon foreground.',
+      '  • For Pattern B: "[cartoon scene with] a thick-black-bordered rectangle on the wall, rectangle is empty white inside" — leaves a slot for the editor to drop the real photo.',
       '',
-      'When you want a colored accent, mention it in `ai_image_prompt` only as a description of the prop ("a red lightning bolt struck above the figure") — never describe color on the figure itself.',
+      'Always add a `notes` line so the editor knows what to composite where: "Composite: real photo of Dyatlov Pass mountains fills the empty rectangle on the right; black border."',
       '',
-      '== VARIANT GROUPS — TARGET 1 PER 6-10 NON-TITLE ROWS ==',
+      '== VARIANT GROUPS — TARGET 1 PER 5-8 NON-TITLE ROWS (USE THEM AGGRESSIVELY) ==',
       '',
-      'A variant group is 2-4 CONSECUTIVE rows sharing the same visual composition with subtle deltas between frames. This is the "near-static animation" feel — same scene with a tiny prop appearing, an expression shifting, a hand moving, a colored mark drawn over the previous frame. The reference video uses this constantly and it is what makes the videos feel alive without true animation.',
+      'A variant group is 2-4 CONSECUTIVE rows sharing the same composition with subtle deltas — the "near-static animation" feel. The reference video uses this CONSTANTLY: the magnifying glass appears, then the red X is drawn over it; the character stands, then the question mark appears above their head, then they react; the sun is bright, then a sunspot appears, then the spot grows into a coronal mass ejection.',
       '',
-      'BROADER trigger than "reactive characters only". USE a variant group whenever 2-4 consecutive script beats happen at the SAME visual moment / SAME composition. Examples that count (all common in the reference video):',
-      '  • Character standing still → noticing something (question mark appears above head) → reacting to it',
-      '  • An empty cartoon TV → cracked screen appears → red X mark drawn over the cracked screen',
-      '  • A stick figure thinking → light bulb appears above head → bulb turns yellow',
-      '  • A timer at 0 → counting up → at 72 seconds with a red highlight ring',
-      '  • Empty desk → laptop appears on it → red exclamation mark added above the laptop',
-      '  • Single tent on a snowy slope → tiny snowflakes start appearing → snow has covered half the tent',
+      'USE a variant group whenever 2-4 consecutive script beats happen at the SAME visual moment / SAME composition. The trigger is broader than "reactive characters" — any sequence of beats describing one evolving scene works:',
       '',
-      'Default to variants when in doubt — they make the video feel alive. The Paint Explainer reference video has roughly ONE variant group per 6-10 standalone rows.',
+      '  • Character standing still → small red question mark appears above their head → they react (eyebrows down, mouth open)',
+      '  • An empty cartoon TV → crack lines appear on the screen → a red X is drawn over the cracked screen',
+      '  • A scientist looking at a clean petri dish → a small green splotch appears → the splotch spreads into a full virus',
+      '  • A bright yellow sun → a small dark sunspot appears → the spot grows into a coronal mass ejection',
+      '  • A character holding a closed book → the book opens → a small icon appears on the open page',
+      '  • A magnifying glass on a wall → a tiny crack appears below it → a red X is drawn over the crack',
+      '  • Three bystanders looking calmly at the sky → their eyebrows raise → mouths drop open in shock',
+      '',
+      'Default to a variant group when the script has any sequence of 2+ beats describing one evolving moment. Variants cost ~$0.011 vs ~$0.04 for an independent row — CHEAPER and they make the video feel alive instead of static.',
       '',
       'How to emit a variant group:',
       '  • Pick a fresh `group_id` (any short stable string). Use the SAME `group_id` on every row in the group.',
