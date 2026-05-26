@@ -2122,9 +2122,18 @@ function ProductionDocPage() {
     });
     setDoc(payload.doc);
     // Convert Record<number, string> → RowImageState[] aligned to rows.
-    const restoredImages: RowImageState[] = payload.doc.rows.map((_, i) => {
+    // Variant rows (variant_index > 0) WITHOUT a saved image still need
+    // their per-row "Generate variant" button as the call-to-action —
+    // not the regular Generate button which would route through the
+    // wrong (from-scratch i2i) path. Setting them to 'pending' renders
+    // the `•••` dots in the image column instead of the misleading
+    // "+ Generate" affordance. Symmetric with the fresh-doc init path
+    // a few hundred lines below.
+    const restoredImages: RowImageState[] = payload.doc.rows.map((row, i) => {
       const url = payload.rowImages[i];
-      return url ? { status: 'done', imageUrl: url } : { status: 'idle' };
+      if (url) return { status: 'done', imageUrl: url };
+      if ((row.variant_index ?? 0) > 0) return { status: 'pending' };
+      return { status: 'idle' };
     });
     setRowImages(restoredImages);
     // Overlays + clips keep their Record<number, …> shape locally; just
@@ -3989,8 +3998,22 @@ function ProductionDocPage() {
 
   const runRetryFailedImages = useCallback(async () => {
     if (retryingImages || imagesGenerating) return;
-    if (failedImagePlan.length === 0) return;
-    setRetryingImages({ done: 0, total: failedImagePlan.length });
+    // Collect failed variant rows too — they fall through `failedImagePlan`
+    // because that filter requires a non-empty ai_image_prompt (variants
+    // have it cleared by design). Without this, a 'Retry failed' click
+    // would only retry failed bases and leave failed variants stuck.
+    const failedVariantIndices = doc?.rows
+      ? doc.rows
+          .map((row, idx) => ({ row, idx }))
+          .filter(({ row, idx }) =>
+            (row.variant_index ?? 0) > 0 && rowImages[idx]?.status === 'error',
+          )
+          .map(({ idx }) => idx)
+      : [];
+    const totalRetries = failedImagePlan.length + failedVariantIndices.length;
+    if (totalRetries === 0) return;
+    setRetryingImages({ done: 0, total: totalRetries });
+    let cursor = 0;
     for (let n = 0; n < failedImagePlan.length; n++) {
       const item = failedImagePlan[n]!;
       await generateImageForRow(item.rowIndex, item.prompt, {
@@ -4003,18 +4026,32 @@ function ProductionDocPage() {
         overlayStockTerms: item.overlayStockTerms,
         skipOverlay: item.skipOverlay,
       });
-      setRetryingImages({ done: n + 1, total: failedImagePlan.length });
+      cursor += 1;
+      setRetryingImages({ done: cursor, total: totalRetries });
+    }
+    for (const idx of failedVariantIndices) {
+      console.info('[prodoc retry-failed variant]', {
+        rowIndex: idx,
+        groupId: doc?.rows[idx]?.group_id,
+        variantIndex: doc?.rows[idx]?.variant_index,
+      });
+      await generateVariantImage(idx);
+      cursor += 1;
+      setRetryingImages({ done: cursor, total: totalRetries });
     }
     setRetryingImages(null);
+    const variantSummary = failedVariantIndices.length > 0
+      ? ` + ${failedVariantIndices.length} variant${failedVariantIndices.length === 1 ? '' : 's'}`
+      : '';
     toast.success(
-      `Retried ${failedImagePlan.length} image${failedImagePlan.length === 1 ? '' : 's'}.`,
+      `Retried ${failedImagePlan.length} image${failedImagePlan.length === 1 ? '' : 's'}${variantSummary}.`,
     );
     // `generateImageForRow` is a per-render async function (not memoised) —
     // intentionally omitted from deps to avoid recreating this callback every
     // render. The function closes over stable state setters and `imageModel`
     // at call time, which is fine for a synchronous retry loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [retryingImages, imagesGenerating, failedImagePlan]);
+  }, [retryingImages, imagesGenerating, failedImagePlan, doc?.rows, rowImages, generateVariantImage]);
 
   // Bulk generate stills for every row that's currently empty (idle /
   // missing) with a usable AI prompt. Shares the same sequential
@@ -4204,23 +4241,81 @@ function ProductionDocPage() {
     // sequentially because each Atlas Edit call is independent but
     // they all hit the same Kie endpoint and rate-limiting parallel
     // calls would be friction the user shouldn't have to think about.
-    const variantRowIndices = doc?.rows
-      ? doc.rows
-          .map((row, idx) => ({ row, idx }))
-          .filter(({ row }) => {
-            const vidx = (row as unknown as Record<string, unknown>).variant_index;
-            return typeof vidx === 'number' && vidx > 0;
-          })
-          .map(({ idx }) => idx)
-      : [];
+    // Two-stage filter (mirrors the auto-pipeline variant phase):
+    //   1) Skip variants that already have an image — re-generating wastes
+    //      money AND would clobber any image the user edited by hand.
+    //   2) Skip variants whose BASE has no image — they'd hit
+    //      BASE_NOT_GENERATED and spam error toasts. Surface a single
+    //      consolidated log line instead.
+    let imagesSnapshot: RowImageState[] = [];
+    setRowImages(prev => {
+      imagesSnapshot = prev;
+      return prev;
+    });
+    const variantRowIndices: number[] = [];
+    const { orphans: orphanCount, incomplete: incompleteCount } = (() => {
+      let orphans = 0;
+      let incomplete = 0;
+      if (!doc?.rows) return { orphans: 0, incomplete: 0 };
+      for (let i = 0; i < doc.rows.length; i++) {
+        const row = doc.rows[i];
+        if ((row.variant_index ?? 0) <= 0) continue;
+        if (imagesSnapshot[i]?.imageUrl) continue;
+        const editPrompt = row.variant_edit_prompt?.trim();
+        if (!editPrompt) {
+          incomplete += 1;
+          continue;
+        }
+        const groupId = row.group_id;
+        if (!groupId) continue;
+        const baseRowIdx = doc.rows.findIndex(
+          (r) => r.group_id === groupId && (r.variant_index ?? 0) === 0,
+        );
+        const baseHasImage = baseRowIdx >= 0 && Boolean(imagesSnapshot[baseRowIdx]?.imageUrl);
+        if (!baseHasImage) {
+          orphans += 1;
+          continue;
+        }
+        variantRowIndices.push(i);
+      }
+      return { orphans, incomplete };
+    })();
+    if (incompleteCount > 0) {
+      appendLog(
+        `⚠ ${incompleteCount} variant${incompleteCount === 1 ? '' : 's'} skipped — empty edit prompt. Fill in "what changes from the base" in the inspector and click Generate variant.`,
+      );
+    }
+    if (orphanCount > 0) {
+      appendLog(
+        `⚠ ${orphanCount} variant${orphanCount === 1 ? '' : 's'} skipped — base image not generated. Retry the failed base${orphanCount === 1 ? '' : 's'} first.`,
+      );
+    }
 
     if (variantRowIndices.length > 0) {
       appendLog(
         `Generating ${variantRowIndices.length} variant frame${variantRowIndices.length === 1 ? '' : 's'} from base images via Atlas Edit (~$${(variantRowIndices.length * 0.011).toFixed(2)})...`,
       );
+      let variantDone = 0;
+      let variantFailed = 0;
       for (const idx of variantRowIndices) {
+        console.info('[prodoc bulk-empty variant]', {
+          rowIndex: idx,
+          groupId: doc?.rows[idx]?.group_id,
+          variantIndex: doc?.rows[idx]?.variant_index,
+          hasEditPrompt: Boolean(doc?.rows[idx]?.variant_edit_prompt?.trim()),
+        });
         await generateVariantImage(idx);
+        let updated: RowImageState[] = [];
+        setRowImages(prev => {
+          updated = prev;
+          return prev;
+        });
+        if (updated[idx]?.imageUrl) variantDone += 1;
+        else variantFailed += 1;
       }
+      appendLog(
+        `✓ Variant generation finished — ${variantDone} succeeded${variantFailed > 0 ? `, ${variantFailed} failed (click Retry on the failing variant or check console)` : ''}`,
+      );
     }
 
     const variantSummary = variantRowIndices.length > 0
@@ -6147,8 +6242,65 @@ function ProductionDocPage() {
         .map(({ idx }) => idx);
 
       if (!signal?.aborted && variantIndices.length > 0) {
+        // Two-stage filter:
+        //   (1) Skip variants whose image already generated successfully in
+        //       a prior run — re-generating wastes ~$0.011 each AND would
+        //       clobber a possibly-user-edited image.
+        //   (2) Skip variants whose BASE has no image — generateVariantImage
+        //       would hit composeVariantEditRequest's BASE_NOT_GENERATED
+        //       branch, surfacing a toast.error per row. In a 130-row doc
+        //       with 35 orphan variants that's 35 error toasts — solid
+        //       UX failure. Quietly log them instead and let the user
+        //       fix the failed base before retrying variants.
+        let imagesSnapshot: RowImageState[] = [];
+        setRowImages(prev => {
+          imagesSnapshot = prev;
+          return prev;
+        });
+        const pendingVariantIndices: number[] = [];
+        const orphanVariantIndices: number[] = [];
+        const incompleteVariantIndices: number[] = [];
+        for (const idx of variantIndices) {
+          const ownImage = imagesSnapshot[idx]?.imageUrl;
+          if (ownImage) continue; // already generated
+          const editPrompt = rows[idx]?.variant_edit_prompt?.trim();
+          if (!editPrompt) {
+            // Manually-added variant with no edit prompt yet — generating
+            // would hit MISSING_EDIT_PROMPT and spam toasts. Skip quietly;
+            // the per-row inspector\'s edit-prompt field is the place to
+            // fill it in.
+            incompleteVariantIndices.push(idx);
+            continue;
+          }
+          const groupId = rows[idx]?.group_id;
+          if (!groupId) continue;
+          const baseRowIdx = rows.findIndex(
+            (r) => r.group_id === groupId && (r.variant_index ?? 0) === 0,
+          );
+          const baseHasImage = baseRowIdx >= 0 && Boolean(imagesSnapshot[baseRowIdx]?.imageUrl);
+          if (!baseHasImage) {
+            orphanVariantIndices.push(idx);
+            continue;
+          }
+          pendingVariantIndices.push(idx);
+        }
+        const skipped =
+          variantIndices.length -
+          pendingVariantIndices.length -
+          orphanVariantIndices.length -
+          incompleteVariantIndices.length;
+        if (incompleteVariantIndices.length > 0) {
+          appendLog(
+            `⚠ ${incompleteVariantIndices.length} variant${incompleteVariantIndices.length === 1 ? '' : 's'} skipped — empty edit prompt. Fill in "what changes from the base" in the inspector and click Generate variant.`,
+          );
+        }
+        if (orphanVariantIndices.length > 0) {
+          appendLog(
+            `⚠ ${orphanVariantIndices.length} variant${orphanVariantIndices.length === 1 ? '' : 's'} can't generate — base image didn't generate. Retry the failed base${orphanVariantIndices.length === 1 ? '' : 's'} first.`,
+          );
+        }
         appendLog(
-          `Generating ${variantIndices.length} variant frame${variantIndices.length === 1 ? '' : 's'} from base images via Atlas Edit (~$${(variantIndices.length * 0.011).toFixed(2)})...`,
+          `Generating ${pendingVariantIndices.length} variant frame${pendingVariantIndices.length === 1 ? '' : 's'} from base images via Atlas Edit (~$${(pendingVariantIndices.length * 0.011).toFixed(2)})${skipped > 0 ? ` — skipping ${skipped} already generated` : ''}...`,
         );
         // CRITICAL — pass the freshly-returned `rows` as an explicit
         // doc override. `generateVariantImage`'s React-closure-bound
@@ -6160,16 +6312,34 @@ function ProductionDocPage() {
         // override, every variant call would bail with "Row is not
         // part of a variant group" because the auto-grouping's
         // `variant_index` / `group_id` stampings exist only on these
-        // fresh rows, not on the stale-closure doc. This was the
-        // silent root cause of "variants have no images on fresh
-        // doc generation".
+        // fresh rows, not on the stale-closure doc.
         const docForVariants = { rows } as ProductionDoc;
-        for (const idx of variantIndices) {
+        let variantDone = 0;
+        let variantFailed = 0;
+        for (const idx of pendingVariantIndices) {
           if (signal?.aborted) break;
+          console.info('[prodoc auto-pipeline variant]', {
+            rowIndex: idx,
+            groupId: rows[idx]?.group_id,
+            variantIndex: rows[idx]?.variant_index,
+            hasEditPrompt: Boolean(rows[idx]?.variant_edit_prompt?.trim()),
+          });
           await generateVariantImage(idx, docForVariants);
+          // Read updated state to count outcomes — a diagnostic so the
+          // user (and future debugger) can see how many variants
+          // succeeded vs failed without trawling the toast history.
+          let updated: RowImageState[] = [];
+          setRowImages(prev => {
+            updated = prev;
+            return prev;
+          });
+          if (updated[idx]?.imageUrl) variantDone += 1;
+          else variantFailed += 1;
         }
         if (!signal?.aborted) {
-          appendLog(`✓ All ${variantIndices.length} variant frame${variantIndices.length === 1 ? '' : 's'} complete`);
+          appendLog(
+            `✓ Variant generation finished — ${variantDone} succeeded${variantFailed > 0 ? `, ${variantFailed} failed (click Retry on the failing variant or check console)` : ''}`,
+          );
         }
       }
 
