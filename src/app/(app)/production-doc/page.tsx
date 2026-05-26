@@ -2462,9 +2462,23 @@ function ProductionDocPage() {
    * so a 3-variant group total is ~$0.073 — surfaced inline on the
    * Generate button label.
    */
-  const generateVariantImage = useCallback(async (variantIndex: number) => {
-    if (!doc) return;
-    const variantRow = doc.rows[variantIndex];
+  const generateVariantImage = useCallback(async (
+    variantIndex: number,
+    // Optional override for the doc whose rows are read. Lets callers in
+    // the auto-pipeline pass the freshly-returned doc directly, bypassing
+    // this callback's React-closure-bound `doc` — which is stale during
+    // the synchronous-tick window between setDoc(newDoc) and React's
+    // next render. Without this, auto-pipeline variant generation would
+    // see the OLD doc's rows and bail with "Row is not part of a
+    // variant group" because the `variant_index` / `group_id` fields
+    // weren't visible yet to this closure. Per-row button clicks (which
+    // happen well after re-render) leave this undefined and use `doc`
+    // as before.
+    docOverride?: ProductionDoc,
+  ) => {
+    const activeDoc = docOverride ?? doc;
+    if (!activeDoc) return;
+    const variantRow = activeDoc.rows[variantIndex];
     if (!variantRow) return;
     const groupId = variantRow.group_id;
     if (!groupId) {
@@ -2474,12 +2488,12 @@ function ProductionDocPage() {
     // Resolve the base's image URL from the rowImages sidecar — that's
     // where the editor stores generated image state. Falls back to
     // empty (which becomes BASE_NOT_GENERATED below).
-    const base = getBaseRow(doc, groupId);
+    const base = getBaseRow(activeDoc, groupId);
     if (!base) {
       toast.error('Base row not found for this variant group.');
       return;
     }
-    const baseRowIndex = doc.rows.indexOf(base);
+    const baseRowIndex = activeDoc.rows.indexOf(base);
     // Snapshot rowImages via the setState callback. The state is
     // declared LATER in the file (`rowImages` lives in a useState
     // ~200 lines below the writers block), so referring to it in a
@@ -2493,7 +2507,7 @@ function ProductionDocPage() {
     });
     const baseImageUrl = snapshot[baseRowIndex]?.imageUrl ?? '';
 
-    const prepared = composeVariantEditRequest(doc, variantRow, baseImageUrl);
+    const prepared = composeVariantEditRequest(activeDoc, variantRow, baseImageUrl);
     if (prepared.kind === 'error') {
       toast.error(prepared.message);
       return;
@@ -6136,9 +6150,23 @@ function ProductionDocPage() {
         appendLog(
           `Generating ${variantIndices.length} variant frame${variantIndices.length === 1 ? '' : 's'} from base images via Atlas Edit (~$${(variantIndices.length * 0.011).toFixed(2)})...`,
         );
+        // CRITICAL — pass the freshly-returned `rows` as an explicit
+        // doc override. `generateVariantImage`'s React-closure-bound
+        // `doc` is STALE during the synchronous-tick window between
+        // setDoc(result) and React's next render — and we're inside
+        // that window here (the auto-pipeline kicks off variant
+        // generation immediately after the bases finish, before any
+        // user interaction triggers a re-render). Without the
+        // override, every variant call would bail with "Row is not
+        // part of a variant group" because the auto-grouping's
+        // `variant_index` / `group_id` stampings exist only on these
+        // fresh rows, not on the stale-closure doc. This was the
+        // silent root cause of "variants have no images on fresh
+        // doc generation".
+        const docForVariants = { rows } as ProductionDoc;
         for (const idx of variantIndices) {
           if (signal?.aborted) break;
-          await generateVariantImage(idx);
+          await generateVariantImage(idx, docForVariants);
         }
         if (!signal?.aborted) {
           appendLog(`✓ All ${variantIndices.length} variant frame${variantIndices.length === 1 ? '' : 's'} complete`);
