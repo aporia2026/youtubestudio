@@ -6109,8 +6109,47 @@ function ProductionDocPage() {
         appendLog(`⊘ Image generation cancelled at ${doneCount}/${aiRows.length}`);
         toast.info(`Image generation cancelled (${doneCount}/${aiRows.length} done)`);
       } else {
-        appendLog(`✓ All ${aiRows.length} images complete`);
-        toast.success(`${aiRows.length} images generated`);
+        appendLog(`✓ All ${aiRows.length} base images complete`);
+      }
+
+      // After all base rows finish, generate any variant rows via Atlas
+      // Edit on their base's image. Variants carry an empty
+      // `ai_image_prompt` by design (auto-grouping post-pass clears it
+      // so the dispatcher composes the final prompt from
+      // base.ai_image_prompt + variant_edit_prompt). Without this phase
+      // they'd never auto-generate on a fresh doc; the user would see
+      // bases-with-images alongside variants-with-no-images and have to
+      // click "Generate variant" on each by hand. Same logic as the
+      // "Generate empty images" button's variant phase but threaded
+      // into the auto-pipeline. Sequential because Atlas Edit hits the
+      // same Kie endpoint and parallel calls would just add rate-limit
+      // friction.
+      const variantIndices = rows
+        .map((row, idx) => ({ row, idx }))
+        .filter(({ row }) => {
+          const vidx = (row as unknown as Record<string, unknown>).variant_index;
+          return typeof vidx === 'number' && vidx > 0;
+        })
+        .map(({ idx }) => idx);
+
+      if (!signal?.aborted && variantIndices.length > 0) {
+        appendLog(
+          `Generating ${variantIndices.length} variant frame${variantIndices.length === 1 ? '' : 's'} from base images via Atlas Edit (~$${(variantIndices.length * 0.011).toFixed(2)})...`,
+        );
+        for (const idx of variantIndices) {
+          if (signal?.aborted) break;
+          await generateVariantImage(idx);
+        }
+        if (!signal?.aborted) {
+          appendLog(`✓ All ${variantIndices.length} variant frame${variantIndices.length === 1 ? '' : 's'} complete`);
+        }
+      }
+
+      if (!signal?.aborted) {
+        const variantSummary = variantIndices.length > 0
+          ? ` + ${variantIndices.length} variant${variantIndices.length === 1 ? '' : 's'} via Atlas Edit`
+          : '';
+        toast.success(`${aiRows.length} image${aiRows.length === 1 ? '' : 's'} generated${variantSummary}`);
       }
     } finally {
       setImagesGenerating(false);
