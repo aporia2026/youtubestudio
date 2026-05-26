@@ -600,11 +600,29 @@ export function TopicCardGridPanel({
         imageUrl: string;
         regions: ThumbnailRegion[];
         layout: { width: number; height: number };
+        uploadsApplied?: number;
       } = await res.json();
       console.info('[thumbnails format-grid image] received', {
         imageUrl: data.imageUrl,
         regionsCount: data.regions.length,
+        // Critical diagnostic: how many user uploads the server actually
+        // composited onto the AI base. If we sent N uploads in the request
+        // (uploadsCount above) and this comes back 0 — or lower than N —
+        // the user's images are NOT in the final thumbnail and we need to
+        // chase the gap on the server side. Without this we'd be guessing.
+        uploadsApplied: data.uploadsApplied ?? 'absent',
+        uploadsSent: liveUploadsPayload.length,
       });
+      if (
+        liveUploadsPayload.length > 0 &&
+        (data.uploadsApplied ?? 0) < liveUploadsPayload.length
+      ) {
+        console.warn('[thumbnails format-grid image] uploads_applied_mismatch', {
+          sent: liveUploadsPayload.length,
+          applied: data.uploadsApplied ?? 0,
+          sentCardIndexes: liveUploadsPayload.map((u) => u.cardIndex),
+        });
+      }
       const generation: FormatGenerationResult = {
         imageUrl: data.imageUrl,
         regions: data.regions,
