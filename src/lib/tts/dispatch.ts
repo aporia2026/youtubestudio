@@ -103,8 +103,17 @@ export function getAlignerForProvider(providerId: TtsProviderId): Aligner {
  * Synthesize via the right provider. Routes call this; the dispatcher
  * routes by `req.voice.providerId`. Errors are `TtsProviderError`
  * instances — routes can branch on `.code` and `.retryable`.
+ *
+ * `signal` (optional) lets the route plumb client disconnects through
+ * to the provider. Long-form chunked synthesis checks the signal
+ * between concurrent waves and throws TtsProviderError('timeout',
+ * retryable=true) if the client has gone away — saves wasted API
+ * spend on synthesis the user no longer needs.
  */
-export async function synthesize(req: SynthesizeRequest): Promise<SynthesizeResult> {
+export async function synthesize(
+  req: SynthesizeRequest,
+  signal?: AbortSignal,
+): Promise<SynthesizeResult> {
   const startedAt = Date.now();
   logger.info('[tts dispatch] synthesize start', {
     providerId: req.voice.providerId,
@@ -126,7 +135,7 @@ export async function synthesize(req: SynthesizeRequest): Promise<SynthesizeResu
   }
 
   try {
-    const result = await synth.synthesize(req);
+    const result = await synth.synthesize(req, signal);
     logger.info('[tts dispatch] synthesize ok', {
       providerId: req.voice.providerId,
       voiceId: req.voice.voiceId,

@@ -187,7 +187,11 @@ export interface Synthesizer {
   /** Returns true if the provider is configured (env vars present). The
    *  dispatcher hides un-configured providers from the picker UI. */
   isConfigured(): boolean;
-  synthesize(req: SynthesizeRequest): Promise<SynthesizeResult>;
+  /** `signal` is an optional AbortSignal — the dispatcher plumbs the
+   *  route's req.signal through. Long-form chunked implementations
+   *  check it between chunk waves and abort early on client disconnect
+   *  so the function doesn't burn cost on synthesis the user cancelled. */
+  synthesize(req: SynthesizeRequest, signal?: AbortSignal): Promise<SynthesizeResult>;
   listVoices(filter?: ListVoicesFilter): Promise<VoiceCatalogEntry[]>;
   /** Pre-flight cost estimate for the picker UI. Pure function — does
    *  not call the network. */

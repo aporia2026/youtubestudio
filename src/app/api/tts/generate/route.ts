@@ -112,7 +112,12 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   }
 
   try {
-    const result = await synthesize(synthReq);
+    // req.signal fires when the browser drops the connection (user
+    // clicks Stop on the Generate button, navigates away, etc.).
+    // Plumbed through to the long-form synth loop so we stop
+    // launching new Chirp/Gemini calls once the user gives up — the
+    // bulk of cost savings on a 30+ chunk script.
+    const result = await synthesize(synthReq, req.signal);
 
     const narrationBucket = process.env.R2_NARRATION_BUCKET_NAME || 'narration';
     const ext = mimeTypeToExt(result.mimeType);

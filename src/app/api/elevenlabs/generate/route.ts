@@ -50,25 +50,28 @@ export async function POST(req: NextRequest) {
       ? voiceSettings
       : {}) as Record<string, unknown>;
 
-    const result = await synthesize({
-      voice: {
-        providerId: 'elevenlabs',
-        voiceId,
-        languageCode: 'en-US',
-        tier,
+    const result = await synthesize(
+      {
+        voice: {
+          providerId: 'elevenlabs',
+          voiceId,
+          languageCode: 'en-US',
+          tier,
+        },
+        text,
+        options: {
+          providerId: 'elevenlabs',
+          modelId: effectiveModelId,
+          stability: typeof settings.stability === 'number' ? settings.stability : 0.5,
+          similarity:
+            typeof settings.similarity_boost === 'number' ? settings.similarity_boost : 0.75,
+          style: typeof settings.style === 'number' ? settings.style : 0.5,
+          useSpeakerBoost:
+            typeof settings.use_speaker_boost === 'boolean' ? settings.use_speaker_boost : true,
+        },
       },
-      text,
-      options: {
-        providerId: 'elevenlabs',
-        modelId: effectiveModelId,
-        stability: typeof settings.stability === 'number' ? settings.stability : 0.5,
-        similarity:
-          typeof settings.similarity_boost === 'number' ? settings.similarity_boost : 0.75,
-        style: typeof settings.style === 'number' ? settings.style : 0.5,
-        useSpeakerBoost:
-          typeof settings.use_speaker_boost === 'boolean' ? settings.use_speaker_boost : true,
-      },
-    });
+      req.signal,
+    );
 
     const narrationBucket = process.env.R2_NARRATION_BUCKET_NAME || 'narration';
     const ext = mimeTypeToExt(result.mimeType);

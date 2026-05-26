@@ -178,23 +178,26 @@ export const POST = apiRoute.authed(async (
   let synthResult;
   try {
     const vs = isPlainObject(voiceSettings) ? voiceSettings : {};
-    synthResult = await synthesize({
-      voice: { providerId: provider, voiceId, languageCode, tier },
-      text: concatScript,
-      options:
-        provider === 'elevenlabs'
-          ? {
-              providerId: 'elevenlabs',
-              modelId,
-              stability: typeof vs.stability === 'number' ? vs.stability : 0.5,
-              similarity:
-                typeof vs.similarity_boost === 'number' ? vs.similarity_boost : 0.75,
-              style: typeof vs.style === 'number' ? vs.style : 0.5,
-              useSpeakerBoost:
-                typeof vs.use_speaker_boost === 'boolean' ? vs.use_speaker_boost : true,
-            }
-          : { providerId: 'google' },
-    });
+    synthResult = await synthesize(
+      {
+        voice: { providerId: provider, voiceId, languageCode, tier },
+        text: concatScript,
+        options:
+          provider === 'elevenlabs'
+            ? {
+                providerId: 'elevenlabs',
+                modelId,
+                stability: typeof vs.stability === 'number' ? vs.stability : 0.5,
+                similarity:
+                  typeof vs.similarity_boost === 'number' ? vs.similarity_boost : 0.75,
+                style: typeof vs.style === 'number' ? vs.style : 0.5,
+                useSpeakerBoost:
+                  typeof vs.use_speaker_boost === 'boolean' ? vs.use_speaker_boost : true,
+              }
+            : { providerId: 'google' },
+      },
+      req.signal,
+    );
   } catch (err) {
     if (err instanceof TtsProviderError) {
       const status =

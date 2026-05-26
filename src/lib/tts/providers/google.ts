@@ -170,7 +170,7 @@ class GoogleSynthesizer implements Synthesizer {
     return loadGoogleCredentials() !== null;
   }
 
-  async synthesize(req: SynthesizeRequest): Promise<SynthesizeResult> {
+  async synthesize(req: SynthesizeRequest, signal?: AbortSignal): Promise<SynthesizeResult> {
     if (req.options.providerId !== 'google') {
       throw new TtsProviderError(
         'Google provider received non-google options.',
@@ -246,7 +246,7 @@ class GoogleSynthesizer implements Synthesizer {
             false,
           );
         }
-        return this.synthesizeLongForm(req, Math.min(textByteLimit, perChunkTextBudget));
+        return this.synthesizeLongForm(req, Math.min(textByteLimit, perChunkTextBudget), signal);
       }
     } else if (payloadBytes > SYNC_INPUT_BYTE_LIMIT) {
       // Long-form path — SSML now supported via the SSML-aware
@@ -254,7 +254,7 @@ class GoogleSynthesizer implements Synthesizer {
       // balance per chunk). Pass the normalized req with the
       // resolved ssml/text fields so synthesizeLongForm sees what
       // we detected.
-      return this.synthesizeLongForm({ ...req, text, ssml });
+      return this.synthesizeLongForm({ ...req, text, ssml }, undefined, signal);
     }
 
     // Update req for the short-form path if we promoted text→ssml.
@@ -447,6 +447,7 @@ class GoogleSynthesizer implements Synthesizer {
   private async synthesizeLongForm(
     req: SynthesizeRequest,
     overrideMaxBytes?: number,
+    signal?: AbortSignal,
   ): Promise<SynthesizeResult> {
     // SSML vs plain text branch. The SSML path is critical: splitting
     // SSML at sentence boundaries (the plain-text behavior) leaves
@@ -502,6 +503,19 @@ class GoogleSynthesizer implements Synthesizer {
     let chunksReceived = 0;
 
     for (let i = 0; i < chunks.length; i += LONG_FORM_CONCURRENCY) {
+      // Cancellation check between waves. We can't cancel chunks
+      // already in flight (the Google SDK doesn't expose per-call
+      // abort cleanly across versions), but we CAN stop launching
+      // new waves once the client gives up — which is most of the
+      // cost saving on a 14k-char / 30+ chunk script.
+      if (signal?.aborted) {
+        throw new TtsProviderError(
+          `Google long-form synthesis cancelled by client after ${chunksReceived}/${chunks.length} chunks.`,
+          PROVIDER_ID,
+          'timeout',
+          true,
+        );
+      }
       const wave = chunks.slice(i, i + LONG_FORM_CONCURRENCY);
       const results = await Promise.all(
         wave.map((chunkPayload) =>
