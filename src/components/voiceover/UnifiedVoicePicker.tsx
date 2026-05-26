@@ -22,7 +22,7 @@
  * catalog UX" for the design rationale.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { TtsProviderId, VoiceCatalogEntry } from '@/lib/tts/types';
 import { TIER_PRICING, synthCostUsd } from '@/lib/tts/cost';
 import {
@@ -32,15 +32,24 @@ import {
   groupVoicesByBand,
   type QualityBand,
 } from '@/lib/tts/voice-bands';
+import {
+  favoriteKey,
+  readFavorites,
+  writeFavorites,
+  type FavoriteKey,
+} from '@/lib/tts/favorites';
+import { readRecent, recordVoiceUse, type RecentEntry } from '@/lib/tts/recent';
 
 /**
  * Browse filters. Not strictly providers — 'gemini' is a capability
  * filter (Gemini-TTS variants only, which accept input.prompt for
- * natural-language style control). Surfaced alongside the provider
- * options so the user can narrow to "voices I can give style
- * instructions to" with one click.
+ * natural-language style control), and 'favorites' shows only voices
+ * the user has starred. Surfaced alongside the provider options so the
+ * user can narrow to "voices I'm working with" with one click.
  */
-type ProviderFilter = 'all' | TtsProviderId | 'gemini';
+type ProviderFilter = 'all' | TtsProviderId | 'gemini' | 'favorites' | 'recent';
+
+const RECENT_INITIAL_LIMIT = 5;
 
 function isGeminiTier(tier: string): boolean {
   return tier === 'gemini-25-flash-tts' || tier === 'gemini-31-flash-tts';
@@ -135,6 +144,32 @@ export function UnifiedVoicePicker({
   // Gender filter — narrows the voice list to a single gender. Local
   // state for the same reason as the provider filter: pure browse aid.
   const [genderFilter, setGenderFilter] = useState<'all' | 'male' | 'female' | 'neutral'>('all');
+  // Dynamic search across voice names. Empty string = no filter.
+  const [searchQuery, setSearchQuery] = useState('');
+  // Favorites are persisted in localStorage (see lib/tts/favorites.ts).
+  // Hydrate from storage on mount; toggles flush back immediately so
+  // a page reload picks up the change.
+  const [favorites, setFavorites] = useState<Set<FavoriteKey>>(() => new Set());
+  // Last-used voices, sorted by recency. Updated by the parent's
+  // onSelect via the storage-side recordVoiceUse helper; the picker
+  // re-reads on every selection so its own UI stays in sync. The
+  // "Show all" expander toggles between the top RECENT_INITIAL_LIMIT
+  // and the full list (capped at 50 by the storage module).
+  const [recent, setRecent] = useState<RecentEntry[]>([]);
+  const [recentExpanded, setRecentExpanded] = useState(false);
+  useEffect(() => {
+    setFavorites(readFavorites());
+    setRecent(readRecent());
+  }, []);
+  function toggleFavorite(key: FavoriteKey) {
+    setFavorites((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      writeFavorites(next);
+      return next;
+    });
+  }
 
   // Filter to selected language up front, then group.
   const allEntries = useMemo(() => {
@@ -175,18 +210,68 @@ export function UnifiedVoicePicker({
   }, [showExpensiveTiers, selectedEntry, elevenLabsCategoryById]);
 
   const voicesInActiveBand = grouped.byBand[activeBand] ?? [];
+
+  // Favorites and Recent intentionally bypass the band filter — they
+  // are voice-identity filters across the whole catalog, not a band
+  // view. The band tab strip stays active for visual continuity but
+  // doesn't constrain the results. Provider+Gemini stay band-scoped
+  // since they're capability filters within the current quality band.
   const voicesInActiveBandFiltered = useMemo(() => {
-    let list = voicesInActiveBand;
-    if (providerFilter === 'gemini') {
-      list = list.filter((v) => isGeminiTier(v.voice.tier));
-    } else if (providerFilter !== 'all') {
-      list = list.filter((v) => v.voice.providerId === providerFilter);
+    let list: VoiceCatalogEntry[];
+
+    if (providerFilter === 'favorites') {
+      list = allEntries.filter((v) => favorites.has(favoriteKey(v.voice)));
+    } else if (providerFilter === 'recent') {
+      // Sort by lastUsedAt (most recent first) and apply the
+      // 5-vs-all toggle. recentByKey gives O(1) lookup; missing
+      // entries (favorited voice that's never been used, voice
+      // outside the current catalog) are silently filtered out.
+      const recentByKey = new Map<string, number>();
+      for (const r of recent) recentByKey.set(r.key, r.lastUsedAt);
+      const resolved = allEntries
+        .map((v) => ({ v, t: recentByKey.get(favoriteKey(v.voice)) }))
+        .filter((x): x is { v: VoiceCatalogEntry; t: number } => typeof x.t === 'number')
+        .sort((a, b) => b.t - a.t)
+        .map((x) => x.v);
+      list = recentExpanded ? resolved : resolved.slice(0, RECENT_INITIAL_LIMIT);
+    } else {
+      list = voicesInActiveBand;
+      if (providerFilter === 'gemini') {
+        list = list.filter((v) => isGeminiTier(v.voice.tier));
+      } else if (providerFilter !== 'all') {
+        list = list.filter((v) => v.voice.providerId === providerFilter);
+      }
     }
+
     if (genderFilter !== 'all') {
       list = list.filter((v) => v.gender === genderFilter);
     }
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      list = list.filter((v) => v.displayName.toLowerCase().includes(q));
+    }
     return list;
-  }, [voicesInActiveBand, providerFilter, genderFilter]);
+  }, [
+    voicesInActiveBand,
+    allEntries,
+    providerFilter,
+    genderFilter,
+    searchQuery,
+    favorites,
+    recent,
+    recentExpanded,
+  ]);
+
+  // Total favorite + recent counts across the whole catalog — drive
+  // the badges in the filter buttons regardless of active band.
+  const totalFavoriteCount = useMemo(() => {
+    return allEntries.filter((v) => favorites.has(favoriteKey(v.voice))).length;
+  }, [allEntries, favorites]);
+
+  const totalRecentCount = useMemo(() => {
+    const recentKeys = new Set(recent.map((r) => r.key));
+    return allEntries.filter((v) => recentKeys.has(favoriteKey(v.voice))).length;
+  }, [allEntries, recent]);
 
   // Per-filter counts in the active band — drives the button labels and
   // disables a button when its filter would yield zero voices.
@@ -250,6 +335,35 @@ export function UnifiedVoicePicker({
               title="Disconnect ElevenLabs API key"
             >
               Disconnect ElevenLabs
+            </button>
+          )}
+        </div>
+
+        {/* Dynamic search — narrows the visible voice list by displayName.
+            Applies on top of every other filter. */}
+        <div className="relative mb-2">
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search voices by name…"
+            className="input-field w-full"
+            style={{ padding: '6px 28px 6px 28px', fontSize: 12 }}
+          />
+          <span
+            className="absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none"
+            style={{ color: 'var(--text-muted)', fontSize: 11 }}
+          >
+            🔍
+          </span>
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2"
+              style={{ color: 'var(--text-muted)', fontSize: 12, lineHeight: 1 }}
+              title="Clear search"
+            >
+              ✕
             </button>
           )}
         </div>
@@ -322,6 +436,24 @@ export function UnifiedVoicePicker({
                     count: filterCountsInBand.gemini,
                     title:
                       'Voices that accept natural-language style instructions (Gemini 2.5 / 3.1 Flash TTS).',
+                  },
+                  // Favorites + Recent ignore the active band — see
+                  // voicesInActiveBandFiltered. Counts here use the
+                  // full catalog so the badge stays stable as the user
+                  // navigates bands.
+                  {
+                    id: 'favorites' as const,
+                    label: '⭐ Favorites',
+                    count: totalFavoriteCount,
+                    title:
+                      'Voices you have starred. Click the ⭐ on any voice card to add.',
+                  },
+                  {
+                    id: 'recent' as const,
+                    label: '🕘 Recent',
+                    count: totalRecentCount,
+                    title:
+                      `Voices you have picked recently — last ${RECENT_INITIAL_LIMIT} by default, expand to see all.`,
                   },
                 ] as const
               ).map((opt) => {
@@ -472,10 +604,19 @@ export function UnifiedVoicePicker({
             const isPreviewing = previewingVoiceId === elemKey;
             const cost = synthCostUsd(entry.voice.tier, scriptCharCount);
             const pricing = TIER_PRICING[entry.voice.tier];
+            const favKey = favoriteKey(entry.voice);
+            const isFavorite = favorites.has(favKey);
             return (
               <div
                 key={`${entry.voice.providerId}-${entry.voice.voiceId}-${entry.voice.tier}`}
-                onClick={() => onSelect(entry)}
+                onClick={() => {
+                  // Record the use BEFORE calling onSelect so the
+                  // Recent list reflects the pick immediately even
+                  // if the parent's selection handler does async
+                  // work that delays a re-render.
+                  setRecent(recordVoiceUse(entry.voice));
+                  onSelect(entry);
+                }}
                 className="flex items-center gap-3 px-4 py-3 cursor-pointer transition-all"
                 style={{
                   background: isSelected ? 'rgba(124,58,237,0.15)' : 'transparent',
@@ -515,6 +656,25 @@ export function UnifiedVoicePicker({
                     {scriptCharCount > 0 && ` · ${formatCost(cost)}`}
                   </p>
                 </div>
+                {/* Favorite star — toggles per voice. Persists in
+                    localStorage via the favorites module. Click target
+                    stops propagation so it doesn't also select the
+                    voice. */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleFavorite(favKey);
+                  }}
+                  className="p-1.5 rounded-lg shrink-0 transition-all"
+                  style={{
+                    background: 'transparent',
+                    color: isFavorite ? '#fbbf24' : 'var(--text-muted)',
+                  }}
+                  title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+                  aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+                >
+                  {isFavorite ? '★' : '☆'}
+                </button>
                 {/* Play button shows for every voice. ElevenLabs voices
                     use entry.previewUrl directly; Google voices fetch a
                     sample from /api/tts/preview on first click (cached
@@ -552,6 +712,26 @@ export function UnifiedVoicePicker({
               </div>
             );
           })
+        )}
+
+        {/* Show-more / show-less for the Recent filter only. The
+            initial state shows the top RECENT_INITIAL_LIMIT picks;
+            expanding reveals the rest of the 50-entry recent list.
+            Stays hidden under other filters. */}
+        {providerFilter === 'recent' && totalRecentCount > RECENT_INITIAL_LIMIT && (
+          <button
+            onClick={() => setRecentExpanded((v) => !v)}
+            className="w-full px-4 py-2 text-xs transition-all"
+            style={{
+              background: 'transparent',
+              color: 'var(--accent-purple-bright)',
+              borderTop: '1px solid var(--border)',
+            }}
+          >
+            {recentExpanded
+              ? `Show only the latest ${RECENT_INITIAL_LIMIT}`
+              : `Show all ${totalRecentCount} recent`}
+          </button>
         )}
       </div>
     </div>
