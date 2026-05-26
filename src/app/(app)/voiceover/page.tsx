@@ -832,7 +832,11 @@ function VoiceoverStudio() {
               />
             )}
 
-            {/* Voice settings */}
+            {/* Voice settings — ElevenLabs only. Google voices have no
+                model picker (the tier IS the model) and no stability/
+                clarity sliders. Gemini variants get their own
+                expressive controls via GeminiStylePanel above. */}
+            {selectedEntry?.voice.providerId !== 'google' && (
             <div className="glass rounded-xl p-5">
               <h2 className="text-sm font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>Voice Settings</h2>
 
@@ -894,6 +898,7 @@ function VoiceoverStudio() {
                 </button>
               </div>
             </div>
+            )}
 
             {/* Generate button */}
             <button
