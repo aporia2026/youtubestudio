@@ -6111,12 +6111,15 @@ function ProductionDocPage() {
       appendLog(`Script: ${totalWords} words · Style: ${stylePreset}${analyzedCount > 0 ? ` · ${analyzedCount} visual ref(s) analyzed` : ''}`);
 
       // ── Chunked generation — split long scripts to avoid 504 timeouts ──────────
-      // 450 words ≈ 22–30 rows per chunk. The prior 700-word cap was tuned
-      // for short ai_image_prompts and hit the 16k output token cap on
-      // styles with verbose suffixes (e.g. doodle_explainer_2). 450 keeps
-      // each chunk's JSON well under any current model's output cap, at
-      // the cost of one extra request per ~1k-word script.
-      const MAX_CHUNK_WORDS = 450;
+      // 300 words ≈ 15–22 rows per chunk. Two prior caps (700, then 450)
+      // both hit the model's output token ceiling on verbose-suffix
+      // styles like doodle_explainer_2: each row carries the full style
+      // suffix in `ai_image_prompt`, so output tokens scale with rows ×
+      // suffix length rather than input words. At 300 words, even the
+      // chunkiest doodle prompt produces ~6-8k output tokens, sitting
+      // safely under GPT-mini-class models' 16k cap. Tradeoff: ~4-5
+      // requests for a 1.2k-word script (vs 2-3 at 450w).
+      const MAX_CHUNK_WORDS = 300;
       const chunks = splitScriptIntoChunks(script.trim(), MAX_CHUNK_WORDS);
       const isMultiChunk = chunks.length > 1;
       if (isMultiChunk) {
