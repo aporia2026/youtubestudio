@@ -22,13 +22,19 @@
  * without the expressive control.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   GEMINI_TAGS,
   TAG_CATEGORY_LABELS,
   searchTags,
   type GeminiTag,
 } from '@/lib/tts/gemini-tags';
+import {
+  deleteTemplate,
+  listTemplates,
+  saveTemplate,
+  type StyleTemplate,
+} from '@/lib/tts/style-templates';
 
 interface GeminiStylePanelProps {
   stylePrompt: string;
@@ -49,6 +55,45 @@ export function GeminiStylePanel({
   geminiVariant,
 }: GeminiStylePanelProps) {
   const [tagPickerOpen, setTagPickerOpen] = useState(false);
+  // Saved templates — hydrated from localStorage on mount, mutated
+  // on save/delete. The list is kept sorted by lastUpdated so the
+  // chips naturally surface the user's recent work first.
+  const [templates, setTemplates] = useState<StyleTemplate[]>([]);
+  useEffect(() => {
+    setTemplates(listTemplates());
+  }, []);
+
+  function handleSaveTemplate() {
+    if (!stylePrompt.trim()) {
+      // eslint-disable-next-line no-alert
+      alert('Style instructions are empty — type something to save as a template.');
+      return;
+    }
+    // eslint-disable-next-line no-alert
+    const name = window.prompt(
+      'Name this template (e.g. "Documentary narrator", "Excited promo"):',
+      '',
+    );
+    if (!name || !name.trim()) return;
+    saveTemplate({ name: name.trim(), text: stylePrompt });
+    setTemplates(listTemplates());
+  }
+
+  function handleApplyTemplate(tpl: StyleTemplate) {
+    if (stylePrompt.trim() && stylePrompt.trim() !== tpl.text.trim()) {
+      // eslint-disable-next-line no-alert
+      if (!window.confirm(`Replace current style instructions with "${tpl.name}"?`)) return;
+    }
+    onStylePromptChange(tpl.text);
+  }
+
+  function handleDeleteTemplate(tpl: StyleTemplate, e: React.MouseEvent) {
+    e.stopPropagation();
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(`Delete template "${tpl.name}"?`)) return;
+    deleteTemplate(tpl.id);
+    setTemplates(listTemplates());
+  }
 
   return (
     <div className="glass rounded-xl p-5">
@@ -61,18 +106,66 @@ export function GeminiStylePanel({
             Tell Gemini how to deliver the script. Optional. Audio tags go in the script itself.
           </p>
         </div>
-        <button
-          onClick={() => setTagPickerOpen(true)}
-          className="px-2.5 py-1 rounded text-xs font-medium transition-all"
-          style={{
-            background: 'var(--bg-secondary)',
-            color: 'var(--text-secondary)',
-            border: '1px solid var(--border)',
-          }}
-        >
-          + Insert audio tag
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={handleSaveTemplate}
+            className="px-2.5 py-1 rounded text-xs font-medium transition-all"
+            style={{
+              background: 'var(--bg-secondary)',
+              color: 'var(--text-secondary)',
+              border: '1px solid var(--border)',
+            }}
+            title="Save the current style instructions as a reusable template"
+          >
+            + Save as template
+          </button>
+          <button
+            onClick={() => setTagPickerOpen(true)}
+            className="px-2.5 py-1 rounded text-xs font-medium transition-all"
+            style={{
+              background: 'var(--bg-secondary)',
+              color: 'var(--text-secondary)',
+              border: '1px solid var(--border)',
+            }}
+          >
+            + Insert audio tag
+          </button>
+        </div>
       </div>
+
+      {/* Template chips — clickable to load, × on hover to delete.
+          Hidden when there are no saved templates yet. */}
+      {templates.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {templates.map((tpl) => {
+            const isActive = stylePrompt.trim() === tpl.text.trim();
+            return (
+              <button
+                key={tpl.id}
+                onClick={() => handleApplyTemplate(tpl)}
+                className="group px-2 py-1 rounded text-xs transition-all inline-flex items-center gap-1"
+                style={{
+                  background: isActive ? 'rgba(124,58,237,0.18)' : 'var(--bg-secondary)',
+                  color: isActive ? 'var(--accent-purple-bright)' : 'var(--text-secondary)',
+                  border: `1px solid ${isActive ? 'rgba(124,58,237,0.3)' : 'transparent'}`,
+                }}
+                title={tpl.text.length > 80 ? `${tpl.text.slice(0, 80)}…` : tpl.text}
+              >
+                <span>{tpl.name}</span>
+                <span
+                  onClick={(e) => handleDeleteTemplate(tpl, e)}
+                  role="button"
+                  aria-label={`Delete template ${tpl.name}`}
+                  className="opacity-0 group-hover:opacity-70 hover:opacity-100 transition-opacity"
+                  style={{ color: 'var(--text-muted)', cursor: 'pointer' }}
+                >
+                  ×
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <textarea
         value={stylePrompt}
