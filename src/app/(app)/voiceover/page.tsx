@@ -157,6 +157,25 @@ function VoiceoverStudio() {
   // time-stretcher, and writes the result to a WAV blob.
   const [speedRate, setSpeedRate] = useState(1.0);
   const [renderingSpeed, setRenderingSpeed] = useState(false);
+  // Mirrors the <audio> element's play/pause state so the slider's
+  // dedicated Preview button can toggle correctly without the user
+  // having to scroll up to the audio bar. Updated via play/pause/ended
+  // listeners on the element so external sources of state change
+  // (browser controls, end-of-clip) stay in sync.
+  const [audioPlaying, setAudioPlaying] = useState(false);
+
+  function toggleAudioPreview() {
+    const el = audioRef.current;
+    if (!el) return;
+    if (el.paused) {
+      // Make sure the rate is current *before* play() — racy otherwise
+      // because some browsers latch playbackRate at play-time.
+      el.playbackRate = speedRate;
+      el.play().catch(() => {/* swallow autoplay-blocked errors */});
+    } else {
+      el.pause();
+    }
+  }
   // Original-clip duration in seconds, captured from the <audio>
   // element's loadedmetadata event. Drives the "12:00 → 9:14"
   // preview next to the speed slider so the user can see, live,
@@ -174,6 +193,28 @@ function VoiceoverStudio() {
     if (audioDuration === null) { setTargetLengthInput(''); return; }
     setTargetLengthInput(formatHmsDuration(audioDuration / speedRate));
   }, [speedRate, audioDuration]);
+  // Editable text mirror of speedRate so the user can type a precise
+  // rate (e.g. 1.23×) instead of being limited to whatever the slider
+  // step rounds to. Same coherence pattern as targetLengthInput: synced
+  // from speedRate on slider drag, committed back on blur/Enter.
+  const [speedRateInput, setSpeedRateInput] = useState('1.00');
+  useEffect(() => { setSpeedRateInput(speedRate.toFixed(2)); }, [speedRate]);
+
+  function commitSpeedRateInput() {
+    const n = parseFloat(speedRateInput);
+    if (!Number.isFinite(n) || n <= 0) {
+      toast.error('Enter a number between 0.5 and 2');
+      setSpeedRateInput(speedRate.toFixed(2));
+      return;
+    }
+    const clamped = Math.max(0.5, Math.min(2.0, n));
+    if (Math.abs(clamped - n) > 0.005) {
+      toast.info(`Clamped to ${clamped.toFixed(2)}× — range is 0.5× to 2×.`);
+    }
+    // Snap to 0.01 precision (matches the slider step) so the slider
+    // thumb and the typed value always agree.
+    setSpeedRate(Math.round(clamped * 100) / 100);
+  }
 
   function commitTargetLength() {
     if (audioDuration === null) return;
@@ -196,9 +237,9 @@ function VoiceoverStudio() {
         `Out of range. Achievable lengths: ${formatHmsDuration(minPossible)} – ${formatHmsDuration(maxPossible)}.`,
       );
     }
-    // Snap to slider precision (step=0.05) so the visible rate matches
+    // Snap to slider precision (step=0.01) so the visible rate matches
     // the slider thumb position exactly.
-    setSpeedRate(Math.round(clamped * 20) / 20);
+    setSpeedRate(Math.round(clamped * 100) / 100);
   }
   useEffect(() => {
     const el = audioRef.current;
@@ -234,7 +275,15 @@ function VoiceoverStudio() {
         await import('@/lib/voiceover/time-stretch');
       const ctx = new AudioContext();
       try {
-        const buffer = await fetchAudioBuffer(audioUrl, ctx);
+        // Browser fetch() of a raw R2 presigned URL is blocked by CORS
+        // (the bucket has no Access-Control-Allow-Origin for this app).
+        // Route cross-origin URLs through the same-origin proxy so the
+        // decoder can pull bytes. Same-origin URLs (/api/voiceovers/...)
+        // hit the decoder directly.
+        const fetchUrl = audioUrl.startsWith('/')
+          ? audioUrl
+          : `/api/voiceover/proxy?url=${encodeURIComponent(audioUrl)}`;
+        const buffer = await fetchAudioBuffer(fetchUrl, ctx);
         const stretched = timeStretchAudioBuffer(buffer, speedRate, ctx);
         const blob = audioBufferToWavBlob(stretched);
         const speedLabel = speedRate.toFixed(2).replace(/\.?0+$/, '');
@@ -1122,6 +1171,9 @@ function VoiceoverStudio() {
                       // we'll pick up the real number on a later event.
                       if (Number.isFinite(d) && d > 0) setAudioDuration(d);
                     }}
+                    onPlay={() => setAudioPlaying(true)}
+                    onPause={() => setAudioPlaying(false)}
+                    onEnded={() => setAudioPlaying(false)}
                   />
 
                   {/* Speed / Speaking Rate slider. Live preview via
@@ -1130,14 +1182,38 @@ function VoiceoverStudio() {
                       button below applies the speed to the actual
                       file via SoundTouch when rate ≠ 1.0. */}
                   <div className="mb-3">
-                    <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center justify-between mb-1 gap-2">
                       <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
                         Playback speed
                       </label>
                       <span className="text-xs tabular-nums flex items-center gap-1.5">
-                        <span style={{ color: speedRate === 1 ? 'var(--text-muted)' : 'var(--accent-purple-bright)' }}>
-                          {speedRate.toFixed(2)}×
-                        </span>
+                        {/* Editable rate. Type any value in [0.5, 2.0]
+                            to override the slider step. Commits on
+                            blur/Enter, snaps to 0.01 precision. */}
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={speedRateInput}
+                          onChange={(e) => setSpeedRateInput(e.target.value)}
+                          onBlur={commitSpeedRateInput}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+                            if (e.key === 'Escape') {
+                              setSpeedRateInput(speedRate.toFixed(2));
+                              (e.currentTarget as HTMLInputElement).blur();
+                            }
+                          }}
+                          className="rounded px-1.5 py-0.5 text-right tabular-nums"
+                          style={{
+                            width: '52px',
+                            background: 'rgba(255,255,255,0.04)',
+                            border: '1px solid var(--border-default)',
+                            color: speedRate === 1 ? 'var(--text-muted)' : 'var(--accent-purple-bright)',
+                            fontWeight: 600,
+                          }}
+                          aria-label="Playback speed multiplier"
+                        />
+                        <span style={{ color: speedRate === 1 ? 'var(--text-muted)' : 'var(--accent-purple-bright)' }}>×</span>
                         {audioDuration !== null && (
                           <>
                             <span style={{ color: 'var(--text-muted)' }}>·</span>
@@ -1160,16 +1236,37 @@ function VoiceoverStudio() {
                         )}
                       </span>
                     </div>
-                    <input
-                      type="range"
-                      min={0.5}
-                      max={2.0}
-                      step={0.05}
-                      value={speedRate}
-                      onChange={(e) => setSpeedRate(parseFloat(e.target.value))}
-                      className="w-full"
-                      style={{ accentColor: 'var(--accent-purple)' }}
-                    />
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="range"
+                        min={0.5}
+                        max={2.0}
+                        step={0.01}
+                        value={speedRate}
+                        onChange={(e) => setSpeedRate(parseFloat(e.target.value))}
+                        className="flex-1"
+                        style={{ accentColor: 'var(--accent-purple)' }}
+                      />
+                      {/* Dedicated preview button — the standard <audio>
+                          bar is above the fold but easy to miss. Putting
+                          play right next to the slider keeps the
+                          listen-while-tweaking loop in one place. */}
+                      <button
+                        type="button"
+                        onClick={toggleAudioPreview}
+                        className="text-xs px-2 py-1 rounded whitespace-nowrap"
+                        style={{
+                          background: audioPlaying ? 'var(--accent-purple)' : 'rgba(124,58,237,0.15)',
+                          color: audioPlaying ? 'white' : 'var(--accent-purple-bright)',
+                          border: '1px solid rgba(124,58,237,0.3)',
+                          cursor: 'pointer',
+                          minWidth: '90px',
+                        }}
+                        title={audioPlaying ? 'Pause preview' : `Preview at ${speedRate.toFixed(2)}×`}
+                      >
+                        {audioPlaying ? '❚❚ Pause' : `▶ Preview ${speedRate.toFixed(2)}×`}
+                      </button>
+                    </div>
                     <div className="flex justify-between text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
                       <span>0.5×</span>
                       <button
