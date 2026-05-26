@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { use as usePromise } from 'react';
 import VideoCard from './VideoCard';
 
@@ -154,6 +154,57 @@ export default function PipelineDetailPage({ params }: { params: Promise<{ id: s
     const t = setInterval(() => setTickNow((n) => n + 1), 1000);
     return () => clearInterval(t);
   }, []);
+
+  // Auto-trigger /api/auto-pipeline/tick when the page detects rows
+  // that are stuck (active stage, no claim, no movement for the cron
+  // tick interval). On a Vercel deployment the platform cron fires
+  // every 60s and this is purely a redundant nudge (the cron lock
+  // makes it safe). On local dev there is no platform cron, and this
+  // auto-tick is what actually drains the queue — otherwise the user
+  // has to remember to click "Run cron tick now" repeatedly.
+  //
+  // 60s cooldown matches the cron cadence; tickInflightRef prevents a
+  // re-entrant call while the previous one is still draining.
+  const autoTickCooldownRef = useRef(0);
+  const tickInflightRef = useRef(false);
+  useEffect(() => {
+    if (!run || run.status === 'idea_ranking') return;
+    if (tickInflightRef.current) return;
+    const now = Date.now();
+    if (now - autoTickCooldownRef.current < CRON_TICK_SECONDS * 1000) return;
+    // "Worth auto-ticking" = at least one row is active-stage, not
+    // claimed, and hasn't moved in CRON_TICK_SECONDS. Mirrors the
+    // per-card stuck warning so the auto-tick fires exactly when
+    // the user would otherwise click manually.
+    const someStuck = videos.some((v) => {
+      if (v.claimed_at != null) return false;
+      if (categorize(v.stage) !== 'in_flight') return false;
+      const ageSec = (now - new Date(v.updated_at).getTime()) / 1000;
+      return ageSec > CRON_TICK_SECONDS;
+    });
+    if (!someStuck) return;
+    autoTickCooldownRef.current = now;
+    tickInflightRef.current = true;
+    console.info('[pipeline detail] auto_tick_start', {
+      runId,
+      stuck_count: videos.filter((v) => v.claimed_at == null && categorize(v.stage) === 'in_flight').length,
+    });
+    void (async () => {
+      try {
+        const res = await fetch('/api/auto-pipeline/tick', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        console.info('[pipeline detail] auto_tick_ok', { runId, ...data });
+      } catch (err) {
+        console.info('[pipeline detail] auto_tick_error', {
+          runId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        tickInflightRef.current = false;
+        void refresh();
+      }
+    })();
+  }, [videos, run, runId, refresh]);
 
   if (loading) {
     return (
@@ -552,11 +603,20 @@ function ProgressStrip({
           <button
             onClick={() => void triggerTick()}
             disabled={batchBusy !== null}
-            className="hover:underline disabled:opacity-50"
-            style={{ color: 'var(--text-secondary)' }}
+            className="disabled:opacity-50 px-2 py-0.5 rounded"
+            style={
+              stuckOrFailed > 0
+                ? {
+                    background: 'rgba(16,185,129,0.15)',
+                    color: '#10b981',
+                    border: '1px solid rgba(16,185,129,0.5)',
+                    fontWeight: 600,
+                  }
+                : { color: 'var(--text-secondary)' }
+            }
             title="Manually run one cron drain. Useful in local dev (where Vercel cron doesn't fire) and when a row is sitting idle waiting for the next scheduled tick."
           >
-            {batchBusy === 'tick' ? 'Ticking…' : 'Run cron tick now'}
+            {batchBusy === 'tick' ? 'Ticking…' : '▶ Run cron tick now'}
           </button>
           {stuckOrFailed > 0 && (
             <button
@@ -592,32 +652,32 @@ function ProgressStrip({
       </div>
 
       {/*
-        Dev-mode hint. If the run was created more than CRON_TICK_SECONDS*2
-        ago AND no video in the run has any movement past its initial
-        creation AND nothing is currently claimed, the most likely
-        explanation is "the cron simply isn't firing" — which on local
-        dev is expected (Vercel cron only runs in production). Surface
-        the fix instead of letting the user guess.
+        Dev-mode hint. Trigger when no video in the run has been claimed
+        AND the oldest update is older than 2 cron ticks. We no longer
+        require retry_count===0 or cost_usd===0 — the original
+        condition would silently disappear after a Retry click even
+        when the cron still wasn't running, leaving the user without
+        guidance. The auto-tick effect above also fires on this same
+        condition, so seeing this banner without progress is a strong
+        signal that the manual tick endpoint itself is failing.
       */}
       {(() => {
         const oldestUpdate = videos.reduce<number | null>((acc, v) => {
           const t = new Date(v.updated_at).getTime();
           return acc == null || t < acc ? t : acc;
         }, null);
-        const nothingClaimedEver = videos.every((v) => v.claimed_at == null);
-        const allStuckSinceStart =
+        const nothingClaimed = videos.every((v) => v.claimed_at == null);
+        const nothingAdvanced = videos.every(
+          (v) => v.stage === 'queued' || v.stage === 'generating_script',
+        );
+        const ageMin = oldestUpdate != null ? (Date.now() - oldestUpdate) / 60000 : 0;
+        const ageSec = oldestUpdate != null ? (Date.now() - oldestUpdate) / 1000 : 0;
+        const cronLikelyDown =
           oldestUpdate != null &&
-          (Date.now() - oldestUpdate) / 1000 > CRON_TICK_SECONDS * 2 &&
-          videos.every((v) => {
-            // "Nothing happened" = stage is still queued / generating_script
-            // (the two initial states), no claim history, no cost incurred.
-            return (
-              (v.stage === 'queued' || v.stage === 'generating_script') &&
-              Number(v.cost_usd) === 0 &&
-              v.retry_count === 0
-            );
-          });
-        if (!allStuckSinceStart || !nothingClaimedEver) return null;
+          ageSec > CRON_TICK_SECONDS * 2 &&
+          nothingClaimed &&
+          nothingAdvanced;
+        if (!cronLikelyDown) return null;
         return (
           <div
             className="mt-3 p-3 rounded text-xs"
@@ -625,11 +685,13 @@ function ProgressStrip({
           >
             <div className="font-semibold mb-1">Cron doesn&apos;t appear to be running.</div>
             <p style={{ color: 'var(--text-secondary)' }}>
-              No video in this run has been claimed yet and the queue has sat untouched for
-              {' '}{Math.floor((Date.now() - (oldestUpdate ?? Date.now())) / 60000)}m. Vercel cron only
-              fires on production deployments, not on <code>npm run dev</code>. Click{' '}
-              <strong>Run cron tick now</strong> above to drain the queue manually, or deploy to
-              Vercel to get the every-60s schedule.
+              No video in this run has been claimed by the cron, and the queue
+              has sat untouched for {Math.floor(ageMin)}m. The page is auto-triggering
+              a manual tick every {CRON_TICK_SECONDS}s, but if you keep seeing this
+              banner after a refresh, either the manual tick is failing (check the
+              browser console for <code>[pipeline detail] auto_tick_error</code>) or
+              you&apos;re on local dev where Vercel cron doesn&apos;t fire — deploy to
+              Vercel for the automatic every-60s schedule.
             </p>
           </div>
         );
