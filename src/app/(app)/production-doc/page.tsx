@@ -1840,9 +1840,16 @@ function ProductionDocPage() {
   // metadata + active script straight off /api/projects/[id] so the
   // owner doesn't need a schedule item in the loop.
   const projectIdParam = search.get('projectId');
+  // Wave 1 (?videoId=) handoff. The Command Center kanban and the
+  // VideoContextStrip's Open-in-tool buttons route here with
+  // ?videoId=<project-uuid>. This parallel param lets the page-body
+  // prefill from /api/videos/[id] without changing the existing
+  // ?projectId= path.
+  const videoIdParam = search.get('videoId');
   const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
   const [schedulePrefilled, setSchedulePrefilled] = useState(false);
   const [projectPrefilled, setProjectPrefilled] = useState(false);
+  const [videoPrefilled, setVideoPrefilled] = useState(false);
 
   // — Inputs
   const [script, setScript] = useState('');
@@ -4266,6 +4273,60 @@ function ProductionDocPage() {
     return () => { cancelled = true; };
   }, [projectIdParam, projectPrefilled, scheduleItemId]);
 
+  // Wave 1 ?videoId= prefill — same shape as the ?projectId= block above
+  // but talks to /api/videos/[id] (the unified endpoint that returns the
+  // project + active script + channel + narrator/editor assignments in
+  // one round-trip). Skips when scheduleItemId or projectIdParam is set
+  // so those handoffs take precedence (they carry richer context). Also
+  // skips when projectPrefilled is true to avoid clobbering a project
+  // handoff that the user navigated through. Functional setters keep
+  // manual edits made before the fetch resolves.
+  useEffect(() => {
+    if (!videoIdParam || videoPrefilled || scheduleItemId || projectIdParam) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/videos/${videoIdParam}`);
+        if (cancelled) return;
+        if (!res.ok) return;
+        const data = await res.json();
+        const video: {
+          id?: string;
+          title?: string;
+          niche?: string;
+          topic?: string | null;
+        } | undefined = data?.video;
+        if (!video) return;
+        setVideoPrefilled(true);
+        const title = (video.title || video.topic || '').trim();
+        const videoNiche = (video.niche || '').trim();
+        if (title) setTopic(curr => curr || title);
+        if (videoNiche) setNiche(curr => curr || videoNiche);
+        // Also pull the active script via the existing projects-scripts
+        // endpoint — /api/videos/[id] returns metadata only, not the
+        // script body, so we mirror the ?projectId= path for the script.
+        try {
+          const scriptsRes = await fetch(`/api/projects/${videoIdParam}/scripts`);
+          if (!cancelled && scriptsRes.ok) {
+            const scriptsData = await scriptsRes.json();
+            type ScriptRow = { content?: string; is_active?: boolean };
+            const list: ScriptRow[] = Array.isArray(scriptsData?.scripts) ? scriptsData.scripts : [];
+            const active = list.find(s => s.is_active) ?? list[0];
+            if (active?.content) {
+              setScript(prev => prev || active.content!);
+            }
+          }
+        } catch {
+          // best-effort — leave the script blank if it can't be fetched
+        }
+        toast.message(`Loaded context from video "${title || 'untitled'}"`);
+      } catch {
+        // best-effort prefill
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [videoIdParam, videoPrefilled, scheduleItemId, projectIdParam]);
+
   // Restore last result from localStorage after mount (useEffect so SSR is unaffected).
   //
   // A "handoff" is a navigation into the page that carries context from
@@ -4914,9 +4975,37 @@ function ProductionDocPage() {
   // Load prefill from generator / QA pages. Functional setters so a
   // schedule-link prefill that resolved first isn't clobbered by stale
   // localStorage from an earlier handoff.
+  //
+  // Niche hints are seeded from BOTH recent-history (localStorage) and
+  // the workspace's configured Settings → Niches list. A user-facing
+  // gap (raised 2026-05-26) was that the autocomplete only showed
+  // recently-typed niches, never the deliberate list set up in
+  // /settings — so configured niches were invisible here. Pulling
+  // /api/niches deduplicates against the recent set.
   useEffect(() => {
-    setNicheHints(getRecentNiches());
+    const recent = getRecentNiches();
+    setNicheHints(recent);
     setTopicHints(getRecentTopics());
+    // Augment with workspace-configured niches. Best-effort: failures
+    // leave the recent-history list as-is. The deduplication preserves
+    // recent ordering (recent first) and appends any configured niches
+    // not already present.
+    fetch('/api/niches')
+      .then(r => (r.ok ? r.json() : null))
+      .then((data: { niches?: Array<{ name?: string; is_active?: boolean }> } | null) => {
+        if (!data || !Array.isArray(data.niches)) return;
+        const configured = data.niches
+          .filter(n => n.is_active !== false)
+          .map(n => (n.name ?? '').trim())
+          .filter(n => n.length > 0);
+        if (configured.length === 0) return;
+        const seen = new Set(recent.map(n => n.toLowerCase()));
+        const additions = configured.filter(n => !seen.has(n.toLowerCase()));
+        if (additions.length > 0) {
+          setNicheHints([...recent, ...additions]);
+        }
+      })
+      .catch(() => { /* best-effort */ });
     try {
       const raw = localStorage.getItem('prodoc_prefill');
       if (raw) {
