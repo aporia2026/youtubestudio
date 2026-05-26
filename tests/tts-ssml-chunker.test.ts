@@ -76,11 +76,28 @@ describe('chunkSsmlForGoogle — section-boundary splits', () => {
     }
   });
 
-  it('also splits on <break time="1s"/> when ≥ 1s — preserves user-authored beats', () => {
+  it('keeps <break time="1s"/> INSIDE the chunk (not a section boundary)', () => {
+    // 1s breaks are intra-section beats (e.g. title → body). They
+    // stay in the SSML so Chirp 3 HD pauses naturally, but they do
+    // NOT trigger a chunk split. The fix here prevents over-
+    // splitting a 27-section narration into 50+ tiny Chirp calls,
+    // which was the root cause of cumulative quality drift across
+    // long voiceovers.
     const input = '<speak>Part one. <break time="1s"/> Part two.</speak>';
+    const chunks = chunkSsmlForGoogle(input);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toContain('<break time="1s"');  // preserved inside
+  });
+
+  it('splits ONLY on <break>=1.5s+ (the section threshold)', () => {
+    const input =
+      '<speak>A <break time="1s"/> B <break time="1.5s"/> C <break time="2s"/> D</speak>';
     const chunks = chunkSsmlForGoogle(input, 30);
-    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    // 1s break: stays inline. 1.5s + 2s: chunk boundaries.
+    // Result: chunk1 = "A <break time=\"1s\"/> B", chunk2 = "C", chunk3 = "D"
+    expect(chunks.length).toBe(3);
     for (const c of chunks) expect(looksLikeValidSpeakBlock(c)).toBe(true);
+    expect(chunks[0]).toContain('<break time="1s"');
   });
 
   it('does not split on sub-second breaks (they stay inside their chunk)', () => {

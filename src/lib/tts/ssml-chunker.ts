@@ -127,12 +127,38 @@ function wrapInSpeak(inner: string): string {
  */
 const WRAPPER_BYTES = byteLen('<speak></speak>');
 
+/**
+ * Threshold (seconds) at which a `<break>` becomes a CHUNK BOUNDARY
+ * candidate. Breaks shorter than this stay INSIDE their segment as
+ * authored SSML — Chirp 3 HD honors them at synthesis time. The
+ * previous code stripped every break unconditionally, which:
+ *
+ *   (a) deleted the user's intra-section pauses (`<break time="1s"/>`
+ *       after each title), and
+ *   (b) caused over-splitting: a 27-section script with 27 title
+ *       breaks AND 26 section breaks produced 53+ tiny chunks. Each
+ *       chunk is one Chirp API call; per-call prosody variance
+ *       accumulated across that many boundaries produced the
+ *       audible "starts good, gets worse" symptom across long
+ *       narrations.
+ *
+ * 1.5s splits cleanly: `<break time="2s"/>` (typical section
+ * separator) splits, `<break time="1s"/>` (typical title-to-body
+ * beat) stays inline. A 27-section script becomes ~27 segments
+ * which pack into ~4-5 chunks at the default byte budget — far
+ * fewer Chirp calls, far less cumulative variance.
+ */
+const SECTION_BREAK_THRESHOLD_SECONDS = 1.5;
+
 interface SsmlSegment {
-  /** Inner SSML text for the segment (no `<speak>` wrapper). */
+  /** Inner SSML text for the segment — INCLUDES any short `<break>`
+   *  tags that fell inside the segment. Only section-boundary
+   *  breaks (≥ SECTION_BREAK_THRESHOLD_SECONDS) are stripped during
+   *  parsing — they become chunk boundaries. */
   content: string;
-  /** Length of the `<break>` that followed (in seconds). Used as a
-   *  preference signal when collapsing segments into chunks — longer
-   *  breaks signal section boundaries and are the best split points. */
+  /** Duration of the long break that terminated this segment.
+   *  Drives the packer's "close current chunk on this boundary"
+   *  decision. 0 for the tail segment (no following break). */
   followingBreakSeconds: number;
 }
 
@@ -151,27 +177,28 @@ function parseBreakSeconds(tag: string): number {
 }
 
 /**
- * Parse the inner SSML into a list of segments separated by `<break>`
- * tags. The break itself is stripped (we don't synthesize empty
- * chunks); its duration is recorded on the preceding segment so the
- * packer can prefer breaks ≥ 1s as section boundaries.
+ * Parse the inner SSML into a list of segments. Only `<break>` tags
+ * with duration ≥ SECTION_BREAK_THRESHOLD_SECONDS act as segment
+ * boundaries (and become chunk splits). Shorter breaks stay verbatim
+ * in the segment content — Chirp 3 HD honors them in the final
+ * `<speak>` document and produces the user-authored pause naturally.
  */
 function parseSegments(innerSsml: string): SsmlSegment[] {
   const segments: SsmlSegment[] = [];
-  // Match the entire `<break ... />` tag. Time extraction happens in
-  // parseBreakSeconds for robustness (lookahead-heavy patterns choke
-  // on attribute reorders).
   const breakRegex = /<break\b[^>]*?\/?>/gi;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = breakRegex.exec(innerSsml)) !== null) {
-    const content = innerSsml.slice(lastIndex, match.index).trim();
     const seconds = parseBreakSeconds(match[0]);
+    if (seconds < SECTION_BREAK_THRESHOLD_SECONDS) {
+      // Short break — stays in the segment content. Don't advance
+      // lastIndex past it; the next content slice picks it up.
+      continue;
+    }
+    const content = innerSsml.slice(lastIndex, match.index).trim();
     segments.push({ content, followingBreakSeconds: seconds });
     lastIndex = match.index + match[0].length;
   }
-  // Tail content after the last break (or the whole string if no
-  // breaks at all).
   const tail = innerSsml.slice(lastIndex).trim();
   if (tail) segments.push({ content: tail, followingBreakSeconds: 0 });
   return segments.filter((s) => s.content.length > 0);

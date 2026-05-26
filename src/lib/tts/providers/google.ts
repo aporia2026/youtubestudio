@@ -40,6 +40,8 @@ import { logger } from '../../logger';
 import { synthCostUsd } from '../cost';
 import { chunkScriptForGoogle, DEFAULT_MAX_CHUNK_BYTES } from '../chunker';
 import { chunkSsmlForGoogle, isSsml, ssmlToGeminiText } from '../ssml-chunker';
+import { buildWav, parseWav } from '../wav-concat';
+import { normalizeChunks, rmsToDb } from '../pcm-normalize';
 import { assertGoogleCredentialsValid, loadGoogleCredentials } from '../google-env';
 import { listGoogleVoices } from '../voices/google-catalog';
 import {
@@ -481,39 +483,37 @@ class GoogleSynthesizer implements Synthesizer {
     });
 
     const startedAt = Date.now();
-    // Long-form ALWAYS uses MP3 chunks. See encoding-decision-matrix
-    // comment above class GoogleSynthesizer for why. MP3 frames are
-    // self-contained so byte concat is correct; per-chunk amplitude
-    // differences manifest at frame boundaries (~26 ms each) rather
-    // than accumulating into the audible volume drift LINEAR16 chunks
-    // produced via Chirp 3 HD's per-call auto-gain.
-    const mp3Buffers: Uint8Array[] = [];
+    // Long-form uses LINEAR16/WAV chunks. Rationale: we need per-
+    // chunk PCM to run RMS-based volume normalization (Chirp 3 HD
+    // returns anomalously quiet audio for some chunks — verified
+    // 2026-05-26 against a user-reported 14-min voiceover where
+    // chunks at 150-210s and 330-450s were 12-22 dB quieter than
+    // the rest). PCM lets us measure RMS in pure JS, identify
+    // outliers, and amplify them to match the median — eliminating
+    // the perceived "voice quality drops mid-narration" symptom.
+    // MP3 would obscure the per-chunk volume in lossy compression
+    // and prevent the fix.
+    const pcmChunks: Uint8Array[] = [];
+    let wavFormat:
+      | { sampleRate: number; numChannels: number; bitsPerSample: number }
+      | null = null;
     let totalCharCount = 0;
     let totalCostUsd = 0;
     let chunksReceived = 0;
 
     for (let i = 0; i < chunks.length; i += LONG_FORM_CONCURRENCY) {
       const wave = chunks.slice(i, i + LONG_FORM_CONCURRENCY);
-      // synthesizeOnce with explicit MP3 encoding — bypasses the
-      // public synthesize() entry which would otherwise loop back
-      // into another long-form check for inputs already under limit.
       const results = await Promise.all(
         wave.map((chunkPayload) =>
           this.synthesizeOnce(
             useSsml
-              ? // SSML chunk: each chunkPayload is a complete
-                // `<speak>...</speak>` document. Route to the ssml
-                // field; clear text so synthesizeOnce uses ssml.
-                { ...req, text: '', ssml: chunkPayload }
+              ? { ...req, text: '', ssml: chunkPayload }
               : { ...req, text: chunkPayload, ssml: undefined },
-            'MP3',
+            'LINEAR16',
           ),
         ),
       );
       for (const r of results) {
-        // Loud chunk-loss detection: any empty audio response fails
-        // the whole synth instead of silently producing a truncated
-        // voiceover.
         if (!r.audioBytes || r.audioBytes.byteLength === 0) {
           throw new TtsProviderError(
             `Google long-form synthesis received empty audio for chunk ${chunksReceived + 1}/${chunks.length}.`,
@@ -522,12 +522,9 @@ class GoogleSynthesizer implements Synthesizer {
             true,
           );
         }
-        if (r.mimeType !== 'audio/mpeg') {
-          // Should be impossible — synthesizeOnce returns mimeType
-          // matching the encoding it was called with. Hard-fail if
-          // something upstream changes that contract.
+        if (r.mimeType !== 'audio/wav') {
           throw new TtsProviderError(
-            `Google long-form chunk returned unexpected mimeType ${r.mimeType}; expected audio/mpeg.`,
+            `Google long-form chunk returned unexpected mimeType ${r.mimeType}; expected audio/wav.`,
             PROVIDER_ID,
             'vendor_5xx',
             false,
@@ -536,11 +533,30 @@ class GoogleSynthesizer implements Synthesizer {
         chunksReceived++;
         totalCharCount += r.charCount;
         totalCostUsd += r.costUsd;
-        mp3Buffers.push(r.audioBytes);
+        const parsed = parseWav(r.audioBytes);
+        if (!wavFormat) {
+          wavFormat = {
+            sampleRate: parsed.sampleRate,
+            numChannels: parsed.numChannels,
+            bitsPerSample: parsed.bitsPerSample,
+          };
+        } else if (
+          parsed.sampleRate !== wavFormat.sampleRate ||
+          parsed.numChannels !== wavFormat.numChannels ||
+          parsed.bitsPerSample !== wavFormat.bitsPerSample
+        ) {
+          throw new TtsProviderError(
+            `Google long-form chunk ${chunksReceived} has mismatched WAV format.`,
+            PROVIDER_ID,
+            'vendor_5xx',
+            false,
+          );
+        }
+        pcmChunks.push(parsed.pcm);
       }
     }
 
-    if (chunksReceived !== chunks.length) {
+    if (chunksReceived !== chunks.length || !wavFormat) {
       throw new TtsProviderError(
         `Google long-form synthesis chunk count mismatch: sent ${chunks.length}, received ${chunksReceived}.`,
         PROVIDER_ID,
@@ -549,17 +565,33 @@ class GoogleSynthesizer implements Synthesizer {
       );
     }
 
-    // MP3 byte concat. Each chunk is a complete MP3 stream; appending
-    // them yields a single playable file because MP3 decoders re-sync
-    // at every frame boundary.
-    const totalBytes = mp3Buffers.reduce((sum, b) => sum + b.byteLength, 0);
-    const merged = new Uint8Array(totalBytes);
-    let offset = 0;
-    for (const buf of mp3Buffers) {
-      merged.set(buf, offset);
-      offset += buf.byteLength;
+    // Per-chunk volume normalization — the actual fix for the
+    // "voice gets quiet mid-narration" symptom. Measures each
+    // chunk's RMS, identifies outliers >6 dB below the median, and
+    // amplifies them (capped at +6 dB gain to avoid noise-floor
+    // amplification).
+    const normalized = normalizeChunks(pcmChunks);
+    const liftedCount = normalized.filter((n) => n.appliedGain > 1).length;
+    if (liftedCount > 0) {
+      logger.info('[tts google synth long-form] normalized quiet chunks', {
+        totalChunks: normalized.length,
+        liftedChunks: liftedCount,
+        gainSummary: normalized
+          .map((n, i) => (n.appliedGain > 1 ? { i, rmsDb: rmsToDb(n.rmsLinear).toFixed(1), gain: n.appliedGain.toFixed(2) } : null))
+          .filter(Boolean),
+      });
     }
-    const chunkMimeType: 'audio/mpeg' = 'audio/mpeg';
+
+    // Glue normalized PCM and emit one WAV with a single header.
+    const totalPcmBytes = normalized.reduce((sum, n) => sum + n.pcm.byteLength, 0);
+    const combinedPcm = new Uint8Array(totalPcmBytes);
+    let offset = 0;
+    for (const n of normalized) {
+      combinedPcm.set(n.pcm, offset);
+      offset += n.pcm.byteLength;
+    }
+    const merged = buildWav({ ...wavFormat, pcm: combinedPcm });
+    const chunkMimeType: 'audio/wav' = 'audio/wav';
 
     const durationSeconds = Math.max(1, totalCharCount / 15);
 
