@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chunkSsmlForGoogle, isSsml } from '@/lib/tts/ssml-chunker';
+import { chunkSsmlForGoogle, isSsml, ssmlToGeminiText } from '@/lib/tts/ssml-chunker';
 
 // Pins the SSML chunker behavior. The bug it guards against: plain-
 // text chunking of SSML input cuts the <speak>...</speak> wrapper
@@ -128,6 +128,43 @@ describe('chunkSsmlForGoogle — inputs without <speak> wrapper', () => {
     const chunks = chunkSsmlForGoogle(input, 50);
     expect(chunks.length).toBeGreaterThanOrEqual(2);
     for (const c of chunks) expect(looksLikeValidSpeakBlock(c)).toBe(true);
+  });
+});
+
+describe('ssmlToGeminiText — SSML → Gemini inline tags', () => {
+  it('strips <speak> wrapper and converts <break time="2s"/> to [long pause]', () => {
+    const input = '<speak>Hello.<break time="2s"/>World.</speak>';
+    const out = ssmlToGeminiText(input);
+    expect(out).not.toContain('<');
+    expect(out).toContain('[long pause]');
+    expect(out).toContain('Hello.');
+    expect(out).toContain('World.');
+  });
+
+  it('maps short / medium / long breaks by duration', () => {
+    const input =
+      '<speak>A<break time="200ms"/>B<break time="1s"/>C<break time="2s"/>D</speak>';
+    const out = ssmlToGeminiText(input);
+    expect(out).toContain('[short pause]');
+    expect(out).toContain('[medium pause]');
+    expect(out).toContain('[long pause]');
+  });
+
+  it('drops every other SSML tag and normalizes whitespace', () => {
+    const input = '<speak><prosody rate="slow"><emphasis>Hi</emphasis> there.</prosody></speak>';
+    const out = ssmlToGeminiText(input);
+    expect(out).toBe('Hi there.');
+  });
+
+  it("converts the user's 27-section script to Gemini text with [long pause] separators", () => {
+    const section = (i: number) => `Section ${i} body content. Some sentences here.`;
+    const sections = Array.from({ length: 27 }, (_, i) => section(i + 1));
+    const input = `<speak>${sections.join(' <break time="2s"/> ')}</speak>`;
+    const out = ssmlToGeminiText(input);
+    expect(out.match(/\[long pause\]/g)).toHaveLength(26);  // n-1 separators
+    expect(out).not.toContain('<');
+    expect(out).toContain('Section 1');
+    expect(out).toContain('Section 27');
   });
 });
 

@@ -43,6 +43,48 @@
 import { DEFAULT_MAX_CHUNK_BYTES } from './chunker';
 
 /**
+ * Convert an SSML script into the inline-tag format Gemini-TTS expects.
+ *
+ * Gemini-TTS does not accept SSML — its expressive control vocabulary
+ * is inline bracketed tags like `[whispers]`, `[laughs]`, `[short pause]`,
+ * `[medium pause]`, `[long pause]` (see Google's Gemini-TTS docs). This
+ * helper strips every SSML tag and rewrites `<break time="Xs"/>` markers
+ * into the corresponding Gemini pause tag based on duration:
+ *
+ *   - ≥ 1.5s → `[long pause]`
+ *   - ≥ 0.5s → `[medium pause]`
+ *   - <  0.5s → `[short pause]`
+ *
+ * Everything else (`<speak>`, `<prosody>`, etc.) is stripped. The
+ * caller passes the result as plain text to Gemini.
+ */
+export function ssmlToGeminiText(ssml: string): string {
+  // Replace <break time="Xs"/> with the appropriate Gemini pause tag
+  // BEFORE the generic tag-strip so duration data isn't lost.
+  const withPauses = ssml.replace(
+    /<break\b[^>]*?\/?>/gi,
+    (match) => {
+      const m = match.match(/time\s*=\s*["'](\d+(?:\.\d+)?)\s*(ms|s)?["']/i);
+      let seconds = 0.5;
+      if (m) {
+        const value = parseFloat(m[1]);
+        const unit = (m[2] || 's').toLowerCase();
+        seconds = unit === 'ms' ? value / 1000 : value;
+      }
+      if (seconds >= 1.5) return ' [long pause] ';
+      if (seconds >= 0.5) return ' [medium pause] ';
+      return ' [short pause] ';
+    },
+  );
+  // Strip everything else (<speak>, <prosody>, <p>, <s>, etc.) and
+  // normalize whitespace.
+  return withPauses
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
  * Heuristic detector. Returns true when the input looks like SSML —
  * starts with `<speak>` (allowing leading whitespace) or contains
  * `<break ...>`. Avoids false positives on text with stray `<` chars

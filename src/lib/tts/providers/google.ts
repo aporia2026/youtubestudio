@@ -39,7 +39,7 @@ import type { protos } from '@google-cloud/text-to-speech';
 import { logger } from '../../logger';
 import { synthCostUsd } from '../cost';
 import { chunkScriptForGoogle, DEFAULT_MAX_CHUNK_BYTES } from '../chunker';
-import { chunkSsmlForGoogle, isSsml } from '../ssml-chunker';
+import { chunkSsmlForGoogle, isSsml, ssmlToGeminiText } from '../ssml-chunker';
 import { assertGoogleCredentialsValid, loadGoogleCredentials } from '../google-env';
 import { listGoogleVoices } from '../voices/google-catalog';
 import {
@@ -198,12 +198,26 @@ class GoogleSynthesizer implements Synthesizer {
       ssml = text;
       text = '';
     }
+
+    const isGemini = isGeminiTier(req.voice.tier);
+
+    // Gemini-TTS does not accept SSML — its expressive vocabulary is
+    // inline bracketed tags. When the user picks a Gemini voice with
+    // SSML input, convert the SSML to Gemini-flavored text (stripping
+    // tags, rewriting <break> → [long pause] / [medium pause] /
+    // [short pause]) and route through the text path.
+    if (isGemini && ssml) {
+      const converted = ssmlToGeminiText(ssml);
+      logger.info('[tts google synth] converted SSML to Gemini inline tags', {
+        ssmlBytes: Buffer.byteLength(ssml, 'utf8'),
+        textBytes: Buffer.byteLength(converted, 'utf8'),
+      });
+      text = converted;
+      ssml = undefined;
+    }
+
     const useSsml = Boolean(ssml);
     const payloadBytes = Buffer.byteLength(useSsml ? ssml! : text, 'utf8');
-
-    // Gemini-TTS has tighter limits than Chirp 3 HD. The chunker
-    // honors them when this is a Gemini request.
-    const isGemini = isGeminiTier(req.voice.tier);
     const textByteLimit = isGemini ? GEMINI_TEXT_BYTE_LIMIT : SYNC_INPUT_BYTE_LIMIT;
 
     // For Gemini, the prompt counts toward an 8KB combined cap.
