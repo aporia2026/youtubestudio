@@ -106,6 +106,12 @@ function VoiceoverStudio() {
   const [previewPlaying, setPreviewPlaying] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const previewRef = useRef<HTMLAudioElement>(null);
+  // Holds the in-flight AbortController for the Generate Voiceover
+  // request. Populated when generation starts, cleared when it
+  // settles (success, error, or cancel). The Stop button calls
+  // .abort() on it — the fetch rejects with AbortError, which the
+  // catch block treats as cancellation rather than failure.
+  const generateAbortRef = useRef<AbortController | null>(null);
   // Ref to the script textarea — used by the Gemini tag picker to
   // splice an audio tag into the script at the current cursor position.
   const scriptTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -396,6 +402,11 @@ function VoiceoverStudio() {
     setGenerating(true);
     setAudioUrl('');
     setSavedToProject(false);
+    // Fresh AbortController for this generation — the Stop button
+    // calls .abort() on it. The previous request (if any) settles
+    // before we get here because the button disables during generation.
+    const controller = new AbortController();
+    generateAbortRef.current = controller;
     try {
       let res: Response;
       if (provider === 'google' && selectedGoogleVoice) {
@@ -417,6 +428,7 @@ function VoiceoverStudio() {
             },
             projectId,
           }),
+          signal: controller.signal,
         });
       } else {
         // Legacy ElevenLabs endpoint — internally dispatches now but keeps
@@ -432,6 +444,7 @@ function VoiceoverStudio() {
             modelId: settings.model_id,
             projectId,
           }),
+          signal: controller.signal,
         });
       }
       if (!res.ok) {
@@ -489,8 +502,18 @@ function VoiceoverStudio() {
       } catch {}
       toast.success('Voiceover generated!');
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Failed to generate voiceover');
+      // AbortError = user clicked Stop. Treat as a benign cancel,
+      // not a failure — no error toast, just a quiet info notice.
+      // DOMException(AbortError) is what fetch throws when its signal
+      // is aborted; the name check covers both the Node and browser
+      // implementations.
+      if (err instanceof Error && (err.name === 'AbortError' || err.name === 'CanceledError')) {
+        toast.info('Voiceover generation stopped');
+      } else {
+        toast.error(err instanceof Error ? err.message : 'Failed to generate voiceover');
+      }
     } finally {
+      generateAbortRef.current = null;
       setGenerating(false);
     }
   }
@@ -900,19 +923,40 @@ function VoiceoverStudio() {
             </div>
             )}
 
-            {/* Generate button */}
-            <button
-              onClick={generateVoiceover}
-              disabled={generating || !text.trim() || !selectedVoice}
-              className="btn-primary w-full justify-center text-base py-3"
-              style={{ width: '100%', justifyContent: 'center' }}
-            >
-              {generating ? (
-                <><div className="spinner" style={{ width: 18, height: 18 }} />Generating Voiceover...</>
-              ) : (
-                <>🎙️ Generate Voiceover</>
-              )}
-            </button>
+            {/* Generate button (with Stop button when in flight) */}
+            {generating ? (
+              <div className="flex gap-2 w-full">
+                <button
+                  disabled
+                  className="btn-primary text-base py-3"
+                  style={{ flex: 1, justifyContent: 'center' }}
+                >
+                  <div className="spinner" style={{ width: 18, height: 18 }} />
+                  Generating Voiceover…
+                </button>
+                <button
+                  onClick={() => generateAbortRef.current?.abort()}
+                  className="text-base py-3 px-5 rounded-lg font-medium transition-all"
+                  style={{
+                    background: 'rgba(239,68,68,0.15)',
+                    color: '#ef4444',
+                    border: '1px solid rgba(239,68,68,0.35)',
+                  }}
+                  title="Cancel the in-flight generation"
+                >
+                  ⏹ Stop
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={generateVoiceover}
+                disabled={!text.trim() || !selectedVoice}
+                className="btn-primary w-full justify-center text-base py-3"
+                style={{ width: '100%', justifyContent: 'center' }}
+              >
+                🎙️ Generate Voiceover
+              </button>
+            )}
 
             {/* Audio player */}
             <AnimatePresence>
