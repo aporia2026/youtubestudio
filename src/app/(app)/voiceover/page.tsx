@@ -112,6 +112,62 @@ function VoiceoverStudio() {
   // .abort() on it — the fetch rejects with AbortError, which the
   // catch block treats as cancellation rather than failure.
   const generateAbortRef = useRef<AbortController | null>(null);
+  // Post-generation playback / download speed. Updates flow into
+  // the <audio> element's playbackRate so the user can preview at
+  // any speed without re-synthesizing. The "Download at Xx" button
+  // pulls the audio, runs it through the SoundTouch pitch-preserving
+  // time-stretcher, and writes the result to a WAV blob.
+  const [speedRate, setSpeedRate] = useState(1.0);
+  const [renderingSpeed, setRenderingSpeed] = useState(false);
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el) return;
+    el.playbackRate = speedRate;
+    // preservesPitch keeps the narrator sounding like the same
+    // person — without it, 1.5× sounds chipmunk-y. Native browser
+    // implementations (Chrome / Edge / Firefox / Safari 18+) handle
+    // pitch-preservation in hardware-accelerated WSOLA.
+    // mozPreservesPitch / webkitPreservesPitch are legacy aliases
+    // for older Firefox / Safari respectively.
+    (el as HTMLAudioElement).preservesPitch = true;
+    (el as HTMLAudioElement & { mozPreservesPitch?: boolean }).mozPreservesPitch = true;
+    (el as HTMLAudioElement & { webkitPreservesPitch?: boolean }).webkitPreservesPitch = true;
+  }, [speedRate, audioUrl]);
+
+  async function downloadAtSpeed() {
+    if (!audioUrl) return;
+    // Speed 1.0 — no processing needed, just trigger the normal
+    // download. Saves the round-trip through decode + stretch.
+    if (Math.abs(speedRate - 1.0) < 0.001) {
+      const a = document.createElement('a');
+      a.href = audioUrl;
+      a.download = 'voiceover.mp3';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      return;
+    }
+    setRenderingSpeed(true);
+    try {
+      const { fetchAudioBuffer, timeStretchAudioBuffer, audioBufferToWavBlob, downloadBlob } =
+        await import('@/lib/voiceover/time-stretch');
+      const ctx = new AudioContext();
+      try {
+        const buffer = await fetchAudioBuffer(audioUrl, ctx);
+        const stretched = timeStretchAudioBuffer(buffer, speedRate, ctx);
+        const blob = audioBufferToWavBlob(stretched);
+        const speedLabel = speedRate.toFixed(2).replace(/\.?0+$/, '');
+        downloadBlob(blob, `voiceover-${speedLabel}x.wav`);
+        toast.success(`Downloaded at ${speedLabel}× speed`);
+      } finally {
+        ctx.close().catch(() => {});
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Speed render failed');
+    } finally {
+      setRenderingSpeed(false);
+    }
+  }
   // Ref to the script textarea — used by the Gemini tag picker to
   // splice an audio tag into the script at the current cursor position.
   const scriptTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -973,11 +1029,63 @@ function VoiceoverStudio() {
                     </h3>
                     <span className="badge badge-green text-xs">Ready</span>
                   </div>
-                  <audio ref={audioRef} controls src={audioUrl} className="w-full mb-4" />
+                  <audio ref={audioRef} controls src={audioUrl} className="w-full mb-3" />
+
+                  {/* Speed / Speaking Rate slider. Live preview via
+                      HTMLAudioElement.playbackRate + preservesPitch
+                      (browser-native, no processing). The Download
+                      button below applies the speed to the actual
+                      file via SoundTouch when rate ≠ 1.0. */}
+                  <div className="mb-3">
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                        Playback speed
+                      </label>
+                      <span className="text-xs tabular-nums" style={{ color: speedRate === 1 ? 'var(--text-muted)' : 'var(--accent-purple-bright)' }}>
+                        {speedRate.toFixed(2)}×
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={2.0}
+                      step={0.05}
+                      value={speedRate}
+                      onChange={(e) => setSpeedRate(parseFloat(e.target.value))}
+                      className="w-full"
+                      style={{ accentColor: 'var(--accent-purple)' }}
+                    />
+                    <div className="flex justify-between text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                      <span>0.5×</span>
+                      <button
+                        onClick={() => setSpeedRate(1.0)}
+                        className="hover:underline"
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }}
+                      >
+                        reset to 1×
+                      </button>
+                      <span>2×</span>
+                    </div>
+                  </div>
+
                   <div className="flex gap-3">
-                    <a href={audioUrl} download="voiceover.mp3" className="btn-secondary text-sm flex-1 justify-center" style={{ justifyContent: 'center' }}>
-                      ⬇️ Download MP3
-                    </a>
+                    <button
+                      onClick={downloadAtSpeed}
+                      disabled={renderingSpeed}
+                      className="btn-secondary text-sm flex-1 justify-center"
+                      style={{ justifyContent: 'center' }}
+                      title={
+                        speedRate === 1
+                          ? 'Download the original audio'
+                          : `Render the audio at ${speedRate.toFixed(2)}× speed (pitch-preserved) and download as WAV`
+                      }
+                    >
+                      {renderingSpeed
+                        ? '⟳ Rendering…'
+                        : speedRate === 1
+                          ? '⬇️ Download MP3'
+                          : `⬇️ Download at ${speedRate.toFixed(2)}×`}
+                    </button>
                     {projectId && !savedToProject && (
                       <button onClick={saveToProject} className="btn-primary text-sm flex-1 justify-center" style={{ justifyContent: 'center' }}>
                         💾 Save to Project
