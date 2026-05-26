@@ -1,8 +1,21 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+
+// Mirrors `DEFAULT_SCHEDULE_STATUSES` in `src/lib/db.ts` for the status
+// pills in the scheduled-items picker. Inlined because db.ts pulls in
+// server-only deps and a tiny color lookup doesn't earn its own module.
+const SCHEDULE_STATUS_COLOR: Record<string, { label: string; color: string }> = {
+  idea:         { label: 'Idea',         color: '#64748b' },
+  scripting:    { label: 'Scripting',    color: '#8b5cf6' },
+  recording:    { label: 'Recording',    color: '#f59e0b' },
+  editing:      { label: 'Editing',      color: '#06b6d4' },
+  ready:        { label: 'Ready',        color: '#10b981' },
+  upload_queue: { label: 'Upload Queue', color: '#f97316' },
+  published:    { label: 'Published',    color: '#3b82f6' },
+};
 
 interface PresetRow {
   id: string;
@@ -25,16 +38,39 @@ interface IdeaRow {
   is_used: boolean;
 }
 
-type Mode = 'fresh' | 'existing';
+interface ScheduleItemRow {
+  id: string;
+  title: string;
+  status: string;
+  scheduled_for: string | null;
+  idea_id: string | null;
+  notes: string | null;
+  pillar: string | null;
+  position: number;
+  pipeline_run_video_id: string | null;
+}
+
+type Mode = 'fresh' | 'existing' | 'scheduled';
 
 export default function NewPipelinePage() {
   const router = useRouter();
   const [presets, setPresets] = useState<PresetRow[]>([]);
   const [ideas, setIdeas] = useState<IdeaRow[]>([]);
+  const [scheduleItems, setScheduleItems] = useState<ScheduleItemRow[]>([]);
   const [presetId, setPresetId] = useState<string>('');
   const [mode, setMode] = useState<Mode>('fresh');
   const [count, setCount] = useState<number>(5);
   const [selectedIdeaIds, setSelectedIdeaIds] = useState<string[]>([]);
+  const [selectedScheduleIds, setSelectedScheduleIds] = useState<string[]>([]);
+  // Picker search + filter state. Kept independent per mode so toggling
+  // back-and-forth doesn't wipe what the user already typed/picked.
+  const [ideaSearch, setIdeaSearch] = useState('');
+  const [scheduleSearch, setScheduleSearch] = useState('');
+  // Empty set = no filter (show all statuses). Storing the negative
+  // (which statuses to *hide*) would be just as valid but harder to
+  // read in the UI; we store which statuses are *kept* and treat
+  // empty as "kept everything".
+  const [scheduleStatusFilter, setScheduleStatusFilter] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,20 +82,32 @@ export default function NewPipelinePage() {
   useEffect(() => {
     void (async () => {
       try {
-        const [presetsRes, ideasRes] = await Promise.all([
+        const [presetsRes, ideasRes, scheduleRes] = await Promise.all([
           fetch('/api/auto-pipeline/presets', { cache: 'no-store' }),
           fetch('/api/ideas?saved=true&limit=100', { cache: 'no-store' }).catch(() => null),
+          fetch('/api/schedule/picker', { cache: 'no-store' }).catch(() => null),
         ]);
         if (presetsRes.ok) {
           const data = await presetsRes.json();
           setPresets((data.presets as PresetRow[]) ?? []);
           if (data.presets?.[0]) setPresetId(data.presets[0].id);
         }
+        let ideasCount = 0;
+        let scheduleCount = 0;
         if (ideasRes && ideasRes.ok) {
           const data = await ideasRes.json();
           const rows = (data.ideas as IdeaRow[]) ?? [];
-          setIdeas(rows.filter((i) => !i.is_used));
+          const filtered = rows.filter((i) => !i.is_used);
+          setIdeas(filtered);
+          ideasCount = filtered.length;
         }
+        if (scheduleRes && scheduleRes.ok) {
+          const data = await scheduleRes.json();
+          const rows = (data.items as ScheduleItemRow[]) ?? [];
+          setScheduleItems(rows);
+          scheduleCount = rows.length;
+        }
+        console.info('[pipeline batch] picker_loaded', { ideas: ideasCount, scheduled: scheduleCount });
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to load');
       } finally {
@@ -70,6 +118,52 @@ export default function NewPipelinePage() {
 
   const selectedPreset = presets.find((p) => p.id === presetId);
 
+  // Filtered ideas: case-insensitive substring match on title + hook.
+  const filteredIdeas = useMemo(() => {
+    const q = ideaSearch.trim().toLowerCase();
+    if (!q) return ideas;
+    return ideas.filter((i) => {
+      return (
+        i.title.toLowerCase().includes(q) ||
+        (i.hook ?? '').toLowerCase().includes(q)
+      );
+    });
+  }, [ideas, ideaSearch]);
+
+  // Filtered scheduled items: combined search + status-filter chip.
+  // Both filters intersect — the user gets back items that match the
+  // search AND fall under the picked statuses (when any).
+  const filteredScheduleItems = useMemo(() => {
+    const q = scheduleSearch.trim().toLowerCase();
+    return scheduleItems.filter((item) => {
+      if (scheduleStatusFilter.size > 0 && !scheduleStatusFilter.has(item.status)) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        item.title.toLowerCase().includes(q) ||
+        (item.notes ?? '').toLowerCase().includes(q) ||
+        (item.pillar ?? '').toLowerCase().includes(q)
+      );
+    });
+  }, [scheduleItems, scheduleSearch, scheduleStatusFilter]);
+
+  // Status chips for the filter row. We surface only the statuses
+  // present in the workspace's actual items (no point offering
+  // "Published" if there are none), but we order them by the
+  // canonical pipeline order from SCHEDULE_STATUS_COLOR.
+  const availableStatuses = useMemo(() => {
+    const present = new Set(scheduleItems.map((i) => i.status));
+    const ordered = Object.keys(SCHEDULE_STATUS_COLOR).filter((s) => present.has(s));
+    // Append any custom statuses the user defined that aren't in our
+    // default color map — they still deserve a chip, just with the
+    // fallback color.
+    for (const s of present) {
+      if (!ordered.includes(s)) ordered.push(s);
+    }
+    return ordered;
+  }, [scheduleItems]);
+
   useEffect(() => {
     if (selectedPreset && selectedPreset.ideas_count_default) {
       setCount(selectedPreset.ideas_count_default);
@@ -78,6 +172,25 @@ export default function NewPipelinePage() {
 
   function toggleIdea(id: string) {
     setSelectedIdeaIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  function toggleScheduleItem(id: string) {
+    setSelectedScheduleIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  function toggleStatusFilter(status: string) {
+    setScheduleStatusFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(status)) next.delete(status);
+      else next.add(status);
+      return next;
+    });
+  }
+
+  function changeMode(next: Mode) {
+    if (next === mode) return;
+    console.info('[pipeline batch] mode_changed', { from: mode, to: next });
+    setMode(next);
   }
 
   async function submit() {
@@ -94,12 +207,20 @@ export default function NewPipelinePage() {
       setError('Pick at least one idea.');
       return;
     }
+    if (mode === 'scheduled' && selectedScheduleIds.length === 0) {
+      setError('Pick at least one scheduled item.');
+      return;
+    }
 
     setSubmitting(true);
+    const countForLog =
+      mode === 'fresh' ? count : mode === 'existing' ? selectedIdeaIds.length : selectedScheduleIds.length;
+    console.info('[pipeline batch] submit', { mode, count: countForLog, presetId });
     try {
       const body: Record<string, unknown> = { presetId };
       if (mode === 'fresh') body.countToGenerate = count;
-      else body.existingIdeaIds = selectedIdeaIds;
+      else if (mode === 'existing') body.existingIdeaIds = selectedIdeaIds;
+      else body.existingScheduleItemIds = selectedScheduleIds;
 
       const res = await fetch('/api/auto-pipeline/runs', {
         method: 'POST',
@@ -113,7 +234,9 @@ export default function NewPipelinePage() {
       const { runId } = await res.json();
       router.push(`/pipeline/${runId}`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to start batch');
+      const message = e instanceof Error ? e.message : 'Failed to start batch';
+      console.info('[pipeline batch] submit_error', { mode, message });
+      setError(message);
       setSubmitting(false);
     }
   }
@@ -247,23 +370,29 @@ export default function NewPipelinePage() {
           </Section>
 
           <Section title="Mode">
-            <div className="flex gap-3">
+            <div className="flex flex-col md:flex-row gap-3">
               <ModeCard
                 active={mode === 'fresh'}
-                onClick={() => setMode('fresh')}
+                onClick={() => changeMode('fresh')}
                 title="Generate fresh ideas"
                 subtitle="Brainstorm N new ideas, you drag-rank them once, the pipeline runs."
               />
               <ModeCard
                 active={mode === 'existing'}
-                onClick={() => setMode('existing')}
+                onClick={() => changeMode('existing')}
                 title="Use existing idea(s)"
                 subtitle="Pick from your saved ideas. Skip idea-gen, go straight to script."
+              />
+              <ModeCard
+                active={mode === 'scheduled'}
+                onClick={() => changeMode('scheduled')}
+                title="Use scheduled items"
+                subtitle="Pull items straight from your Schedule. We bump them to Scripting and link the run."
               />
             </div>
           </Section>
 
-          {mode === 'fresh' ? (
+          {mode === 'fresh' && (
             <Section title="How many ideas?">
               <input
                 type="number"
@@ -279,7 +408,9 @@ export default function NewPipelinePage() {
                 drag-rank them to set priority — the pipeline runs in that order.
               </p>
             </Section>
-          ) : (
+          )}
+
+          {mode === 'existing' && (
             <Section title="Pick ideas">
               {ideas.length === 0 ? (
                 <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
@@ -288,15 +419,26 @@ export default function NewPipelinePage() {
                 </p>
               ) : (
                 <>
-                  <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
-                    Selected order = priority. {selectedIdeaIds.length} selected.
+                  <SearchBox
+                    placeholder={`Search ${ideas.length} idea${ideas.length === 1 ? '' : 's'}…`}
+                    value={ideaSearch}
+                    onChange={setIdeaSearch}
+                  />
+                  <p className="text-xs mb-2 mt-2" style={{ color: 'var(--text-muted)' }}>
+                    Selected order = priority. {selectedIdeaIds.length} selected
+                    {ideaSearch ? ` · ${filteredIdeas.length} of ${ideas.length} shown` : ''}.
                   </p>
                   <div
                     className="rounded-lg overflow-hidden"
                     style={{ border: '1px solid var(--border)', maxHeight: 384, overflowY: 'auto' }}
                   >
+                    {filteredIdeas.length === 0 ? (
+                      <p className="px-3 py-6 text-sm text-center" style={{ color: 'var(--text-muted)' }}>
+                        No ideas match &ldquo;{ideaSearch}&rdquo;.
+                      </p>
+                    ) : (
                     <ul>
-                      {ideas.map((idea, idx) => {
+                      {filteredIdeas.map((idea, idx) => {
                         const selected = selectedIdeaIds.includes(idea.id);
                         const position = selected ? selectedIdeaIds.indexOf(idea.id) + 1 : null;
                         return (
@@ -329,6 +471,165 @@ export default function NewPipelinePage() {
                         );
                       })}
                     </ul>
+                    )}
+                  </div>
+                </>
+              )}
+            </Section>
+          )}
+
+          {mode === 'scheduled' && (
+            <Section title="Pick scheduled items">
+              {scheduleItems.length === 0 ? (
+                <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                  No scheduled items in this workspace yet.{' '}
+                  <Link href="/schedule" className="underline">
+                    Open the Schedule
+                  </Link>{' '}
+                  to add some.
+                </p>
+              ) : (
+                <>
+                  <SearchBox
+                    placeholder={`Search ${scheduleItems.length} scheduled item${scheduleItems.length === 1 ? '' : 's'}…`}
+                    value={scheduleSearch}
+                    onChange={setScheduleSearch}
+                  />
+                  {availableStatuses.length > 1 && (
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {availableStatuses.map((s) => {
+                        const meta = SCHEDULE_STATUS_COLOR[s] ?? { label: s, color: '#64748b' };
+                        const active = scheduleStatusFilter.has(s);
+                        return (
+                          <button
+                            key={s}
+                            type="button"
+                            onClick={() => toggleStatusFilter(s)}
+                            className="text-[11px] uppercase tracking-wider px-2 py-1 rounded transition-colors"
+                            style={{
+                              background: active ? `${meta.color}33` : 'transparent',
+                              color: active ? meta.color : 'var(--text-muted)',
+                              border: `1px solid ${active ? meta.color : 'var(--border)'}`,
+                            }}
+                          >
+                            {meta.label}
+                          </button>
+                        );
+                      })}
+                      {scheduleStatusFilter.size > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setScheduleStatusFilter(new Set())}
+                          className="text-[11px] uppercase tracking-wider px-2 py-1 rounded hover:underline"
+                          style={{ color: 'var(--text-muted)' }}
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  <p className="text-xs mb-2 mt-2" style={{ color: 'var(--text-muted)' }}>
+                    Selected order = priority. {selectedScheduleIds.length} selected
+                    {scheduleSearch || scheduleStatusFilter.size > 0
+                      ? ` · ${filteredScheduleItems.length} of ${scheduleItems.length} shown`
+                      : ''}
+                    . Items in <em>Idea</em> status get auto-bumped to <em>Scripting</em>; later statuses
+                    are left as-is.
+                  </p>
+                  <div
+                    className="rounded-lg overflow-hidden"
+                    style={{ border: '1px solid var(--border)', maxHeight: 384, overflowY: 'auto' }}
+                  >
+                    {filteredScheduleItems.length === 0 ? (
+                      <p className="px-3 py-6 text-sm text-center" style={{ color: 'var(--text-muted)' }}>
+                        No scheduled items match the current filters.
+                      </p>
+                    ) : (
+                    <ul>
+                      {filteredScheduleItems.map((item, idx) => {
+                        const selected = selectedScheduleIds.includes(item.id);
+                        const position = selected ? selectedScheduleIds.indexOf(item.id) + 1 : null;
+                        const statusMeta = SCHEDULE_STATUS_COLOR[item.status] ?? {
+                          label: item.status,
+                          color: '#64748b',
+                        };
+                        const alreadyInPipeline = item.pipeline_run_video_id != null;
+                        const scheduledDate = item.scheduled_for
+                          ? new Date(item.scheduled_for).toLocaleDateString()
+                          : null;
+                        return (
+                          <li
+                            key={item.id}
+                            onClick={() => toggleScheduleItem(item.id)}
+                            className="px-3 py-2 cursor-pointer text-sm flex items-start gap-3 transition-colors"
+                            style={{
+                              background: selected ? 'rgba(124,58,237,0.10)' : 'transparent',
+                              borderTop: idx === 0 ? 'none' : '1px solid var(--border)',
+                            }}
+                          >
+                            <div
+                              className="w-6 shrink-0 text-xs font-mono pt-0.5"
+                              style={{ color: selected ? 'var(--accent-purple-bright)' : 'var(--text-muted)' }}
+                            >
+                              {position ? `#${position}` : '·'}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+                                  {item.title || 'Untitled scheduled item'}
+                                </span>
+                                <span
+                                  className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded"
+                                  style={{
+                                    background: `${statusMeta.color}22`,
+                                    color: statusMeta.color,
+                                    border: `1px solid ${statusMeta.color}55`,
+                                  }}
+                                >
+                                  {statusMeta.label}
+                                </span>
+                                {item.pillar && (
+                                  <span
+                                    className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded"
+                                    style={{
+                                      background: 'rgba(148,163,184,0.10)',
+                                      color: 'var(--text-muted)',
+                                      border: '1px solid var(--border)',
+                                    }}
+                                  >
+                                    {item.pillar}
+                                  </span>
+                                )}
+                                {alreadyInPipeline && (
+                                  <span
+                                    className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded"
+                                    style={{
+                                      background: 'rgba(239,68,68,0.10)',
+                                      color: '#f87171',
+                                      border: '1px solid rgba(239,68,68,0.35)',
+                                    }}
+                                    title="Already linked to a pipeline run. Re-batching will overwrite the link."
+                                  >
+                                    In pipeline
+                                  </span>
+                                )}
+                                {scheduledDate && (
+                                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                                    · {scheduledDate}
+                                  </span>
+                                )}
+                              </div>
+                              {item.notes && (
+                                <div className="text-xs mt-0.5 line-clamp-2" style={{ color: 'var(--text-muted)' }}>
+                                  {item.notes}
+                                </div>
+                              )}
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    )}
                   </div>
                 </>
               )}
@@ -386,6 +687,42 @@ function ModeCard({
       <div className="font-semibold" style={{ color: 'var(--text-primary)' }}>{title}</div>
       <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>{subtitle}</div>
     </button>
+  );
+}
+
+function SearchBox({
+  placeholder,
+  value,
+  onChange,
+}: {
+  placeholder: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="relative">
+      <input
+        type="search"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="input-field pl-8"
+        autoComplete="off"
+      />
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <circle cx="11" cy="11" r="7" />
+        <line x1="21" y1="21" x2="16.65" y2="16.65" />
+      </svg>
+    </div>
   );
 }
 
