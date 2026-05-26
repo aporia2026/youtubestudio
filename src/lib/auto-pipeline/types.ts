@@ -41,6 +41,8 @@ export const PIPELINE_STAGES = [
   'narration_overdue',
   // ─── terminal (cron skips; UI shows final state) ──────────────────
   'done',
+  'idea_generation_failed',
+  'script_generation_failed',
   'qa_failed_after_max_retries',
   'narration_abandoned',
   'production_doc_failed',
@@ -77,6 +79,8 @@ export const WAITING_STAGES: ReadonlySet<PipelineStage> = new Set<PipelineStage>
 /** Stages from which no further transition is possible. */
 export const TERMINAL_STAGES: ReadonlySet<PipelineStage> = new Set<PipelineStage>([
   'done',
+  'idea_generation_failed',
+  'script_generation_failed',
   'qa_failed_after_max_retries',
   'narration_abandoned',
   'production_doc_failed',
@@ -90,6 +94,8 @@ export const TERMINAL_STAGES: ReadonlySet<PipelineStage> = new Set<PipelineStage
 /** Terminal failure stages (subset of TERMINAL_STAGES). Useful for
  *  the UI's "failed" filter. */
 export const FAILURE_STAGES: ReadonlySet<PipelineStage> = new Set<PipelineStage>([
+  'idea_generation_failed',
+  'script_generation_failed',
   'qa_failed_after_max_retries',
   'narration_abandoned',
   'production_doc_failed',

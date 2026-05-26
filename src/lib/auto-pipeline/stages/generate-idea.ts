@@ -14,11 +14,11 @@
  * here.
  *
  * On success: video.idea_id set, advance to `generating_script`.
- * On refusal/unknown failure: terminal `production_doc_failed` —
- * wait, no, we don't have an `idea_failed` terminal. For
- * now (Tuesday), failures route to `production_doc_failed` as a
- * placeholder; if this stage becomes a real failure mode in prod,
- * add a dedicated `idea_failed` terminal in a follow-up migration.
+ * On refusal/unknown failure: terminal `idea_generation_failed`.
+ * (Earlier versions mis-routed these to `production_doc_failed`,
+ * which broke the Retry button: my reset logic would push the row
+ * to `generating_production_doc` and the invariant guard there
+ * would fire with "no script_id or project_id". Fixed 2026-05-26.)
  */
 import { sql } from '@vercel/postgres';
 import { ideaGenerationPrompt } from '../../prompts';
@@ -47,7 +47,7 @@ export async function handleGenerateIdea(ctx: StageHandlerContext): Promise<Stag
   if (!niche) {
     return {
       kind: 'fail',
-      terminalStage: 'production_doc_failed',
+      terminalStage: 'idea_generation_failed',
       failureClass: 'config_missing',
       failureMessage: 'Preset is missing a niche — required for idea generation.',
     };
@@ -82,7 +82,7 @@ export async function handleGenerateIdea(ctx: StageHandlerContext): Promise<Stag
     if (err instanceof GenerateFailure) {
       return {
         kind: 'fail',
-        terminalStage: 'production_doc_failed',
+        terminalStage: 'idea_generation_failed',
         failureClass: err.failureClass,
         failureMessage: err.message.slice(0, 500),
       };
@@ -94,7 +94,7 @@ export async function handleGenerateIdea(ctx: StageHandlerContext): Promise<Stag
   if (!parsed) {
     return {
       kind: 'fail',
-      terminalStage: 'production_doc_failed',
+      terminalStage: 'idea_generation_failed',
       failureClass: 'empty_or_malformed',
       failureMessage: 'Model returned no parseable idea.',
     };

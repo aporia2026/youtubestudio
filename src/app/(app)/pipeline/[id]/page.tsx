@@ -54,6 +54,8 @@ const POLL_SECONDS = 10;
 
 const TERMINAL_STAGE_KEYS = [
   'done',
+  'idea_generation_failed',
+  'script_generation_failed',
   'qa_failed_after_max_retries',
   'narration_abandoned',
   'production_doc_failed',
@@ -64,6 +66,8 @@ const TERMINAL_STAGE_KEYS = [
   'cost_cap_exceeded',
 ] as const;
 const FAILURE_STAGE_KEYS = [
+  'idea_generation_failed',
+  'script_generation_failed',
   'qa_failed_after_max_retries',
   'narration_abandoned',
   'production_doc_failed',

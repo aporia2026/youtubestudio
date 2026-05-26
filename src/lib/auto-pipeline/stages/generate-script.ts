@@ -43,7 +43,7 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
     // with it. Defensive: fail loud.
     return {
       kind: 'fail',
-      terminalStage: 'production_doc_failed',
+      terminalStage: 'script_generation_failed',
       failureClass: 'invariant_violation',
       failureMessage: 'generate-script handler reached without idea_id set.',
     };
@@ -67,7 +67,7 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
   if (ideaRows.length === 0) {
     return {
       kind: 'fail',
-      terminalStage: 'production_doc_failed',
+      terminalStage: 'script_generation_failed',
       failureClass: 'idea_missing',
       failureMessage: `Idea ${video.idea_id} not found (deleted?).`,
     };
@@ -77,7 +77,7 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
   if (!niche) {
     return {
       kind: 'fail',
-      terminalStage: 'production_doc_failed',
+      terminalStage: 'script_generation_failed',
       failureClass: 'config_missing',
       failureMessage: 'Niche not available on idea or preset — required for script gen.',
     };
@@ -151,7 +151,7 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
     if (err instanceof GenerateFailure) {
       return {
         kind: 'fail',
-        terminalStage: 'production_doc_failed',
+        terminalStage: 'script_generation_failed',
         failureClass: err.failureClass,
         failureMessage: err.message.slice(0, 500),
       };

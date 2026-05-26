@@ -261,6 +261,8 @@ export async function abandonNarration(args: {
  * way, starting from script regeneration is the safe re-entry point.
  */
 const TERMINAL_RETRY_TARGET: Record<string, PipelineStage> = {
+  idea_generation_failed: 'queued',
+  script_generation_failed: 'generating_script',
   qa_failed_after_max_retries: 'generating_script',
   production_doc_failed: 'generating_production_doc',
   thumbnail_failed: 'generating_thumbnail',
@@ -269,6 +271,43 @@ const TERMINAL_RETRY_TARGET: Record<string, PipelineStage> = {
   cancelled_by_user: 'generating_script',
   cost_cap_exceeded: 'generating_script',
 };
+
+/**
+ * Defensive FK guard. Some handlers historically returned the wrong
+ * terminal stage on failure (script-gen failures were mis-tagged as
+ * `production_doc_failed` before 2026-05-26 — see
+ * `_plans/2026-05-26-batch-from-scheduled-items.md` and the comment
+ * at the top of `generate-idea.ts`). If a row is labeled with a
+ * downstream terminal but is missing the FK that downstream stage
+ * needs, retrying to that downstream stage just re-fails on the
+ * invariant guard. This map says "if you're about to retry to X but
+ * the row is missing FK Y, fall back further to Z instead."
+ */
+function resolveSafeRetryTarget(
+  configuredTarget: PipelineStage,
+  row: { script_id: string | null; project_id: string | null; idea_id: string | null },
+): PipelineStage {
+  // generating_production_doc / generating_thumbnail / generating_seo
+  // / assigning_to_editor all need script_id + project_id.
+  const needsScript = (
+    configuredTarget === 'generating_production_doc' ||
+    configuredTarget === 'generating_thumbnail' ||
+    configuredTarget === 'generating_seo' ||
+    configuredTarget === 'assigning_to_editor' ||
+    configuredTarget === 'running_qa'
+  );
+  if (needsScript && (!row.script_id || !row.project_id)) {
+    // Has an idea but no script → retry script gen.
+    if (row.idea_id) return 'generating_script';
+    // No idea either → retry from the very beginning.
+    return 'queued';
+  }
+  // generating_script needs idea_id.
+  if (configuredTarget === 'generating_script' && !row.idea_id) {
+    return 'queued';
+  }
+  return configuredTarget;
+}
 
 /** How long a claimed_at can sit without movement before we treat
  *  it as a zombie claim from a crashed handler. The cron's max
@@ -309,9 +348,17 @@ export async function retryVideo(args: {
     stage: string;
     claimed_at: string | null;
     updated_at: string;
+    idea_id: string | null;
+    script_id: string | null;
+    project_id: string | null;
   }>(
     `
-    SELECT stage, claimed_at::text AS claimed_at, updated_at::text AS updated_at
+    SELECT stage,
+           claimed_at::text AS claimed_at,
+           updated_at::text AS updated_at,
+           idea_id::text AS idea_id,
+           script_id::text AS script_id,
+           project_id::text AS project_id
       FROM pipeline_run_videos
      WHERE id = $1::uuid AND workspace_id = $2::uuid
     `,
@@ -320,7 +367,8 @@ export async function retryVideo(args: {
   if (rows.length === 0) {
     throw new PipelineActionError('video_not_found', `Pipeline video ${videoId} not found.`);
   }
-  const { stage, claimed_at } = rows[0];
+  const row = rows[0];
+  const { stage, claimed_at } = row;
 
   if (stage === 'narration_abandoned') {
     throw new PipelineActionError(
@@ -330,8 +378,13 @@ export async function retryVideo(args: {
   }
 
   // Case 1: terminal failure → reset.
-  const target = TERMINAL_RETRY_TARGET[stage];
-  if (target) {
+  const configuredTarget = TERMINAL_RETRY_TARGET[stage];
+  if (configuredTarget) {
+    // FK-aware safety net — if the configured target needs FKs the
+    // row never got (because of the pre-2026-05-26 mis-labelling bug
+    // in generate-script.ts / generate-idea.ts), fall back to a
+    // safer earlier stage instead of re-failing on the invariant.
+    const target = resolveSafeRetryTarget(configuredTarget, row);
     await sql.query(
       `
       UPDATE pipeline_run_videos
@@ -349,7 +402,12 @@ export async function retryVideo(args: {
     logger.info('auto-pipeline: video reset for retry', {
       pipeline_video_id: videoId,
       from_stage: stage,
+      configured_target: configuredTarget,
       to_stage: target,
+      fk_downgrade: target !== configuredTarget,
+      has_idea_id: row.idea_id != null,
+      has_script_id: row.script_id != null,
+      has_project_id: row.project_id != null,
     });
     return { action: 'reset_terminal', fromStage: stage, toStage: target };
   }

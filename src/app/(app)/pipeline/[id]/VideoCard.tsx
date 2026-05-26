@@ -56,6 +56,8 @@ const STAGE_LABEL: Record<string, string> = {
   assigning_to_editor: 'Assigning to editor',
   generating_seo: 'Generating SEO metadata',
   done: 'Done',
+  idea_generation_failed: 'Idea generation failed',
+  script_generation_failed: 'Script generation failed',
   qa_failed_after_max_retries: 'QA failed (max retries)',
   narration_abandoned: 'Narration abandoned',
   production_doc_failed: 'Shot list failed',
@@ -98,6 +100,8 @@ const STAGE_EXPLANATION: Record<string, string> = {
 
 const TERMINAL: ReadonlySet<string> = new Set([
   'done',
+  'idea_generation_failed',
+  'script_generation_failed',
   'qa_failed_after_max_retries',
   'narration_abandoned',
   'production_doc_failed',
@@ -109,6 +113,8 @@ const TERMINAL: ReadonlySet<string> = new Set([
 ]);
 
 const FAILED: ReadonlySet<string> = new Set([
+  'idea_generation_failed',
+  'script_generation_failed',
   'qa_failed_after_max_retries',
   'narration_abandoned',
   'production_doc_failed',
