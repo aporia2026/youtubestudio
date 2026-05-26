@@ -10,7 +10,7 @@ import {
 import { synthesize } from '@/lib/tts/dispatch';
 import { TtsProviderError } from '@/lib/tts/types';
 
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 /**
  * POST /api/elevenlabs/generate

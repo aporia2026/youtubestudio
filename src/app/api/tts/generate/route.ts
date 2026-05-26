@@ -19,7 +19,12 @@ import {
 } from '@/lib/tts/types';
 import { getEffectiveTtsSettings } from '@/lib/tts/workspace-settings';
 
-export const maxDuration = 300;
+// 800s ceiling for 20k-word narrations. Realistic timings: 36 chunks
+// × ~5s/chunk Chirp 3 HD latency / 3-wide concurrency = ~60s synth +
+// ~30s for ~380 MB R2 upload + ~10s margin = ~100s typical. The 800s
+// headroom absorbs slow Google responses or backed-up R2 writes. The
+// Vercel Pro limit is 800s; revisit if we need longer narrations.
+export const maxDuration = 800;
 
 /**
  * POST /api/tts/generate

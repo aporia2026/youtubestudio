@@ -49,7 +49,7 @@ import type { ProductionDoc } from '@/remotion/utils';
  * the tier. Rate-limited at 3 req/min/IP to stop runaway loops.
  */
 
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 const DEFAULT_TTS_MODEL = 'eleven_multilingual_v2';
 const MAX_CONCAT_CHARS = 50_000;

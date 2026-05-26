@@ -39,7 +39,7 @@ import type { protos } from '@google-cloud/text-to-speech';
 import { logger } from '../../logger';
 import { synthCostUsd } from '../cost';
 import { chunkScriptForGoogle, DEFAULT_MAX_CHUNK_BYTES } from '../chunker';
-import { concatWavFiles } from '../wav-concat';
+import { buildWav, parseWav } from '../wav-concat';
 import { assertGoogleCredentialsValid, loadGoogleCredentials } from '../google-env';
 import { listGoogleVoices } from '../voices/google-catalog';
 import {
@@ -402,10 +402,23 @@ class GoogleSynthesizer implements Synthesizer {
     });
 
     const startedAt = Date.now();
-    const audioBuffers: Uint8Array[] = [];
+    // For WAV: extract PCM as each chunk arrives, drop the raw WAV
+    // bytes — only the PCM payload is kept. Halves peak memory
+    // (~380 MB instead of ~760 MB on a 20k-word / 2h narration) so a
+    // single Vercel function can handle the whole concatenation
+    // without OOM.
+    //
+    // For MP3: keep raw chunks (MP3 frames are self-contained, byte
+    // concat is correct).
+    const pcmBuffers: Uint8Array[] = [];
+    const mp3Buffers: Uint8Array[] = [];
+    let wavFormat:
+      | { sampleRate: number; numChannels: number; bitsPerSample: number }
+      | null = null;
     let totalCharCount = 0;
     let totalCostUsd = 0;
     let chunkMimeType: 'audio/mpeg' | 'audio/wav' = 'audio/wav';
+    let chunksReceived = 0;
 
     for (let i = 0; i < chunks.length; i += LONG_FORM_CONCURRENCY) {
       const wave = chunks.slice(i, i + LONG_FORM_CONCURRENCY);
@@ -423,27 +436,82 @@ class GoogleSynthesizer implements Synthesizer {
         ),
       );
       for (const r of results) {
-        audioBuffers.push(r.audioBytes);
+        // Loud chunk-loss detection: any empty audio response fails
+        // the whole synth instead of silently producing a truncated
+        // voiceover. This is what guards "didn't record all the
+        // script" — if a chunk vanished, you'll see the error, not
+        // a 95%-complete file.
+        if (!r.audioBytes || r.audioBytes.byteLength === 0) {
+          throw new TtsProviderError(
+            `Google long-form synthesis received empty audio for chunk ${chunksReceived + 1}/${chunks.length}.`,
+            PROVIDER_ID,
+            'vendor_5xx',
+            true,
+          );
+        }
+        chunksReceived++;
         totalCharCount += r.charCount;
         totalCostUsd += r.costUsd;
         chunkMimeType = r.mimeType;
+        if (r.mimeType === 'audio/wav') {
+          const parsed = parseWav(r.audioBytes);
+          if (!wavFormat) {
+            wavFormat = {
+              sampleRate: parsed.sampleRate,
+              numChannels: parsed.numChannels,
+              bitsPerSample: parsed.bitsPerSample,
+            };
+          } else if (
+            parsed.sampleRate !== wavFormat.sampleRate ||
+            parsed.numChannels !== wavFormat.numChannels ||
+            parsed.bitsPerSample !== wavFormat.bitsPerSample
+          ) {
+            throw new TtsProviderError(
+              `Google long-form chunk ${chunksReceived} has mismatched WAV format ` +
+                `(${parsed.sampleRate}/${parsed.numChannels}ch/${parsed.bitsPerSample}bit vs ` +
+                `expected ${wavFormat.sampleRate}/${wavFormat.numChannels}ch/${wavFormat.bitsPerSample}bit).`,
+              PROVIDER_ID,
+              'vendor_5xx',
+              false,
+            );
+          }
+          pcmBuffers.push(parsed.pcm);
+          // The raw WAV bytes (r.audioBytes) drop out of scope here —
+          // only the PCM stays in memory. Critical for 20k-word scripts.
+        } else {
+          mp3Buffers.push(r.audioBytes);
+        }
       }
     }
 
-    // Format-aware concatenation. MP3 frames are self-contained so
-    // naive byte concat works; WAV files start with a RIFF/WAVE
-    // header that would land mid-stream and break playback. The
-    // wav-concat helper parses each chunk, pulls out the PCM payload,
-    // and emits a single new WAV with one header. See its module
-    // jsdoc for the underlying bug this fixes.
+    // Sanity guard: chunks went in, audio came out. If the counts
+    // disagree something dropped a chunk silently.
+    if (chunksReceived !== chunks.length) {
+      throw new TtsProviderError(
+        `Google long-form synthesis chunk count mismatch: sent ${chunks.length}, received ${chunksReceived}.`,
+        PROVIDER_ID,
+        'vendor_5xx',
+        true,
+      );
+    }
+
+    // Build the final audio buffer. WAV: one header + all PCM glued.
+    // MP3: byte concat (frames self-contained).
     let merged: Uint8Array;
-    if (chunkMimeType === 'audio/wav') {
-      merged = concatWavFiles(audioBuffers);
+    if (chunkMimeType === 'audio/wav' && wavFormat) {
+      const totalPcmBytes = pcmBuffers.reduce((sum, b) => sum + b.byteLength, 0);
+      const combinedPcm = new Uint8Array(totalPcmBytes);
+      let offset = 0;
+      for (const buf of pcmBuffers) {
+        combinedPcm.set(buf, offset);
+        offset += buf.byteLength;
+      }
+      merged = buildWav({ ...wavFormat, pcm: combinedPcm });
     } else {
-      const totalBytes = audioBuffers.reduce((sum, b) => sum + b.byteLength, 0);
+      const totalBytes = mp3Buffers.reduce((sum, b) => sum + b.byteLength, 0);
       merged = new Uint8Array(totalBytes);
       let offset = 0;
-      for (const buf of audioBuffers) {
+      for (const buf of mp3Buffers) {
         merged.set(buf, offset);
         offset += buf.byteLength;
       }
