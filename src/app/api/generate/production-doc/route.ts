@@ -301,5 +301,25 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     });
   }
 
+  // Pin the doc-level OST default from the chosen style when the style
+  // has an opinion. doodle_explainer_2 sets `'overlay'` so the chunky
+  // yellow-bubble LowerThird variant is what gets composited at render
+  // time, instead of the diffusion prompt baking small black text into
+  // the corner of every image. The LLM is told the same rule via the
+  // style's mixing_rules, but its compliance is unreliable — server-
+  // pinning the doc default removes the failure mode entirely. Only
+  // overwrite when the LLM didn't already set a value (it shouldn't,
+  // but guard so a future schema change doesn't get clobbered here).
+  if (resolved?.default_on_screen_text_mode && result && typeof result === 'object') {
+    const r = result as Record<string, unknown>;
+    if (r.on_screen_text_mode_default === undefined) {
+      r.on_screen_text_mode_default = resolved.default_on_screen_text_mode;
+      logger.info('[production-doc ost-mode-default]', {
+        styleId: resolved.id,
+        mode: resolved.default_on_screen_text_mode,
+      });
+    }
+  }
+
   return NextResponse.json({ result, generation_warnings });
 });

@@ -2011,6 +2011,32 @@ function ProductionDocPage() {
     if (doc.style_preset === stylePreset) return;
     setDoc((prev) => (prev ? { ...prev, style_preset: stylePreset } : prev));
   }, [stylePreset, doc]);
+
+  // OST mode auto-migration for docs whose style has a non-default
+  // LowerThird treatment (chunky yellow bubble in doodle_explainer_2 —
+  // see SceneRouter in src/remotion/compositions/YouTubeVideo.tsx). The
+  // server now sets `on_screen_text_mode_default = 'overlay'` on freshly
+  // generated docs (see src/app/api/generate/production-doc/route.ts),
+  // but docs created before that fix have the field undefined → fall
+  // through to `'bake'` → the diffusion model paints text into the image
+  // corner instead of LowerThird compositing the yellow bubble on top.
+  //
+  // Migration policy: only flip undefined → 'overlay'. If the user has
+  // explicitly chosen `'bake'` or `'none'` for this doc (via the
+  // settings toggle in EditorClient), respect that — we don't know
+  // better than them.
+  //
+  // Hardcoded style id here mirrors the same hardcoded id in
+  // SceneRouter. When a second style gets the doodle-yellow treatment,
+  // both sites move to a shared list (Set or registry) at the same time.
+  useEffect(() => {
+    if (!doc) return;
+    if (doc.style_preset !== 'doodle_explainer_2') return;
+    if (doc.on_screen_text_mode_default !== undefined) return;
+    setDoc((prev) =>
+      prev ? { ...prev, on_screen_text_mode_default: 'overlay' } : prev,
+    );
+  }, [doc?.style_preset, doc?.on_screen_text_mode_default]);
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
   // Initial state from localStorage cache so the panel paints instantly;

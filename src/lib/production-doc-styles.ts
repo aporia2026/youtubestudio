@@ -69,6 +69,15 @@ export interface ResolvedStyle {
    *  `style_reference_images` table); it's the marker for "this
    *  style ships with refs out of the box". */
   built_in_refs?: readonly { filename: string; mime_type: string }[];
+  /** Per-style preferred default for `ProductionDoc.on_screen_text_mode_default`.
+   *  When set, the production-doc generation route writes this onto the
+   *  doc so every row inherits the right OST treatment from the start
+   *  without the user (or LLM) needing to flip 130 toggles. Styles whose
+   *  on-screen text renders as a real visual treatment (yellow bubble
+   *  callouts in `doodle_explainer_2`, etc.) set this to `'overlay'`;
+   *  styles that have no special OST treatment leave it undefined and
+   *  fall through to the legacy `'bake'` default. */
+  default_on_screen_text_mode?: 'overlay' | 'bake' | 'none';
 }
 
 /** Shape of a row in the `production_doc_styles` table. */
@@ -371,6 +380,17 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
     ].join('\n'),
     allow_overlay_stock: true,
     origin: 'built-in',
+    // The doodle-yellow LowerThird variant in src/remotion/components/LowerThird.tsx
+    // is the visual treatment for this style's on-screen text. The renderer
+    // already routes styleId=doodle_explainer_2 → variant='doodle-yellow'
+    // (see SceneRouter in YouTubeVideo.tsx). For that LowerThird path to
+    // fire, the OST mode has to be 'overlay' — otherwise the text is sent
+    // to the diffusion prompt and the AI paints it directly into the image
+    // (which is what the user saw when the doc default fell through to
+    // 'bake': small black text in the image corner instead of the chunky
+    // yellow bubble). Pinning the doc-level default here removes the need
+    // for the LLM or the user to flip ~131 toggles by hand.
+    default_on_screen_text_mode: 'overlay',
   },
 ]);
 
