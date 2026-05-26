@@ -2160,10 +2160,12 @@ export function productionDocPrompt({
 ## MANDATORY IMAGE STYLE — APPLIES TO ALL ai_image_prompt FIELDS
 
 ${styleSuffix ? `### Chosen Style: ${style!.label}
-Every non-empty ai_image_prompt MUST end with this exact suffix (copy verbatim, do not rephrase):
+The visual aesthetic for this doc is:
 "${styleSuffix}"
 
-The style controls the VISUAL AESTHETIC of generated images — it does not restrict which shot types (Talking Head, B-Roll, etc.) you may use. Choose shot types based on what best serves the content. The style suffix ensures every generated image looks consistent.` : ''}
+Use this aesthetic as the lens for every scene body you write — pick subjects, framings, and details that fit it. **Do NOT copy the aesthetic text into ai_image_prompt; it is attached automatically downstream after generation.** Just write the focused scene body (subject, action, environment, lighting, camera angle) and the style will be enforced for you.
+
+The style controls the VISUAL AESTHETIC of generated images — it does not restrict which shot types (Talking Head, B-Roll, etc.) you may use. Choose shot types based on what best serves the content.` : ''}
 
 ${mixingRules ? `### Mixing Rules — When to Combine AI Visuals With Real Stock Assets
 These rules tell you when a row should ALSO carry an \`overlay_stock_terms\` value so the editor can composite a real-world asset (logo, screenshot, photograph) on top of the AI-generated visual in post.
@@ -2248,14 +2250,14 @@ ${ssmlSections.map((s, i) => `### Section ${i + 1}\n${s.length > 280 ? s.slice(0
 
 For each section: emit one OR MORE rows. A short section (≤ 7 seconds at the speaking pace) becomes a single row. A longer section is split into multiple rows on sentence boundaries WITHIN that section. Do not pull content forward from the next section to "fill" a short row. The user authored these breaks deliberately to separate beats; preserve that structure verbatim.` : ''}
 
-**visual_description** — Specific and actionable for the editor. **15–25 words.** Include: subject, action, shot type (wide/medium/close), lighting/mood. Match the chosen visual style precisely. Do not restate the style suffix — that lives in ai_image_prompt only.
+**visual_description** — Specific and actionable for the editor. **15–25 words.** Include: subject, action, shot type (wide/medium/close), lighting/mood. Match the chosen visual style precisely. Keep it concise — the style is enforced downstream, not here.
 
 **stock_search_terms** — 2–4 comma-separated keywords for stock image/footage search. For animation rows, describe what the scene depicts (e.g. "cartoon character thinking, 2D animation").
 
-**ai_image_prompt** — A scene prompt for AI image generation. **35–55 words MAX for the scene body**, then append the mandatory style suffix verbatim. Hard ceiling — going over makes the doc's JSON output exceed model token caps mid-stream on long scripts.
+**ai_image_prompt** — A scene prompt for AI image generation. **35–55 words — scene body only.** The chosen style's aesthetic suffix is appended automatically after generation, so do NOT write it yourself.
 - For "Talking Head" and "Screen Recording" rows: set to "" (empty — these use stock search instead)
-- For ALL other rows: write a focused scene description (35–55 words), then append the mandatory style suffix verbatim${styleSuffix ? ` ("${styleSuffix}")` : ''}
-- The scene body must describe: subject, action, environment, lighting, camera angle — concise, no decorative adjectives stacked on each noun. Then the style suffix carries the look.
+- For ALL other rows: write a focused scene body in 35–55 words — that is the whole field. Nothing else.
+- The scene body must describe: subject, action, environment, lighting, camera angle — concise, no decorative adjectives stacked on each noun. The style is added for you downstream.
 
 ${allowOverlay ? `**overlay_stock_terms** — OPTIONAL. 2–4 comma-separated keywords for a real-world asset (logo, screenshot, photo) the editor will composite on top of the AI-generated visual in post. ONLY populate this when the Mixing Rules above explicitly call for it. Leave as "" otherwise. When set:
   - visual_type STAYS as Animation (or whatever the doodle scene calls for) — do NOT switch to "Screen Recording" or "B-Roll"
@@ -2309,7 +2311,7 @@ ${overlaysDisabled ? `**OVERLAY MODE: OFF for this doc.** The user has disabled 
       "visual_type": "Title Card",
       "visual_description": "specific shot direction matching the chosen style",
       "stock_search_terms": "keyword1, keyword2",
-      "ai_image_prompt": "Full detailed scene prompt... ${styleSuffix ?? ''}",${allowOverlay ? `
+      "ai_image_prompt": "Focused 35–55 word scene body — subject, action, environment, lighting, camera angle. No style suffix; it is appended automatically downstream.",${allowOverlay ? `
       "overlay_stock_terms": "",
       "overlay_zone": "",
       "overlay_size": "",` : ''}
@@ -2323,8 +2325,8 @@ ${overlaysDisabled ? `**OVERLAY MODE: OFF for this doc.** The user has disabled 
 ABSOLUTE RULES:
 - Every row has all ${allowOverlay ? '11' : '8'} fields
 - script_text is verbatim from the script — never paraphrase
-- ai_image_prompt ≥ 40 words for every non-Talking Head / non-Screen Recording / non-Title-Card row
-- Every ai_image_prompt MUST end with the style suffix${styleSuffix ? ` "${styleSuffix}"` : ' (if one was specified)'}
+- ai_image_prompt is 35–55 words (the scene body only) for every non-Talking Head / non-Screen Recording / non-Title-Card row
+- Do NOT append the style suffix to ai_image_prompt — it is attached automatically by the server after generation
 - Talking Head + Screen Recording + Title Card → ai_image_prompt = ""
 - EVERY \`<<TITLE_N>>\` sentinel in the input script MUST become exactly one standalone Title Card row at that position. Do NOT skip any sentinel. Do NOT invent extra Title Card rows for text that is not a sentinel.
 - The sentinel text itself (\`<<TITLE_0>>\`, \`<<TITLE_1>>\`, etc.) MUST NEVER appear inside any row's \`script_text\` — use the mapped title text only.

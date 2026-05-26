@@ -8,6 +8,7 @@ import { resolveStyle } from '@/lib/production-doc-styles';
 import { getEffectiveModelId } from '@/lib/model-defaults';
 import { logger } from '@/lib/logger';
 import {
+  attachStyleSuffixToRows,
   validateAndSplitOverlongRows,
   type ProductionDocRowLike,
 } from '@/lib/production-doc-postprocess';
@@ -279,6 +280,25 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     if (extracted.warnings.length > 0) {
       generation_warnings.push(...extracted.warnings);
     }
+  }
+
+  // Post-pass: attach the chosen style's `ai_image_suffix` to every row's
+  // `ai_image_prompt`. The LLM is instructed (see productionDocPrompt) to
+  // emit only the 35–55 word scene body and leave the style attachment to
+  // the server — this keeps each row's output under ~150 tokens and avoids
+  // the verbose-suffix-per-row truncation that GPT-mini-class models hit on
+  // long scripts. See plan `_plans/2026-05-26-production-doc-suffix-server-side.md`.
+  if (Array.isArray(result.rows) && style?.ai_image_suffix) {
+    const attach = attachStyleSuffixToRows(result.rows, style.ai_image_suffix);
+    logger.info('[production-doc suffix-attach]', {
+      modelId: effectiveModelId,
+      rowCount: result.rows.length,
+      attachedCount: attach.attachedCount,
+      skippedAlreadyPresent: attach.skippedAlreadyPresent,
+      skippedNonString: attach.skippedNonString,
+      suffixChars: style.ai_image_suffix.length,
+      suffixWords: style.ai_image_suffix.trim().split(/\s+/).length,
+    });
   }
 
   return NextResponse.json({ result, generation_warnings });

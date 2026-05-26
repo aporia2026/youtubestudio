@@ -193,3 +193,83 @@ export function shiftTimecodeBySeconds(timecode: string, seconds: number): strin
   const s = total % 60;
   return `${m}:${String(s).padStart(2, '0')}`;
 }
+
+/** Result of the style-suffix attachment pass. */
+export interface AttachSuffixResult<R extends ProductionDocRowLike> {
+  rows: R[];
+  /** Rows whose ai_image_prompt was non-empty and received the suffix. */
+  attachedCount: number;
+  /** Non-empty rows skipped because the body already ended with the suffix
+   *  (idempotency — LLM partial compliance, retries). */
+  skippedAlreadyPresent: number;
+  /** Non-empty rows skipped because the body was not a string. */
+  skippedNonString: number;
+}
+
+/** Substring length used for idempotency detection. Long enough to make a
+ *  false positive on natural prose essentially impossible; short enough that
+ *  a body that contains *most* of the suffix (LLM partial compliance) still
+ *  matches. */
+const SUFFIX_FINGERPRINT_CHARS = 80;
+
+/**
+ * Append the style suffix to every row whose `ai_image_prompt` carries a
+ * non-empty scene body.
+ *
+ * Why this exists: the LLM used to be asked to copy the style suffix verbatim
+ * into every row. For long-suffix styles (doodle_explainer_2 is 377 words /
+ * ~500 tokens) this blew past GPT-mini-class models' 16k output cap mid-stream
+ * on long scripts. Now the LLM emits only the 35–55 word scene body and the
+ * server attaches the suffix here, after JSON parsing. Persisted row shape is
+ * identical to the old "LLM wrote the suffix in" path, so zero downstream
+ * consumers change.
+ *
+ * Rules:
+ *   - Empty `ai_image_prompt` ("") stays empty — those are Title Card /
+ *     Talking Head / Screen Recording rows which never carried a suffix.
+ *   - Idempotency: if the body already contains the suffix's first 80 chars,
+ *     leave it alone. Handles LLMs that ignored the new instruction and
+ *     handles retries against rows that already had the suffix attached.
+ *   - Joiner: the body's trailing whitespace and trailing periods are
+ *     stripped, then `". " + suffix` is appended. Matches the joining
+ *     convention `buildBrollPrompt` uses when composing the final prompt.
+ *
+ * Empty / missing suffix → pass-through, no mutations.
+ */
+export function attachStyleSuffixToRows<R extends ProductionDocRowLike>(
+  rows: R[],
+  suffix: string | null | undefined,
+): AttachSuffixResult<R> {
+  const cleanSuffix = (suffix ?? '').trim();
+  if (!cleanSuffix) {
+    return { rows, attachedCount: 0, skippedAlreadyPresent: 0, skippedNonString: 0 };
+  }
+  const fingerprint = cleanSuffix.slice(0, SUFFIX_FINGERPRINT_CHARS);
+
+  let attachedCount = 0;
+  let skippedAlreadyPresent = 0;
+  let skippedNonString = 0;
+
+  for (const row of rows) {
+    // Bracket access via the interface's `[key: string]: unknown` index
+    // signature — `ai_image_prompt` isn't declared on the type but every
+    // real production-doc row carries it.
+    const bag = row as Record<string, unknown>;
+    const value = bag.ai_image_prompt;
+    if (typeof value !== 'string') {
+      if (value !== undefined && value !== null) skippedNonString += 1;
+      continue;
+    }
+    const body = value.trim();
+    if (!body) continue;
+    if (body.includes(fingerprint)) {
+      skippedAlreadyPresent += 1;
+      continue;
+    }
+    const stripped = body.replace(/[.\s]+$/, '');
+    bag.ai_image_prompt = `${stripped}. ${cleanSuffix}`;
+    attachedCount += 1;
+  }
+
+  return { rows, attachedCount, skippedAlreadyPresent, skippedNonString };
+}

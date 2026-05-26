@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  attachStyleSuffixToRows,
   estimateRowSeconds,
   PRODUCTION_DOC_MAX_SECONDS_PER_ROW,
   shiftTimecodeBySeconds,
@@ -182,5 +183,110 @@ describe('validateAndSplitOverlongRows', () => {
 
   it('exports the cap constant matching the prompt rule', () => {
     expect(PRODUCTION_DOC_MAX_SECONDS_PER_ROW).toBe(7.0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// attachStyleSuffixToRows — server-side suffix attachment.
+// Replaces the legacy "LLM copies the 377-word suffix into every row" path
+// that caused GPT-mini truncations on long doodle-style scripts. See plan
+// `_plans/2026-05-26-production-doc-suffix-server-side.md`.
+// ---------------------------------------------------------------------------
+
+const DOODLE_SUFFIX =
+  'extremely minimalist stick figure cartoon in the style of a child\'s freehand drawing, ' +
+  'thin uneven hand-drawn black ink lines on plain pure white background';
+
+describe('attachStyleSuffixToRows', () => {
+  function brollRow(prompt: string) {
+    return {
+      timecode: '0:00',
+      script_text: 'narration here',
+      visual_type: 'B-Roll',
+      visual_description: 'desc',
+      ai_image_prompt: prompt,
+    };
+  }
+
+  it('appends the suffix to a non-empty ai_image_prompt', () => {
+    const rows = [brollRow('A stick figure waving at the camera, plain white background')];
+    const out = attachStyleSuffixToRows(rows, DOODLE_SUFFIX);
+    expect(out.attachedCount).toBe(1);
+    expect(out.rows[0].ai_image_prompt).toBe(
+      'A stick figure waving at the camera, plain white background. ' + DOODLE_SUFFIX,
+    );
+  });
+
+  it('strips the body\'s trailing period and joins with ". "', () => {
+    const rows = [brollRow('Two characters seated at a desk.')];
+    const out = attachStyleSuffixToRows(rows, DOODLE_SUFFIX);
+    // Body keeps its single period (we strip and re-add via joiner).
+    expect(out.rows[0].ai_image_prompt).toBe('Two characters seated at a desk. ' + DOODLE_SUFFIX);
+  });
+
+  it('leaves empty ai_image_prompt rows alone (Title Card / Talking Head / Screen Recording)', () => {
+    const rows = [
+      { ...brollRow(''), visual_type: 'Title Card' },
+      { ...brollRow(''), visual_type: 'Talking Head' },
+      { ...brollRow('Real scene body'), visual_type: 'B-Roll' },
+    ];
+    const out = attachStyleSuffixToRows(rows, DOODLE_SUFFIX);
+    expect(out.attachedCount).toBe(1);
+    expect(out.rows[0].ai_image_prompt).toBe('');
+    expect(out.rows[1].ai_image_prompt).toBe('');
+    expect(out.rows[2].ai_image_prompt).toBe('Real scene body. ' + DOODLE_SUFFIX);
+  });
+
+  it('is idempotent — skips rows whose body already contains the suffix fingerprint', () => {
+    const already = 'A stick figure waving. ' + DOODLE_SUFFIX;
+    const rows = [brollRow(already)];
+    const out = attachStyleSuffixToRows(rows, DOODLE_SUFFIX);
+    expect(out.attachedCount).toBe(0);
+    expect(out.skippedAlreadyPresent).toBe(1);
+    expect(out.rows[0].ai_image_prompt).toBe(already);
+  });
+
+  it('idempotency catches LLMs that wrote only the suffix prefix', () => {
+    // Even if the LLM produced just the first ~100 chars of the suffix, we
+    // detect it and don\'t append (prevents double-suffixing).
+    const partial = 'Scene body here. ' + DOODLE_SUFFIX.slice(0, 100);
+    const rows = [brollRow(partial)];
+    const out = attachStyleSuffixToRows(rows, DOODLE_SUFFIX);
+    expect(out.skippedAlreadyPresent).toBe(1);
+    expect(out.rows[0].ai_image_prompt).toBe(partial);
+  });
+
+  it('null or empty suffix is a no-op pass-through', () => {
+    const rows = [brollRow('Scene body')];
+    const out1 = attachStyleSuffixToRows(rows, null);
+    expect(out1.attachedCount).toBe(0);
+    expect(out1.rows[0].ai_image_prompt).toBe('Scene body');
+    const out2 = attachStyleSuffixToRows(rows, '');
+    expect(out2.attachedCount).toBe(0);
+    const out3 = attachStyleSuffixToRows(rows, '   ');
+    expect(out3.attachedCount).toBe(0);
+  });
+
+  it('mutates rows in place and returns the same array reference', () => {
+    const rows = [brollRow('Scene body')];
+    const out = attachStyleSuffixToRows(rows, DOODLE_SUFFIX);
+    expect(out.rows).toBe(rows);
+    expect(rows[0].ai_image_prompt).toContain(DOODLE_SUFFIX);
+  });
+
+  it('processes a mixed batch correctly', () => {
+    const rows = [
+      brollRow('Body A'),
+      { ...brollRow(''), visual_type: 'Title Card' },
+      brollRow('Body C with trailing space.   '),
+      brollRow('Body D. ' + DOODLE_SUFFIX), // already attached
+    ];
+    const out = attachStyleSuffixToRows(rows, DOODLE_SUFFIX);
+    expect(out.attachedCount).toBe(2);
+    expect(out.skippedAlreadyPresent).toBe(1);
+    expect(out.rows[0].ai_image_prompt).toBe('Body A. ' + DOODLE_SUFFIX);
+    expect(out.rows[1].ai_image_prompt).toBe('');
+    expect(out.rows[2].ai_image_prompt).toBe('Body C with trailing space. ' + DOODLE_SUFFIX);
+    expect(out.rows[3].ai_image_prompt).toBe('Body D. ' + DOODLE_SUFFIX);
   });
 });
