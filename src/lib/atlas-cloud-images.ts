@@ -299,9 +299,20 @@ async function createAtlasPrediction(
     throw new Error('[atlas-images] non-JSON response during prediction creation');
   }
 
-  const predictionId = createData.id as string | undefined;
+  // Atlas's create response nests the prediction id under `data` per the
+  // official Python example (verified against docs 2026-05-27):
+  //   result["data"]["id"]
+  // Defensive fallback: also accept a top-level `id` for API-version
+  // drift and to keep existing fixtures green. The previous
+  // implementation read top-level directly and produced no-prediction-id
+  // errors against the real API for any Edit call.
+  const innerCreate =
+    (createData.data as Record<string, unknown> | undefined) ?? createData;
+  const predictionId = innerCreate.id as string | undefined;
   if (!predictionId) {
-    const errorField = createData.error as string | undefined;
+    const errorField =
+      (innerCreate.error as string | undefined) ??
+      (createData.error as string | undefined);
     const detail = errorField
       ? `Atlas responded error="${errorField}"`
       : `Atlas returned an unexpected body: ${JSON.stringify(createData).slice(0, 400)}`;
@@ -311,14 +322,20 @@ async function createAtlasPrediction(
 }
 
 /**
- * Poll /api/v1/model/result/{id} until the prediction hits a terminal
+ * Poll /api/v1/model/prediction/{id} until the prediction hits a terminal
  * state. Mirrors pollKieResult's shape: fixed 3 s interval × 95 attempts =
  * 285 s ceiling. 429 responses are retried without consuming an attempt
  * slot (rare in practice).
  *
- * Endpoint verified against Atlas's OpenAPI schema 2026-05-25. The docs
- * prose earlier referenced `/prediction/{id}` which was wrong — the
- * canonical path is `/result/{request_id}`.
+ * Path corrected 2026-05-27 from the earlier `/result/{id}` against the
+ * official Python example in Atlas's docs, which polls
+ * `https://api.atlascloud.ai/api/v1/model/prediction/{prediction_id}`.
+ * The previous `/result/{id}` path was a misreading of an earlier docs
+ * prose paragraph and produced 404 on every poll attempt in production.
+ *
+ * Response shape is also nested under `data` per the docs
+ * (`result["data"]["status"]`, etc.). We unwrap defensively below so
+ * fixtures using the top-level shape stay green during the transition.
  */
 async function pollAtlasPrediction(
   apiKey: string,
@@ -328,7 +345,7 @@ async function pollAtlasPrediction(
   for (let i = 0; i < POLL_MAX_ATTEMPTS; i++) {
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
 
-    const res = await fetch(`${ATLAS_BASE}/result/${encodeURIComponent(predictionId)}`, {
+    const res = await fetch(`${ATLAS_BASE}/prediction/${encodeURIComponent(predictionId)}`, {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
     if (!res.ok) {
@@ -336,20 +353,34 @@ async function pollAtlasPrediction(
       throw new Error(`[atlas-images ${label}] poll failed: ${res.status}`);
     }
 
-    let data: AtlasPredictionResponse;
+    let raw: Record<string, unknown>;
     try {
-      data = (await res.json()) as AtlasPredictionResponse;
+      raw = (await res.json()) as Record<string, unknown>;
     } catch {
       // Transient bad response — keep polling.
       continue;
     }
 
-    if (data.status === 'completed') {
-      return data;
+    // Atlas nests the poll fields under `data` per the docs; fall back
+    // to top-level for API-version drift and existing test fixtures.
+    const inner = (raw.data as Record<string, unknown> | undefined) ?? raw;
+    const status = inner.status as AtlasPredictionStatus | undefined;
+    const outputs = inner.outputs as string[] | undefined;
+    const errorMsg = inner.error as string | undefined;
+    const metrics = inner.metrics as AtlasPredictionResponse['metrics'];
+
+    if (status === 'completed') {
+      return {
+        id: predictionId,
+        status: 'completed',
+        outputs,
+        metrics,
+        error: errorMsg,
+      };
     }
-    if (data.status === 'failed') {
+    if (status === 'failed') {
       throw new Error(
-        `[atlas-images ${label}] prediction ${predictionId} failed: ${data.error ?? '(no error message)'}`,
+        `[atlas-images ${label}] prediction ${predictionId} failed: ${errorMsg ?? '(no error message)'}`,
       );
     }
     // 'created' / 'processing' / any unknown intermediate — keep polling.

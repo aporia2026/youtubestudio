@@ -99,9 +99,10 @@ describe('generateAtlasT2I — request shape', () => {
     // Explicit assertion that no `input` wrapper sneaks back in.
     expect(body.input).toBeUndefined();
 
-    // Second call: poll. Path is `/result/{id}` per the OpenAPI schema,
-    // NOT `/prediction/{id}` (the docs prose's earlier name).
-    expect(calls[1].url).toBe(`${ATLAS_BASE}/result/pred_abc`);
+    // Second call: poll. Path is `/prediction/{id}` per Atlas's official
+    // Python example (verified against docs 2026-05-27). The earlier
+    // `/result/{id}` path was a misreading and produced 404 in prod.
+    expect(calls[1].url).toBe(`${ATLAS_BASE}/prediction/pred_abc`);
     const headers1 = calls[1].init?.headers as Record<string, string>;
     expect(headers1.Authorization).toBe('Bearer test-atlas-key');
   });
