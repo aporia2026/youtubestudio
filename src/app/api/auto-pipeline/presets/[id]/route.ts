@@ -32,6 +32,11 @@ interface PresetFull {
   video_editor_collaborator_id: string | null;
   thumbnail_template_id: string | null;
   seo_template_id: string | null;
+  // ─── Feature-preset bundle FKs (migration 0097) ──────────────────
+  script_preset_id: string | null;
+  qa_preset_id: string | null;
+  narration_preset_id: string | null;
+  idea_preset_id: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -56,6 +61,10 @@ const ROW_SHAPE = `
   video_editor_collaborator_id::text AS video_editor_collaborator_id,
   thumbnail_template_id::text AS thumbnail_template_id,
   seo_template_id::text AS seo_template_id,
+  script_preset_id::text AS script_preset_id,
+  qa_preset_id::text AS qa_preset_id,
+  narration_preset_id::text AS narration_preset_id,
+  idea_preset_id::text AS idea_preset_id,
   created_by::text AS created_by,
   created_at::text AS created_at,
   updated_at::text AS updated_at
@@ -126,6 +135,18 @@ export const PATCH = apiRoute.authed<{ id: string }>(async (session, req: NextRe
     if (b.seo_template_id !== undefined) {
       patch.seo_template_id = b.seo_template_id === null ? null : asUuidOrThrow(b.seo_template_id, 'seo_template_id');
     }
+    if (b.script_preset_id !== undefined) {
+      patch.script_preset_id = b.script_preset_id === null ? null : asUuidOrThrow(b.script_preset_id, 'script_preset_id');
+    }
+    if (b.qa_preset_id !== undefined) {
+      patch.qa_preset_id = b.qa_preset_id === null ? null : asUuidOrThrow(b.qa_preset_id, 'qa_preset_id');
+    }
+    if (b.narration_preset_id !== undefined) {
+      patch.narration_preset_id = b.narration_preset_id === null ? null : asUuidOrThrow(b.narration_preset_id, 'narration_preset_id');
+    }
+    if (b.idea_preset_id !== undefined) {
+      patch.idea_preset_id = b.idea_preset_id === null ? null : asUuidOrThrow(b.idea_preset_id, 'idea_preset_id');
+    }
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Invalid input' }, { status: 400 });
   }
@@ -163,6 +184,10 @@ export const PATCH = apiRoute.authed<{ id: string }>(async (session, req: NextRe
              thumbnail_template_id = CASE WHEN $23::boolean THEN $24::uuid ELSE thumbnail_template_id END,
              seo_template_id = CASE WHEN $25::boolean THEN $26::uuid ELSE seo_template_id END,
              script_style_preset_id = CASE WHEN $27::boolean THEN $28::uuid ELSE script_style_preset_id END,
+             script_preset_id = CASE WHEN $29::boolean THEN $30::uuid ELSE script_preset_id END,
+             qa_preset_id = CASE WHEN $31::boolean THEN $32::uuid ELSE qa_preset_id END,
+             narration_preset_id = CASE WHEN $33::boolean THEN $34::uuid ELSE narration_preset_id END,
+             idea_preset_id = CASE WHEN $35::boolean THEN $36::uuid ELSE idea_preset_id END,
              updated_at = NOW()
        WHERE id = $1::uuid AND workspace_id = $2::uuid
       RETURNING ${ROW_SHAPE}
@@ -186,6 +211,10 @@ export const PATCH = apiRoute.authed<{ id: string }>(async (session, req: NextRe
         patch.thumbnail_template_id !== undefined, patch.thumbnail_template_id ?? null,
         patch.seo_template_id !== undefined, patch.seo_template_id ?? null,
         patch.script_style_preset_id !== undefined, patch.script_style_preset_id ?? null,
+        patch.script_preset_id !== undefined, patch.script_preset_id ?? null,
+        patch.qa_preset_id !== undefined, patch.qa_preset_id ?? null,
+        patch.narration_preset_id !== undefined, patch.narration_preset_id ?? null,
+        patch.idea_preset_id !== undefined, patch.idea_preset_id ?? null,
       ],
     );
     if (rows.length === 0) return NextResponse.json({ error: 'Preset not found.' }, { status: 404 });

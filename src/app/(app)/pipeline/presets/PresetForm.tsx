@@ -54,6 +54,24 @@ interface FullPreset {
   video_editor_collaborator_id: string | null;
   thumbnail_template_id: string | null;
   seo_template_id: string | null;
+  // ─── Feature-preset bundle (migration 0097) ───────────────────────
+  script_preset_id: string | null;
+  qa_preset_id: string | null;
+  narration_preset_id: string | null;
+  idea_preset_id: string | null;
+}
+
+interface FeaturePresetOption {
+  id: string;
+  name: string;
+  description: string | null;
+}
+
+interface FeaturePresetLists {
+  script: FeaturePresetOption[];
+  qa: FeaturePresetOption[];
+  narration: FeaturePresetOption[];
+  idea: FeaturePresetOption[];
 }
 
 const PIPELINE_FEATURES = [
@@ -111,6 +129,20 @@ export default function PresetForm({
   const [scriptReferenceContext, setScriptReferenceContext] = useState('');
   const [scriptRulesOther, setScriptRulesOther] = useState<Record<string, unknown>>({});
   const [fallbackChains, setFallbackChains] = useState<Record<string, string[]>>({});
+  // Feature-preset bundle FKs (migration 0097). When set, the pipeline
+  // preset routes the stage handler to a per-feature preset row
+  // instead of the inline columns below. The inline columns stay
+  // editable for legacy presets and as a fallback path.
+  const [scriptPresetId, setScriptPresetId] = useState<string>('');
+  const [qaPresetId, setQaPresetId] = useState<string>('');
+  const [narrationPresetId, setNarrationPresetId] = useState<string>('');
+  const [ideaPresetId, setIdeaPresetId] = useState<string>('');
+  const [featurePresets, setFeaturePresets] = useState<FeaturePresetLists>({
+    script: [],
+    qa: [],
+    narration: [],
+    idea: [],
+  });
 
   const [editors, setEditors] = useState<Collaborator[]>([]);
   const [thumbnailTemplates, setThumbnailTemplates] = useState<ThumbnailTemplateRow[]>([]);
@@ -124,11 +156,12 @@ export default function PresetForm({
   useEffect(() => {
     void (async () => {
       try {
-        const [editorsRes, tplsRes, seoTplsRes, stylesRes, presetRes] = await Promise.all([
+        const [editorsRes, tplsRes, seoTplsRes, stylesRes, featurePresetsRes, presetRes] = await Promise.all([
           fetch('/api/team/collaborators?role=editor', { cache: 'no-store' }).catch(() => null),
           fetch('/api/thumbnail-templates', { cache: 'no-store' }).catch(() => null),
           fetch('/api/templates?field_type=seo', { cache: 'no-store' }).catch(() => null),
           fetch('/api/production-doc/styles', { cache: 'no-store' }).catch(() => null),
+          fetch('/api/auto-pipeline/feature-presets', { cache: 'no-store' }).catch(() => null),
           presetId
             ? fetch(`/api/auto-pipeline/presets/${presetId}`, { cache: 'no-store' })
             : Promise.resolve(null),
@@ -151,6 +184,15 @@ export default function PresetForm({
           const data = await stylesRes.json();
           setStyles((data.styles as StyleRow[]) ?? []);
         }
+        if (featurePresetsRes && featurePresetsRes.ok) {
+          const data = await featurePresetsRes.json();
+          setFeaturePresets({
+            script: (data.script as FeaturePresetOption[]) ?? [],
+            qa: (data.qa as FeaturePresetOption[]) ?? [],
+            narration: (data.narration as FeaturePresetOption[]) ?? [],
+            idea: (data.idea as FeaturePresetOption[]) ?? [],
+          });
+        }
         if (presetRes && presetRes.ok) {
           const data = await presetRes.json();
           const p = data.preset as FullPreset;
@@ -167,6 +209,10 @@ export default function PresetForm({
           setSeoTemplateId(p.seo_template_id ?? '');
           setProductionDocStyleId(p.production_doc_style_id ?? '');
           setScriptStylePresetId(p.script_style_preset_id ?? '');
+          setScriptPresetId(p.script_preset_id ?? '');
+          setQaPresetId(p.qa_preset_id ?? '');
+          setNarrationPresetId(p.narration_preset_id ?? '');
+          setIdeaPresetId(p.idea_preset_id ?? '');
           setIdeaContextJson(JSON.stringify(p.idea_context ?? {}, null, 2));
           // Decompose script_rules_jsonb into the structured fields,
           // stashing any unknown keys in scriptRulesOther so they're
@@ -259,6 +305,12 @@ export default function PresetForm({
       seo_template_id: seoTemplateId || null,
       production_doc_style_id: productionDocStyleId || null,
       script_style_preset_id: scriptStylePresetId || null,
+      // Feature-preset bundle (migration 0097). Null = unbundled (the
+      // stage handler falls back to the inline columns below).
+      script_preset_id: scriptPresetId || null,
+      qa_preset_id: qaPresetId || null,
+      narration_preset_id: narrationPresetId || null,
+      idea_preset_id: ideaPresetId || null,
     };
 
     setSaving(true);
@@ -345,6 +397,75 @@ export default function PresetForm({
               className="input-field"
             />
           </Field>
+        </div>
+
+        <SectionHeader title="Feature presets (bundle)" />
+        <div
+          className="p-3 rounded-lg mb-1"
+          style={{
+            background: 'rgba(124,58,237,0.05)',
+            border: '1px solid rgba(124,58,237,0.20)',
+          }}
+        >
+          <p className="text-xs mb-3" style={{ color: 'var(--text-secondary)' }}>
+            Each pipeline preset bundles a per-feature preset for script,
+            QA, narration, and idea generation. Edit any of these via
+            their own page (coming soon) — the field sections below are
+            the legacy inline editor and stay as a fallback. When a
+            dropdown here is set, the stage handler will eventually read
+            from that preset instead of the inline section. For now both
+            paths work; pick from the existing (auto-migrated) options.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Field label="Script preset">
+              <select
+                value={scriptPresetId}
+                onChange={(e) => setScriptPresetId(e.target.value)}
+                className="input-field"
+              >
+                <option value="">— Use inline fields below —</option>
+                {featurePresets.script.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="QA preset">
+              <select
+                value={qaPresetId}
+                onChange={(e) => setQaPresetId(e.target.value)}
+                className="input-field"
+              >
+                <option value="">— Use inline fields below —</option>
+                {featurePresets.qa.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Narration preset">
+              <select
+                value={narrationPresetId}
+                onChange={(e) => setNarrationPresetId(e.target.value)}
+                className="input-field"
+              >
+                <option value="">— Use inline fields below —</option>
+                {featurePresets.narration.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Idea-gen preset">
+              <select
+                value={ideaPresetId}
+                onChange={(e) => setIdeaPresetId(e.target.value)}
+                className="input-field"
+              >
+                <option value="">— Use inline fields below —</option>
+                {featurePresets.idea.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </Field>
+          </div>
         </div>
 
         <SectionHeader title="Script" />

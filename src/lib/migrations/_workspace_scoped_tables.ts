@@ -82,6 +82,11 @@ export const ROOT_TENANT_TABLES = [
   'style_test_renders',
   'team_hub_audit_log',
   'thumbnail_template_presets',
+  // Feature-preset bundle tables (migration 0097).
+  'script_presets',
+  'qa_presets',
+  'narration_presets',
+  'idea_presets',
   'user_history',
   'video_analytics',
   'video_analytics_history',
