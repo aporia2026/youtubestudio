@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Player, type PlayerRef } from '@remotion/player';
 import { YouTubeVideo } from '@/remotion/compositions/YouTubeVideo';
 import { msToFrame, totalFrames } from '@/remotion/utils';
@@ -43,14 +43,34 @@ export const Stage: React.FC<StageProps> = ({ config, activeSection, takeover })
   const frames = useMemo(() => totalFrames(config), [config]);
   const [hasInitialSeek, setHasInitialSeek] = useState(false);
 
+  // Keep the latest config in a ref so the seek effect can look up the
+  // current section's start frame without listing `config` as a
+  // dependency. If `config` were in the dep list, every doc edit (and
+  // every parent re-render that produced a new memoized config) would
+  // re-fire this effect and call `pause()` + `seekTo()` on the live
+  // player — interrupting playback. The user's symptom was "play stops
+  // at the end of the selected scene": the boundary crossing was
+  // coinciding with a config rebuild, which then paused and re-seeked
+  // back to the section start. With the ref, the effect only fires when
+  // the user actually changes section.
+  //
+  // We sync the ref in a `useLayoutEffect` (not during render) so the
+  // assignment doesn't happen during React's render phase — and runs
+  // before the activeSection `useEffect` below in the same commit,
+  // guaranteeing that effect reads the latest config.
+  const configRef = useRef(config);
+  useLayoutEffect(() => {
+    configRef.current = config;
+  }, [config]);
+
   useEffect(() => {
     if (!playerRef.current) return;
-    const target = sectionStartFrame(config, activeSection);
+    const target = sectionStartFrame(configRef.current, activeSection);
     if (target == null) return;
     playerRef.current.pause();
     playerRef.current.seekTo(target);
     setHasInitialSeek(true);
-  }, [activeSection, config]);
+  }, [activeSection]);
 
   if (takeover) {
     return (
