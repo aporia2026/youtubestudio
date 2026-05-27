@@ -58,11 +58,15 @@ async function expandChildren({ id }: { id: string }) {
     const dates = expandRecurrence(new Date(p.scheduled_for), p.recurrence);
     let created = 0;
     // Skip dates[0] — that's the parent's own date.
+    // workspace_id inherited from the parent row so the children sit
+    // in the same tenant. schedule_items.workspace_id is NOT NULL
+    // post the multi-tenant rollout.
     for (const iso of dates.slice(1)) {
       const child = await sql`
-        INSERT INTO schedule_items (title, scheduled_for, status, notes, tags, custom_fields, recurrence_parent_id)
+        INSERT INTO schedule_items (title, scheduled_for, status, notes, tags, custom_fields, recurrence_parent_id, workspace_id)
         VALUES (${p.title}, ${iso}, ${p.status}, ${p.notes},
-                ${JSON.stringify(p.tags ?? [])}, ${JSON.stringify(p.custom_fields ?? {})}, ${id})
+                ${JSON.stringify(p.tags ?? [])}, ${JSON.stringify(p.custom_fields ?? {})}, ${id},
+                ${p.workspace_id})
         RETURNING id
       `;
       const cid = child.rows[0].id as string;

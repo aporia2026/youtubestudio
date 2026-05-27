@@ -15,7 +15,7 @@
  * grid size, format mode, the card list editor, the result + regions.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
 import type { ThumbnailRegion } from '@/remotion/types';
@@ -35,6 +35,12 @@ export interface FormatPalette {
   secondary_accent: string;
 }
 
+/** Visual shape of each card. `'square'` keeps the original layout
+ *  (rectangle + label strip); `'circle'` renders each card as a disc on
+ *  white with the label beneath. Mirrors the `CardShape` type in
+ *  `src/lib/thumbnail-formats/topic-card-grid.ts`. */
+export type CardShape = 'square' | 'circle';
+
 export interface FormatGenerationResult {
   imageUrl: string;
   regions: ThumbnailRegion[];
@@ -48,6 +54,13 @@ export interface FormatGenerationResult {
   referenceImageUrl?: string;
   outputWidth: number;
   outputHeight: number;
+  /** Visual card shape used for this render. Defaults to `'square'` on
+   *  history entries restored from before the shape toggle shipped. */
+  cardShape?: CardShape;
+  /** 1-based cell index → R2 download URL of the user-uploaded image
+   *  that was composited into that cell. Empty when no cells had
+   *  attached uploads. */
+  uploads?: Record<number, string>;
 }
 
 /**
@@ -67,6 +80,12 @@ export interface TopicCardGridDraftState {
   cards: FormatCard[] | null;
   palette: FormatPalette | null;
   notesForImageModel?: string;
+  /** Visual card shape selected by the user. Defaults to `'square'` for
+   *  drafts saved before the shape toggle shipped. */
+  cardShape?: CardShape;
+  /** 1-based cell index → R2 download URL of an uploaded image. Restored
+   *  so a refresh mid-review keeps the user's attachments. */
+  uploads?: Record<number, string>;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -93,6 +112,38 @@ const IMAGE_MODELS = [
 
 const REGION_OVERLAY_PREF_KEY = 'topic_card_grid_region_overlay';
 const IMAGE_MODEL_PREF_KEY = 'topic_card_grid_default_image_model';
+const CARD_SHAPE_PREF_KEY = 'topic_card_grid_default_card_shape';
+
+/**
+ * Style block for the icon_concept textarea on each review-card row.
+ * Fixed 3-row preview with an inner scrollbar for longer text and a
+ * vertical drag handle. We do NOT use `field-sizing: content` here —
+ * at narrow column widths it ballooned rows to 10+ lines, which made
+ * the review state unusable. The `rows={3}` JSX prop sets the visible
+ * height; this style only handles the scroll + resize behaviour and
+ * the disabled dim-out.
+ */
+function ICON_CONCEPT_TEXTAREA_STYLE(disabled: boolean): CSSProperties {
+  return {
+    resize: 'vertical',
+    overflowY: 'auto',
+    opacity: disabled ? 0.55 : undefined,
+  };
+}
+
+/** Hard cap on per-cell upload size. Mirrors the presign route's cap so
+ *  the browser surfaces the error before the round trip — the route is
+ *  still the source of truth. */
+const MAX_CELL_UPLOAD_BYTES = 8 * 1024 * 1024;
+
+/** Allowed MIME types for per-cell uploads. Matches the presign route's
+ *  allowlist exactly. */
+const ALLOWED_CELL_UPLOAD_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+]);
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
@@ -177,6 +228,33 @@ export function TopicCardGridPanel({
     try { localStorage.setItem(IMAGE_MODEL_PREF_KEY, imageModelId); } catch { /* ignore */ }
   }, [imageModelId]);
 
+  // Card shape — defaults to 'square', remembers the user's last pick in
+  // localStorage so a repeat-user lands back in their preferred mode.
+  // Same pattern as the image-model preference above (see plan rule 15
+  // for the rationale).
+  const [cardShape, setCardShape] = useState<CardShape>(() => {
+    if (typeof window === 'undefined') return 'square';
+    try {
+      const stored = localStorage.getItem(CARD_SHAPE_PREF_KEY);
+      if (stored === 'circle' || stored === 'square') return stored;
+    } catch {
+      /* fall through to default */
+    }
+    return 'square';
+  });
+  useEffect(() => {
+    try { localStorage.setItem(CARD_SHAPE_PREF_KEY, cardShape); } catch { /* ignore */ }
+  }, [cardShape]);
+
+  // Per-cell uploads. Keyed by 1-based card index so the same number that
+  // appears in the LLM's TopicCard.index is the lookup key. Values are
+  // R2 download URLs returned by the presign upload route.
+  const [uploads, setUploads] = useState<Record<number, string>>({});
+  // Card indexes currently mid-upload, used to render the spinner state
+  // in the per-row upload UI. Separate from `uploads` so an in-flight
+  // upload doesn't leave a stale URL in place if it fails.
+  const [uploadingCells, setUploadingCells] = useState<Set<number>>(new Set());
+
   // Flow state
   const [busyStep, setBusyStep] = useState<'idle' | 'cards' | 'image'>('idle');
   const [cards, setCards] = useState<FormatCard[] | null>(null);
@@ -202,6 +280,8 @@ export function TopicCardGridPanel({
     }
     setFormatMode(restoredResult.mode);
     setImageModelId(restoredResult.formatImageModel);
+    setCardShape(restoredResult.cardShape ?? 'square');
+    setUploads(restoredResult.uploads ?? {});
     setCards(restoredResult.cards);
     setPalette(restoredResult.palette);
     setResult(restoredResult);
@@ -227,6 +307,8 @@ export function TopicCardGridPanel({
     setFormatMode(restoredDraftState.formatMode);
     setPrefilledLabels(restoredDraftState.prefilledLabels);
     setImageModelId(restoredDraftState.imageModelId);
+    setCardShape(restoredDraftState.cardShape ?? 'square');
+    setUploads(restoredDraftState.uploads ?? {});
     setCards(restoredDraftState.cards);
     setPalette(restoredDraftState.palette);
     setNotesForImageModel(restoredDraftState.notesForImageModel);
@@ -234,6 +316,8 @@ export function TopicCardGridPanel({
       card_count: restoredDraftState.cards?.length ?? 0,
       grid_mode: restoredDraftState.gridMode,
       format_mode: restoredDraftState.formatMode,
+      card_shape: restoredDraftState.cardShape ?? 'square',
+      uploads_count: Object.keys(restoredDraftState.uploads ?? {}).length,
     });
   }, [restoredDraftState]);
 
@@ -253,10 +337,13 @@ export function TopicCardGridPanel({
       cards,
       palette,
       notesForImageModel,
+      cardShape,
+      uploads,
     });
   }, [
     gridMode, presetIdx, customRows, customCols, formatMode,
     prefilledLabels, imageModelId, cards, palette, notesForImageModel,
+    cardShape, uploads,
     onDraftStateChange,
   ]);
 
@@ -303,9 +390,89 @@ export function TopicCardGridPanel({
     (formatMode !== 'pre-fill' || prefilledLabelsList.length === totalCards);
 
   const cardListMismatch = cards && cards.length !== totalCards;
-  const canRenderImage = !!cards && !cardListMismatch && cards.every((c) => c.label.trim() && c.icon_concept.trim());
+  // A card is renderable if it has a label AND either an icon_concept OR
+  // an attached upload (the composite step paints the upload regardless
+  // of what the icon_concept says).
+  const canRenderImage =
+    !!cards &&
+    !cardListMismatch &&
+    cards.every((c) => c.label.trim() && (c.icon_concept.trim() || !!uploads[c.index]));
 
   // ─── Actions ──────────────────────────────────────────────────────────────
+
+  /**
+   * Direct browser → R2 presigned-PUT upload for a per-cell image. Same
+   * pattern as the page-level reference uploader (see `uploadReferenceImage`
+   * in `src/app/(app)/thumbnails/page.tsx`). The presign route enforces the
+   * size cap, allowed MIME types, and auth; this function mirrors those
+   * checks for instant feedback before the round-trip.
+   *
+   * `cardIndex` is 1-based to match `TopicCard.index`. On success the
+   * resulting R2 download URL is written into the `uploads` map under that
+   * key. On failure the toast surfaces the specific reason and the cell
+   * stays unattached.
+   */
+  async function uploadCellImage(cardIndex: number, file: File) {
+    if (!ALLOWED_CELL_UPLOAD_TYPES.has(file.type)) {
+      toast.error('Cell upload must be JPEG, PNG, WebP, or GIF.');
+      return;
+    }
+    if (file.size > MAX_CELL_UPLOAD_BYTES) {
+      toast.error('Cell upload must be under 8MB.');
+      return;
+    }
+    console.info('[topic-card-grid panel] upload start', {
+      cardIndex, sizeBytes: file.size, contentType: file.type,
+    });
+    setUploadingCells((prev) => {
+      const next = new Set(prev);
+      next.add(cardIndex);
+      return next;
+    });
+    const startedAt = Date.now();
+    try {
+      const presignRes = await fetch('/api/uploads/topic-card-grid-cell', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileName: file.name, contentType: file.type, fileSize: file.size }),
+      });
+      if (!presignRes.ok) {
+        const data: { error?: string } = await presignRes.json().catch(() => ({}));
+        throw new Error(data.error || `Presign failed (${presignRes.status})`);
+      }
+      const { uploadUrl, downloadUrl } = await presignRes.json();
+      const putRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type },
+        body: file,
+      });
+      if (!putRes.ok) throw new Error(`R2 upload failed (${putRes.status})`);
+      setUploads((prev) => ({ ...prev, [cardIndex]: downloadUrl }));
+      console.info('[topic-card-grid panel] upload done', {
+        cardIndex, durationMs: Date.now() - startedAt,
+      });
+      toast.success(`Card ${cardIndex} image attached`);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn('[topic-card-grid panel] upload error', { cardIndex, reason });
+      toast.error(reason || 'Cell upload failed');
+    } finally {
+      setUploadingCells((prev) => {
+        const next = new Set(prev);
+        next.delete(cardIndex);
+        return next;
+      });
+    }
+  }
+
+  function clearCellUpload(cardIndex: number) {
+    console.info('[topic-card-grid panel] upload clear', { cardIndex });
+    setUploads((prev) => {
+      const next = { ...prev };
+      delete next[cardIndex];
+      return next;
+    });
+  }
 
   async function runStep1() {
     if (!canGenerateCards) {
@@ -326,8 +493,17 @@ export function TopicCardGridPanel({
       ? pickedLabels
       : (formatMode === 'pre-fill' ? prefilledLabelsList : undefined);
 
+    // Drop any uploads whose cell index has fallen outside the current
+    // grid (the user can shrink the grid after attaching an image). Send
+    // only the still-valid set to the LLM so it doesn't get told about
+    // ghost cells it isn't being asked to render.
+    const liveUploadedIndexes = Object.keys(uploads)
+      .map((k) => Number(k))
+      .filter((i) => Number.isInteger(i) && i >= 1 && i <= totalCards)
+      .sort((a, b) => a - b);
     console.info('[thumbnails format-grid cards] requesting', {
       gridRows, gridCols, modelId, mode: effectiveMode, usingPickedLabels: usePicked,
+      cardShape, uploadedIndexes: liveUploadedIndexes,
     });
     setBusyStep('cards');
     try {
@@ -345,6 +521,8 @@ export function TopicCardGridPanel({
           mode: effectiveMode,
           prefilledLabels: effectivePrefill,
           referenceImageUrl: referenceImageUrl.trim(),
+          cardShape,
+          uploadedCellIndexes: liveUploadedIndexes.length > 0 ? liveUploadedIndexes : undefined,
         }),
       });
       if (!res.ok) {
@@ -382,10 +560,20 @@ export function TopicCardGridPanel({
       toast.error(`Card count (${cardsToUse.length}) does not match the grid (${totalCards}). Add or remove cards before rendering.`);
       return;
     }
+    // Build the uploads payload — keep only entries still inside the
+    // grid. Same de-stale filter as runStep1; cells the user attached
+    // before shrinking the grid get dropped here so the server never
+    // sees out-of-range indexes.
+    const liveUploadsPayload = Object.entries(uploads)
+      .map(([k, v]) => ({ cardIndex: Number(k), imageUrl: v }))
+      .filter((u) => Number.isInteger(u.cardIndex) && u.cardIndex >= 1 && u.cardIndex <= totalCards && !!u.imageUrl)
+      .sort((a, b) => a.cardIndex - b.cardIndex);
     console.info('[thumbnails format-grid image] requesting', {
       cardsCount: cardsToUse.length,
       imageModelId,
       editsApplied: 0,
+      cardShape,
+      uploadsCount: liveUploadsPayload.length,
     });
     setBusyStep('image');
     try {
@@ -400,6 +588,8 @@ export function TopicCardGridPanel({
           gridRows,
           gridCols,
           referenceImageUrl: referenceImageUrl.trim(),
+          cardShape,
+          uploads: liveUploadsPayload.length > 0 ? liveUploadsPayload : undefined,
         }),
       });
       if (!res.ok) {
@@ -410,11 +600,29 @@ export function TopicCardGridPanel({
         imageUrl: string;
         regions: ThumbnailRegion[];
         layout: { width: number; height: number };
+        uploadsApplied?: number;
       } = await res.json();
       console.info('[thumbnails format-grid image] received', {
         imageUrl: data.imageUrl,
         regionsCount: data.regions.length,
+        // Critical diagnostic: how many user uploads the server actually
+        // composited onto the AI base. If we sent N uploads in the request
+        // (uploadsCount above) and this comes back 0 — or lower than N —
+        // the user's images are NOT in the final thumbnail and we need to
+        // chase the gap on the server side. Without this we'd be guessing.
+        uploadsApplied: data.uploadsApplied ?? 'absent',
+        uploadsSent: liveUploadsPayload.length,
       });
+      if (
+        liveUploadsPayload.length > 0 &&
+        (data.uploadsApplied ?? 0) < liveUploadsPayload.length
+      ) {
+        console.warn('[thumbnails format-grid image] uploads_applied_mismatch', {
+          sent: liveUploadsPayload.length,
+          applied: data.uploadsApplied ?? 0,
+          sentCardIndexes: liveUploadsPayload.map((u) => u.cardIndex),
+        });
+      }
       const generation: FormatGenerationResult = {
         imageUrl: data.imageUrl,
         regions: data.regions,
@@ -428,6 +636,10 @@ export function TopicCardGridPanel({
         referenceImageUrl: referenceImageUrl.trim() || undefined,
         outputWidth: data.layout.width,
         outputHeight: data.layout.height,
+        cardShape,
+        uploads: liveUploadsPayload.length > 0
+          ? Object.fromEntries(liveUploadsPayload.map((u) => [u.cardIndex, u.imageUrl]))
+          : undefined,
       };
       setResult(generation);
       onResultChange(generation);
@@ -454,6 +666,19 @@ export function TopicCardGridPanel({
       return;
     }
     setCards((prev) => prev?.filter((_, i) => i !== idx).map((c, i) => ({ ...c, index: i + 1 })) ?? null);
+    // Uploads travel with their card. Drop the entry at the deleted
+    // position (1-based = idx + 1) and shift every entry above it down
+    // by one so the keys still match the post-renumber card.index values.
+    setUploads((prev) => {
+      const deletedCardIndex = idx + 1;
+      const next: Record<number, string> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        const n = Number(k);
+        if (n === deletedCardIndex) continue;
+        next[n > deletedCardIndex ? n - 1 : n] = v;
+      }
+      return next;
+    });
     // Shrink the grid by 1 column or row to match. Simplest: drop one cell off
     // the last row by decreasing cols if possible.
     setCustomCols((c) => Math.max(1, c - 1));
@@ -481,13 +706,29 @@ export function TopicCardGridPanel({
       [next[idx], next[j]] = [next[j], next[idx]];
       return next.map((c, i) => ({ ...c, index: i + 1 }));
     });
+    // Uploads travel with their card — swap the entries at the same
+    // 1-based positions so an uploaded image stays bound to the card the
+    // user attached it to, not to a fixed cell slot.
+    setUploads((prev) => {
+      const j = idx + dir;
+      if (j < 0) return prev;
+      const aKey = idx + 1;
+      const bKey = j + 1;
+      if (prev[aKey] === undefined && prev[bKey] === undefined) return prev;
+      const next = { ...prev };
+      const tmp = next[aKey];
+      if (next[bKey] !== undefined) next[aKey] = next[bKey]; else delete next[aKey];
+      if (tmp !== undefined) next[bKey] = tmp; else delete next[bKey];
+      return next;
+    });
   }
 
   function clearCards() {
-    if (cards && !confirm('Discard the current card list and regenerate?')) return;
+    if (cards && !confirm('Discard the current card list and regenerate? Per-cell uploads will be cleared too.')) return;
     setCards(null);
     setPalette(null);
     setNotesForImageModel(undefined);
+    setUploads({});
     setResult(null);
     onResultChange(null);
   }
@@ -564,6 +805,44 @@ export function TopicCardGridPanel({
                 Grids above 8×8 may render inconsistently — the model has more cards to keep aligned.
               </p>
             )}
+          </div>
+
+          {/* Card shape — square (rectangle + label strip) vs. circle
+              (disc on white with label beneath). The composite module
+              supports both; the toggle simply forwards the choice into
+              the prompts and region math. */}
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+              Card shape
+            </label>
+            <div className="flex gap-1.5">
+              {(['square', 'circle'] as const).map((s) => {
+                const active = cardShape === s;
+                const labelText = s === 'square' ? 'Square' : 'Circle';
+                return (
+                  <button
+                    key={s}
+                    onClick={() => {
+                      console.info('[topic-card-grid panel] shape toggle', { from: cardShape, to: s });
+                      setCardShape(s);
+                    }}
+                    className="text-[11px] px-2.5 py-1 rounded transition-all"
+                    style={{
+                      background: active ? 'rgba(236,72,153,0.2)' : 'var(--bg-card)',
+                      border: `1px solid ${active ? 'rgba(236,72,153,0.4)' : 'var(--border)'}`,
+                      color: active ? 'var(--accent-pink)' : 'var(--text-muted)',
+                    }}
+                  >
+                    {labelText}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+              {cardShape === 'square'
+                ? 'Each card is a black-bordered rectangle with a white label strip.'
+                : 'Each card is a disc on a white canvas, label centred beneath it.'}
+            </p>
           </div>
 
           {/* Image model */}
@@ -717,10 +996,14 @@ export function TopicCardGridPanel({
             busy={busyStep === 'image'}
             allowDelete={gridMode === 'custom'}
             allowAdd={gridMode === 'custom'}
+            uploads={uploads}
+            uploadingCells={uploadingCells}
             onUpdate={updateCard}
             onMove={moveCard}
             onDelete={deleteCard}
             onAdd={addCard}
+            onUpload={uploadCellImage}
+            onClearUpload={clearCellUpload}
             onRender={() => runStep2()}
             onRegenerate={() => { setCards(null); runStep1(); }}
           />
@@ -751,16 +1034,31 @@ interface CardTableProps {
   busy: boolean;
   allowDelete: boolean;
   allowAdd: boolean;
+  /** Map of 1-based card index → R2 download URL for that card's
+   *  attached image. A missing entry means the card will be rendered
+   *  from its icon_concept prompt as normal. */
+  uploads: Record<number, string>;
+  /** Set of 1-based card indexes currently mid-upload. Drives the
+   *  spinner state on the per-row upload button. */
+  uploadingCells: Set<number>;
   onUpdate: (idx: number, patch: Partial<FormatCard>) => void;
   onMove: (idx: number, dir: -1 | 1) => void;
   onDelete: (idx: number) => void;
   onAdd: () => void;
+  /** Trigger an upload for the given card index (1-based). The handler
+   *  owns the presign + R2 PUT flow and the state writeback. */
+  onUpload: (cardIndex: number, file: File) => void;
+  /** Clear the attached upload for the given card index (1-based). */
+  onClearUpload: (cardIndex: number) => void;
   onRender: () => void;
   onRegenerate: () => void;
 }
 
 function CardTableState(props: CardTableProps) {
-  const { cards, totalCards, gridMismatch, canRender, busy, allowDelete, allowAdd } = props;
+  const {
+    cards, totalCards, gridMismatch, canRender, busy, allowDelete, allowAdd,
+    uploads, uploadingCells,
+  } = props;
   return (
     <div className="glass p-5 space-y-3" style={{ borderColor: 'rgba(124,58,237,0.2)' }}>
       <div className="flex items-center justify-between">
@@ -795,6 +1093,12 @@ function CardTableState(props: CardTableProps) {
               <input
                 className="input-field flex-1 text-xs font-medium"
                 placeholder="Card label"
+                // Labels are 1-4 words by spec (max 60 chars). Stay
+                // single-line so the row height matches the buttons next
+                // to it, and surface the full text via the native tooltip
+                // for the narrow-column case where the label doesn't fit
+                // visually.
+                title={card.label}
                 value={card.label}
                 onChange={(e) => props.onUpdate(i, { label: e.target.value })}
                 maxLength={60}
@@ -857,13 +1161,40 @@ function CardTableState(props: CardTableProps) {
                 </button>
               )}
             </div>
-            <input
-              className="input-field w-full text-xs"
-              placeholder="Icon concept — one bold central symbol, no text, no scene"
-              value={card.icon_concept}
-              onChange={(e) => props.onUpdate(i, { icon_concept: e.target.value })}
-              maxLength={200}
-            />
+            {(() => {
+              const uploadedUrl = uploads[card.index];
+              const isUploading = uploadingCells.has(card.index);
+              const conceptDisabled = !!uploadedUrl;
+              return (
+                <div className="flex items-start gap-2">
+                  <textarea
+                    className="input-field flex-1 text-xs"
+                    placeholder={conceptDisabled
+                      ? 'Using uploaded image — icon concept ignored'
+                      : 'Icon concept — one bold central symbol, no text, no scene'}
+                    value={conceptDisabled ? '' : card.icon_concept}
+                    onChange={(e) => props.onUpdate(i, { icon_concept: e.target.value })}
+                    maxLength={200}
+                    disabled={conceptDisabled}
+                    rows={3}
+                    // Fixed 3-row preview (covers most icon concepts) with
+                    // an inner scrollbar for longer text, and a vertical
+                    // resize grip so the user can drag taller when they
+                    // need to read all 200 chars at once. Avoids the
+                    // `field-sizing: content` trap where narrow columns
+                    // would balloon the row to 10+ lines.
+                    style={ICON_CONCEPT_TEXTAREA_STYLE(conceptDisabled)}
+                  />
+                  <CellUploadControl
+                    cardIndex={card.index}
+                    uploadedUrl={uploadedUrl}
+                    isUploading={isUploading}
+                    onUpload={props.onUpload}
+                    onClear={props.onClearUpload}
+                  />
+                </div>
+              );
+            })()}
           </div>
         ))}
         {allowAdd && (
@@ -912,6 +1243,121 @@ function CardTableState(props: CardTableProps) {
   );
 }
 
+// ─── Per-cell upload control (used inside CardTableState) ───────────────────
+
+interface CellUploadControlProps {
+  cardIndex: number;
+  uploadedUrl: string | undefined;
+  isUploading: boolean;
+  onUpload: (cardIndex: number, file: File) => void;
+  onClear: (cardIndex: number) => void;
+}
+
+/**
+ * Three-state per-card upload affordance, slotted next to the
+ * icon_concept input:
+ *   - **none**: paperclip "+ Image" button kicks off the file picker.
+ *   - **uploading**: small spinner replaces the button.
+ *   - **uploaded**: 32px thumbnail + Replace + Clear (×) controls.
+ *
+ * The file `<input type="file" hidden>` is owned by this component so
+ * each row has its own ref — sharing one input across rows would race
+ * the `onChange` event when the user uploads quickly to multiple cells.
+ */
+function CellUploadControl({
+  cardIndex, uploadedUrl, isUploading, onUpload, onClear,
+}: CellUploadControlProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const open = () => inputRef.current?.click();
+
+  if (isUploading) {
+    return (
+      <div
+        className="flex items-center justify-center text-xs px-2 rounded shrink-0"
+        style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', minWidth: 84, color: 'var(--text-muted)' }}
+        title={`Uploading image for card ${cardIndex}…`}
+      >
+        <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <circle cx="12" cy="12" r="10" opacity="0.25" />
+          <path d="M12 2a10 10 0 0 1 10 10" />
+        </svg>
+      </div>
+    );
+  }
+
+  if (uploadedUrl) {
+    return (
+      <div
+        className="flex items-center gap-1 px-1.5 rounded shrink-0"
+        style={{ background: 'var(--bg-card)', border: '1px solid rgba(34,197,94,0.35)' }}
+      >
+        <img
+          src={uploadedUrl}
+          alt={`Card ${cardIndex} upload`}
+          className="rounded"
+          style={{ width: 28, height: 28, objectFit: 'cover', display: 'block' }}
+        />
+        <button
+          onClick={open}
+          className="text-[10px] px-1 py-0.5 rounded"
+          style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+          title="Replace image"
+        >
+          Replace
+        </button>
+        <button
+          onClick={() => onClear(cardIndex)}
+          className="text-[10px] px-1 py-0.5 rounded"
+          style={{ background: 'var(--bg-secondary)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}
+          title="Clear upload — restore the icon concept prompt"
+        >
+          ×
+        </button>
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp,image/gif"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) onUpload(cardIndex, file);
+            e.target.value = '';
+          }}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <button
+        onClick={open}
+        className="text-[10px] px-2 rounded shrink-0 flex items-center gap-1"
+        style={{ background: 'var(--bg-card)', color: 'var(--text-muted)', border: '1px dashed var(--border)' }}
+        title="Attach an image to use for this card instead of generating one"
+      >
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="17 8 12 3 7 8" />
+          <line x1="12" y1="3" x2="12" y2="15" />
+        </svg>
+        Image
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp,image/gif"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) onUpload(cardIndex, file);
+          e.target.value = '';
+        }}
+      />
+    </>
+  );
+}
+
 // ─── State B subcomponent — result with region overlay ──────────────────────
 
 interface ResultProps {
@@ -957,29 +1403,53 @@ function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditCards, on
             preserveAspectRatio="none"
             style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
           >
-            {result.regions.map((r, i) => (
-              <g key={r.id}>
-                <rect
-                  x={r.x}
-                  y={r.y}
-                  width={r.w}
-                  height={r.h}
-                  fill="none"
-                  stroke="rgba(236,72,153,0.85)"
-                  strokeWidth={Math.max(2, result.outputWidth * 0.003)}
-                  strokeDasharray={`${Math.max(6, result.outputWidth * 0.01)} ${Math.max(4, result.outputWidth * 0.006)}`}
-                />
-                <text
-                  x={r.x + 8}
-                  y={r.y + Math.max(20, result.outputWidth * 0.025)}
-                  fill="rgba(236,72,153,1)"
-                  fontSize={Math.max(14, result.outputWidth * 0.018)}
-                  fontFamily="ui-monospace, monospace"
-                >
-                  {i + 1}
-                </text>
-              </g>
-            ))}
+            {result.regions.map((r, i) => {
+              // Circle mode: regions describe disc bounding boxes, so we
+              // draw an ellipse that fills the box. Square mode keeps the
+              // dashed rectangle behaviour. This matches what the user
+              // actually sees in the rendered thumbnail (rule 16: clear).
+              const isCircle = result.cardShape === 'circle';
+              const stroke = 'rgba(236,72,153,0.85)';
+              const strokeWidth = Math.max(2, result.outputWidth * 0.003);
+              const dashArray = `${Math.max(6, result.outputWidth * 0.01)} ${Math.max(4, result.outputWidth * 0.006)}`;
+              return (
+                <g key={r.id}>
+                  {isCircle ? (
+                    <ellipse
+                      cx={r.x + r.w / 2}
+                      cy={r.y + r.h / 2}
+                      rx={r.w / 2}
+                      ry={r.h / 2}
+                      fill="none"
+                      stroke={stroke}
+                      strokeWidth={strokeWidth}
+                      strokeDasharray={dashArray}
+                    />
+                  ) : (
+                    <rect
+                      x={r.x}
+                      y={r.y}
+                      width={r.w}
+                      height={r.h}
+                      fill="none"
+                      stroke={stroke}
+                      strokeWidth={strokeWidth}
+                      strokeDasharray={dashArray}
+                    />
+                  )}
+                  <text
+                    x={isCircle ? r.x + r.w / 2 : r.x + 8}
+                    y={isCircle ? r.y + r.h / 2 + Math.max(7, result.outputWidth * 0.009) : r.y + Math.max(20, result.outputWidth * 0.025)}
+                    fill="rgba(236,72,153,1)"
+                    fontSize={Math.max(14, result.outputWidth * 0.018)}
+                    fontFamily="ui-monospace, monospace"
+                    textAnchor={isCircle ? 'middle' : 'start'}
+                  >
+                    {i + 1}
+                  </text>
+                </g>
+              );
+            })}
           </svg>
         )}
       </div>

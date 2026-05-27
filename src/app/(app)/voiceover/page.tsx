@@ -79,10 +79,17 @@ function parseHmsDuration(input: string): number | null {
 
 function VoiceoverStudio() {
   const searchParams = useSearchParams();
-  const projectId = searchParams.get('projectId');
+  // Wave 1 ?videoId= (the Command Center kanban + strip's preferred
+  // param) is treated as a synonym for ?projectId= on this page — both
+  // identify the same project row that the voiceover saves attach to.
+  // Falling back this way means the existing save-to-project flow at
+  // line 615+ Just Works when arriving via the kanban.
+  const projectId = searchParams.get('projectId') || searchParams.get('videoId');
+  const videoIdParam = searchParams.get('videoId');
   const scheduleItemId = getScheduleLinkId(searchParams);
   const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
   const [schedulePrefilled, setSchedulePrefilled] = useState(false);
+  const [videoPrefilled, setVideoPrefilled] = useState(false);
   const [apiKey, setApiKey] = useState('');
   const [keyInput, setKeyInput] = useState('');
   const [voices, setVoices] = useState<ElevenVoice[]>([]);
@@ -371,6 +378,33 @@ function VoiceoverStudio() {
     })();
     return () => { cancelled = true; };
   }, [scheduleItemId, schedulePrefilled]);
+
+  // Wave 1 ?videoId= prefill — pulls the active script and cleans it
+  // for voiceover, same shape as the schedule-link block above.
+  // Skips when ?scheduleItemId= is in the URL (that path carries
+  // richer context, including the linked project's narrator history).
+  useEffect(() => {
+    if (!videoIdParam || videoPrefilled || scheduleItemId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const scriptsRes = await fetch(`/api/projects/${videoIdParam}/scripts`);
+        if (cancelled || !scriptsRes.ok) return;
+        const scriptsData = await scriptsRes.json();
+        type ScriptRow = { content?: string; is_active?: boolean };
+        const list: ScriptRow[] = Array.isArray(scriptsData?.scripts) ? scriptsData.scripts : [];
+        const active = list.find(s => s.is_active) ?? list[0];
+        if (active?.content) {
+          setText(curr => curr || cleanScriptForVoiceover(active.content!));
+          setVideoPrefilled(true);
+          toast.message('Loaded script from project');
+        }
+      } catch {
+        // best-effort
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [videoIdParam, videoPrefilled, scheduleItemId]);
 
   // Probe whether the server has Google TTS credentials so the provider
   // tab strip can hide the Google tab entirely when it's not configured.

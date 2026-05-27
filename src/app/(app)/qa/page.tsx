@@ -98,8 +98,11 @@ export default function QAPageWrapper() {
 function QAPage() {
   const search = useSearchParams();
   const scheduleItemId = getScheduleLinkId(search);
+  // Wave 1 (?videoId=) handoff from the Command Center kanban + strip.
+  const videoIdParam = search.get('videoId');
   const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
   const [schedulePrefilled, setSchedulePrefilled] = useState(false);
+  const [videoPrefilled, setVideoPrefilled] = useState(false);
 
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('qa-engine'));
   const [script, setScript] = useState('');
@@ -186,8 +189,49 @@ function QAPage() {
     })();
     return () => { cancelled = true; };
     // `script` intentionally omitted from deps — we only peek at its initial value on mount.
-     
+
   }, [scheduleItemId, schedulePrefilled]);
+
+  // Wave 1 ?videoId= prefill — fires when the user lands here from the
+  // Command Center kanban or the strip's "Open in tool" overflow.
+  // Skips when ?scheduleItemId= is already in the URL (that path
+  // carries richer context). Functional setters protect manual edits.
+  useEffect(() => {
+    if (!videoIdParam || videoPrefilled || scheduleItemId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/videos/${videoIdParam}`);
+        if (cancelled || !res.ok) return;
+        const data = await res.json();
+        const video: { id?: string; title?: string; niche?: string; topic?: string | null } | undefined = data?.video;
+        if (!video) return;
+        setVideoPrefilled(true);
+        const t = (video.title || video.topic || '').trim();
+        const n = (video.niche || '').trim();
+        if (t) setTopic(curr => curr || t);
+        if (n) setNiche(curr => curr || n);
+        // Active script body lives on /api/projects/[id]/scripts.
+        const scriptsRes = await fetch(`/api/projects/${videoIdParam}/scripts`);
+        if (!cancelled && scriptsRes.ok) {
+          const scriptsData = await scriptsRes.json();
+          type ScriptRow = { id?: string; content?: string; is_active?: boolean };
+          const list: ScriptRow[] = Array.isArray(scriptsData?.scripts) ? scriptsData.scripts : [];
+          const active = list.find(s => s.is_active) ?? list[0];
+          if (active?.content) {
+            setScript(prev => prev || active.content!);
+            setLastSavedQaScript(prev => prev || active.content!.trim());
+          }
+          if (active?.id) setScriptId(curr => curr ?? active.id ?? null);
+        }
+        setProjectId(curr => curr ?? videoIdParam);
+        if (t) toast.message(`Loaded context from video "${t}"`);
+      } catch {
+        // best-effort prefill
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [videoIdParam, videoPrefilled, scheduleItemId]);
 
   useEffect(() => {
     setNicheHints(getRecentNiches());

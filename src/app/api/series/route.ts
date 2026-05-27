@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureSeriesSchema } from '@/lib/db';
+import { apiRoute } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
 
 /** GET /api/series — list all series ordered by most recently updated.
@@ -41,8 +42,10 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/** POST /api/series — create a new series. */
-export async function POST(req: NextRequest) {
+/** POST /api/series — create a new series in the caller's workspace.
+ *  Authed because `series` is a root tenant table and workspace_id is
+ *  NOT NULL post the multi-tenant rollout. */
+export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   try {
     await ensureSeriesSchema();
     const { title, niche, description, totalPartsPlanned, channelId } = await req.json();
@@ -50,13 +53,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
     }
     const result = await sql`
-      INSERT INTO series (title, niche, description, total_parts_planned, channel_id)
+      INSERT INTO series (title, niche, description, total_parts_planned, channel_id, workspace_id)
       VALUES (
         ${title.trim()},
         ${niche || null},
         ${description || null},
         ${totalPartsPlanned || null},
-        ${channelId || null}
+        ${channelId || null},
+        ${session.ws}::uuid
       )
       RETURNING *
     `;
@@ -65,4 +69,4 @@ export async function POST(req: NextRequest) {
     logger.error('POST /api/series error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to create series' }, { status: 500 });
   }
-}
+});

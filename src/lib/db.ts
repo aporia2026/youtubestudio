@@ -567,6 +567,12 @@ export async function ensureScheduleSchema() {
     try { await sql`CREATE INDEX IF NOT EXISTS idx_schedule_items_editor_collab ON schedule_items(editor_collaborator_id)`; } catch {}
     try { await sql`CREATE INDEX IF NOT EXISTS idx_schedule_items_narrator_collab ON schedule_items(narrator_collaborator_id)`; } catch {}
 
+    // Link back to the auto-pipeline run a scheduled item was queued into.
+    // Mirrors migration 0092 so dev environments that haven't run the
+    // migration runner still pick up the column on first schedule call.
+    try { await sql`ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS pipeline_run_video_id UUID REFERENCES pipeline_run_videos(id) ON DELETE SET NULL`; } catch {}
+    try { await sql`CREATE INDEX IF NOT EXISTS idx_schedule_items_pipeline_run_video ON schedule_items(pipeline_run_video_id) WHERE pipeline_run_video_id IS NOT NULL`; } catch {}
+
     // Stage-transition checklist templates (per channel + status).
     await sql`
       CREATE TABLE IF NOT EXISTS schedule_checklist_templates (

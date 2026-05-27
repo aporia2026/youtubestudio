@@ -96,6 +96,68 @@ describe('validateCreatePipelineRunInput', () => {
     }
   });
 
+  it('rejects existingScheduleItemIds with > 50 entries', () => {
+    const items = Array.from({ length: 51 }, (_, i) => `item-${i}`);
+    const r = validateCreatePipelineRunInput({ ...base, existingScheduleItemIds: items });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('too_many_schedule_items');
+  });
+
+  it('rejects duplicate schedule-item ids', () => {
+    const r = validateCreatePipelineRunInput({
+      ...base,
+      existingScheduleItemIds: ['item-1', 'item-2', 'item-1'],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('duplicate_schedule_items');
+  });
+
+  it('rejects three-way mixed mode (count + ideas + scheduled)', () => {
+    const r = validateCreatePipelineRunInput({
+      ...base,
+      countToGenerate: 2,
+      existingIdeaIds: ['a'],
+      existingScheduleItemIds: ['x'],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('mixed_mode_not_supported');
+  });
+
+  it('rejects two-way mix of existing + scheduled', () => {
+    const r = validateCreatePipelineRunInput({
+      ...base,
+      existingIdeaIds: ['a'],
+      existingScheduleItemIds: ['x'],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('mixed_mode_not_supported');
+  });
+
+  it('accepts scheduled-mode input with unique ids', () => {
+    const r = validateCreatePipelineRunInput({
+      ...base,
+      existingScheduleItemIds: ['s1', 's2', 's3'],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok && r.mode === 'scheduled') {
+      expect(r.scheduleItemIds).toEqual(['s1', 's2', 's3']);
+    } else if (r.ok) {
+      throw new Error(`expected scheduled mode, got ${r.mode}`);
+    }
+  });
+
+  it('preserves caller-supplied schedule-item order (order = priority)', () => {
+    const r = validateCreatePipelineRunInput({
+      ...base,
+      existingScheduleItemIds: ['z', 'a', 'm'],
+    });
+    if (r.ok && r.mode === 'scheduled') {
+      expect(r.scheduleItemIds).toEqual(['z', 'a', 'm']);
+    } else {
+      throw new Error('expected ok scheduled-mode result');
+    }
+  });
+
   it('CreatePipelineRunError exposes a code field', () => {
     const err = new CreatePipelineRunError('preset_not_found', 'Preset 123 not found.');
     expect(err.code).toBe('preset_not_found');

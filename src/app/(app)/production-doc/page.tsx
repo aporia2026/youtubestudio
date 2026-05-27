@@ -39,6 +39,7 @@ import {
   type ProductionDocHistoryEntry,
 } from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
+import { NichePicker } from '@/components/ui/NichePicker';
 import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { StyleManagerDialog, type StyleSummary } from './StyleManagerDialog';
@@ -1840,9 +1841,16 @@ function ProductionDocPage() {
   // metadata + active script straight off /api/projects/[id] so the
   // owner doesn't need a schedule item in the loop.
   const projectIdParam = search.get('projectId');
+  // Wave 1 (?videoId=) handoff. The Command Center kanban and the
+  // VideoContextStrip's Open-in-tool buttons route here with
+  // ?videoId=<project-uuid>. This parallel param lets the page-body
+  // prefill from /api/videos/[id] without changing the existing
+  // ?projectId= path.
+  const videoIdParam = search.get('videoId');
   const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
   const [schedulePrefilled, setSchedulePrefilled] = useState(false);
   const [projectPrefilled, setProjectPrefilled] = useState(false);
+  const [videoPrefilled, setVideoPrefilled] = useState(false);
 
   // — Inputs
   const [script, setScript] = useState('');
@@ -2003,6 +2011,32 @@ function ProductionDocPage() {
     if (doc.style_preset === stylePreset) return;
     setDoc((prev) => (prev ? { ...prev, style_preset: stylePreset } : prev));
   }, [stylePreset, doc]);
+
+  // OST mode auto-migration for docs whose style has a non-default
+  // LowerThird treatment (chunky yellow bubble in doodle_explainer_2 —
+  // see SceneRouter in src/remotion/compositions/YouTubeVideo.tsx). The
+  // server now sets `on_screen_text_mode_default = 'overlay'` on freshly
+  // generated docs (see src/app/api/generate/production-doc/route.ts),
+  // but docs created before that fix have the field undefined → fall
+  // through to `'bake'` → the diffusion model paints text into the image
+  // corner instead of LowerThird compositing the yellow bubble on top.
+  //
+  // Migration policy: only flip undefined → 'overlay'. If the user has
+  // explicitly chosen `'bake'` or `'none'` for this doc (via the
+  // settings toggle in EditorClient), respect that — we don't know
+  // better than them.
+  //
+  // Hardcoded style id here mirrors the same hardcoded id in
+  // SceneRouter. When a second style gets the doodle-yellow treatment,
+  // both sites move to a shared list (Set or registry) at the same time.
+  useEffect(() => {
+    if (!doc) return;
+    if (doc.style_preset !== 'doodle_explainer_2') return;
+    if (doc.on_screen_text_mode_default !== undefined) return;
+    setDoc((prev) =>
+      prev ? { ...prev, on_screen_text_mode_default: 'overlay' } : prev,
+    );
+  }, [doc?.style_preset, doc?.on_screen_text_mode_default]);
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
   // Initial state from localStorage cache so the panel paints instantly;
@@ -2088,9 +2122,18 @@ function ProductionDocPage() {
     });
     setDoc(payload.doc);
     // Convert Record<number, string> → RowImageState[] aligned to rows.
-    const restoredImages: RowImageState[] = payload.doc.rows.map((_, i) => {
+    // Variant rows (variant_index > 0) WITHOUT a saved image still need
+    // their per-row "Generate variant" button as the call-to-action —
+    // not the regular Generate button which would route through the
+    // wrong (from-scratch i2i) path. Setting them to 'pending' renders
+    // the `•••` dots in the image column instead of the misleading
+    // "+ Generate" affordance. Symmetric with the fresh-doc init path
+    // a few hundred lines below.
+    const restoredImages: RowImageState[] = payload.doc.rows.map((row, i) => {
       const url = payload.rowImages[i];
-      return url ? { status: 'done', imageUrl: url } : { status: 'idle' };
+      if (url) return { status: 'done', imageUrl: url };
+      if ((row.variant_index ?? 0) > 0) return { status: 'pending' };
+      return { status: 'idle' };
     });
     setRowImages(restoredImages);
     // Overlays + clips keep their Record<number, …> shape locally; just
@@ -2428,9 +2471,23 @@ function ProductionDocPage() {
    * so a 3-variant group total is ~$0.073 — surfaced inline on the
    * Generate button label.
    */
-  const generateVariantImage = useCallback(async (variantIndex: number) => {
-    if (!doc) return;
-    const variantRow = doc.rows[variantIndex];
+  const generateVariantImage = useCallback(async (
+    variantIndex: number,
+    // Optional override for the doc whose rows are read. Lets callers in
+    // the auto-pipeline pass the freshly-returned doc directly, bypassing
+    // this callback's React-closure-bound `doc` — which is stale during
+    // the synchronous-tick window between setDoc(newDoc) and React's
+    // next render. Without this, auto-pipeline variant generation would
+    // see the OLD doc's rows and bail with "Row is not part of a
+    // variant group" because the `variant_index` / `group_id` fields
+    // weren't visible yet to this closure. Per-row button clicks (which
+    // happen well after re-render) leave this undefined and use `doc`
+    // as before.
+    docOverride?: ProductionDoc,
+  ) => {
+    const activeDoc = docOverride ?? doc;
+    if (!activeDoc) return;
+    const variantRow = activeDoc.rows[variantIndex];
     if (!variantRow) return;
     const groupId = variantRow.group_id;
     if (!groupId) {
@@ -2440,12 +2497,12 @@ function ProductionDocPage() {
     // Resolve the base's image URL from the rowImages sidecar — that's
     // where the editor stores generated image state. Falls back to
     // empty (which becomes BASE_NOT_GENERATED below).
-    const base = getBaseRow(doc, groupId);
+    const base = getBaseRow(activeDoc, groupId);
     if (!base) {
       toast.error('Base row not found for this variant group.');
       return;
     }
-    const baseRowIndex = doc.rows.indexOf(base);
+    const baseRowIndex = activeDoc.rows.indexOf(base);
     // Snapshot rowImages via the setState callback. The state is
     // declared LATER in the file (`rowImages` lives in a useState
     // ~200 lines below the writers block), so referring to it in a
@@ -2459,7 +2516,7 @@ function ProductionDocPage() {
     });
     const baseImageUrl = snapshot[baseRowIndex]?.imageUrl ?? '';
 
-    const prepared = composeVariantEditRequest(doc, variantRow, baseImageUrl);
+    const prepared = composeVariantEditRequest(activeDoc, variantRow, baseImageUrl);
     if (prepared.kind === 'error') {
       toast.error(prepared.message);
       return;
@@ -3941,8 +3998,22 @@ function ProductionDocPage() {
 
   const runRetryFailedImages = useCallback(async () => {
     if (retryingImages || imagesGenerating) return;
-    if (failedImagePlan.length === 0) return;
-    setRetryingImages({ done: 0, total: failedImagePlan.length });
+    // Collect failed variant rows too — they fall through `failedImagePlan`
+    // because that filter requires a non-empty ai_image_prompt (variants
+    // have it cleared by design). Without this, a 'Retry failed' click
+    // would only retry failed bases and leave failed variants stuck.
+    const failedVariantIndices = doc?.rows
+      ? doc.rows
+          .map((row, idx) => ({ row, idx }))
+          .filter(({ row, idx }) =>
+            (row.variant_index ?? 0) > 0 && rowImages[idx]?.status === 'error',
+          )
+          .map(({ idx }) => idx)
+      : [];
+    const totalRetries = failedImagePlan.length + failedVariantIndices.length;
+    if (totalRetries === 0) return;
+    setRetryingImages({ done: 0, total: totalRetries });
+    let cursor = 0;
     for (let n = 0; n < failedImagePlan.length; n++) {
       const item = failedImagePlan[n]!;
       await generateImageForRow(item.rowIndex, item.prompt, {
@@ -3955,18 +4026,32 @@ function ProductionDocPage() {
         overlayStockTerms: item.overlayStockTerms,
         skipOverlay: item.skipOverlay,
       });
-      setRetryingImages({ done: n + 1, total: failedImagePlan.length });
+      cursor += 1;
+      setRetryingImages({ done: cursor, total: totalRetries });
+    }
+    for (const idx of failedVariantIndices) {
+      console.info('[prodoc retry-failed variant]', {
+        rowIndex: idx,
+        groupId: doc?.rows[idx]?.group_id,
+        variantIndex: doc?.rows[idx]?.variant_index,
+      });
+      await generateVariantImage(idx);
+      cursor += 1;
+      setRetryingImages({ done: cursor, total: totalRetries });
     }
     setRetryingImages(null);
+    const variantSummary = failedVariantIndices.length > 0
+      ? ` + ${failedVariantIndices.length} variant${failedVariantIndices.length === 1 ? '' : 's'}`
+      : '';
     toast.success(
-      `Retried ${failedImagePlan.length} image${failedImagePlan.length === 1 ? '' : 's'}.`,
+      `Retried ${failedImagePlan.length} image${failedImagePlan.length === 1 ? '' : 's'}${variantSummary}.`,
     );
     // `generateImageForRow` is a per-render async function (not memoised) —
     // intentionally omitted from deps to avoid recreating this callback every
     // render. The function closes over stable state setters and `imageModel`
     // at call time, which is fine for a synchronous retry loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [retryingImages, imagesGenerating, failedImagePlan]);
+  }, [retryingImages, imagesGenerating, failedImagePlan, doc?.rows, rowImages, generateVariantImage]);
 
   // Bulk generate stills for every row that's currently empty (idle /
   // missing) with a usable AI prompt. Shares the same sequential
@@ -3985,7 +4070,10 @@ function ProductionDocPage() {
     if (retryingImages || imagesGenerating) return;
     if (emptyImagePlan.length === 0) return;
 
-    const collageOn = doc?.collage_mode === true;
+    // Default: ON. Only an explicit `false` (set via the settings
+    // toggle) opts out. Existing docs with no `collage_mode` field
+    // automatically run collage after the 2026-05-26 flip.
+    const collageOn = doc?.collage_mode !== false;
     const chunkCount = collageOn ? Math.floor(emptyImagePlan.length / 4) : 0;
     const tailCount = emptyImagePlan.length - chunkCount * 4;
     const confirmMsg = collageOn
@@ -4024,7 +4112,19 @@ function ProductionDocPage() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              prompts: chunk.map((c) => c.prompt),
+              // `cells` carries the per-row metadata so the collage
+              // route's `augmentCellPrompt` produces the same per-cell
+              // OST baking + safe-top bias + sheet-description hint
+              // that the single-shot route would have applied. See
+              // _plans/2026-05-26-collage-default-on-with-per-cell-augmentation.md.
+              cells: chunk.map((c) => ({
+                prompt: c.prompt,
+                onScreenText: c.onScreenText,
+                onScreenTextMode: c.onScreenTextMode,
+                sectionTitle: c.sectionTitle,
+                sectionTitleLayout: c.sectionTitleLayout,
+                styleSheetDescription: c.styleSheetDescription,
+              })),
               model: imageModel,
             }),
           });
@@ -4129,17 +4229,109 @@ function ProductionDocPage() {
     }
 
     setRetryingImages(null);
+
+    // After base rows finish, generate any variant rows in the doc via
+    // Atlas Edit on their base's image. Variant rows have an empty
+    // `ai_image_prompt` by design (the auto-grouping post-pass in
+    // src/lib/auto-group-variants.ts clears it; the dispatcher composes
+    // the final prompt from base.ai_image_prompt + variant_edit_prompt),
+    // so they're skipped by the bulk plan above. Without this phase,
+    // the user would have to click "Generate variant" on every variant
+    // row by hand — defeating the purpose of auto-grouping. Done
+    // sequentially because each Atlas Edit call is independent but
+    // they all hit the same Kie endpoint and rate-limiting parallel
+    // calls would be friction the user shouldn't have to think about.
+    // Two-stage filter (mirrors the auto-pipeline variant phase):
+    //   1) Skip variants that already have an image — re-generating wastes
+    //      money AND would clobber any image the user edited by hand.
+    //   2) Skip variants whose BASE has no image — they'd hit
+    //      BASE_NOT_GENERATED and spam error toasts. Surface a single
+    //      consolidated log line instead.
+    let imagesSnapshot: RowImageState[] = [];
+    setRowImages(prev => {
+      imagesSnapshot = prev;
+      return prev;
+    });
+    const variantRowIndices: number[] = [];
+    const { orphans: orphanCount, incomplete: incompleteCount } = (() => {
+      let orphans = 0;
+      let incomplete = 0;
+      if (!doc?.rows) return { orphans: 0, incomplete: 0 };
+      for (let i = 0; i < doc.rows.length; i++) {
+        const row = doc.rows[i];
+        if ((row.variant_index ?? 0) <= 0) continue;
+        if (imagesSnapshot[i]?.imageUrl) continue;
+        const editPrompt = row.variant_edit_prompt?.trim();
+        if (!editPrompt) {
+          incomplete += 1;
+          continue;
+        }
+        const groupId = row.group_id;
+        if (!groupId) continue;
+        const baseRowIdx = doc.rows.findIndex(
+          (r) => r.group_id === groupId && (r.variant_index ?? 0) === 0,
+        );
+        const baseHasImage = baseRowIdx >= 0 && Boolean(imagesSnapshot[baseRowIdx]?.imageUrl);
+        if (!baseHasImage) {
+          orphans += 1;
+          continue;
+        }
+        variantRowIndices.push(i);
+      }
+      return { orphans, incomplete };
+    })();
+    if (incompleteCount > 0) {
+      appendLog(
+        `⚠ ${incompleteCount} variant${incompleteCount === 1 ? '' : 's'} skipped — empty edit prompt. Fill in "what changes from the base" in the inspector and click Generate variant.`,
+      );
+    }
+    if (orphanCount > 0) {
+      appendLog(
+        `⚠ ${orphanCount} variant${orphanCount === 1 ? '' : 's'} skipped — base image not generated. Retry the failed base${orphanCount === 1 ? '' : 's'} first.`,
+      );
+    }
+
+    if (variantRowIndices.length > 0) {
+      appendLog(
+        `Generating ${variantRowIndices.length} variant frame${variantRowIndices.length === 1 ? '' : 's'} from base images via Atlas Edit (~$${(variantRowIndices.length * 0.011).toFixed(2)})...`,
+      );
+      let variantDone = 0;
+      let variantFailed = 0;
+      for (const idx of variantRowIndices) {
+        console.info('[prodoc bulk-empty variant]', {
+          rowIndex: idx,
+          groupId: doc?.rows[idx]?.group_id,
+          variantIndex: doc?.rows[idx]?.variant_index,
+          hasEditPrompt: Boolean(doc?.rows[idx]?.variant_edit_prompt?.trim()),
+        });
+        await generateVariantImage(idx);
+        let updated: RowImageState[] = [];
+        setRowImages(prev => {
+          updated = prev;
+          return prev;
+        });
+        if (updated[idx]?.imageUrl) variantDone += 1;
+        else variantFailed += 1;
+      }
+      appendLog(
+        `✓ Variant generation finished — ${variantDone} succeeded${variantFailed > 0 ? `, ${variantFailed} failed (click Retry on the failing variant or check console)` : ''}`,
+      );
+    }
+
+    const variantSummary = variantRowIndices.length > 0
+      ? ` + ${variantRowIndices.length} variant${variantRowIndices.length === 1 ? '' : 's'} via Atlas Edit`
+      : '';
     toast.success(
       collageOn
-        ? `Generated ${emptyImagePlan.length} image${emptyImagePlan.length === 1 ? '' : 's'} (${chunkCount} collage group${chunkCount === 1 ? '' : 's'}).`
-        : `Generated ${emptyImagePlan.length} image${emptyImagePlan.length === 1 ? '' : 's'}.`,
+        ? `Generated ${emptyImagePlan.length} image${emptyImagePlan.length === 1 ? '' : 's'} (${chunkCount} collage group${chunkCount === 1 ? '' : 's'})${variantSummary}.`
+        : `Generated ${emptyImagePlan.length} image${emptyImagePlan.length === 1 ? '' : 's'}${variantSummary}.`,
     );
     // Same deps justification as runRetryFailedImages above. `imageModel`
     // and `doc.collage_mode` are read inside but stable enough at the
     // batch's scope that we don't need to refire the callback when they
     // change mid-batch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [retryingImages, imagesGenerating, emptyImagePlan, doc?.collage_mode, imageModel]);
+  }, [retryingImages, imagesGenerating, emptyImagePlan, doc?.collage_mode, imageModel, doc?.rows, generateVariantImage]);
 
   const runRetryFailedVideos = useCallback(async () => {
     if (animatingAll || retryingVideos) return;
@@ -4265,6 +4457,60 @@ function ProductionDocPage() {
     })();
     return () => { cancelled = true; };
   }, [projectIdParam, projectPrefilled, scheduleItemId]);
+
+  // Wave 1 ?videoId= prefill — same shape as the ?projectId= block above
+  // but talks to /api/videos/[id] (the unified endpoint that returns the
+  // project + active script + channel + narrator/editor assignments in
+  // one round-trip). Skips when scheduleItemId or projectIdParam is set
+  // so those handoffs take precedence (they carry richer context). Also
+  // skips when projectPrefilled is true to avoid clobbering a project
+  // handoff that the user navigated through. Functional setters keep
+  // manual edits made before the fetch resolves.
+  useEffect(() => {
+    if (!videoIdParam || videoPrefilled || scheduleItemId || projectIdParam) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/videos/${videoIdParam}`);
+        if (cancelled) return;
+        if (!res.ok) return;
+        const data = await res.json();
+        const video: {
+          id?: string;
+          title?: string;
+          niche?: string;
+          topic?: string | null;
+        } | undefined = data?.video;
+        if (!video) return;
+        setVideoPrefilled(true);
+        const title = (video.title || video.topic || '').trim();
+        const videoNiche = (video.niche || '').trim();
+        if (title) setTopic(curr => curr || title);
+        if (videoNiche) setNiche(curr => curr || videoNiche);
+        // Also pull the active script via the existing projects-scripts
+        // endpoint — /api/videos/[id] returns metadata only, not the
+        // script body, so we mirror the ?projectId= path for the script.
+        try {
+          const scriptsRes = await fetch(`/api/projects/${videoIdParam}/scripts`);
+          if (!cancelled && scriptsRes.ok) {
+            const scriptsData = await scriptsRes.json();
+            type ScriptRow = { content?: string; is_active?: boolean };
+            const list: ScriptRow[] = Array.isArray(scriptsData?.scripts) ? scriptsData.scripts : [];
+            const active = list.find(s => s.is_active) ?? list[0];
+            if (active?.content) {
+              setScript(prev => prev || active.content!);
+            }
+          }
+        } catch {
+          // best-effort — leave the script blank if it can't be fetched
+        }
+        toast.message(`Loaded context from video "${title || 'untitled'}"`);
+      } catch {
+        // best-effort prefill
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [videoIdParam, videoPrefilled, scheduleItemId, projectIdParam]);
 
   // Restore last result from localStorage after mount (useEffect so SSR is unaffected).
   //
@@ -4914,9 +5160,37 @@ function ProductionDocPage() {
   // Load prefill from generator / QA pages. Functional setters so a
   // schedule-link prefill that resolved first isn't clobbered by stale
   // localStorage from an earlier handoff.
+  //
+  // Niche hints are seeded from BOTH recent-history (localStorage) and
+  // the workspace's configured Settings → Niches list. A user-facing
+  // gap (raised 2026-05-26) was that the autocomplete only showed
+  // recently-typed niches, never the deliberate list set up in
+  // /settings — so configured niches were invisible here. Pulling
+  // /api/niches deduplicates against the recent set.
   useEffect(() => {
-    setNicheHints(getRecentNiches());
+    const recent = getRecentNiches();
+    setNicheHints(recent);
     setTopicHints(getRecentTopics());
+    // Augment with workspace-configured niches. Best-effort: failures
+    // leave the recent-history list as-is. The deduplication preserves
+    // recent ordering (recent first) and appends any configured niches
+    // not already present.
+    fetch('/api/niches')
+      .then(r => (r.ok ? r.json() : null))
+      .then((data: { niches?: Array<{ name?: string; is_active?: boolean }> } | null) => {
+        if (!data || !Array.isArray(data.niches)) return;
+        const configured = data.niches
+          .filter(n => n.is_active !== false)
+          .map(n => (n.name ?? '').trim())
+          .filter(n => n.length > 0);
+        if (configured.length === 0) return;
+        const seen = new Set(recent.map(n => n.toLowerCase()));
+        const additions = configured.filter(n => !seen.has(n.toLowerCase()));
+        if (additions.length > 0) {
+          setNicheHints([...recent, ...additions]);
+        }
+      })
+      .catch(() => { /* best-effort */ });
     try {
       const raw = localStorage.getItem('prodoc_prefill');
       if (raw) {
@@ -5867,9 +6141,22 @@ function ProductionDocPage() {
       .map((r, i) => ({ row: r, idx: i }))
       .filter(({ row }) => row.ai_image_prompt?.trim());
 
-    // Initialise all row states immediately
+    // Initialise all row states immediately. Variant rows (variant_index
+    // > 0) intentionally carry an empty `ai_image_prompt` — their image
+    // is derived from the base via the per-row "Generate variant" button
+    // through Atlas Edit, NOT via stock search. Without this carve-out,
+    // every variant row would falsely surface a "Search Images" button
+    // in the image column alongside its real "Generate variant" CTA,
+    // which the user reported as confusing. Variants get 'pending' (the
+    // `•••` waiting indicator) so the Generate variant button is the
+    // unambiguous next action.
     const initialStates: RowImageState[] = rows.map(r => {
-      if (!r.ai_image_prompt?.trim()) {
+      const rBag = r as unknown as Record<string, unknown>;
+      const variantIndex = typeof rBag.variant_index === 'number'
+        ? (rBag.variant_index as number)
+        : -1;
+      const isDerivedVariant = variantIndex > 0;
+      if (!r.ai_image_prompt?.trim() && !isDerivedVariant) {
         const q = r.stock_search_terms || r.visual_description || r.visual_type;
         return {
           status: 'search',
@@ -5887,43 +6174,188 @@ function ProductionDocPage() {
     let doneCount = 0;
     const CONCURRENCY = 2;
 
-    for (let i = 0; i < aiRows.length; i += CONCURRENCY) {
-      if (signal?.aborted) break;
-      const batch = aiRows.slice(i, i + CONCURRENCY);
-      await Promise.all(
-        batch.map(async ({ row, idx }) => {
-          if (signal?.aborted) return;
-          // Read meta from the `rows` argument, not React `doc` state — see
-          // generateImageForRow header for why.
-          const skipOverlay = typeof row.skip_overlay === 'boolean'
-            ? row.skip_overlay
-            : (docOverlaysDisabled === true);
-          const sheetRef = doc ? resolveSheetReference(row, doc) : { referenceImageUrl: undefined, styleSheetDescription: undefined };
-          await generateImageForRow(
-            idx,
-            row.ai_image_prompt,
-            {
-              onScreenText: row.on_screen_text,
-              onScreenTextMode: row.on_screen_text_mode ?? doc?.on_screen_text_mode_default,
-              sectionTitle: row.section_title,
-              sectionTitleLayout: row.section_title_layout ?? doc?.section_title_layout_default,
-              referenceImageUrl: sheetRef.referenceImageUrl,
-              styleSheetDescription: sheetRef.styleSheetDescription,
-              overlayStockTerms: row.overlay_stock_terms,
-              skipOverlay,
-            },
-            signal,
-          );
-          doneCount++;
-          setImageProgress({ done: doneCount, total: aiRows.length });
-          appendLog(`Image ${doneCount}/${aiRows.length} — shot ${idx + 1} (${row.visual_type})`);
-        }),
-      );
-    }
+    try {
+      for (let i = 0; i < aiRows.length; i += CONCURRENCY) {
+        if (signal?.aborted) break;
+        const batch = aiRows.slice(i, i + CONCURRENCY);
+        await Promise.all(
+          batch.map(async ({ row, idx }) => {
+            if (signal?.aborted) return;
+            // Read meta from the `rows` argument, not React `doc` state — see
+            // generateImageForRow header for why.
+            const skipOverlay = typeof row.skip_overlay === 'boolean'
+              ? row.skip_overlay
+              : (docOverlaysDisabled === true);
+            const sheetRef = doc ? resolveSheetReference(row, doc) : { referenceImageUrl: undefined, styleSheetDescription: undefined };
+            await generateImageForRow(
+              idx,
+              row.ai_image_prompt,
+              {
+                onScreenText: row.on_screen_text,
+                onScreenTextMode: row.on_screen_text_mode ?? doc?.on_screen_text_mode_default,
+                sectionTitle: row.section_title,
+                sectionTitleLayout: row.section_title_layout ?? doc?.section_title_layout_default,
+                referenceImageUrl: sheetRef.referenceImageUrl,
+                styleSheetDescription: sheetRef.styleSheetDescription,
+                overlayStockTerms: row.overlay_stock_terms,
+                skipOverlay,
+              },
+              signal,
+            );
+            // Don't tick progress for rows that aborted mid-fetch — the
+            // fetch rejects with AbortError, generateImageForRow marks the
+            // row 'error', but we shouldn't count it as "done" or log
+            // "Image N/M shot K" past the user's cancel.
+            if (signal?.aborted) return;
+            doneCount++;
+            setImageProgress({ done: doneCount, total: aiRows.length });
+            appendLog(`Image ${doneCount}/${aiRows.length} — shot ${idx + 1} (${row.visual_type})`);
+          }),
+        );
+      }
 
-    setImagesGenerating(false);
-    appendLog(`✓ All ${aiRows.length} images complete`);
-    toast.success(`${aiRows.length} images generated`);
+      if (signal?.aborted) {
+        appendLog(`⊘ Image generation cancelled at ${doneCount}/${aiRows.length}`);
+        toast.info(`Image generation cancelled (${doneCount}/${aiRows.length} done)`);
+      } else {
+        appendLog(`✓ All ${aiRows.length} base images complete`);
+      }
+
+      // After all base rows finish, generate any variant rows via Atlas
+      // Edit on their base's image. Variants carry an empty
+      // `ai_image_prompt` by design (auto-grouping post-pass clears it
+      // so the dispatcher composes the final prompt from
+      // base.ai_image_prompt + variant_edit_prompt). Without this phase
+      // they'd never auto-generate on a fresh doc; the user would see
+      // bases-with-images alongside variants-with-no-images and have to
+      // click "Generate variant" on each by hand. Same logic as the
+      // "Generate empty images" button's variant phase but threaded
+      // into the auto-pipeline. Sequential because Atlas Edit hits the
+      // same Kie endpoint and parallel calls would just add rate-limit
+      // friction.
+      const variantIndices = rows
+        .map((row, idx) => ({ row, idx }))
+        .filter(({ row }) => {
+          const vidx = (row as unknown as Record<string, unknown>).variant_index;
+          return typeof vidx === 'number' && vidx > 0;
+        })
+        .map(({ idx }) => idx);
+
+      if (!signal?.aborted && variantIndices.length > 0) {
+        // Two-stage filter:
+        //   (1) Skip variants whose image already generated successfully in
+        //       a prior run — re-generating wastes ~$0.011 each AND would
+        //       clobber a possibly-user-edited image.
+        //   (2) Skip variants whose BASE has no image — generateVariantImage
+        //       would hit composeVariantEditRequest's BASE_NOT_GENERATED
+        //       branch, surfacing a toast.error per row. In a 130-row doc
+        //       with 35 orphan variants that's 35 error toasts — solid
+        //       UX failure. Quietly log them instead and let the user
+        //       fix the failed base before retrying variants.
+        let imagesSnapshot: RowImageState[] = [];
+        setRowImages(prev => {
+          imagesSnapshot = prev;
+          return prev;
+        });
+        const pendingVariantIndices: number[] = [];
+        const orphanVariantIndices: number[] = [];
+        const incompleteVariantIndices: number[] = [];
+        for (const idx of variantIndices) {
+          const ownImage = imagesSnapshot[idx]?.imageUrl;
+          if (ownImage) continue; // already generated
+          const editPrompt = rows[idx]?.variant_edit_prompt?.trim();
+          if (!editPrompt) {
+            // Manually-added variant with no edit prompt yet — generating
+            // would hit MISSING_EDIT_PROMPT and spam toasts. Skip quietly;
+            // the per-row inspector\'s edit-prompt field is the place to
+            // fill it in.
+            incompleteVariantIndices.push(idx);
+            continue;
+          }
+          const groupId = rows[idx]?.group_id;
+          if (!groupId) continue;
+          const baseRowIdx = rows.findIndex(
+            (r) => r.group_id === groupId && (r.variant_index ?? 0) === 0,
+          );
+          const baseHasImage = baseRowIdx >= 0 && Boolean(imagesSnapshot[baseRowIdx]?.imageUrl);
+          if (!baseHasImage) {
+            orphanVariantIndices.push(idx);
+            continue;
+          }
+          pendingVariantIndices.push(idx);
+        }
+        const skipped =
+          variantIndices.length -
+          pendingVariantIndices.length -
+          orphanVariantIndices.length -
+          incompleteVariantIndices.length;
+        if (incompleteVariantIndices.length > 0) {
+          appendLog(
+            `⚠ ${incompleteVariantIndices.length} variant${incompleteVariantIndices.length === 1 ? '' : 's'} skipped — empty edit prompt. Fill in "what changes from the base" in the inspector and click Generate variant.`,
+          );
+        }
+        if (orphanVariantIndices.length > 0) {
+          appendLog(
+            `⚠ ${orphanVariantIndices.length} variant${orphanVariantIndices.length === 1 ? '' : 's'} can't generate — base image didn't generate. Retry the failed base${orphanVariantIndices.length === 1 ? '' : 's'} first.`,
+          );
+        }
+        appendLog(
+          `Generating ${pendingVariantIndices.length} variant frame${pendingVariantIndices.length === 1 ? '' : 's'} from base images via Atlas Edit (~$${(pendingVariantIndices.length * 0.011).toFixed(2)})${skipped > 0 ? ` — skipping ${skipped} already generated` : ''}...`,
+        );
+        // CRITICAL — pass the freshly-returned `rows` as an explicit
+        // doc override. `generateVariantImage`'s React-closure-bound
+        // `doc` is STALE during the synchronous-tick window between
+        // setDoc(result) and React's next render — and we're inside
+        // that window here (the auto-pipeline kicks off variant
+        // generation immediately after the bases finish, before any
+        // user interaction triggers a re-render). Without the
+        // override, every variant call would bail with "Row is not
+        // part of a variant group" because the auto-grouping's
+        // `variant_index` / `group_id` stampings exist only on these
+        // fresh rows, not on the stale-closure doc.
+        const docForVariants = { rows } as ProductionDoc;
+        let variantDone = 0;
+        let variantFailed = 0;
+        for (const idx of pendingVariantIndices) {
+          if (signal?.aborted) break;
+          console.info('[prodoc auto-pipeline variant]', {
+            rowIndex: idx,
+            groupId: rows[idx]?.group_id,
+            variantIndex: rows[idx]?.variant_index,
+            hasEditPrompt: Boolean(rows[idx]?.variant_edit_prompt?.trim()),
+          });
+          await generateVariantImage(idx, docForVariants);
+          // Read updated state to count outcomes — a diagnostic so the
+          // user (and future debugger) can see how many variants
+          // succeeded vs failed without trawling the toast history.
+          let updated: RowImageState[] = [];
+          setRowImages(prev => {
+            updated = prev;
+            return prev;
+          });
+          if (updated[idx]?.imageUrl) variantDone += 1;
+          else variantFailed += 1;
+        }
+        if (!signal?.aborted) {
+          appendLog(
+            `✓ Variant generation finished — ${variantDone} succeeded${variantFailed > 0 ? `, ${variantFailed} failed (click Retry on the failing variant or check console)` : ''}`,
+          );
+        }
+      }
+
+      if (!signal?.aborted) {
+        const variantSummary = variantIndices.length > 0
+          ? ` + ${variantIndices.length} variant${variantIndices.length === 1 ? '' : 's'} via Atlas Edit`
+          : '';
+        toast.success(`${aiRows.length} image${aiRows.length === 1 ? '' : 's'} generated${variantSummary}`);
+      }
+    } finally {
+      setImagesGenerating(false);
+      // Now that no more in-flight work is bound to this controller, clear
+      // it so the next generate() run starts fresh. (generate()'s own
+      // finally deliberately no longer nulls — see comment there.)
+      abortControllerRef.current = null;
+    }
   }
 
   // ── Main generation
@@ -5944,7 +6376,24 @@ function ProductionDocPage() {
   }, []);
 
   function cancelGeneration() {
-    abortControllerRef.current?.abort();
+    const controller = abortControllerRef.current;
+    console.info('[prodoc cancel] Stop clicked', {
+      hasController: Boolean(controller),
+      alreadyAborted: controller?.signal.aborted ?? null,
+      generating,
+      imagesGenerating,
+      imageProgress,
+    });
+    if (!controller) {
+      // Pre-fix this branch was the silent failure: generate()'s finally
+      // nulled the ref while generateImages kept running fire-and-forget,
+      // so Stop became a no-op once the doc had returned. Kept as a
+      // defensive log in case a future code path re-introduces it.
+      appendLog('⚠ Stop pressed but no in-flight generation is registered');
+      return;
+    }
+    controller.abort();
+    appendLog('⊘ Stop requested — cancelling in-flight work…');
   }
 
   async function generate() {
@@ -6021,8 +6470,15 @@ function ProductionDocPage() {
       appendLog(`Script: ${totalWords} words · Style: ${stylePreset}${analyzedCount > 0 ? ` · ${analyzedCount} visual ref(s) analyzed` : ''}`);
 
       // ── Chunked generation — split long scripts to avoid 504 timeouts ──────────
-      // 700 words ≈ 35–50 rows per chunk, comfortably within the API's 16k output cap.
-      const MAX_CHUNK_WORDS = 700;
+      // 300 words ≈ 15–22 rows per chunk. Two prior caps (700, then 450)
+      // both hit the model's output token ceiling on verbose-suffix
+      // styles like doodle_explainer_2: each row carries the full style
+      // suffix in `ai_image_prompt`, so output tokens scale with rows ×
+      // suffix length rather than input words. At 300 words, even the
+      // chunkiest doodle prompt produces ~6-8k output tokens, sitting
+      // safely under GPT-mini-class models' 16k cap. Tradeoff: ~4-5
+      // requests for a 1.2k-word script (vs 2-3 at 450w).
+      const MAX_CHUNK_WORDS = 300;
       const chunks = splitScriptIntoChunks(script.trim(), MAX_CHUNK_WORDS);
       const isMultiChunk = chunks.length > 1;
       if (isMultiChunk) {
@@ -6193,7 +6649,12 @@ function ProductionDocPage() {
       }
     } finally {
       setGenerating(false);
-      abortControllerRef.current = null;
+      // Do NOT null abortControllerRef here. generateImages above is
+      // fire-and-forget and may still be running for the next ~30–60 s ×
+      // (rows / concurrency). The image-progress UI still exposes a Stop
+      // button bound to the same controller, so the ref must stay live
+      // until generateImages finishes (it clears the ref itself on exit).
+      // Nulling here previously made Stop a silent no-op during image gen.
     }
   }
 
@@ -7053,11 +7514,12 @@ function ProductionDocPage() {
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <div>
             <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>Niche *</label>
-            <AutocompleteInput
+            <NichePicker
               value={niche}
               onChange={setNiche}
               suggestions={nicheHints}
               placeholder="e.g. Cybersecurity & Antivirus"
+              required
             />
           </div>
           <div>
@@ -7715,31 +8177,41 @@ function ProductionDocPage() {
               which has its own server-side flag (defence in depth). */}
           {COLLAGE_TESTER_PUBLIC && <CollageTesterPanel />}
 
-          {/* Collage batch mode — when on, "Generate empty" groups 4
-              consecutive shots into a single 2×2 collage call + 1
-              upscale (~75% cheaper than 4 single calls). Per-shot
+          {/* Collage batch mode — when on (default), "Generate empty"
+              groups 4 consecutive shots into a single 2×2 collage call
+              + 1 upscale (~75% cheaper than 4 single calls). Per-cell
+              OST baking, safe-top, and sheet description are applied
+              per cell — behaviour matches single-shot mode. Per-shot
               Regenerate stays single-image regardless. Falls back to
-              single shots automatically on per-chunk failure. v1
-              limitations: no per-cell OST baking, no style-ref i2i. */}
+              single shots automatically on per-chunk failure or
+              ineligible groups (mixed model, i2i, <4 shots). Default
+              flipped to ON 2026-05-26 with augmentation parity. */}
           <div
             className="flex items-center gap-2 mb-4 px-3 py-2 rounded text-xs"
             style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}
           >
             <label
               className="flex items-center gap-2 cursor-pointer"
-              title='Group every 4 shots into a single 2×2 collage call. The server upscales the collage and crops it into 4 per-shot images. ~75% cheaper than 4 single calls. Limitations: no per-cell on-screen-text baking. Per-shot Regenerate always stays single-image.'
+              title='Group every 4 shots into a single 2×2 collage call. The server upscales the collage once and crops it into 4 per-shot images. ~75% cheaper than 4 single calls, with byte-identical per-cell OST/safe-top/sheet-description augmentation. Default: ON. Per-shot Regenerate always stays single-image.'
             >
               <input
                 type="checkbox"
-                checked={doc.collage_mode === true}
+                checked={doc.collage_mode !== false}
                 onChange={(e) => {
                   const next: ProductionDoc = { ...doc };
                   if (e.target.checked) {
-                    next.collage_mode = true;
-                  } else {
+                    // Default is ON — clearing the field reverts to the
+                    // default. Storing `true` explicitly would also work
+                    // but `delete` keeps the persisted doc smaller for
+                    // the common case.
                     delete next.collage_mode;
+                  } else {
+                    // Explicit `false` is required to override the
+                    // default-on behaviour; `undefined` and `true` both
+                    // mean "collage on" after the 2026-05-26 flip.
+                    next.collage_mode = false;
                   }
-                  console.info('[collage-mode] doc-level toggle', { collage_mode: next.collage_mode === true });
+                  console.info('[collage-mode] doc-level toggle', { collage_mode: next.collage_mode !== false });
                   setDoc(next);
                   if (historyEntryId) {
                     updateProductionDocEntry(historyEntryId, { doc: next }).catch(() => {});
@@ -7752,8 +8224,8 @@ function ProductionDocPage() {
               </span>
             </label>
             <span style={{ color: 'var(--text-muted)' }}>
-              {doc.collage_mode === true
-                ? 'on: ~75% cheaper, slight quality tradeoff, no per-cell text baking'
+              {doc.collage_mode !== false
+                ? 'on (default): ~75% cheaper, per-cell text baking matches single-shot'
                 : 'off: each shot is its own generation call'}
             </span>
           </div>

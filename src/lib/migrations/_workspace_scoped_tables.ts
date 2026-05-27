@@ -21,6 +21,7 @@
  */
 
 export const ROOT_TENANT_TABLES = [
+  // Original phase-1 root tables.
   'projects',
   'channels',
   'niches',
@@ -35,6 +36,66 @@ export const ROOT_TENANT_TABLES = [
   'reference_library',
   'google_auth_tokens',
   'production_doc_styles',
+  // Post-rollout tables added 2026-05-26 after a `CREATE TABLE` audit
+  // showed they all declare workspace_id in their own CREATE (so the
+  // backfill UPDATE is a no-op for them — the column is already
+  // populated at INSERT time). Listing them here keeps:
+  //   1. the `workspace-scope.ts` runtime allowlist in sync,
+  //   2. any future workspace-deletion cascade aware of them, and
+  //   3. the tenancy test exercising every workspace-scoped surface.
+  // Several are denormalized children (pipeline_run_videos carries its
+  // own workspace_id rather than join through pipeline_runs); they
+  // sit under ROOT rather than CHILD because they don't need parent-
+  // join backfill.
+  'ab_test_snapshots',
+  'ab_tests',
+  'admin_audit_log',
+  'ai_spend_log',
+  'ask_studio_questions',
+  'broll_clips',
+  'cannibalization_alerts',
+  'comment_sync_runs',
+  'critic_panel_events',
+  'critic_panels',
+  'dip_analyses',
+  'dubbed_voiceovers',
+  'editor_telemetry',
+  'insight_digests',
+  'messages',
+  'niche_discoveries',
+  'niche_favorite_briefs',
+  'niche_favorite_videos',
+  'niche_favorites',
+  'niche_reports',
+  'niche_search_presets',
+  'niche_taxonomy_scores',
+  'niche_watchlist',
+  'pipeline_presets',
+  'pipeline_run_videos',
+  'pipeline_runs',
+  'prediction_outcomes',
+  'published_videos',
+  'retention_predictions',
+  'saved_catalog_views',
+  'shorts',
+  'style_reference_images',
+  'style_test_renders',
+  'team_hub_audit_log',
+  'thumbnail_template_presets',
+  'user_history',
+  'video_analytics',
+  'video_analytics_history',
+  'video_breakout_fires',
+  'video_format_tags',
+  'video_search_terms',
+  'video_stage_transitions',
+  'webhook_deliveries',
+  'webhook_subscriptions',
+  'workflow_action_runs',
+  'workflow_rules',
+  'workspace_model_defaults',
+  'youtube_analyses',
+  'youtube_comments',
 ] as const;
 
 export interface ChildTenantTable {

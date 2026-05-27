@@ -74,13 +74,14 @@ export async function POST(req: NextRequest) {
     `;
 
     // ─── Drain ──────────────────────────────────────────────────────
+    // processNextVideo returns 'advanced' for every row that got
+    // processed (advance or terminal failure — both count as work
+    // done by this tick) or 'no_work' when the queue is empty.
     let advanced = 0;
-    let released = 0;
     let noWork = false;
     for (let i = 0; i < DRAIN_PER_TICK; i++) {
       const result = await processNextVideo();
       if (result === 'advanced') advanced++;
-      else if (result === 'released') released++;
       else {
         noWork = true;
         break;
@@ -90,7 +91,6 @@ export async function POST(req: NextRequest) {
     return {
       overdue: overdue.rowCount ?? 0,
       advanced,
-      released,
       drained_to_empty: noWork,
     };
   });

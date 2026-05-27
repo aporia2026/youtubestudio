@@ -288,6 +288,16 @@ ${referenceContext}
 - If multiple references are provided, synthesize the best elements from each` : ''}
 ${styleNote}${stylePresetBlock}
 
+## SECTION HEADINGS — MANDATORY FORMAT
+Every section heading in your output (HOOK, INTRO, each MAIN CONTENT section, OUTRO, and any in-script titles like "Chapter One" or topic names) MUST be on its own line with a leading \`## \` (two hash marks + one space). Example:
+
+\`\`\`
+## The Vanishing
+In February 1959, nine hikers died...
+\`\`\`
+
+Why this matters: a downstream production-doc generator extracts headings from \`##\` markers and turns each into a Title Card scene. Headings without \`##\` are treated as regular narration, silently dropping the section structure. **No exceptions** — even when the section count or section names change for this specific video, every section's title still gets the \`## \` prefix.
+
 ## Structure (follow precisely — word counts are SPOKEN words, excluding [VISUAL CUE: ...] / [PAUSE] / [SFX: ...]):
 
 ${constraints?.skipHook
@@ -2136,6 +2146,15 @@ export function productionDocPrompt({
   const totalSecs = chunkDurationSeconds % 60;
   const totalDuration = `${totalMins}:${String(totalSecs).padStart(2, '0')}`;
 
+  // Per-row word budgets derived from the speaking pace. LLMs respect
+  // concrete word counts far better than abstract time bounds — at 135
+  // wpm the 4–6 s sweet spot is just 9–14 words, which is shorter than
+  // the model's default sentence length and needs to be stated as a
+  // hard number, not a duration the model has to convert.
+  const minWordsPerRow = Math.max(1, Math.round((4 * speakingPaceWpm) / 60));
+  const maxWordsPerRow = Math.round((6 * speakingPaceWpm) / 60);
+  const ceilingWordsPerRow = Math.round((7 * speakingPaceWpm) / 60);
+
   const styleSuffix = style?.ai_image_suffix ?? null;
   const mixingRules = style?.mixing_rules?.trim() ?? '';
   // Overlay stock terms are offered to the LLM only when (a) the style
@@ -2150,10 +2169,12 @@ export function productionDocPrompt({
 ## MANDATORY IMAGE STYLE — APPLIES TO ALL ai_image_prompt FIELDS
 
 ${styleSuffix ? `### Chosen Style: ${style!.label}
-Every non-empty ai_image_prompt MUST end with this exact suffix (copy verbatim, do not rephrase):
+The visual aesthetic for this doc is:
 "${styleSuffix}"
 
-The style controls the VISUAL AESTHETIC of generated images — it does not restrict which shot types (Talking Head, B-Roll, etc.) you may use. Choose shot types based on what best serves the content. The style suffix ensures every generated image looks consistent.` : ''}
+Use this aesthetic as the lens for every scene body you write — pick subjects, framings, and details that fit it. **Do NOT copy the aesthetic text into ai_image_prompt; it is attached automatically downstream after generation.** Just write the focused scene body (subject, action, environment, lighting, camera angle) and the style will be enforced for you.
+
+The style controls the VISUAL AESTHETIC of generated images — it does not restrict which shot types (Talking Head, B-Roll, etc.) you may use. Choose shot types based on what best serves the content.` : ''}
 
 ${mixingRules ? `### Mixing Rules — When to Combine AI Visuals With Real Stock Assets
 These rules tell you when a row should ALSO carry an \`overlay_stock_terms\` value so the editor can composite a real-world asset (logo, screenshot, photograph) on top of the AI-generated visual in post.
@@ -2174,24 +2195,32 @@ ${mandatoryStyleBlock}
 ## YOUR TASK
 Break the provided script into timed production rows. Each row = one visual shot or scene change. Aim for **4–6 seconds of narration per row**, and NEVER let a row exceed 7 seconds. Short, punchy scenes feel intentional; long scenes drag and any single image-to-video clip starts to freeze on its last frame past ~10s. Shorter scenes are non-negotiable.
 
-## TIMING RULES
-- Speaking pace is ${speakingPaceWpm} words per minute
-- **Target: 4–6 seconds of spoken content per row.**
-- **Hard ceiling: 7 seconds.** If a sentence alone would exceed this, break the sentence between two rows at a natural pause (comma, conjunction, clause boundary) so each row stays within the cap. The two rows share continuous narration but show DIFFERENT visuals — pick distinct visual moments to keep the screen alive.
-- A row may run shorter than 4 seconds if the content truly calls for a quick cut (one-line punchline, beat shift, sudden pivot) — short is fine, long is not.
-- Timecodes for THIS segment start at **${startTimecode}** and end at **${endTimecode}**
-- First row timecode MUST be "${startTimecode}" — increment from there based on word count
+## TIMING RULES — COUNT THE WORDS BEFORE YOU EMIT EACH ROW
+- Speaking pace is ${speakingPaceWpm} words per minute.
+- **Per-row word budget at this pace:**
+  - Target: **${minWordsPerRow}–${maxWordsPerRow} words** of \`script_text\` per row (the 4–6s sweet spot).
+  - Hard ceiling: **${ceilingWordsPerRow} words** per row. Above this the row exceeds 7s and the renderer freezes the last frame for the rest of the take.
+- These numbers are derived from the speaking pace. Count the words in each \`script_text\` you write — if a row would exceed ${ceilingWordsPerRow} words, SPLIT IT before emitting. Do not emit it and hope the post-processor handles it: not every long sentence has an internal comma the splitter can use, and those rows freeze on the rendered video.
+- Splitting rules: if a single source sentence runs longer than ${ceilingWordsPerRow} words, break it between two rows at a natural pause — preferring a **comma**, then a **conjunction (and / but / so / because / however / although / while)**, then any **clause boundary**. The two halves keep continuous narration (read back-to-back the listener hears one sentence) but show DIFFERENT visuals — pick distinct visual moments to keep the screen alive.
+- A row may run shorter than ${minWordsPerRow} words if the content truly calls for a quick cut (one-line punchline, beat shift, sudden pivot) — short is fine, long is not.
+- Timecodes for THIS segment start at **${startTimecode}** and end at **${endTimecode}**.
+- First row timecode MUST be "${startTimecode}" — increment from there based on word count.
+
+### FAIL CRITERIA
+Any row whose \`script_text\` exceeds ${ceilingWordsPerRow} words at ${speakingPaceWpm} wpm will be auto-split by the server's deterministic post-pass. If that pass finds no internal comma/conjunction to split on, the row is left intact AND surfaces a warning to the user, AND the rendered scene will freeze its last frame after 7s. Either outcome is a failure. Split long rows yourself, in the prompt output, before this happens.
 
 ### Worked example — splitting a long sentence across two rows
 
-If the script contains a single 16-second sentence at ${speakingPaceWpm} wpm (around 36 words), do NOT produce one 16s row. Produce two:
+If the script contains a single 36-word sentence (~16 s at ${speakingPaceWpm} wpm), do NOT produce one big row. Split it at the comma:
 
 \`\`\`
-Row A: timecode "0:00", script_text "When we first looked at the data we expected a clear pattern, something obvious that would explain everything we had been seeing for months,", visual: wide-shot of analyst at desk staring at screens, expression of focus
-Row B: timecode "0:06", script_text "but what we actually found was so strange that we had to run the entire experiment three more times just to believe it.", visual: close-up insert of the surprising chart on the screen, dramatic
+Row A: timecode "0:00", script_text "When we first looked at the data we expected a clear pattern, something obvious that would explain everything we had been seeing for months,", visual_description: "wide-shot of analyst at desk staring at screens, expression of focus"
+Row B: timecode "0:06", script_text "but what we actually found was so strange that we had to run the entire experiment three more times just to believe it.", visual_description: "close-up insert of the surprising chart on the screen, dramatic"
 \`\`\`
 
-Each row is ~5–6 s. The narration flows continuously when the two voiceover lines are read back-to-back, but the editor cuts to a new visual mid-sentence — exactly what good documentary editing does.
+Row A is 23 words (~10 s — still over budget, would itself need another split at "pattern, something" → 14 words + 9 words). Row B is 22 words (~10 s — split again at "strange that" → 14 + 8). Real result: 4 rows of ~9–14 words each, all under the ${ceilingWordsPerRow}-word ceiling. The narration flows continuously when the four voiceover lines are read back-to-back, but the editor cuts to a new visual at every break — exactly what good documentary editing does.
+
+The bigger lesson: any source sentence over ~${ceilingWordsPerRow} words almost always needs to be split TWICE, not once. Count words before you emit.
 
 ## COLUMN DEFINITIONS
 
@@ -2238,14 +2267,14 @@ ${ssmlSections.map((s, i) => `### Section ${i + 1}\n${s.length > 280 ? s.slice(0
 
 For each section: emit one OR MORE rows. A short section (≤ 7 seconds at the speaking pace) becomes a single row. A longer section is split into multiple rows on sentence boundaries WITHIN that section. Do not pull content forward from the next section to "fill" a short row. The user authored these breaks deliberately to separate beats; preserve that structure verbatim.` : ''}
 
-**visual_description** — Specific and actionable for the editor. Include: subject, action, shot type (wide/medium/close), lighting/mood. Match the chosen visual style precisely.
+**visual_description** — Specific and actionable for the editor. **15–25 words.** Include: subject, action, shot type (wide/medium/close), lighting/mood. Match the chosen visual style precisely. Keep it concise — the style is enforced downstream, not here.
 
 **stock_search_terms** — 2–4 comma-separated keywords for stock image/footage search. For animation rows, describe what the scene depicts (e.g. "cartoon character thinking, 2D animation").
 
-**ai_image_prompt** — A complete, detailed prompt for AI image generation. Minimum 40 words. Must be usable as-is.
+**ai_image_prompt** — A scene prompt for AI image generation. **35–55 words — scene body only.** The chosen style's aesthetic suffix is appended automatically after generation, so do NOT write it yourself.
 - For "Talking Head" and "Screen Recording" rows: set to "" (empty — these use stock search instead)
-- For ALL other rows: write a full scene prompt, then append the mandatory style suffix verbatim${styleSuffix ? ` ("${styleSuffix}")` : ''}
-- The prompt must describe the exact scene: subject, action, environment, lighting, camera angle — then the style suffix
+- For ALL other rows: write a focused scene body in 35–55 words — that is the whole field. Nothing else.
+- The scene body must describe: subject, action, environment, lighting, camera angle — concise, no decorative adjectives stacked on each noun. The style is added for you downstream.
 
 ${allowOverlay ? `**overlay_stock_terms** — OPTIONAL. 2–4 comma-separated keywords for a real-world asset (logo, screenshot, photo) the editor will composite on top of the AI-generated visual in post. ONLY populate this when the Mixing Rules above explicitly call for it. Leave as "" otherwise. When set:
   - visual_type STAYS as Animation (or whatever the doodle scene calls for) — do NOT switch to "Screen Recording" or "B-Roll"
@@ -2299,7 +2328,7 @@ ${overlaysDisabled ? `**OVERLAY MODE: OFF for this doc.** The user has disabled 
       "visual_type": "Title Card",
       "visual_description": "specific shot direction matching the chosen style",
       "stock_search_terms": "keyword1, keyword2",
-      "ai_image_prompt": "Full detailed scene prompt... ${styleSuffix ?? ''}",${allowOverlay ? `
+      "ai_image_prompt": "Focused 35–55 word scene body — subject, action, environment, lighting, camera angle. No style suffix; it is appended automatically downstream.",${allowOverlay ? `
       "overlay_stock_terms": "",
       "overlay_zone": "",
       "overlay_size": "",` : ''}
@@ -2310,11 +2339,30 @@ ${overlaysDisabled ? `**OVERLAY MODE: OFF for this doc.** The user has disabled 
 }
 \`\`\`
 
+### OPTIONAL — variant-group fields
+
+When the chosen style's mixing_rules ABOVE describe variant groups (a base + N derived edits sharing one composition), add these THREE optional fields to grouped rows. Omit them entirely on standalone rows.
+
+\`\`\`json
+{
+  "...": "all the core fields above",
+  "group_id": "rxn-pause-1",
+  "variant_index": 0,
+  "variant_edit_prompt": ""
+}
+\`\`\`
+
+  - \`group_id\` — any short string. Use the SAME group_id on every row in the variant group. Standalone rows omit it.
+  - \`variant_index\` — 0 for the BASE row of the group; 1, 2, 3 for derived edits in order. Cap at 4 rows per group.
+  - \`variant_edit_prompt\` — REQUIRED on derived rows (variant_index > 0): the smallest possible delta from the base ("raise the right eyebrow", "open the mouth into an O shape"). LEAVE \`ai_image_prompt\` EMPTY on derived rows — the server composes the final prompt from the base's ai_image_prompt + this delta. The BASE row keeps the full ai_image_prompt and omits variant_edit_prompt.
+
+Only emit variant groups when the chosen style's mixing_rules explicitly permit them AND the script has multiple consecutive narration beats hitting one visual moment. Default = no group_id, no variant_index, no variant_edit_prompt.
+
 ABSOLUTE RULES:
-- Every row has all ${allowOverlay ? '11' : '8'} fields
+- Every row has all ${allowOverlay ? '11' : '8'} core fields (variant fields are OPTIONAL and only appear on grouped rows — they're additive, never replace core fields)
 - script_text is verbatim from the script — never paraphrase
-- ai_image_prompt ≥ 40 words for every non-Talking Head / non-Screen Recording / non-Title-Card row
-- Every ai_image_prompt MUST end with the style suffix${styleSuffix ? ` "${styleSuffix}"` : ' (if one was specified)'}
+- ai_image_prompt is 35–55 words (the scene body only) for every non-Talking Head / non-Screen Recording / non-Title-Card row
+- Do NOT append the style suffix to ai_image_prompt — it is attached automatically by the server after generation
 - Talking Head + Screen Recording + Title Card → ai_image_prompt = ""
 - EVERY \`<<TITLE_N>>\` sentinel in the input script MUST become exactly one standalone Title Card row at that position. Do NOT skip any sentinel. Do NOT invent extra Title Card rows for text that is not a sentinel.
 - The sentinel text itself (\`<<TITLE_0>>\`, \`<<TITLE_1>>\`, etc.) MUST NEVER appear inside any row's \`script_text\` — use the mapped title text only.

@@ -5,18 +5,24 @@ import path from 'node:path';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
 import { createKieTask, pollKieResultThenUpscale } from '@/lib/kie-poll';
-import { getAppUrl } from '@/lib/email';
-import { generateImageOpenAI, isOpenAIDirectImageModel } from '@/lib/openai-images';
+import { generateImageOpenAI } from '@/lib/openai-images';
 import { uploadToBucket, getImagesBucket, getImagesDownloadUrl } from '@/lib/r2';
 import {
   topicCardGridImagePrompt,
   validateCardList,
   makeDefaultLayout,
-  computeRegions,
+  computeRegionsFor,
   DEFAULT_CANVAS,
+  type CardShape,
   type TopicCard,
   type GlobalPalette,
 } from '@/lib/thumbnail-formats/topic-card-grid';
+import {
+  applyCellUploads,
+  SHARP_INPUT_PIXEL_CAP,
+  type CellUpload,
+} from '@/lib/thumbnail-formats/topic-card-grid-composite';
+import sharp from 'sharp';
 import { assertSafePublicUrl } from '@/lib/url-safety';
 import type { ThumbnailRegion } from '@/remotion/types';
 
@@ -27,23 +33,58 @@ const BUNDLED_REFERENCE_PATH = path.join(
   BUNDLED_REFERENCE_FILENAME,
 );
 
+/** Stable R2 key for the bundled default reference image. Same key on
+ *  every deploy so we don't accumulate orphaned copies, and so the
+ *  upload-if-missing call below is idempotent. */
+const BUNDLED_REFERENCE_R2_KEY = `thumbnails/format-grid-defaults/${BUNDLED_REFERENCE_FILENAME}`;
+
+/** Module-scoped cache flag — once we've staged the bundled default to
+ *  R2 within this Function instance we don't need to re-upload on every
+ *  request. Cold starts repeat the upload; that's fine, R2 PUT is
+ *  idempotent and adds ~100ms only on the first request per instance. */
+let bundledReferenceStagedToR2 = false;
+
 /**
  * Returns the public URL of the bundled curated default reference image
- * IFF it exists on disk in this deployment. Kie needs a public URL to
- * fetch the reference, so we hand it `${getAppUrl()}/thumbnail-formats/
- * topic-card-grid-default.png` — same file Next.js serves from /public.
+ * IFF it exists on disk in this deployment.
+ *
+ * Background: Kie fetches the reference URL from its own servers. If we
+ * hand it `${getAppUrl()}/thumbnail-formats/...`, that URL goes through
+ * Vercel Deployment Protection on preview deploys (and even on production
+ * deploys that have protection enabled), so Kie's fetch returns 401 and
+ * Kie surfaces "Image fetch failed. Check access settings or use our File
+ * Upload API instead." The fix: stage the PNG to R2 with a stable key and
+ * hand Kie the R2 presigned URL, which is publicly fetchable.
  *
  * Returns null when the PNG hasn't been generated and committed yet, so
  * the API can fall back to "reference upload required" cleanly.
  */
 async function bundledReferenceUrlIfPresent(): Promise<string | null> {
+  let buf: Buffer;
   try {
-    await fs.access(BUNDLED_REFERENCE_PATH);
-    const base = getAppUrl().replace(/\/$/, '');
-    return `${base}/thumbnail-formats/${BUNDLED_REFERENCE_FILENAME}`;
+    buf = await fs.readFile(BUNDLED_REFERENCE_PATH);
   } catch {
     return null;
   }
+  if (!bundledReferenceStagedToR2) {
+    try {
+      await uploadToBucket(getImagesBucket(), BUNDLED_REFERENCE_R2_KEY, buf, 'image/png');
+      bundledReferenceStagedToR2 = true;
+      logger.info('[thumb-format-grid image] bundled reference staged to r2', {
+        r2_key: BUNDLED_REFERENCE_R2_KEY,
+        bytes: buf.byteLength,
+      });
+    } catch (err) {
+      // Surface — without R2 access the route cannot produce a Kie-
+      // accessible URL for the bundled default. Caller will return a
+      // clear 400 to the user.
+      logger.warn('[thumb-format-grid image] bundled reference r2 stage failed', {
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+  return await getImagesDownloadUrl(BUNDLED_REFERENCE_R2_KEY);
 }
 
 export const maxDuration = 300;
@@ -106,7 +147,20 @@ interface ReqBody {
   referenceImageUrl?: string;
   outputWidth?: number;
   outputHeight?: number;
+  cardShape?: 'square' | 'circle';
+  /** Per-cell uploads. Each entry pairs a 1-based `cardIndex` with the R2
+   *  download URL of the user's uploaded image. The server fetches the
+   *  bytes (with SSRF + size guards), then hands them to the composite
+   *  module which paints them over the AI-rendered cell. See
+   *  `_plans/2026-05-19-topic-card-grid-circles-and-uploads.md`. */
+  uploads?: Array<{ cardIndex: number; imageUrl: string }>;
 }
+
+/** Hard cap on uploaded image bytes per cell. Matches the presign route's
+ *  `MAX_FILE_SIZE` so a presigned upload that slipped past the browser
+ *  check still fails here. Pixel-bomb protection is handled separately
+ *  inside the composite module via sharp's `limitInputPixels`. */
+const MAX_CELL_UPLOAD_BYTES = 8 * 1024 * 1024;
 
 function requireKieKey(): string {
   const key = process.env.KIE_API_KEY;
@@ -200,20 +254,55 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Compute regions deterministically from the layout BEFORE the image
-    // call so they're returned even if the model itself drifts.
-    const outputWidth = Number.isInteger(body.outputWidth) ? Number(body.outputWidth) : DEFAULT_CANVAS.width;
-    const outputHeight = Number.isInteger(body.outputHeight) ? Number(body.outputHeight) : DEFAULT_CANVAS.height;
-    const layout = makeDefaultLayout(gridRows, gridCols, outputWidth, outputHeight);
+    // Card shape — defaults to 'square' so older clients that don't send
+    // the field keep working unchanged.
+    const cardShape: CardShape = body.cardShape === 'circle' ? 'circle' : 'square';
+
+    // Per-cell uploads. Each entry's URL passes the same SSRF guard the
+    // reference URL passes; out-of-range cardIndex values are dropped
+    // server-side so a stale client can't smuggle in extras. The bytes
+    // themselves are fetched below, after the AI image lands — we don't
+    // want to pay the egress on a request that will fail validation later.
+    const totalCards = gridRows * gridCols;
+    const uploadRequests: Array<{ cardIndex: number; safeUrl: URL }> = [];
+    if (Array.isArray(body.uploads)) {
+      const seen = new Set<number>();
+      for (const entry of body.uploads) {
+        if (!entry || typeof entry !== 'object') continue;
+        const cardIndex = Number((entry as { cardIndex?: unknown }).cardIndex);
+        const rawUrl = String((entry as { imageUrl?: unknown }).imageUrl ?? '').trim();
+        if (!Number.isInteger(cardIndex) || cardIndex < 1 || cardIndex > totalCards) continue;
+        if (seen.has(cardIndex)) continue;
+        if (!rawUrl) continue;
+        let safeUrl: URL;
+        try {
+          safeUrl = assertSafePublicUrl(rawUrl, { allowedProtocols: ['https:'] });
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          return NextResponse.json(
+            { error: `Cell upload URL for card ${cardIndex} was rejected: ${reason}` },
+            { status: 400 },
+          );
+        }
+        seen.add(cardIndex);
+        uploadRequests.push({ cardIndex, safeUrl });
+      }
+    }
+    const uploadedCellIndexes = uploadRequests.map((u) => u.cardIndex).sort((a, b) => a - b);
+
+    // Layout + regions are computed AFTER the AI image lands so they're
+    // keyed off the actual canvas dimensions of `aiBytes`, not the
+    // 1280×720 default. Kie upscales to ~4K; OpenAI returns 2048×1152.
+    // If we computed layout against DEFAULT_CANVAS and then composited
+    // onto the (much larger) AI image, every overlay would land in the
+    // top-left quadrant at miniature size — which is the
+    // "uploads-not-where-they-should-be" bug 2026-05-26. `outputWidth`/
+    // `outputHeight` from the body are kept as DEFAULTS for the rare
+    // case the AI image lacks readable dimensions; the actual probe
+    // overrides them downstream.
+    const fallbackOutputWidth = Number.isInteger(body.outputWidth) ? Number(body.outputWidth) : DEFAULT_CANVAS.width;
+    const fallbackOutputHeight = Number.isInteger(body.outputHeight) ? Number(body.outputHeight) : DEFAULT_CANVAS.height;
     const labels = cards.map((c) => c.label);
-    const regions: ThumbnailRegion[] = computeRegions(layout, labels, () => randomUUID());
-    logger.info('[thumb-format-grid image] regions computed', {
-      regions_count: regions.length,
-      outer_margin: layout.outerMargin,
-      gutter: layout.gutter,
-      card_w: regions[0]?.w,
-      card_h: regions[0]?.h,
-    });
 
     const prompt = topicCardGridImagePrompt({
       cards,
@@ -221,6 +310,8 @@ export async function POST(req: NextRequest) {
       gridRows,
       gridCols,
       notesForImageModel: body.notesForImageModel,
+      cardShape,
+      uploadedCellIndexes: uploadedCellIndexes.length > 0 ? uploadedCellIndexes : undefined,
     });
 
     logger.info('[thumb-format-grid image] start', {
@@ -233,10 +324,17 @@ export async function POST(req: NextRequest) {
       has_user_reference: !usedBundledDefault,
       used_bundled_default: usedBundledDefault,
       ref_host: safeRefUrl.hostname,
+      card_shape: cardShape,
+      uploads_count: uploadRequests.length,
     });
 
-    let imageUrl: string;
+    // Each provider branch produces `aiBytes` (the raw AI output) plus a
+    // few diagnostic fields. A single R2 upload happens at the end so the
+    // composite step (if any) runs in one place and we don't pay double
+    // storage for the pre- and post-composite artifacts.
+    let aiBytes: Buffer;
     let taskId: string | undefined;
+    let providerDetailLog: Record<string, unknown> = {};
 
     if (config.provider === 'kie') {
       // Build Kie input. Match the existing /api/thumbnails/image patterns:
@@ -258,34 +356,26 @@ export async function POST(req: NextRequest) {
       // System-wide auto-upscale runs after poll. See src/lib/upscale.ts.
       const kieImageUrl = await pollKieResultThenUpscale(taskId, apiKey);
 
-      // Persist the result bytes to R2. Kie's hosted resultUrls expire
-      // after hours/days AND live on a host that the download-proxy
-      // allowlist does not cover, so storing the raw Kie URL leads to
-      // dead Download buttons + thumbnails that vanish from history.
-      // Mirror the OpenAI branch: fetch the bytes, upload to R2, return
-      // the R2 download URL as the canonical imageUrl.
+      // Kie's hosted resultUrls expire after hours/days AND live on a host
+      // outside our download-proxy allowlist, so we always fetch the bytes
+      // here and let the unified R2 upload at the end produce the canonical
+      // permanent URL.
       const kieRes = await fetch(kieImageUrl);
       if (!kieRes.ok) {
         throw new Error(`Failed to fetch Kie result image (HTTP ${kieRes.status}).`);
       }
       const kieArrayBuf = await kieRes.arrayBuffer();
-      const kieBytes = Buffer.from(kieArrayBuf);
-      const kieR2Key = `thumbnails/format-grid-kie/${randomUUID()}.png`;
-      await uploadToBucket(getImagesBucket(), kieR2Key, kieBytes, 'image/png');
-      imageUrl = await getImagesDownloadUrl(kieR2Key);
-
-      logger.info('[thumb-format-grid image] kie persisted to r2', {
+      aiBytes = Buffer.from(kieArrayBuf);
+      providerDetailLog = {
         kie_host: (() => { try { return new URL(kieImageUrl).hostname; } catch { return 'unknown'; } })(),
-        bytes: kieBytes.byteLength,
-        r2_key: kieR2Key,
-      });
+        ai_bytes: aiBytes.byteLength,
+      };
     } else {
       // OpenAI direct path. Fetch the reference image bytes (Kie passed a
       // URL, OpenAI's edits endpoint expects a multipart file upload), call
-      // /v1/images/edits synchronously, then upload the returned PNG bytes
-      // to R2 so the rest of the app sees a permanent URL just like the
-      // Kie path. This is the emergency fast-path — no polling, returns in
-      // 20-60s typically.
+      // /v1/images/edits synchronously. Bytes flow into the shared
+      // composite + R2 upload below. This is the emergency fast-path — no
+      // polling, returns in 20-60s typically.
       let referenceBytes: Buffer | undefined;
       let referenceMime: string | undefined;
       if (config.mode === 'i2i') {
@@ -330,24 +420,123 @@ export async function POST(req: NextRequest) {
           : undefined,
       });
 
-      // Upload to R2 for a permanent URL the download-proxy allowlist
-      // covers and that history entries can still serve weeks later.
-      const bytes = Buffer.from(result.base64, 'base64');
-      const r2Key = `thumbnails/format-grid-openai/${randomUUID()}.png`;
-      await uploadToBucket(getImagesBucket(), r2Key, bytes, 'image/png');
-      imageUrl = await getImagesDownloadUrl(r2Key);
-
-      logger.info('[thumb-format-grid image] openai direct done', {
-        bytes: bytes.byteLength,
-        r2_key: r2Key,
+      aiBytes = Buffer.from(result.base64, 'base64');
+      providerDetailLog = {
+        ai_bytes: aiBytes.byteLength,
         revised_prompt_chars: result.revisedPrompt?.length ?? 0,
-      });
+      };
     }
+
+    // Probe the actual AI image dimensions so the layout we use for
+    // composite + regions matches the pixel grid of `aiBytes`. Kie's
+    // post-upscale output lands around 4K; OpenAI returns 2048×1152;
+    // the 1280×720 DEFAULT_CANVAS guess is essentially never right.
+    // sharp.metadata is cheap (<10ms) — no decode of the full image.
+    const aiMeta = await sharp(aiBytes, { limitInputPixels: SHARP_INPUT_PIXEL_CAP }).metadata();
+    const canvasW = aiMeta.width && aiMeta.width > 0 ? aiMeta.width : fallbackOutputWidth;
+    const canvasH = aiMeta.height && aiMeta.height > 0 ? aiMeta.height : fallbackOutputHeight;
+    const layout = makeDefaultLayout(gridRows, gridCols, canvasW, canvasH, cardShape);
+    const regions: ThumbnailRegion[] = computeRegionsFor(layout, labels, () => randomUUID(), cardShape);
+    logger.info('[thumb-format-grid image] layout from ai dims', {
+      ai_width: aiMeta.width,
+      ai_height: aiMeta.height,
+      canvas_w: canvasW,
+      canvas_h: canvasH,
+      fallback_used: !(aiMeta.width && aiMeta.height),
+      outer_margin: layout.outerMargin,
+      gutter: layout.gutter,
+      card_w: regions[0]?.w,
+      card_h: regions[0]?.h,
+      card_shape: cardShape,
+      regions_count: regions.length,
+    });
+
+    // Composite step — ALWAYS runs in square mode so every cell gets
+    // a deterministic label rendered at the same font size, regardless
+    // of whether the user attached an upload for it. AI's per-cell
+    // label autoscaling was blowing short labels (e.g. "UVB-76") up to
+    // ~1.5× the size of longer labels in the same grid; the composite
+    // overpaints the AI's label band with a uniform-sized label and
+    // leaves the AI's illustration intact for non-upload cells.
+    //
+    // Circle mode currently skips non-upload label uniformisation —
+    // see applyCellUploads. Uploaded cells still get composited in both
+    // shapes.
+    const cellUploads: CellUpload[] = [];
+    if (uploadRequests.length > 0) {
+      logger.info('[thumb-format-grid image] composite uploads fetch start', {
+        cell_count: uploadRequests.length,
+        card_shape: cardShape,
+      });
+      for (const req of uploadRequests) {
+        const upRes = await fetch(req.safeUrl);
+        if (!upRes.ok) {
+          throw new Error(
+            `Failed to fetch upload for card ${req.cardIndex} (HTTP ${upRes.status}). Re-upload the image and try again.`,
+          );
+        }
+        const declaredLen = Number.parseInt(upRes.headers.get('content-length') ?? '', 10);
+        if (Number.isFinite(declaredLen) && declaredLen > MAX_CELL_UPLOAD_BYTES) {
+          throw new Error(
+            `Upload for card ${req.cardIndex} exceeds the 8 MB cap. Pick a smaller image.`,
+          );
+        }
+        const upArrayBuf = await upRes.arrayBuffer();
+        if (upArrayBuf.byteLength > MAX_CELL_UPLOAD_BYTES) {
+          throw new Error(
+            `Upload for card ${req.cardIndex} exceeds the 8 MB cap. Pick a smaller image.`,
+          );
+        }
+        cellUploads.push({ cardIndex: req.cardIndex, bytes: Buffer.from(upArrayBuf) });
+      }
+    }
+    const compositeStart = Date.now();
+    const finalBytes = await applyCellUploads({
+      baseImage: aiBytes,
+      layout,
+      cards,
+      cardShape,
+      uploads: cellUploads,
+    });
+    const compositorMs = Date.now() - compositeStart;
+    const uploadsApplied = cellUploads.length;
+    const labelsUniformized = cardShape === 'square' ? cards.length : cellUploads.length;
+    logger.info('[thumb-format-grid image] composite done', {
+      duration_ms: compositorMs,
+      uploads_applied: uploadsApplied,
+      labels_uniformized: labelsUniformized,
+      card_shape: cardShape,
+      output_bytes: finalBytes.byteLength,
+    });
+
+    // Single R2 upload — prefix records the AI provider and whether the
+    // composite step ran so a future audit can tell the AI's raw output
+    // from a user-composited result by R2 key alone.
+    const r2Prefix =
+      uploadsApplied > 0
+        ? 'thumbnails/format-grid-composite'
+        : config.provider === 'kie'
+          ? 'thumbnails/format-grid-kie'
+          : 'thumbnails/format-grid-openai';
+    const r2Key = `${r2Prefix}/${randomUUID()}.png`;
+    await uploadToBucket(getImagesBucket(), r2Key, finalBytes, 'image/png');
+    const imageUrl = await getImagesDownloadUrl(r2Key);
+
+    logger.info('[thumb-format-grid image] persisted to r2', {
+      ...providerDetailLog,
+      r2_key: r2Key,
+      final_bytes: finalBytes.byteLength,
+      uploads_applied: uploadsApplied,
+      compositor_ms: compositorMs,
+    });
 
     logger.info('[thumb-format-grid image] done', {
       duration_ms: Date.now() - startedAt,
       task_id: taskId,
       provider: config.provider,
+      uploads_applied: uploadsApplied,
+      compositor_ms: compositorMs,
+      card_shape: cardShape,
       image_url_host: (() => {
         try { return new URL(imageUrl).hostname; } catch { return 'unknown'; }
       })(),
@@ -362,7 +551,10 @@ export async function POST(req: NextRequest) {
         height: layout.height,
         outerMargin: layout.outerMargin,
         gutter: layout.gutter,
+        cardShape,
       },
+      cardShape,
+      uploadsApplied,
     });
   } catch (err) {
     logger.error('[thumb-format-grid image] error', {

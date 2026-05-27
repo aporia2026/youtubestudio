@@ -10,7 +10,12 @@
  * model each cell must contain a unique fully-rendered scene. Used
  * on the retry pass after malformed-quadrant detection fires.
  *
- * See `_plans/2026-05-24-system-upscale-and-collage.md`.
+ * Cells are expected to be already-augmented strings — OST baking,
+ * safe-top bias, and sheet-description hints are applied per cell by
+ * the caller via `augmentCellPrompt`. This module only wraps the
+ * augmented cells in the 2×2 grid template. See
+ * `_plans/2026-05-26-collage-default-on-with-per-cell-augmentation.md`
+ * and `_plans/2026-05-24-system-upscale-and-collage.md`.
  */
 
 const LABELS = ['Top-left', 'Top-right', 'Bottom-left', 'Bottom-right'] as const;

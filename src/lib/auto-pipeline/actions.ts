@@ -246,6 +246,322 @@ export async function abandonNarration(args: {
   return { stage: 'narration_abandoned' };
 }
 
+// ─── Retry (stuck + terminal failure recovery) ──────────────────────
+
+/**
+ * Maps a terminal failure stage to the stage we reset to so the
+ * orchestrator picks the video up and re-runs it. `narration_abandoned`
+ * is intentionally absent — retrying narration requires a fresh
+ * deadline, so the UI sends the user to `extendNarrationDeadline`
+ * instead of treating it as a regular retry.
+ *
+ * `cost_cap_exceeded` and `cancelled_by_user` both reset to
+ * `generating_script` because by the time the user clicks retry,
+ * either the cap was lifted or the cancel was a mistake — either
+ * way, starting from script regeneration is the safe re-entry point.
+ */
+const TERMINAL_RETRY_TARGET: Record<string, PipelineStage> = {
+  idea_generation_failed: 'queued',
+  script_generation_failed: 'generating_script',
+  qa_failed_after_max_retries: 'generating_script',
+  production_doc_failed: 'generating_production_doc',
+  thumbnail_failed: 'generating_thumbnail',
+  editor_assignment_failed: 'assigning_to_editor',
+  seo_failed: 'generating_seo',
+  cancelled_by_user: 'generating_script',
+  cost_cap_exceeded: 'generating_script',
+};
+
+/**
+ * Defensive FK guard. Some handlers historically returned the wrong
+ * terminal stage on failure (script-gen failures were mis-tagged as
+ * `production_doc_failed` before 2026-05-26 — see
+ * `_plans/2026-05-26-batch-from-scheduled-items.md` and the comment
+ * at the top of `generate-idea.ts`). If a row is labeled with a
+ * downstream terminal but is missing the FK that downstream stage
+ * needs, retrying to that downstream stage just re-fails on the
+ * invariant guard. This map says "if you're about to retry to X but
+ * the row is missing FK Y, fall back further to Z instead."
+ */
+function resolveSafeRetryTarget(
+  configuredTarget: PipelineStage,
+  row: { script_id: string | null; project_id: string | null; idea_id: string | null },
+): PipelineStage {
+  // generating_production_doc / generating_thumbnail / generating_seo
+  // / assigning_to_editor all need script_id + project_id.
+  const needsScript = (
+    configuredTarget === 'generating_production_doc' ||
+    configuredTarget === 'generating_thumbnail' ||
+    configuredTarget === 'generating_seo' ||
+    configuredTarget === 'assigning_to_editor' ||
+    configuredTarget === 'running_qa'
+  );
+  if (needsScript && (!row.script_id || !row.project_id)) {
+    // Has an idea but no script → retry script gen.
+    if (row.idea_id) return 'generating_script';
+    // No idea either → retry from the very beginning.
+    return 'queued';
+  }
+  // generating_script needs idea_id.
+  if (configuredTarget === 'generating_script' && !row.idea_id) {
+    return 'queued';
+  }
+  return configuredTarget;
+}
+
+/** How long a claimed_at can sit without movement before we treat
+ *  it as a zombie claim from a crashed handler. The cron's max
+ *  execution time is 300s; 5min covers the worst-case handler. */
+const ZOMBIE_CLAIM_AGE_SEC = 5 * 60;
+
+export type RetryOutcome =
+  | { action: 'reset_terminal'; fromStage: string; toStage: PipelineStage }
+  | { action: 'cleared_zombie_claim'; stage: string; claimAgeSec: number }
+  | { action: 'noop'; stage: string; reason: string };
+
+/**
+ * Make a video re-runnable. Three cases the user might hit:
+ *
+ *   1. Terminal failure → reset to the stage that should retry it,
+ *      clear failure metadata, bump retry_count. Cron picks it up
+ *      on the next tick.
+ *
+ *   2. Non-terminal but `claimed_at` is old (handler crashed before
+ *      it could release the row) → clear claimed_at + claimed_by_tick
+ *      so the cron's SKIP LOCKED query stops skipping it.
+ *
+ *   3. Non-terminal, no zombie claim → noop. The cron will pick it
+ *      up on the next tick anyway; nothing to fix here. The UI
+ *      should hide the Retry button in this case, but we tolerate
+ *      it being clicked.
+ *
+ * `narration_abandoned` cannot be retried this way (extend deadline
+ * + mark complete is the right path); we throw a clear error so the
+ * UI knows not to offer Retry on those rows.
+ */
+export async function retryVideo(args: {
+  workspaceId: string;
+  videoId: string;
+}): Promise<RetryOutcome> {
+  const { workspaceId, videoId } = args;
+  const { rows } = await sql.query<{
+    stage: string;
+    claimed_at: string | null;
+    updated_at: string;
+    idea_id: string | null;
+    script_id: string | null;
+    project_id: string | null;
+  }>(
+    `
+    SELECT stage,
+           claimed_at::text AS claimed_at,
+           updated_at::text AS updated_at,
+           idea_id::text AS idea_id,
+           script_id::text AS script_id,
+           project_id::text AS project_id
+      FROM pipeline_run_videos
+     WHERE id = $1::uuid AND workspace_id = $2::uuid
+    `,
+    [videoId, workspaceId],
+  );
+  if (rows.length === 0) {
+    throw new PipelineActionError('video_not_found', `Pipeline video ${videoId} not found.`);
+  }
+  const row = rows[0];
+  const { stage, claimed_at } = row;
+
+  if (stage === 'narration_abandoned') {
+    throw new PipelineActionError(
+      'unretryable',
+      'narration_abandoned cannot be retried directly. Extend the deadline and mark narration complete.',
+    );
+  }
+
+  // Case 1: terminal failure → reset.
+  const configuredTarget = TERMINAL_RETRY_TARGET[stage];
+  if (configuredTarget) {
+    // FK-aware safety net — if the configured target needs FKs the
+    // row never got (because of the pre-2026-05-26 mis-labelling bug
+    // in generate-script.ts / generate-idea.ts), fall back to a
+    // safer earlier stage instead of re-failing on the invariant.
+    const target = resolveSafeRetryTarget(configuredTarget, row);
+    await sql.query(
+      `
+      UPDATE pipeline_run_videos
+         SET stage = $1,
+             failure_class = NULL,
+             failure_message = NULL,
+             claimed_at = NULL,
+             claimed_by_tick = NULL,
+             retry_count = retry_count + 1,
+             updated_at = NOW()
+       WHERE id = $2::uuid AND workspace_id = $3::uuid
+      `,
+      [target, videoId, workspaceId],
+    );
+    logger.info('auto-pipeline: video reset for retry', {
+      pipeline_video_id: videoId,
+      from_stage: stage,
+      configured_target: configuredTarget,
+      to_stage: target,
+      fk_downgrade: target !== configuredTarget,
+      has_idea_id: row.idea_id != null,
+      has_script_id: row.script_id != null,
+      has_project_id: row.project_id != null,
+    });
+    return { action: 'reset_terminal', fromStage: stage, toStage: target };
+  }
+
+  // Case 2: stuck claim.
+  if (claimed_at) {
+    const claimAgeSec = Math.floor((Date.now() - new Date(claimed_at).getTime()) / 1000);
+    if (claimAgeSec >= ZOMBIE_CLAIM_AGE_SEC) {
+      await sql.query(
+        `
+        UPDATE pipeline_run_videos
+           SET claimed_at = NULL,
+               claimed_by_tick = NULL,
+               updated_at = NOW()
+         WHERE id = $1::uuid AND workspace_id = $2::uuid
+        `,
+        [videoId, workspaceId],
+      );
+      logger.info('auto-pipeline: zombie claim cleared on retry', {
+        pipeline_video_id: videoId,
+        stage,
+        claim_age_sec: claimAgeSec,
+      });
+      return { action: 'cleared_zombie_claim', stage, claimAgeSec };
+    }
+    return {
+      action: 'noop',
+      stage,
+      reason: `Cron has the row claimed (age ${claimAgeSec}s). Wait for the handler to finish or kill the video.`,
+    };
+  }
+
+  // Case 3: nothing to retry; the cron will pick it up on its next tick.
+  return {
+    action: 'noop',
+    stage,
+    reason: 'Video is not in a failure state and not stuck. The cron will pick it up on its next tick.',
+  };
+}
+
+// ─── Run-level batch actions ────────────────────────────────────────
+
+export interface BatchOutcome {
+  scanned: number;
+  changed: number;
+  details: Array<{ videoId: string; outcome: string }>;
+}
+
+/**
+ * Stop every non-terminal video in a run. Used by the "Stop all"
+ * button in the run header. Already-terminal rows are skipped (not
+ * counted as changed).
+ */
+export async function stopAllInRun(args: {
+  workspaceId: string;
+  runId: string;
+  reason?: string;
+}): Promise<BatchOutcome> {
+  const { workspaceId, runId, reason } = args;
+  const { rows } = await sql.query<{ id: string; stage: string }>(
+    `
+    SELECT id::text AS id, stage
+      FROM pipeline_run_videos
+     WHERE pipeline_run_id = $1::uuid AND workspace_id = $2::uuid
+    `,
+    [runId, workspaceId],
+  );
+  if (rows.length === 0) {
+    throw new PipelineActionError('run_not_found', `Pipeline run ${runId} not found.`);
+  }
+  const details: BatchOutcome['details'] = [];
+  let changed = 0;
+  for (const r of rows) {
+    if (isPipelineStage(r.stage) && TERMINAL_STAGES.has(r.stage)) {
+      details.push({ videoId: r.id, outcome: 'already_terminal' });
+      continue;
+    }
+    await sql`
+      UPDATE pipeline_run_videos
+         SET stage = 'cancelled_by_user',
+             failure_class = 'user_cancelled',
+             failure_message = ${reason ?? 'Stopped via Stop all.'},
+             claimed_at = NULL,
+             claimed_by_tick = NULL,
+             updated_at = NOW()
+       WHERE id = ${r.id}::uuid AND workspace_id = ${workspaceId}::uuid
+    `;
+    details.push({ videoId: r.id, outcome: 'cancelled' });
+    changed++;
+  }
+  logger.info('auto-pipeline: run stop-all', {
+    pipeline_run_id: runId,
+    workspace_id: workspaceId,
+    scanned: rows.length,
+    changed,
+  });
+  return { scanned: rows.length, changed, details };
+}
+
+/**
+ * Retry every video in a run that's either:
+ *   - in a retry-able terminal failure stage, or
+ *   - holding a zombie claim (claimed_at older than 5 min).
+ *
+ * Healthy in-flight rows are left alone. `narration_abandoned` rows
+ * are skipped (the dedicated narration flow is the right path for
+ * those).
+ */
+export async function retryStuckOrFailedInRun(args: {
+  workspaceId: string;
+  runId: string;
+}): Promise<BatchOutcome> {
+  const { workspaceId, runId } = args;
+  const { rows } = await sql.query<{
+    id: string;
+    stage: string;
+    claimed_at: string | null;
+  }>(
+    `
+    SELECT id::text AS id, stage, claimed_at::text AS claimed_at
+      FROM pipeline_run_videos
+     WHERE pipeline_run_id = $1::uuid AND workspace_id = $2::uuid
+    `,
+    [runId, workspaceId],
+  );
+  if (rows.length === 0) {
+    throw new PipelineActionError('run_not_found', `Pipeline run ${runId} not found.`);
+  }
+  const details: BatchOutcome['details'] = [];
+  let changed = 0;
+  for (const r of rows) {
+    try {
+      const result = await retryVideo({ workspaceId, videoId: r.id });
+      if (result.action === 'noop') {
+        details.push({ videoId: r.id, outcome: 'noop' });
+        continue;
+      }
+      details.push({ videoId: r.id, outcome: result.action });
+      changed++;
+    } catch (err) {
+      // narration_abandoned (unretryable) lands here. Skip and continue.
+      const code = err instanceof PipelineActionError ? err.code : 'error';
+      details.push({ videoId: r.id, outcome: `skipped:${code}` });
+    }
+  }
+  logger.info('auto-pipeline: run retry-stuck-or-failed', {
+    pipeline_run_id: runId,
+    workspace_id: workspaceId,
+    scanned: rows.length,
+    changed,
+  });
+  return { scanned: rows.length, changed, details };
+}
+
 // ─── Run-level: commit drag-rank ────────────────────────────────────
 
 /**

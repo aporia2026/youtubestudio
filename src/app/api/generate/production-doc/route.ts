@@ -8,9 +8,11 @@ import { resolveStyle } from '@/lib/production-doc-styles';
 import { getEffectiveModelId } from '@/lib/model-defaults';
 import { logger } from '@/lib/logger';
 import {
+  attachStyleSuffixToRows,
   validateAndSplitOverlongRows,
   type ProductionDocRowLike,
 } from '@/lib/production-doc-postprocess';
+import { autoGroupVariants } from '@/lib/auto-group-variants';
 import { extractScriptTitles, TITLE_SENTINEL_LEAK_RE } from '@/lib/script-titles';
 import { preprocessSsmlForProductionDoc } from '@/lib/ssml-production-doc';
 
@@ -278,6 +280,68 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     }
     if (extracted.warnings.length > 0) {
       generation_warnings.push(...extracted.warnings);
+    }
+  }
+
+  // Post-pass: attach the chosen style's `ai_image_suffix` to every row's
+  // `ai_image_prompt`. The LLM is instructed (see productionDocPrompt) to
+  // emit only the 35–55 word scene body and leave the style attachment to
+  // the server — this keeps each row's output under ~150 tokens and avoids
+  // the verbose-suffix-per-row truncation that GPT-mini-class models hit on
+  // long scripts. See plan `_plans/2026-05-26-production-doc-suffix-server-side.md`.
+  if (Array.isArray(result.rows) && style?.ai_image_suffix) {
+    const attach = attachStyleSuffixToRows(result.rows, style.ai_image_suffix);
+    logger.info('[production-doc suffix-attach]', {
+      modelId: effectiveModelId,
+      rowCount: result.rows.length,
+      attachedCount: attach.attachedCount,
+      skippedAlreadyPresent: attach.skippedAlreadyPresent,
+      skippedNonString: attach.skippedNonString,
+      suffixChars: style.ai_image_suffix.length,
+      suffixWords: style.ai_image_suffix.trim().split(/\s+/).length,
+    });
+  }
+
+  // Pin the doc-level OST default from the chosen style when the style
+  // has an opinion. doodle_explainer_2 sets `'overlay'` so the chunky
+  // yellow-bubble LowerThird variant is what gets composited at render
+  // time, instead of the diffusion prompt baking small black text into
+  // the corner of every image. The LLM is told the same rule via the
+  // style's mixing_rules, but its compliance is unreliable — server-
+  // pinning the doc default removes the failure mode entirely. Only
+  // overwrite when the LLM didn't already set a value (it shouldn't,
+  // but guard so a future schema change doesn't get clobbered here).
+  if (resolved?.default_on_screen_text_mode && result && typeof result === 'object') {
+    const r = result as Record<string, unknown>;
+    if (r.on_screen_text_mode_default === undefined) {
+      r.on_screen_text_mode_default = resolved.default_on_screen_text_mode;
+      logger.info('[production-doc ost-mode-default]', {
+        styleId: resolved.id,
+        mode: resolved.default_on_screen_text_mode,
+      });
+    }
+  }
+
+  // Auto-group consecutive similar rows into variant groups for styles
+  // whose mixing_rules describe the additive frame-by-frame pattern. The
+  // LLM is instructed to emit variant groups directly but its compliance
+  // is unreliable — this post-pass detects "consecutive rows with very
+  // similar ai_image_prompts" and rewrites them in place to use
+  // group_id / variant_index / variant_edit_prompt so the existing Atlas
+  // Edit dispatcher (composeVariantEditRequest → /image/edit) generates
+  // the derivative frames from a shared base image instead of from
+  // scratch with different seeds. Gated on doodle_explainer_2 for now
+  // because it's the only style that has variant_groups in its
+  // mixing_rules. See `_plans/2026-05-25-near-static-variants.md`.
+  if (Array.isArray(result.rows) && resolved?.id === 'doodle_explainer_2') {
+    const grouped = autoGroupVariants(result.rows);
+    if (grouped.groupCount > 0) {
+      logger.info('[production-doc auto-group-variants]', {
+        styleId: resolved.id,
+        rowCount: result.rows.length,
+        groupCount: grouped.groupCount,
+        mergedRowCount: grouped.mergedRowCount,
+      });
     }
   }
 

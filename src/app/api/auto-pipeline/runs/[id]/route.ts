@@ -21,6 +21,14 @@ interface VideoRow {
   editor_assignment_id: string | null;
   narration_deadline_at: string | null;
   updated_at: string;
+  /** Non-null when the cron has this row checked out and is executing
+   *  its stage handler right now. Read on the client as the strongest
+   *  "is anything actually happening" signal. */
+  claimed_at: string | null;
+  /** Tick id that claimed the row. Useful to differentiate "claimed by
+   *  the current tick (live)" from "stale claim (orchestrator crashed
+   *  mid-handler)" once we surface tick-age in the UI. */
+  claimed_by_tick: string | null;
 }
 
 /**
@@ -87,7 +95,9 @@ export const GET = apiRoute.authed<{ id: string }>(async (session, _req, ctx) =>
            v.thumbnail_url,
            v.editor_assignment_id::text AS editor_assignment_id,
            v.narration_deadline_at::text AS narration_deadline_at,
-           v.updated_at::text AS updated_at
+           v.updated_at::text AS updated_at,
+           v.claimed_at::text AS claimed_at,
+           v.claimed_by_tick
       FROM pipeline_run_videos v
       LEFT JOIN video_ideas vi ON vi.id = v.idea_id
       LEFT JOIN scripts s ON s.id = v.script_id

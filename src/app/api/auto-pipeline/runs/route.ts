@@ -76,6 +76,9 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   const existingIdeaIds = Array.isArray(b.existingIdeaIds)
     ? b.existingIdeaIds.filter((x): x is string => typeof x === 'string')
     : undefined;
+  const existingScheduleItemIds = Array.isArray(b.existingScheduleItemIds)
+    ? b.existingScheduleItemIds.filter((x): x is string => typeof x === 'string')
+    : undefined;
   const estimatedCostUsd =
     typeof b.estimatedCostUsd === 'number' && Number.isFinite(b.estimatedCostUsd)
       ? b.estimatedCostUsd
@@ -88,6 +91,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       channelId,
       countToGenerate,
       existingIdeaIds,
+      existingScheduleItemIds,
       estimatedCostUsd,
       createdBy: session.uid,
     });
@@ -95,7 +99,11 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   } catch (err) {
     if (err instanceof CreatePipelineRunError) {
       const status =
-        err.code === 'preset_not_found' || err.code === 'idea_not_found' ? 404 : 400;
+        err.code === 'preset_not_found' ||
+        err.code === 'idea_not_found' ||
+        err.code === 'schedule_item_not_found'
+          ? 404
+          : 400;
       return NextResponse.json({ error: err.message, code: err.code }, { status });
     }
     return domainErrorResponse(err, {

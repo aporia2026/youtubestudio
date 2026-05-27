@@ -137,7 +137,7 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
   const isErase = body.intent === 'erase';
 
   const { originalImageUrl } = body;
-  const prompt = isErase ? ERASE_PROMPT : (body.prompt ?? '').trim();
+  let prompt = isErase ? ERASE_PROMPT : (body.prompt ?? '').trim();
 
   if (!originalImageUrl?.trim()) {
     return NextResponse.json({ error: 'originalImageUrl required' }, { status: 400 });
@@ -145,8 +145,21 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
   if (!isErase && !prompt) {
     return NextResponse.json({ error: 'prompt required' }, { status: 400 });
   }
-  if (prompt.length > 2000) {
-    return NextResponse.json({ error: 'Prompt too long (max 2000 chars)' }, { status: 400 });
+  // Truncate rather than 400 — production-doc rows persist the scene
+  // body plus the chosen style's full suffix in `ai_image_prompt`, and
+  // verbose-suffix styles (doodle_explainer_2 is ~1.9 kB) push the field
+  // past 2000 chars on their own. Trimming the tail preserves the body
+  // and the suffix's leading rules; for ref-bearing styles the refs
+  // carry the visual style independently so the dropped suffix tail is
+  // acceptable degradation. Symmetric with the main /image route.
+  const PROMPT_CAP = 2000;
+  if (!isErase && prompt.length > PROMPT_CAP) {
+    const original = prompt.length;
+    prompt = prompt.slice(0, PROMPT_CAP).replace(/\s+\S*$/, '').trimEnd();
+    logger.info('[prodoc image-edit prompt-truncated]', {
+      originalLen: original,
+      truncatedLen: prompt.length,
+    });
   }
 
   // SSRF guard on source image. Same comment as before: Kie does the

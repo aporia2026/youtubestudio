@@ -191,14 +191,17 @@ export async function handleQaRetry(ctx: StageHandlerContext): Promise<StageOutc
     `,
     [video.project_id],
   );
+  // workspace_id is NOT NULL on scripts (post multi-tenant migration);
+  // omitting it crashed the qa-retry path the same way the script
+  // gen path did before its fix.
   const { rows: insertedRows } = await sql.query<{ id: string; version: number }>(
     `
     INSERT INTO scripts
-      (project_id, version, content, word_count, estimated_duration_seconds, ai_model, generation_params, is_active)
+      (project_id, version, content, word_count, estimated_duration_seconds, ai_model, generation_params, is_active, workspace_id)
     VALUES (
       $1::uuid,
       COALESCE((SELECT MAX(version) FROM scripts WHERE project_id = $1::uuid), 0) + 1,
-      $2, $3, $4, $5, $6::jsonb, true
+      $2, $3, $4, $5, $6::jsonb, true, $7::uuid
     )
     RETURNING id::text AS id, version
     `,
@@ -214,6 +217,7 @@ export async function handleQaRetry(ctx: StageHandlerContext): Promise<StageOutc
         applied_fixes_count: fixes.length,
         fallback_attempts: result.attempts.length,
       }),
+      video.workspace_id,
     ],
   );
   const newScriptId = insertedRows[0].id;
