@@ -36,19 +36,27 @@ export function isShortVariantPromptEnabled(): boolean {
  *  instruction (Stage 2). The Atlas Edit model already SEES the input
  *  image, so the hint is a soft nudge against the model drifting into
  *  a fully redrawn scene — NOT a full re-description of the base.
- *  Keep entries short (one sentence each).
  *
- *  Doodle Explainer 2's hint was hand-verified by the user (2026-05-27)
- *  with a 31-word manual Atlas Edit prompt that produced perfect output.
- *  Other styles fall through to a generic default until each is tuned
- *  with the same empirical pass. Add entries as styles are validated. */
+ *  2026-05-27 (post-frame-stability user feedback): the prior
+ *  "stick-figure / plain white background" wording let the model drift
+ *  on non-target areas (mountains subtly reshape, character positions
+ *  shift a few pixels frame-to-frame, lines re-draw slightly) which
+ *  read as "jumpy" rather than "stable near-static animation." The
+ *  new wording names the four qualities that drift most — composition,
+ *  positions, proportions, line style — without naming any scene-
+ *  specific element (mountain, character, background) that the model
+ *  might interpret literally and render. Generic enough to work for any
+ *  scenario; explicit enough to constrain the four drift axes.
+ *
+ *  Add a per-style entry here when a style needs language different
+ *  from the default. Most styles can ride the default. */
 const VARIANT_PRESERVATION_HINTS: Record<string, string> = {
   doodle_explainer_2:
-    'Keep the same simple black stick-figure drawing and plain white background. No text or extra elements.',
+    'Apply only the change above. Composition, positions, proportions, and line style must stay exactly identical to the input image — nothing else changes.',
 };
 
 const DEFAULT_VARIANT_PRESERVATION_HINT =
-  'Keep everything else in the image identical to the input.';
+  'Apply only the change above. Composition, positions, proportions, and line style must stay exactly identical to the input image — nothing else changes.';
 
 /** Return the preservation hint for a given style id, or a safe generic
  *  default when the style is unknown or has no tuned hint yet. */
