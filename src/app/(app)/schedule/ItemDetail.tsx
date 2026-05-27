@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { ScheduleItem, ScheduleStatus, RecurrenceRule, ChecklistItem } from '@/lib/schedule';
@@ -48,11 +49,13 @@ function dtLocal(iso: string | null): string {
 }
 
 export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatch, onDelete, onRefresh, onSelectItem }: Props) {
+  const router = useRouter();
   const [tab, setTab] = useState<'details' | 'script' | 'recurrence'>('details');
   const [scripts, setScripts] = useState<ScriptRow[]>([]);
   const [scriptDraft, setScriptDraft] = useState('');
   const [savingScript, setSavingScript] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
+  const [autoContinuing, setAutoContinuing] = useState(false);
   // Track the last successfully saved text so blur+blur with no edit doesn't create duplicate versions.
   const lastSavedRef = useRef<string>('');
 
@@ -160,6 +163,63 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
     }
   }
 
+  /**
+   * Spin up an auto-pipeline run for THIS schedule item's project,
+   * starting at narration_complete. Skips idea/script/QA/narration
+   * wait entirely — the cron picks it up and runs production doc →
+   * thumbnail → editor handoff → SEO.
+   *
+   * Prerequisites: project_id + script_id must be set on the item.
+   * Without them, the production-doc handler would immediately fail
+   * its invariant guard; we surface that as a disabled button rather
+   * than a 400 mid-fetch.
+   *
+   * Preset: defaults to the first preset in the workspace. If there
+   * are none, route the user to /pipeline/presets to create one
+   * (the pipeline run can't exist without one).
+   */
+  async function autoContinue() {
+    if (!item.project_id || !item.script_id) {
+      toast.error('Save a script to a project first.');
+      return;
+    }
+    setAutoContinuing(true);
+    try {
+      const presetsRes = await fetch('/api/auto-pipeline/presets', { cache: 'no-store' });
+      const presetsData = await presetsRes.json().catch(() => ({}));
+      const presets = (presetsData.presets ?? []) as Array<{ id: string; name: string }>;
+      if (presets.length === 0) {
+        toast.error('No pipeline preset yet — create one first.', {
+          action: { label: 'Open presets', onClick: () => router.push('/pipeline/presets') },
+        });
+        return;
+      }
+      const presetId = presets[0].id;
+      console.info('[schedule auto-continue] submit', {
+        item_id: item.id,
+        project_id: item.project_id,
+        preset_id: presetId,
+      });
+      const res = await fetch('/api/auto-pipeline/runs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ presetId, existingProjectIds: [item.project_id] }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      toast.success(`Auto-continuing under preset "${presets[0].name}"`);
+      router.push(`/pipeline/${data.runId}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to start auto-continue';
+      console.info('[schedule auto-continue] error', { item_id: item.id, error: msg });
+      toast.error(msg);
+    } finally {
+      setAutoContinuing(false);
+    }
+  }
+
   async function prepareForYouTube() {
     const lines = [
       `Title: ${item.title || 'Untitled'}`,
@@ -258,6 +318,23 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
               border: '1px solid rgba(124,58,237,0.3)',
             }}>
             ✨ {suggestingTitles ? 'Thinking…' : 'AI titles'}
+          </button>
+          <button
+            onClick={autoContinue}
+            disabled={autoContinuing || !item.project_id || !item.script_id}
+            title={
+              !item.project_id || !item.script_id
+                ? 'Save a script to this item first — the pipeline starts at production doc and needs one to work from.'
+                : 'Start an auto-pipeline run for THIS video at narration_complete. Skips idea/script/QA — runs production doc, thumbnail, editor handoff, and SEO.'
+            }
+            className="flex items-center gap-1 px-2 py-1 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{
+              background: 'rgba(6,182,212,0.10)',
+              color: '#06b6d4',
+              border: '1px solid rgba(6,182,212,0.35)',
+            }}
+          >
+            🤖 {autoContinuing ? 'Starting…' : 'Auto-continue'}
           </button>
           <button onClick={prepareForYouTube}
             className="flex items-center gap-1 px-2 py-1 rounded"
