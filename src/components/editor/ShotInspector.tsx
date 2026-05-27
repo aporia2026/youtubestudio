@@ -27,6 +27,15 @@ import { BROLL_MODELS } from '@/lib/broll-types';
 import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS, getImageModelSpec } from '@/lib/image-models';
 import { useLocalStudioEnabled } from '@/lib/local-studio-enabled';
 import { ShotLayoutControls } from '@/components/editor/inspector/ShotLayoutControls';
+import {
+  InspectorVariantsPanel,
+  type VariantGenState,
+} from '@/components/editor/inspector/InspectorVariantsPanel';
+import {
+  InspectorShotTypePanel,
+  detectLeadingHeading,
+} from '@/components/editor/inspector/InspectorShotTypePanel';
+import { InspectorNotesPanel } from '@/components/editor/inspector/InspectorNotesPanel';
 import { TransitionDialog } from '@/components/production-doc/TransitionDialog';
 
 /** A clip from /api/broll. Trimmed to the fields the picker needs. */
@@ -250,6 +259,51 @@ interface ShotInspectorProps {
    *  following shots in one batched mutation. When `row.section_title`
    *  is empty/undefined, clears section_title on those rows instead. */
   onApplyTitleForward: () => void;
+
+  // ─── Variants + title-card + per-row notes ──────────────────────
+  //
+  // See `_plans/2026-05-27-editor-variants-titles-notes.md`. These
+  // surface the same affordances the production-doc grid view has had
+  // since the near-static-variants + title-card workflows shipped.
+  // Optional — when undefined the inspector hides the corresponding
+  // panel so an editor mounted without these (e.g. a future read-only
+  // surface) renders cleanly.
+
+  /** Sparse map of row-index → image URL. The variant mini-strip
+   *  reads this to render thumbnails for siblings in the same group. */
+  rowImagesMap?: Record<number, string>;
+  /** Async variant-generation state for the active row only. The
+   *  variant panel uses it to drive the Generate button's
+   *  spinner / error display. */
+  variantGenState?: VariantGenState;
+  /** Promote the active row to a base + insert the first variant; or
+   *  extend an existing group with a new variant. */
+  onAddVariantRow?: () => void;
+  /** Delete the active variant row (only meaningful when the active
+   *  row IS a variant — variant_index > 0). */
+  onDeleteVariantRow?: () => void;
+  /** Move the active variant up / down within its group. Refuses to
+   *  cross the base or a group boundary. */
+  onMoveVariantRow?: (direction: 'up' | 'down') => void;
+  /** Jump editor selection to a different row index. Used by the
+   *  variant mini-strip's click-to-jump and the variant view's
+   *  "Jump to base" link. */
+  onSelectRowIndex?: (rowIndex: number) => void;
+  /** Kick off the variant generation against the base (or previous
+   *  variant if chained). Async — parent POSTs to
+   *  /api/generate/production-doc/image/edit and persists via /row-asset. */
+  onGenerateVariant?: () => void;
+  /** Change the active row's `visual_type`. With `promoteFields: true`,
+   *  also runs the production-doc Title Card promotion side-effects. */
+  onSetRowVisualType?: (visualType: string, options?: { promoteFields?: boolean }) => void;
+  /** Extract a leading markdown heading from `script_text` into a
+   *  fresh Title Card row inserted above the active row. */
+  onSplitAsTitleCard?: (heading: string) => void;
+  /** Propagate the active Title Card's text as `section_title` to
+   *  every downstream row up to (not including) the next Title Card. */
+  onApplyTitleCardAsSectionTitle?: () => void;
+  /** Commit the per-row notes textarea via PATCH_ROW. */
+  onCommitNotes?: (notes: string) => void;
 }
 
 /** Lifted regen state shape — kept here so EditorClient and the
@@ -328,6 +382,17 @@ export function ShotInspector({
   rmbgInflight,
   rmbgApplied,
   hasRmbgCutout,
+  rowImagesMap,
+  variantGenState,
+  onAddVariantRow,
+  onDeleteVariantRow,
+  onMoveVariantRow,
+  onSelectRowIndex,
+  onGenerateVariant,
+  onSetRowVisualType,
+  onSplitAsTitleCard,
+  onApplyTitleCardAsSectionTitle,
+  onCommitNotes,
 }: ShotInspectorProps): React.ReactElement {
   const undoDepth = editHistoryDepth ?? 0;
   const overlayReady = overlayState?.status === 'done' && Boolean(overlayState.url);
@@ -1641,6 +1706,61 @@ export function ShotInspector({
             {shot.muted && <Badge label="muted" tone="red" />}
           </div>
         </div>
+
+        {/* Shot Type — visual_type dropdown + Title Card workflow
+            buttons (make / split / apply-as-section-title). Hidden
+            entirely when the parent didn't wire onSetRowVisualType
+            so a read-only inspector mount stays clean.
+            See `_plans/2026-05-27-editor-variants-titles-notes.md`. */}
+        {onSetRowVisualType && (
+          <InspectorShotTypePanel
+            row={row}
+            detectedHeading={detectLeadingHeading(row.script_text ?? '')}
+            applySectionTitleAffectedCount={(() => {
+              if (row.visual_type !== 'Title Card') return 0;
+              let endIndex = doc.rows.length - 1;
+              for (let i = shotIndex + 1; i < doc.rows.length; i++) {
+                if (doc.rows[i]?.visual_type === 'Title Card') {
+                  endIndex = i - 1;
+                  break;
+                }
+              }
+              return Math.max(0, endIndex - shotIndex);
+            })()}
+            onSetVisualType={onSetRowVisualType}
+            onSplitAsTitleCard={onSplitAsTitleCard ?? (() => {})}
+            onApplyTitleCardAsSectionTitle={
+              onApplyTitleCardAsSectionTitle ?? (() => {})
+            }
+          />
+        )}
+
+        {/* Variants — add / generate / move / delete affordances. The
+            panel hides ALL controls when no writers are wired, which
+            mirrors the read-only convention of the rest of this
+            inspector. */}
+        {onAddVariantRow && onUpdateRow && (
+          <InspectorVariantsPanel
+            row={row}
+            rowIndex={shotIndex}
+            doc={doc}
+            rowImages={rowImagesMap ?? {}}
+            genState={variantGenState ?? { kind: 'idle' }}
+            onAddVariant={onAddVariantRow}
+            onDeleteVariant={onDeleteVariantRow ?? (() => {})}
+            onMoveVariant={onMoveVariantRow ?? (() => {})}
+            onPatchRow={onUpdateRow}
+            onGenerateVariant={onGenerateVariant ?? (() => {})}
+            onSelectRow={onSelectRowIndex ?? (() => {})}
+          />
+        )}
+
+        {/* Per-row notes — bottom of the inspector body so the more
+            frequently-edited fields stay above the fold. The
+            timeline-level NotesDock is separate from this. */}
+        {onCommitNotes && (
+          <InspectorNotesPanel row={row} onCommit={onCommitNotes} />
+        )}
       </div>
 
       <footer

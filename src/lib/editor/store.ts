@@ -36,6 +36,7 @@
  * and version, dropping the user's unsaved edits.
  */
 import type { ProductionDoc, RowOverlayRenderState, RowVideoClipState } from '@/remotion/utils';
+import { MAX_VARIANTS_PER_GROUP } from '@/remotion/utils';
 import type { BrandKit, TextOverlay } from '@/remotion/types';
 import type { ForcedAlignmentResponse } from '@/lib/elevenlabs';
 import type { ProjectPayloadFlags } from '@/lib/project/payload';
@@ -526,6 +527,113 @@ export type EditorCommand =
       rowIndex: number;
       restoredUrl: string;
       restoredHistory: string[];
+    }
+  /** Promote the row at `baseIndex` into a variant group (or extend an
+   *  existing one) and insert a new variant row right after the last
+   *  member of that group. If the base row was standalone, this is when
+   *  it gets stamped with `group_id` + `variant_index = 0`. The new
+   *  variant clones the base's scene-context fields (visual_type,
+   *  visual_description, stock_search_terms) and leaves
+   *  ai_image_prompt / script_text / on_screen_text empty — the edit
+   *  dispatcher composes the actual generation prompt from the base
+   *  prompt + the variant's `variant_edit_prompt` (filled in by the
+   *  user after this command lands). Refuses when the group is at
+   *  `MAX_VARIANTS_PER_GROUP`. Mirrors the production-doc grid's
+   *  `addVariantRow` semantics.
+   *
+   *  Inverse is `REVERT_ADD_VARIANT_ROW`, which removes the inserted
+   *  variant AND (when the forward action promoted the base in the
+   *  same step) restores the base row's prior group_id / variant_index
+   *  exactly — so Cmd+Z brings the doc back to a true standalone state
+   *  rather than leaving a base with an empty group. */
+  | { type: 'ADD_VARIANT_ROW'; baseIndex: number }
+  /** Inverse of ADD_VARIANT_ROW. Removes the variant row at
+   *  `variantIndex` and, when `restoreBase` is present, un-stamps the
+   *  base row's group_id / variant_index (which the forward command had
+   *  added on first promotion). `variantIndex` is the index AFTER the
+   *  original splice — i.e. where the forward inserted the variant. */
+  | {
+      type: 'REVERT_ADD_VARIANT_ROW';
+      variantIndex: number;
+      restoreBase?: {
+        rowIndex: number;
+        priorGroupId: string | undefined;
+        priorVariantIndex: number | undefined;
+        priorGroupChainDefault: 'parallel' | 'chained' | undefined;
+      };
+    }
+  /** Delete a single variant row (variant_index > 0). Re-numbers the
+   *  remaining variants in the same group so their indices are 1..N-1
+   *  with no gaps. Does NOT unpromote the base — mirroring production-
+   *  doc behavior; an "orphaned" base with group_id but zero variants
+   *  is a deliberate accepted state. Use REVERT_ADD_VARIANT_ROW with
+   *  restoreBase if you specifically need to undo the promotion. */
+  | { type: 'DELETE_VARIANT_ROW'; rowIndex: number }
+  /** Inverse of DELETE_VARIANT_ROW. Re-inserts the deleted variant
+   *  back into the row list at `atIndex`, restores its rowImages slot,
+   *  and re-numbers the group's variants so the inserted row reclaims
+   *  its prior `variant_index`. */
+  | {
+      type: 'RESTORE_VARIANT_ROW';
+      atIndex: number;
+      row: ProductionDoc['rows'][number];
+      rowImageUrl: string | null;
+    }
+  /** Swap a variant row with its adjacent sibling in the same group.
+   *  Refuses to cross a group boundary or move past the base. Updates
+   *  both the row positions in `doc.rows` AND the `variant_index`
+   *  values on the two swapped rows so the indices stay consistent.
+   *  Self-inverse: the inverse is the same command with `direction`
+   *  flipped. Re-keys rowImages / rowOverlays / rowVideoClips for the
+   *  two swapped row positions. */
+  | { type: 'MOVE_VARIANT_ROW'; rowIndex: number; direction: 'up' | 'down' }
+  /** Set a row's `visual_type` field. When `promoteFields` is true AND
+   *  the new type is 'Title Card', also runs the production-doc
+   *  "Make this a title card" side-effects: clears `ai_image_prompt`,
+   *  `visual_description`, `stock_search_terms`, lifts the row's
+   *  `script_text` into `on_screen_text`, and backs the prior prompt
+   *  into notes. The inverse is a `PATCH_ROW` that restores every
+   *  field touched — so Cmd+Z reverses the full promotion in one step,
+   *  not just the visual_type flip. */
+  | {
+      type: 'SET_ROW_VISUAL_TYPE';
+      rowIndex: number;
+      visualType: string;
+      promoteFields?: boolean;
+    }
+  /** Split a leading `## heading` out of a row's `script_text` into a
+   *  fresh Title Card row inserted ABOVE the source row. The source
+   *  row's script_text loses the matched heading; the new row keeps
+   *  the heading as `on_screen_text` and sets `visual_type =
+   *  'Title Card'`. Reindexes all three per-row asset maps so the
+   *  source row's image / overlay / clip ride along with it to its new
+   *  index. The inverse is a composite REVERT_SPLIT_AS_TITLE_CARD that
+   *  removes the title card AND restores the source's original
+   *  script_text in one undo step. */
+  | { type: 'SPLIT_AS_TITLE_CARD'; rowIndex: number; heading: string }
+  /** Inverse of SPLIT_AS_TITLE_CARD. Removes the title card row at
+   *  `atIndex` and restores the source row's pre-split `script_text`. */
+  | {
+      type: 'REVERT_SPLIT_AS_TITLE_CARD';
+      atIndex: number;
+      sourceRowIndex: number;
+      restoreScriptText: string;
+    }
+  /** Propagate a Title Card row's text down through every row below it
+   *  (up to but not including the next Title Card or doc end) as the
+   *  `section_title` field. Production-doc surfaces this as the
+   *  "Apply as section title →" button on a Title Card row. Source text
+   *  is `on_screen_text` (preferred) or `script_text`, trimmed. Refuses
+   *  when the source row isn't a Title Card or when there's no text to
+   *  propagate. Inverse restores each affected row's prior
+   *  section_title verbatim. */
+  | { type: 'APPLY_TITLE_CARD_AS_SECTION_TITLE'; rowIndex: number }
+  /** Inverse of APPLY_TITLE_CARD_AS_SECTION_TITLE. Restores each
+   *  affected row's prior `section_title` (undefined ⇒ delete the
+   *  field). */
+  | {
+      type: 'REVERT_APPLY_TITLE_CARD_AS_SECTION_TITLE';
+      restore: Array<{ rowIndex: number; priorSectionTitle: string | undefined }>;
     };
 
 /** Discriminator: editing commands push to the undo stack; non-
@@ -564,6 +672,16 @@ function isEditingCommand(cmd: EditorCommand): boolean {
     case 'DUPLICATE_SHOT':
     case 'INSERT_BLANK_SHOT':
     case 'REMOVE_INSERTED_SHOT':
+    case 'ADD_VARIANT_ROW':
+    case 'REVERT_ADD_VARIANT_ROW':
+    case 'DELETE_VARIANT_ROW':
+    case 'RESTORE_VARIANT_ROW':
+    case 'MOVE_VARIANT_ROW':
+    case 'SET_ROW_VISUAL_TYPE':
+    case 'SPLIT_AS_TITLE_CARD':
+    case 'REVERT_SPLIT_AS_TITLE_CARD':
+    case 'APPLY_TITLE_CARD_AS_SECTION_TITLE':
+    case 'REVERT_APPLY_TITLE_CARD_AS_SECTION_TITLE':
       return true;
     default:
       return false;
@@ -2399,6 +2517,721 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           doc: { ...state.doc, rows: nextRows },
           isDirty: true,
           selection: shotIndex,
+        },
+        inverse,
+      };
+    }
+
+    case 'ADD_VARIANT_ROW': {
+      const { baseIndex } = cmd;
+      if (baseIndex < 0 || baseIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const baseRow = state.doc.rows[baseIndex];
+      const existingGroupId = baseRow.group_id;
+      const groupId =
+        existingGroupId
+        ?? (typeof crypto !== 'undefined' && 'randomUUID' in crypto
+            ? crypto.randomUUID()
+            : `g-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+
+      // The base counts as a group member even when it hasn't been
+      // promoted yet — the cap (4 = 1 base + 3 variants) is for the
+      // post-add state, so the predicate is "is the group already at
+      // the ceiling BEFORE we add."
+      const groupRows = state.doc.rows.filter((r) => r.group_id === groupId);
+      const currentSize = existingGroupId ? groupRows.length : 1;
+      if (currentSize >= MAX_VARIANTS_PER_GROUP) {
+        console.warn('[editor store] add-variant refused — group at cap', {
+          baseIndex,
+          groupId,
+          cap: MAX_VARIANTS_PER_GROUP,
+        });
+        return { next: state, inverse: null };
+      }
+      const nextVariantIndex = existingGroupId
+        ? Math.max(...groupRows.map((r) => r.variant_index ?? 0)) + 1
+        : 1;
+
+      // Capture pre-mutation state of the base for the inverse so we
+      // can restore a TRUE standalone row on undo (not just delete the
+      // variant and leave the base with a dangling group_id).
+      const wasStandalone = !existingGroupId;
+      const priorBaseGroupId = baseRow.group_id;
+      const priorBaseVariantIndex = baseRow.variant_index;
+      const priorBaseGroupChainDefault = baseRow.group_variant_chain_default;
+
+      const rowsWithBasePromoted = wasStandalone
+        ? state.doc.rows.map((r, i) =>
+            i === baseIndex
+              ? { ...r, group_id: groupId, variant_index: 0 }
+              : r,
+          )
+        : state.doc.rows.slice();
+
+      // Insert right after the LAST member of the group — variants are
+      // contiguous after the base in the row list (a production-doc
+      // invariant). Scanning until the first row whose group_id differs
+      // lands us at the slot just past the group's tail.
+      let lastGroupIndex = baseIndex;
+      for (let i = baseIndex + 1; i < rowsWithBasePromoted.length; i++) {
+        if (rowsWithBasePromoted[i]?.group_id === groupId) {
+          lastGroupIndex = i;
+        } else {
+          break;
+        }
+      }
+      const insertAt = lastGroupIndex + 1;
+
+      // Chain-mode resolution mirrors the runtime tier order in
+      // remotion/utils.ts:653 (per-variant > base default > doc default).
+      const groupChainDefault = baseRow.group_variant_chain_default;
+      let chainedDefault: boolean | undefined;
+      if (groupChainDefault === 'chained') chainedDefault = true;
+      else if (groupChainDefault === 'parallel') chainedDefault = false;
+      else if (state.doc.variants_chained_by_default === true) chainedDefault = true;
+
+      const newRow: ProductionDoc['rows'][number] = {
+        timecode: '',
+        script_text: '',
+        visual_type: baseRow.visual_type,
+        visual_description: baseRow.visual_description,
+        stock_search_terms: baseRow.stock_search_terms,
+        // Empty by design — the edit dispatcher composes the actual
+        // generation prompt from base.ai_image_prompt + this row's
+        // variant_edit_prompt. A non-empty ai_image_prompt here would
+        // confuse the prompt-composition path.
+        ai_image_prompt: '',
+        on_screen_text: '',
+        notes: '',
+        group_id: groupId,
+        variant_index: nextVariantIndex,
+        variant_edit_prompt: '',
+        ...(chainedDefault !== undefined
+          ? { variant_derives_from_previous: chainedDefault }
+          : {}),
+        edited_at: stampEditedAt(undefined, 'structure'),
+      };
+
+      const nextRows = [
+        ...rowsWithBasePromoted.slice(0, insertAt),
+        newRow,
+        ...rowsWithBasePromoted.slice(insertAt),
+      ];
+      const nextImages = reindexRowImages(state.rowImages, insertAt, 1);
+      const nextOverlays = reindexRecord(state.rowOverlays, insertAt, 1);
+      const nextVideoClips = reindexRecord(state.rowVideoClips, insertAt, 1);
+
+      const inverse: EditorCommand = {
+        type: 'REVERT_ADD_VARIANT_ROW',
+        variantIndex: insertAt,
+        restoreBase: wasStandalone
+          ? {
+              rowIndex: baseIndex,
+              priorGroupId: priorBaseGroupId,
+              priorVariantIndex: priorBaseVariantIndex,
+              priorGroupChainDefault: priorBaseGroupChainDefault,
+            }
+          : undefined,
+      };
+
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          rowImages: nextImages,
+          rowOverlays: nextOverlays,
+          rowVideoClips: nextVideoClips,
+          selection: insertAt,
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'REVERT_ADD_VARIANT_ROW': {
+      const { variantIndex, restoreBase } = cmd;
+      if (variantIndex < 0 || variantIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      if (state.doc.rows.length === 1) {
+        console.warn('[editor store] revert-add-variant refused — can\'t empty the doc');
+        return { next: state, inverse: null };
+      }
+      const removedRow = state.doc.rows[variantIndex];
+      const removedImageUrl = state.rowImages[variantIndex] ?? null;
+      const baseIndexForRedo = restoreBase?.rowIndex ?? -1;
+
+      const mutatedRows = state.doc.rows.slice();
+      if (restoreBase) {
+        const { rowIndex, priorGroupId, priorVariantIndex, priorGroupChainDefault } = restoreBase;
+        if (rowIndex >= 0 && rowIndex < mutatedRows.length) {
+          const copy = { ...mutatedRows[rowIndex] };
+          if (priorGroupId === undefined) delete copy.group_id;
+          else copy.group_id = priorGroupId;
+          if (priorVariantIndex === undefined) delete copy.variant_index;
+          else copy.variant_index = priorVariantIndex;
+          if (priorGroupChainDefault === undefined) delete copy.group_variant_chain_default;
+          else copy.group_variant_chain_default = priorGroupChainDefault;
+          mutatedRows[rowIndex] = copy;
+        }
+      }
+      const nextRows = [
+        ...mutatedRows.slice(0, variantIndex),
+        ...mutatedRows.slice(variantIndex + 1),
+      ];
+      const nextImages = reindexRowImages(state.rowImages, variantIndex, -1);
+      const nextOverlays = reindexRecord(state.rowOverlays, variantIndex, -1);
+      const nextVideoClips = reindexRecord(state.rowVideoClips, variantIndex, -1);
+
+      let nextSelection = state.selection;
+      if (nextSelection !== null) {
+        if (nextSelection === variantIndex) {
+          nextSelection = baseIndexForRedo >= 0
+            ? baseIndexForRedo
+            : Math.min(variantIndex, nextRows.length - 1);
+        } else if (nextSelection > variantIndex) {
+          nextSelection -= 1;
+        }
+      }
+
+      // Redo (forward of the original ADD_VARIANT_ROW): when restoreBase
+      // is present the original add was the first-promotion case, so the
+      // redo targets the base at its restored index. When absent, the
+      // original add extended an existing group — the new variant landed
+      // right after the previous tail, and the base sits earlier.
+      // In both cases the redo's `baseIndex` is the row whose group the
+      // variant belongs to; we look it up from the removed row.
+      let redoBaseIndex = baseIndexForRedo;
+      if (redoBaseIndex < 0 && removedRow.group_id) {
+        const idx = nextRows.findIndex(
+          (r) => r.group_id === removedRow.group_id && (r.variant_index ?? 0) === 0,
+        );
+        if (idx >= 0) redoBaseIndex = idx;
+      }
+      const inverse: EditorCommand = {
+        type: 'ADD_VARIANT_ROW',
+        baseIndex: redoBaseIndex >= 0 ? redoBaseIndex : variantIndex - 1,
+      };
+
+      void removedImageUrl; // captured for symmetry with DELETE_VARIANT_ROW; not used here
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          rowImages: nextImages,
+          rowOverlays: nextOverlays,
+          rowVideoClips: nextVideoClips,
+          selection: nextSelection,
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'DELETE_VARIANT_ROW': {
+      const { rowIndex } = cmd;
+      if (rowIndex < 0 || rowIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const target = state.doc.rows[rowIndex];
+      const groupId = target.group_id;
+      // Guard: only variant rows (variant_index > 0) flow through here.
+      // Refuse on base rows + standalone rows so a misrouted dispatch
+      // can't silently corrupt a group.
+      if (!groupId || (target.variant_index ?? 0) === 0) {
+        console.warn('[editor store] delete-variant refused — not a variant row', {
+          rowIndex,
+          group_id: target.group_id,
+          variant_index: target.variant_index,
+        });
+        return { next: state, inverse: null };
+      }
+      if (state.doc.rows.length === 1) {
+        console.warn('[editor store] delete-variant refused — can\'t empty the doc');
+        return { next: state, inverse: null };
+      }
+
+      const rowImageUrl = state.rowImages[rowIndex] ?? null;
+      // Remove + re-number remaining variants so indices are 1..N-1 with
+      // no gaps. Base (variant_index === 0) stays at 0. Mirrors the
+      // production-doc grid's deleteVariantRow.
+      const without = state.doc.rows.filter((_, i) => i !== rowIndex);
+      let seen = 0;
+      const reindexed = without.map((r) => {
+        if (r.group_id !== groupId) return r;
+        if ((r.variant_index ?? 0) === 0) return r;
+        seen += 1;
+        return { ...r, variant_index: seen };
+      });
+
+      const nextImages = reindexRowImages(state.rowImages, rowIndex, -1);
+      const nextOverlays = reindexRecord(state.rowOverlays, rowIndex, -1);
+      const nextVideoClips = reindexRecord(state.rowVideoClips, rowIndex, -1);
+
+      let nextSelection = state.selection;
+      if (nextSelection !== null) {
+        if (nextSelection === rowIndex) {
+          nextSelection = Math.min(rowIndex, reindexed.length - 1);
+        } else if (nextSelection > rowIndex) {
+          nextSelection -= 1;
+        }
+      }
+
+      const inverse: EditorCommand = {
+        type: 'RESTORE_VARIANT_ROW',
+        atIndex: rowIndex,
+        // Snapshot the row WITH its original variant_index — the
+        // restore handler re-inserts it and re-applies the variant
+        // numbering so the remaining variants slot back into 1..N.
+        row: target,
+        rowImageUrl,
+      };
+
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: reindexed },
+          rowImages: nextImages,
+          rowOverlays: nextOverlays,
+          rowVideoClips: nextVideoClips,
+          selection: nextSelection,
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'RESTORE_VARIANT_ROW': {
+      const { atIndex, row, rowImageUrl } = cmd;
+      if (atIndex < 0 || atIndex > state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const groupId = row.group_id;
+      const variantIdx = row.variant_index ?? 0;
+      if (!groupId || variantIdx === 0) {
+        // Only restorable as a variant. A misshapen inverse would be a
+        // bug elsewhere; refuse rather than corrupt the group.
+        console.warn('[editor store] restore-variant refused — not a variant row payload');
+        return { next: state, inverse: null };
+      }
+
+      // Re-insert the row at its original index. The reducer's caller
+      // is the undo path of DELETE_VARIANT_ROW, where deletion re-
+      // numbered the remaining variants downward. To put the restored
+      // variant back into the right slot we re-bump every later
+      // variant in the group whose variant_index >= the restored value.
+      const withRestored = [
+        ...state.doc.rows.slice(0, atIndex),
+        row,
+        ...state.doc.rows.slice(atIndex),
+      ];
+      const reindexed = withRestored.map((r, i) => {
+        if (i === atIndex) return r;
+        if (r.group_id !== groupId) return r;
+        const idx = r.variant_index ?? 0;
+        if (idx >= variantIdx) return { ...r, variant_index: idx + 1 };
+        return r;
+      });
+
+      let nextImages = reindexRowImages(state.rowImages, atIndex, 1);
+      if (rowImageUrl !== null) {
+        nextImages = { ...nextImages, [atIndex]: rowImageUrl };
+      }
+      const nextOverlays = reindexRecord(state.rowOverlays, atIndex, 1);
+      const nextVideoClips = reindexRecord(state.rowVideoClips, atIndex, 1);
+
+      const inverse: EditorCommand = {
+        type: 'DELETE_VARIANT_ROW',
+        rowIndex: atIndex,
+      };
+
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: reindexed },
+          rowImages: nextImages,
+          rowOverlays: nextOverlays,
+          rowVideoClips: nextVideoClips,
+          selection: atIndex,
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'MOVE_VARIANT_ROW': {
+      const { rowIndex, direction } = cmd;
+      if (rowIndex < 0 || rowIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const target = state.doc.rows[rowIndex];
+      const groupId = target.group_id;
+      const targetIdx = target.variant_index ?? 0;
+      // Only swap variants (idx >= 1) with siblings in the same group.
+      // Refuse base / standalone rows + cross-group swaps so the
+      // variant_index sequence stays consistent.
+      if (!groupId || targetIdx === 0) {
+        return { next: state, inverse: null };
+      }
+      const swapIdx = direction === 'up' ? targetIdx - 1 : targetIdx + 1;
+      if (swapIdx < 1) {
+        // Can't move past the base — that would re-number the base to 1
+        // and silently corrupt the group's structure.
+        return { next: state, inverse: null };
+      }
+      const swapRowIndex = state.doc.rows.findIndex(
+        (r) => r.group_id === groupId && (r.variant_index ?? 0) === swapIdx,
+      );
+      if (swapRowIndex < 0) {
+        return { next: state, inverse: null };
+      }
+
+      const nextRows = state.doc.rows.slice();
+      const a = { ...nextRows[rowIndex], variant_index: swapIdx };
+      const b = { ...nextRows[swapRowIndex], variant_index: targetIdx };
+      nextRows[rowIndex] = b;
+      nextRows[swapRowIndex] = a;
+
+      // Swap the asset map entries for the two positions so each
+      // variant's image / overlay / clip rides with it.
+      const swapEntry = <V,>(rec: Record<number, V>): Record<number, V> => {
+        const next = { ...rec };
+        const va = rec[rowIndex];
+        const vb = rec[swapRowIndex];
+        if (va !== undefined) next[swapRowIndex] = va;
+        else delete next[swapRowIndex];
+        if (vb !== undefined) next[rowIndex] = vb;
+        else delete next[rowIndex];
+        return next;
+      };
+
+      const inverse: EditorCommand = {
+        type: 'MOVE_VARIANT_ROW',
+        rowIndex: swapRowIndex,
+        direction: direction === 'up' ? 'down' : 'up',
+      };
+
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          rowImages: swapEntry(state.rowImages),
+          rowOverlays: swapEntry(state.rowOverlays),
+          rowVideoClips: swapEntry(state.rowVideoClips),
+          selection: swapRowIndex,
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'SET_ROW_VISUAL_TYPE': {
+      const { rowIndex, visualType, promoteFields } = cmd;
+      if (rowIndex < 0 || rowIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const row = state.doc.rows[rowIndex];
+      if (row.visual_type === visualType && !promoteFields) {
+        return { next: state, inverse: null };
+      }
+      const priorFields: Partial<ProductionDoc['rows'][number]> = {
+        visual_type: row.visual_type,
+      };
+      const patch: Partial<ProductionDoc['rows'][number]> = { visual_type: visualType };
+
+      if (promoteFields && visualType === 'Title Card') {
+        // Mirrors the production-doc "Make this a title card" handler.
+        // Capture every field we're about to overwrite so undo restores
+        // the prior prompt + description + on-screen text verbatim.
+        priorFields.ai_image_prompt = row.ai_image_prompt;
+        priorFields.visual_description = row.visual_description;
+        priorFields.stock_search_terms = row.stock_search_terms;
+        priorFields.on_screen_text = row.on_screen_text;
+        priorFields.notes = row.notes;
+
+        const titleText = (row.script_text ?? '').trim();
+        const priorPrompt = (row.ai_image_prompt ?? '').trim();
+        const backup = priorPrompt
+          ? `\n[backup-from-promote] ai_image_prompt was: ${priorPrompt}`
+          : '';
+
+        patch.ai_image_prompt = '';
+        patch.stock_search_terms = '';
+        patch.on_screen_text = titleText;
+        patch.visual_description = titleText
+          ? `Title card displaying "${titleText}"`
+          : 'Title card scene';
+        patch.notes = (
+          `${(row.notes ?? '').trim()}${backup ? `\n${backup}`.trimStart() : ''}`
+            .trim()
+        ) || 'Title card scene — rendered as crisp typography without an image.';
+      }
+
+      const nextRow: ProductionDoc['rows'][number] = {
+        ...row,
+        ...patch,
+        // Use 'structure' here — a visual_type change rewires which
+        // pipeline branch the renderer takes, which is structural
+        // intent. Promotion to Title Card additionally rewrites text
+        // fields but the structural flip is the dominant signal.
+        edited_at: stampEditedAt(row.edited_at, 'structure'),
+      };
+      const nextRows = state.doc.rows.slice();
+      nextRows[rowIndex] = nextRow;
+
+      const inverse: EditorCommand = {
+        type: 'PATCH_ROW',
+        rowIndex,
+        patch: priorFields,
+      };
+
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'SPLIT_AS_TITLE_CARD': {
+      const { rowIndex, heading } = cmd;
+      if (rowIndex < 0 || rowIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const trimmedHeading = heading.trim();
+      if (!trimmedHeading) {
+        console.warn('[editor store] split-as-title-card refused — empty heading');
+        return { next: state, inverse: null };
+      }
+      const sourceRow = state.doc.rows[rowIndex];
+      const originalScriptText = sourceRow.script_text ?? '';
+
+      // Heading match is tolerant: optional leading `##`, optional
+      // whitespace, optional trailing punctuation. Mirrors the
+      // production-doc page's strip regex so split behaves identically
+      // across surfaces.
+      const escapedHeading = trimmedHeading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const stripRe = new RegExp(
+        `^\\s*(?:##\\s*)?${escapedHeading}\\s*[\\.,:;—-]?\\s*`,
+        'i',
+      );
+      const strippedScript = originalScriptText.replace(stripRe, '').trim();
+      if (strippedScript === originalScriptText.trim()) {
+        console.warn('[editor store] split-as-title-card no-op — heading not found in script', {
+          rowIndex,
+          heading: trimmedHeading,
+        });
+        return { next: state, inverse: null };
+      }
+
+      const titleCardRow: ProductionDoc['rows'][number] = {
+        timecode: sourceRow.timecode ?? '',
+        script_text: '',
+        visual_type: 'Title Card',
+        visual_description: `Title card displaying "${trimmedHeading}"`,
+        stock_search_terms: '',
+        ai_image_prompt: '',
+        on_screen_text: trimmedHeading,
+        notes: 'Auto-split title card. Lock-as-still so the title text is preserved.',
+        edited_at: stampEditedAt(undefined, 'structure'),
+      };
+
+      const updatedSource: ProductionDoc['rows'][number] = {
+        ...sourceRow,
+        script_text: strippedScript,
+        edited_at: stampEditedAt(sourceRow.edited_at, 'script_text'),
+      };
+
+      // Insert title-card ABOVE the source row. The source row's
+      // assets ride along to its new index via the +1 reindex below.
+      const nextRows = [
+        ...state.doc.rows.slice(0, rowIndex),
+        titleCardRow,
+        updatedSource,
+        ...state.doc.rows.slice(rowIndex + 1),
+      ];
+      const nextImages = reindexRowImages(state.rowImages, rowIndex, 1);
+      const nextOverlays = reindexRecord(state.rowOverlays, rowIndex, 1);
+      const nextVideoClips = reindexRecord(state.rowVideoClips, rowIndex, 1);
+
+      const inverse: EditorCommand = {
+        type: 'REVERT_SPLIT_AS_TITLE_CARD',
+        atIndex: rowIndex,
+        sourceRowIndex: rowIndex + 1,
+        restoreScriptText: originalScriptText,
+      };
+
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          rowImages: nextImages,
+          rowOverlays: nextOverlays,
+          rowVideoClips: nextVideoClips,
+          // Select the title card so the user lands on what they just
+          // created — they typically want to tweak it next.
+          selection: rowIndex,
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'REVERT_SPLIT_AS_TITLE_CARD': {
+      const { atIndex, sourceRowIndex, restoreScriptText } = cmd;
+      if (atIndex < 0 || atIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      if (sourceRowIndex < 0 || sourceRowIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      if (state.doc.rows.length === 1) {
+        console.warn('[editor store] revert-split-title-card refused — can\'t empty the doc');
+        return { next: state, inverse: null };
+      }
+
+      const sourceRow = state.doc.rows[sourceRowIndex];
+      // Capture the heading from the title card so the redo can find it
+      // in the restored script.
+      const titleCardRow = state.doc.rows[atIndex];
+      const heading = (titleCardRow.on_screen_text ?? '').trim();
+
+      const restoredSource: ProductionDoc['rows'][number] = {
+        ...sourceRow,
+        script_text: restoreScriptText,
+      };
+      const withSourceRestored = state.doc.rows.slice();
+      withSourceRestored[sourceRowIndex] = restoredSource;
+      const nextRows = [
+        ...withSourceRestored.slice(0, atIndex),
+        ...withSourceRestored.slice(atIndex + 1),
+      ];
+      const nextImages = reindexRowImages(state.rowImages, atIndex, -1);
+      const nextOverlays = reindexRecord(state.rowOverlays, atIndex, -1);
+      const nextVideoClips = reindexRecord(state.rowVideoClips, atIndex, -1);
+
+      // After the splice, the original source row sits at atIndex.
+      const inverse: EditorCommand = {
+        type: 'SPLIT_AS_TITLE_CARD',
+        rowIndex: atIndex,
+        heading,
+      };
+
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          rowImages: nextImages,
+          rowOverlays: nextOverlays,
+          rowVideoClips: nextVideoClips,
+          selection: atIndex,
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'APPLY_TITLE_CARD_AS_SECTION_TITLE': {
+      const { rowIndex } = cmd;
+      if (rowIndex < 0 || rowIndex >= state.doc.rows.length) {
+        return { next: state, inverse: null };
+      }
+      const sourceRow = state.doc.rows[rowIndex];
+      if (sourceRow.visual_type !== 'Title Card') {
+        console.warn('[editor store] apply-title-as-section refused — not a Title Card row', {
+          rowIndex,
+          visual_type: sourceRow.visual_type,
+        });
+        return { next: state, inverse: null };
+      }
+      const text = ((sourceRow.on_screen_text ?? '').trim()
+        || (sourceRow.script_text ?? '').trim()).trim();
+      if (!text) {
+        console.warn('[editor store] apply-title-as-section refused — no text on title card', {
+          rowIndex,
+        });
+        return { next: state, inverse: null };
+      }
+
+      // Section runs from rowIndex+1 to the row BEFORE the next Title
+      // Card (or doc end). Walking the array once gives both bounds.
+      let endIndex = state.doc.rows.length - 1;
+      for (let i = rowIndex + 1; i < state.doc.rows.length; i++) {
+        if (state.doc.rows[i]?.visual_type === 'Title Card') {
+          endIndex = i - 1;
+          break;
+        }
+      }
+      if (endIndex < rowIndex + 1) {
+        // No following rows under this title card — refuse rather than
+        // dirty state for a zero-op.
+        return { next: state, inverse: null };
+      }
+
+      const restore: Array<{ rowIndex: number; priorSectionTitle: string | undefined }> = [];
+      const nextRows = state.doc.rows.map((r, i) => {
+        if (i > rowIndex && i <= endIndex) {
+          restore.push({ rowIndex: i, priorSectionTitle: r.section_title });
+          return { ...r, section_title: text };
+        }
+        return r;
+      });
+
+      const inverse: EditorCommand = {
+        type: 'REVERT_APPLY_TITLE_CARD_AS_SECTION_TITLE',
+        restore,
+      };
+
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          isDirty: true,
+        },
+        inverse,
+      };
+    }
+
+    case 'REVERT_APPLY_TITLE_CARD_AS_SECTION_TITLE': {
+      const { restore } = cmd;
+      if (restore.length === 0) {
+        return { next: state, inverse: null };
+      }
+      const restoreMap = new Map(restore.map((e) => [e.rowIndex, e.priorSectionTitle]));
+      const nextRows = state.doc.rows.map((r, i) => {
+        if (!restoreMap.has(i)) return r;
+        const prior = restoreMap.get(i);
+        const copy = { ...r };
+        if (prior === undefined) delete copy.section_title;
+        else copy.section_title = prior;
+        return copy;
+      });
+
+      // Redo path: dispatch APPLY_TITLE_CARD_AS_SECTION_TITLE against
+      // the first row above the restore range that's a Title Card.
+      // The restore range is guaranteed contiguous starting at
+      // rowIndex+1 (forward command's invariant), so scanning back from
+      // the first restored index lands us on the source.
+      const firstAffected = Math.min(...restore.map((e) => e.rowIndex));
+      let sourceIdx = firstAffected - 1;
+      while (sourceIdx >= 0 && nextRows[sourceIdx]?.visual_type !== 'Title Card') {
+        sourceIdx -= 1;
+      }
+      const inverse: EditorCommand =
+        sourceIdx >= 0
+          ? { type: 'APPLY_TITLE_CARD_AS_SECTION_TITLE', rowIndex: sourceIdx }
+          : // Defensive: no Title Card found above the restore range.
+            // Should never happen given the forward command's guards.
+            { type: 'SET_SELECTION', shotIndex: state.selection };
+
+      return {
+        next: {
+          ...state,
+          doc: { ...state.doc, rows: nextRows },
+          isDirty: true,
         },
         inverse,
       };

@@ -97,4 +97,108 @@ describe('reindexForCommand', () => {
       expect(reindexForCommand(cmd), `for ${cmd.type}`).toBeNull();
     }
   });
+
+  // ── variant commands ────────────────────────────────────────────
+  // ADD_VARIANT_ROW intentionally returns null because the insert
+  // index is derived from the doc at dispatch time, not embedded in
+  // the command. EditorClient computes the position from state.doc +
+  // the base index and calls the server reindex directly. The inverse
+  // (REVERT_ADD_VARIANT_ROW) DOES carry the index so undo works
+  // through the standard reindexForCommand path.
+
+  it('returns null for ADD_VARIANT_ROW (caller computes insert index)', () => {
+    expect(reindexForCommand({ type: 'ADD_VARIANT_ROW', baseIndex: 4 })).toBeNull();
+  });
+
+  it('maps REVERT_ADD_VARIANT_ROW to delete at variantIndex', () => {
+    expect(
+      reindexForCommand({
+        type: 'REVERT_ADD_VARIANT_ROW',
+        variantIndex: 7,
+      }),
+    ).toEqual({ op: 'delete', atIndex: 7 });
+  });
+
+  it('maps DELETE_VARIANT_ROW to delete at rowIndex', () => {
+    expect(
+      reindexForCommand({ type: 'DELETE_VARIANT_ROW', rowIndex: 12 }),
+    ).toEqual({ op: 'delete', atIndex: 12 });
+  });
+
+  it('maps RESTORE_VARIANT_ROW to insert at atIndex', () => {
+    expect(
+      reindexForCommand({
+        type: 'RESTORE_VARIANT_ROW',
+        atIndex: 5,
+        row: {
+          timecode: '',
+          script_text: '',
+          visual_type: '',
+          visual_description: '',
+          stock_search_terms: '',
+          ai_image_prompt: '',
+          on_screen_text: '',
+          notes: '',
+          group_id: 'g-1',
+          variant_index: 2,
+        },
+        rowImageUrl: null,
+      }),
+    ).toEqual({ op: 'insert', atIndex: 5 });
+  });
+
+  it('returns null for MOVE_VARIANT_ROW (swap, not splice)', () => {
+    expect(
+      reindexForCommand({ type: 'MOVE_VARIANT_ROW', rowIndex: 3, direction: 'down' }),
+    ).toBeNull();
+  });
+
+  // ── title-card commands ─────────────────────────────────────────
+
+  it('maps SPLIT_AS_TITLE_CARD to insert at rowIndex', () => {
+    expect(
+      reindexForCommand({
+        type: 'SPLIT_AS_TITLE_CARD',
+        rowIndex: 8,
+        heading: 'Section 1',
+      }),
+    ).toEqual({ op: 'insert', atIndex: 8 });
+  });
+
+  it('maps REVERT_SPLIT_AS_TITLE_CARD to delete at atIndex', () => {
+    expect(
+      reindexForCommand({
+        type: 'REVERT_SPLIT_AS_TITLE_CARD',
+        atIndex: 8,
+        sourceRowIndex: 9,
+        restoreScriptText: '## Section 1 — body',
+      }),
+    ).toEqual({ op: 'delete', atIndex: 8 });
+  });
+
+  it('returns null for SET_ROW_VISUAL_TYPE (slot stays in place)', () => {
+    expect(
+      reindexForCommand({
+        type: 'SET_ROW_VISUAL_TYPE',
+        rowIndex: 4,
+        visualType: 'Title Card',
+        promoteFields: true,
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null for APPLY_TITLE_CARD_AS_SECTION_TITLE (no slot shift)', () => {
+    expect(
+      reindexForCommand({
+        type: 'APPLY_TITLE_CARD_AS_SECTION_TITLE',
+        rowIndex: 0,
+      }),
+    ).toBeNull();
+    expect(
+      reindexForCommand({
+        type: 'REVERT_APPLY_TITLE_CARD_AS_SECTION_TITLE',
+        restore: [{ rowIndex: 1, priorSectionTitle: undefined }],
+      }),
+    ).toBeNull();
+  });
 });

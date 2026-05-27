@@ -33,6 +33,7 @@ import { YouTubeVideo } from '@/remotion/compositions/YouTubeVideo';
 import {
   productionDocToVideoConfig,
   summarizeConfigForDiagnostics,
+  composeVariantEditRequest,
   type ProductionDoc,
   type RowImageState,
   type RowOverlayRenderState,
@@ -350,10 +351,34 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       // assets appear on the wrong shots.
       //
       // See `_plans/2026-05-24-project-assets-extraction.md` §Reindex.
-      onAfterCommand: ({ cmd, resolvedInner }) => {
+      onAfterCommand: ({ cmd, resolvedInner, prevState }) => {
+        // ADD_VARIANT_ROW's insert index isn't part of the command (it
+        // depends on the base's group membership), so the pure
+        // reindexForCommand helper returns null for it. Compute the
+        // insert position here from the pre-state — same algorithm as
+        // the reducer — then synthesize an insert effect manually.
+        const computeAddVariantInsert = (baseIndex: number): number => {
+          const baseRow = prevState.doc.rows[baseIndex];
+          if (!baseRow) return baseIndex + 1;
+          const gid = baseRow.group_id;
+          if (!gid) return baseIndex + 1;
+          let lastGroupIndex = baseIndex;
+          for (let i = baseIndex + 1; i < prevState.doc.rows.length; i++) {
+            if (prevState.doc.rows[i]?.group_id === gid) lastGroupIndex = i;
+            else break;
+          }
+          return lastGroupIndex + 1;
+        };
+        const addVariantEffect = (c: EditorCommand) =>
+          c.type === 'ADD_VARIANT_ROW'
+            ? { op: 'insert' as const, atIndex: computeAddVariantInsert(c.baseIndex) }
+            : null;
+
         const effect =
-          reindexForCommand(cmd) ??
-          (resolvedInner ? reindexForCommand(resolvedInner) : null);
+          reindexForCommand(cmd)
+          ?? (resolvedInner ? reindexForCommand(resolvedInner) : null)
+          ?? addVariantEffect(cmd)
+          ?? (resolvedInner ? addVariantEffect(resolvedInner) : null);
         if (!effect) return;
         console.info('[editor row-reindex] start', {
           op: effect.op,
@@ -2459,6 +2484,209 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     },
     [apply],
   );
+
+  // ─── Variants + title cards — port from production-doc ──────────
+  //
+  // See `_plans/2026-05-27-editor-variants-titles-notes.md`. These are
+  // the editor-side adapters that mount the ported reducer commands on
+  // the writers prop bundle the ShotInspector + InspectorVariantsPanel
+  // expect. Each is intentionally THIN: the heavy lifting (row splice,
+  // group renumbering, undo-inverse construction, asset reindex)
+  // happens in the reducer + the onAfterCommand reindex side-effect at
+  // the store boundary. The wrappers' job is to:
+  //   - bind the active row index (or compute it from selection),
+  //   - log a console.info breadcrumb that mirrors the production-doc
+  //     surface so a bug report from either surface reads the same way,
+  //   - surface a toast on user-meaningful state.
+
+  /** Per-row variant-generation state. Keyed by row index. Drives the
+   *  Generate button's spinner / error display in InspectorVariantsPanel.
+   *  Cleared on success (handled by the helper) or when the user
+   *  clicks Generate again (the helper sets it back to 'generating'). */
+  const [variantGenStates, setVariantGenStates] = useState<
+    Record<number, { kind: 'idle' } | { kind: 'generating' } | { kind: 'error'; message: string }>
+  >({});
+
+  const addVariantRow = useCallback(
+    (baseIndex: number) => {
+      console.info('[editor variants] add', { baseIndex });
+      apply({ type: 'ADD_VARIANT_ROW', baseIndex });
+    },
+    [apply],
+  );
+
+  const deleteVariantRow = useCallback(
+    (rowIndex: number) => {
+      console.info('[editor variants] delete', { rowIndex });
+      apply({ type: 'DELETE_VARIANT_ROW', rowIndex });
+    },
+    [apply],
+  );
+
+  const moveVariantRow = useCallback(
+    (rowIndex: number, direction: 'up' | 'down') => {
+      console.info('[editor variants] move', { rowIndex, direction });
+      // Look up the swap target's row index BEFORE dispatch so we know
+      // which two asset slots to mirror to the server. The reducer
+      // swaps in-place (no row-reindex effect fires) — we have to push
+      // both slots through /row-asset explicitly so the server's
+      // project_assets table matches the post-swap state.
+      const target = stateRef.current.doc.rows[rowIndex];
+      if (!target?.group_id || (target.variant_index ?? 0) === 0) return;
+      const swapIdx =
+        direction === 'up' ? (target.variant_index ?? 0) - 1 : (target.variant_index ?? 0) + 1;
+      const swapRowIndex = stateRef.current.doc.rows.findIndex(
+        (r) => r.group_id === target.group_id && (r.variant_index ?? 0) === swapIdx,
+      );
+      if (swapRowIndex < 0) return;
+      apply({ type: 'MOVE_VARIANT_ROW', rowIndex, direction });
+      // After dispatch, what WAS at rowIndex is now at swapRowIndex
+      // (and vice versa). Re-persist both image URLs in their new
+      // positions. Reading from stateRef.current post-dispatch is safe
+      // because dispatch flushes synchronously in useEditorStore.
+      const newRowImages = stateRef.current.rowImages;
+      const urlAtRow = newRowImages[rowIndex];
+      const urlAtSwap = newRowImages[swapRowIndex];
+      writeRowAsset(rowIndex, 'image', urlAtRow ?? null);
+      writeRowAsset(swapRowIndex, 'image', urlAtSwap ?? null);
+    },
+    [apply, writeRowAsset],
+  );
+
+  /** Generate a variant image from its base (or previous variant if
+   *  chained). Async fire-and-forget: dispatches a local "generating"
+   *  state, POSTs to the existing edit endpoint, then commits the
+   *  returned URL via commitRowImage (which both dispatches
+   *  SET_ROW_IMAGE locally AND persists via /row-asset). On error,
+   *  parks the error message on variantGenStates for the panel to
+   *  display. */
+  const generateVariantImage = useCallback(
+    async (variantRowIndex: number) => {
+      const liveDoc = stateRef.current.doc;
+      const variantRow = liveDoc.rows[variantRowIndex];
+      if (!variantRow?.group_id || (variantRow.variant_index ?? 0) === 0) {
+        toast.error('Not a variant row.');
+        return;
+      }
+
+      // Source image: base for parallel variants, previous variant for
+      // chained ones. Mirrors production-doc's generateVariantImage.
+      const groupId = variantRow.group_id;
+      const baseRowIndex = liveDoc.rows.findIndex(
+        (r) => r.group_id === groupId && (r.variant_index ?? 0) === 0,
+      );
+      if (baseRowIndex < 0) {
+        toast.error('Base row not found for this variant group.');
+        return;
+      }
+      const currentVariantIdx = variantRow.variant_index ?? 0;
+      let sourceRowIndex = baseRowIndex;
+      if (variantRow.variant_derives_from_previous && currentVariantIdx > 1) {
+        const prevIdx = liveDoc.rows.findIndex(
+          (r) =>
+            r.group_id === groupId
+            && (r.variant_index ?? 0) === currentVariantIdx - 1,
+        );
+        if (prevIdx >= 0) sourceRowIndex = prevIdx;
+      }
+      const sourceImageUrl = stateRef.current.rowImages[sourceRowIndex];
+      if (!sourceImageUrl) {
+        toast.error('Generate the base image first — variants edit it.');
+        return;
+      }
+
+      const prepared = composeVariantEditRequest(liveDoc, variantRow, sourceImageUrl);
+      if (prepared.kind === 'error') {
+        toast.error(prepared.message);
+        return;
+      }
+
+      console.info('[editor variants] generate start', {
+        variantRowIndex,
+        baseRowIndex,
+        sourceRowIndex,
+        chained: variantRow.variant_derives_from_previous === true,
+      });
+      setVariantGenStates((prev) => ({ ...prev, [variantRowIndex]: { kind: 'generating' } }));
+
+      try {
+        const res = await fetch('/api/generate/production-doc/image/edit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(prepared.request),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          imageUrl?: string;
+          error?: string;
+        };
+        if (!res.ok || !data.imageUrl) {
+          const msg = data.error || `HTTP ${res.status}`;
+          console.warn('[editor variants] generate failed', {
+            variantRowIndex,
+            status: res.status,
+            detail: msg.slice(0, 200),
+          });
+          setVariantGenStates((prev) => ({
+            ...prev,
+            [variantRowIndex]: { kind: 'error', message: msg },
+          }));
+          toast.error(`Variant generate failed: ${msg}`);
+          return;
+        }
+        commitRowImage(variantRowIndex, data.imageUrl);
+        // Stamp the source image so the staleness banner can detect
+        // when the base later changes. Same field the production-doc
+        // grid writes in Phase 3.7c.
+        updateRow(variantRowIndex, { variant_base_image_at_generation: sourceImageUrl });
+        setVariantGenStates((prev) => ({ ...prev, [variantRowIndex]: { kind: 'idle' } }));
+        console.info('[editor variants] generate ok', { variantRowIndex });
+        toast.success(`Variant ${currentVariantIdx} generated`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn('[editor variants] generate threw', { variantRowIndex, detail: msg });
+        setVariantGenStates((prev) => ({
+          ...prev,
+          [variantRowIndex]: { kind: 'error', message: msg },
+        }));
+        toast.error(`Variant generate threw: ${msg}`);
+      }
+    },
+    [commitRowImage, updateRow],
+  );
+
+  const setRowVisualType = useCallback(
+    (rowIndex: number, visualType: string, options?: { promoteFields?: boolean }) => {
+      console.info('[editor visual-type] set', {
+        rowIndex,
+        visualType,
+        promoteFields: options?.promoteFields === true,
+      });
+      apply({
+        type: 'SET_ROW_VISUAL_TYPE',
+        rowIndex,
+        visualType,
+        promoteFields: options?.promoteFields,
+      });
+    },
+    [apply],
+  );
+
+  const splitAsTitleCard = useCallback(
+    (rowIndex: number, heading: string) => {
+      console.info('[editor title-card] split', { rowIndex, heading });
+      apply({ type: 'SPLIT_AS_TITLE_CARD', rowIndex, heading });
+    },
+    [apply],
+  );
+
+  const applyTitleCardAsSectionTitle = useCallback(
+    (rowIndex: number) => {
+      console.info('[editor title-card] apply-as-section-title', { rowIndex });
+      apply({ type: 'APPLY_TITLE_CARD_AS_SECTION_TITLE', rowIndex });
+      toast.success('Section title applied to downstream rows.');
+    },
+    [apply],
+  );
   /** Set / clear the per-row overlay render state. Same auto-save +
    *  undo guarantees as updateRow. `transient: true` marks the change
    *  as ephemeral UI state (e.g. `loading`) so it skips the undo
@@ -4483,6 +4711,38 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               hasRmbgCutout={
                 state.selection !== null &&
                 typeof state.doc.rows[state.selection]?.image_rmbg_url === 'string'
+              }
+              // Variants + title-card + per-row notes (see
+              // `_plans/2026-05-27-editor-variants-titles-notes.md`).
+              // Threading the full image map for the variant mini-strip;
+              // every other prop is a per-selection writer that delegates
+              // to the reducer commands defined in src/lib/editor/store.ts.
+              rowImagesMap={state.rowImages}
+              variantGenState={
+                variantGenStates[state.selection] ?? { kind: 'idle' }
+              }
+              onAddVariantRow={() => addVariantRow(state.selection as number)}
+              onDeleteVariantRow={() => deleteVariantRow(state.selection as number)}
+              onMoveVariantRow={(direction) =>
+                moveVariantRow(state.selection as number, direction)
+              }
+              onSelectRowIndex={(idx) =>
+                apply({ type: 'SET_SELECTION', shotIndex: idx })
+              }
+              onGenerateVariant={() => {
+                void generateVariantImage(state.selection as number);
+              }}
+              onSetRowVisualType={(visualType, options) =>
+                setRowVisualType(state.selection as number, visualType, options)
+              }
+              onSplitAsTitleCard={(heading) =>
+                splitAsTitleCard(state.selection as number, heading)
+              }
+              onApplyTitleCardAsSectionTitle={() =>
+                applyTitleCardAsSectionTitle(state.selection as number)
+              }
+              onCommitNotes={(notes) =>
+                updateRow(state.selection as number, { notes })
               }
             />
           ) : undefined,

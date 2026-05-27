@@ -33,11 +33,39 @@ export function ShotsTab({ rows, rowImages, selection, onSelect, onContextMenu }
   // current row's number.
   const badgeDigits = Math.max(2, String(rows.length).length);
   const badgeMinWidth = 16 + badgeDigits * 8; // 8px per digit at 12px tabular-nums, + 16px chrome
+
+  // Pre-compute per-group sizes so each variant/base row can show
+  // its position within the group ("var 2/3", "base · 3 variants")
+  // without re-walking the array per render. Pure derivation, no
+  // memo — the array walk is O(N) and the row map is rebuilt on
+  // every render anyway.
+  const groupSizes = new Map<string, number>();
+  for (const r of rows) {
+    if (r.group_id) {
+      groupSizes.set(r.group_id, (groupSizes.get(r.group_id) ?? 0) + 1);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-1.5">
       {rows.map((row, i) => {
         const thumb = rowImages[i];
         const isActive = selection === i;
+        const variantIdx = row.variant_index ?? 0;
+        const groupSize = row.group_id ? (groupSizes.get(row.group_id) ?? 0) : 0;
+        const isBase = !!row.group_id && variantIdx === 0 && groupSize > 1;
+        const isVariant = !!row.group_id && variantIdx > 0;
+        const isTitleCard = row.visual_type === 'Title Card';
+        // Left-border accent for grouped rows so variant runs read as
+        // a visual cluster on the strip. Distinct color from the
+        // selection border so the two don't fight.
+        const leftAccent = row.group_id
+          ? isVariant
+            ? '3px solid var(--accent-purple, #7c3aed)'
+            : isBase
+              ? '3px solid var(--accent-purple-bright, #a78bfa)'
+              : 'none'
+          : 'none';
         return (
           <button
             key={i}
@@ -61,6 +89,7 @@ export function ShotsTab({ rows, rowImages, selection, onSelect, onContextMenu }
               background: isActive ? 'var(--editor-accent-soft)' : 'var(--editor-panel)',
               border: '1px solid',
               borderColor: isActive ? 'var(--editor-accent)' : 'var(--editor-edge)',
+              borderLeft: leftAccent !== 'none' ? leftAccent : undefined,
             }}
           >
             <div className="flex items-center gap-2 p-1.5">
@@ -107,10 +136,52 @@ export function ShotsTab({ rows, rowImages, selection, onSelect, onContextMenu }
               </div>
               <div className="min-w-0 flex-1">
                 <div
-                  className="text-[10px] tabular-nums ed-mono"
+                  className="text-[10px] tabular-nums ed-mono flex items-center gap-1"
                   style={{ color: isActive ? 'var(--editor-accent)' : 'var(--fg-muted)' }}
                 >
-                  {row.timecode || '—'}
+                  <span>{row.timecode || '—'}</span>
+                  {/* Variant / title-card chips — scan-friendly tiny
+                      glyphs so a 171-row doc with 36 variant groups
+                      stays readable. Variants and title cards are the
+                      two row-types users most often want to find at a
+                      glance on the strip. See
+                      `_plans/2026-05-27-editor-variants-titles-notes.md`. */}
+                  {isBase && (
+                    <span
+                      className="px-1 py-0 rounded text-[8px] font-semibold"
+                      style={{
+                        background: 'var(--accent-purple-bright, #a78bfa)',
+                        color: '#fff',
+                      }}
+                      title={`Base of a ${groupSize - 1}-variant group`}
+                    >
+                      base
+                    </span>
+                  )}
+                  {isVariant && (
+                    <span
+                      className="px-1 py-0 rounded text-[8px] font-semibold"
+                      style={{
+                        background: 'var(--accent-purple, #7c3aed)',
+                        color: '#fff',
+                      }}
+                      title={`Variant ${variantIdx} of ${groupSize - 1}`}
+                    >
+                      v{variantIdx}/{groupSize - 1}
+                    </span>
+                  )}
+                  {isTitleCard && (
+                    <span
+                      className="px-1 py-0 rounded text-[8px] font-semibold"
+                      style={{
+                        background: 'var(--accent-blue, #3b82f6)',
+                        color: '#fff',
+                      }}
+                      title="Title card (renders as typography, no image)"
+                    >
+                      title
+                    </span>
+                  )}
                 </div>
                 <div
                   className="text-[11px] truncate"
