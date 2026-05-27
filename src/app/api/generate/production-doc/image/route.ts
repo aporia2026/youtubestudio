@@ -27,6 +27,12 @@ import { resolveStyle } from '@/lib/production-doc-styles';
 import { loadStyleReferences, markReferenceRejected } from '@/lib/production-doc-styles-refs';
 import { generateImageWithRefs, ReferenceRejectedError } from '@/lib/image-gen-i2i';
 import { augmentCellPrompt, SINGLE_SHOT_PROMPT_CAP } from '@/lib/prompt-augmentation';
+import {
+  PROMPT_VERSION,
+  useShortVariantPrompt,
+  useTrimmedSuffix,
+  type ImageGenTelemetry,
+} from '@/lib/production-doc-flags';
 
 export const maxDuration = 300;
 
@@ -187,6 +193,21 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
             refs_loaded: refs.length,
             prompt_slice: augmentedPrompt.slice(0, 80),
           });
+          // Foundation telemetry (Stage 0). Attributes this generation to
+          // a prompt version, style + version, ref set, suffix size, and
+          // flag state so post-ship regressions are forensically
+          // traceable. Plan: _plans/2026-05-27-doodle-explainer-2-foundation.md.
+          logger.info('[prodoc image-gen telemetry]', {
+            prompt_version: PROMPT_VERSION,
+            style_id: style.id,
+            style_version: style.version ?? null,
+            ref_count: refs.length,
+            ref_ids: refs.map((r) => r.id),
+            suffix_chars: (style.ai_image_suffix ?? '').length,
+            prompt_chars: augmentedPrompt.length,
+            flag_short_variant: useShortVariantPrompt(),
+            flag_trimmed_suffix: useTrimmedSuffix(),
+          } satisfies ImageGenTelemetry);
 
           // ─── Unified i2i dispatch (cloud + local via the shared helper) ──
           //

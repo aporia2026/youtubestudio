@@ -12,6 +12,12 @@ import {
   pollKieResultThenUpscale,
 } from '@/lib/kie-poll';
 import { generateAtlasEdit } from '@/lib/atlas-cloud-images';
+import {
+  PROMPT_VERSION,
+  useShortVariantPrompt,
+  useTrimmedSuffix,
+  type ImageGenTelemetry,
+} from '@/lib/production-doc-flags';
 import { upscaleViaRecraft } from '@/lib/upscale';
 import { checkSafePublicUrl } from '@/lib/url-safety';
 import {
@@ -262,6 +268,23 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
         // the vendor URL directly. Token telemetry is logged so we can
         // true up the $0.01/call estimate against real usage. See
         // _plans/2026-05-25-atlas-cloud-gpt-image-2.md.
+        // Foundation telemetry (Stage 0). The edit route doesn't know
+        // the active style — variants come from `composeVariantEditRequest`
+        // which composes against the base row's style upstream. ref_count
+        // is 1 (the single input image); ref_ids is empty because the
+        // input isn't a style ref row. Plan:
+        // _plans/2026-05-27-doodle-explainer-2-foundation.md.
+        logger.info('[prodoc image-gen telemetry]', {
+          prompt_version: PROMPT_VERSION,
+          style_id: null,
+          style_version: null,
+          ref_count: 1,
+          ref_ids: [],
+          suffix_chars: 0,
+          prompt_chars: prompt.length,
+          flag_short_variant: useShortVariantPrompt(),
+          flag_trimmed_suffix: useTrimmedSuffix(),
+        } satisfies ImageGenTelemetry);
         const atlasResult = await generateAtlasEdit({
           prompt,
           images: [originalImageUrl],

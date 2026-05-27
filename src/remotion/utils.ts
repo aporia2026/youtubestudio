@@ -6,6 +6,10 @@ import {
   type AlignedRow,
 } from '@/lib/voiceover-alignment';
 import type { ForcedAlignmentResponse } from '@/lib/elevenlabs';
+import {
+  getVariantPreservationHint,
+  useShortVariantPrompt,
+} from '@/lib/production-doc-flags';
 
 // ─── Timecode Parsing ──────────────────────────────────────────────────────────
 
@@ -755,16 +759,32 @@ export function composeVariantEditRequest(
     };
   }
 
-  // Prompt composition: base scene context + clear delimiter + the
-  // smallest possible edit instruction. The delimiter wording is
-  // deliberate — "EDIT:" anchors the model on "apply this delta to
-  // the input image" rather than "draw a new scene that includes
-  // these elements". Verified pattern across other edit-model
-  // callers in this repo.
-  const basePrompt = (base.ai_image_prompt || '').trim();
-  const composedPrompt = basePrompt
-    ? `${basePrompt}\n\nEDIT (apply this change to the input image, keep everything else identical): ${editInstruction}`
-    : `EDIT (apply this change to the input image): ${editInstruction}`;
+  // Prompt composition strategy depends on the Stage 2 flag.
+  //
+  // SHORT (flag on, the target end-state): just the edit instruction +
+  // a style-specific preservation hint. Atlas Edit can SEE the input
+  // image, so re-describing the scene pollutes signal. User
+  // hand-verified this format with a 31-word Atlas Edit prompt
+  // (2026-05-27) that produced perfect output.
+  //
+  // LONG (flag off, legacy back-compat): prepend the full base
+  // ai_image_prompt before "EDIT: <delta>". Kept until the short
+  // format passes validation on 10 varied edit types.
+  //
+  // Plan: _plans/2026-05-27-doodle-explainer-2-foundation.md (Stage 2).
+  let composedPrompt: string;
+  if (useShortVariantPrompt()) {
+    const hint = getVariantPreservationHint(doc.style_preset);
+    // Strip a trailing period from the edit instruction so the joined
+    // sentence reads as one continuous prompt without ".."
+    const trimmedInstruction = editInstruction.replace(/\.\s*$/, '');
+    composedPrompt = `${trimmedInstruction}. ${hint}`;
+  } else {
+    const basePrompt = (base.ai_image_prompt || '').trim();
+    composedPrompt = basePrompt
+      ? `${basePrompt}\n\nEDIT (apply this change to the input image, keep everything else identical): ${editInstruction}`
+      : `EDIT (apply this change to the input image): ${editInstruction}`;
+  }
 
   // Defensive truncation — the /api/.../edit route caps prompts to
   // its own limit; trimming here gives a clearer error than a
