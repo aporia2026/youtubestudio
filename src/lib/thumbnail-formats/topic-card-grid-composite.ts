@@ -401,18 +401,40 @@ async function buildSquareCellOverlay(
 ): Promise<Buffer> {
   const illustrationH = Math.round(cellH * SQUARE_ILLUSTRATION_FRAC);
   const labelH = cellH - illustrationH;
+  const borderPx = squareBorderPx(cellW);
 
-  // 1) Cover-fit the uploaded image to the illustration area.
-  const illustrationPng = await fitCover(imageBytes, cellW, illustrationH);
+  // 1) Cover-fit the uploaded image to the illustration area INSET by the
+  //    border thickness on the left, right, and top so the image sits
+  //    INSIDE the black border instead of running edge-to-edge with the
+  //    border painted on top. The bottom edge of the image meets the
+  //    hairline divider at y=illustrationH (no inset there — the hairline
+  //    sits on the seam between image and label band).
+  const insetW = Math.max(1, cellW - 2 * borderPx);
+  const insetH = Math.max(1, illustrationH - borderPx);
+  const illustrationPng = await fitCover(imageBytes, insetW, insetH);
 
   // 2) Render the label text PNG. We give it the label band width with
   //    a small horizontal padding so descenders don't kiss the border.
   const labelPad = Math.max(2, Math.round(cellW * 0.04));
-  const labelPng = await renderLabelPng(
-    label,
-    cellW - 2 * labelPad,
-    Math.max(8, labelH - 2),
-  );
+  const maxLabelW = Math.max(1, cellW - 2 * labelPad);
+  const maxLabelH = Math.max(1, labelH - 2);
+  const labelPngRaw = await renderLabelPng(label, maxLabelW, maxLabelH);
+  // Sharp's text input treats `width` as a wrap-hint, not a hard cap, so
+  // unbreakable labels like "UVB-76" render wider than maxLabelW (and
+  // long multi-word labels can wrap to 2 lines that exceed maxLabelH).
+  // Resize-inside shrinks the rendered bitmap to fit both axes; labels
+  // that already fit pass through unchanged. Mirrors the same guard in
+  // buildSquareLabelBandOverlay so uploaded and non-upload cells use
+  // identical sizing rules.
+  const rawMeta = await sharp(labelPngRaw).metadata();
+  const rawW = rawMeta.width ?? 1;
+  const rawH = rawMeta.height ?? 1;
+  const labelPng = rawW > maxLabelW || rawH > maxLabelH
+    ? await sharp(labelPngRaw)
+        .resize({ width: maxLabelW, height: maxLabelH, fit: 'inside' })
+        .png()
+        .toBuffer()
+    : labelPngRaw;
   const labelMeta = await sharp(labelPng).metadata();
   const labelW = labelMeta.width ?? 1;
   const labelTextH = labelMeta.height ?? 1;
@@ -422,6 +444,7 @@ async function buildSquareCellOverlay(
 
   // 4) Composite everything onto a white base of the cell size so the
   //    cell is fully covered (wiping anything the AI rendered there).
+  //    Illustration sits at (borderPx, borderPx) so the border wraps it.
   const labelLeft = Math.max(0, Math.round((cellW - labelW) / 2));
   const labelTop = Math.max(
     illustrationH + 1,
@@ -431,7 +454,7 @@ async function buildSquareCellOverlay(
     create: { width: cellW, height: cellH, channels: 4, background: WHITE },
   })
     .composite([
-      { input: illustrationPng, top: 0, left: 0 },
+      { input: illustrationPng, top: borderPx, left: borderPx },
       { input: chrome, top: 0, left: 0 },
       { input: labelPng, top: labelTop, left: labelLeft },
     ])
