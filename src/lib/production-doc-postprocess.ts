@@ -420,3 +420,71 @@ export function attachStyleSuffixToRows<R extends ProductionDocRowLike>(
 
   return { rows, attachedCount, skippedAlreadyPresent, skippedNonString };
 }
+
+/** Result of the variant-group-base detection pass. Stage 3.0 of the
+ *  2026-05-27 foundation rebuild (see
+ *  `_plans/2026-05-27-doodle-explainer-2-foundation.md`).
+ *
+ *  Detection-only on purpose: the bug hypothesis ("LLM mis-applies the
+ *  mixing_rules 'leave empty on variants' instruction to the base too,
+ *  leaving the base.ai_image_prompt empty") is not yet reproduced in a
+ *  fixture. Shipping detection first surfaces real-world frequency via
+ *  telemetry. If the warning fires in production usage, a Stage 3.1
+ *  repair pass (re-prompt the LLM for just the missing base) lands
+ *  next. If it never fires, the bug was already incidentally killed by
+ *  adjacent shipped work (autoGroupVariants in particular) and the
+ *  repair effort is unnecessary. */
+export interface EmptyBaseDetection {
+  /** Number of distinct variant groups (rows with a `group_id`) found
+   *  in the input. Useful as the denominator when reporting the rate. */
+  totalGroupsChecked: number;
+  /** Group ids whose base row (`variant_index === 0`) has an empty or
+   *  missing `ai_image_prompt`. Also includes groups with no base row
+   *  at all — both shapes prevent the downstream Atlas Edit dispatcher
+   *  from generating variant images. */
+  emptyBaseGroupIds: string[];
+}
+
+/** Walk the rows and identify variant groups whose base lacks an
+ *  `ai_image_prompt`. Pure — no IO. Runs AFTER `autoGroupVariants` so
+ *  both LLM-emitted groups AND post-process-derived groups are checked
+ *  by the same pass. See `EmptyBaseDetection` for why this is
+ *  detection-only in Stage 3.0. */
+export function detectEmptyVariantGroupBases<R extends ProductionDocRowLike>(
+  rows: R[],
+): EmptyBaseDetection {
+  const groupsById = new Map<string, R[]>();
+  for (const row of rows) {
+    const bag = row as Record<string, unknown>;
+    const gid = bag.group_id;
+    if (typeof gid !== 'string' || !gid) continue;
+    const arr = groupsById.get(gid) ?? [];
+    arr.push(row);
+    groupsById.set(gid, arr);
+  }
+
+  const emptyBaseGroupIds: string[] = [];
+  for (const [gid, groupRows] of groupsById) {
+    const base = groupRows.find((r) => {
+      const bag = r as Record<string, unknown>;
+      return bag.variant_index === 0;
+    });
+    if (!base) {
+      // No base row at all — group integrity bug, surfaced under the
+      // same banner because the downstream effect is identical
+      // (variants can't generate without a base image).
+      emptyBaseGroupIds.push(gid);
+      continue;
+    }
+    const bag = base as Record<string, unknown>;
+    const prompt = bag.ai_image_prompt;
+    if (typeof prompt !== 'string' || prompt.trim().length === 0) {
+      emptyBaseGroupIds.push(gid);
+    }
+  }
+
+  return {
+    totalGroupsChecked: groupsById.size,
+    emptyBaseGroupIds,
+  };
+}

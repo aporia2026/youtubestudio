@@ -168,6 +168,38 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
     }
   }
 
+  // Stage 3.0 — detect variant groups whose base row has an empty
+  // `ai_image_prompt`. The auto-pipeline path runs the same LLM as the
+  // manual /api/generate/production-doc route, so the same bug
+  // hypothesis applies here. Logs only; no repair (see
+  // `_plans/2026-05-27-doodle-explainer-2-foundation.md` for the
+  // detection-first reasoning). Lazy-import the postprocess helper so
+  // this stage's existing import graph is unchanged.
+  if (parsedDoc && typeof parsedDoc === 'object' && !Array.isArray(parsedDoc)) {
+    const docObj = parsedDoc as Record<string, unknown>;
+    const rows = docObj.rows;
+    if (Array.isArray(rows)) {
+      const { detectEmptyVariantGroupBases } = await import('../../production-doc-postprocess');
+      // Cast through `unknown` because the auto-pipeline doesn't know the
+      // strict ProductionDocRowLike shape at this point — but the
+      // detection helper only reads `group_id`, `variant_index`, and
+      // `ai_image_prompt` via the index signature, so missing
+      // timecode/script_text fields don't affect correctness.
+      const detection = detectEmptyVariantGroupBases(
+        rows as unknown as Parameters<typeof detectEmptyVariantGroupBases>[0],
+      );
+      if (detection.emptyBaseGroupIds.length > 0) {
+        logger.warn('auto-pipeline: empty-variant-bases', {
+          pipeline_video_id: video.id,
+          style_id: style?.id ?? null,
+          totalGroupsChecked: detection.totalGroupsChecked,
+          emptyBaseGroupCount: detection.emptyBaseGroupIds.length,
+          emptyBaseGroupIds: detection.emptyBaseGroupIds,
+        });
+      }
+    }
+  }
+
   // Persist the parsed doc onto the artefact row. v1 — no
   // dedicated production_doc_entries table.
   await persistArtefact({

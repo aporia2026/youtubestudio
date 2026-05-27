@@ -151,3 +151,38 @@ Plus stage-specific:
 - Atlas Cloud docs: <https://api.atlascloud.ai> — re-verify before Stage 4.
 - Plans superseded by this one's execution order: `_plans/2026-05-25-near-static-variants.md` (the original Phase 3 plan).
 - Active companion plans not touched by this rebuild: `_plans/2026-05-25-doodle-explainer-2-built-in.md` (Phase 1, shipped), `_plans/2026-05-25-style-aware-overlay-text.md` (Phase 2, shipped).
+
+---
+
+## Update 2026-05-27 (post-audit reconciliation)
+
+After Stages 0 + 2 landed (commit `b1fc507`), an audit of parallel-session commits (`abc142f`, `e7956c8`, `c215246`, `e88664c`, `140bc8c`, `fff3d17`) revealed substantial overlap with this plan's scope. Reconciled findings:
+
+### What's already shipped that overlaps with this plan
+
+- **Client-side auto-image-generation after fresh doc creation** (`abc142f`). When the editor receives a freshly-generated production-doc, it now walks rows and dispatches bases via i2i, then variants via Atlas Edit, sequentially. Entry point: `generateImages(rows, signal)` in `src/app/(app)/production-doc/page.tsx`. **Does NOT run from the auto-pipeline orchestrator** — only from the user's "Generate Production Doc" click in the editor.
+- **Auto-grouping of consecutive similar rows** (`e7956c8`). New post-process at `src/app/api/generate/production-doc/route.ts:336` (gated on `doodle_explainer_2`). Walks consecutive non-Title rows, detects high-overlap `ai_image_prompt` pairs/triplets, and rewrites them into a variant group: first row becomes the base (variant_index=0, keeps prompt), subsequent rows become variants (variant_index=1..N, ai_image_prompt cleared, variant_edit_prompt extracted).
+- **Variant-generation audit fixing 6 bugs across all bulk paths** (`140bc8c`). All in `src/app/(app)/production-doc/page.tsx`. Covers: skip-already-generated, fresh-rows passed via `docOverride` to bypass stale closures, failed-variant collection in retry path, history-restore pending-vs-idle distinction, orphan/incomplete-variant silent skipping.
+
+### What's still live (unchanged by parallel work)
+
+- **Stage 4 — server-side auto-pipeline image-gen stage.** Client-side works; orchestrator-side does not. Still needed for true end-to-end auto-pipeline videos.
+- **Stage 3 — base-not-generating bug.** No audit commit addressed the root cause. The auto-grouping post-process inherits whatever ai_image_prompt the LLM wrote into row 0; it doesn't synthesize a missing one.
+- **Stage 1 — aggressive prompt trim.** Untouched.
+
+### Stage 3 split (detection-first per rule 1: verify before stating)
+
+Original plan called for a deterministic post-process that re-prompts the LLM for any missing base. I haven't reproduced the bug against a current-code fixture. Splitting:
+
+- **Stage 3.0 (shipped — commit pending after this update).** Pure detection. `detectEmptyVariantGroupBases` in `src/lib/production-doc-postprocess.ts` walks every variant group and flags ones whose base has empty/missing `ai_image_prompt`. Wired into both the manual `/api/generate/production-doc` route (after `autoGroupVariants`, surfaces a `generation_warning`) and the auto-pipeline stage at `src/lib/auto-pipeline/stages/generate-production-doc.ts` (logs only). No repair, no behavior change.
+- **Stage 3.1 (deferred until 3.0 telemetry fires).** LLM re-prompt repair. Only build this if real-world usage shows the detection warning firing. If it never fires, the bug was already incidentally killed (auto-grouping + the audit fixes may have closed it through side effects) and 3.1 is unnecessary effort.
+
+### Pre-existing inconsistency surfaced by audit (out of scope)
+
+The auto-pipeline stage at `src/lib/auto-pipeline/stages/generate-production-doc.ts` does NOT call `attachStyleSuffixToRows` or `autoGroupVariants` — only the manual route does. So auto-pipeline-generated docs land in `metadata_jsonb` without the style suffix or auto-grouping. This is a pre-existing inconsistency, NOT in my plan's scope, but flagging it here for future work — it likely explains visible-quality drift between auto-pipeline and manual generation for ref-bearing styles.
+
+### Revised next step
+
+Per the council's order (Stage 3 before Stage 1, so trim doesn't confound the base bug), Stage 3.0 (detection) is now sufficient to unblock Stage 1. The detection telemetry will let us measure whether Stage 1's trim moves the empty-base rate up or down, independent of any Stage 3.1 repair work.
+
+**Next:** Stage 1 (aggressive suffix + mixing_rules trim) gated behind `USE_TRIMMED_SUFFIX=1`. Council bar: drop suffix to ~200 chars or empty for ref-bearing styles; trim mixing_rules from 9,657 to ~1,500 chars.
