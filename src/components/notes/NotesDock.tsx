@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { VideoShot } from '@/remotion/types';
 import type { PlayerController } from '@/lib/notes/player-controller';
 import { frameToScenePin, formatSceneTs, scenePinToFrame } from '@/lib/notes/scene-math';
@@ -9,6 +9,13 @@ import { NOTE_TAG_COLOR, NOTE_TAG_LABEL, type NoteTag, type ProductionDocNote } 
 import { NoteInput } from './NoteInput';
 import { useNotesHotkeys } from './useNotesHotkeys';
 import { ReviewQueue } from './ReviewQueue';
+
+/** Poll cadence (ms) for tracking the playhead in the grid view. Slow
+ *  enough to cost essentially nothing (~4 calls/sec), fast enough that
+ *  scene transitions feel responsive in the dock. The editor view
+ *  bypasses this entirely — it passes `activeRowIndex` down from its
+ *  own state and the dock skips the polling effect. */
+const PLAYHEAD_POLL_MS = 250;
 
 /**
  * Notes-while-watching dock — mounts under the player on both surfaces
@@ -126,16 +133,32 @@ export const NotesDock: React.FC<Props> = ({
     onOpenReviewQueue: () => setReviewQueueOpen(true),
   });
 
+  // Grid-view path: poll the controller's frame to detect scene
+  // boundaries while the user watches. Editor view passes
+  // `activeRowIndex` and skips this entirely. 250ms is cheap and the
+  // jitter at scene crossings is imperceptible — the dock's list
+  // re-keys naturally as the row index changes.
+  const [polledRowIndex, setPolledRowIndex] = useState<number | null>(null);
+  useEffect(() => {
+    if (activeRowIndex != null) return;
+    if (!controller) return;
+    const tick = () => {
+      const pin = frameToScenePin(shots, fps, controller.getCurrentFrame());
+      setPolledRowIndex((curr) => {
+        const next = pin?.rowIndex ?? null;
+        return next === curr ? curr : next;
+      });
+    };
+    tick();
+    const handle = window.setInterval(tick, PLAYHEAD_POLL_MS);
+    return () => window.clearInterval(handle);
+  }, [activeRowIndex, controller, shots, fps]);
+
   // Filter to the currently-active scene's notes for the visible list.
   // The full doc's notes are still loaded in `notes`; we just don't show
   // off-scene ones in the dock's main panel (the review queue surfaces
   // those).
-  const currentRowIndex = useMemo(() => {
-    if (activeRowIndex != null) return activeRowIndex;
-    if (!controller) return null;
-    const pin = frameToScenePin(shots, fps, controller.getCurrentFrame());
-    return pin?.rowIndex ?? null;
-  }, [activeRowIndex, controller, shots, fps]);
+  const currentRowIndex = activeRowIndex != null ? activeRowIndex : polledRowIndex;
 
   const visibleNotes = useMemo(() => {
     if (currentRowIndex == null) return [];
@@ -385,6 +408,8 @@ export const NotesDock: React.FC<Props> = ({
             setReviewQueueOpen(false);
           }}
           onClose={() => setReviewQueueOpen(false)}
+          onToggleResolved={(id) => void toggleResolved(id)}
+          onDelete={(id) => void remove(id)}
         />
       )}
     </div>

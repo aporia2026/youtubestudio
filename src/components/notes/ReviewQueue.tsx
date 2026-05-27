@@ -11,7 +11,6 @@ import {
   type NoteTag,
   type ProductionDocNote,
 } from '@/lib/notes/types';
-import { useNotes } from '@/lib/notes/store';
 
 /**
  * Full-doc review queue. Modal-style panel that opens from the dock or
@@ -34,10 +33,13 @@ interface Props {
   shots: VideoShot[];
   fps: number;
   /** Notes are passed in by the dock to avoid double-subscribing to the
-   *  same store. We only need the writers from `useNotes()` here. */
+   *  same store. Writers come in the same way — the dock owns the
+   *  single useNotes(docId) hook for the page. */
   notes: ProductionDocNote[];
   onSeekToNote: (note: ProductionDocNote) => void;
   onClose: () => void;
+  onToggleResolved: (id: string) => void;
+  onDelete: (id: string) => void;
 }
 
 type TagFilter = 'all' | NoteTag;
@@ -49,11 +51,15 @@ export const ReviewQueue: React.FC<Props> = ({
   notes,
   onSeekToNote,
   onClose,
+  onToggleResolved,
+  onDelete,
 }) => {
-  // We still call useNotes() here just to get the writers; the rendered
-  // list comes from the prop so the dock and queue stay in lockstep
-  // even during optimistic edits.
-  const { remove, toggleResolved } = useNotes(docId);
+  // docId is only kept on the prop interface for parity with future
+  // callers that may need to scope additional fetches from this
+  // surface (e.g. a "regen all flagged" action that talks to a
+  // workspace endpoint). The current queue derives everything it
+  // needs from `notes` + the host's writers.
+  void docId;
   const [tagFilter, setTagFilter] = useState<TagFilter>('all');
   const [showResolved, setShowResolved] = useState(false);
 
@@ -362,7 +368,7 @@ export const ReviewQueue: React.FC<Props> = ({
                           <div className="flex items-center" style={{ gap: 4, flexShrink: 0 }}>
                             <button
                               type="button"
-                              onClick={() => void toggleResolved(note.id)}
+                              onClick={() => onToggleResolved(note.id)}
                               className="text-[10px] px-1.5 py-0.5 rounded"
                               title={note.resolved ? 'Re-open' : 'Mark resolved'}
                               style={{
@@ -376,7 +382,7 @@ export const ReviewQueue: React.FC<Props> = ({
                             </button>
                             <button
                               type="button"
-                              onClick={() => void remove(note.id)}
+                              onClick={() => onDelete(note.id)}
                               className="text-[10px] px-1.5 py-0.5 rounded"
                               title="Delete"
                               style={{
