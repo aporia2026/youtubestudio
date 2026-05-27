@@ -66,8 +66,22 @@ export async function saveEditorPayload(args: {
   signal?: AbortSignal;
 }): Promise<SaveResult> {
   const { projectId, version, payload, signal } = args;
+  // Guard against empty / missing projectId. The autosave loop can fire
+  // before the editor has a real project context (initial mount race,
+  // route change, doc without a project id). With no id the PATCH URL
+  // becomes `/api/edit/` which Next.js normalizes to `/api/edit` — no
+  // handler exists at that exact path, so it returns the default 404
+  // HTML page. That noise was filling the browser console without
+  // surfacing anything actionable; data was never at risk because
+  // there's nothing to save. Returning `saved` with the unchanged
+  // version no-ops the autosave loop cleanly: caller treats it as
+  // success, doesn't retry, doesn't toast.
+  const trimmedId = projectId?.trim();
+  if (!trimmedId) {
+    return { kind: 'saved', version };
+  }
   try {
-    const res = await fetch(`/api/edit/${encodeURIComponent(projectId)}`, {
+    const res = await fetch(`/api/edit/${encodeURIComponent(trimmedId)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ version, payload }),
