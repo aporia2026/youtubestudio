@@ -164,12 +164,16 @@ export const I2I_MODELS: readonly I2IModelSpec[] = Object.freeze([
     label: 'Reference-driven (GPT Image 2 via Atlas, cheaper)',
     provider: 'atlas',
     atlasModel: 'openai/gpt-image-2/image-to-image',
-    // 2K native 16:9 at low quality — same defaults as the t2i sibling.
-    // Skips crop + Recraft upscale (source is already at pipeline target).
-    atlasSize: '2560x1440',
+    // Atlas's gpt-image-2 endpoints only accept 1024x1024 / 1024x1536 /
+    // 1536x1024. The 2560x1440 size the playground exposes is rejected
+    // at the API gateway (verified 2026-05-27 for both Edit and i2i —
+    // same `404 {code, msg:"not found"}` response shape). 1536x1024 is
+    // 3:2 landscape (closest to 16:9); the dispatcher center-crops to
+    // 1536x864 and Recraft Crisp Upscale takes it to ~4K downstream.
+    atlasSize: '1536x1024',
     atlasQuality: 'low',
     maxRefs: 4,
-    hint: 'Cheaper Atlas route for ref-driven GPT Image 2. Native 16:9 at 2K, ~$0.011/image, up to 4 refs.',
+    hint: 'Cheaper Atlas route for ref-driven GPT Image 2. ~$0.011/image, up to 4 refs.',
     costUsdPerImage: 0.011,
   },
   {
