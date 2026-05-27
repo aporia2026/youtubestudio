@@ -253,13 +253,16 @@ export const EDIT_OPTIONS: readonly EditOption[] = [
     backend: {
       kind: 'atlas',
       atlasModel: 'openai/gpt-image-2/edit',
-      // Match the t2i + i2i defaults: native 16:9 at 2K + low quality.
-      // Atlas Edit preserves input aspect, so when the input is already
-      // 16:9 (the common case for editing pipeline outputs) the size
-      // hint mainly governs upscale eligibility. Atlas Edit also runs
-      // through upscaleViaRecraft in the route's switch — the >2000px
-      // guard handles the no-op skip when inputs are already 2K.
-      atlasSize: '2560x1440',
+      // Atlas Edit's `size` enum is documented as 1024x1024 / 1024x1536 /
+      // 1536x1024 only — the 2560x1440 size the playground exposes is
+      // T2I-only and was never valid for Edit. Sending it produced
+      // `404 {code, msg: "not found"}` because Atlas's router rejects
+      // unsupported (endpoint, size) combos at HTTP-routing layer
+      // before dispatching to the model. Verified against the docs page
+      // for openai/gpt-image-2/edit on 2026-05-27. 1536x1024 is 3:2
+      // landscape — the closest match to our 16:9 production-doc
+      // canvas; Recraft Crisp Upscale brings it to ~4K downstream.
+      atlasSize: '1536x1024',
       atlasQuality: 'low',
     },
   },
