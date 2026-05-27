@@ -78,20 +78,31 @@ export function useTrimmedSuffix(): boolean {
   return process.env.USE_TRIMMED_SUFFIX === '1';
 }
 
-/** Trimmed `ai_image_suffix` for ref-bearing styles. Council target:
- *  ~150 chars (or empty) — refs do the visual style work, the suffix
- *  becomes a soft fallback for the rare path where refs are
- *  unavailable. Keep entries SHORT; verbose suffixes fight refs.
+/** Trimmed `ai_image_suffix` for ref-bearing styles. Refs do the bulk
+ *  of the visual style work; the suffix layers in invocations the refs
+ *  alone don't reliably pull through, while staying short enough not
+ *  to fight the refs for attention budget.
  *
- *  Doodle Explainer 2 — original is 1,775 chars of "CRITICAL ARM
- *  RULE… NO hand, NO fingers, NO palm…" which negative-prompts the
- *  i2i model can't truly negate AND fights against the 14 bundled
- *  visual refs that already show the no-hand stick-figure pose. The
- *  trimmed version drops to a one-sentence style descriptor — the
- *  refs carry everything else. */
+ *  Doodle Explainer 2 — original is 3,116 chars of negative directives
+ *  ("NO hand, NO fingers, NO palm…") which image models can't truly
+ *  negate AND which fight against the 14 bundled visual refs that
+ *  already show the no-hand stick-figure pose. The first trim
+ *  (~165 chars) over-corrected and stripped out color invocations,
+ *  which produced flat black-and-white output when the reference
+ *  videos actually use flat color fills (pale blue / yellow / gray
+ *  on props, occasional saturated red for danger, real-photo overlays
+ *  framed with thick coloured borders).
+ *
+ *  This rewrite (2026-05-27, post-frame-audit of refs/screenshots)
+ *  keeps the brevity but explicitly invites:
+ *   - flat color accents on props (buildings, books, icons)
+ *   - saturated red for danger/alarm
+ *   - real-photo embeds with thick coloured borders
+ *   - the asdfmovie / Cyanide & Happiness aesthetic the original
+ *     suffix referenced (a known training-distribution anchor) */
 export const TRIMMED_AI_IMAGE_SUFFIX: Record<string, string> = {
   doodle_explainer_2:
-    'Minimalist hand-drawn stick figure cartoon on plain white background, thick uneven black ink lines, child-like freehand drawing style, no shading or gradients.',
+    'Hand-drawn stick-figure cartoon on plain white background, child-like freehand pen-and-ink style, asdfmovie / Cyanide & Happiness aesthetic. Thick uneven black ink lines. Muted flat color fills (pale blue, pale yellow, light gray) on scene props — buildings, books, icons, signs. Occasional saturated red for danger or alarm. Real photos embed as inset rectangles with thick coloured borders. Generous white space.',
 };
 
 /** Trimmed `mixing_rules` for ref-bearing styles. Council target:
