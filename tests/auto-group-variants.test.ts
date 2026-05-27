@@ -165,6 +165,33 @@ describe('autoGroupVariants — boundary cases that should NOT group', () => {
     // Same content reworded → no extractable delta → no group.
     expect(result.groupCount).toBe(0);
   });
+
+  it('does not group unrelated scenes that share a long appended style suffix (the user-reported tent/bodies/avalanche bug)', () => {
+    // Reproduces the 2026-05-27 bug: with the trimmed doodle_explainer_2
+    // suffix (~560 chars) appended to every row's ai_image_prompt by
+    // attachStyleSuffixToRows, three semantically-unrelated Dyatlov Pass
+    // scenes were being grouped because the ~60 shared suffix tokens
+    // alone pushed overlapSimilarity above the 0.55 threshold. The
+    // common-suffix strip in overlapSimilarity should let the scene
+    // bodies dominate the comparison again.
+    const SUFFIX =
+      ' Hand-drawn stick-figure cartoon on plain white background, child-like freehand pen-and-ink style, asdfmovie / Cyanide & Happiness aesthetic. Thick uneven black ink lines. Muted flat color fills (pale blue, pale yellow, light gray) on scene props — buildings, books, icons, signs. Occasional saturated red for danger or alarm. Real photos and realistic objects integrate naturally with the cartoon — e.g. a doodle character holding a photographic real product, or a framed real photograph with a thick coloured border embedded in the scene. Generous white space.';
+
+    const rows = [
+      row('Wide shot of tiny hikers on a snowy mountain slope, bleak daylight, empty white space, ominous mood.' + SUFFIX),
+      row('Medium shot of a torn tent with a jagged slit, cold moonlight, tense stillness.' + SUFFIX),
+      row('Close-up of a cracked hiking boot and broken gear in snow, harsh contrast, grim insert.' + SUFFIX),
+      row('Wide shot of a snow slab sliding over a tent, pale daylight, explanatory diagram feel.' + SUFFIX),
+    ];
+    const result = autoGroupVariants(rows);
+    // Each scene is a completely different beat (hikers walking, torn
+    // tent, broken gear, avalanche diagram). None should group.
+    expect(result.groupCount).toBe(0);
+    for (const r of rows) {
+      expect((r as Record<string, unknown>).variant_index).toBeUndefined();
+      expect((r as Record<string, unknown>).group_id).toBeUndefined();
+    }
+  });
 });
 
 describe('autoGroupVariants — interleaving with standalone rows', () => {

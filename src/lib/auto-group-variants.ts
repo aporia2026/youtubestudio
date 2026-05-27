@@ -88,14 +88,66 @@ function tokenize(text: string): string[] {
     .filter((w) => w.length > 1);
 }
 
+/** Length of the longest common TRAILING substring of two strings
+ *  (case-insensitive). Used to detect — and strip — the shared style
+ *  suffix that `attachStyleSuffixToRows` appends to every row's
+ *  ai_image_prompt. Without stripping, the suffix's ~60 shared
+ *  tokens inflate `overlapSimilarity` for any two suffix-bearing rows
+ *  to ~0.55 regardless of whether their actual SCENE bodies are
+ *  related, producing false-positive variant groups (the user-
+ *  reported "tent / bodies / avalanche grouped as variants" bug). */
+function commonSuffixLength(a: string, b: string): number {
+  const la = a.toLowerCase();
+  const lb = b.toLowerCase();
+  let i = la.length - 1;
+  let j = lb.length - 1;
+  let count = 0;
+  while (i >= 0 && j >= 0 && la[i] === lb[j]) {
+    i -= 1;
+    j -= 1;
+    count += 1;
+  }
+  return count;
+}
+
+/** Strip the trailing common substring (likely the appended style
+ *  suffix) before similarity comparison. Only fires when the common
+ *  trailing run is long enough to be the suffix (vs incidental
+ *  shared ending punctuation); below 40 chars we leave both strings
+ *  alone so genuinely-similar short prompts still match correctly.
+ *  The 40-char floor sits well above incidental endings ("on a plain
+ *  white background." = ~25 chars) and well below any real style
+ *  suffix (Doodle Explainer 2's trimmed suffix is ~560 chars). */
+const MIN_COMMON_SUFFIX_TO_STRIP = 40;
+function stripCommonSuffix(a: string, b: string): { a: string; b: string } {
+  const len = commonSuffixLength(a, b);
+  if (len < MIN_COMMON_SUFFIX_TO_STRIP) return { a, b };
+  return {
+    a: a.slice(0, a.length - len),
+    b: b.slice(0, b.length - len),
+  };
+}
+
 /** Overlap-coefficient similarity over word sets — `|A ∩ B| / min(|A|, |B|)`.
  *  Asymmetric in spirit: when one prompt is a near-subset of the other
  *  (variant adds content on top of base), the coefficient is high
  *  regardless of how much extra material the larger prompt has. Pure —
- *  no shared state. */
+ *  no shared state.
+ *
+ *  The trailing common substring (the appended style suffix) is
+ *  stripped from BOTH inputs before tokenisation. Without this, two
+ *  unrelated scenes sharing the same 400+ char style suffix score
+ *  ~0.55 on the suffix alone — high enough to trip the default
+ *  grouping threshold even when the actual scene bodies are
+ *  semantically unrelated (e.g. "Their tent was found cut open" vs
+ *  "Several bodies sustained severe trauma"). Stripping the suffix
+ *  lets us compare scene bodies only, which is what we actually
+ *  want to measure for "is this the same composition with a small
+ *  delta?". */
 function overlapSimilarity(a: string, b: string): number {
-  const tokensA = new Set(tokenize(a));
-  const tokensB = new Set(tokenize(b));
+  const { a: strippedA, b: strippedB } = stripCommonSuffix(a, b);
+  const tokensA = new Set(tokenize(strippedA));
+  const tokensB = new Set(tokenize(strippedB));
   if (tokensA.size === 0 && tokensB.size === 0) return 1;
   if (tokensA.size === 0 || tokensB.size === 0) return 0;
   let intersection = 0;
