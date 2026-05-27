@@ -97,47 +97,52 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
   // have to detect them itself.
   const extracted = extractScriptTitles(scriptForPipeline);
 
+  // Build the call args once — both the first attempt and the strict
+  // retry use the same prompt, just at different temperatures. Pulled
+  // out so the retry path is a one-liner that flips temperature.
+  const buildCall = (temperature: number) => (modelId: string) => {
+    const prompt = productionDocPrompt({
+      script: extracted.stripped,
+      titles: extracted.titles,
+      ssmlSections: ssmlPre.wasSsml ? ssmlPre.sections : undefined,
+      niche,
+      topic,
+      style: style
+        ? {
+            id: style.id,
+            label: '',
+            // Stage 1 — flag-gated trim of ai_image_suffix +
+            // mixing_rules for ref-bearing styles. See
+            // `_plans/2026-05-27-doodle-explainer-2-foundation.md`.
+            ai_image_suffix: getEffectiveAiImageSuffix({
+              id: style.id,
+              ai_image_suffix: style.ai_image_suffix ?? '',
+            }),
+            mixing_rules: getEffectiveMixingRules({
+              id: style.id,
+              mixing_rules: style.mixing_rules,
+            }),
+            allow_overlay_stock: style.allow_overlay_stock === true,
+          }
+        : null,
+    });
+    return {
+      modelId,
+      prompt: prompt.user,
+      systemPrompt: prompt.system,
+      maxTokens: 8000,
+      temperature,
+      spend: {
+        workspaceId: video.workspace_id,
+        projectId: video.project_id,
+        featureArea: 'pipeline_production_doc',
+      },
+    };
+  };
+
   let result: Awaited<ReturnType<typeof generateTextWithFallback>>;
   try {
-    result = await generateTextWithFallback(chain, (modelId) => {
-      const prompt = productionDocPrompt({
-        script: extracted.stripped,
-        titles: extracted.titles,
-        ssmlSections: ssmlPre.wasSsml ? ssmlPre.sections : undefined,
-        niche,
-        topic,
-        style: style
-          ? {
-              id: style.id,
-              label: '',
-              // Stage 1 — flag-gated trim of ai_image_suffix +
-              // mixing_rules for ref-bearing styles. See
-              // `_plans/2026-05-27-doodle-explainer-2-foundation.md`.
-              ai_image_suffix: getEffectiveAiImageSuffix({
-                id: style.id,
-                ai_image_suffix: style.ai_image_suffix ?? '',
-              }),
-              mixing_rules: getEffectiveMixingRules({
-                id: style.id,
-                mixing_rules: style.mixing_rules,
-              }),
-              allow_overlay_stock: style.allow_overlay_stock === true,
-            }
-          : null,
-      });
-      return {
-        modelId,
-        prompt: prompt.user,
-        systemPrompt: prompt.system,
-        maxTokens: 8000,
-        temperature: 0.7,
-        spend: {
-          workspaceId: video.workspace_id,
-          projectId: video.project_id,
-          featureArea: 'pipeline_production_doc',
-        },
-      };
-    });
+    result = await generateTextWithFallback(chain, buildCall(0.7));
   } catch (err) {
     if (err instanceof GenerateFailure) {
       return {
@@ -150,20 +155,66 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
     throw err;
   }
 
-  // Parse the model's JSON. Strip fences if any.
-  let body = result.text.trim();
-  if (body.startsWith('```')) {
-    body = body.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+  // Robust JSON extraction. The naive `JSON.parse(body)` path was
+  // failing in production on outputs like:
+  //   "Here's the production doc:\n\n{ ... }\n\nLet me know..."
+  // — perfectly valid JSON wrapped in prose preamble/postamble that
+  // breaks the strict parser. extractJson strips fences, tries direct
+  // parse first, and falls back to a balanced-brace scan that finds
+  // the outermost {...} or [...] substring and parses THAT.
+  let parsedDoc = extractJson(result.text);
+  let retryRawText: string | null = null;
+  let retryModelUsed: string | null = null;
+
+  // If the parser still couldn't find valid JSON, one retry at a
+  // lower temperature. Same prompt, just more deterministic. Doesn't
+  // count as a separate "stage" — same persistArtefact slot at
+  // attempt_number=1 still owns the eventual success. Skipped when
+  // the first call hit a hard provider error (handled above).
+  if (parsedDoc === null) {
+    logger.warn('auto-pipeline: production-doc first-pass unparseable; retrying at temperature 0.3', {
+      pipeline_video_id: video.id,
+      response_chars: result.text.length,
+      model_used: result.modelUsed,
+    });
+    try {
+      const retry = await generateTextWithFallback(chain, buildCall(0.3));
+      retryRawText = retry.text;
+      retryModelUsed = retry.modelUsed;
+      parsedDoc = extractJson(retry.text);
+    } catch (err) {
+      logger.warn('auto-pipeline: production-doc retry threw', {
+        pipeline_video_id: video.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
-  let parsedDoc: unknown;
-  try {
-    parsedDoc = JSON.parse(body);
-  } catch {
+
+  if (parsedDoc === null) {
+    // Both attempts failed. Persist the raw responses as an artefact
+    // so the user / debugger can see what came back instead of the
+    // info disappearing into the logs only. attempt_number=1 +
+    // artefact_kind='production_doc_unparseable' keeps it distinct
+    // from a successful 'production_doc' artefact.
+    await persistArtefact({
+      pipelineRunVideoId: video.id,
+      stage: 'generating_production_doc',
+      attemptNumber: 1,
+      artefactKind: 'production_doc_unparseable',
+      artefactId: null,
+      costUsd: 0,
+      metadata: {
+        first_pass_response: result.text.slice(0, 20000),
+        first_pass_model: result.modelUsed,
+        retry_response: retryRawText ? retryRawText.slice(0, 20000) : null,
+        retry_model: retryModelUsed,
+      },
+    });
     return {
       kind: 'fail',
       terminalStage: 'production_doc_failed',
       failureClass: 'empty_or_malformed',
-      failureMessage: 'Production doc response was not parseable JSON.',
+      failureMessage: 'Production doc response was not parseable JSON (after one retry). Raw output saved to artefacts.',
     };
   }
 
@@ -231,4 +282,94 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
   });
 
   return { kind: 'advance', nextStage: 'generating_thumbnail' };
+}
+
+/**
+ * Best-effort JSON extraction from a model response. Production cases
+ * we've seen fail bare `JSON.parse`:
+ *
+ *   1. Output wrapped in ```json … ``` fences.
+ *   2. Output wrapped in prose: "Here's the production doc: { … }
+ *      Let me know if you need anything else."
+ *   3. Output starts with a stray comment, ellipsis, or partial sentence
+ *      before the JSON body.
+ *
+ * Strategy:
+ *   1. Strip code fences if present.
+ *   2. Try direct JSON.parse — covers the happy path with zero overhead.
+ *   3. Scan for opening braces/brackets and, for each candidate, walk
+ *      forward through string/escape state until the matching close.
+ *      Try to JSON.parse THAT substring. First valid parse wins. Capped
+ *      at the first 50 candidates so an adversarial response with
+ *      thousands of `{` characters can't blow up the cron tick.
+ *
+ * Returns the parsed value, or null when nothing in the text parses.
+ * Null is the signal the caller uses to trigger the retry path.
+ *
+ * Exported for unit tests. The function is pure and has no side
+ * effects; it does not need access to anything in the handler's
+ * closure.
+ */
+export function extractJson(rawText: string): unknown | null {
+  if (!rawText) return null;
+  let body = rawText.trim();
+  if (body.startsWith('```')) {
+    body = body.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+  }
+
+  // Fast path — most responses parse directly.
+  try {
+    return JSON.parse(body);
+  } catch {
+    // fall through to the scan
+  }
+
+  const MAX_CANDIDATES = 50;
+  let tried = 0;
+  for (let i = 0; i < body.length && tried < MAX_CANDIDATES; i++) {
+    const ch = body[i];
+    if (ch !== '{' && ch !== '[') continue;
+    tried++;
+    const close = ch === '{' ? '}' : ']';
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let j = i; j < body.length; j++) {
+      const c = body[j];
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (inString) {
+        if (c === '\\') {
+          escape = true;
+          continue;
+        }
+        if (c === '"') inString = false;
+        continue;
+      }
+      if (c === '"') {
+        inString = true;
+        continue;
+      }
+      if (c === ch) {
+        depth++;
+      } else if (c === close) {
+        depth--;
+        if (depth === 0) {
+          const candidate = body.slice(i, j + 1);
+          try {
+            return JSON.parse(candidate);
+          } catch {
+            // This open-brace turned out not to be a valid JSON
+            // start (e.g. it was inside JS-style {} that isn't
+            // proper JSON). Bail on this candidate and let the
+            // outer loop try the next open-brace.
+            break;
+          }
+        }
+      }
+    }
+  }
+  return null;
 }
