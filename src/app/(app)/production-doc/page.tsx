@@ -2451,6 +2451,18 @@ function ProductionDocPage() {
     });
   }, [historyEntryId]);
 
+  // Always-fresh mirror of rowImages so writers that need to read it
+  // (notably generateVariantImage, which must look up the BASE row's
+  // image URL) get the current value synchronously. rowImages itself is
+  // declared via useState much later in this component; the
+  // setState-callback snapshot trick previously used here was
+  // unreliable when React batched setState calls from concurrent
+  // variant generations. The ref is hoisted here so the writer block
+  // can reference it; the matching useEffect that mirrors rowImages →
+  // rowImagesRef.current lives near the other render-state-hardening
+  // refs further down. See `_plans/2026-05-17-render-state-hardening.md`.
+  const rowImagesRef = useRef<RowImageState[]>([]);
+
   /**
    * Phase 3.3 — Generate the image for a variant row by POSTing the
    * composed Atlas-Edit request to the existing
@@ -2503,18 +2515,16 @@ function ProductionDocPage() {
       return;
     }
     const baseRowIndex = activeDoc.rows.indexOf(base);
-    // Snapshot rowImages via the setState callback. The state is
-    // declared LATER in the file (`rowImages` lives in a useState
-    // ~200 lines below the writers block), so referring to it in a
-    // useCallback dep array would be a use-before-declaration. The
-    // functional-setter callback runs synchronously with the freshest
-    // state and lets us read without a textual reference up here.
-    let snapshot: RowImageState[] = [];
-    setRowImages(prev => {
-      snapshot = prev;
-      return prev;
-    });
-    const baseImageUrl = snapshot[baseRowIndex]?.imageUrl ?? '';
+    // Read the base image URL from the always-fresh ref instead of a
+    // setState-callback snapshot. The earlier snapshot trick was
+    // unreliable when React batched multiple variant Generate clicks
+    // fired in quick succession — variant 2 would see an empty base
+    // because variant 1's setState batch hadn't flushed yet, and the
+    // setState callback (which only runs DURING a render) wouldn't
+    // fire for a no-op state update. `rowImagesRef.current` is
+    // mutated by an effect immediately after every rowImages render
+    // so reads here are synchronous + current.
+    const baseImageUrl = rowImagesRef.current[baseRowIndex]?.imageUrl ?? '';
 
     const prepared = composeVariantEditRequest(activeDoc, variantRow, baseImageUrl);
     if (prepared.kind === 'error') {
@@ -2576,6 +2586,68 @@ function ProductionDocPage() {
       toast.error(msg);
     }
   }, [doc, historyEntryId]);
+
+  /**
+   * Generate every variant in a group in parallel. Skips variants
+   * whose image is already generated (saves the $0.011/call) and
+   * variants whose variant_edit_prompt is empty (would error out).
+   * Uses Promise.all — safe now that generateVariantImage reads from
+   * rowImagesRef (so concurrent calls all see the same fresh base
+   * image instead of racing on the setState-callback snapshot).
+   *
+   * Called from the "Generate all variants" button on the BASE row's
+   * Inspector chip. Fires from baseRowIndex (the BASE row, not a
+   * variant) so the UX matches "generate the rest of this group."
+   */
+  const generateAllVariantsInGroup = useCallback(async (baseRowIndex: number) => {
+    if (!doc) return;
+    const baseRow = doc.rows[baseRowIndex];
+    if (!baseRow || !baseRow.group_id) {
+      toast.error('Not a variant group base.');
+      return;
+    }
+    const groupId = baseRow.group_id;
+    // Verify the base itself has an image — variants edit it, can't
+    // generate them without it.
+    if (!rowImagesRef.current[baseRowIndex]?.imageUrl) {
+      toast.error('Generate the base image first — variants edit it.');
+      return;
+    }
+    // Collect every variant in the group that needs work: variant_index
+    // > 0, image not already generated, variant_edit_prompt non-empty.
+    const toGenerate: number[] = [];
+    let skippedAlreadyGenerated = 0;
+    let skippedNoPrompt = 0;
+    doc.rows.forEach((r, i) => {
+      if (r.group_id !== groupId) return;
+      if ((r.variant_index ?? 0) === 0) return; // skip the base itself
+      if (rowImagesRef.current[i]?.imageUrl) {
+        skippedAlreadyGenerated += 1;
+        return;
+      }
+      if (!r.variant_edit_prompt?.trim()) {
+        skippedNoPrompt += 1;
+        return;
+      }
+      toGenerate.push(i);
+    });
+    if (toGenerate.length === 0) {
+      if (skippedAlreadyGenerated > 0) {
+        toast.info(`All ${skippedAlreadyGenerated} variants already generated.`);
+      } else if (skippedNoPrompt > 0) {
+        toast.error(`Skipped ${skippedNoPrompt} variants without an edit prompt — fill them in first.`);
+      } else {
+        toast.info('No variants to generate in this group.');
+      }
+      return;
+    }
+    toast.info(`Generating ${toGenerate.length} variant${toGenerate.length === 1 ? '' : 's'} in parallel…`);
+    await Promise.all(toGenerate.map((idx) => generateVariantImage(idx)));
+    // Per-variant toasts have already fired from inside
+    // generateVariantImage; an overall completion toast would just be
+    // noise unless we also tally failures, but rowImages already shows
+    // per-row error state. Leaving silent on completion.
+  }, [doc, generateVariantImage]);
 
   /**
    * Phase 3.7a — Delete a variant row from its group.
@@ -3472,6 +3544,7 @@ function ProductionDocPage() {
     // Variant-group mutators added in Phase 3.3 + 3.7.
     addVariantRow,
     generateVariantImage,
+    generateAllVariantsInGroup,
     deleteVariantRow,
     moveVariantRow,
   }), [
@@ -3494,6 +3567,7 @@ function ProductionDocPage() {
     computeRowSceneDurationMs,
     addVariantRow,
     generateVariantImage,
+    generateAllVariantsInGroup,
     deleteVariantRow,
     moveVariantRow,
   ]);
@@ -4915,7 +4989,12 @@ function ProductionDocPage() {
   // Reading through these refs guarantees we send the freshest values
   // to the server. See `_plans/2026-05-17-render-state-hardening.md`.
   const rowVideoClipsRef = useRef<Record<number, { status: string; videoUrl?: string } | null>>({});
-  const rowImagesRef = useRef<RowImageState[]>([]);
+  // `rowImagesRef` is declared earlier in this component (before the
+  // generateVariantImage writer block) so that callback can read the
+  // freshest rowImages without the setState-callback snapshot trick
+  // (which is unreliable when React batches multiple variant Generate
+  // clicks fired in quick succession — variant 2 would see an empty
+  // base because variant 1's setState batch hadn't flushed yet).
   const rowOverlaysRef = useRef<Record<number, RowOverlayState>>({});
 
   // — Voiceover-aligned scene timing (per _plans/2026-05-13-voiceover-aligned-scene-timing.md)

@@ -179,6 +179,22 @@ const BaseRowControls: React.FC<BaseRowControlsProps> = ({
             + Add variant
           </button>
         )}
+        {variantRows.length > 0 && (
+          <button
+            type="button"
+            onClick={() => void writers.generateAllVariantsInGroup(rowIndex)}
+            className="text-[10px] px-2 py-0.5 rounded font-semibold"
+            style={{
+              background: 'rgba(124,58,237,0.15)',
+              color: 'var(--accent-purple-bright)',
+              border: '1px solid rgba(124,58,237,0.4)',
+              cursor: 'pointer',
+            }}
+            title={`Generate every variant in this group in parallel. Skips variants already generated and variants without an edit prompt. ~$0.011 per variant.`}
+          >
+            ✨ Generate all variants
+          </button>
+        )}
       </div>
 
       <div className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>

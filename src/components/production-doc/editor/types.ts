@@ -76,6 +76,11 @@ export interface EditorWriters {
    *  Atlas Edit route. Async — Inspector should show a busy state
    *  while pending. */
   generateVariantImage: (variantIndex: number) => Promise<void>;
+  /** Generate every variant in a group in parallel. Skips variants
+   *  already generated and variants without an edit prompt. Surfaced
+   *  on the BASE row's Inspector as the "Generate all variants" button.
+   *  Async — button should show busy while pending. */
+  generateAllVariantsInGroup: (baseRowIndex: number) => Promise<void>;
   /** Delete a variant row and renumber the remaining variants in
    *  the group. Base rows can NOT be deleted via this writer. */
   deleteVariantRow: (variantIndex: number) => void;
