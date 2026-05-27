@@ -179,20 +179,28 @@ export async function renderLabelPng(
       .toBuffer();
   }
   // Pango font-size is in points; sharp defaults to dpi: 72 so 1pt ≈ 1px.
-  // Sized so a TWO-LINE wrapped label still fits inside the band: 2 lines
-  // at fontPt × ~1.3 line-height stay within targetH when fontPt ≈
-  // 0.38·targetH. Every label in the grid renders at the exact same
-  // fontPt — short labels stay one line, long ones wrap to two, both at
-  // the same point size. CRITICAL: we deliberately do NOT pass `height`
-  // to sharp's text input. Despite the docs claiming auto-scaling only
-  // happens "if neither dpi nor a font is provided", libvips empirically
-  // scales the font to fill the bounding box whenever BOTH `width` and
-  // `height` are supplied, even with an explicit font string — which is
-  // what caused the bug where "UVB-76" rendered at ~40pt (1 line filling
-  // the box vertically) while "The Antikythera Mechanism" rendered at
-  // ~18pt (2 lines fitting the same box vertically). Width-only keeps
-  // wrap behaviour without the unwanted vertical auto-fit.
-  const fontPt = Math.max(12, Math.round(targetH * 0.38));
+  // 0.55·targetH is empirically calibrated to match the bundled
+  // cybersecurity-themes reference: single-line labels render at a
+  // comfortably readable size with a small margin around them in the
+  // band. Labels long enough to wrap to two lines (e.g. "Espionage,
+  // Supply Chain Attacks & Prepositioning") overflow the band height
+  // and are downscaled by buildSquareCellOverlay's resize-to-fit guard,
+  // appearing slightly smaller than single-line labels — same trade-off
+  // the reference makes. Every SINGLE-LINE label in the grid renders at
+  // the exact same point size, which is the property that was actually
+  // broken: short labels like "UVB-76" used to render ~2× bigger than
+  // "Belmez Faces" because of a libvips auto-scale bug.
+  //
+  // CRITICAL: we deliberately do NOT pass `height` to sharp's text
+  // input. Despite the docs claiming auto-scaling only happens "if
+  // neither dpi nor a font is provided", libvips empirically scales the
+  // font to fill the width × height bounding box whenever BOTH are
+  // supplied, even with an explicit font string. That's what caused
+  // UVB-76 (1 line) to render at ~40pt filling a 52px box while
+  // "The Antikythera Mechanism" (2 wrapped lines) rendered at ~18pt to
+  // fit the SAME 52px box. Width-only keeps wrap behaviour without the
+  // unwanted vertical auto-fit.
+  const fontPt = Math.max(12, Math.round(targetH * 0.55));
   const safeW = Math.max(16, Math.round(targetW));
   return await sharp({
     text: {

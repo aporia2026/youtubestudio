@@ -348,7 +348,14 @@ export async function POST(req: NextRequest) {
     // from scratch with deterministic geometry. 2048×1152 matches the
     // OpenAI direct path's output size so downstream consumers don't
     // notice a quality drop.
-    const allCellsUploaded = uploadRequests.length === totalCards;
+    // True only when every card in the grid has a validated upload. Count
+    // equality alone wasn't enough — a stale client could send 16 uploads
+    // that map to cards 1-15 + a duplicate, the dedup loop above keeps the
+    // first 15 (uploadRequests.length === 15), totalCards stays 16, and
+    // the AI gets called for nothing it can usefully draw. Index-set
+    // intersection catches that case.
+    const uploadedIndexSet = new Set(uploadRequests.map((u) => u.cardIndex));
+    const allCellsUploaded = cards.every((c) => uploadedIndexSet.has(c.index));
     if (allCellsUploaded) {
       const blankW = 2048;
       const blankH = 1152;
