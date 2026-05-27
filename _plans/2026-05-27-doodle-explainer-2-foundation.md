@@ -72,6 +72,7 @@ Compressed from the council's "watch for a week" to one real end-to-end doc gene
 
 The expensive, high-risk stage. Do NOT start until Stages 0-3 are landed and the pause-validation passes.
 
+- **Also fix the auto-pipeline post-process inconsistency.** Audit (2026-05-27) found that `src/lib/auto-pipeline/stages/generate-production-doc.ts` does NOT call `attachStyleSuffixToRows` or `autoGroupVariants` — only the manual `/api/generate/production-doc` route does. Auto-pipeline-generated docs therefore land without the style suffix on `ai_image_prompt` and without auto-grouped variants, which silently degrades image quality vs manual generation for ref-bearing styles. Stage 4 must mirror the manual route's post-process chain in the auto-pipeline stage (call `attachStyleSuffixToRows`, then `autoGroupVariants` for `doodle_explainer_2`, then `detectEmptyVariantGroupBases`). Without this, auto-pipeline videos render with materially worse images than the editor preview.
 - **Prerequisite check (before writing code):** read the existing auto-pipeline dispatcher (`src/lib/auto-pipeline/`). Confirm whether `{kind: 'requeue'}` outcomes are supported. If not, building requeue is a separate prerequisite to scope explicitly.
 - New stage `generate-production-doc-images` between `generate-production-doc` and `generate-thumbnail`.
 - **Idempotency key:** `hash(doc_id, row_index, ai_image_prompt, prompt_version)` → cached `image_url`. Never regenerate the same input. Closes the council's "lost-write, double-execution, orphaned-row" risk.

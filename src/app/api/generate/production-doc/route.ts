@@ -13,6 +13,10 @@ import {
   validateAndSplitOverlongRows,
   type ProductionDocRowLike,
 } from '@/lib/production-doc-postprocess';
+import {
+  getEffectiveAiImageSuffix,
+  getEffectiveMixingRules,
+} from '@/lib/production-doc-flags';
 import { autoGroupVariants } from '@/lib/auto-group-variants';
 import { extractScriptTitles, TITLE_SENTINEL_LEAK_RE } from '@/lib/script-titles';
 import { preprocessSsmlForProductionDoc } from '@/lib/ssml-production-doc';
@@ -67,13 +71,19 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   // Resolve the style id (built-in slug or saved-row UUID) into the full
   // payload the prompt builder needs. Unknown ids resolve to null — the
   // builder treats null as "no style" rather than failing the generation.
+  // Stage 1 — pipe both `ai_image_suffix` and `mixing_rules` through the
+  // trim-flag helpers. When `USE_TRIMMED_SUFFIX=1` AND the style has a
+  // trimmed entry registered (currently doodle_explainer_2), the LLM
+  // receives the condensed versions and `attachStyleSuffixToRows` later
+  // appends the condensed suffix. Flag off ⇒ helpers return originals
+  // unchanged. See `_plans/2026-05-27-doodle-explainer-2-foundation.md`.
   const resolved = await resolveStyle(stylePreset, session.ws);
   const style = resolved
     ? {
         id: resolved.id,
         label: resolved.label,
-        ai_image_suffix: resolved.ai_image_suffix,
-        mixing_rules: resolved.mixing_rules,
+        ai_image_suffix: getEffectiveAiImageSuffix(resolved),
+        mixing_rules: getEffectiveMixingRules(resolved),
         allow_overlay_stock: resolved.allow_overlay_stock,
       }
     : null;

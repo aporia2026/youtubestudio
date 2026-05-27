@@ -26,6 +26,10 @@ import { GenerateFailure } from '../../ai-fallback';
 import { resolveChain } from '../resolve-chain';
 import { persistArtefact } from '../db';
 import { logger } from '../../logger';
+import {
+  getEffectiveAiImageSuffix,
+  getEffectiveMixingRules,
+} from '../../production-doc-flags';
 import type { StageHandlerContext, StageOutcome } from '../types';
 
 export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Promise<StageOutcome> {
@@ -106,8 +110,17 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
           ? {
               id: style.id,
               label: '',
-              ai_image_suffix: style.ai_image_suffix ?? '',
-              mixing_rules: style.mixing_rules ?? undefined,
+              // Stage 1 — flag-gated trim of ai_image_suffix +
+              // mixing_rules for ref-bearing styles. See
+              // `_plans/2026-05-27-doodle-explainer-2-foundation.md`.
+              ai_image_suffix: getEffectiveAiImageSuffix({
+                id: style.id,
+                ai_image_suffix: style.ai_image_suffix ?? '',
+              }),
+              mixing_rules: getEffectiveMixingRules({
+                id: style.id,
+                mixing_rules: style.mixing_rules,
+              }),
               allow_overlay_stock: style.allow_overlay_stock === true,
             }
           : null,
