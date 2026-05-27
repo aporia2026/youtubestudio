@@ -17,6 +17,10 @@ import { logger } from '@/lib/logger';
 export const GET = apiRoute.authed(async (session) => {
   try {
     await ensureScheduleSchema();
+    // pipeline_run_id is joined on the schedule item's
+    // pipeline_run_video_id so the picker chip can deep-link to the run
+    // (`/pipeline/{runId}`) without an extra round-trip. LEFT JOIN keeps
+    // items that aren't linked to a run (the majority).
     const { rows } = await sql.query<{
       id: string;
       title: string;
@@ -27,20 +31,23 @@ export const GET = apiRoute.authed(async (session) => {
       pillar: string | null;
       position: number;
       pipeline_run_video_id: string | null;
+      pipeline_run_id: string | null;
     }>(
       `
-      SELECT id::text AS id,
-             title,
-             status,
-             scheduled_for::text AS scheduled_for,
-             idea_id::text AS idea_id,
-             notes,
-             pillar,
-             position,
-             pipeline_run_video_id::text AS pipeline_run_video_id
-        FROM schedule_items
-       WHERE workspace_id = $1::uuid
-       ORDER BY position ASC, created_at DESC
+      SELECT si.id::text                    AS id,
+             si.title,
+             si.status,
+             si.scheduled_for::text         AS scheduled_for,
+             si.idea_id::text               AS idea_id,
+             si.notes,
+             si.pillar,
+             si.position,
+             si.pipeline_run_video_id::text AS pipeline_run_video_id,
+             prv.pipeline_run_id::text      AS pipeline_run_id
+        FROM schedule_items si
+   LEFT JOIN pipeline_run_videos prv ON prv.id = si.pipeline_run_video_id
+       WHERE si.workspace_id = $1::uuid
+       ORDER BY si.position ASC, si.created_at DESC
        LIMIT 500
       `,
       [session.ws],

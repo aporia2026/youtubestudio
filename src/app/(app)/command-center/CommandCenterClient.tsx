@@ -43,6 +43,12 @@ import {
 import { NewVideoDialog } from './NewVideoDialog';
 import { usePresenceSnapshot } from '@/components/video-context/use-presence';
 
+// Sentinel key for the "No channel" virtual chip. Unchanneled cards
+// (channel: null) used to leak past the filter because the old check
+// short-circuited on card.channel?.id; making the sentinel explicit
+// lets the user include or exclude them like any other channel.
+const NO_CHANNEL_KEY = '__no_channel__';
+
 interface ChannelOption {
   id: string;
   name: string;
@@ -68,7 +74,13 @@ interface Props {
 export function CommandCenterClient({ initialCards, truncated, totalProjects, channels, initialWeek, stuckThresholdHours, wipLimits }: Props) {
   const router = useRouter();
   const [cards, setCards] = useState<CommandCenterCard[]>(initialCards);
-  const [channelFilter, setChannelFilter] = useState<Set<string>>(new Set(channels.map(c => c.id)));
+  // Default = every chip selected (incl. the No-channel sentinel), which
+  // reads as "no filter — show everything." A partial set means the user
+  // has narrowed the view; an empty set is disallowed (we reset to all
+  // rather than show a blank kanban).
+  const [channelFilter, setChannelFilter] = useState<Set<string>>(
+    () => new Set<string>([...channels.map(c => c.id), NO_CHANNEL_KEY]),
+  );
   const [stageFilter, setStageFilter] = useState<VideoStageId | 'all'>('all');
   const [search, setSearch] = useState('');
   const [weekOffset, setWeekOffset] = useState(0);
@@ -119,13 +131,28 @@ export function CommandCenterClient({ initialCards, truncated, totalProjects, ch
 
   const week = useMemo(() => shiftIsoWeek(initialWeek, weekOffset), [initialWeek, weekOffset]);
 
+  // Whether any card in the current data set has no channel — drives
+  // whether we render the No-channel chip at all (no point if every card
+  // is channeled).
+  const hasUnchanneled = useMemo(() => cards.some(c => !c.channel?.id), [cards]);
+
+  // Every chip the user can click — real channels plus the No-channel
+  // sentinel when applicable. Used to detect "all selected" and to reset.
+  const allChannelKeys = useMemo<string[]>(
+    () => [...channels.map(c => c.id), ...(hasUnchanneled ? [NO_CHANNEL_KEY] : [])],
+    [channels, hasUnchanneled],
+  );
+
+  const allChannelsSelected =
+    channelFilter.size === allChannelKeys.length &&
+    allChannelKeys.every(k => channelFilter.has(k));
+
   // Filtered card set, in this order: week → channel → stage → search.
   const filteredCards = useMemo(() => {
     const byWeek = filterCardsByWeek(cards, week);
     return byWeek.filter(card => {
-      if (channelFilter.size > 0 && card.channel?.id && !channelFilter.has(card.channel.id)) {
-        return false;
-      }
+      const cardChannelKey = card.channel?.id ?? NO_CHANNEL_KEY;
+      if (!channelFilter.has(cardChannelKey)) return false;
       if (stageFilter !== 'all' && card.current_stage !== stageFilter) return false;
       if (search.trim()) {
         const q = search.trim().toLowerCase();
@@ -218,13 +245,37 @@ export function CommandCenterClient({ initialCards, truncated, totalProjects, ch
     }
   }
 
-  function toggleChannel(id: string) {
+  // Click a chip = "show only this channel" (single-select).
+  // Cmd/Ctrl+click = add or remove this chip from the current selection.
+  // Click the only-active chip again = restore "all chips selected."
+  // Empty set is disallowed (would render an empty kanban with no
+  // discoverable way back) — we coerce that to "all."
+  function selectChannel(id: string, additive: boolean) {
     setChannelFilter(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      let next: Set<string>;
+      if (additive) {
+        next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        if (next.size === 0) next = new Set(allChannelKeys);
+      } else if (prev.size === 1 && prev.has(id)) {
+        next = new Set(allChannelKeys);
+      } else {
+        next = new Set([id]);
+      }
+      console.info('[command-center channel-filter]', {
+        clicked: id,
+        additive,
+        selected_count: next.size,
+        all_selected: next.size === allChannelKeys.length,
+      });
       return next;
     });
+  }
+
+  function resetChannelFilter() {
+    setChannelFilter(new Set(allChannelKeys));
+    console.info('[command-center channel-filter] reset');
   }
 
   return (
@@ -283,9 +334,11 @@ export function CommandCenterClient({ initialCards, truncated, totalProjects, ch
         onCreated={() => startTransition(() => router.refresh())}
       />
 
-      {channels.length > 1 && (
+      {(channels.length > 1 || hasUnchanneled) && (
         <div className="border-b px-4 py-2 flex items-center gap-1.5 flex-wrap" style={{ borderColor: 'var(--border)' }}>
-          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Channels:</span>
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }} title="Click a chip to filter to that channel. ⌘/Ctrl+click to add more.">
+            Channels:
+          </span>
           {channels.map(ch => {
             const selected = channelFilter.has(ch.id);
             const color = ch.account_color || 'var(--accent-purple)';
@@ -293,7 +346,8 @@ export function CommandCenterClient({ initialCards, truncated, totalProjects, ch
               <button
                 key={ch.id}
                 type="button"
-                onClick={() => toggleChannel(ch.id)}
+                onClick={e => selectChannel(ch.id, e.metaKey || e.ctrlKey)}
+                title={`Click: filter to ${ch.name}. ⌘/Ctrl+click: toggle in selection.`}
                 className="text-xs px-2.5 py-1 rounded-full inline-flex items-center gap-1.5 transition-colors"
                 style={{
                   background: selected ? `${color}22` : 'transparent',
@@ -306,6 +360,39 @@ export function CommandCenterClient({ initialCards, truncated, totalProjects, ch
               </button>
             );
           })}
+          {hasUnchanneled && (() => {
+            const selected = channelFilter.has(NO_CHANNEL_KEY);
+            const color = 'var(--text-muted)';
+            return (
+              <button
+                key={NO_CHANNEL_KEY}
+                type="button"
+                onClick={e => selectChannel(NO_CHANNEL_KEY, e.metaKey || e.ctrlKey)}
+                title="Click: show only unchanneled videos. ⌘/Ctrl+click: toggle in selection."
+                className="text-xs px-2.5 py-1 rounded-full inline-flex items-center gap-1.5 transition-colors"
+                style={{
+                  background: selected ? 'rgba(148,163,184,0.18)' : 'transparent',
+                  color: selected ? 'var(--text-primary)' : 'var(--text-muted)',
+                  border: `1px solid ${selected ? 'rgba(148,163,184,0.55)' : 'var(--border)'}`,
+                  fontStyle: 'italic',
+                }}
+              >
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: color, opacity: 0.6 }} aria-hidden />
+                No channel
+              </button>
+            );
+          })()}
+          {!allChannelsSelected && (
+            <button
+              type="button"
+              onClick={resetChannelFilter}
+              title="Show every channel again"
+              className="text-xs px-2 py-1 rounded transition-colors hover:underline"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              ↺ All
+            </button>
+          )}
         </div>
       )}
 
@@ -326,14 +413,17 @@ export function CommandCenterClient({ initialCards, truncated, totalProjects, ch
               </p>
             )}
             <div className="space-y-2">
-              {summary.map(s => (
-                <SummaryRow
-                  key={s.channelId ?? '__no_channel__'}
-                  s={s}
-                  isActive={s.channelId ? channelFilter.has(s.channelId) : false}
-                  onClick={() => s.channelId && toggleChannel(s.channelId)}
-                />
-              ))}
+              {summary.map(s => {
+                const key = s.channelId ?? NO_CHANNEL_KEY;
+                return (
+                  <SummaryRow
+                    key={key}
+                    s={s}
+                    isActive={channelFilter.has(key)}
+                    onClick={e => selectChannel(key, e.metaKey || e.ctrlKey)}
+                  />
+                );
+              })}
             </div>
           </div>
         </aside>
@@ -404,12 +494,13 @@ function WeekButton({ label, onClick, title }: { label: string; onClick: () => v
   );
 }
 
-function SummaryRow({ s, isActive, onClick }: { s: PerChannelWeekSummary; isActive: boolean; onClick: () => void }) {
+function SummaryRow({ s, isActive, onClick }: { s: PerChannelWeekSummary; isActive: boolean; onClick: (e: React.MouseEvent) => void }) {
   const color = s.channelColor || 'var(--accent-purple)';
   return (
     <button
       type="button"
       onClick={onClick}
+      title={`Click: filter to ${s.channelName}. ⌘/Ctrl+click: toggle in selection.`}
       className="w-full text-left px-2.5 py-2 rounded transition-colors"
       style={{
         background: isActive ? `${color}11` : 'transparent',

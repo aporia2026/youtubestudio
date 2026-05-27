@@ -48,6 +48,9 @@ interface ScheduleItemRow {
   pillar: string | null;
   position: number;
   pipeline_run_video_id: string | null;
+  // Set when the item is linked to a pipeline run — drives the
+  // "In pipeline" chip's deep link to /pipeline/{runId}.
+  pipeline_run_id: string | null;
 }
 
 type Mode = 'fresh' | 'existing' | 'scheduled';
@@ -601,17 +604,39 @@ export default function NewPipelinePage() {
                                   </span>
                                 )}
                                 {alreadyInPipeline && (
-                                  <span
-                                    className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded"
-                                    style={{
-                                      background: 'rgba(239,68,68,0.10)',
-                                      color: '#f87171',
-                                      border: '1px solid rgba(239,68,68,0.35)',
-                                    }}
-                                    title="Already linked to a pipeline run. Re-batching will overwrite the link."
-                                  >
-                                    In pipeline
-                                  </span>
+                                  item.pipeline_run_id ? (
+                                    <Link
+                                      href={`/pipeline/${item.pipeline_run_id}`}
+                                      onClick={e => {
+                                        // Don't also toggle the row's selection — the chip
+                                        // is a navigation control, the row is a selection
+                                        // control. Two clear affordances on one row.
+                                        e.stopPropagation();
+                                      }}
+                                      className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded inline-flex items-center gap-1 hover:underline transition-colors"
+                                      style={{
+                                        background: 'rgba(239,68,68,0.10)',
+                                        color: '#f87171',
+                                        border: '1px solid rgba(239,68,68,0.35)',
+                                      }}
+                                      title="Open the pipeline run for this item — retry, stop, or inspect stages."
+                                    >
+                                      In pipeline
+                                      <span aria-hidden style={{ marginLeft: 1 }}>→</span>
+                                    </Link>
+                                  ) : (
+                                    <span
+                                      className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded"
+                                      style={{
+                                        background: 'rgba(239,68,68,0.10)',
+                                        color: '#f87171',
+                                        border: '1px solid rgba(239,68,68,0.35)',
+                                      }}
+                                      title="Linked to a pipeline video but the run record is missing (likely a run that was deleted)."
+                                    >
+                                      In pipeline
+                                    </span>
+                                  )
                                 )}
                                 {scheduledDate && (
                                   <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
