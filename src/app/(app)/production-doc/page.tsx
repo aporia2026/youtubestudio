@@ -2614,11 +2614,45 @@ function ProductionDocPage() {
     });
 
     try {
-      const res = await fetch('/api/generate/production-doc/image/edit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(prepared.request),
-      });
+      // Stage 5 — retry on transient failures with exponential backoff.
+      // 429 (rate limit) and 5xx (server errors) are usually transient
+      // and the same request will succeed on a retry; 4xx (other) means
+      // the request itself is broken so retrying is just waste. The
+      // 2-attempt cap (1s, 2s waits) bounds the worst case at ~5s
+      // total latency for a doomed call without hammering Atlas during
+      // a real outage. See `_plans/2026-05-27-doodle-explainer-2-foundation.md`.
+      const MAX_VARIANT_RETRIES = 2;
+      let res: Response | null = null;
+      let lastError: unknown;
+      for (let attempt = 0; attempt <= MAX_VARIANT_RETRIES; attempt++) {
+        if (attempt > 0) {
+          const delayMs = 1000 * Math.pow(2, attempt - 1); // 1s, 2s
+          await new Promise((r) => setTimeout(r, delayMs));
+          console.info('[variant-gen retry]', { variantIndex, attempt, delayMs });
+        }
+        try {
+          res = await fetch('/api/generate/production-doc/image/edit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(prepared.request),
+          });
+          // Retry on rate-limit + transient server errors.
+          const isRetryable =
+            res.status === 429 || (res.status >= 500 && res.status < 600);
+          if (isRetryable && attempt < MAX_VARIANT_RETRIES) continue;
+          break;
+        } catch (err) {
+          lastError = err;
+          if (attempt < MAX_VARIANT_RETRIES) continue;
+          res = null;
+        }
+      }
+      if (!res) {
+        // Network failure after all retries — caught below by the outer
+        // try/catch via re-throw so the existing error-state setter
+        // fires uniformly with HTTP-level failures.
+        throw lastError instanceof Error ? lastError : new Error('Network error after retries');
+      }
       const data = await res.json() as { imageUrl?: string; error?: string };
       if (res.ok && data.imageUrl) {
         setRowImages(prev => {
@@ -2724,12 +2758,63 @@ function ProductionDocPage() {
       return;
     }
     toGenerate.sort((a, b) => a.variantIndex - b.variantIndex);
+
+    // Stage 5 — cost preview before firing the batch. Each variant is
+    // a flat ~$0.011 Atlas Edit call; we surface the total only when
+    // it crosses the per-batch soft-warning threshold so typical small
+    // groups don't get a friction prompt. Threshold hardcoded for v1;
+    // a workspace setting + schema migration will land separately
+    // when we have a UX home for it (per global rule 8 — cost
+    // discipline is non-negotiable, but the UX shouldn't gate every
+    // click).
+    const COST_PER_VARIANT_USD = 0.011;
+    const COST_WARN_THRESHOLD_USD = 2.0;
+    const estimatedCostUsd = toGenerate.length * COST_PER_VARIANT_USD;
+    if (estimatedCostUsd > COST_WARN_THRESHOLD_USD) {
+      const proceed = window.confirm(
+        `Generating ${toGenerate.length} variants will cost approximately $${estimatedCostUsd.toFixed(2)} (Atlas Edit at $${COST_PER_VARIANT_USD.toFixed(3)}/variant). Proceed?`,
+      );
+      if (!proceed) {
+        toast.info('Generation cancelled.');
+        return;
+      }
+    }
+
     toast.info(`Generating ${toGenerate.length} variant${toGenerate.length === 1 ? '' : 's'} in order…`);
+    // Track per-batch outcome — generateVariantImage doesn't return a
+    // status, so we read rowImagesRef after each await to count what
+    // landed vs failed. Lets the summary toast surface real numbers
+    // instead of generic "done."
+    let succeeded = 0;
+    let failed = 0;
     for (const item of toGenerate) {
       // Sequential await — chained variants need the parent's image
       // to land before they can fire. Per-variant toasts/errors come
       // from inside generateVariantImage.
       await generateVariantImage(item.docRowIndex);
+      const outcome = rowImagesRef.current[item.docRowIndex];
+      if (outcome?.status === 'done' && outcome.imageUrl) {
+        succeeded += 1;
+      } else {
+        failed += 1;
+      }
+    }
+    // Per-batch summary so the user sees the rollup. Per-variant
+    // toasts already fired inside generateVariantImage; the summary
+    // is the rollup so an attended batch finishes with one clear
+    // signal instead of a stream the user might miss.
+    console.info('[variant-batch] complete', {
+      attempted: toGenerate.length,
+      succeeded,
+      failed,
+      estimatedCostUsd,
+    });
+    if (failed === 0) {
+      toast.success(`All ${succeeded} variant${succeeded === 1 ? '' : 's'} generated.`);
+    } else if (succeeded === 0) {
+      toast.error(`All ${failed} variant${failed === 1 ? '' : 's'} failed — see per-row error state.`);
+    } else {
+      toast.error(`${succeeded}/${toGenerate.length} variants generated; ${failed} failed.`);
     }
   }, [doc, generateVariantImage]);
 
