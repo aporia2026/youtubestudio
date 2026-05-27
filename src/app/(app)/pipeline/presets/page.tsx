@@ -75,9 +75,55 @@ export default function PresetsListPage() {
           </Link>
           <h1 className="text-2xl font-bold gradient-text mt-2">Pipeline presets</h1>
           <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
-            Reusable batch configurations. Each batch picks a preset for its rules, score thresholds, model
-            fallback chains, narrator deadline, editor + thumbnail template.
+            Reusable batch configurations. A pipeline preset bundles one feature preset per stage
+            (script · QA · narration · idea) plus model fallback chains, editor handoff, and
+            thumbnail/SEO templates.
           </p>
+          <nav
+            className="mt-3 flex gap-2 flex-wrap text-xs"
+            aria-label="Manage feature presets"
+          >
+            <span style={{ color: 'var(--text-muted)' }}>Manage feature presets:</span>
+            <Link
+              href="/pipeline/presets/script"
+              className="hover:underline"
+              style={{ color: 'var(--accent-purple-bright)' }}
+            >
+              Script
+            </Link>
+            <span style={{ color: 'var(--text-muted)' }}>·</span>
+            <Link
+              href="/pipeline/presets/qa"
+              className="hover:underline"
+              style={{ color: 'var(--accent-purple-bright)' }}
+            >
+              QA
+            </Link>
+            <span style={{ color: 'var(--text-muted)' }}>·</span>
+            <Link
+              href="/pipeline/presets/narration"
+              className="hover:underline"
+              style={{ color: 'var(--accent-purple-bright)' }}
+            >
+              Narration
+            </Link>
+            <span style={{ color: 'var(--text-muted)' }}>·</span>
+            <Link
+              href="/pipeline/presets/idea"
+              className="hover:underline"
+              style={{ color: 'var(--accent-purple-bright)' }}
+            >
+              Idea-gen
+            </Link>
+            <span style={{ color: 'var(--text-muted)' }}>·</span>
+            <Link
+              href="/pipeline/thumbnail-templates"
+              className="hover:underline"
+              style={{ color: 'var(--accent-purple-bright)' }}
+            >
+              Thumbnail templates
+            </Link>
+          </nav>
         </div>
         <button onClick={() => setEditingId('new')} className="btn-primary text-sm">
           ＋ New preset
