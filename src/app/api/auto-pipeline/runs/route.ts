@@ -79,6 +79,9 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   const existingScheduleItemIds = Array.isArray(b.existingScheduleItemIds)
     ? b.existingScheduleItemIds.filter((x): x is string => typeof x === 'string')
     : undefined;
+  const existingProjectIds = Array.isArray(b.existingProjectIds)
+    ? b.existingProjectIds.filter((x): x is string => typeof x === 'string')
+    : undefined;
   const estimatedCostUsd =
     typeof b.estimatedCostUsd === 'number' && Number.isFinite(b.estimatedCostUsd)
       ? b.estimatedCostUsd
@@ -92,6 +95,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       countToGenerate,
       existingIdeaIds,
       existingScheduleItemIds,
+      existingProjectIds,
       estimatedCostUsd,
       createdBy: session.uid,
     });
@@ -101,7 +105,9 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       const status =
         err.code === 'preset_not_found' ||
         err.code === 'idea_not_found' ||
-        err.code === 'schedule_item_not_found'
+        err.code === 'schedule_item_not_found' ||
+        err.code === 'project_not_found' ||
+        err.code === 'project_missing_script'
           ? 404
           : 400;
       return NextResponse.json({ error: err.message, code: err.code }, { status });

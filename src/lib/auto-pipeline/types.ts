@@ -233,6 +233,15 @@ export interface CreatePipelineRunInput {
    *  status). Mutually exclusive with countToGenerate AND
    *  existingIdeaIds. */
   existingScheduleItemIds?: string[];
+  /** UUIDs of `projects` rows that already have a saved script AND a
+   *  finished narration. Each becomes a video at
+   *  `stage='narration_complete'`, with `project_id`/`script_id`
+   *  pre-populated from the project and `idea_id` set to the project's
+   *  linked idea (or an auto-created stub from `projects.title` if
+   *  none). Skips idea/script/QA/narration-wait entirely — the next
+   *  cron tick runs the production-doc handler. Mutually exclusive
+   *  with all the modes above. */
+  existingProjectIds?: string[];
   /** Estimated $ for the pre-run cost preview (LLM-only; image-gen
    *  separate per plan). Optional — UI may show '?' until estimate
    *  is computed. */

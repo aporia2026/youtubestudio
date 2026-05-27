@@ -62,10 +62,12 @@ export function validateCreatePipelineRunInput(
   | { ok: true; mode: 'fresh'; count: number }
   | { ok: true; mode: 'existing'; ideaIds: string[] }
   | { ok: true; mode: 'scheduled'; scheduleItemIds: string[] }
+  | { ok: true; mode: 'continue'; projectIds: string[] }
   | { ok: false; code: string; message: string } {
   const count = input.countToGenerate ?? 0;
   const ideas = input.existingIdeaIds ?? [];
   const scheduled = input.existingScheduleItemIds ?? [];
+  const projects = input.existingProjectIds ?? [];
 
   // Range/size checks run BEFORE the mode-count check so a malformed
   // input (negative count, oversized list) reports the precise reason
@@ -83,9 +85,16 @@ export function validateCreatePipelineRunInput(
       message: 'existingScheduleItemIds must have at most 50 entries.',
     };
   }
-  // Dedupe — running the same idea/item twice in one batch is almost
-  // certainly a UI bug; reject loudly rather than create two videos
-  // for the same source.
+  if (projects.length > 50) {
+    return {
+      ok: false,
+      code: 'too_many_projects',
+      message: 'existingProjectIds must have at most 50 entries.',
+    };
+  }
+  // Dedupe — running the same idea/item/project twice in one batch is
+  // almost certainly a UI bug; reject loudly rather than create
+  // duplicate videos.
   if (ideas.length !== new Set(ideas).size) {
     return { ok: false, code: 'duplicate_ideas', message: 'existingIdeaIds must not contain duplicates.' };
   }
@@ -96,21 +105,29 @@ export function validateCreatePipelineRunInput(
       message: 'existingScheduleItemIds must not contain duplicates.',
     };
   }
+  if (projects.length !== new Set(projects).size) {
+    return {
+      ok: false,
+      code: 'duplicate_projects',
+      message: 'existingProjectIds must not contain duplicates.',
+    };
+  }
 
   // After per-field validation, enforce the single-mode constraint.
-  const modesProvided = [count > 0, ideas.length > 0, scheduled.length > 0].filter(Boolean).length;
+  const modesProvided = [count > 0, ideas.length > 0, scheduled.length > 0, projects.length > 0]
+    .filter(Boolean).length;
   if (modesProvided === 0) {
     return {
       ok: false,
       code: 'no_input',
-      message: 'Must provide countToGenerate, existingIdeaIds, or existingScheduleItemIds.',
+      message: 'Must provide countToGenerate, existingIdeaIds, existingScheduleItemIds, or existingProjectIds.',
     };
   }
   if (modesProvided > 1) {
     return {
       ok: false,
       code: 'mixed_mode_not_supported',
-      message: 'Cannot mix fresh/existing/scheduled modes in one batch. Pick one mode.',
+      message: 'Cannot mix fresh/existing/scheduled/continue modes in one batch. Pick one mode.',
     };
   }
 
@@ -120,7 +137,10 @@ export function validateCreatePipelineRunInput(
   if (ideas.length > 0) {
     return { ok: true, mode: 'existing', ideaIds: ideas };
   }
-  return { ok: true, mode: 'scheduled', scheduleItemIds: scheduled };
+  if (scheduled.length > 0) {
+    return { ok: true, mode: 'scheduled', scheduleItemIds: scheduled };
+  }
+  return { ok: true, mode: 'continue', projectIds: projects };
 }
 
 /**
@@ -177,7 +197,7 @@ export async function createPipelineRun(
   // The scheduled→video_id mapping is kept (parallel array to
   // validatedIdeaIds, same order) so we can link the schedule
   // items to the pipeline_run_videos rows once they're inserted.
-  let scheduledItemForVideo: Array<{ scheduleItemId: string; currentStatus: string }> = [];
+  const scheduledItemForVideo: Array<{ scheduleItemId: string; currentStatus: string }> = [];
   let autoCreatedIdeas = 0;
   if (validation.mode === 'scheduled') {
     const { rows } = await sql.query<{
@@ -239,9 +259,84 @@ export async function createPipelineRun(
     }
   }
 
+  // Continue mode: load each project (workspace-scoped) + its active
+  // script. Each row becomes a pipeline_run_videos at
+  // `narration_complete`, so the user's already-recorded narration is
+  // taken as given and the cron jumps straight to the production-doc
+  // handler on the next tick.
+  //
+  // idea_id: we always create a stub video_ideas row from the
+  // project's title. The pipeline_run_videos table requires
+  // `idea_id` semantically (the schema permits null, but the handlers
+  // assume it), and projects don't carry a direct FK to video_ideas.
+  // The stub is harmless because downstream stages (production-doc,
+  // thumbnail, editor, SEO) read script content + project metadata,
+  // not the idea body.
+  const continueProjectForVideo: Array<{ projectId: string; scriptId: string }> = [];
+  if (validation.mode === 'continue') {
+    const { rows } = await sql.query<{
+      id: string;
+      title: string;
+      niche: string | null;
+      script_id: string | null;
+    }>(
+      `
+      SELECT p.id::text   AS id,
+             p.title,
+             p.niche,
+             (SELECT s.id::text
+                FROM scripts s
+               WHERE s.project_id = p.id
+                 AND s.is_active = true
+               ORDER BY s.version DESC
+               LIMIT 1) AS script_id
+        FROM projects p
+       WHERE p.id = ANY($1::uuid[])
+         AND p.workspace_id = $2::uuid
+      `,
+      [validation.projectIds, input.workspaceId],
+    );
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const missing = validation.projectIds.filter((id) => !byId.has(id));
+    if (missing.length > 0) {
+      throw new CreatePipelineRunError(
+        'project_not_found',
+        `Project(s) not found in workspace: ${missing.join(', ')}`,
+      );
+    }
+    const noScript = validation.projectIds.filter((id) => !byId.get(id)?.script_id);
+    if (noScript.length > 0) {
+      throw new CreatePipelineRunError(
+        'project_missing_script',
+        `Project(s) have no saved script — can't continue: ${noScript.join(', ')}`,
+      );
+    }
+
+    // Resolve each project in caller-supplied priority order. Stub
+    // idea-creation is done EVERY time (the project's existing
+    // idea_id isn't loaded here — keeping the query minimal); the
+    // stub is harmless because downstream stages don't read it.
+    for (const pid of validation.projectIds) {
+      const project = byId.get(pid)!;
+      const title = project.title || 'Untitled video';
+      const { rows: insRows } = await sql.query<{ id: string }>(
+        `
+        INSERT INTO video_ideas
+          (niche, title, hook, is_saved, workspace_id)
+        VALUES ($1, $2, $3, true, $4::uuid)
+        RETURNING id::text AS id
+        `,
+        [project.niche ?? preset.niche ?? '', title, '', input.workspaceId],
+      );
+      validatedIdeaIds.push(insRows[0].id);
+      continueProjectForVideo.push({ projectId: pid, scriptId: project.script_id! });
+    }
+    autoCreatedIdeas += continueProjectForVideo.length;
+  }
+
   // Count for the pipeline_runs row. For fresh mode it's the
-  // count we'll generate; for existing/scheduled modes it's the
-  // array length (same as the eventual video count).
+  // count we'll generate; for existing/scheduled/continue modes it's
+  // the array length (same as the eventual video count).
   const ideasCount = validation.mode === 'fresh' ? validation.count : validatedIdeaIds.length;
 
   // Insert pipeline_runs first, then the video rows in priority
@@ -276,8 +371,15 @@ export async function createPipelineRun(
   const runId = runRows[0].id;
 
   // Video rows. The initial stage depends on the mode.
+  //   fresh     → queued (idea-gen handler will set idea_id)
+  //   existing  → generating_script (idea_id already known)
+  //   scheduled → generating_script (idea_id already known)
+  //   continue  → narration_complete (project_id + script_id known;
+  //               skip idea/script/QA/narration entirely)
   const initialStage: PipelineStage =
-    validation.mode === 'fresh' ? 'queued' : 'generating_script';
+    validation.mode === 'fresh' ? 'queued'
+    : validation.mode === 'continue' ? 'narration_complete'
+    : 'generating_script';
 
   const videoIds: string[] = [];
   if (validation.mode === 'fresh') {
@@ -292,6 +394,33 @@ export async function createPipelineRun(
         RETURNING id::text AS id
         `,
         [input.workspaceId, runId, i + 1, initialStage],
+      );
+      videoIds.push(vRows[0].id);
+    }
+  } else if (validation.mode === 'continue') {
+    // Each row carries project_id + script_id + idea_id from
+    // creation. Downstream handlers (production-doc et al.) read all
+    // three to do their work.
+    for (let i = 0; i < validatedIdeaIds.length; i++) {
+      const { projectId, scriptId } = continueProjectForVideo[i];
+      const { rows: vRows } = await sql.query<{ id: string }>(
+        `
+        INSERT INTO pipeline_run_videos
+          (workspace_id, pipeline_run_id, priority, stage,
+           idea_id, project_id, script_id)
+        VALUES ($1::uuid, $2::uuid, $3, $4,
+                $5::uuid, $6::uuid, $7::uuid)
+        RETURNING id::text AS id
+        `,
+        [
+          input.workspaceId,
+          runId,
+          i + 1,
+          initialStage,
+          validatedIdeaIds[i],
+          projectId,
+          scriptId,
+        ],
       );
       videoIds.push(vRows[0].id);
     }

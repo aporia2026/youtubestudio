@@ -53,7 +53,16 @@ interface ScheduleItemRow {
   pipeline_run_id: string | null;
 }
 
-type Mode = 'fresh' | 'existing' | 'scheduled';
+type Mode = 'fresh' | 'existing' | 'scheduled' | 'continue';
+
+interface ProjectRow {
+  id: string;
+  title: string;
+  niche: string | null;
+  script_id: string;
+  script_word_count: number | null;
+  script_updated_at: string;
+}
 
 export default function NewPipelinePage() {
   const router = useRouter();
@@ -65,10 +74,13 @@ export default function NewPipelinePage() {
   const [count, setCount] = useState<number>(5);
   const [selectedIdeaIds, setSelectedIdeaIds] = useState<string[]>([]);
   const [selectedScheduleIds, setSelectedScheduleIds] = useState<string[]>([]);
+  const [projects, setProjects] = useState<ProjectRow[]>([]);
+  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   // Picker search + filter state. Kept independent per mode so toggling
   // back-and-forth doesn't wipe what the user already typed/picked.
   const [ideaSearch, setIdeaSearch] = useState('');
   const [scheduleSearch, setScheduleSearch] = useState('');
+  const [projectSearch, setProjectSearch] = useState('');
   // Empty set = no filter (show all statuses). Storing the negative
   // (which statuses to *hide*) would be just as valid but harder to
   // read in the UI; we store which statuses are *kept* and treat
@@ -85,10 +97,11 @@ export default function NewPipelinePage() {
   useEffect(() => {
     void (async () => {
       try {
-        const [presetsRes, ideasRes, scheduleRes] = await Promise.all([
+        const [presetsRes, ideasRes, scheduleRes, projectsRes] = await Promise.all([
           fetch('/api/auto-pipeline/presets', { cache: 'no-store' }),
           fetch('/api/ideas?saved=true&limit=100', { cache: 'no-store' }).catch(() => null),
           fetch('/api/schedule/picker', { cache: 'no-store' }).catch(() => null),
+          fetch('/api/auto-pipeline/projects-picker', { cache: 'no-store' }).catch(() => null),
         ]);
         if (presetsRes.ok) {
           const data = await presetsRes.json();
@@ -110,7 +123,18 @@ export default function NewPipelinePage() {
           setScheduleItems(rows);
           scheduleCount = rows.length;
         }
-        console.info('[pipeline batch] picker_loaded', { ideas: ideasCount, scheduled: scheduleCount });
+        let projectsCount = 0;
+        if (projectsRes && projectsRes.ok) {
+          const data = await projectsRes.json();
+          const rows = (data.projects as ProjectRow[]) ?? [];
+          setProjects(rows);
+          projectsCount = rows.length;
+        }
+        console.info('[pipeline batch] picker_loaded', {
+          ideas: ideasCount,
+          scheduled: scheduleCount,
+          projects: projectsCount,
+        });
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to load');
       } finally {
@@ -132,6 +156,16 @@ export default function NewPipelinePage() {
       );
     });
   }, [ideas, ideaSearch]);
+
+  // Filtered projects: case-insensitive substring on title + niche.
+  const filteredProjects = useMemo(() => {
+    const q = projectSearch.trim().toLowerCase();
+    if (!q) return projects;
+    return projects.filter((p) =>
+      p.title.toLowerCase().includes(q) ||
+      (p.niche ?? '').toLowerCase().includes(q),
+    );
+  }, [projects, projectSearch]);
 
   // Filtered scheduled items: combined search + status-filter chip.
   // Both filters intersect — the user gets back items that match the
@@ -181,6 +215,10 @@ export default function NewPipelinePage() {
     setSelectedScheduleIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
+  function toggleProject(id: string) {
+    setSelectedProjectIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
   function toggleStatusFilter(status: string) {
     setScheduleStatusFilter((prev) => {
       const next = new Set(prev);
@@ -214,16 +252,24 @@ export default function NewPipelinePage() {
       setError('Pick at least one scheduled item.');
       return;
     }
+    if (mode === 'continue' && selectedProjectIds.length === 0) {
+      setError('Pick at least one project to continue.');
+      return;
+    }
 
     setSubmitting(true);
     const countForLog =
-      mode === 'fresh' ? count : mode === 'existing' ? selectedIdeaIds.length : selectedScheduleIds.length;
+      mode === 'fresh' ? count
+      : mode === 'existing' ? selectedIdeaIds.length
+      : mode === 'scheduled' ? selectedScheduleIds.length
+      : selectedProjectIds.length;
     console.info('[pipeline batch] submit', { mode, count: countForLog, presetId });
     try {
       const body: Record<string, unknown> = { presetId };
       if (mode === 'fresh') body.countToGenerate = count;
       else if (mode === 'existing') body.existingIdeaIds = selectedIdeaIds;
-      else body.existingScheduleItemIds = selectedScheduleIds;
+      else if (mode === 'scheduled') body.existingScheduleItemIds = selectedScheduleIds;
+      else body.existingProjectIds = selectedProjectIds;
 
       const res = await fetch('/api/auto-pipeline/runs', {
         method: 'POST',
@@ -391,6 +437,12 @@ export default function NewPipelinePage() {
                 onClick={() => changeMode('scheduled')}
                 title="Use scheduled items"
                 subtitle="Pull items straight from your Schedule. We bump them to Scripting and link the run."
+              />
+              <ModeCard
+                active={mode === 'continue'}
+                onClick={() => changeMode('continue')}
+                title="Continue an existing video"
+                subtitle="You already have a script + narration. Skip the writing & QA — the pipeline does production doc, thumbnail, editor handoff, and SEO."
               />
             </div>
           </Section>
@@ -654,6 +706,101 @@ export default function NewPipelinePage() {
                         );
                       })}
                     </ul>
+                    )}
+                  </div>
+                </>
+              )}
+            </Section>
+          )}
+
+          {mode === 'continue' && (
+            <Section title="Pick projects to continue">
+              {projects.length === 0 ? (
+                <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                  No workspace projects with a saved script yet. Write + save a script in the{' '}
+                  <Link href="/generator" className="underline">
+                    Script Generator
+                  </Link>{' '}
+                  first, then come back here.
+                </p>
+              ) : (
+                <>
+                  <SearchBox
+                    placeholder={`Search ${projects.length} project${projects.length === 1 ? '' : 's'}…`}
+                    value={projectSearch}
+                    onChange={setProjectSearch}
+                  />
+                  <p className="text-xs mb-2 mt-2" style={{ color: 'var(--text-muted)' }}>
+                    Selected order = priority. {selectedProjectIds.length} selected
+                    {projectSearch ? ` · ${filteredProjects.length} of ${projects.length} shown` : ''}.
+                    Each pipeline run starts at <em>narration_complete</em> — make sure narration is
+                    actually done before starting, or the editor handoff will get an empty audio packet.
+                  </p>
+                  <div
+                    className="rounded-lg overflow-hidden"
+                    style={{ border: '1px solid var(--border)', maxHeight: 384, overflowY: 'auto' }}
+                  >
+                    {filteredProjects.length === 0 ? (
+                      <p className="px-3 py-6 text-sm text-center" style={{ color: 'var(--text-muted)' }}>
+                        No projects match &ldquo;{projectSearch}&rdquo;.
+                      </p>
+                    ) : (
+                      <ul>
+                        {filteredProjects.map((project, idx) => {
+                          const selected = selectedProjectIds.includes(project.id);
+                          const position = selected ? selectedProjectIds.indexOf(project.id) + 1 : null;
+                          const updated = project.script_updated_at
+                            ? new Date(project.script_updated_at).toLocaleDateString()
+                            : null;
+                          return (
+                            <li
+                              key={project.id}
+                              onClick={() => toggleProject(project.id)}
+                              className="px-3 py-2 cursor-pointer text-sm flex items-start gap-3 transition-colors"
+                              style={{
+                                background: selected ? 'rgba(124,58,237,0.10)' : 'transparent',
+                                borderTop: idx === 0 ? 'none' : '1px solid var(--border)',
+                              }}
+                            >
+                              <div
+                                className="w-6 shrink-0 text-xs font-mono pt-0.5"
+                                style={{ color: selected ? 'var(--accent-purple-bright)' : 'var(--text-muted)' }}
+                              >
+                                {position ? `#${position}` : '·'}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+                                    {project.title || 'Untitled project'}
+                                  </span>
+                                  {project.niche && (
+                                    <span
+                                      className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded"
+                                      style={{
+                                        background: 'rgba(148,163,184,0.10)',
+                                        color: 'var(--text-muted)',
+                                        border: '1px solid var(--border)',
+                                      }}
+                                    >
+                                      {project.niche}
+                                    </span>
+                                  )}
+                                  {project.script_word_count != null && (
+                                    <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                                      {project.script_word_count} words
+                                    </span>
+                                  )}
+                                  {updated && (
+                                    <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                                      · {updated}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
                     )}
                   </div>
                 </>
