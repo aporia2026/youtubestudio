@@ -385,7 +385,13 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
     model_used: result.modelUsed,
   });
 
-  return { kind: 'advance', nextStage: 'generating_thumbnail' };
+  // Stage 4 — advance to the new server-side image-generation stage
+  // before thumbnail. The image-gen stage walks the doc, generates
+  // every row's image, and re-enters itself for chunked progress
+  // until all rows have image_url. When complete it advances to
+  // 'generating_thumbnail'. See
+  // `_plans/2026-05-27-doodle-explainer-2-foundation.md`.
+  return { kind: 'advance', nextStage: 'generating_production_doc_images' };
 }
 
 /**

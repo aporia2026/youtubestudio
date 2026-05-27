@@ -18,20 +18,13 @@ import type { VideoShot } from '@/remotion/types';
 import { recipeForDirection } from './kenburns';
 import type { KenBurnsRecipe, SceneCanvas, SceneRecipe } from './types';
 
-const KB_DIRECTIONS = [
-  'zoom-in',
-  'pan-left',
-  'pan-right',
-  'zoom-out',
-  'pan-up',
-  'pan-down',
-] as const;
+// Ken Burns is OFF by default — `shot.kenBurnsDirection` left undefined
+// renders a static still. The legacy "cycle directions by shot index"
+// default was removed; motion is now opt-in per-row.
 
 export interface CompileSceneArgs {
   shot: VideoShot;
-  /** Zero-based shot index. Used both as the SceneRecipe.index and as
-   *  the fallback Ken Burns direction seed (so consecutive shots vary
-   *  motion without configuration). */
+  /** Zero-based shot index — surfaced on the resulting SceneRecipe. */
   shotIndex: number;
   /** Output canvas. Caller passes the doc's canvas once. */
   canvas: SceneCanvas;
@@ -46,27 +39,24 @@ export interface CompileSceneArgs {
 }
 
 /**
- * Build a SceneRecipe for a single still-image scene with Ken Burns.
+ * Build a SceneRecipe for a single still-image scene.
  *
- * Direction resolution order:
- *   1. `shot.kenBurnsDirection` (per-row override)
- *   2. Cycle through KB_DIRECTIONS by `shotIndex` to avoid repetition
- *      — matches today's BRollScene behaviour.
+ * Motion is opt-in: only the per-row `shot.kenBurnsDirection` triggers
+ * a Ken Burns recipe. When undefined (the default for production-doc
+ * rows), the scene renders as a static still — matches BRollScene's
+ * preview behaviour.
  *
- * If `floatImage === false` is explicitly set on the shot, falls back
- * to `{ kind: 'none' }` (static still). Today's editor doesn't surface
- * this directly, but the field exists on VideoShot for future use.
+ * `floatImage === false` is also honoured as an explicit "no motion"
+ * knob, preserved for back-compat with shots that set it directly.
  */
 export function compileStillScene(args: CompileSceneArgs): SceneRecipe {
   const { shot, shotIndex, canvas, imagePath, backgroundColor } = args;
 
   let kenBurns: KenBurnsRecipe;
-  if (shot.floatImage === false) {
+  if (shot.floatImage === false || !shot.kenBurnsDirection) {
     kenBurns = { kind: 'none' };
   } else {
-    const direction =
-      shot.kenBurnsDirection ?? KB_DIRECTIONS[shotIndex % KB_DIRECTIONS.length];
-    kenBurns = recipeForDirection(direction);
+    kenBurns = recipeForDirection(shot.kenBurnsDirection);
   }
 
   return {

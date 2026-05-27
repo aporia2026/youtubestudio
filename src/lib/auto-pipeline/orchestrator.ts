@@ -26,6 +26,7 @@ import { handleRunCriticPanel } from './stages/run-critic-panel';
 import { handleQaRetry } from './stages/qa-retry';
 import { handleNarrationComplete } from './stages/narration-complete';
 import { handleGenerateProductionDoc } from './stages/generate-production-doc';
+import { handleGenerateProductionDocImages } from './stages/generate-production-doc-images';
 import { handleGenerateThumbnail } from './stages/generate-thumbnail';
 import { handleAssignToEditor } from './stages/assign-to-editor';
 import { handleGenerateSeo } from './stages/generate-seo';
@@ -64,6 +65,7 @@ const STAGE_HANDLERS: Record<string, StageHandler | undefined> = {
   qa_retry: handleQaRetry,
   narration_complete: handleNarrationComplete,
   generating_production_doc: handleGenerateProductionDoc,
+  generating_production_doc_images: handleGenerateProductionDocImages,
   generating_thumbnail: handleGenerateThumbnail,
   assigning_to_editor: handleAssignToEditor,
   generating_seo: handleGenerateSeo,

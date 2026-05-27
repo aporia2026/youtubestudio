@@ -24,10 +24,12 @@ interface BRollSceneProps {
   lowerThirdVariant?: LowerThirdVariant;
 }
 
-// Cycle Ken Burns directions based on shot index to avoid repetition
-const KB_DIRECTIONS: VideoShot['kenBurnsDirection'][] = [
-  'zoom-in', 'pan-left', 'pan-right', 'zoom-out', 'pan-up', 'pan-down',
-];
+// Ken Burns is OFF by default — `shot.kenBurnsDirection` left undefined
+// renders the still as a static <Img>, no pan/zoom. A direction must be
+// set explicitly per-row to opt into motion. The legacy
+// "cycle directions by shot index" default was removed because automatic
+// camera moves are not the right default for production-doc videos; the
+// user opts in per-row when they want motion.
 
 /** Sanity-clamp a numeric transform field. Returns the clamped value
  *  when finite + in-range, otherwise `fallback`. Keeps malformed
@@ -71,7 +73,10 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
   const [imgError, setImgError] = useState(false);
   const [videoError, setVideoError] = useState(false);
 
-  const direction = shot.kenBurnsDirection ?? KB_DIRECTIONS[shotIndex % KB_DIRECTIONS.length];
+  // Undefined direction ⇒ no motion. The renderer below switches between
+  // a static <Img> (no kenBurnsDirection set, or letterbox layout) and
+  // <KenBurns> (explicit direction set on the shot).
+  const direction = shot.kenBurnsDirection;
 
   // Video URL: only https://; blob: URLs from Vercel Blob writes don't survive
   // page reload (same caveat as the still-image guard).
@@ -307,12 +312,25 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
             objectFit: 'contain',
           }}
         />
-      ) : (
+      ) : direction ? (
         <KenBurns
           imageUrl={shot.imageUrl!}
           durationInFrames={durationInFrames}
           direction={direction}
           onError={() => setImgError(true)}
+        />
+      ) : (
+        // No kenBurnsDirection set ⇒ render a static, motionless still.
+        // The free-transform / sceneZoom wrappers above still apply, so
+        // the user can position / scale the image without it panning.
+        <Img
+          src={shot.imageUrl!}
+          onError={() => setImgError(true)}
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+          }}
         />
       )}
       </AbsoluteFill>

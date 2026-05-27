@@ -32,6 +32,14 @@ export const PIPELINE_STAGES = [
   'qa_retry',
   'narration_complete',
   'generating_production_doc',
+  // Stage 4 of the 2026-05-27 foundation rebuild — new auto-pipeline
+  // stage that walks the production doc and generates every row's
+  // image server-side, so end-to-end pipeline videos arrive at the
+  // editor with images already populated. Re-enters itself on each
+  // tick (chunked: ~8 rows per invocation) until every row has an
+  // image_url, then advances to `generating_thumbnail`. See
+  // `_plans/2026-05-27-doodle-explainer-2-foundation.md` (Stage 4).
+  'generating_production_doc_images',
   'generating_thumbnail',
   'assigning_to_editor',
   'generating_seo',
@@ -46,6 +54,7 @@ export const PIPELINE_STAGES = [
   'qa_failed_after_max_retries',
   'narration_abandoned',
   'production_doc_failed',
+  'production_doc_images_failed',
   'thumbnail_failed',
   'editor_assignment_failed',
   'seo_failed',
@@ -64,6 +73,7 @@ export const ACTIVE_STAGES: ReadonlySet<PipelineStage> = new Set<PipelineStage>(
   'qa_retry',
   'narration_complete',
   'generating_production_doc',
+  'generating_production_doc_images',
   'generating_thumbnail',
   'assigning_to_editor',
   'generating_seo',
@@ -84,6 +94,7 @@ export const TERMINAL_STAGES: ReadonlySet<PipelineStage> = new Set<PipelineStage
   'qa_failed_after_max_retries',
   'narration_abandoned',
   'production_doc_failed',
+  'production_doc_images_failed',
   'thumbnail_failed',
   'editor_assignment_failed',
   'seo_failed',
@@ -99,6 +110,7 @@ export const FAILURE_STAGES: ReadonlySet<PipelineStage> = new Set<PipelineStage>
   'qa_failed_after_max_retries',
   'narration_abandoned',
   'production_doc_failed',
+  'production_doc_images_failed',
   'thumbnail_failed',
   'editor_assignment_failed',
   'seo_failed',

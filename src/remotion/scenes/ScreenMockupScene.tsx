@@ -115,12 +115,26 @@ export const ScreenMockupScene: React.FC<ScreenMockupSceneProps> = ({
           }}
         >
           {shot.imageUrl ? (
-            <KenBurns
-              imageUrl={shot.imageUrl}
-              durationInFrames={durationInFrames}
-              direction="zoom-in"
-              baseScale={1.02}
-            />
+            shot.kenBurnsDirection ? (
+              <KenBurns
+                imageUrl={shot.imageUrl}
+                durationInFrames={durationInFrames}
+                direction={shot.kenBurnsDirection}
+                baseScale={1.02}
+              />
+            ) : (
+              // No kenBurnsDirection set ⇒ static screenshot, no motion.
+              <Img
+                src={shot.imageUrl}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                  transform: 'scale(1.02)',
+                  transformOrigin: 'center center',
+                }}
+              />
+            )
           ) : (
             <div
               style={{
