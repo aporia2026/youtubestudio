@@ -23,7 +23,12 @@ interface SeoTemplateRow {
 
 interface StyleRow {
   id: string;
-  name: string;
+  /** The /api/production-doc/styles endpoint returns ResolvedStyle
+   *  shape — built-ins carry a `label` and saved rows are mapped to
+   *  `label = name` in savedRowToResolved. Either way the field is
+   *  `label`, NOT `name`. Reading `s.name` here used to render every
+   *  built-in option as just "(built-in)" with no preset name. */
+  label: string;
   description?: string | null;
   origin: 'built-in' | 'saved';
 }
@@ -388,7 +393,7 @@ export default function PresetForm({
             <option value="">— Inherit from Visual style (or none) —</option>
             {styles.map((s) => (
               <option key={s.id} value={s.id}>
-                {s.name}
+                {s.label}
                 {s.origin === 'built-in' ? ' (built-in)' : ''}
               </option>
             ))}
@@ -577,7 +582,7 @@ export default function PresetForm({
             <option value="">— No visual style preset —</option>
             {styles.map((s) => (
               <option key={s.id} value={s.id}>
-                {s.name}
+                {s.label}
                 {s.origin === 'built-in' ? ' (built-in)' : ''}
               </option>
             ))}

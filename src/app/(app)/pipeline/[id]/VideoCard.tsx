@@ -126,7 +126,12 @@ const FAILED: ReadonlySet<string> = new Set([
 
 interface StyleOption {
   id: string;
-  name: string;
+  /** Display name. The /api/production-doc/styles endpoint returns
+   *  ResolvedStyle shape where the field is `label` (built-ins) or
+   *  `label = name` for saved rows after savedRowToResolved. Use
+   *  `label` here, NOT `name`. Otherwise built-in options render as
+   *  blank "(built-in)" entries. */
+  label: string;
   description?: string | null;
   origin: 'built-in' | 'saved';
 }
@@ -872,7 +877,7 @@ function InlineStylePicker({
 }) {
   if (styles.length === 0) return null;
   const currentLabel = currentOverrideId
-    ? styles.find((s) => s.id === currentOverrideId)?.name ?? 'Custom (deleted?)'
+    ? styles.find((s) => s.id === currentOverrideId)?.label ?? 'Custom (deleted?)'
     : null;
   return (
     <div className="flex items-center gap-2 flex-wrap text-xs" style={{ color: 'var(--text-muted)' }}>
@@ -889,7 +894,7 @@ function InlineStylePicker({
         <option value="">Clear override — inherit from preset</option>
         {styles.map((s) => (
           <option key={s.id} value={s.id}>
-            {s.name}
+            {s.label}
             {s.origin === 'built-in' ? ' (built-in)' : ''}
           </option>
         ))}
@@ -1072,7 +1077,7 @@ function EditPanel({
             <option value="">— Inherit from run preset —</option>
             {styles.map((s) => (
               <option key={s.id} value={s.id}>
-                {s.name}
+                {s.label}
                 {s.origin === 'built-in' ? ' (built-in)' : ''}
               </option>
             ))}
@@ -1091,7 +1096,7 @@ function EditPanel({
             <option value="">— Inherit from run preset —</option>
             {styles.map((s) => (
               <option key={s.id} value={s.id}>
-                {s.name}
+                {s.label}
                 {s.origin === 'built-in' ? ' (built-in)' : ''}
               </option>
             ))}

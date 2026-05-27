@@ -847,7 +847,9 @@ interface AutoContinuePreset {
 
 interface AutoContinueStyle {
   id: string;
-  name: string;
+  /** API returns `label`, not `name` — see note on StyleOption in
+   *  VideoCard.tsx. Reading `s.name` rendered built-ins as blank. */
+  label: string;
   origin: 'built-in' | 'saved';
 }
 
@@ -1020,7 +1022,7 @@ function AutoContinueModal({
                 <option value="">— No visual style —</option>
                 {styles.map(s => (
                   <option key={s.id} value={s.id}>
-                    {s.name}
+                    {s.label}
                     {s.origin === 'built-in' ? ' (built-in)' : ''}
                     {s.id === presetDefault ? ' · preset default' : ''}
                   </option>
