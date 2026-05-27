@@ -1,7 +1,7 @@
 'use client';
 
 import React, { Suspense, useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
 import { COLLAGE_TESTER_PUBLIC, EDITOR_V1_PUBLIC } from '@/lib/feature-flags';
@@ -1874,6 +1874,10 @@ export default function ProductionDocPageWrapper() {
 
 function ProductionDocPage() {
   const search = useSearchParams();
+  // router.replace is used by `ensureProjectForVoiceover` below to stamp
+  // a newly-auto-created `?projectId=` into the URL so a reload keeps the
+  // production-doc linked to its draft project.
+  const router = useRouter();
   // Whether the local ComfyUI stack is wired up in this env (controls
   // visibility of the "Local (free)" image-model entries below).
   const localStudioEnabled = useLocalStudioEnabled();
@@ -5435,6 +5439,50 @@ function ProductionDocPage() {
       if (stored.primaryColor) setBrandKit(b => ({ ...b, ...stored }));
     } catch { /* ignore */ }
   }, []);
+
+  // ── Lazy draft-project creation for voiceover upload / save-to-library ─
+  //
+  // The Video Preview & Render voiceover picker needs a `projects.id` to
+  // scope `media_assets`. When the user opens a fresh production-doc that
+  // isn't linked to a project yet, this callback creates one on demand —
+  // triggered by the picker's `onRequireProject` prop — so the upload
+  // path is never blocked by a "save first" wall. Title falls back through
+  // `doc.title → topic → niche → 'Untitled production doc'` so the create
+  // works in every realistic state. URL is updated via `router.replace`
+  // so a reload preserves the linkage. See
+  // `_plans/2026-05-27-voiceover-upload-without-saved-project.md`.
+  const ensureProjectForVoiceover = useCallback(async (): Promise<string | null> => {
+    const existing = scheduleItem?.project_id ?? projectIdParam;
+    if (existing) return existing;
+    const title = (doc?.title || topic || niche || 'Untitled production doc').trim();
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, niche, topic }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const msg = data?.error ? String(data.error) : `Create failed (${res.status})`;
+        toast.error(`Could not create a project for this voiceover: ${msg}`);
+        return null;
+      }
+      const { project } = (await res.json()) as { project?: { id?: string } };
+      if (!project?.id) {
+        toast.error('Could not create a project for this voiceover');
+        return null;
+      }
+      const params = new URLSearchParams(search.toString());
+      params.set('projectId', project.id);
+      router.replace(`/production-doc?${params.toString()}`);
+      toast.success('Created a draft project for this doc');
+      return project.id;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Network error';
+      toast.error(`Could not create a project for this voiceover: ${msg}`);
+      return null;
+    }
+  }, [scheduleItem?.project_id, projectIdParam, doc?.title, topic, niche, search, router]);
 
   // ── Fetch the active channel + its visual brand kit on mount ───────────
   //
@@ -10560,6 +10608,7 @@ function ProductionDocPage() {
                     scheduleItemId={scheduleItemId}
                     projectId={scheduleItem?.project_id ?? projectIdParam}
                     titleCandidates={[scheduleItem?.title, doc?.title, topic]}
+                    onRequireProject={ensureProjectForVoiceover}
                   />
                   {/* Voiceover-aligned scene timing pill. Sits directly
                       under the picker — same visual locus as the data

@@ -53,6 +53,13 @@ export interface VoiceoverPickerProps {
    *  Defaults to `voiceover-picker` so each surface labels its own events
    *  for the observability trail. */
   logNamespace?: string;
+  /** Optional. When `projectId` is null and the user clicks Upload / Save
+   *  to library, the picker calls this to lazily create (or look up) a
+   *  project to scope the new media_assets row against. Returning `null`
+   *  aborts the action without an error toast — the caller is expected
+   *  to surface its own message in that case. See
+   *  `_plans/2026-05-27-voiceover-upload-without-saved-project.md`. */
+  onRequireProject?: () => Promise<string | null>;
 }
 
 interface LibraryRow {
@@ -75,6 +82,7 @@ export function VoiceoverPicker({
   projectId,
   titleCandidates,
   logNamespace = 'voiceover-picker',
+  onRequireProject,
 }: VoiceoverPickerProps) {
   const [items, setItems] = useState<VoiceoverItem[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -300,24 +308,43 @@ export function VoiceoverPicker({
   }
 
   /**
+   * Resolve a project id for the upload / save-to-library flows. Returns
+   * the existing prop when present; otherwise asks the caller via
+   * `onRequireProject` to lazily create (or look up) one. The callback is
+   * responsible for any user-visible "project created" feedback. Returns
+   * null when no id can be obtained — the caller surfaces the toast.
+   */
+  async function ensureProjectId(): Promise<string | null> {
+    if (projectId) return projectId;
+    if (!onRequireProject) return null;
+    try {
+      return await onRequireProject();
+    } catch (err) {
+      console.error(`[${logNamespace}] onRequireProject failed`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
+  /**
    * Upload a voiceover audio file from the user's computer straight to R2
    * via the existing presigned-PUT path, then register it as a media_assets
    * row scoped to the current project. On success, refresh the picker list
    * and auto-select the new entry so the user is one click closer to
-   * scene-sync. Requires `projectId` — disabled in the UI when absent.
+   * scene-sync. When `projectId` is null and `onRequireProject` is wired,
+   * the caller lazily creates a draft project before upload runs.
    */
   async function handleUploadFromComputer(file: File) {
-    if (!projectId) {
-      // The trigger button is disabled when projectId is missing, so this
-      // branch is defence-in-depth in case a future caller wires it
-      // differently.
+    const resolvedProjectId = await ensureProjectId();
+    if (!resolvedProjectId) {
       toast.error('Open this doc from a project to upload voiceovers.');
       return;
     }
     const contentType = file.type || 'audio/mpeg';
     setUploadingFile(file.name);
     try {
-      const presignRes = await fetch(`/api/projects/${projectId}/voiceover-upload`, {
+      const presignRes = await fetch(`/api/projects/${resolvedProjectId}/voiceover-upload`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fileName: file.name, contentType }),
@@ -335,7 +362,7 @@ export function VoiceoverPicker({
       });
       if (!putRes.ok) throw new Error(`R2 upload failed (${putRes.status})`);
 
-      const registerRes = await fetch(`/api/projects/${projectId}/media`, {
+      const registerRes = await fetch(`/api/projects/${resolvedProjectId}/media`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -390,11 +417,12 @@ export function VoiceoverPicker({
    * the media_assets insert.
    */
   async function handleSaveToLibrary(item: VoiceoverItem) {
-    if (!projectId) {
+    if (item.source !== 'elevenlabs' || !item.audioUrl) return;
+    const resolvedProjectId = await ensureProjectId();
+    if (!resolvedProjectId) {
       toast.error('Open this doc from a project to save voiceovers to the library.');
       return;
     }
-    if (item.source !== 'elevenlabs' || !item.audioUrl) return;
     // item.id is `el:<historyId>`; strip the prefix to get the raw id.
     const historyId = item.id.startsWith('el:') ? item.id.slice(3) : item.id;
     setSavingToLibraryId(item.id);
@@ -403,7 +431,7 @@ export function VoiceoverPicker({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          projectId,
+          projectId: resolvedProjectId,
           historyId,
           audioUrl: item.audioUrl,
           voiceName: item.voiceName,
@@ -455,9 +483,11 @@ export function VoiceoverPicker({
 
   // Top-of-popover "Upload from computer" row. Always rendered when the
   // popover is open (even during loading / empty state) so the affordance
-  // is in the same spot every time. Disabled state when projectId is
-  // absent explains why; we don't hide the row in that case because
-  // hiding would force the user to guess where it went.
+  // is in the same spot every time. Disabled only when there's no way to
+  // resolve a project (no `projectId` prop AND no `onRequireProject`
+  // callback) — that's the editor-style caller; production-doc passes
+  // `onRequireProject` so a fresh, unsaved doc can still upload.
+  const canUpload = Boolean(projectId) || Boolean(onRequireProject);
   const uploadRow = (
     <div
       style={{
@@ -472,21 +502,23 @@ export function VoiceoverPicker({
       <button
         type="button"
         onClick={() => fileInputRef.current?.click()}
-        disabled={!projectId || uploadingFile !== null}
+        disabled={!canUpload || uploadingFile !== null}
         title={
-          !projectId
+          !canUpload
             ? 'Open this doc from a project to upload voiceovers'
             : uploadingFile
               ? `Uploading ${uploadingFile}…`
-              : 'Upload a voiceover audio file from your computer'
+              : !projectId
+                ? "Upload a voiceover — we'll create a draft project for this doc on the fly"
+                : 'Upload a voiceover audio file from your computer'
         }
         className="text-xs flex items-center gap-1.5 px-2 py-1 rounded"
         style={{
           background: 'rgba(168,85,247,0.14)',
-          color: !projectId || uploadingFile ? 'var(--text-muted)' : '#c084fc',
+          color: !canUpload || uploadingFile ? 'var(--text-muted)' : '#c084fc',
           border: '1px solid rgba(168,85,247,0.30)',
-          cursor: !projectId || uploadingFile ? 'not-allowed' : 'pointer',
-          opacity: !projectId || uploadingFile ? 0.6 : 1,
+          cursor: !canUpload || uploadingFile ? 'not-allowed' : 'pointer',
+          opacity: !canUpload || uploadingFile ? 0.6 : 1,
         }}
       >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -790,28 +822,30 @@ export function VoiceoverPicker({
                             e.stopPropagation();
                             void handleSaveToLibrary(item);
                           }}
-                          disabled={!projectId || savingToLibraryId !== null}
+                          disabled={!canUpload || savingToLibraryId !== null}
                           title={
-                            !projectId
+                            !canUpload
                               ? 'Open this doc from a project to enable scene sync'
                               : savingToLibraryId === item.id
                                 ? 'Saving…'
-                                : 'Save to workspace library (enables scene sync)'
+                                : !projectId
+                                  ? "Save to workspace library — we'll create a draft project for this doc on the fly"
+                                  : 'Save to workspace library (enables scene sync)'
                           }
                           className="text-[10px] px-1.5 py-1 rounded whitespace-nowrap flex-shrink-0"
                           style={{
                             background: 'rgba(52,211,153,0.14)',
                             color:
-                              !projectId || savingToLibraryId !== null
+                              !canUpload || savingToLibraryId !== null
                                 ? 'var(--text-muted)'
                                 : '#34d399',
                             border: '1px solid rgba(52,211,153,0.30)',
                             cursor:
-                              !projectId || savingToLibraryId !== null
+                              !canUpload || savingToLibraryId !== null
                                 ? 'not-allowed'
                                 : 'pointer',
                             opacity:
-                              !projectId || savingToLibraryId !== null ? 0.6 : 1,
+                              !canUpload || savingToLibraryId !== null ? 0.6 : 1,
                             marginTop: 2,
                           }}
                         >
