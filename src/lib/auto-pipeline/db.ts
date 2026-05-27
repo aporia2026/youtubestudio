@@ -334,6 +334,7 @@ export async function getPresetForWorkspace(
            idea_context_jsonb, script_rules_jsonb, target_spoken_words,
            qa_min_score, qa_max_iterations, script_gate_enabled,
            production_doc_style_id, script_style_preset_id, narration_deadline_days,
+           script_preset_id, qa_preset_id, narration_preset_id, idea_preset_id,
            fallback_chains_jsonb, video_editor_collaborator_id,
            thumbnail_template_id, seo_template_id
       FROM pipeline_presets

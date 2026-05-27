@@ -213,6 +213,72 @@ export interface PipelinePreset {
    *  generating_seo handler. Null = skip the SEO step entirely
    *  (advance editor → done with no SEO generation). */
   seo_template_id: string | null;
+  // ─── Feature-preset bundle (migration 0097) ────────────────────────
+  // Each FK points at a row in the per-feature preset table. Stage
+  // handlers prefer the bundle; when an FK is null they fall back to
+  // the corresponding inline column above. The inline columns will be
+  // dropped in a follow-up migration once the bundle path is stable.
+  script_preset_id: string | null;
+  qa_preset_id: string | null;
+  narration_preset_id: string | null;
+  idea_preset_id: string | null;
+}
+
+// ─── Feature preset row shapes ──────────────────────────────────────
+
+export interface ScriptPreset {
+  id: string;
+  workspace_id: string;
+  name: string;
+  description: string | null;
+  tone: string | null;
+  style_note: string | null;
+  audience: string | null;
+  target_duration_minutes: number | null;
+  additional_context: string | null;
+  reference_context: string | null;
+  /** Visual / production-doc style preset that doubles as the script's
+   *  style on the generation stage. Null = inherit from the pipeline
+   *  preset's production_doc_style_id (legacy fallback). */
+  script_style_preset_id: string | null;
+  /** Preserved unknown keys from the pre-bundle script_rules_jsonb so
+   *  power-user fields like `constraints` aren't silently dropped. */
+  constraints_jsonb: Record<string, unknown> | null;
+}
+
+export interface QaPreset {
+  id: string;
+  workspace_id: string;
+  name: string;
+  description: string | null;
+  min_score: number;
+  max_iterations: number;
+  pre_check_enabled: 'on' | 'off' | 'inherit' | null;
+  generator_v2_enabled: 'on' | 'off' | 'inherit' | null;
+}
+
+export interface NarrationPreset {
+  id: string;
+  workspace_id: string;
+  name: string;
+  description: string | null;
+  deadline_days: number;
+  preferred_narrator_collaborator_id: string | null;
+  voice_settings_jsonb: Record<string, unknown> | null;
+}
+
+export interface IdeaPreset {
+  id: string;
+  workspace_id: string;
+  name: string;
+  description: string | null;
+  niche_default: string | null;
+  ideas_count_default: number;
+  focus: 'trending' | 'evergreen' | 'controversial' | 'beginner' | 'mixed' | null;
+  audience: string | null;
+  video_type: string | null;
+  reference_context: string | null;
+  reddit_context: string | null;
 }
 
 // ─── createPipelineRun input ────────────────────────────────────────
