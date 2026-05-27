@@ -647,8 +647,23 @@ export interface ProductionRow {
    *
    *  Compounding caveat: chained variant N inherits style drift from
    *  N-1. The MAX_VARIANTS_PER_GROUP cap (4 rows / 3 variants) bounds
-   *  the maximum chain depth at 3 hops. */
+   *  the maximum chain depth at 3 hops.
+   *
+   *  Three-tier resolution for NEW variants added via the editor:
+   *    1. variant_derives_from_previous on the variant itself (if set)
+   *    2. group_variant_chain_default on the BASE row (if set)
+   *    3. variants_chained_by_default on the doc (if true)
+   *    4. else false (parallel)
+   *  Tier 1 is the per-variant override the chip toggle sets; tiers
+   *  2-3 only affect what NEW variants default to. */
   variant_derives_from_previous?: boolean;
+
+  /** Group-level default for new variants in this group. Set on the
+   *  BASE row (variant_index === 0) only. New variants added via the
+   *  editor inherit this when their own `variant_derives_from_previous`
+   *  is unset. Undefined ⇒ fall through to the doc-level
+   *  `variants_chained_by_default`. */
+  group_variant_chain_default?: 'parallel' | 'chained';
 }
 
 // ─── Phase 3 helpers ────────────────────────────────────────────────
@@ -875,6 +890,16 @@ export interface ProductionDoc {
    *  the user's `default_style_preset` setting or to the built-in
    *  default. See `_plans/2026-05-21-user-defined-styles-with-reference-images.md`. */
   style_preset?: string;
+  /** Doc-level default for new variants' chain mode. When true, every
+   *  new variant added via the editor starts with
+   *  `variant_derives_from_previous = true` (chained to the previous
+   *  variant). When false / undefined, new variants default to
+   *  parallel (deriving from the group's base). Per-group default
+   *  (`group_variant_chain_default` on the base row) wins over this;
+   *  per-variant explicit (`variant_derives_from_previous` on the
+   *  variant) wins over both. Existing variants are NOT mutated when
+   *  this flag flips — only NEW variant additions inherit. */
+  variants_chained_by_default?: boolean;
   /** Doc-level fallback for the static scene zoom percentage. Per-row
    *  `scene_zoom` overrides this. Undefined ⇒ 100 (no zoom). */
   scene_zoom_default?: number;

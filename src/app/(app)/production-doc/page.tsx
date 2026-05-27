@@ -322,6 +322,11 @@ interface ProductionRow {
    *  false ⇒ each variant derives independently from the base. See
    *  the same-named field on `ProductionRow` in `@/remotion/utils.ts`. */
   variant_derives_from_previous?: boolean;
+  /** Group-level default for new variants in this group. Set on the
+   *  BASE row (variant_index === 0) only. New variants inherit this
+   *  when their own `variant_derives_from_previous` is unset. Mirrors
+   *  the same-named field on `ProductionRow` in `@/remotion/utils.ts`. */
+  group_variant_chain_default?: 'parallel' | 'chained';
   /** Per-row transition override. Falls back to doc-level default. */
   thumbnail_transition?: ThumbnailTransitionConfig;
   /** Per-row scene-to-scene cross-fade override. `undefined` inherits the
@@ -427,6 +432,14 @@ interface ProductionDoc {
    *  type (`src/remotion/utils.ts`); the two interfaces must stay in
    *  sync. May be a built-in slug or a saved-style UUID. */
   style_preset?: string;
+  /** Doc-level default for new variants' chain mode. When true, new
+   *  variants added via the editor default to
+   *  `variant_derives_from_previous = true` (chained). Per-group
+   *  default on the base row wins; per-variant explicit wins over
+   *  both. Existing variants are NOT mutated when this flag flips.
+   *  Mirrors the same-named field on ProductionDoc in
+   *  `@/remotion/utils.ts`. */
+  variants_chained_by_default?: boolean;
   /** v3 (2026-05-22) — doc-level animation model override. When set,
    *  every B-roll cell on this doc adopts this model as its default
    *  (unless the user has manually overridden a specific row via the
@@ -2424,6 +2437,20 @@ function ProductionDocPage() {
       }
       const insertAt = lastGroupIndex + 1;
 
+      // Three-tier resolution for the new variant's chain mode:
+      //   1. base row's group_variant_chain_default (per-group override)
+      //   2. doc-level variants_chained_by_default
+      //   3. else parallel (omit the field)
+      // Variant 1 (no previous variant) effectively ignores chained
+      // mode at gen-time (composeVariantEditRequest falls back to base)
+      // but we still stamp the flag so the chip toggle starts in the
+      // right state when the user opens variant 1's Inspector.
+      const groupChainDefault = baseRow.group_variant_chain_default;
+      let chainedDefault: boolean | undefined;
+      if (groupChainDefault === 'chained') chainedDefault = true;
+      else if (groupChainDefault === 'parallel') chainedDefault = false;
+      else if (prev.variants_chained_by_default === true) chainedDefault = true;
+
       const newRow: ProductionRow = {
         timecode: '',
         script_text: '',
@@ -2441,6 +2468,9 @@ function ProductionDocPage() {
         group_id: groupId,
         variant_index: nextVariantIndex,
         variant_edit_prompt: '',
+        ...(chainedDefault !== undefined
+          ? { variant_derives_from_previous: chainedDefault }
+          : {}),
       };
 
       const nextRows = [
@@ -8644,6 +8674,53 @@ function ProductionDocPage() {
               </span>
             </div>
           </div>
+
+          {/* Doc-level default for new variants' chain mode. When ON,
+              every variant added to this doc (via "+ Add variant" or
+              the script-gen auto-grouper, when it eventually respects
+              this) starts with `variant_derives_from_previous = true`
+              — chained, additive frame-by-frame. When OFF (default),
+              new variants edit the group's base independently
+              (parallel). Per-group default + per-variant override
+              still win. Existing variants are NOT mutated. */}
+          {doc && (
+            <div className="mb-4 flex flex-wrap items-center gap-3 px-4 py-2.5 rounded-lg" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+              <button
+                type="button"
+                onClick={() => setDoc((prev) => prev ? { ...prev, variants_chained_by_default: !prev.variants_chained_by_default } : prev)}
+                role="switch"
+                aria-checked={doc.variants_chained_by_default === true}
+                className="relative inline-flex items-center rounded-full transition-colors"
+                style={{
+                  width: 36,
+                  height: 20,
+                  background: doc.variants_chained_by_default ? 'rgba(168,85,247,0.45)' : 'rgba(120,120,120,0.35)',
+                }}
+                title={doc.variants_chained_by_default
+                  ? 'Chained variants are the doc default — new variants build on the previous one. Click to switch new variants to parallel.'
+                  : 'Parallel variants are the doc default — new variants edit the base independently. Click to switch new variants to chained (additive frame-by-frame).'}
+              >
+                <span
+                  className="inline-block rounded-full bg-white transition-transform"
+                  style={{
+                    width: 14,
+                    height: 14,
+                    transform: `translateX(${doc.variants_chained_by_default ? 18 : 4}px)`,
+                  }}
+                />
+              </button>
+              <div className="flex flex-col leading-tight flex-1 min-w-[220px]">
+                <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                  Chained variants by default
+                </span>
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  {doc.variants_chained_by_default
+                    ? 'New variants build on the previous variant (additive frame-by-frame). Per-group + per-variant toggles still override.'
+                    : 'New variants edit the group base independently. Flip ON for additive frame-by-frame sequences. Existing variants are unchanged.'}
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* Animate-scenes master toggle. When OFF, B-roll buttons are
               hidden on every row and the renderer falls back to stills with

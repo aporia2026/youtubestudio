@@ -179,6 +179,62 @@ const BaseRowControls: React.FC<BaseRowControlsProps> = ({
             + Add variant
           </button>
         )}
+        {/* Group-level chain default — three-state cycle:
+            undefined (inherit doc) → 'chained' → 'parallel' → undefined.
+            Only affects NEW variants added after the toggle flips;
+            existing variants' explicit values are preserved. */}
+        {(() => {
+          const groupDefault = row.group_variant_chain_default;
+          const label =
+            groupDefault === 'chained'
+              ? '↪ Group: chained'
+              : groupDefault === 'parallel'
+                ? '↩ Group: parallel'
+                : '• Group: inherit doc';
+          const nextState =
+            groupDefault === undefined ? 'chained' : groupDefault === 'chained' ? 'parallel' : undefined;
+          return (
+            <button
+              type="button"
+              onClick={() =>
+                writers.updateRow(rowIndex, {
+                  group_variant_chain_default: nextState,
+                })
+              }
+              className="text-[10px] px-2 py-0.5 rounded"
+              style={{
+                background:
+                  groupDefault === 'chained'
+                    ? 'rgba(168,85,247,0.18)'
+                    : groupDefault === 'parallel'
+                      ? 'rgba(34,211,238,0.12)'
+                      : 'rgba(255,255,255,0.04)',
+                color:
+                  groupDefault === 'chained'
+                    ? 'var(--accent-purple-bright)'
+                    : groupDefault === 'parallel'
+                      ? '#22d3ee'
+                      : 'var(--text-muted)',
+                border:
+                  groupDefault === 'chained'
+                    ? '1px solid rgba(168,85,247,0.45)'
+                    : groupDefault === 'parallel'
+                      ? '1px solid rgba(34,211,238,0.35)'
+                      : '1px solid var(--border)',
+                cursor: 'pointer',
+              }}
+              title={
+                groupDefault === 'chained'
+                  ? 'New variants added to this group default to chained (build on the previous variant). Click to switch to parallel for this group.'
+                  : groupDefault === 'parallel'
+                    ? 'New variants added to this group default to parallel (edit the base). Click to clear the override and inherit the doc default.'
+                    : 'New variants added to this group inherit the doc-level default. Click to override: chained.'
+              }
+            >
+              {label}
+            </button>
+          );
+        })()}
         {variantRows.length > 0 && (
           <button
             type="button"
