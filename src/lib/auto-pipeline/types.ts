@@ -222,6 +222,15 @@ export interface PipelinePreset {
   qa_preset_id: string | null;
   narration_preset_id: string | null;
   idea_preset_id: string | null;
+  /** Resolved feature-preset rows joined by db.ts (LEFT JOIN). Null
+   *  when the corresponding FK is null. Handlers should call the
+   *  resolver helpers in `preset-resolvers.ts` rather than reach into
+   *  these directly — the resolver falls back to the inline columns
+   *  when the bundle row is missing. */
+  script_preset: ScriptPreset | null;
+  qa_preset: QaPreset | null;
+  narration_preset: NarrationPreset | null;
+  idea_preset: IdeaPreset | null;
 }
 
 // ─── Feature preset row shapes ──────────────────────────────────────

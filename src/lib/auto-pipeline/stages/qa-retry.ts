@@ -31,6 +31,7 @@ import { countWords } from '../../utils';
 import { flattenVerdictToFixes, buildPromptAugmentFromFixes } from '../fix-list';
 import { QA_GENERATOR_V2_ENABLED } from '../../feature-flags';
 import { getWorkspaceQaSettings, resolveToggle } from '../../qa-workspace-settings';
+import { resolveScriptRules, resolveQaConfig } from '../preset-resolvers';
 import { logger } from '../../logger';
 import type { StageHandlerContext, StageOutcome } from '../types';
 import type { ScriptPanelVerdict } from '../../script-critics/types';
@@ -100,16 +101,9 @@ export async function handleQaRetry(ctx: StageHandlerContext): Promise<StageOutc
 
   const promptAugment = buildPromptAugmentFromFixes(fixes);
 
-  // Preset script rules (same shape as generate-script.ts).
-  const rules = (preset.script_rules_jsonb ?? {}) as {
-    tone?: string;
-    style?: string;
-    audience?: string;
-    additionalContext?: string;
-    referenceContext?: string;
-    targetDurationMinutes?: number;
-    constraints?: unknown;
-  };
+  // Preset script rules via the resolver — same source of truth
+  // generate-script.ts uses, so a retry sees identical config.
+  const rules = resolveScriptRules(preset);
   const effectiveNiche = niche || preset.niche || '';
   const targetDurationMinutes =
     rules.targetDurationMinutes ?? Math.max(1, Math.round((preset.target_spoken_words ?? 1100) / 140));
@@ -131,8 +125,13 @@ export async function handleQaRetry(ctx: StageHandlerContext): Promise<StageOutc
 
   // Same generator-V2 toggle resolution as in generate-script.ts so the
   // retry pass aims at the same rubric the panel will grade against.
+  // Bundle (QA preset) wins over workspace setting, which wins over env.
+  const qaBundle = resolveQaConfig(preset);
   const qaSettings = await getWorkspaceQaSettings(video.workspace_id).catch(() => null);
-  const generatorV2Enabled = resolveToggle(qaSettings?.generatorV2 ?? 'inherit', QA_GENERATOR_V2_ENABLED);
+  const generatorV2Enabled = resolveToggle(
+    qaBundle.generatorV2Enabled !== 'inherit' ? qaBundle.generatorV2Enabled : (qaSettings?.generatorV2 ?? 'inherit'),
+    QA_GENERATOR_V2_ENABLED,
+  );
 
   let result: Awaited<ReturnType<typeof generateTextWithFallback>>;
   try {

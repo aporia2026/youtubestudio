@@ -27,6 +27,7 @@ import { runScriptPanelLive } from '../../script-critics/runner-live';
 import { createCriticPanel, appendCriticPanelEvent, completeCriticPanel } from '../../critic-panels';
 import { resolveChain } from '../resolve-chain';
 import { logger } from '../../logger';
+import { resolveQaConfig, resolveNarrationConfig } from '../preset-resolvers';
 import type { StageHandlerContext, StageOutcome } from '../types';
 import type { ScriptPanelVerdict } from '../../script-critics/types';
 
@@ -170,16 +171,21 @@ export async function handleRunCriticPanel(ctx: StageHandlerContext): Promise<St
   //     panel's fix list applied, then re-routes to running_qa)
   //   - score < threshold AND retry_count >= max → terminal
   //     failure (qa_failed_after_max_retries)
+  // Resolve threshold + retry cap + narration deadline via the
+  // bundle (migration 0097) with inline-column fallback.
+  const qaCfg = resolveQaConfig(preset);
+  const narrationCfg = resolveNarrationConfig(preset);
+
   logger.info('auto-pipeline: critic panel completed', {
     pipeline_video_id: video.id,
     panel_id: panel.id,
     overall_score: verdict.overall_score,
-    threshold: preset.qa_min_score,
+    threshold: qaCfg.minScore,
     retry_count: video.retry_count,
-    max_retries: preset.qa_max_iterations,
+    max_retries: qaCfg.maxIterations,
   });
 
-  const passedThreshold = verdict.overall_score >= preset.qa_min_score;
+  const passedThreshold = verdict.overall_score >= qaCfg.minScore;
 
   if (passedThreshold) {
     return {
@@ -187,17 +193,17 @@ export async function handleRunCriticPanel(ctx: StageHandlerContext): Promise<St
       nextStage: 'waiting_narration',
       persist: {
         critic_panel_id: panel.id,
-        narration_deadline_at: new Date(Date.now() + preset.narration_deadline_days * 24 * 60 * 60 * 1000),
+        narration_deadline_at: new Date(Date.now() + narrationCfg.deadlineDays * 24 * 60 * 60 * 1000),
       },
     };
   }
 
-  if (video.retry_count >= preset.qa_max_iterations) {
+  if (video.retry_count >= qaCfg.maxIterations) {
     return {
       kind: 'fail',
       terminalStage: 'qa_failed_after_max_retries',
       failureClass: 'qa_below_threshold',
-      failureMessage: `Score ${verdict.overall_score} below threshold ${preset.qa_min_score} after ${video.retry_count + 1} attempts (max ${preset.qa_max_iterations}). Critic verdict is preserved on critic_panels.${panel.id} for review.`,
+      failureMessage: `Score ${verdict.overall_score} below threshold ${qaCfg.minScore} after ${video.retry_count + 1} attempts (max ${qaCfg.maxIterations}). Critic verdict is preserved on critic_panels.${panel.id} for review.`,
     };
   }
 

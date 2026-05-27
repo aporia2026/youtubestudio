@@ -32,6 +32,7 @@ import { QA_PRE_CHECK_ENABLED, QA_GENERATOR_V2_ENABLED } from '../../feature-fla
 import { runPreQaSelfCheck } from '../../script-critics/pre-qa-self-check';
 import { getWorkspaceQaSettings, resolveToggle } from '../../qa-workspace-settings';
 import { resolveStyle } from '../../production-doc-styles';
+import { resolveScriptRules, resolveQaConfig, resolveScriptStyleId } from '../preset-resolvers';
 import { logger } from '../../logger';
 import type { StageHandlerContext, StageOutcome } from '../types';
 
@@ -100,39 +101,42 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
     projectId = pRows[0].id;
   }
 
-  // Pull preset script rules. All fields optional — the script
-  // generator has sensible defaults.
-  const rules = (preset.script_rules_jsonb ?? {}) as {
-    tone?: string;
-    style?: string;
-    audience?: string;
-    additionalContext?: string;
-    referenceContext?: string;
-    targetDurationMinutes?: number;
-    constraints?: unknown;
-  };
+  // Pull preset script rules via the resolver — prefers the bundled
+  // script_preset row (migration 0097), falls back to the legacy
+  // inline `script_rules_jsonb` for un-migrated presets. All fields
+  // optional; the script generator has sensible defaults.
+  const rules = resolveScriptRules(preset);
   const targetDurationMinutes = rules.targetDurationMinutes ?? guessDurationFromSpokenWords(preset.target_spoken_words);
 
   const chain = await resolveChain('script-generator', preset);
 
-  // Resolve QA-hardening toggles once: workspace setting overrides env var.
+  // Resolve QA-hardening toggles once: per-preset bundle wins, then
+  // workspace setting, then env var. The bundle's tri-state values
+  // ('on' | 'off' | 'inherit') feed `resolveToggle` directly when
+  // they're not 'inherit'; 'inherit' falls through to the workspace
+  // setting's tri-state.
+  const qaBundle = resolveQaConfig(preset);
   const qaSettings = await getWorkspaceQaSettings(video.workspace_id).catch(() => null);
-  const generatorV2Enabled = resolveToggle(qaSettings?.generatorV2 ?? 'inherit', QA_GENERATOR_V2_ENABLED);
-  const preCheckEnabled = resolveToggle(qaSettings?.preCheck ?? 'inherit', QA_PRE_CHECK_ENABLED);
+  const generatorV2Enabled = resolveToggle(
+    qaBundle.generatorV2Enabled !== 'inherit' ? qaBundle.generatorV2Enabled : (qaSettings?.generatorV2 ?? 'inherit'),
+    QA_GENERATOR_V2_ENABLED,
+  );
+  const preCheckEnabled = resolveToggle(
+    qaBundle.preCheckEnabled !== 'inherit' ? qaBundle.preCheckEnabled : (qaSettings?.preCheck ?? 'inherit'),
+    QA_PRE_CHECK_ENABLED,
+  );
 
   // Style preset resolution chain (highest priority first):
   //   1. video.script_style_preset_override_id (per-video — mig 0094)
-  //   2. preset.script_style_preset_id          (per-preset — mig 0093)
-  //   3. preset.production_doc_style_id         (per-preset — mig 0052)
-  //   4. null                                    (no style preset)
+  //   2. preset.script_preset.script_style_preset_id (bundle — mig 0097)
+  //   3. preset.script_style_preset_id          (per-preset — mig 0093)
+  //   4. preset.production_doc_style_id         (per-preset — mig 0052)
+  //   5. null                                    (no style preset)
   //
-  // Each layer can be cleared independently. Cross-workspace ids
-  // return null too. All-null = prompt byte-identical to the
-  // pre-style code path.
+  // resolveScriptStyleId folds layers 2-4 into one helper. Per-video
+  // override at layer 1 still wins above everything.
   const effectiveStyleId =
-    video.script_style_preset_override_id
-    ?? preset.script_style_preset_id
-    ?? preset.production_doc_style_id;
+    video.script_style_preset_override_id ?? resolveScriptStyleId(preset);
   const resolvedStyle = effectiveStyleId
     ? await resolveStyle(effectiveStyleId, video.workspace_id)
     : null;
@@ -141,10 +145,7 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
       pipeline_video_id: video.id,
       preset_id: preset.id,
       style_id: effectiveStyleId,
-      source:
-        video.script_style_preset_override_id ? 'video_override'
-        : preset.script_style_preset_id ? 'preset_script_style'
-        : 'preset_visual_style',
+      source: video.script_style_preset_override_id ? 'video_override' : 'preset_chain',
     });
   }
 

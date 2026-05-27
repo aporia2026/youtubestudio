@@ -25,6 +25,7 @@ import { ideaGenerationPrompt } from '../../prompts';
 import { generateTextWithFallback } from '../../ai';
 import { GenerateFailure } from '../../ai-fallback';
 import { resolveChain } from '../resolve-chain';
+import { resolveIdeaConfig } from '../preset-resolvers';
 import type { StageHandlerContext, StageOutcome } from '../types';
 
 export async function handleGenerateIdea(ctx: StageHandlerContext): Promise<StageOutcome> {
@@ -34,16 +35,11 @@ export async function handleGenerateIdea(ctx: StageHandlerContext): Promise<Stag
   // single-model fallback via the Phase 6.2 resolver.
   const chain = await resolveChain('idea-generator', preset);
 
-  // Idea-gen context from the preset.
-  const ctxJson = (preset.idea_context_jsonb ?? {}) as {
-    niche?: string;
-    audience?: string;
-    focus?: 'trending' | 'evergreen' | 'controversial' | 'beginner' | 'mixed';
-    videoType?: string;
-    referenceContext?: string;
-    redditContext?: string;
-  };
-  const niche = preset.niche || ctxJson.niche;
+  // Idea-gen context via the resolver — prefers the bundled
+  // idea_preset row (migration 0097), falls back to the legacy
+  // inline `idea_context_jsonb` for un-migrated presets.
+  const ideaCfg = resolveIdeaConfig(preset);
+  const niche = ideaCfg.niche;
   if (!niche) {
     return {
       kind: 'fail',
@@ -59,11 +55,11 @@ export async function handleGenerateIdea(ctx: StageHandlerContext): Promise<Stag
       const prompt = ideaGenerationPrompt({
         niche,
         count: 1,
-        audience: ctxJson.audience,
-        focus: ctxJson.focus,
-        videoType: ctxJson.videoType,
-        referenceContext: ctxJson.referenceContext,
-        redditContext: ctxJson.redditContext,
+        audience: ideaCfg.audience ?? undefined,
+        focus: ideaCfg.focus ?? undefined,
+        videoType: ideaCfg.videoType ?? undefined,
+        referenceContext: ideaCfg.referenceContext ?? undefined,
+        redditContext: ideaCfg.redditContext ?? undefined,
       });
       return {
         modelId,
@@ -118,7 +114,7 @@ export async function handleGenerateIdea(ctx: StageHandlerContext): Promise<Stag
       parsed.title,
       parsed.hook ?? null,
       parsed.description ?? null,
-      ctxJson.audience ?? null,
+      ideaCfg.audience ?? null,
       parsed.estimated_views_potential ?? null,
       parsed.trend_relevance ?? null,
       parsed.difficulty ?? null,

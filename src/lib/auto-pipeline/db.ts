@@ -98,16 +98,31 @@ export async function claimNextVideo(tickId: string): Promise<{
   // scope is enforced via the FK chain — both the video and the
   // preset belong to the same pipeline_run, which belongs to the
   // same workspace.
+  //
+  // LEFT JOIN the four feature-preset tables so resolvePreset* helpers
+  // can read from the bundle without a follow-up round-trip per tick.
+  // row_to_json gives each nested row as a JSON object on the parent
+  // result (snake_case columns straight through), which matches the
+  // ScriptPreset/QaPreset/NarrationPreset/IdeaPreset interface shapes.
   const { rows: presetRows } = await sql.query<PipelinePreset>(
     `
     SELECT p.id, p.workspace_id, p.name, p.niche, p.ideas_count_default,
            p.idea_context_jsonb, p.script_rules_jsonb, p.target_spoken_words,
            p.qa_min_score, p.qa_max_iterations, p.script_gate_enabled,
            p.production_doc_style_id, p.script_style_preset_id, p.narration_deadline_days,
+           p.script_preset_id, p.qa_preset_id, p.narration_preset_id, p.idea_preset_id,
            p.fallback_chains_jsonb, p.video_editor_collaborator_id,
-           p.thumbnail_template_id, p.seo_template_id
+           p.thumbnail_template_id, p.seo_template_id,
+           CASE WHEN sp.id IS NULL THEN NULL ELSE row_to_json(sp.*) END AS script_preset,
+           CASE WHEN qp.id IS NULL THEN NULL ELSE row_to_json(qp.*) END AS qa_preset,
+           CASE WHEN np.id IS NULL THEN NULL ELSE row_to_json(np.*) END AS narration_preset,
+           CASE WHEN ip.id IS NULL THEN NULL ELSE row_to_json(ip.*) END AS idea_preset
       FROM pipeline_presets p
       JOIN pipeline_runs r ON r.preset_id = p.id
+      LEFT JOIN script_presets sp    ON sp.id = p.script_preset_id
+      LEFT JOIN qa_presets qp        ON qp.id = p.qa_preset_id
+      LEFT JOIN narration_presets np ON np.id = p.narration_preset_id
+      LEFT JOIN idea_presets ip      ON ip.id = p.idea_preset_id
      WHERE r.id = $1::uuid
     `,
     [video.pipeline_run_id],
@@ -330,15 +345,23 @@ export async function getPresetForWorkspace(
 ): Promise<PipelinePreset | null> {
   const { rows } = await sql.query<PipelinePreset>(
     `
-    SELECT id, workspace_id, name, niche, ideas_count_default,
-           idea_context_jsonb, script_rules_jsonb, target_spoken_words,
-           qa_min_score, qa_max_iterations, script_gate_enabled,
-           production_doc_style_id, script_style_preset_id, narration_deadline_days,
-           script_preset_id, qa_preset_id, narration_preset_id, idea_preset_id,
-           fallback_chains_jsonb, video_editor_collaborator_id,
-           thumbnail_template_id, seo_template_id
-      FROM pipeline_presets
-     WHERE id = $1::uuid AND workspace_id = $2::uuid
+    SELECT p.id, p.workspace_id, p.name, p.niche, p.ideas_count_default,
+           p.idea_context_jsonb, p.script_rules_jsonb, p.target_spoken_words,
+           p.qa_min_score, p.qa_max_iterations, p.script_gate_enabled,
+           p.production_doc_style_id, p.script_style_preset_id, p.narration_deadline_days,
+           p.script_preset_id, p.qa_preset_id, p.narration_preset_id, p.idea_preset_id,
+           p.fallback_chains_jsonb, p.video_editor_collaborator_id,
+           p.thumbnail_template_id, p.seo_template_id,
+           CASE WHEN sp.id IS NULL THEN NULL ELSE row_to_json(sp.*) END AS script_preset,
+           CASE WHEN qp.id IS NULL THEN NULL ELSE row_to_json(qp.*) END AS qa_preset,
+           CASE WHEN np.id IS NULL THEN NULL ELSE row_to_json(np.*) END AS narration_preset,
+           CASE WHEN ip.id IS NULL THEN NULL ELSE row_to_json(ip.*) END AS idea_preset
+      FROM pipeline_presets p
+      LEFT JOIN script_presets sp    ON sp.id = p.script_preset_id
+      LEFT JOIN qa_presets qp        ON qp.id = p.qa_preset_id
+      LEFT JOIN narration_presets np ON np.id = p.narration_preset_id
+      LEFT JOIN idea_presets ip      ON ip.id = p.idea_preset_id
+     WHERE p.id = $1::uuid AND p.workspace_id = $2::uuid
     `,
     [presetId, workspaceId],
   );
