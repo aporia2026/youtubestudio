@@ -53,3 +53,4 @@ next-env.d.ts
 
 # v2 style-refs sweeper transient logs (if added later)
 /_plans/sweep-runs/
+scripts/_artifacts/

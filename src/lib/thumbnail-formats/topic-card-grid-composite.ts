@@ -179,24 +179,21 @@ export async function renderLabelPng(
       .toBuffer();
   }
   // Pango font-size is in points; sharp defaults to dpi: 72 so 1pt ≈ 1px.
-  // Sized so a TWO-LINE wrapped label still fits inside the band, which is
-  // the actual constraint: a long label like "The Antikythera Mechanism"
-  // word-wraps to 2 lines and (line-count * font-pt * line-height) must
-  // stay within targetH. Patrick Hand renders with line-height ~1.3, so
-  // 2 lines at 0.38·targetH take ~0.99·targetH — fits with a hair of
-  // margin. Critically, this is the SAME font size for every label in the
-  // grid: short labels stay one line, long ones wrap to two, both at the
-  // same point size. The previous coefficient (0.55) made short labels
-  // render at full size but forced long-label PNGs to be shrunk by the
-  // resize-to-fit guard, which produced visibly smaller text for the
-  // longer labels — the user complaint that motivated this change.
+  // Sized so a TWO-LINE wrapped label still fits inside the band: 2 lines
+  // at fontPt × ~1.3 line-height stay within targetH when fontPt ≈
+  // 0.38·targetH. Every label in the grid renders at the exact same
+  // fontPt — short labels stay one line, long ones wrap to two, both at
+  // the same point size. CRITICAL: we deliberately do NOT pass `height`
+  // to sharp's text input. Despite the docs claiming auto-scaling only
+  // happens "if neither dpi nor a font is provided", libvips empirically
+  // scales the font to fill the bounding box whenever BOTH `width` and
+  // `height` are supplied, even with an explicit font string — which is
+  // what caused the bug where "UVB-76" rendered at ~40pt (1 line filling
+  // the box vertically) while "The Antikythera Mechanism" rendered at
+  // ~18pt (2 lines fitting the same box vertically). Width-only keeps
+  // wrap behaviour without the unwanted vertical auto-fit.
   const fontPt = Math.max(12, Math.round(targetH * 0.38));
-  // Sharp's text input wants a positive width AND height. Width is a
-  // wrap-hint (Pango breaks at word boundaries when a line would exceed
-  // it); unbreakable single words can still overflow, which is why the
-  // composite step keeps a resize-to-fit safety net.
   const safeW = Math.max(16, Math.round(targetW));
-  const safeH = Math.max(16, Math.round(targetH));
   return await sharp({
     text: {
       // Escape the few chars that Pango markup treats as control (&, <, >).
@@ -208,7 +205,6 @@ export async function renderLabelPng(
       font: `${LABEL_FONT_FAMILY} ${fontPt}`,
       rgba: true,
       width: safeW,
-      height: safeH,
       align: 'centre',
       // Explicit — Pango defaults to 'word' but we depend on it for label
       // uniformity (long labels MUST wrap, not overflow). Pinning it here

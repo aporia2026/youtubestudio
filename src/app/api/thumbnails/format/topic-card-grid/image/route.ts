@@ -336,7 +336,39 @@ export async function POST(req: NextRequest) {
     let taskId: string | undefined;
     let providerDetailLog: Record<string, unknown> = {};
 
-    if (config.provider === 'kie') {
+    // Fast path — every cell has a user upload. The AI's image would be
+    // 100% painted over by the composite, so calling the AI is pure waste:
+    // it costs Kie credits or OpenAI tokens, takes 30-285s of poll time,
+    // and (most damagingly) introduces a grid-coordinate mismatch — the
+    // AI's drawn cell positions don't exactly match the composite's
+    // computed cellRect, so the composite overpaints in the wrong place
+    // and AI content peeks around the overlay (visible as "double labels"
+    // and image edges that escape the composite's border). Generate a
+    // blank white canvas instead and let the composite paint everything
+    // from scratch with deterministic geometry. 2048×1152 matches the
+    // OpenAI direct path's output size so downstream consumers don't
+    // notice a quality drop.
+    const allCellsUploaded = uploadRequests.length === totalCards;
+    if (allCellsUploaded) {
+      const blankW = 2048;
+      const blankH = 1152;
+      aiBytes = await sharp({
+        create: {
+          width: blankW,
+          height: blankH,
+          channels: 4,
+          background: { r: 255, g: 255, b: 255, alpha: 1 },
+        },
+      })
+        .png()
+        .toBuffer();
+      providerDetailLog = { ai_skipped: true, blank_w: blankW, blank_h: blankH };
+      logger.info('[thumb-format-grid image] all-uploads fast path: AI skipped', {
+        cell_count: totalCards,
+        blank_w: blankW,
+        blank_h: blankH,
+      });
+    } else if (config.provider === 'kie') {
       // Build Kie input. Match the existing /api/thumbnails/image patterns:
       // gpt-image-2 uses `input_urls`, every other i2i model uses `image_urls`.
       // nsfw_checker is on for everything except gpt-image-2 (which 422's on
