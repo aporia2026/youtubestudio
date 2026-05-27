@@ -366,6 +366,21 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
 
   const overlays: sharp.OverlayOptions[] = [];
 
+  // Half-gutter white wipe pad around every uploaded cell. Belt-and-
+  // braces against AI bleed: when the AI runs (mixed-upload case, or
+  // when the route's all-uploads fast path can't detect the input as
+  // fully uploaded for some reason), the AI's drawn cell boundaries
+  // never line up perfectly with our cellRect formula, so a few pixels
+  // of the AI's cell content (image, drawn label, faint chrome) end up
+  // outside the composite cell overlay and visible in the gutter. By
+  // extending the white wipe halfway into each surrounding gutter, we
+  // wallpaper over anything the AI rendered within that margin — the
+  // composite cell paints on top of the wipe at its original position,
+  // so the visual layout is unchanged. Clamped to canvas bounds for
+  // edge cells.
+  const gutterPad = Math.max(0, Math.round(layout.gutter / 2));
+  const wipeOverlaysForUploads: sharp.OverlayOptions[] = [];
+
   // Iterate every card in reading order. Upload presence picks between
   // full-cell overlay (wipes the AI render at that cell) and label-only
   // overlay (keeps the AI illustration, only overpaints the label band).
@@ -374,6 +389,25 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
     const uploadedBytes = uploadByIndex.get(card.index);
 
     if (uploadedBytes) {
+      // Stage the white wipe (cellRect + gutterPad on each side, clamped
+      // to canvas) BEFORE the cell overlay so sharp paints them in this
+      // order: base → wipes → cells → labels. Without staging order,
+      // sharp composites them in the array order anyway, so we just
+      // push to the wipe array first then cells later.
+      if (gutterPad > 0) {
+        const wipeLeft = Math.max(0, rect.x - gutterPad);
+        const wipeTop = Math.max(0, rect.y - gutterPad);
+        const wipeRight = Math.min(layout.width, rect.x + rect.w + gutterPad);
+        const wipeBottom = Math.min(layout.height, rect.y + rect.h + gutterPad);
+        const wipeW = Math.max(1, wipeRight - wipeLeft);
+        const wipeH = Math.max(1, wipeBottom - wipeTop);
+        const wipePng = await sharp({
+          create: { width: wipeW, height: wipeH, channels: 4, background: WHITE },
+        })
+          .png()
+          .toBuffer();
+        wipeOverlaysForUploads.push({ input: wipePng, top: wipeTop, left: wipeLeft });
+      }
       const overlay =
         cardShape === 'circle'
           ? await buildCircleCellOverlay(uploadedBytes, card.label, rect.w, rect.h)
@@ -393,12 +427,18 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
     }
   }
 
-  if (overlays.length === 0) {
+  // Wipes paint FIRST so cell overlays land on top of them. Sharp
+  // composites overlays in array order, so prepending the wipe array
+  // gives us the correct paint order: base → wipes → cell overlays →
+  // label-band overlays.
+  const finalOverlays = [...wipeOverlaysForUploads, ...overlays];
+
+  if (finalOverlays.length === 0) {
     return await sharp(baseImage, { limitInputPixels: SHARP_INPUT_PIXEL_CAP }).png().toBuffer();
   }
 
   return await sharp(baseImage, { limitInputPixels: SHARP_INPUT_PIXEL_CAP })
-    .composite(overlays)
+    .composite(finalOverlays)
     .png()
     .toBuffer();
 }
