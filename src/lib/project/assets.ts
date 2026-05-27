@@ -180,35 +180,41 @@ export async function reindexProjectAssets(
 }
 
 /**
- * One-shot backfill from a project's existing in-payload asset maps
- * into the project_assets table. Called lazily on the first GET
- * after this feature deploys — projects that have NEVER been
- * accessed stay in the payload until accessed; no big-bang migration.
+ * Lazy per-row backfill from a project's in-payload asset maps into
+ * the project_assets table. Called from `loadProject` whenever the
+ * payload still carries legacy maps.
  *
- * Skips the entire backfill when project_assets already has rows
- * for this project (idempotent — future GETs are no-ops). Inserts
- * happen in a single multi-VALUES statement so a partial failure
- * leaves the table unchanged.
+ * MERGE semantics — not all-or-nothing. For each legacy entry we
+ * INSERT ... ON CONFLICT DO NOTHING, so existing project_assets rows
+ * always win (they're the post-extraction writes and are newer than
+ * anything on the payload) and missing rows get filled from the
+ * legacy maps.
  *
- * NOTE: the payload's asset maps remain present after backfill;
- * the load path simply ignores them in favor of project_assets.
- * Cleaning them up is a follow-up — they're stale but harmless.
+ * The earlier version of this helper short-circuited with
+ * "if any row exists for project_id, skip everything." That guard
+ * silently dropped legacy entries on any project that reached a
+ * hybrid state: a doc with 120 pre-extraction images in the payload,
+ * then one new post-extraction image written via /row-asset before
+ * the editor's first GET. The probe found that single new row and
+ * skipped — the 120 legacy images never made it into the table and
+ * those rows rendered empty in the editor. Per-row merge is correct
+ * in every sequencing.
+ *
+ * The bulk INSERT uses jsonb_array_elements because @vercel/postgres
+ * tagged templates don't accept JS arrays as bound parameters. Cost
+ * of the no-op case (every legacy entry already present in the
+ * table): one statement, every row hits the unique index and is
+ * skipped — cheap enough that an extra probe isn't worth the
+ * complexity.
+ *
+ * NOTE: the payload's asset maps remain present after backfill; the
+ * load path ignores them in favor of project_assets. Cleaning them
+ * up is a follow-up — they're stale but harmless.
  */
 export async function backfillFromPayload(
   projectId: string,
   payload: Pick<ProjectPayload, 'rowImages' | 'rowOverlays' | 'rowVideoClips'>,
 ): Promise<{ backfilled: number; skipped: boolean }> {
-  // Check if the project already has assets in the table —
-  // skip the backfill entirely if so. Cheap COUNT-1 probe.
-  const existing = await sql<{ exists_row: boolean }>`
-    SELECT EXISTS(
-      SELECT 1 FROM project_assets WHERE project_id = ${projectId}::uuid
-    ) AS exists_row
-  `;
-  if (existing.rows[0]?.exists_row) {
-    return { backfilled: 0, skipped: true };
-  }
-
   const rows: Array<{ row_index: number; slot: AssetSlot; data: unknown }> = [];
   for (const [k, v] of Object.entries(payload.rowImages ?? {})) {
     const idx = Number(k);
@@ -234,15 +240,11 @@ export async function backfillFromPayload(
     return { backfilled: 0, skipped: false };
   }
 
-  // Bulk INSERT: pass the whole batch as ONE jsonb parameter and
-  // unpack server-side via `jsonb_array_elements`. The Vercel
-  // Postgres SDK doesn't accept JS arrays as bound parameters in
-  // tagged-template queries; jsonb is the workaround that keeps
-  // this a single statement.
-  // ON CONFLICT DO NOTHING guards against a race where two
-  // simultaneous backfills land at once (the second is a no-op).
+  // RETURNING gives us the count of rows that ACTUALLY inserted
+  // (post-ON-CONFLICT), so the log distinguishes "first run filled N
+  // gaps" from "no-op replay on an already-merged project."
   const batchJson = JSON.stringify(rows);
-  await sql`
+  const result = await sql<{ row_index: number }>`
     INSERT INTO project_assets (project_id, row_index, slot, data)
     SELECT ${projectId}::uuid,
            (r->>'row_index')::int,
@@ -250,13 +252,16 @@ export async function backfillFromPayload(
            r->'data'
       FROM jsonb_array_elements(${batchJson}::jsonb) AS r
     ON CONFLICT (project_id, row_index, slot) DO NOTHING
+    RETURNING row_index
   `;
+  const inserted = result.rowCount ?? result.rows.length;
 
   logger.info('[project-assets backfill] done', {
     projectId,
-    backfilled: rows.length,
+    candidates: rows.length,
+    inserted,
   });
-  return { backfilled: rows.length, skipped: false };
+  return { backfilled: inserted, skipped: false };
 }
 
 /**

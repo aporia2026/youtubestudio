@@ -182,46 +182,59 @@ describe('reindexProjectAssets', () => {
 // ── backfillFromPayload ─────────────────────────────────────────────
 
 describe('backfillFromPayload', () => {
-  it('skips entirely when project_assets already has rows', async () => {
-    sqlImpl = async () => ({ rows: [{ exists_row: true }], rowCount: 1 });
+  it('merges into a project_assets that already has rows (no early-skip)', async () => {
+    // Pre-fix bug: a single existence probe found a row and the
+    // entire backfill was skipped, dropping legacy entries that
+    // belonged to other indices. Post-fix: no probe; INSERT with
+    // ON CONFLICT DO NOTHING handles the merge per-row.
+    sqlImpl = async () => ({
+      rows: [{ row_index: 0 }, { row_index: 1 }], // 2 actually inserted
+      rowCount: 2,
+    });
     const result = await backfillFromPayload(PROJECT_ID, {
-      rowImages: { 0: 'https://r2/a.png' },
+      rowImages: {
+        0: 'https://r2/legacy-0.png',
+        1: 'https://r2/legacy-1.png',
+        5: 'https://r2/already-in-table.png',
+      },
       rowOverlays: {},
       rowVideoClips: {},
     });
-    expect(result).toEqual({ backfilled: 0, skipped: true });
-    // Only the existence probe ran — no INSERT.
+    // backfilled = rows the DB actually inserted (RETURNING count),
+    // not the candidate count. Skipped is now always false: the
+    // helper always tries the INSERT and lets the unique index decide.
+    expect(result).toEqual({ backfilled: 2, skipped: false });
     expect(sqlCalls).toHaveLength(1);
-    expect(sqlCalls[0].text).toContain('EXISTS');
+    expect(sqlCalls[0].text).toContain('INSERT INTO project_assets');
+    expect(sqlCalls[0].text).toContain('ON CONFLICT');
+    expect(sqlCalls[0].text).toContain('RETURNING');
+    expect(sqlCalls[0].text).not.toContain('EXISTS');
   });
 
   it('reports skipped:false, backfilled:0 when payload is empty', async () => {
-    sqlImpl = async () => ({ rows: [{ exists_row: false }], rowCount: 1 });
     const result = await backfillFromPayload(PROJECT_ID, {
       rowImages: {},
       rowOverlays: {},
       rowVideoClips: {},
     });
     expect(result).toEqual({ backfilled: 0, skipped: false });
-    expect(sqlCalls).toHaveLength(1);
+    // No SQL fired — nothing to backfill, no point opening a tx.
+    expect(sqlCalls).toHaveLength(0);
   });
 
   it('inserts one row per (slot, index) pair via a single bulk statement', async () => {
-    let callIndex = 0;
-    sqlImpl = async () => {
-      callIndex += 1;
-      if (callIndex === 1) return { rows: [{ exists_row: false }], rowCount: 1 };
-      return { rows: [], rowCount: 3 };
-    };
+    sqlImpl = async () => ({
+      rows: [{ row_index: 0 }, { row_index: 1 }, { row_index: 0 }],
+      rowCount: 3,
+    });
     const result = await backfillFromPayload(PROJECT_ID, {
       rowImages: { 0: 'https://r2/a.png', 1: 'https://r2/b.png' },
       rowOverlays: { 0: { status: 'done', url: 'https://r2/o.png' } },
       rowVideoClips: {},
     });
     expect(result).toEqual({ backfilled: 3, skipped: false });
-    expect(sqlCalls).toHaveLength(2);
-    // 2nd call: bulk INSERT with the rows as a single jsonb param.
-    const insertCall = sqlCalls[1];
+    expect(sqlCalls).toHaveLength(1);
+    const insertCall = sqlCalls[0];
     expect(insertCall.text).toContain('INSERT INTO project_assets');
     expect(insertCall.text).toContain('jsonb_array_elements');
     // Two binds: projectId + the batch JSON.
@@ -239,12 +252,7 @@ describe('backfillFromPayload', () => {
   });
 
   it('rejects malformed keys: negative indices, non-integer indices, empty strings, non-objects', async () => {
-    let callIndex = 0;
-    sqlImpl = async () => {
-      callIndex += 1;
-      if (callIndex === 1) return { rows: [{ exists_row: false }], rowCount: 1 };
-      return { rows: [], rowCount: 1 };
-    };
+    sqlImpl = async () => ({ rows: [{ row_index: 7 }], rowCount: 1 });
     await backfillFromPayload(PROJECT_ID, {
       rowImages: {
         '-1': 'https://r2/neg.png', // dropped: negative
@@ -258,9 +266,8 @@ describe('backfillFromPayload', () => {
       },
       rowVideoClips: {},
     });
-    // Only the existence probe + one INSERT ran.
-    expect(sqlCalls).toHaveLength(2);
-    const batch = JSON.parse(sqlCalls[1].values[1] as string) as Array<Record<string, unknown>>;
+    expect(sqlCalls).toHaveLength(1);
+    const batch = JSON.parse(sqlCalls[0].values[1] as string) as Array<Record<string, unknown>>;
     expect(batch).toEqual([{ row_index: 7, slot: 'image', data: 'https://r2/keep.png' }]);
   });
 });
