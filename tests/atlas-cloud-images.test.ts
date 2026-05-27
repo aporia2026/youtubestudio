@@ -245,8 +245,12 @@ describe('generateAtlasEdit + generateAtlasI2I — input validation', () => {
     await vi.runAllTimersAsync();
     await promise;
     const body = JSON.parse(calls[0].init?.body as string);
+    // Atlas only ships ONE GPT Image 2 image-modification model (Edit);
+    // it serves both single-image edit AND multi-image reference
+    // generation via the same `images` array. Verified against
+    // atlascloud.ai/collections/gpt-image-2 on 2026-05-27.
     expect(body).toEqual({
-      model: 'openai/gpt-image-2/image-to-image',
+      model: 'openai/gpt-image-2/edit',
       prompt: 'in the style of these refs',
       images: ['https://r2/ref1.jpg'],
     });

@@ -163,7 +163,14 @@ export const I2I_MODELS: readonly I2IModelSpec[] = Object.freeze([
     value: 'gpt-image-2-atlas-i2i',
     label: 'Reference-driven (GPT Image 2 via Atlas, cheaper)',
     provider: 'atlas',
-    atlasModel: 'openai/gpt-image-2/image-to-image',
+    // Atlas only ships ONE GPT Image 2 image-modification model — Edit —
+    // which handles both single-image editing AND multi-image reference
+    // generation via the same `images` array. The previously-assumed
+    // `openai/gpt-image-2/image-to-image` id doesn't exist (verified
+    // 2026-05-27 against atlascloud.ai/collections/gpt-image-2; only
+    // text-to-image + edit are listed). Both i2i and edit catalog rows
+    // now point at the same atlasModel.
+    atlasModel: 'openai/gpt-image-2/edit',
     // Atlas's gpt-image-2 endpoints only accept 1024x1024 / 1024x1536 /
     // 1536x1024. The 2560x1440 size the playground exposes is rejected
     // at the API gateway (verified 2026-05-27 for both Edit and i2i —

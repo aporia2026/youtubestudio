@@ -176,10 +176,23 @@ export async function generateAtlasEdit(opts: AtlasEditOpts): Promise<AtlasGener
 }
 
 /**
- * Reference-driven generation via Atlas GPT Image 2 I2I. Same payload shape
- * as Edit — the distinction is semantic (Edit modifies an input, I2I uses
- * inputs as style/composition references). Atlas docs are sparse on the
- * exact distinction; a probe script verifies the multi-ref cap.
+ * Reference-driven generation via Atlas GPT Image 2. Uses the same
+ * `openai/gpt-image-2/edit` model as `generateAtlasEdit` — Atlas
+ * categorises Edit as their "Image-to-Image" SKU and only ships ONE
+ * underlying model for both single-image editing AND multi-image
+ * reference-based generation (verified 2026-05-27 against
+ * atlascloud.ai/collections/gpt-image-2 which lists only T2I and Edit
+ * as the GPT Image 2 product family).
+ *
+ * The previous `openai/gpt-image-2/image-to-image` model id was
+ * fabricated by reflex against typical AI-API naming conventions; no
+ * such model exists on Atlas, so every i2i request returned
+ * `400 {code, msg:"not found"}` from Atlas's backend after the size
+ * routing-layer pass added in commit 28c5816.
+ *
+ * Semantic distinction (Edit modifies an input vs I2I uses inputs as
+ * style references) is preserved in the helper name + caller intent;
+ * the model itself doesn't differentiate.
  */
 export async function generateAtlasI2I(opts: AtlasI2IOpts): Promise<AtlasGenerateResult> {
   if (opts.images.length === 0) {
@@ -187,7 +200,7 @@ export async function generateAtlasI2I(opts: AtlasI2IOpts): Promise<AtlasGenerat
   }
   return runAtlasGeneration({
     label: 'i2i',
-    model: 'openai/gpt-image-2/image-to-image',
+    model: 'openai/gpt-image-2/edit',
     input: {
       prompt: opts.prompt,
       images: opts.images,
