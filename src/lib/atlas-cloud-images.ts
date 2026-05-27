@@ -275,10 +275,34 @@ async function createAtlasPrediction(
   // implementation copied Kie's shape by reflex and would have 4xx'd
   // every Atlas call. The Input schema's required array is ["model",
   // "prompt"]; size/quality/output_format/etc are optional siblings.
+  // Diagnostic logging — capture the exact request shape we send so we
+  // can post-mortem any vendor-side rejection (the bare `{code, msg}`
+  // envelope Atlas returns on routing-layer 404s doesn't tell us
+  // anything useful about WHY). Image URLs are truncated to 100 chars
+  // to avoid leaking signed-URL signatures in logs. The API key itself
+  // is never logged.
+  const createUrl = `${ATLAS_BASE}/generateImage`;
+  const inputRecord = input as Record<string, unknown>;
+  const imagesField = inputRecord.images;
+  const imagesPreview = Array.isArray(imagesField)
+    ? imagesField.map((u) => (typeof u === 'string' ? u.slice(0, 100) : '<non-string>'))
+    : undefined;
+  const promptField = inputRecord.prompt;
+  const promptChars = typeof promptField === 'string' ? promptField.length : 0;
+  logger.info('[atlas-images create] request', {
+    url: createUrl,
+    model,
+    body_keys: Object.keys({ model, ...input }).sort(),
+    size: inputRecord.size ?? null,
+    quality: inputRecord.quality ?? null,
+    prompt_chars: promptChars,
+    ...(imagesPreview ? { images_preview: imagesPreview, images_count: imagesPreview.length } : {}),
+  });
+
   let createRes!: Response;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) await new Promise((r) => setTimeout(r, 2000 * attempt));
-    createRes = await fetch(`${ATLAS_BASE}/generateImage`, {
+    createRes = await fetch(createUrl, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -289,6 +313,22 @@ async function createAtlasPrediction(
     if (createRes.status !== 502 && createRes.status !== 503 && createRes.status !== 504) break;
   }
   if (!createRes.ok) {
+    // Clone the response so we can both log the raw body AND let
+    // atlasErrorMessage parse it (each Body can only be consumed once).
+    const cloned = createRes.clone();
+    const rawBody = await cloned.text().catch(() => '');
+    logger.warn('[atlas-images create] non-ok response', {
+      url: createUrl,
+      model,
+      status: createRes.status,
+      content_type: createRes.headers.get('content-type'),
+      body_preview: rawBody.slice(0, 500),
+      response_headers: Object.fromEntries(
+        Array.from(createRes.headers.entries()).filter(
+          ([k]) => !k.toLowerCase().startsWith('set-cookie'),
+        ),
+      ),
+    });
     throw new Error(await atlasErrorMessage(createRes));
   }
 
