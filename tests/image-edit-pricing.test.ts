@@ -123,14 +123,17 @@ describe('Atlas Cloud edit entry', () => {
     expect(label).toBe('GPT Image 2 Edit (Atlas) — $0.011');
   });
 
-  it('Atlas Edit backend defaults to 2560x1440 native 16:9 at low quality', () => {
-    // Same defaults as the t2i + i2i Atlas entries: 2K native 16:9 +
-    // low quality. Atlas Edit preserves input aspect, so the size
-    // hint mostly governs the upscale-eligibility downstream
-    // (>2000px skips Recraft). Locked with user 2026-05-25.
+  it('Atlas Edit backend defaults to 1536x1024 (Edit-supported size) at low quality', () => {
+    // 2026-05-27 fix (commit 06f7264): Atlas's Edit endpoint only
+    // accepts 1024x1024 / 1024x1536 / 1536x1024, NOT the 2560x1440
+    // size the playground exposes. The 2560 size was T2I-only and
+    // was incorrectly copied into the Edit catalog row when the
+    // integration shipped, producing 404 from Atlas's router on
+    // every Edit call. 1536x1024 is 3:2 landscape (closest to 16:9)
+    // and gets upscaled to ~4K downstream by Recraft.
     const opt = getEditOption('gpt-image-2-atlas-edit')!;
     if (opt.backend.kind === 'atlas') {
-      expect(opt.backend.atlasSize).toBe('2560x1440');
+      expect(opt.backend.atlasSize).toBe('1536x1024');
       expect(opt.backend.atlasQuality).toBe('low');
     }
   });

@@ -73,20 +73,30 @@ export async function handleGenerateProductionDocImages(
   //    AFTER generate-production-doc, so this row should exist; if
   //    not, that's an invariant violation (orchestrator routed us
   //    here without the prior stage completing).
+  //
+  //    Cross-workspace guard: JOIN through pipeline_run_videos so the
+  //    artefact only resolves when its parent video belongs to this
+  //    handler's workspace. Without the join a malformed
+  //    pipeline_run_video_id pointed at another workspace would
+  //    return that workspace's artefact unchallenged. The orchestrator
+  //    only routes here through a properly-scoped claim, but defense
+  //    in depth — never trust the input row's id alone (rule 13).
   const { rows: artefactRows } = await sql.query<{
     id: string;
     metadata_jsonb: Record<string, unknown> | null;
   }>(
     `
-    SELECT id::text AS id, metadata_jsonb
-      FROM pipeline_stage_artefacts
-     WHERE pipeline_run_video_id = $1::uuid
-       AND stage = 'generating_production_doc'
-       AND artefact_kind = 'production_doc'
-     ORDER BY attempt_number DESC
+    SELECT psa.id::text AS id, psa.metadata_jsonb
+      FROM pipeline_stage_artefacts psa
+      JOIN pipeline_run_videos prv ON prv.id = psa.pipeline_run_video_id
+     WHERE psa.pipeline_run_video_id = $1::uuid
+       AND prv.workspace_id = $2::uuid
+       AND psa.stage = 'generating_production_doc'
+       AND psa.artefact_kind = 'production_doc'
+     ORDER BY psa.attempt_number DESC
      LIMIT 1
     `,
-    [video.id],
+    [video.id, video.workspace_id],
   );
   if (artefactRows.length === 0 || !artefactRows[0].metadata_jsonb) {
     return {

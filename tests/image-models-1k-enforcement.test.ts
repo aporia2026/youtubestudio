@@ -84,8 +84,14 @@ describe('NanoBanana 2 swap', () => {
     expect(spec!.refsField).toBe('image_input');
   });
 
-  it('DEFAULT_CLOUD_I2I_MODEL points to NanoBanana 2 i2i', () => {
-    expect(DEFAULT_CLOUD_I2I_MODEL).toBe('nano-banana-2-i2i');
+  it('DEFAULT_CLOUD_I2I_MODEL points to Atlas GPT Image 2 i2i (default switched 2026-05-27)', () => {
+    // 2026-05-27 (commit 0bf6e8d): switched the default from Kie's
+    // nano-banana-2-i2i to Atlas GPT Image 2 i2i per user direction
+    // "default for everything to be gpt 2 atlas, not just for edits".
+    // Unifies the provider with the variant edit path and cuts
+    // per-image cost ~73%. Trade-off: Atlas i2i caps at 4 refs vs
+    // Kie's 14 — styles with more refs lose breadth at dispatch.
+    expect(DEFAULT_CLOUD_I2I_MODEL).toBe('gpt-image-2-atlas-i2i');
   });
 
   it('I2I_MODEL_VALUES no longer contains the retired nano-banana-pro-i2i id', () => {
@@ -182,14 +188,26 @@ describe('Atlas Cloud entries (2026-05-25)', () => {
     const spec = I2I_MODELS.find((m) => m.value === 'gpt-image-2-atlas-i2i');
     expect(spec).toBeDefined();
     expect(spec!.provider).toBe('atlas');
-    expect(spec!.atlasModel).toBe('openai/gpt-image-2/image-to-image');
+    // 2026-05-27 (commit 573d067): Atlas only ships ONE GPT Image 2
+    // image-modification model — Edit — which handles both
+    // single-image editing AND multi-image reference-based
+    // generation via the same `images` array. The previously-assumed
+    // `openai/gpt-image-2/image-to-image` id doesn't exist on Atlas
+    // (verified against atlascloud.ai/collections/gpt-image-2). Both
+    // the i2i catalog row and generateAtlasI2I helper point at the
+    // edit model id.
+    expect(spec!.atlasModel).toBe('openai/gpt-image-2/edit');
     // Conservative cap pending the one-shot probe script. If the probe
     // confirms Atlas accepts more (or less) than 4, BOTH this number
     // and the registry hint copy need updating.
     expect(spec!.maxRefs).toBe(4);
-    // 2560×1440 native 16:9 at low quality — same defaults as the t2i
-    // sibling. Skips crop + Recraft upscale.
-    expect(spec!.atlasSize).toBe('2560x1440');
+    // 2026-05-27 (commit 28c5816): Atlas's gpt-image-2 endpoints
+    // only accept 1024x1024 / 1024x1536 / 1536x1024. The 2560x1440
+    // size the playground exposes is T2I-only (the Edit + i2i
+    // endpoints return 404 at the API-gateway layer for unsupported
+    // sizes). 1536x1024 is 3:2 landscape, closest to 16:9; Recraft
+    // upscales to ~4K downstream.
+    expect(spec!.atlasSize).toBe('1536x1024');
     expect(spec!.atlasQuality).toBe('low');
   });
 
