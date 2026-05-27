@@ -77,6 +77,10 @@ export interface AugmentCellPromptResult {
   promptBudget: number;
   /** True when the OST leading + trailing directives were appended. */
   ostBaked: boolean;
+  /** True when the safe-edge directive (always-on margin guard) was
+   *  prepended. Only false in defensive code paths — current behaviour
+   *  always sets this. */
+  safeEdge: boolean;
   /** True when the safe-top scene bias directive was prepended. */
   safeTop: boolean;
   /** True when the sheet-description tail directive was appended. */
@@ -85,17 +89,28 @@ export interface AugmentCellPromptResult {
 
 /**
  * Apply per-cell augmentation to a raw prompt and return the final
- * string ready for the image model. Byte-identical output to the
- * historical inline block when called with the same inputs and
- * `promptCap = SINGLE_SHOT_PROMPT_CAP`.
+ * string ready for the image model.
  *
- * Directive ordering (preserved from the inline block):
- *   `${safeTop}${ostLeading}${body}${ostTrailing}${sheetDesc}`
+ * Directive ordering:
+ *   `${safeEdge}${safeTop}${ostLeading}${body}${ostTrailing}${sheetDesc}`
  *
- * Image models weight late tokens heavily for "what must appear in
- * the image", so the OST trailing directive intentionally sits after
- * the body. Sheet description follows it — the visual-continuity hint
- * is the lowest-priority signal in the prompt.
+ * `safeEdge` is a structural constraint ("everything fits inside the
+ * canvas with margin") so it leads — the model needs to plan composition
+ * around it before any content directive lands. Image models weight late
+ * tokens heavily for "what must appear in the image", so the OST trailing
+ * directive intentionally sits after the body. Sheet description follows
+ * it — the visual-continuity hint is the lowest-priority signal in the
+ * prompt.
+ *
+ * History: an earlier version omitted `safeEdge` and only fired
+ * `safeTop` for `overlay` layout. Refs bundled with the
+ * doodle_explainer_2 built-in style have edge-bleeding text and motifs,
+ * which the i2i model faithfully reproduced — producing outputs where the
+ * section title was cropped at the top edge and callouts ran off the
+ * bottom. Adding an always-on safe-edge directive stops the bleed at the
+ * prompt layer (the ref-image cleanup tracked under
+ * `_plans/2026-05-27-doodle-explainer-2-ref-bleed-fix.md` stops it at the
+ * ref layer).
  */
 export function augmentCellPrompt(input: AugmentCellPromptInput): AugmentCellPromptResult {
   // Normalise the OST mode and layout exactly like the single-shot
@@ -110,6 +125,27 @@ export function augmentCellPrompt(input: AugmentCellPromptInput): AugmentCellPro
     input.onScreenTextMode === 'bake' || input.onScreenTextMode === 'overlay' || input.onScreenTextMode === 'none'
       ? input.onScreenTextMode
       : 'bake';
+
+  // Safe-edge margin guard — always-on. Two reasons the margin is 10%,
+  // not the more typical 5–6%:
+  //   1. The Atlas GPT-Image-2 i2i path (and the pipeline variant path)
+  //      generate at 1536×1024 (3:2) and the dispatcher center-crops to
+  //      1536×864 (16:9). That crop removes 80px = 7.8% off the TOP and
+  //      another 7.8% off the BOTTOM of the model's output. Any element
+  //      the model placed closer than ~8% to the top or bottom edge is
+  //      destroyed by the crop. A 10% directive gives the model ~2% of
+  //      headroom over the destroy band.
+  //   2. i2i models also bleed reference-frame content past the visible
+  //      canvas edge when refs themselves have edge-bleeding composition
+  //      (the doodle_explainer_2 source-video refs were the canonical
+  //      example — section titles flush to the top edge, callouts hung
+  //      off the bottom). Cleaning the refs is the upstream fix; this
+  //      directive is the downstream backstop.
+  // Repeated wording ("top, bottom, left, right") + repeated numeric
+  // ("10%") because diffusion models obey concrete numbers in the prompt
+  // more reliably than abstract "safe area" language.
+  const safeEdgeDirective =
+    `Composition fits fully inside the visible frame with AT LEAST 10% empty margin from every edge. No text, faces, callouts, props, titles, or background elements extend within 10% of the top, bottom, left, or right edge of the canvas. All important content is centered in the inner 80% of the frame.\n\n`;
 
   // Safe-top scene bias — only useful when the stripe will overlay the
   // image (covering its top). When the stripe is letterboxed, the
@@ -155,7 +191,7 @@ export function augmentCellPrompt(input: AugmentCellPromptInput): AugmentCellPro
   // slack mirrors the historical inline block; trimming a partial word
   // at the truncation boundary may eat a few extra chars beyond the
   // strict budget.
-  const fixedOverhead = safeTopDirective.length + ostLeadingDirective.length + ostTrailingDirective.length + sheetDescDirective.length;
+  const fixedOverhead = safeEdgeDirective.length + safeTopDirective.length + ostLeadingDirective.length + ostTrailingDirective.length + sheetDescDirective.length;
   const promptBudget = Math.max(200, input.promptCap - fixedOverhead - 4);
   const trimmedBody = input.prompt.trim();
   const originalBodyLen = trimmedBody.length;
@@ -174,7 +210,7 @@ export function augmentCellPrompt(input: AugmentCellPromptInput): AugmentCellPro
     });
   }
 
-  const finalPrompt = `${safeTopDirective}${ostLeadingDirective}${safeBody}${ostTrailingDirective}${sheetDescDirective}`;
+  const finalPrompt = `${safeEdgeDirective}${safeTopDirective}${ostLeadingDirective}${safeBody}${ostTrailingDirective}${sheetDescDirective}`;
 
   return {
     prompt: finalPrompt,
@@ -184,6 +220,7 @@ export function augmentCellPrompt(input: AugmentCellPromptInput): AugmentCellPro
     fixedOverhead,
     promptBudget,
     ostBaked: shouldBakeOst,
+    safeEdge: true,
     safeTop: needsSafeTopBias,
     sheetDesc: safeSheetDesc.length > 0,
   };

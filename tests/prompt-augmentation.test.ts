@@ -94,6 +94,44 @@ describe('augmentCellPrompt — OST baking', () => {
   });
 });
 
+describe('augmentCellPrompt — safe-edge guard', () => {
+  // The safe-edge directive is always-on (no input gates it off) so it
+  // appears on every output. See the always-on history note in the
+  // module docstring.
+  const SAFE_EDGE_HEAD = 'Composition fits fully inside the visible frame with AT LEAST 10% empty margin from every edge.';
+
+  it('always prepends the safe-edge directive — minimal input', () => {
+    const out = augmentCellPrompt({ ...BASE });
+    expect(out.safeEdge).toBe(true);
+    expect(out.prompt.startsWith(SAFE_EDGE_HEAD)).toBe(true);
+  });
+
+  it('always prepends the safe-edge directive — full input', () => {
+    const out = augmentCellPrompt({
+      ...BASE,
+      onScreenText: 'EUREKA',
+      onScreenTextMode: 'bake',
+      sectionTitle: 'Chapter 1',
+      sectionTitleLayout: 'overlay',
+      styleSheetDescription: 'flat 2D vector',
+    });
+    expect(out.safeEdge).toBe(true);
+    expect(out.prompt.startsWith(SAFE_EDGE_HEAD)).toBe(true);
+  });
+
+  it('safe-edge sits before safe-top in the final prompt', () => {
+    const out = augmentCellPrompt({
+      ...BASE,
+      sectionTitle: 'Chapter 1',
+      sectionTitleLayout: 'overlay',
+    });
+    const edgeIdx = out.prompt.indexOf(SAFE_EDGE_HEAD);
+    const topIdx = out.prompt.indexOf('Wide composition with an empty open sky');
+    expect(edgeIdx).toBe(0);
+    expect(topIdx).toBeGreaterThan(edgeIdx);
+  });
+});
+
 describe('augmentCellPrompt — safe-top bias', () => {
   it('fires only when sectionTitle non-empty AND layout is overlay', () => {
     const out = augmentCellPrompt({
@@ -102,7 +140,7 @@ describe('augmentCellPrompt — safe-top bias', () => {
       sectionTitleLayout: 'overlay',
     });
     expect(out.safeTop).toBe(true);
-    expect(out.prompt.startsWith('Wide composition with an empty open sky')).toBe(true);
+    expect(out.prompt).toContain('Wide composition with an empty open sky');
   });
 
   it('suppressed when layout is letterbox', () => {
@@ -211,23 +249,27 @@ describe('augmentCellPrompt — truncation', () => {
     expect(out.promptBudget).toBeGreaterThanOrEqual(200);
   });
 
-  it('returns the original body unchanged when promptCap is the single-shot 2000', () => {
+  it('preserves the body verbatim when no per-input directives apply (safe-edge is still prepended)', () => {
     const body = 'A short scene';
     const out = augmentCellPrompt({
       prompt: body,
       promptCap: SINGLE_SHOT_PROMPT_CAP,
     });
-    expect(out.prompt).toBe(body);
     expect(out.truncated).toBe(false);
+    expect(out.prompt.endsWith(body)).toBe(true);
+    // Body sits intact after the safe-edge prefix.
+    expect(out.finalBodyLen).toBe(body.length);
   });
 });
 
-describe('augmentCellPrompt — parity with the historical inline block', () => {
-  // These cases reproduce the directive ordering and exact strings that
-  // the inline block in `src/app/api/generate/production-doc/image/route.ts`
-  // used to produce. Changing the helper's output here is a behaviour
-  // change for the single-shot route — keep these snapshots stable.
-  it('matches inline-block output for sectionTitle + overlay + bake OST', () => {
+describe('augmentCellPrompt — full prompt composition', () => {
+  // Snapshot the exact assembled string for representative inputs so a
+  // future edit to any directive surfaces here. Safe-edge is always-on
+  // and leads every output.
+  const SAFE_EDGE_PREFIX =
+    'Composition fits fully inside the visible frame with AT LEAST 10% empty margin from every edge. No text, faces, callouts, props, titles, or background elements extend within 10% of the top, bottom, left, or right edge of the canvas. All important content is centered in the inner 80% of the frame.\n\n';
+
+  it('snapshots sectionTitle + overlay + bake OST', () => {
     const out = augmentCellPrompt({
       prompt: 'A scientist',
       onScreenText: 'EUREKA',
@@ -237,30 +279,32 @@ describe('augmentCellPrompt — parity with the historical inline block', () => 
       promptCap: SINGLE_SHOT_PROMPT_CAP,
     });
     expect(out.prompt).toBe(
-      'Wide composition with an empty open sky or plain low-detail background across the upper portion of the frame. All characters, faces, objects, and key details sit in the lower portion.\n\n'
+      SAFE_EDGE_PREFIX
+      + 'Wide composition with an empty open sky or plain low-detail background across the upper portion of the frame. All characters, faces, objects, and key details sit in the lower portion.\n\n'
       + 'Hand-lettered text "EUREKA" drawn large in bold marker style in the lower portion of the frame, in the illustration\'s own style.\n\n'
       + 'A scientist'
       + '\n\nText shown: "EUREKA".',
     );
   });
 
-  it('matches inline-block output for no-augmentation case', () => {
+  it('snapshots minimal input — body wrapped only by the safe-edge prefix', () => {
     const out = augmentCellPrompt({
       prompt: 'A scientist',
       promptCap: SINGLE_SHOT_PROMPT_CAP,
     });
-    expect(out.prompt).toBe('A scientist');
-    expect(out.fixedOverhead).toBe(0);
+    expect(out.prompt).toBe(SAFE_EDGE_PREFIX + 'A scientist');
+    expect(out.fixedOverhead).toBe(SAFE_EDGE_PREFIX.length);
   });
 
-  it('matches inline-block output for sheet-description-only case', () => {
+  it('snapshots sheet-description-only case', () => {
     const out = augmentCellPrompt({
       prompt: 'A scientist',
       styleSheetDescription: 'flat 2D vector',
       promptCap: SINGLE_SHOT_PROMPT_CAP,
     });
     expect(out.prompt).toBe(
-      'A scientist\n\nMaintain visual continuity with the established style: flat 2D vector.',
+      SAFE_EDGE_PREFIX
+      + 'A scientist\n\nMaintain visual continuity with the established style: flat 2D vector.',
     );
   });
 });

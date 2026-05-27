@@ -29,6 +29,7 @@ import { loadStyleReferences } from '../production-doc-styles-refs';
 import { generateImageWithRefs, ReferenceRejectedError } from '../image-gen-i2i';
 import { DEFAULT_CLOUD_I2I_MODEL, getI2IModelSpec } from '../image-models-i2i';
 import { generateAtlasEdit } from './../atlas-cloud-images';
+import { cropTo16x9AndUpload } from '../image-gen-dispatch';
 import { upscaleViaRecraft } from '../upscale';
 import {
   getDownloadUrlForBucket,
@@ -251,8 +252,16 @@ export async function generateVariantImage(args: {
       size: '1536x1024',
       quality: 'low',
     });
-    // Recraft upscale → R2 mirror, same as the manual edit route.
-    const upscale = await upscaleViaRecraft(atlasResult.url);
+    // Atlas Edit returns 3:2 (1536×1024). Center-crop to 16:9 (1536×864)
+    // before upscale so the rendered variant lands in the 16:9 canvas
+    // without the BRollScene's object-fit:cover slicing 7.8% off the top
+    // and bottom at render time. The collage route and the manual t2i
+    // dispatcher both do this; this path used to skip it (verified
+    // 2026-05-27 against the cropping issue user-reported on project
+    // 7fafe333). Same R2 prefix as the dispatcher so all Atlas-crop
+    // intermediates land in one place.
+    const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, 'prodoc-images-atlas-crop');
+    const upscale = await upscaleViaRecraft(croppedUrl);
     let imageUrl = upscale.url;
     try {
       const imgRes = await fetch(upscale.url);
