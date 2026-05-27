@@ -179,13 +179,22 @@ export async function renderLabelPng(
       .toBuffer();
   }
   // Pango font-size is in points; sharp defaults to dpi: 72 so 1pt ≈ 1px.
-  // Target ~55% of the band height as the cap-height so a single-line
-  // label fits comfortably with breathing room. Patrick Hand has tall
-  // ascenders; 0.55 is the empirically-OK upper bound.
-  const fontPt = Math.max(12, Math.round(targetH * 0.55));
-  // Sharp's text input wants a positive width AND height. We size the box
-  // generously so Pango doesn't auto-shrink; the composite step positions
-  // the result so its bounding box is centred on the label band.
+  // Sized so a TWO-LINE wrapped label still fits inside the band, which is
+  // the actual constraint: a long label like "The Antikythera Mechanism"
+  // word-wraps to 2 lines and (line-count * font-pt * line-height) must
+  // stay within targetH. Patrick Hand renders with line-height ~1.3, so
+  // 2 lines at 0.38·targetH take ~0.99·targetH — fits with a hair of
+  // margin. Critically, this is the SAME font size for every label in the
+  // grid: short labels stay one line, long ones wrap to two, both at the
+  // same point size. The previous coefficient (0.55) made short labels
+  // render at full size but forced long-label PNGs to be shrunk by the
+  // resize-to-fit guard, which produced visibly smaller text for the
+  // longer labels — the user complaint that motivated this change.
+  const fontPt = Math.max(12, Math.round(targetH * 0.38));
+  // Sharp's text input wants a positive width AND height. Width is a
+  // wrap-hint (Pango breaks at word boundaries when a line would exceed
+  // it); unbreakable single words can still overflow, which is why the
+  // composite step keeps a resize-to-fit safety net.
   const safeW = Math.max(16, Math.round(targetW));
   const safeH = Math.max(16, Math.round(targetH));
   return await sharp({
@@ -201,6 +210,10 @@ export async function renderLabelPng(
       width: safeW,
       height: safeH,
       align: 'centre',
+      // Explicit — Pango defaults to 'word' but we depend on it for label
+      // uniformity (long labels MUST wrap, not overflow). Pinning it here
+      // protects against a future sharp/Pango default change.
+      wrap: 'word',
     },
   })
     .png()
