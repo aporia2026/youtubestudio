@@ -14,8 +14,8 @@ import {
 import { generateAtlasEdit } from '@/lib/atlas-cloud-images';
 import {
   PROMPT_VERSION,
-  useShortVariantPrompt,
-  useTrimmedSuffix,
+  isShortVariantPromptEnabled,
+  isTrimmedSuffixEnabled,
   type ImageGenTelemetry,
 } from '@/lib/production-doc-flags';
 import { upscaleViaRecraft } from '@/lib/upscale';
@@ -282,8 +282,8 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
           ref_ids: [],
           suffix_chars: 0,
           prompt_chars: prompt.length,
-          flag_short_variant: useShortVariantPrompt(),
-          flag_trimmed_suffix: useTrimmedSuffix(),
+          flag_short_variant: isShortVariantPromptEnabled(),
+          flag_trimmed_suffix: isTrimmedSuffixEnabled(),
         } satisfies ImageGenTelemetry);
         const atlasResult = await generateAtlasEdit({
           prompt,

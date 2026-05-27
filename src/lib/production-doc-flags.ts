@@ -28,7 +28,7 @@ export const PROMPT_VERSION = 1;
  *  the flag is consistent between the client composer and the server
  *  route's telemetry log. Bundle exposure is benign — the flag only
  *  toggles prompt-composition strategy, not credentials or policy. */
-export function useShortVariantPrompt(): boolean {
+export function isShortVariantPromptEnabled(): boolean {
   return process.env.NEXT_PUBLIC_USE_SHORT_VARIANT_PROMPT === '1';
 }
 
@@ -91,7 +91,7 @@ export function useRefinedVariantPrompt(): boolean {
  *
  *  Defaults to OFF so unflagged deploys are byte-identical to before
  *  Stage 1. */
-export function useTrimmedSuffix(): boolean {
+export function isTrimmedSuffixEnabled(): boolean {
   return process.env.USE_TRIMMED_SUFFIX === '1';
 }
 
@@ -175,7 +175,7 @@ export function getEffectiveAiImageSuffix(style: {
   id: string;
   ai_image_suffix: string;
 }): string {
-  if (!useTrimmedSuffix()) return style.ai_image_suffix;
+  if (!isTrimmedSuffixEnabled()) return style.ai_image_suffix;
   return TRIMMED_AI_IMAGE_SUFFIX[style.id] ?? style.ai_image_suffix;
 }
 
@@ -191,7 +191,7 @@ export function getEffectiveMixingRules(style: {
   mixing_rules?: string | null;
 }): string | undefined {
   const original = style.mixing_rules ?? undefined;
-  if (!useTrimmedSuffix()) return original;
+  if (!isTrimmedSuffixEnabled()) return original;
   return TRIMMED_MIXING_RULES[style.id] ?? original;
 }
 

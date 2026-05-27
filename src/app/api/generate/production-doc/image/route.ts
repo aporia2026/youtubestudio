@@ -30,8 +30,8 @@ import { augmentCellPrompt, SINGLE_SHOT_PROMPT_CAP } from '@/lib/prompt-augmenta
 import {
   getEffectiveAiImageSuffix,
   PROMPT_VERSION,
-  useShortVariantPrompt,
-  useTrimmedSuffix,
+  isShortVariantPromptEnabled,
+  isTrimmedSuffixEnabled,
   type ImageGenTelemetry,
 } from '@/lib/production-doc-flags';
 
@@ -215,8 +215,8 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
             ref_ids: refs.map((r) => r.id),
             suffix_chars: getEffectiveAiImageSuffix(style).length,
             prompt_chars: augmentedPrompt.length,
-            flag_short_variant: useShortVariantPrompt(),
-            flag_trimmed_suffix: useTrimmedSuffix(),
+            flag_short_variant: isShortVariantPromptEnabled(),
+            flag_trimmed_suffix: isTrimmedSuffixEnabled(),
           } satisfies ImageGenTelemetry);
 
           // ─── Unified i2i dispatch (cloud + local via the shared helper) ──
