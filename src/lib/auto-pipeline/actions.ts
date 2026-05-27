@@ -15,6 +15,65 @@ import { logger } from '../logger';
 import type { PipelineStage } from './types';
 import { isPipelineStage, TERMINAL_STAGES } from './types';
 
+/**
+ * The ordered set of stages a user can "Re-run from" in the UI.
+ *
+ * Excluded by design:
+ *  - awaiting_script_gate / waiting_narration / narration_overdue —
+ *    these are wait states, not work states. Re-running into them
+ *    would just sit waiting again. Users who want to re-run from
+ *    "before the gate" pick `generating_script` instead.
+ *  - qa_retry — internal substage between running_qa and
+ *    awaiting_script_gate; the orchestrator drives it, not the user.
+ *  - narration_complete — auto-advance state, not a work stage.
+ *  - done / terminal failures — these are END states, not work states.
+ *
+ * The order matches the canonical pipeline flow; index = "rerun rank."
+ * Used to validate that a chosen target is at-or-before the current
+ * stage (you can re-run BACK from done to script, but you can't
+ * fast-forward from queued to thumbnail).
+ */
+export const RERUN_TARGET_STAGES: readonly PipelineStage[] = [
+  'queued',
+  'generating_idea',
+  'generating_script',
+  'running_qa',
+  'generating_production_doc',
+  'generating_thumbnail',
+  'assigning_to_editor',
+  'generating_seo',
+] as const;
+
+/**
+ * The "rerun rank" of every stage the orchestrator can leave a row
+ * sitting in. Higher = further along. Used by the rerun-from-stage
+ * validator to reject "fast-forward" requests (target rank > current
+ * rank when the current isn't terminal) while allowing "re-run from
+ * earlier" requests (target rank <= current rank, OR current is
+ * terminal regardless of rank).
+ *
+ * Wait-states map to the same rank as the work-stage that produced
+ * them (e.g., awaiting_script_gate ranks like generating_script).
+ * Terminal failure states are skipped — they have no rank because the
+ * rerun is unconditional from terminals.
+ */
+const STAGE_RERUN_RANK: Record<string, number> = {
+  queued: 0,
+  generating_idea: 1,
+  generating_script: 2,
+  awaiting_script_gate: 2,
+  running_qa: 3,
+  qa_retry: 3,
+  waiting_narration: 3,
+  narration_overdue: 3,
+  narration_complete: 4,
+  generating_production_doc: 4,
+  generating_thumbnail: 5,
+  assigning_to_editor: 6,
+  generating_seo: 7,
+  done: 8,
+};
+
 export class PipelineActionError extends Error {
   constructor(public readonly code: string, message: string) {
     super(message);
@@ -39,8 +98,14 @@ export async function applyScriptGateDecision(args: {
   workspaceId: string;
   videoId: string;
   decision: ScriptGateDecision;
+  /** Optional. Only honoured on `decision === 'regenerate'`. When set,
+   *  the per-video script-style override is updated BEFORE the row
+   *  is bumped back to `generating_script`, so the next handler tick
+   *  reads the new override. Pass `null` to clear an existing
+   *  override; omit (undefined) to leave it untouched. */
+  styleOverrideId?: string | null;
 }): Promise<{ newStage: PipelineStage }> {
-  const { workspaceId, videoId, decision } = args;
+  const { workspaceId, videoId, decision, styleOverrideId } = args;
 
   // Load + validate the current stage. Workspace-scoped.
   const { rows } = await sql.query<{ stage: string; retry_count: number }>(
@@ -74,6 +139,16 @@ export async function applyScriptGateDecision(args: {
     `;
   } else if (decision === 'regenerate') {
     newStage = 'generating_script';
+    // Apply the inline style override (if any) BEFORE bumping the
+    // stage. Sets a persistent per-video override — see the action's
+    // doc comment for why we don't model it as ephemeral.
+    if (styleOverrideId !== undefined) {
+      await sql`
+        UPDATE pipeline_run_videos
+           SET script_style_preset_override_id = ${styleOverrideId}
+         WHERE id = ${videoId}::uuid AND workspace_id = ${workspaceId}::uuid
+      `;
+    }
     // Bump retry_count so the spend log + UI show the regen
     // history. The handler reads retry_count to vary prompt seeds
     // on a regen.
@@ -104,6 +179,7 @@ export async function applyScriptGateDecision(args: {
     decision,
     from_stage: 'awaiting_script_gate',
     to_stage: newStage,
+    style_override_changed: styleOverrideId !== undefined,
   });
 
   return { newStage };
@@ -647,4 +723,227 @@ export async function commitRanking(args: {
      WHERE id = ${runId}::uuid
        AND workspace_id = ${workspaceId}::uuid
   `;
+}
+
+// ─── Per-video style override (migration 0094) ──────────────────────
+
+/**
+ * Persist a per-video script-style override. Highest layer in the
+ * effective-style chain that `handleGenerateScript` walks:
+ *
+ *   video.script_style_preset_override_id  ← this
+ *     ?? preset.script_style_preset_id
+ *     ?? preset.production_doc_style_id
+ *     ?? null
+ *
+ * Passing `null` clears the override (falls back through the chain).
+ * The styleId is validated by the route handler before reaching this
+ * function; we don't re-validate ownership here because the DB's FK
+ * constraint (ON DELETE SET NULL) already handles the "style was
+ * deleted" race.
+ *
+ * Returns the value that was stored so the UI can confirm what
+ * persisted (mostly for the `null = cleared` case).
+ */
+export async function setVideoStyleOverride(args: {
+  workspaceId: string;
+  videoId: string;
+  styleId: string | null;
+}): Promise<{ styleId: string | null }> {
+  const { workspaceId, videoId, styleId } = args;
+  const { rowCount } = await sql.query(
+    `
+    UPDATE pipeline_run_videos
+       SET script_style_preset_override_id = $3::uuid,
+           updated_at = NOW()
+     WHERE id = $1::uuid AND workspace_id = $2::uuid
+    `,
+    [videoId, workspaceId, styleId],
+  );
+  if (!rowCount) {
+    throw new PipelineActionError('video_not_found', `Pipeline video ${videoId} not found.`);
+  }
+  logger.info('auto-pipeline: per-video style override set', {
+    pipeline_video_id: videoId,
+    style_id: styleId,
+  });
+  return { styleId };
+}
+
+// ─── Re-run from a chosen stage ─────────────────────────────────────
+
+/**
+ * Re-run a video from a chosen stage. Distinct from `retryVideo` —
+ * which auto-picks the target from `TERMINAL_RETRY_TARGET` for terminal
+ * failures — in that the caller explicitly names the target stage.
+ *
+ * Validation:
+ *  - target must be in RERUN_TARGET_STAGES (no wait-states, no
+ *    qa_retry, no done).
+ *  - target must not be "ahead" of the current stage when the row is
+ *    non-terminal. Terminals get a free pass (you can re-run from
+ *    anywhere when the row is dead).
+ *  - target must have the required FKs already present on the row
+ *    (e.g., running_qa needs script_id; rerunning to a stage whose FKs
+ *    were never written would immediately re-fail). Reuses the same
+ *    safety map `resolveSafeRetryTarget` enforces.
+ *
+ * Effects: stage ← target, failure_class/message NULL, claimed_at
+ * NULL (lets the orchestrator reclaim a mid-flight row), retry_count
+ * += 1. Old downstream artefacts (`scripts`, `production_doc_entries`,
+ * …) are NOT deleted — they stay for audit, and the handler creates
+ * fresh rows on the next tick.
+ */
+export async function rerunVideoFromStage(args: {
+  workspaceId: string;
+  videoId: string;
+  targetStage: PipelineStage;
+}): Promise<{ fromStage: string; toStage: PipelineStage }> {
+  const { workspaceId, videoId, targetStage } = args;
+
+  if (!RERUN_TARGET_STAGES.includes(targetStage)) {
+    throw new PipelineActionError(
+      'invalid_target',
+      `targetStage "${targetStage}" is not a re-runnable stage. ` +
+        `Pick one of: ${RERUN_TARGET_STAGES.join(', ')}.`,
+    );
+  }
+
+  const { rows } = await sql.query<{
+    stage: string;
+    idea_id: string | null;
+    project_id: string | null;
+    script_id: string | null;
+  }>(
+    `
+    SELECT stage,
+           idea_id::text AS idea_id,
+           project_id::text AS project_id,
+           script_id::text AS script_id
+      FROM pipeline_run_videos
+     WHERE id = $1::uuid AND workspace_id = $2::uuid
+    `,
+    [videoId, workspaceId],
+  );
+  if (rows.length === 0) {
+    throw new PipelineActionError('video_not_found', `Pipeline video ${videoId} not found.`);
+  }
+  const row = rows[0];
+  const current = row.stage;
+  const currentIsTerminal = isPipelineStage(current) && TERMINAL_STAGES.has(current);
+
+  // Forward-fast guard: when the row is still in flight, the user can
+  // only re-run BACK to an earlier stage — never forward. Terminals
+  // get a free pass because by definition they've stopped.
+  if (!currentIsTerminal) {
+    const currentRank = STAGE_RERUN_RANK[current];
+    const targetRank = STAGE_RERUN_RANK[targetStage];
+    if (typeof currentRank === 'number' && typeof targetRank === 'number' && targetRank > currentRank) {
+      throw new PipelineActionError(
+        'cannot_fast_forward',
+        `Cannot re-run from a later stage (target "${targetStage}", current "${current}"). ` +
+          `Re-run only supports going BACK to an earlier stage.`,
+      );
+    }
+  }
+
+  // FK-aware safety net — refuse rerun targets whose handler would
+  // immediately fail on missing FKs. Same logic the auto-retry path
+  // already runs.
+  const safeTarget = resolveSafeRetryTarget(targetStage, row);
+  if (safeTarget !== targetStage) {
+    throw new PipelineActionError(
+      'missing_prereqs',
+      `Cannot re-run from "${targetStage}" — the row is missing FKs that stage requires. ` +
+        `Pick "${safeTarget}" or earlier.`,
+    );
+  }
+
+  await sql.query(
+    `
+    UPDATE pipeline_run_videos
+       SET stage = $1,
+           failure_class = NULL,
+           failure_message = NULL,
+           claimed_at = NULL,
+           claimed_by_tick = NULL,
+           retry_count = retry_count + 1,
+           updated_at = NOW()
+     WHERE id = $2::uuid AND workspace_id = $3::uuid
+    `,
+    [targetStage, videoId, workspaceId],
+  );
+
+  logger.info('auto-pipeline: video re-run from chosen stage', {
+    pipeline_video_id: videoId,
+    from_stage: current,
+    to_stage: targetStage,
+    from_terminal: currentIsTerminal,
+  });
+
+  return { fromStage: current, toStage: targetStage };
+}
+
+// ─── Run-level: swap the preset ─────────────────────────────────────
+
+/**
+ * Replace the preset a pipeline_run points at. Future stages on every
+ * video in this run pick up the new preset on their next cron tick;
+ * already-completed stages don't auto-rerun. Users who want stages
+ * redone with the new preset's settings click `rerun_from_stage` on
+ * the individual videos.
+ *
+ * Validates that the new preset belongs to the same workspace as the
+ * run. Cross-workspace presets surface as 404 (same pattern as the
+ * rest of this file).
+ */
+export async function swapRunPreset(args: {
+  workspaceId: string;
+  runId: string;
+  newPresetId: string;
+}): Promise<{ runId: string; oldPresetId: string; newPresetId: string }> {
+  const { workspaceId, runId, newPresetId } = args;
+
+  // Load run + verify both old and new preset are in the same
+  // workspace. Belt-and-suspenders: the FK to pipeline_presets is
+  // workspace-naive, so the workspace check has to happen here.
+  const { rows: runRows } = await sql.query<{ preset_id: string }>(
+    `
+    SELECT preset_id::text AS preset_id
+      FROM pipeline_runs
+     WHERE id = $1::uuid AND workspace_id = $2::uuid
+    `,
+    [runId, workspaceId],
+  );
+  if (runRows.length === 0) {
+    throw new PipelineActionError('run_not_found', `Pipeline run ${runId} not found.`);
+  }
+  const oldPresetId = runRows[0].preset_id;
+
+  if (oldPresetId === newPresetId) {
+    // Idempotent no-op.
+    return { runId, oldPresetId, newPresetId };
+  }
+
+  const { rows: presetRows } = await sql.query<{ id: string }>(
+    `SELECT id::text AS id FROM pipeline_presets WHERE id = $1::uuid AND workspace_id = $2::uuid`,
+    [newPresetId, workspaceId],
+  );
+  if (presetRows.length === 0) {
+    throw new PipelineActionError('preset_not_found', `Preset ${newPresetId} not in this workspace.`);
+  }
+
+  await sql.query(
+    `UPDATE pipeline_runs SET preset_id = $1::uuid WHERE id = $2::uuid AND workspace_id = $3::uuid`,
+    [newPresetId, runId, workspaceId],
+  );
+
+  logger.info('auto-pipeline: run preset swapped', {
+    pipeline_run_id: runId,
+    workspace_id: workspaceId,
+    old_preset_id: oldPresetId,
+    new_preset_id: newPresetId,
+  });
+
+  return { runId, oldPresetId, newPresetId };
 }

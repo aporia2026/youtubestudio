@@ -37,6 +37,10 @@ export interface VideoSummary {
   thumbnail_url: string | null;
   editor_assignment_id: string | null;
   narration_deadline_at: string | null;
+  /** Per-video script-style override (migration 0094). Wins over the
+   *  run preset's script_style_preset_id and production_doc_style_id.
+   *  Null = inherit from the preset chain. */
+  script_style_preset_override_id: string | null;
   updated_at: string;
   /** Non-null when the cron is actively executing this video's stage
    *  handler. The single most truthful "is it working right now" signal. */
@@ -268,11 +272,19 @@ export default function PipelineDetailPage({ params }: { params: Promise<{ id: s
           )}
         </div>
       </div>
-      <p className="text-sm mt-1 mb-3" style={{ color: 'var(--text-muted)' }}>
+      <p className="text-sm mt-1 mb-2" style={{ color: 'var(--text-muted)' }}>
         {run.ideas_count} videos · QA threshold {run.qa_min_score} ·
         Script gate {run.script_gate_enabled ? 'on' : 'off'} · Created{' '}
         {new Date(run.created_at).toLocaleString()}
       </p>
+      <div className="mb-3">
+        <PresetSwap
+          runId={runId}
+          currentPresetId={run.preset_id}
+          currentPresetName={run.preset_name}
+          onSwapped={() => void refresh()}
+        />
+      </div>
 
       {run.status !== 'idea_ranking' && (
         <ProgressStrip
@@ -738,4 +750,157 @@ export function formatAgo(timestamp: number | string): string {
   if (diffHr < 24) return `${diffHr}h ago`;
   const diffDay = Math.floor(diffHr / 24);
   return `${diffDay}d ago`;
+}
+
+interface PresetListRow {
+  id: string;
+  name: string;
+  niche: string | null;
+}
+
+/**
+ * Run-level preset swap. PATCHes pipeline_runs.preset_id so future
+ * stages on every video in the run pick up the new preset's settings
+ * on the next cron tick. Already-completed stages don't auto-rerun —
+ * the user explicitly re-runs the videos they want redone via the
+ * per-video "Re-run from..." dropdown.
+ *
+ * Default collapsed: shows "Preset: <name> · Change" as a single
+ * inline link. Expand to reveal the picker. Keeps the header tidy
+ * while making the affordance discoverable.
+ */
+function PresetSwap({
+  runId,
+  currentPresetId,
+  currentPresetName,
+  onSwapped,
+}: {
+  runId: string;
+  currentPresetId: string;
+  currentPresetName: string;
+  onSwapped: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [presets, setPresets] = useState<PresetListRow[]>([]);
+  const [selectedId, setSelectedId] = useState<string>(currentPresetId);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || presets.length > 0) return;
+    setLoading(true);
+    void fetch('/api/auto-pipeline/presets', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : { presets: [] }))
+      .then((d) => setPresets((d.presets as PresetListRow[]) ?? []))
+      .catch(() => setPresets([]))
+      .finally(() => setLoading(false));
+  }, [open, presets.length]);
+
+  async function save() {
+    if (selectedId === currentPresetId) {
+      setOpen(false);
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await fetch(`/api/auto-pipeline/runs/${runId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preset_id: selectedId }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || `HTTP ${res.status}`);
+      }
+      setOpen(false);
+      onSwapped();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to swap preset');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <div className="text-xs flex items-center gap-2" style={{ color: 'var(--text-muted)' }}>
+        <span>Preset:</span>
+        <span style={{ color: 'var(--text-secondary)' }}>{currentPresetName}</span>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="hover:underline"
+          style={{ color: 'var(--accent-purple-bright)' }}
+          title="Swap this run's preset. Future stages on every video pick up the new settings on the next cron tick. Already-completed stages stay as-is — use per-video Re-run for those."
+        >
+          Change
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="rounded-lg p-3 text-sm"
+      style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+    >
+      <div className="flex items-baseline justify-between mb-2 gap-2 flex-wrap">
+        <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+          Change preset
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(false);
+            setSelectedId(currentPresetId);
+            setErr(null);
+          }}
+          className="text-xs hover:underline"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          Cancel
+        </button>
+      </div>
+      <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+        Future stages on every video in this run will use the new preset on the next cron tick.
+        Already-completed stages stay as they are — use a video&apos;s &ldquo;Re-run from&rdquo; control
+        to redo them under the new preset.
+      </p>
+      <div className="flex items-center gap-2 flex-wrap">
+        <select
+          value={selectedId}
+          onChange={(e) => setSelectedId(e.target.value)}
+          disabled={loading || saving}
+          className="text-sm px-3 py-1.5 rounded"
+          style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)', minWidth: 240 }}
+        >
+          {loading && <option>Loading…</option>}
+          {!loading &&
+            presets.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+                {p.niche ? ` — ${p.niche}` : ''}
+                {p.id === currentPresetId ? ' (current)' : ''}
+              </option>
+            ))}
+        </select>
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={saving || loading || selectedId === currentPresetId}
+          className="btn-primary text-xs disabled:opacity-60"
+          style={{ padding: '6px 12px' }}
+        >
+          {saving ? 'Swapping…' : 'Apply'}
+        </button>
+      </div>
+      {err && (
+        <div className="mt-2 text-xs" style={{ color: '#f87171' }}>
+          {err}
+        </div>
+      )}
+    </div>
+  );
 }

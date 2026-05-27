@@ -120,13 +120,19 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
   const generatorV2Enabled = resolveToggle(qaSettings?.generatorV2 ?? 'inherit', QA_GENERATOR_V2_ENABLED);
   const preCheckEnabled = resolveToggle(qaSettings?.preCheck ?? 'inherit', QA_PRE_CHECK_ENABLED);
 
-  // Style preset: prefer the dedicated script_style_preset_id when
-  // set, otherwise fall back to production_doc_style_id (so a preset
-  // that only set the visual style also flavors the script — matches
-  // the standalone Script Generator's single-stylePreset UX). Both
-  // null → resolvedStyle stays null → prompt is byte-identical to
-  // the pre-style code path. Cross-workspace ids return null too.
-  const effectiveStyleId = preset.script_style_preset_id ?? preset.production_doc_style_id;
+  // Style preset resolution chain (highest priority first):
+  //   1. video.script_style_preset_override_id (per-video — mig 0094)
+  //   2. preset.script_style_preset_id          (per-preset — mig 0093)
+  //   3. preset.production_doc_style_id         (per-preset — mig 0052)
+  //   4. null                                    (no style preset)
+  //
+  // Each layer can be cleared independently. Cross-workspace ids
+  // return null too. All-null = prompt byte-identical to the
+  // pre-style code path.
+  const effectiveStyleId =
+    video.script_style_preset_override_id
+    ?? preset.script_style_preset_id
+    ?? preset.production_doc_style_id;
   const resolvedStyle = effectiveStyleId
     ? await resolveStyle(effectiveStyleId, video.workspace_id)
     : null;
@@ -135,6 +141,10 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
       pipeline_video_id: video.id,
       preset_id: preset.id,
       style_id: effectiveStyleId,
+      source:
+        video.script_style_preset_override_id ? 'video_override'
+        : preset.script_style_preset_id ? 'preset_script_style'
+        : 'preset_visual_style',
     });
   }
 

@@ -124,6 +124,13 @@ const FAILED: ReadonlySet<string> = new Set([
   'cost_cap_exceeded',
 ]);
 
+interface StyleOption {
+  id: string;
+  name: string;
+  description?: string | null;
+  origin: 'built-in' | 'saved';
+}
+
 export default function VideoCard({
   video,
   onChanged,
@@ -136,6 +143,10 @@ export default function VideoCard({
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Style catalogue — loaded lazily on first expand so the collapsed
+  // list of cards stays cheap. Used by the per-video override picker
+  // AND by the inline regenerate picker in ScriptGate.
+  const [styles, setStyles] = useState<StyleOption[] | null>(null);
 
   async function loadDetail() {
     setLoadingDetail(true);
@@ -150,10 +161,26 @@ export default function VideoCard({
     }
   }
 
+  async function loadStyles() {
+    if (styles !== null) return;
+    try {
+      const res = await fetch('/api/production-doc/styles', { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        setStyles((data.styles as StyleOption[]) ?? []);
+      } else {
+        setStyles([]);
+      }
+    } catch {
+      setStyles([]);
+    }
+  }
+
   function toggle() {
     setExpanded((prev) => {
       const next = !prev;
       if (next && !detail) void loadDetail();
+      if (next && styles === null) void loadStyles();
       return next;
     });
   }
@@ -290,11 +317,42 @@ export default function VideoCard({
                   estimatedDurationSeconds={detail.video.script_estimated_duration_seconds}
                   ideaTitle={video.idea_title}
                   busyAction={busyAction}
+                  styles={styles ?? []}
+                  currentOverrideId={video.script_style_preset_override_id}
                   onKeep={() => callAction({ action: 'script_gate', decision: 'keep' })}
-                  onRegenerate={() => callAction({ action: 'script_gate', decision: 'regenerate' })}
+                  onRegenerate={(styleOverrideId) =>
+                    callAction({
+                      action: 'script_gate',
+                      decision: 'regenerate',
+                      // Pass the picker's value only when it differs from
+                      // the persisted override — sending `undefined` (as
+                      // an absent property) leaves the override untouched.
+                      // Sending the same value again is a harmless no-op.
+                      ...(styleOverrideId !== undefined
+                        ? { style_override_id: styleOverrideId }
+                        : {}),
+                    })
+                  }
                   onKill={() => callAction({ action: 'script_gate', decision: 'kill' })}
                 />
               )}
+
+              {/* Per-video edit panel — style override + re-run from
+                  stage. Appears below the gate (or replaces it when the
+                  video isn't gate-paused) so the user can iterate on
+                  any video, in any state. */}
+              <EditPanel
+                video={video}
+                styles={styles ?? []}
+                busyAction={busyAction}
+                onSetStyleOverride={(styleId) =>
+                  callAction({ action: 'set_style_override', style_id: styleId })
+                }
+                onRerunFromStage={(targetStage) =>
+                  callAction({ action: 'rerun_from_stage', target_stage: targetStage })
+                }
+              />
+
 
               {(video.stage === 'waiting_narration' || video.stage === 'narration_overdue') && (
                 <div className="p-3 rounded-lg" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
@@ -585,8 +643,15 @@ function ScriptGate(props: {
   estimatedDurationSeconds: number | null;
   ideaTitle: string | null;
   busyAction: string | null;
+  styles: StyleOption[];
+  currentOverrideId: string | null;
   onKeep: () => void;
-  onRegenerate: () => void;
+  /** styleOverrideId semantics:
+   *   undefined → don't touch the persisted per-video override.
+   *   null      → clear any persisted override (inherit from preset chain).
+   *   <uuid>    → set the override BEFORE running the regen.
+   */
+  onRegenerate: (styleOverrideId?: string | null) => void;
   onKill: () => void;
 }) {
   const {
@@ -595,10 +660,27 @@ function ScriptGate(props: {
     estimatedDurationSeconds,
     ideaTitle,
     busyAction,
+    styles,
+    currentOverrideId,
     onKeep,
     onRegenerate,
     onKill,
   } = props;
+
+  // Picker state — initialised to the persisted override (so the
+  // dropdown reflects the current setting on open). Special sentinel
+  // '__unchanged__' = "keep whatever is persisted, send undefined."
+  // Any other value (incl. '') is sent verbatim — '' becomes null.
+  const UNCHANGED = '__unchanged__';
+  const [picker, setPicker] = useState<string>(UNCHANGED);
+
+  function handleRegenerate() {
+    if (picker === UNCHANGED) {
+      onRegenerate();
+      return;
+    }
+    onRegenerate(picker === '' ? null : picker);
+  }
 
   // Empty `scripts.content` row — usually a stream error from a
   // generation that failed mid-flight (the underlying bug was fixed
@@ -628,9 +710,16 @@ function ScriptGate(props: {
             For: {ideaTitle}
           </div>
         )}
-        <div className="flex gap-2 flex-wrap">
+        <InlineStylePicker
+          styles={styles}
+          currentOverrideId={currentOverrideId}
+          value={picker}
+          unchangedSentinel={UNCHANGED}
+          onChange={setPicker}
+        />
+        <div className="flex gap-2 flex-wrap mt-3">
           <button
-            onClick={onRegenerate}
+            onClick={handleRegenerate}
             disabled={!!busyAction}
             className="btn-primary text-xs"
             style={{ padding: '8px 14px' }}
@@ -689,7 +778,14 @@ function ScriptGate(props: {
       >
         {scriptContent}
       </div>
-      <div className="flex gap-2 flex-wrap">
+      <InlineStylePicker
+        styles={styles}
+        currentOverrideId={currentOverrideId}
+        value={picker}
+        unchangedSentinel={UNCHANGED}
+        onChange={setPicker}
+      />
+      <div className="flex gap-2 flex-wrap mt-3">
         <button
           onClick={onKeep}
           disabled={!!busyAction}
@@ -699,7 +795,7 @@ function ScriptGate(props: {
           Keep → run AI script review
         </button>
         <button
-          onClick={onRegenerate}
+          onClick={handleRegenerate}
           disabled={!!busyAction}
           className="btn-secondary text-xs"
           style={{ padding: '8px 14px' }}
@@ -720,6 +816,223 @@ function ScriptGate(props: {
     </div>
   );
 }
+
+/**
+ * The inline style picker shown above the Regenerate button in the
+ * ScriptGate. Lets the user override the style for THIS regeneration
+ * (and persisted on the per-video override column — see
+ * applyScriptGateDecision for why we don't make it ephemeral).
+ *
+ * Three states the picker can be in:
+ *   - "Don't change" (sentinel) — Regenerate uses the persisted setting.
+ *   - "" (empty) — Regenerate clears any persisted override; the script
+ *     stage will inherit from the run preset's chain.
+ *   - <uuid>    — Regenerate sets THIS style as the per-video override.
+ */
+function InlineStylePicker({
+  styles,
+  currentOverrideId,
+  value,
+  unchangedSentinel,
+  onChange,
+}: {
+  styles: StyleOption[];
+  currentOverrideId: string | null;
+  value: string;
+  unchangedSentinel: string;
+  onChange: (v: string) => void;
+}) {
+  if (styles.length === 0) return null;
+  const currentLabel = currentOverrideId
+    ? styles.find((s) => s.id === currentOverrideId)?.name ?? 'Custom (deleted?)'
+    : null;
+  return (
+    <div className="flex items-center gap-2 flex-wrap text-xs" style={{ color: 'var(--text-muted)' }}>
+      <span>Style for next regen:</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="px-2 py-1 rounded"
+        style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+      >
+        <option value={unchangedSentinel}>
+          Keep current{currentLabel ? ` (${currentLabel})` : currentOverrideId ? '' : ' (none)'}
+        </option>
+        <option value="">Clear override — inherit from preset</option>
+        {styles.map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.name}
+            {s.origin === 'built-in' ? ' (built-in)' : ''}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+/**
+ * Per-video edit controls — style override + re-run from stage.
+ * Always rendered when the card is expanded so the user can iterate
+ * on any video, in any state.
+ */
+function EditPanel({
+  video,
+  styles,
+  busyAction,
+  onSetStyleOverride,
+  onRerunFromStage,
+}: {
+  video: VideoSummary;
+  styles: StyleOption[];
+  busyAction: string | null;
+  onSetStyleOverride: (styleId: string | null) => void;
+  onRerunFromStage: (targetStage: string) => void;
+}) {
+  // Style override picker — initialised from the video's persisted
+  // value. Saves on change (no Apply button — single-field forms
+  // benefit from immediate persistence so the user can move on).
+  const [stylePending, setStylePending] = useState(false);
+
+  function handleStyleChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const next = e.target.value;
+    if (next === (video.script_style_preset_override_id ?? '')) return;
+    setStylePending(true);
+    onSetStyleOverride(next === '' ? null : next);
+    // Optimistic: the parent's onChanged → refresh will reflect the
+    // new value within ~POLL_SECONDS. Until then, the dropdown shows
+    // the user's pick (because React preserves the controlled value
+    // until the prop updates).
+    setTimeout(() => setStylePending(false), 1000);
+  }
+
+  function handleRerun(stage: string) {
+    if (!stage) return;
+    if (!confirm(`Re-run this video from "${RERUN_TARGET_LABELS[stage] ?? stage}"? Old downstream artefacts (scripts, doc, thumb, SEO) stay in the database but stop being current.`)) {
+      return;
+    }
+    onRerunFromStage(stage);
+  }
+
+  // Compute which rerun targets are eligible. Terminal rows get all
+  // RERUN_TARGET_STAGES; in-flight rows get only the prefix up to and
+  // including their current rank.
+  const isTerm = TERMINAL.has(video.stage);
+  const currentRank = STAGE_RERUN_RANK[video.stage];
+  const eligibleStages = isTerm
+    ? RERUN_TARGET_STAGES_UI
+    : typeof currentRank === 'number'
+    ? RERUN_TARGET_STAGES_UI.filter((s) => (STAGE_RERUN_RANK[s] ?? 0) <= currentRank)
+    : [];
+
+  return (
+    <div
+      className="rounded-lg p-3 text-sm"
+      style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+    >
+      <div className="text-xs uppercase tracking-wider font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>
+        Edit · re-run
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <label className="block">
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Script style for this video</span>
+          <select
+            value={video.script_style_preset_override_id ?? ''}
+            onChange={handleStyleChange}
+            disabled={!!busyAction || stylePending || styles.length === 0}
+            className="mt-1 w-full px-2 py-1.5 rounded text-sm"
+            style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+            title="Override the run preset's script style for THIS video only. Blank = inherit from the run preset's chain."
+          >
+            <option value="">— Inherit from run preset —</option>
+            {styles.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+                {s.origin === 'built-in' ? ' (built-in)' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Re-run from stage</span>
+          <select
+            defaultValue=""
+            onChange={(e) => {
+              handleRerun(e.target.value);
+              // Reset the dropdown back to placeholder after the call
+              // fires so the user can pick another target on a stuck row.
+              e.currentTarget.value = '';
+            }}
+            disabled={!!busyAction || eligibleStages.length === 0}
+            className="mt-1 w-full px-2 py-1.5 rounded text-sm"
+            style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+            title="Reset this video to just before the chosen stage. Old downstream artefacts stay in the DB but stop being current. retry_count bumps."
+          >
+            <option value="">— Pick a stage to re-run from —</option>
+            {eligibleStages.map((s) => (
+              <option key={s} value={s}>
+                {RERUN_TARGET_LABELS[s] ?? s}
+              </option>
+            ))}
+          </select>
+          {eligibleStages.length === 0 && (
+            <span className="text-[11px] mt-1 inline-block" style={{ color: 'var(--text-muted)' }}>
+              Nothing to re-run from yet — the row hasn&apos;t completed any rerun-target stage.
+            </span>
+          )}
+        </label>
+      </div>
+    </div>
+  );
+}
+
+/** UI-friendly labels for re-run target stages. Kept in this file
+ *  (rather than reused from STAGE_LABEL above) because the rerun-
+ *  target wording is action-oriented ("Idea generation") while
+ *  STAGE_LABEL is status-oriented ("Generating idea"). */
+const RERUN_TARGET_LABELS: Record<string, string> = {
+  queued: 'Start (queued)',
+  generating_idea: 'Idea generation',
+  generating_script: 'Script generation',
+  running_qa: 'AI script review (QA)',
+  generating_production_doc: 'Production doc',
+  generating_thumbnail: 'Thumbnail',
+  assigning_to_editor: 'Editor handoff',
+  generating_seo: 'SEO metadata',
+};
+
+/** Subset of stages a user can pick from in the UI dropdown. Matches
+ *  the server-side RERUN_TARGET_STAGES contract; kept inlined to
+ *  avoid a server-side import in this client component. */
+const RERUN_TARGET_STAGES_UI = [
+  'queued',
+  'generating_idea',
+  'generating_script',
+  'running_qa',
+  'generating_production_doc',
+  'generating_thumbnail',
+  'assigning_to_editor',
+  'generating_seo',
+] as const;
+
+/** Rerun rank — mirrors STAGE_RERUN_RANK in actions.ts. Lives here
+ *  to spare the client a server-side import. The ordering is the
+ *  contract; if the server map changes, update both sides together. */
+const STAGE_RERUN_RANK: Record<string, number> = {
+  queued: 0,
+  generating_idea: 1,
+  generating_script: 2,
+  awaiting_script_gate: 2,
+  running_qa: 3,
+  qa_retry: 3,
+  waiting_narration: 3,
+  narration_overdue: 3,
+  narration_complete: 4,
+  generating_production_doc: 4,
+  generating_thumbnail: 5,
+  assigning_to_editor: 6,
+  generating_seo: 7,
+  done: 8,
+};
 
 function FixListDisplay({ fixes, attemptNumber }: { fixes: FlatFix[]; attemptNumber: number }) {
   if (!Array.isArray(fixes) || fixes.length === 0) return null;

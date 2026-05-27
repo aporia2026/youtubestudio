@@ -1,6 +1,7 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
-import { apiRoute } from '@/lib/route-helpers';
+import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
+import { swapRunPreset, PipelineActionError } from '@/lib/auto-pipeline/actions';
 
 interface VideoRow {
   id: string;
@@ -20,6 +21,9 @@ interface VideoRow {
   thumbnail_url: string | null;
   editor_assignment_id: string | null;
   narration_deadline_at: string | null;
+  /** Per-video script-style override. Surfaces in the VideoCard's
+   *  "Style for this video" dropdown. Migration 0094. */
+  script_style_preset_override_id: string | null;
   updated_at: string;
   /** Non-null when the cron has this row checked out and is executing
    *  its stage handler right now. Read on the client as the strongest
@@ -30,6 +34,8 @@ interface VideoRow {
    *  mid-handler)" once we surface tick-age in the UI. */
   claimed_by_tick: string | null;
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * GET /api/auto-pipeline/runs/[id] — detail view for /pipeline/[id].
@@ -95,6 +101,7 @@ export const GET = apiRoute.authed<{ id: string }>(async (session, _req, ctx) =>
            v.thumbnail_url,
            v.editor_assignment_id::text AS editor_assignment_id,
            v.narration_deadline_at::text AS narration_deadline_at,
+           v.script_style_preset_override_id::text AS script_style_preset_override_id,
            v.updated_at::text AS updated_at,
            v.claimed_at::text AS claimed_at,
            v.claimed_by_tick
@@ -110,4 +117,50 @@ export const GET = apiRoute.authed<{ id: string }>(async (session, _req, ctx) =>
   );
 
   return NextResponse.json({ run: runRows[0], videos: videoRows });
+});
+
+/**
+ * PATCH /api/auto-pipeline/runs/[id]
+ *
+ * Today supports one field:
+ *   { preset_id: string }   — re-points the run at a different preset.
+ *
+ * Future stages on every video in the run pick up the new preset on
+ * their next cron tick. Already-completed stages don't auto-rerun;
+ * users explicitly rerun the videos they want redone via
+ * /api/auto-pipeline/videos/[id]/actions { action: 'rerun_from_stage' }.
+ */
+export const PATCH = apiRoute.authed<{ id: string }>(async (session, req: NextRequest, ctx) => {
+  const { id } = await ctx.params;
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+
+  try {
+    if (b.preset_id !== undefined) {
+      if (typeof b.preset_id !== 'string' || !UUID_RE.test(b.preset_id)) {
+        return NextResponse.json({ error: 'preset_id must be a UUID' }, { status: 400 });
+      }
+      const result = await swapRunPreset({
+        workspaceId: session.ws,
+        runId: id,
+        newPresetId: b.preset_id,
+      });
+      return NextResponse.json(result);
+    }
+    return NextResponse.json({ error: 'No supported field in body' }, { status: 400 });
+  } catch (err) {
+    if (err instanceof PipelineActionError) {
+      const status = err.code === 'run_not_found' || err.code === 'preset_not_found' ? 404 : 400;
+      return NextResponse.json({ error: err.message, code: err.code }, { status });
+    }
+    return domainErrorResponse(err, {
+      op: 'auto-pipeline: patch run',
+      fallbackMessage: 'Failed to update run.',
+    });
+  }
 });

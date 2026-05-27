@@ -157,6 +157,11 @@ export interface PipelineRunVideoRow {
   thumbnail_url: string | null;
   editor_assignment_id: string | null;
   narration_deadline_at: Date | null;
+  /** Per-video override for the script-stage style preset. When set,
+   *  takes precedence over preset.script_style_preset_id (and over
+   *  preset.production_doc_style_id). Null = inherit from the preset
+   *  chain. Migration 0094. */
+  script_style_preset_override_id: string | null;
   claimed_at: Date | null;
   claimed_by_tick: string | null;
   created_at: Date;
