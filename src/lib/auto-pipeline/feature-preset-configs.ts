@@ -33,12 +33,17 @@ export interface FeaturePresetField {
   label?: string;
   /** Tooltip / help text shown beneath the input. */
   hint?: string;
-  /** Force a widget choice. Defaults inferred from type + maxLength. */
-  widget?: 'input' | 'textarea';
+  /** Force a widget choice. Defaults inferred from type + maxLength.
+   *  - `input` / `textarea` — auto-inferred from type/maxLength
+   *  - `style-picker` — UUID dropdown sourced from /api/production-doc/styles
+   *  - `collaborator-picker` — UUID dropdown sourced from /api/team/collaborators */
+  widget?: 'input' | 'textarea' | 'style-picker' | 'collaborator-picker';
   /** Number of rows for textarea widgets. */
   rows?: number;
   /** Placeholder. */
   placeholder?: string;
+  /** For collaborator-picker: filter the list by role (e.g. 'narrator'). */
+  collaboratorRole?: string;
 }
 
 export interface FeaturePresetConfig {
@@ -77,6 +82,10 @@ export const SCRIPT_PRESET_CONFIG: FeaturePresetConfig = {
       label: 'Reference context / videos',
       widget: 'textarea', rows: 3,
       hint: 'Optional. Transcripts, URLs, or notes the writer should treat as reference.' },
+    { column: 'script_style_preset_id', type: 'uuid',
+      widget: 'style-picker',
+      label: 'Visual / voice style',
+      hint: "Drives the script's voice. Falls back to the pipeline preset's Visual style preset when left blank." },
   ],
 };
 
@@ -113,6 +122,11 @@ export const NARRATION_PRESET_CONFIG: FeaturePresetConfig = {
     { column: 'description', type: 'text', maxLength: 500, label: 'Description' },
     { column: 'deadline_days', type: 'int', min: 1, max: 90, label: 'Deadline (days)',
       hint: 'How long the narrator has from assignment before the pipeline flags it overdue.' },
+    { column: 'preferred_narrator_collaborator_id', type: 'uuid',
+      widget: 'collaborator-picker',
+      collaboratorRole: 'narrator',
+      label: 'Preferred narrator',
+      hint: 'Optional. Default narrator assigned when a video in this batch reaches narration. Leave blank to assign manually.' },
   ],
 };
 

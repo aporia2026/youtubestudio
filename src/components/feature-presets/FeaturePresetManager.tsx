@@ -368,6 +368,26 @@ function FieldRenderer({
             <option key={v} value={v}>{v}</option>
           ))}
         </select>
+      ) : widget === 'style-picker' ? (
+        <RemoteIdPicker
+          id={id}
+          value={typeof value === 'string' ? value : ''}
+          onChange={(v) => onChange(v || null)}
+          endpoint="/api/production-doc/styles"
+          listKey="styles"
+          labelKey="label"
+          placeholder="— No style preset —"
+        />
+      ) : widget === 'collaborator-picker' ? (
+        <RemoteIdPicker
+          id={id}
+          value={typeof value === 'string' ? value : ''}
+          onChange={(v) => onChange(v || null)}
+          endpoint={`/api/team/collaborators${field.collaboratorRole ? `?role=${encodeURIComponent(field.collaboratorRole)}` : ''}`}
+          listKey={null}
+          labelKey="name"
+          placeholder="— Not set —"
+        />
       ) : widget === 'textarea' ? (
         <textarea
           id={id}
@@ -403,4 +423,91 @@ function FieldRenderer({
 function inferWidget(field: FeaturePresetField): 'input' | 'textarea' {
   if (field.type === 'text' && field.maxLength && field.maxLength > 500) return 'textarea';
   return 'input';
+}
+
+/**
+ * Generic UUID picker that fetches a list from a remote endpoint and
+ * renders a dropdown. Used for style-picker (/api/production-doc/styles
+ * → array of `{ id, label }`) and collaborator-picker (/api/team/
+ * collaborators → array of `{ id, name }`).
+ *
+ * `listKey` tells us where the array lives in the response:
+ *   - 'styles' → `data.styles[]` (production-doc styles endpoint)
+ *   - null     → response IS the array (collaborators endpoint)
+ *
+ * Errors are swallowed silently — an empty dropdown is more useful
+ * than a broken form. The hint text on the field itself tells the
+ * user what to do if nothing shows up.
+ */
+function RemoteIdPicker({
+  id,
+  value,
+  onChange,
+  endpoint,
+  listKey,
+  labelKey,
+  placeholder,
+}: {
+  id: string;
+  value: string;
+  onChange: (v: string) => void;
+  endpoint: string;
+  listKey: string | null;
+  labelKey: string;
+  placeholder: string;
+}) {
+  const [options, setOptions] = useState<Array<{ id: string; label: string }>>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    void fetch(endpoint, { cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : null))
+      .then((data: unknown) => {
+        if (cancelled) return;
+        if (data === null || data === undefined) {
+          setOptions([]);
+          return;
+        }
+        const arr = listKey === null
+          ? (Array.isArray(data) ? data : [])
+          : (Array.isArray((data as Record<string, unknown>)[listKey])
+              ? ((data as Record<string, unknown>)[listKey] as unknown[])
+              : []);
+        const mapped: Array<{ id: string; label: string }> = [];
+        for (const row of arr) {
+          if (typeof row !== 'object' || row === null) continue;
+          const r = row as Record<string, unknown>;
+          const rid = typeof r.id === 'string' ? r.id : null;
+          if (!rid) continue;
+          const lbl = typeof r[labelKey] === 'string' ? (r[labelKey] as string) : rid;
+          mapped.push({ id: rid, label: lbl });
+        }
+        setOptions(mapped);
+      })
+      .catch(() => {
+        if (!cancelled) setOptions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [endpoint, listKey, labelKey]);
+
+  return (
+    <select
+      id={id}
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      disabled={loading && options.length === 0}
+      className="input-field"
+    >
+      <option value="">{loading ? 'Loading…' : placeholder}</option>
+      {options.map(o => (
+        <option key={o.id} value={o.id}>{o.label}</option>
+      ))}
+    </select>
+  );
 }
