@@ -9,6 +9,7 @@ import {
   retryVideo,
   rerunVideoFromStage,
   setVideoStyleOverride,
+  setVideoVisualStyleOverride,
   setVideoCustomInstructions,
   PipelineActionError,
   type ScriptGateDecision,
@@ -31,6 +32,7 @@ import { isPipelineStage } from '@/lib/auto-pipeline/types';
  *   - retry:                   body = { action: 'retry' }            — auto-picks target stage from TERMINAL_RETRY_TARGET
  *   - rerun_from_stage:        body = { action: 'rerun_from_stage', target_stage: PipelineStage } — explicit target
  *   - set_style_override:      body = { action: 'set_style_override', style_id: string | null }
+ *   - set_visual_style_override: body = { action: 'set_visual_style_override', style_id: string | null }
  *   - set_custom_instructions: body = { action: 'set_custom_instructions', custom_instructions: string | null }
  */
 
@@ -148,6 +150,21 @@ export const POST = apiRoute.authed<{ id: string }>(async (session, req: NextReq
           return NextResponse.json({ error: 'style_id is required (UUID or null)' }, { status: 400 });
         }
         const result = await setVideoStyleOverride({ workspaceId: session.ws, videoId, styleId });
+        return NextResponse.json(result);
+      }
+      case 'set_visual_style_override': {
+        let styleId: string | null;
+        if (b.style_id === null) {
+          styleId = null;
+        } else if (typeof b.style_id === 'string') {
+          if (!UUID_RE.test(b.style_id)) {
+            return NextResponse.json({ error: 'style_id must be a UUID or null' }, { status: 400 });
+          }
+          styleId = b.style_id;
+        } else {
+          return NextResponse.json({ error: 'style_id is required (UUID or null)' }, { status: 400 });
+        }
+        const result = await setVideoVisualStyleOverride({ workspaceId: session.ws, videoId, styleId });
         return NextResponse.json(result);
       }
       case 'set_custom_instructions': {

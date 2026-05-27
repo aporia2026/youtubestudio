@@ -45,6 +45,10 @@ export interface VideoSummary {
    *  the run preset's script_rules_jsonb.additionalContext when non-null.
    *  Empty string is a valid "explicit clear" override. */
   script_additional_context_override: string | null;
+  /** Per-video visual / production-doc style override (migration 0096).
+   *  Wins over the run preset's production_doc_style_id inside the
+   *  production-doc handler. Null = inherit from the preset. */
+  production_doc_style_override_id: string | null;
   updated_at: string;
   /** Non-null when the cron is actively executing this video's stage
    *  handler. The single most truthful "is it working right now" signal. */

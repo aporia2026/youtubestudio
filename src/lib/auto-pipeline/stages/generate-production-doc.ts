@@ -68,19 +68,38 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
   const niche = scriptRows[0].niche || preset.niche || '';
   const topic = scriptRows[0].title || undefined;
 
-  // Resolve the production-doc style (if the preset references
-  // one). Pure DB read — null when no style is configured.
+  // Resolve the visual style (migration 0096 layered the per-video
+  // override on top of the per-preset value):
+  //
+  //   1. video.production_doc_style_override_id  (per-video — new)
+  //   2. preset.production_doc_style_id          (per-preset)
+  //   3. null                                     (no style)
+  //
+  // First non-null wins. Cross-workspace ids return null via the
+  // SELECT's workspace filter. When both are null, no style is
+  // injected and the prompt is byte-identical to the pre-style path.
+  const effectiveVisualStyleId =
+    video.production_doc_style_override_id ?? preset.production_doc_style_id;
   let style: { id: string; ai_image_suffix: string | null; mixing_rules: string | null; allow_overlay_stock: boolean | null } | null = null;
-  if (preset.production_doc_style_id) {
+  if (effectiveVisualStyleId) {
     const { rows } = await sql.query<{ id: string; ai_image_suffix: string | null; mixing_rules: string | null; allow_overlay_stock: boolean | null }>(
       `
       SELECT id::text AS id, ai_image_suffix, mixing_rules, allow_overlay_stock
         FROM production_doc_styles
        WHERE id = $1::uuid AND workspace_id = $2::uuid
       `,
-      [preset.production_doc_style_id, video.workspace_id],
+      [effectiveVisualStyleId, video.workspace_id],
     );
-    if (rows.length > 0) style = rows[0];
+    if (rows.length > 0) {
+      style = rows[0];
+    } else {
+      logger.warn('[pipeline production-doc] style referenced but not resolvable', {
+        pipeline_video_id: video.id,
+        preset_id: preset.id,
+        style_id: effectiveVisualStyleId,
+        source: video.production_doc_style_override_id ? 'video_override' : 'preset',
+      });
+    }
   }
 
   const chain = await resolveChain('production-doc', preset);

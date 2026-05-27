@@ -56,6 +56,7 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
   const [savingScript, setSavingScript] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
   const [autoContinuing, setAutoContinuing] = useState(false);
+  const [autoContinueOpen, setAutoContinueOpen] = useState(false);
   // Track the last successfully saved text so blur+blur with no edit doesn't create duplicate versions.
   const lastSavedRef = useRef<string>('');
 
@@ -164,52 +165,64 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
   }
 
   /**
-   * Spin up an auto-pipeline run for THIS schedule item's project,
-   * starting at narration_complete. Skips idea/script/QA/narration
-   * wait entirely — the cron picks it up and runs production doc →
-   * thumbnail → editor handoff → SEO.
+   * Open the Auto-continue modal. The modal is the actual entry point
+   * now — it fetches presets + visual styles and lets the user pick
+   * BEFORE the run is created, so they're not stuck with whatever
+   * style happened to be on the first preset. The modal does the
+   * fetch/create dance and routes to /pipeline/[runId].
    *
    * Prerequisites: project_id + script_id must be set on the item.
    * Without them, the production-doc handler would immediately fail
    * its invariant guard; we surface that as a disabled button rather
    * than a 400 mid-fetch.
-   *
-   * Preset: defaults to the first preset in the workspace. If there
-   * are none, route the user to /pipeline/presets to create one
-   * (the pipeline run can't exist without one).
    */
-  async function autoContinue() {
+  function autoContinue() {
     if (!item.project_id || !item.script_id) {
       toast.error('Save a script to a project first.');
       return;
     }
+    setAutoContinueOpen(true);
+  }
+
+  /** Modal's "Start" handler — invoked after the user picks preset +
+   *  visual style. Creates the pipeline_run, optionally applies the
+   *  per-video visual-style override, then navigates. */
+  async function autoContinueSubmit(args: {
+    presetId: string;
+    presetName: string;
+    visualStyleOverrideId: string | null;
+  }) {
+    if (!item.project_id) return;
     setAutoContinuing(true);
+    console.info('[schedule auto-continue] submit', {
+      item_id: item.id,
+      project_id: item.project_id,
+      preset_id: args.presetId,
+      visual_style_override: args.visualStyleOverrideId,
+    });
     try {
-      const presetsRes = await fetch('/api/auto-pipeline/presets', { cache: 'no-store' });
-      const presetsData = await presetsRes.json().catch(() => ({}));
-      const presets = (presetsData.presets ?? []) as Array<{ id: string; name: string }>;
-      if (presets.length === 0) {
-        toast.error('No pipeline preset yet — create one first.', {
-          action: { label: 'Open presets', onClick: () => router.push('/pipeline/presets') },
-        });
-        return;
-      }
-      const presetId = presets[0].id;
-      console.info('[schedule auto-continue] submit', {
-        item_id: item.id,
-        project_id: item.project_id,
-        preset_id: presetId,
-      });
       const res = await fetch('/api/auto-pipeline/runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ presetId, existingProjectIds: [item.project_id] }),
+        body: JSON.stringify({ presetId: args.presetId, existingProjectIds: [item.project_id] }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.error || `HTTP ${res.status}`);
       }
-      toast.success(`Auto-continuing under preset "${presets[0].name}"`);
+      // If the user picked a different visual style than the preset's
+      // default, apply the per-video override to the newly-created
+      // pipeline_run_videos row before the cron picks it up. The
+      // response shape from POST /runs is { runId, videoIds[] }.
+      if (args.visualStyleOverrideId && Array.isArray(data.videoIds) && data.videoIds[0]) {
+        await fetch(`/api/auto-pipeline/videos/${data.videoIds[0]}/actions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'set_visual_style_override', style_id: args.visualStyleOverrideId }),
+        });
+      }
+      toast.success(`Auto-continuing under preset "${args.presetName}"`);
+      setAutoContinueOpen(false);
       router.push(`/pipeline/${data.runId}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to start auto-continue';
@@ -814,7 +827,243 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
         defaultScheduleItemId={item.id}
         defaultProjectId={item.project_id ?? undefined}
       />
+      <AutoContinueModal
+        open={autoContinueOpen}
+        itemTitle={item.title || 'Untitled'}
+        submitting={autoContinuing}
+        onClose={() => setAutoContinueOpen(false)}
+        onSubmit={autoContinueSubmit}
+      />
     </AnimatePresence>
+  );
+}
+
+interface AutoContinuePreset {
+  id: string;
+  name: string;
+  niche: string | null;
+  production_doc_style_id: string | null;
+}
+
+interface AutoContinueStyle {
+  id: string;
+  name: string;
+  origin: 'built-in' | 'saved';
+}
+
+/**
+ * Pre-flight dialog for the Auto-continue button. Lets the user pick
+ * the preset (+ surfaces that preset's default visual style) AND
+ * optionally override the visual style for THIS run before the
+ * pipeline_run_videos row is created. Solves the "I never got to
+ * choose the style for production doc" complaint.
+ *
+ * Fetches presets + production-doc styles on first open. Cached for
+ * the lifetime of the modal — closing + reopening re-fetches, which
+ * is fine because the modal is rarely opened twice in a row.
+ */
+function AutoContinueModal({
+  open,
+  itemTitle,
+  submitting,
+  onClose,
+  onSubmit,
+}: {
+  open: boolean;
+  itemTitle: string;
+  submitting: boolean;
+  onClose: () => void;
+  onSubmit: (args: { presetId: string; presetName: string; visualStyleOverrideId: string | null }) => void;
+}) {
+  const [presets, setPresets] = useState<AutoContinuePreset[]>([]);
+  const [styles, setStyles] = useState<AutoContinueStyle[]>([]);
+  const [presetId, setPresetId] = useState<string>('');
+  const [visualStyleId, setVisualStyleId] = useState<string>('');
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoading(true);
+    setErr(null);
+    void Promise.all([
+      fetch('/api/auto-pipeline/presets', { cache: 'no-store' }).then(r => r.ok ? r.json() : { presets: [] }),
+      fetch('/api/production-doc/styles', { cache: 'no-store' }).then(r => r.ok ? r.json() : { styles: [] }),
+    ])
+      .then(async ([presetsList, stylesList]) => {
+        if (cancelled) return;
+        const presetsArr = (presetsList.presets ?? []) as Array<{ id: string; name: string; niche: string | null }>;
+        // /api/auto-pipeline/presets returns a small shape — fetch each
+        // preset's full row to learn its production_doc_style_id. Done
+        // in parallel; capped at the first 50 presets so an absurd
+        // workspace doesn't fan out forever.
+        const fullPresets = await Promise.all(
+          presetsArr.slice(0, 50).map(p =>
+            fetch(`/api/auto-pipeline/presets/${p.id}`, { cache: 'no-store' })
+              .then(r => r.ok ? r.json() : null)
+              .then(d => (d?.preset ?? null) as ({ id: string; name: string; niche: string | null; production_doc_style_id: string | null } | null))
+              .catch(() => null),
+          ),
+        );
+        const validPresets: AutoContinuePreset[] = fullPresets
+          .filter((p): p is AutoContinuePreset => p !== null);
+        setPresets(validPresets);
+        setStyles((stylesList.styles ?? []) as AutoContinueStyle[]);
+        if (validPresets[0]) {
+          setPresetId(validPresets[0].id);
+          // Default the visual-style selection to the preset's value
+          // so a user who hits Start without touching it gets the
+          // preset's configured style (matches today's silent behavior).
+          setVisualStyleId(validPresets[0].production_doc_style_id ?? '');
+        }
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setErr(e instanceof Error ? e.message : 'Failed to load presets / styles');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  // When the user switches preset, reset the visual-style choice to
+  // that preset's default. They can still override after.
+  function onPresetChange(nextId: string) {
+    setPresetId(nextId);
+    const next = presets.find(p => p.id === nextId);
+    setVisualStyleId(next?.production_doc_style_id ?? '');
+  }
+
+  if (!open) return null;
+
+  const selectedPreset = presets.find(p => p.id === presetId);
+  const presetDefault = selectedPreset?.production_doc_style_id ?? null;
+  const overrideId = visualStyleId || null;
+  // Only persist a per-video override when the user picked something
+  // different from the preset's default. If they accept the default,
+  // the row just inherits — no override needed.
+  const overrideToSend = overrideId !== presetDefault ? overrideId : null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.55)' }}
+      onMouseDown={e => {
+        if (e.target === e.currentTarget && !submitting) onClose();
+      }}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Auto-continue with this video"
+    >
+      <div
+        className="w-full max-w-lg rounded-lg p-5"
+        style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}
+      >
+        <header className="mb-4">
+          <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
+            🤖 Auto-continue
+          </h2>
+          <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+            Spin up a pipeline run for <strong>{itemTitle}</strong> starting at narration_complete.
+            Skips idea/script/QA/narration — runs production doc, thumbnail, editor handoff, SEO.
+          </p>
+        </header>
+
+        {loading ? (
+          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Loading presets…</p>
+        ) : err ? (
+          <p className="text-sm" style={{ color: '#f87171' }}>{err}</p>
+        ) : presets.length === 0 ? (
+          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            No pipeline preset yet. Create one first on{' '}
+            <Link href="/pipeline/presets" className="underline" style={{ color: 'var(--accent-purple-bright)' }}>
+              /pipeline/presets
+            </Link>
+            .
+          </p>
+        ) : (
+          <div className="space-y-3">
+            <label className="block">
+              <span className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Preset</span>
+              <select
+                value={presetId}
+                onChange={e => onPresetChange(e.target.value)}
+                disabled={submitting}
+                className="mt-1 w-full px-3 py-2 rounded text-sm"
+                style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+              >
+                {presets.map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                    {p.niche ? ` — ${p.niche}` : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block">
+              <span className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>
+                Visual style for the production doc
+              </span>
+              <select
+                value={visualStyleId}
+                onChange={e => setVisualStyleId(e.target.value)}
+                disabled={submitting}
+                className="mt-1 w-full px-3 py-2 rounded text-sm"
+                style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                title="What visual style the production-doc handler should use. Defaults to the preset's value. Changing here applies as a per-video override only — the preset isn't touched."
+              >
+                <option value="">— No visual style —</option>
+                {styles.map(s => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                    {s.origin === 'built-in' ? ' (built-in)' : ''}
+                    {s.id === presetDefault ? ' · preset default' : ''}
+                  </option>
+                ))}
+              </select>
+              {overrideToSend !== null && (
+                <span className="mt-1 inline-block text-[11px]" style={{ color: 'var(--accent-purple-bright)' }}>
+                  Overrides the preset for this run.
+                </span>
+              )}
+            </label>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={submitting}
+                className="text-sm px-3 py-1.5 rounded font-medium disabled:opacity-60"
+                style={{ background: 'transparent', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!selectedPreset) return;
+                  onSubmit({
+                    presetId,
+                    presetName: selectedPreset.name,
+                    visualStyleOverrideId: overrideToSend,
+                  });
+                }}
+                disabled={submitting || !selectedPreset}
+                className="text-sm px-3 py-1.5 rounded font-medium disabled:opacity-60"
+                style={{ background: 'var(--accent-purple)', color: 'white' }}
+              >
+                {submitting ? 'Starting…' : 'Start pipeline'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

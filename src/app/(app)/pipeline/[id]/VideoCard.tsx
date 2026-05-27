@@ -351,6 +351,9 @@ export default function VideoCard({
                 onSetStyleOverride={(styleId) =>
                   callAction({ action: 'set_style_override', style_id: styleId })
                 }
+                onSetVisualStyleOverride={(styleId) =>
+                  callAction({ action: 'set_visual_style_override', style_id: styleId })
+                }
                 onSetCustomInstructions={(text) =>
                   callAction({ action: 'set_custom_instructions', custom_instructions: text })
                 }
@@ -965,6 +968,7 @@ function EditPanel({
   styles,
   busyAction,
   onSetStyleOverride,
+  onSetVisualStyleOverride,
   onSetCustomInstructions,
   onRerunFromStage,
 }: {
@@ -972,6 +976,7 @@ function EditPanel({
   styles: StyleOption[];
   busyAction: string | null;
   onSetStyleOverride: (styleId: string | null) => void;
+  onSetVisualStyleOverride: (styleId: string | null) => void;
   onSetCustomInstructions: (text: string | null) => void;
   onRerunFromStage: (targetStage: string) => void;
 }) {
@@ -979,6 +984,7 @@ function EditPanel({
   // value. Saves on change (no Apply button — single-field forms
   // benefit from immediate persistence so the user can move on).
   const [stylePending, setStylePending] = useState(false);
+  const [visualStylePending, setVisualStylePending] = useState(false);
   // Custom instructions — controlled, saved via explicit Apply
   // because every keystroke would either be a debounce hassle or a
   // bad burn on the cron's update_at column. Initialised from the
@@ -1001,6 +1007,14 @@ function EditPanel({
     // the user's pick (because React preserves the controlled value
     // until the prop updates).
     setTimeout(() => setStylePending(false), 1000);
+  }
+
+  function handleVisualStyleChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const next = e.target.value;
+    if (next === (video.production_doc_style_override_id ?? '')) return;
+    setVisualStylePending(true);
+    onSetVisualStyleOverride(next === '' ? null : next);
+    setTimeout(() => setVisualStylePending(false), 1000);
   }
 
   function applyCustomInstructions() {
@@ -1054,6 +1068,25 @@ function EditPanel({
             className="mt-1 w-full px-2 py-1.5 rounded text-sm"
             style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
             title="Override the run preset's script style for THIS video only. Blank = inherit from the run preset's chain."
+          >
+            <option value="">— Inherit from run preset —</option>
+            {styles.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+                {s.origin === 'built-in' ? ' (built-in)' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Visual style for this video</span>
+          <select
+            value={video.production_doc_style_override_id ?? ''}
+            onChange={handleVisualStyleChange}
+            disabled={!!busyAction || visualStylePending || styles.length === 0}
+            className="mt-1 w-full px-2 py-1.5 rounded text-sm"
+            style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+            title="Override the run preset's visual style for THIS video only. Drives the production-doc shot prompts. Blank = inherit from the run preset."
           >
             <option value="">— Inherit from run preset —</option>
             {styles.map((s) => (

@@ -787,6 +787,45 @@ export async function setVideoStyleOverride(args: {
 }
 
 /**
+ * Persist a per-video visual-style override (the
+ * `production_doc_style_override_id` column, migration 0096).
+ * Effective visual-style chain in handleGenerateProductionDoc:
+ *
+ *   video.production_doc_style_override_id  ← this
+ *     ?? preset.production_doc_style_id
+ *     ?? null
+ *
+ * Passing `null` clears the override. Sibling to
+ * setVideoStyleOverride but on the visual side — they don't share
+ * a column so the user can decouple script style from visual style
+ * per video.
+ */
+export async function setVideoVisualStyleOverride(args: {
+  workspaceId: string;
+  videoId: string;
+  styleId: string | null;
+}): Promise<{ styleId: string | null }> {
+  const { workspaceId, videoId, styleId } = args;
+  const { rowCount } = await sql.query(
+    `
+    UPDATE pipeline_run_videos
+       SET production_doc_style_override_id = $3::uuid,
+           updated_at = NOW()
+     WHERE id = $1::uuid AND workspace_id = $2::uuid
+    `,
+    [videoId, workspaceId, styleId],
+  );
+  if (!rowCount) {
+    throw new PipelineActionError('video_not_found', `Pipeline video ${videoId} not found.`);
+  }
+  logger.info('auto-pipeline: per-video visual-style override set', {
+    pipeline_video_id: videoId,
+    style_id: styleId,
+  });
+  return { styleId };
+}
+
+/**
  * Persist a per-video custom-instructions override (the
  * `script_additional_context_override` column, migration 0095).
  * Effective-additionalContext chain in handleGenerateScript:
