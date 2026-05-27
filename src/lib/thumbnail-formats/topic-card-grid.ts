@@ -623,16 +623,22 @@ export function topicCardGridImagePrompt(input: ImagePromptInput): string {
 
   const cardLines = cards
     .map((c) => {
-      const label = sanitizeForPrompt(c.label, 60);
-      // Uploaded cells: drop the icon_concept and tell the model to leave
-      // the cell as a clean white background, no illustration. Composite
-      // overpaints regardless, but the prompt nudge stops the model from
-      // wasting capacity inventing an icon nobody will see — and reduces
-      // the chance of bleed-through if the overpaint mask is off by a
-      // pixel at the cell edge.
+      // Uploaded cells: render the entire cell as PURE WHITE — no
+      // illustration, no label, no border, no text of any kind. The
+      // composite step paints the user's image, the cell border, and the
+      // label deterministically afterwards, so anything the model draws
+      // here can only ever leak through if our cellRect is off by a few
+      // pixels (the "double labels" bug the user kept hitting). By
+      // omitting the label from the prompt entirely — not just the
+      // icon_concept — we eliminate the source of the doubled label
+      // bleed even when the AI runs (mixed-upload case where some but
+      // not all cells have uploads, so the all-uploads fast path can't
+      // skip the AI). Whatever was in the user's `c.label` / `c.icon_concept`
+      // is IGNORED for uploaded cells, by design.
       if (uploadedIdxSet.has(c.index)) {
-        return `${c.index}. Label: "${label}" — Illustration: BLANK — render this cell's illustration area as a clean pure-white background with no icon, no text, no detail. Only the label band below carries content.`;
+        return `${c.index}. PURE WHITE CELL — no illustration, no label, no text, no border, no icon, no decoration of any kind. Render this cell's entire area as solid pure-white pixels. The compositor will paint the user's uploaded image and label after generation.`;
       }
+      const label = sanitizeForPrompt(c.label, 60);
       const concept = sanitizeForPrompt(c.icon_concept, 250);
       const accent = c.accent_color ? ` (accent hint: ${sanitizeForPrompt(c.accent_color, 16)})` : '';
       return `${c.index}. Label: "${label}" — Illustration: ${concept}${accent}`;
@@ -718,7 +724,7 @@ ABSOLUTE REQUIREMENTS — DO NOT VIOLATE:
 - Match the LAYOUT (grid + gutters + outer margin) and the LABEL TYPOGRAPHY of the attached reference image precisely. Do NOT inherit the reference's specific palette or per-card content — those are dictated by THIS card list, not by the reference's topic.${
   uploadedIdxSet.size > 0
     ? `
-- The following cells are USER-RESERVED (the user is attaching their own image post-render). Leave each one as a clean pure-white illustration area with no icon, no text, no detail — only the label band below carries content: ${[...uploadedIdxSet].sort((a, b) => a - b).join(', ')}.`
+- The following cells are USER-RESERVED — the user is attaching their own image AND their own label post-render. Leave EACH of these cells ENTIRELY blank: pure white pixels covering the full cell area, NO illustration, NO label text, NO border, NO icon, NO decoration. The compositor paints everything for these cells: ${[...uploadedIdxSet].sort((a, b) => a - b).join(', ')}.`
     : ''
 }
 

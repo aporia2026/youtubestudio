@@ -175,20 +175,26 @@ describe('topicCardGridImagePrompt', () => {
     expect(prompt).toMatch(/Each label sits in the white canvas BELOW its disc/);
   });
 
-  it('replaces uploaded cells with BLANK rendering instruction', () => {
+  it('renders uploaded cells as 100% blank — no label, no illustration, no concept', () => {
     const prompt = topicCardGridImagePrompt({
       ...baseInput,
       uploadedCellIndexes: [2],
     });
-    // Cell 2 line should NOT mention pizza (the icon_concept) — it's been
-    // replaced with the BLANK directive.
+    // Cell 2 line should reference NEITHER the label ("Pizza") NOR the
+    // icon_concept ("pizza slice") — both are deliberately dropped so
+    // the AI has nothing to render in that cell. The composite paints
+    // the user's image AND the label deterministically afterwards;
+    // anything the AI draws here can only leak through the composite
+    // edges as a doubled artefact.
     const cell2Line = prompt.split('\n').find((l) => l.startsWith('2.'));
     expect(cell2Line).toBeDefined();
-    expect(cell2Line).toMatch(/Illustration: BLANK/);
-    expect(cell2Line).not.toMatch(/pizza/);
+    expect(cell2Line).toMatch(/PURE WHITE CELL/);
+    expect(cell2Line).not.toMatch(/pizza/i);
+    expect(cell2Line).not.toMatch(/Pizza/);
     // Cell 1 unchanged
     const cell1Line = prompt.split('\n').find((l) => l.startsWith('1.'));
     expect(cell1Line).toMatch(/a coffee cup/);
+    expect(cell1Line).toMatch(/Coffee/);
   });
 
   it('lists uploaded cells in the ABSOLUTE REQUIREMENTS section', () => {
