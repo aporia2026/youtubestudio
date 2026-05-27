@@ -57,6 +57,23 @@ export function getVariantPreservationHint(styleId: string | null | undefined): 
   return VARIANT_PRESERVATION_HINTS[styleId] ?? DEFAULT_VARIANT_PRESERVATION_HINT;
 }
 
+/** When set, the production-doc generation route runs a post-process
+ *  LLM pass that rewrites each variant row's `variant_edit_prompt`
+ *  into a specific visually-concrete instruction (see
+ *  `src/lib/variant-prompt-refiner.ts`). The auto-grouper's naive
+ *  delta-extraction produces vague prompts like "add flap hanging"
+ *  that don't tell the GPT Image 2 Edit model anything actionable —
+ *  the variant ends up looking identical to the base. Refinement
+ *  uses the base row's `ai_image_prompt` + variant's `script_text`
+ *  to produce a concrete edit instruction the model can execute.
+ *
+ *  Server-side env var (no `NEXT_PUBLIC_`); the refinement happens
+ *  inside the doc-gen route, never on the client. Defaults to OFF so
+ *  unflagged deploys keep the existing auto-grouper output. */
+export function useRefinedVariantPrompt(): boolean {
+  return process.env.USE_REFINED_VARIANT_PROMPT === '1';
+}
+
 /** When set, ref-bearing styles use the trimmed-content versions of
  *  their `ai_image_suffix` AND `mixing_rules` (Stage 1). The visual
  *  reference images encode the style; the full text suffix fights
@@ -102,7 +119,7 @@ export function useTrimmedSuffix(): boolean {
  *     suffix referenced (a known training-distribution anchor) */
 export const TRIMMED_AI_IMAGE_SUFFIX: Record<string, string> = {
   doodle_explainer_2:
-    'Hand-drawn stick-figure cartoon on plain white background, child-like freehand pen-and-ink style, asdfmovie / Cyanide & Happiness aesthetic. Thick uneven black ink lines. Muted flat color fills (pale blue, pale yellow, light gray) on scene props — buildings, books, icons, signs. Occasional saturated red for danger or alarm. Real photos embed as inset rectangles with thick coloured borders. Generous white space.',
+    'Hand-drawn stick-figure cartoon on plain white background, child-like freehand pen-and-ink style, asdfmovie / Cyanide & Happiness aesthetic. Thick uneven black ink lines. Muted flat color fills (pale blue, pale yellow, light gray) on scene props — buildings, books, icons, signs. Occasional saturated red for danger or alarm. Real photos and realistic objects integrate naturally with the cartoon — e.g. a doodle character holding a photographic real product, or a framed real photograph with a thick coloured border embedded in the scene. Generous white space.',
 };
 
 /** Trimmed `mixing_rules` for ref-bearing styles. Council target:

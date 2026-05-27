@@ -16,7 +16,9 @@ import {
 import {
   getEffectiveAiImageSuffix,
   getEffectiveMixingRules,
+  useRefinedVariantPrompt,
 } from '@/lib/production-doc-flags';
+import { refineVariantPromptsInDoc } from '@/lib/variant-prompt-refiner';
 import { autoGroupVariants } from '@/lib/auto-group-variants';
 import { extractScriptTitles, TITLE_SENTINEL_LEAK_RE } from '@/lib/script-titles';
 import { preprocessSsmlForProductionDoc } from '@/lib/ssml-production-doc';
@@ -352,6 +354,42 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         rowCount: result.rows.length,
         groupCount: grouped.groupCount,
         mergedRowCount: grouped.mergedRowCount,
+      });
+    }
+  }
+
+  // Option A (variant prompt refinement) — rewrites each variant's
+  // vague `variant_edit_prompt` (extracted by autoGroupVariants) into
+  // a specific, visually-concrete instruction the GPT Image 2 Edit
+  // model can actually execute. Runs AFTER auto-grouping so it sees
+  // both LLM-emitted and post-process-derived variant groups.
+  // Parallelised internally; one LLM call per variant. Fail-soft per
+  // variant — a single refinement failure preserves that variant's
+  // original prompt without aborting the pass.
+  //
+  // Gated behind `USE_REFINED_VARIANT_PROMPT=1` so default behavior
+  // is unchanged until validated. See
+  // `_plans/2026-05-27-doodle-explainer-2-foundation.md` (Option A).
+  if (Array.isArray(result.rows) && useRefinedVariantPrompt()) {
+    const refinement = await refineVariantPromptsInDoc({
+      rows: result.rows,
+      styleLabel: resolved?.label ?? null,
+      modelId: effectiveModelId,
+      spend: {
+        workspaceId: session.ws,
+        featureArea: 'variant_prompt_refinement',
+      },
+    });
+    if (
+      refinement.refinedCount > 0 ||
+      refinement.failedCount > 0 ||
+      refinement.skippedCount > 0
+    ) {
+      logger.info('[production-doc variant-prompt-refinement]', {
+        styleId: resolved?.id ?? null,
+        refined: refinement.refinedCount,
+        skipped: refinement.skippedCount,
+        failed: refinement.failedCount,
       });
     }
   }
