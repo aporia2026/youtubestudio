@@ -197,7 +197,7 @@ describe('applyCellUploads', () => {
     expect(b).toBe(0);
   });
 
-  it('paints a red upload into cell 4 in square mode', async () => {
+  it('paints a red upload into cell 4 and white-wipes non-uploaded cells in mixed mode', async () => {
     const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 0, g: 0, b: 0 });
     const upload = await makeSolidPng(64, 64, { r: 255, g: 0, b: 0 });
     const layout = makeDefaultLayout(2, 2, CANVAS_W, CANVAS_H, 'square');
@@ -217,12 +217,18 @@ describe('applyCellUploads', () => {
     expect(r).toBeGreaterThan(200);
     expect(g).toBeLessThan(60);
     expect(b).toBeLessThan(60);
-    // Cell 1 (top-left) should still be black (no upload there).
+    // Cell 1 (top-left) is NOT uploaded but uploads.length > 0 → mixed
+    // mode, so it gets the white-placeholder full-cell overlay rather
+    // than the prompt-mode label-band-only treatment. The illustration
+    // region of cell 1 should now be white (placeholder), wiping the
+    // black base. This is the behaviour that prevents AI bleed from
+    // showing up around non-uploaded cells when the user thought they
+    // were uploading everything.
     const r1 = cellRect(layout, 1);
     const [cr, cg, cb] = await pixelAt(out, r1.x + r1.w / 2, r1.y + r1.h * 0.3);
-    expect(cr).toBe(0);
-    expect(cg).toBe(0);
-    expect(cb).toBe(0);
+    expect(cr).toBeGreaterThan(240);
+    expect(cg).toBeGreaterThan(240);
+    expect(cb).toBeGreaterThan(240);
   });
 
   it('leaves cell corners white in circle mode (circular mask)', async () => {

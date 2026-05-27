@@ -381,19 +381,57 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
   const gutterPad = Math.max(0, Math.round(layout.gutter / 2));
   const wipeOverlaysForUploads: sharp.OverlayOptions[] = [];
 
-  // Iterate every card in reading order. Upload presence picks between
-  // full-cell overlay (wipes the AI render at that cell) and label-only
-  // overlay (keeps the AI illustration, only overpaints the label band).
+  // When ANY upload is present in this request, EVERY non-uploaded cell
+  // is treated as "user-intended an upload here, it just didn't reach
+  // us" rather than as a prompt-mode cell where AI illustration is
+  // wanted. We paint those cells fully blank (white placeholder) with
+  // only a composite label, wiping any AI bleed entirely. Two reasons:
+  //   1) When mixed uploads exist, AI bleed below/around uploaded cells
+  //      is a constant misalignment hazard (the AI's drawn cell layout
+  //      never matches our cellRect formula exactly). Treating the
+  //      whole grid as composite-rendered removes the seam.
+  //   2) If an upload SILENTLY fails (URL expired, presign mismatch,
+  //      client state stale), the visible result is a clean blank cell
+  //      with just the label — a clear signal the user can re-upload,
+  //      instead of a confusing AI hallucination of what their image
+  //      probably looked like with a misaligned bleed strip.
+  // Pure prompt mode (uploads.length === 0) keeps the existing
+  // behaviour: the AI's illustration stays and only the label band is
+  // overpainted.
+  const someUploadsProvided = uploads.length > 0;
+
+  // Reuse one tiny white PNG for every failed-upload placeholder — it
+  // gets resized via fitCover anyway, so the source dimensions don't
+  // matter beyond "positive integers".
+  let whitePlaceholderBytes: Buffer | null = null;
+  const getWhitePlaceholder = async (): Promise<Buffer> => {
+    if (!whitePlaceholderBytes) {
+      whitePlaceholderBytes = await sharp({
+        create: { width: 100, height: 100, channels: 4, background: WHITE },
+      })
+        .png()
+        .toBuffer();
+    }
+    return whitePlaceholderBytes;
+  };
+
+  // Iterate every card in reading order. Upload presence + the mixed-
+  // vs-prompt distinction above picks between three overlay kinds:
+  //   - Uploaded cell: full overlay with the user's image
+  //   - Non-uploaded cell in mixed mode: full overlay with white
+  //     placeholder (wipes any AI bleed; signals failed upload)
+  //   - Non-uploaded cell in pure-prompt mode: label-band only
+  //     (preserves the AI's illustration)
   for (const card of cards) {
     const rect = cellRect(layout, card.index);
     const uploadedBytes = uploadByIndex.get(card.index);
+    const useFullCellOverlay = uploadedBytes !== undefined || someUploadsProvided;
 
-    if (uploadedBytes) {
+    if (useFullCellOverlay) {
+      const imageBytes = uploadedBytes ?? (await getWhitePlaceholder());
       // Stage the white wipe (cellRect + gutterPad on each side, clamped
       // to canvas) BEFORE the cell overlay so sharp paints them in this
-      // order: base → wipes → cells → labels. Without staging order,
-      // sharp composites them in the array order anyway, so we just
-      // push to the wipe array first then cells later.
+      // order: base → wipes → cells → labels.
       if (gutterPad > 0) {
         const wipeLeft = Math.max(0, rect.x - gutterPad);
         const wipeTop = Math.max(0, rect.y - gutterPad);
@@ -410,17 +448,17 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
       }
       const overlay =
         cardShape === 'circle'
-          ? await buildCircleCellOverlay(uploadedBytes, card.label, rect.w, rect.h)
-          : await buildSquareCellOverlay(uploadedBytes, card.label, rect.w, rect.h);
+          ? await buildCircleCellOverlay(imageBytes, card.label, rect.w, rect.h)
+          : await buildSquareCellOverlay(imageBytes, card.label, rect.w, rect.h);
       overlays.push({ input: overlay, top: rect.y, left: rect.x });
       continue;
     }
 
-    // Non-upload cells: only paint a uniform-style label band in square
-    // mode. Skip for circle mode — the AI renders labels beneath the
-    // disc on white canvas and overpainting risks blanking the disc if
-    // the layout-derived band misses by a few pixels (the reference
-    // sample size for circle mode is small).
+    // Pure prompt mode (zero uploads in request): only paint a uniform-
+    // style label band in square mode. Skip for circle mode — the AI
+    // renders labels beneath the disc on white canvas and overpainting
+    // risks blanking the disc if the layout-derived band misses by a
+    // few pixels (the reference sample size for circle mode is small).
     if (cardShape === 'square') {
       const { overlay, topOffset } = await buildSquareLabelBandOverlay(card.label, rect.w, rect.h);
       overlays.push({ input: overlay, top: rect.y + topOffset, left: rect.x });
