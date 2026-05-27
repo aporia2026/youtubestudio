@@ -124,6 +124,7 @@ export const CHILD_TENANT_TABLES: readonly ChildTenantTable[] = [
   { table: 'scripts', parentTable: 'projects', fkColumn: 'project_id', depth: 1 },
   { table: 'qa_sessions', parentTable: 'projects', fkColumn: 'project_id', depth: 1 },
   { table: 'media_assets', parentTable: 'projects', fkColumn: 'project_id', depth: 1 },
+  { table: 'production_doc_notes', parentTable: 'user_history', fkColumn: 'doc_id', depth: 1 },
   { table: 'youtube_references', parentTable: 'projects', fkColumn: 'project_id', depth: 1 },
   { table: 'oauth_tokens', parentTable: 'channels', fkColumn: 'channel_id', depth: 1 },
   { table: 'competitor_videos', parentTable: 'competitor_channels', fkColumn: 'competitor_id', depth: 1 },

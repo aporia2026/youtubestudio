@@ -97,6 +97,7 @@ import migration0094 from './0094_add_pipeline_video_style_override';
 import migration0095 from './0095_add_pipeline_video_custom_instructions';
 import migration0096 from './0096_add_pipeline_video_visual_style_override';
 import migration0097 from './0097_create_feature_preset_tables';
+import migration0098 from './0098_create_production_doc_notes';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -201,6 +202,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0095,
   migration0096,
   migration0097,
+  migration0098,
 ]);
 
 /**
