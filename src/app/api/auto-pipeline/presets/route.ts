@@ -12,6 +12,9 @@ import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
  */
 
 export const GET = apiRoute.authed(async (session) => {
+  // `production_doc_style_id` is included so the Auto-continue modal
+  // (and other pickers) can render the default visual style without
+  // a fan-out of N follow-up GET requests for each preset's full row.
   const { rows } = await sql.query<{
     id: string;
     name: string;
@@ -24,6 +27,7 @@ export const GET = apiRoute.authed(async (session) => {
     video_editor_collaborator_id: string | null;
     thumbnail_template_id: string | null;
     seo_template_id: string | null;
+    production_doc_style_id: string | null;
     updated_at: string;
   }>(
     `
@@ -38,6 +42,7 @@ export const GET = apiRoute.authed(async (session) => {
            video_editor_collaborator_id::text AS video_editor_collaborator_id,
            thumbnail_template_id::text AS thumbnail_template_id,
            seo_template_id::text AS seo_template_id,
+           production_doc_style_id::text AS production_doc_style_id,
            updated_at::text AS updated_at
       FROM pipeline_presets
      WHERE workspace_id = $1::uuid

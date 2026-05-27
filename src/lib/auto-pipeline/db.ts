@@ -119,10 +119,14 @@ export async function claimNextVideo(tickId: string): Promise<{
            CASE WHEN ip.id IS NULL THEN NULL ELSE row_to_json(ip.*) END AS idea_preset
       FROM pipeline_presets p
       JOIN pipeline_runs r ON r.preset_id = p.id
-      LEFT JOIN script_presets sp    ON sp.id = p.script_preset_id
-      LEFT JOIN qa_presets qp        ON qp.id = p.qa_preset_id
-      LEFT JOIN narration_presets np ON np.id = p.narration_preset_id
-      LEFT JOIN idea_presets ip      ON ip.id = p.idea_preset_id
+      -- Workspace filter on each LEFT JOIN: defense in depth so a
+      -- bundle FK that somehow got pointed at a foreign workspace's
+      -- row (write-side validator regression, manual DB edit, etc.)
+      -- never leaks foreign data into the orchestrator.
+      LEFT JOIN script_presets sp    ON sp.id = p.script_preset_id    AND sp.workspace_id = p.workspace_id
+      LEFT JOIN qa_presets qp        ON qp.id = p.qa_preset_id        AND qp.workspace_id = p.workspace_id
+      LEFT JOIN narration_presets np ON np.id = p.narration_preset_id AND np.workspace_id = p.workspace_id
+      LEFT JOIN idea_presets ip      ON ip.id = p.idea_preset_id      AND ip.workspace_id = p.workspace_id
      WHERE r.id = $1::uuid
     `,
     [video.pipeline_run_id],
@@ -357,10 +361,12 @@ export async function getPresetForWorkspace(
            CASE WHEN np.id IS NULL THEN NULL ELSE row_to_json(np.*) END AS narration_preset,
            CASE WHEN ip.id IS NULL THEN NULL ELSE row_to_json(ip.*) END AS idea_preset
       FROM pipeline_presets p
-      LEFT JOIN script_presets sp    ON sp.id = p.script_preset_id
-      LEFT JOIN qa_presets qp        ON qp.id = p.qa_preset_id
-      LEFT JOIN narration_presets np ON np.id = p.narration_preset_id
-      LEFT JOIN idea_presets ip      ON ip.id = p.idea_preset_id
+      -- Defense in depth: workspace filter on every LEFT JOIN. See
+      -- comment on claimNextVideo for the rationale.
+      LEFT JOIN script_presets sp    ON sp.id = p.script_preset_id    AND sp.workspace_id = p.workspace_id
+      LEFT JOIN qa_presets qp        ON qp.id = p.qa_preset_id        AND qp.workspace_id = p.workspace_id
+      LEFT JOIN narration_presets np ON np.id = p.narration_preset_id AND np.workspace_id = p.workspace_id
+      LEFT JOIN idea_presets ip      ON ip.id = p.idea_preset_id      AND ip.workspace_id = p.workspace_id
      WHERE p.id = $1::uuid AND p.workspace_id = $2::uuid
     `,
     [presetId, workspaceId],

@@ -151,6 +151,18 @@ export const PATCH = apiRoute.authed<{ id: string }>(async (session, req: NextRe
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Invalid input' }, { status: 400 });
   }
 
+  // Workspace-ownership check for every FK that came in non-null.
+  // Without this, the UUID-shape validator alone lets a caller point
+  // a preset they own at a row from another workspace; the cron-side
+  // JOIN would then pull foreign data. (db.ts JOINs filter workspace
+  // as defense in depth, but the right place to reject is here.)
+  const fkCheck = await validateFkOwnership(patch, session.ws);
+  if (fkCheck.invalid.length > 0) {
+    return NextResponse.json({
+      error: `Unknown or cross-workspace id: ${fkCheck.invalid.join(', ')}`,
+    }, { status: 400 });
+  }
+
   if (Object.keys(patch).length === 0) {
     // Nothing to update — return the current row.
     const { rows } = await sql.query<PresetFull>(
@@ -279,6 +291,56 @@ function asUuidOrThrow(v: unknown, field: string): string {
   // Loose UUID check — db will reject malformed via the cast.
   if (v.length < 32 || v.length > 40) throw new Error(`${field} doesn't look like a UUID`);
   return v;
+}
+
+/**
+ * Verify each FK id in the patch references a row in the caller's
+ * workspace. Returns a list of field names whose ids couldn't be
+ * found. Null values (clearing an FK) and `undefined` values (field
+ * not in the patch) are skipped — only writes of a real id need to
+ * be checked.
+ *
+ * Runs one targeted SELECT per FK in parallel via Promise.all. These
+ * are indexed lookups on the PK + workspace_id so the round-trips
+ * are cheap, and the parallelism caps the latency at one round-trip
+ * regardless of how many fields the patch touches.
+ */
+async function validateFkOwnership(
+  patch: Record<string, unknown>,
+  workspaceId: string,
+): Promise<{ invalid: string[] }> {
+  // Maps each FK column we accept to the table it points at. Only
+  // workspace-scoped tables go here — `collaborators` and
+  // `prompt_templates` (the targets of video_editor_collaborator_id /
+  // seo_template_id) are global by design (see
+  // `_workspace_scoped_tables.ts`), so an id-shape check is all we
+  // can do for them at this layer. The targets below all carry a
+  // `workspace_id` column.
+  const checks: Array<{ field: string; table: string; value: unknown }> = [
+    { field: 'production_doc_style_id',       table: 'production_doc_styles',     value: patch.production_doc_style_id },
+    { field: 'script_style_preset_id',        table: 'production_doc_styles',     value: patch.script_style_preset_id },
+    { field: 'thumbnail_template_id',         table: 'thumbnail_template_presets', value: patch.thumbnail_template_id },
+    { field: 'script_preset_id',              table: 'script_presets',            value: patch.script_preset_id },
+    { field: 'qa_preset_id',                  table: 'qa_presets',                value: patch.qa_preset_id },
+    { field: 'narration_preset_id',           table: 'narration_presets',         value: patch.narration_preset_id },
+    { field: 'idea_preset_id',                table: 'idea_presets',              value: patch.idea_preset_id },
+  ];
+
+  const needsCheck = checks.filter(c => typeof c.value === 'string');
+  if (needsCheck.length === 0) return { invalid: [] };
+
+  // Table names are compile-time constants here — no SQL injection
+  // surface. Identifiers can't be parameterised in pg.
+  const results = await Promise.all(
+    needsCheck.map(async ({ field, table, value }) => {
+      const { rowCount } = await sql.query(
+        `SELECT 1 FROM ${table} WHERE id = $1::uuid AND workspace_id = $2::uuid LIMIT 1`,
+        [value, workspaceId],
+      );
+      return { field, ok: (rowCount ?? 0) > 0 };
+    }),
+  );
+  return { invalid: results.filter(r => !r.ok).map(r => r.field) };
 }
 
 function asFallbackChainsOrNull(v: unknown): Record<string, string[]> | null {

@@ -893,31 +893,20 @@ function AutoContinueModal({
       fetch('/api/auto-pipeline/presets', { cache: 'no-store' }).then(r => r.ok ? r.json() : { presets: [] }),
       fetch('/api/production-doc/styles', { cache: 'no-store' }).then(r => r.ok ? r.json() : { styles: [] }),
     ])
-      .then(async ([presetsList, stylesList]) => {
+      .then(([presetsList, stylesList]) => {
         if (cancelled) return;
-        const presetsArr = (presetsList.presets ?? []) as Array<{ id: string; name: string; niche: string | null }>;
-        // /api/auto-pipeline/presets returns a small shape — fetch each
-        // preset's full row to learn its production_doc_style_id. Done
-        // in parallel; capped at the first 50 presets so an absurd
-        // workspace doesn't fan out forever.
-        const fullPresets = await Promise.all(
-          presetsArr.slice(0, 50).map(p =>
-            fetch(`/api/auto-pipeline/presets/${p.id}`, { cache: 'no-store' })
-              .then(r => r.ok ? r.json() : null)
-              .then(d => (d?.preset ?? null) as ({ id: string; name: string; niche: string | null; production_doc_style_id: string | null } | null))
-              .catch(() => null),
-          ),
-        );
-        const validPresets: AutoContinuePreset[] = fullPresets
-          .filter((p): p is AutoContinuePreset => p !== null);
-        setPresets(validPresets);
+        // The list endpoint returns `production_doc_style_id` directly
+        // so we can render the default visual style without a fan-out
+        // of N follow-up GETs per preset.
+        const presetsArr = (presetsList.presets ?? []) as AutoContinuePreset[];
+        setPresets(presetsArr);
         setStyles((stylesList.styles ?? []) as AutoContinueStyle[]);
-        if (validPresets[0]) {
-          setPresetId(validPresets[0].id);
+        if (presetsArr[0]) {
+          setPresetId(presetsArr[0].id);
           // Default the visual-style selection to the preset's value
           // so a user who hits Start without touching it gets the
           // preset's configured style (matches today's silent behavior).
-          setVisualStyleId(validPresets[0].production_doc_style_id ?? '');
+          setVisualStyleId(presetsArr[0].production_doc_style_id ?? '');
         }
       })
       .catch((e: unknown) => {

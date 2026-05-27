@@ -45,7 +45,13 @@ export const GET = apiRoute.authed(async (session) => {
              si.pipeline_run_video_id::text AS pipeline_run_video_id,
              prv.pipeline_run_id::text      AS pipeline_run_id
         FROM schedule_items si
-   LEFT JOIN pipeline_run_videos prv ON prv.id = si.pipeline_run_video_id
+   -- Workspace filter on the LEFT JOIN defends against a stale
+   -- pipeline_run_video_id that was pointed at a row from another
+   -- workspace (shouldn't happen via the API, but the column has
+   -- no DB-side workspace constraint).
+   LEFT JOIN pipeline_run_videos prv
+          ON prv.id = si.pipeline_run_video_id
+         AND prv.workspace_id = si.workspace_id
        WHERE si.workspace_id = $1::uuid
        ORDER BY si.position ASC, si.created_at DESC
        LIMIT 500
