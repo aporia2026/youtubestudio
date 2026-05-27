@@ -28,6 +28,7 @@ import { loadStyleReferences, markReferenceRejected } from '@/lib/production-doc
 import { generateImageWithRefs, ReferenceRejectedError } from '@/lib/image-gen-i2i';
 import { augmentCellPrompt, SINGLE_SHOT_PROMPT_CAP } from '@/lib/prompt-augmentation';
 import {
+  getEffectiveAiImageSuffix,
   PROMPT_VERSION,
   useShortVariantPrompt,
   useTrimmedSuffix,
@@ -197,13 +198,22 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
           // a prompt version, style + version, ref set, suffix size, and
           // flag state so post-ship regressions are forensically
           // traceable. Plan: _plans/2026-05-27-doodle-explainer-2-foundation.md.
+          //
+          // `suffix_chars` reads the EFFECTIVE suffix (post-trim-flag), not
+          // the resolved style's raw `ai_image_suffix`. With the trim flag
+          // on, the effective value is the trimmed fallback (~165 chars
+          // for doodle_explainer_2) — which is what was actually attached
+          // to the row's ai_image_prompt upstream at doc-generation time.
+          // Logging the raw value was misleading: it pretended the
+          // generation used the full suffix when in fact the row had been
+          // trimmed long before the image-gen call reached this route.
           logger.info('[prodoc image-gen telemetry]', {
             prompt_version: PROMPT_VERSION,
             style_id: style.id,
             style_version: style.version ?? null,
             ref_count: refs.length,
             ref_ids: refs.map((r) => r.id),
-            suffix_chars: (style.ai_image_suffix ?? '').length,
+            suffix_chars: getEffectiveAiImageSuffix(style).length,
             prompt_chars: augmentedPrompt.length,
             flag_short_variant: useShortVariantPrompt(),
             flag_trimmed_suffix: useTrimmedSuffix(),
