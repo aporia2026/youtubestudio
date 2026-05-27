@@ -31,6 +31,7 @@ import { countWords } from '../../utils';
 import { QA_PRE_CHECK_ENABLED, QA_GENERATOR_V2_ENABLED } from '../../feature-flags';
 import { runPreQaSelfCheck } from '../../script-critics/pre-qa-self-check';
 import { getWorkspaceQaSettings, resolveToggle } from '../../qa-workspace-settings';
+import { resolveStyle } from '../../production-doc-styles';
 import { logger } from '../../logger';
 import type { StageHandlerContext, StageOutcome } from '../types';
 
@@ -119,6 +120,24 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
   const generatorV2Enabled = resolveToggle(qaSettings?.generatorV2 ?? 'inherit', QA_GENERATOR_V2_ENABLED);
   const preCheckEnabled = resolveToggle(qaSettings?.preCheck ?? 'inherit', QA_PRE_CHECK_ENABLED);
 
+  // Style preset: prefer the dedicated script_style_preset_id when
+  // set, otherwise fall back to production_doc_style_id (so a preset
+  // that only set the visual style also flavors the script — matches
+  // the standalone Script Generator's single-stylePreset UX). Both
+  // null → resolvedStyle stays null → prompt is byte-identical to
+  // the pre-style code path. Cross-workspace ids return null too.
+  const effectiveStyleId = preset.script_style_preset_id ?? preset.production_doc_style_id;
+  const resolvedStyle = effectiveStyleId
+    ? await resolveStyle(effectiveStyleId, video.workspace_id)
+    : null;
+  if (effectiveStyleId && !resolvedStyle) {
+    logger.warn('[pipeline script-gen] style preset referenced but not resolvable', {
+      pipeline_video_id: video.id,
+      preset_id: preset.id,
+      style_id: effectiveStyleId,
+    });
+  }
+
   let result: Awaited<ReturnType<typeof generateTextWithFallback>>;
   try {
     result = await generateTextWithFallback(chain, (modelId) => {
@@ -133,6 +152,13 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
         referenceContext: rules.referenceContext,
         constraints: rules.constraints as never,
         generatorV2Enabled,
+        stylePreset: resolvedStyle
+          ? {
+              label: resolvedStyle.label,
+              description: resolvedStyle.description,
+              mixing_rules: resolvedStyle.mixing_rules,
+            }
+          : null,
       });
       return {
         modelId,

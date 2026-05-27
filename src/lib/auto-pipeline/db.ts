@@ -103,7 +103,7 @@ export async function claimNextVideo(tickId: string): Promise<{
     SELECT p.id, p.workspace_id, p.name, p.niche, p.ideas_count_default,
            p.idea_context_jsonb, p.script_rules_jsonb, p.target_spoken_words,
            p.qa_min_score, p.qa_max_iterations, p.script_gate_enabled,
-           p.production_doc_style_id, p.narration_deadline_days,
+           p.production_doc_style_id, p.script_style_preset_id, p.narration_deadline_days,
            p.fallback_chains_jsonb, p.video_editor_collaborator_id,
            p.thumbnail_template_id, p.seo_template_id
       FROM pipeline_presets p
@@ -333,7 +333,7 @@ export async function getPresetForWorkspace(
     SELECT id, workspace_id, name, niche, ideas_count_default,
            idea_context_jsonb, script_rules_jsonb, target_spoken_words,
            qa_min_score, qa_max_iterations, script_gate_enabled,
-           production_doc_style_id, narration_deadline_days,
+           production_doc_style_id, script_style_preset_id, narration_deadline_days,
            fallback_chains_jsonb, video_editor_collaborator_id,
            thumbnail_template_id, seo_template_id
       FROM pipeline_presets

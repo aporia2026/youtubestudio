@@ -21,6 +21,13 @@ interface SeoTemplateRow {
   is_default: boolean;
 }
 
+interface StyleRow {
+  id: string;
+  name: string;
+  description?: string | null;
+  origin: 'built-in' | 'saved';
+}
+
 interface FullPreset {
   id: string;
   name: string;
@@ -33,6 +40,10 @@ interface FullPreset {
   qa_max_iterations: number;
   script_gate_enabled: boolean;
   production_doc_style_id: string | null;
+  /** When set, overrides `production_doc_style_id` for the script-
+   *  generation stage. Null = fall back to `production_doc_style_id`.
+   *  Both null = no style preset injection. Migration 0093. */
+  script_style_preset_id: string | null;
   narration_deadline_days: number;
   fallback_chains: Record<string, string[]> | null;
   video_editor_collaborator_id: string | null;
@@ -72,6 +83,13 @@ export default function PresetForm({
   const [videoEditorId, setVideoEditorId] = useState<string>('');
   const [thumbnailTemplateId, setThumbnailTemplateId] = useState<string>('');
   const [seoTemplateId, setSeoTemplateId] = useState<string>('');
+  // Visual style preset — drives the production-doc and thumbnail
+  // stages, AND (when scriptStylePresetId is blank) the script stage.
+  const [productionDocStyleId, setProductionDocStyleId] = useState<string>('');
+  // Script style preset — overrides productionDocStyleId for the
+  // script-generation stage only. Blank = inherit from
+  // productionDocStyleId. Both blank = no style preset injection.
+  const [scriptStylePresetId, setScriptStylePresetId] = useState<string>('');
   const [ideaContextJson, setIdeaContextJson] = useState('{}');
   const [scriptRulesJson, setScriptRulesJson] = useState('{}');
   const [fallbackChains, setFallbackChains] = useState<Record<string, string[]>>({});
@@ -79,6 +97,7 @@ export default function PresetForm({
   const [editors, setEditors] = useState<Collaborator[]>([]);
   const [thumbnailTemplates, setThumbnailTemplates] = useState<ThumbnailTemplateRow[]>([]);
   const [seoTemplates, setSeoTemplates] = useState<SeoTemplateRow[]>([]);
+  const [styles, setStyles] = useState<StyleRow[]>([]);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -87,10 +106,11 @@ export default function PresetForm({
   useEffect(() => {
     void (async () => {
       try {
-        const [editorsRes, tplsRes, seoTplsRes, presetRes] = await Promise.all([
+        const [editorsRes, tplsRes, seoTplsRes, stylesRes, presetRes] = await Promise.all([
           fetch('/api/team/collaborators?role=editor', { cache: 'no-store' }).catch(() => null),
           fetch('/api/thumbnail-templates', { cache: 'no-store' }).catch(() => null),
           fetch('/api/templates?field_type=seo', { cache: 'no-store' }).catch(() => null),
+          fetch('/api/production-doc/styles', { cache: 'no-store' }).catch(() => null),
           presetId
             ? fetch(`/api/auto-pipeline/presets/${presetId}`, { cache: 'no-store' })
             : Promise.resolve(null),
@@ -109,6 +129,10 @@ export default function PresetForm({
           const rows = Array.isArray(data) ? data : (data.templates ?? []);
           setSeoTemplates(rows as SeoTemplateRow[]);
         }
+        if (stylesRes && stylesRes.ok) {
+          const data = await stylesRes.json();
+          setStyles((data.styles as StyleRow[]) ?? []);
+        }
         if (presetRes && presetRes.ok) {
           const data = await presetRes.json();
           const p = data.preset as FullPreset;
@@ -123,6 +147,8 @@ export default function PresetForm({
           setVideoEditorId(p.video_editor_collaborator_id ?? '');
           setThumbnailTemplateId(p.thumbnail_template_id ?? '');
           setSeoTemplateId(p.seo_template_id ?? '');
+          setProductionDocStyleId(p.production_doc_style_id ?? '');
+          setScriptStylePresetId(p.script_style_preset_id ?? '');
           setIdeaContextJson(JSON.stringify(p.idea_context ?? {}, null, 2));
           setScriptRulesJson(JSON.stringify(p.script_rules ?? {}, null, 2));
           setFallbackChains(p.fallback_chains ?? {});
@@ -179,6 +205,8 @@ export default function PresetForm({
       video_editor_collaborator_id: videoEditorId || null,
       thumbnail_template_id: thumbnailTemplateId || null,
       seo_template_id: seoTemplateId || null,
+      production_doc_style_id: productionDocStyleId || null,
+      script_style_preset_id: scriptStylePresetId || null,
     };
 
     setSaving(true);
@@ -302,6 +330,25 @@ export default function PresetForm({
         </Field>
 
         <Field
+          label="Script style preset"
+          hint="The producer-curated style that shapes the script's voice and structure. Picks from the same catalogue the standalone Script Generator uses (built-ins + workspace-saved styles). Leave blank to inherit the Visual style preset below."
+        >
+          <select
+            value={scriptStylePresetId}
+            onChange={(e) => setScriptStylePresetId(e.target.value)}
+            className="input-field"
+          >
+            <option value="">— Inherit from Visual style (or none) —</option>
+            {styles.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+                {s.origin === 'built-in' ? ' (built-in)' : ''}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field
           label="Script rules (JSON)"
           hint="Free-form: tone, style, audience, targetDurationMinutes, additionalContext. Power-user surface."
         >
@@ -375,6 +422,25 @@ export default function PresetForm({
         </Field>
 
         <SectionHeader title="Post-production" />
+
+        <Field
+          label="Visual style preset"
+          hint="Drives the production-doc shot prompts and (when set) thumbnail composition. Doubles as the script-stage style when 'Script style preset' above is blank."
+        >
+          <select
+            value={productionDocStyleId}
+            onChange={(e) => setProductionDocStyleId(e.target.value)}
+            className="input-field"
+          >
+            <option value="">— No visual style preset —</option>
+            {styles.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+                {s.origin === 'built-in' ? ' (built-in)' : ''}
+              </option>
+            ))}
+          </select>
+        </Field>
 
         <Field label="Thumbnail template">
           <select

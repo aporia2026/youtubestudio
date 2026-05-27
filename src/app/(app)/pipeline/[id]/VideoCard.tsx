@@ -600,10 +600,54 @@ function ScriptGate(props: {
     onKill,
   } = props;
 
+  // Empty `scripts.content` row — usually a stream error from a
+  // generation that failed mid-flight (the underlying bug was fixed
+  // in commit 187fe51, but prior partial rows can still surface
+  // here). Don't dead-end the user: surface the recovery controls
+  // (Regenerate / Kill) so the run isn't stuck. No Keep button —
+  // there's nothing to keep.
   if (!scriptContent) {
     return (
-      <div className="text-sm" style={{ color: 'var(--text-muted)' }}>
-        Script not loaded.
+      <div
+        className="rounded-lg p-4"
+        style={{
+          background: 'rgba(239,68,68,0.08)',
+          border: '1px solid rgba(239,68,68,0.35)',
+        }}
+      >
+        <div className="font-semibold text-sm mb-1" style={{ color: 'var(--text-primary)' }}>
+          Script row is empty
+        </div>
+        <p className="text-xs mb-3" style={{ color: 'var(--text-secondary)' }}>
+          The script record exists ({scriptWordCount ?? '?'} words counted) but its
+          content is missing — usually a generation that failed mid-stream. Regenerate
+          to retry, or Kill to drop this video from the run.
+        </p>
+        {ideaTitle && (
+          <div className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+            For: {ideaTitle}
+          </div>
+        )}
+        <div className="flex gap-2 flex-wrap">
+          <button
+            onClick={onRegenerate}
+            disabled={!!busyAction}
+            className="btn-primary text-xs"
+            style={{ padding: '8px 14px' }}
+          >
+            Regenerate script
+          </button>
+          <button
+            onClick={() => {
+              if (confirm('Kill this video?')) onKill();
+            }}
+            disabled={!!busyAction}
+            className="btn-danger text-xs"
+            style={{ padding: '8px 14px' }}
+          >
+            Kill
+          </button>
+        </div>
       </div>
     );
   }

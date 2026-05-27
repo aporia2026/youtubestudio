@@ -26,6 +26,7 @@ interface PresetFull {
   qa_max_iterations: number;
   script_gate_enabled: boolean;
   production_doc_style_id: string | null;
+  script_style_preset_id: string | null;
   narration_deadline_days: number;
   fallback_chains: Record<string, string[]> | null;
   video_editor_collaborator_id: string | null;
@@ -49,6 +50,7 @@ const ROW_SHAPE = `
   qa_max_iterations,
   script_gate_enabled,
   production_doc_style_id::text AS production_doc_style_id,
+  script_style_preset_id::text AS script_style_preset_id,
   narration_deadline_days,
   fallback_chains_jsonb AS fallback_chains,
   video_editor_collaborator_id::text AS video_editor_collaborator_id,
@@ -110,6 +112,9 @@ export const PATCH = apiRoute.authed<{ id: string }>(async (session, req: NextRe
     if (b.production_doc_style_id !== undefined) {
       patch.production_doc_style_id = b.production_doc_style_id === null ? null : asUuidOrThrow(b.production_doc_style_id, 'production_doc_style_id');
     }
+    if (b.script_style_preset_id !== undefined) {
+      patch.script_style_preset_id = b.script_style_preset_id === null ? null : asUuidOrThrow(b.script_style_preset_id, 'script_style_preset_id');
+    }
     if (b.narration_deadline_days !== undefined) patch.narration_deadline_days = clampInt(b.narration_deadline_days, 1, 90, 'narration_deadline_days');
     if (b.fallback_chains !== undefined) patch.fallback_chains_jsonb = asFallbackChainsOrNull(b.fallback_chains);
     if (b.video_editor_collaborator_id !== undefined) {
@@ -157,6 +162,7 @@ export const PATCH = apiRoute.authed<{ id: string }>(async (session, req: NextRe
              video_editor_collaborator_id = CASE WHEN $21::boolean THEN $22::uuid ELSE video_editor_collaborator_id END,
              thumbnail_template_id = CASE WHEN $23::boolean THEN $24::uuid ELSE thumbnail_template_id END,
              seo_template_id = CASE WHEN $25::boolean THEN $26::uuid ELSE seo_template_id END,
+             script_style_preset_id = CASE WHEN $27::boolean THEN $28::uuid ELSE script_style_preset_id END,
              updated_at = NOW()
        WHERE id = $1::uuid AND workspace_id = $2::uuid
       RETURNING ${ROW_SHAPE}
@@ -179,6 +185,7 @@ export const PATCH = apiRoute.authed<{ id: string }>(async (session, req: NextRe
         patch.video_editor_collaborator_id !== undefined, patch.video_editor_collaborator_id ?? null,
         patch.thumbnail_template_id !== undefined, patch.thumbnail_template_id ?? null,
         patch.seo_template_id !== undefined, patch.seo_template_id ?? null,
+        patch.script_style_preset_id !== undefined, patch.script_style_preset_id ?? null,
       ],
     );
     if (rows.length === 0) return NextResponse.json({ error: 'Preset not found.' }, { status: 404 });

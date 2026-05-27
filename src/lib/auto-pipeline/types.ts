@@ -178,6 +178,12 @@ export interface PipelinePreset {
   qa_max_iterations: number;
   script_gate_enabled: boolean;
   production_doc_style_id: string | null;
+  /** FK to production_doc_styles — overrides production_doc_style_id
+   *  for the script-generation stage only. Null = fall back to
+   *  production_doc_style_id (so a preset that only set the visual
+   *  style also flavors the script). Both null = no style preset
+   *  injected, prompt is byte-identical to the pre-style path. */
+  script_style_preset_id: string | null;
   narration_deadline_days: number;
   fallback_chains_jsonb: Record<string, string[]> | null;
   /** Collaborator id of the video editor who receives the auto-

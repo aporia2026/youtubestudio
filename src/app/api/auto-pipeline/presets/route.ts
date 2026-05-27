@@ -83,6 +83,14 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     typeof b.seo_template_id === 'string' && b.seo_template_id.length > 0
       ? b.seo_template_id
       : null;
+  const productionDocStyleId =
+    typeof b.production_doc_style_id === 'string' && b.production_doc_style_id.length > 0
+      ? b.production_doc_style_id
+      : null;
+  const scriptStylePresetId =
+    typeof b.script_style_preset_id === 'string' && b.script_style_preset_id.length > 0
+      ? b.script_style_preset_id
+      : null;
   const ideaContext = isObject(b.idea_context) ? b.idea_context : null;
   const scriptRules = isObject(b.script_rules) ? b.script_rules : null;
   const fallbackChains = isObject(b.fallback_chains) ? b.fallback_chains : null;
@@ -95,13 +103,15 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         idea_context_jsonb, script_rules_jsonb, target_spoken_words,
         qa_min_score, qa_max_iterations, script_gate_enabled,
         narration_deadline_days, fallback_chains_jsonb,
-        video_editor_collaborator_id, thumbnail_template_id, seo_template_id, created_by
+        video_editor_collaborator_id, thumbnail_template_id, seo_template_id,
+        production_doc_style_id, script_style_preset_id, created_by
       ) VALUES (
         $1::uuid, $2, $3, $4,
         $5::jsonb, $6::jsonb, $7,
         $8, $9, $10,
         $11, $12::jsonb,
-        $13::uuid, $14::uuid, $15::uuid, $16::uuid
+        $13::uuid, $14::uuid, $15::uuid,
+        $16::uuid, $17::uuid, $18::uuid
       )
       RETURNING id::text AS id
       `,
@@ -121,6 +131,8 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         videoEditorCollaboratorId,
         thumbnailTemplateId,
         seoTemplateId,
+        productionDocStyleId,
+        scriptStylePresetId,
         session.uid,
       ],
     );
