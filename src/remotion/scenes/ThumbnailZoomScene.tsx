@@ -2,8 +2,8 @@ import React from 'react';
 import { AbsoluteFill, Img, interpolate, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import {
   SPRING_GENTLE,
-  SPRING_SMOOTH,
   SPRING_SNAPPY,
+  SPRING_ZOOM,
 } from '../animations/spring-presets';
 import { msToFrame } from '../utils';
 import type {
@@ -78,9 +78,9 @@ interface PixelTransform {
 }
 
 const DEFAULTS = {
-  holdAtFullMs: 500,
-  zoomDurationMs: 1000,
-  holdAtTargetMs: 600,
+  holdAtFullMs: 250,
+  zoomDurationMs: 650,
+  holdAtTargetMs: 350,
   easing: 'spring-smooth' as const,
 };
 
@@ -175,12 +175,19 @@ function framingToPixelTransform(f: Framing, cW: number, cH: number): PixelTrans
   };
 }
 
+// The 'spring-smooth' tier is the dialog's "balanced (default)" choice.
+// We deliberately map it to SPRING_ZOOM (not SPRING_SMOOTH) for this scene:
+// SPRING_SMOOTH is tuned for Ken Burns / background slides, and its
+// near-critical damping makes the section-zoom tail feel stuck. SPRING_ZOOM
+// keeps the no-overshoot promise of the "smooth" tier while landing
+// confidently. SPRING_SMOOTH stays in use by other scenes (e.g.
+// ScreenMockupScene) where its gentle settle is the right feel.
 function easingToSpringConfig(easing: ThumbnailTransitionConfig['easing']) {
   switch (easing) {
     case 'spring-snappy': return SPRING_SNAPPY;
     case 'spring-gentle': return SPRING_GENTLE;
     case 'spring-smooth':
-    default:              return SPRING_SMOOTH;
+    default:              return SPRING_ZOOM;
   }
 }
 

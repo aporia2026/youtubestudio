@@ -35,9 +35,9 @@ const FALLBACK_TRANSITION: Required<Pick<ThumbnailTransitionConfig,
   'kind' | 'holdAtFullMs' | 'zoomDurationMs' | 'holdAtTargetMs' | 'easing'
 >> = {
   kind: 'hard-cut',
-  holdAtFullMs: 500,
-  zoomDurationMs: 1000,
-  holdAtTargetMs: 600,
+  holdAtFullMs: 250,
+  zoomDurationMs: 650,
+  holdAtTargetMs: 350,
   easing: 'spring-smooth',
 };
 

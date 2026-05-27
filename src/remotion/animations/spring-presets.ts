@@ -27,6 +27,16 @@ export const SPRING_SMOOTH: SpringConfig = {
   overshootClamping: true,
 };
 
+/** Zoom — punchy land, no visible overshoot. Tuned for section-divider
+ *  thumbnail zooms where SMOOTH's near-critical damping feels "stuck"
+ *  in the tail. Underdamped with clamping ⇒ fast approach, hard stop. */
+export const SPRING_ZOOM: SpringConfig = {
+  damping: 17,
+  stiffness: 200,
+  mass: 0.9,
+  overshootClamping: true,
+};
+
 /** Wobbly — heavy overshoot. Good for "impact" moments, sticker-style entrances. */
 export const SPRING_WOBBLY: SpringConfig = {
   damping: 6,
