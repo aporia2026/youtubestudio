@@ -202,6 +202,16 @@ export function useProject(
     const currentVersion = versionRef.current;
     if (!current || currentVersion === null) return { kind: 'no_op' };
     if (!isDirtyRef.current) return { kind: 'no_op' };
+    // Guard against an empty projectId. The autosave loop can fire
+    // before the editor has a real project context (initial mount race,
+    // route change, doc loaded without a project id). With no id, the
+    // PATCH URL collapses to `/api/edit/` which Next.js normalizes to
+    // `/api/edit` — no handler at that exact path, so the response is
+    // the default 404 HTML page and the console fills with
+    // `PATCH .../api/edit 404` noise on every debounce. Skip cleanly
+    // here; the caller's state machine treats no_op as "nothing to do"
+    // and the loop stops without retry / toast.
+    if (!projectId || !projectId.trim()) return { kind: 'no_op' };
 
     // Cancel any prior in-flight save. The server-side optimistic
     // version check would catch a concurrent write anyway, but
