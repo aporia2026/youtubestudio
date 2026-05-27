@@ -309,6 +309,14 @@ interface ProductionRow {
   /** Cached pixel-saliency map for this row's generated image. Populated
    *  by `/api/generate/production-doc/image` after the image lands in R2. */
   image_saliency?: ImageSaliencyMap;
+  /** Server-persisted URL of the row's last-generated image. Mirrors
+   *  the transient `rowImages[i].imageUrl` client state — written by a
+   *  useEffect every time a generation completes, read on doc load to
+   *  re-hydrate `rowImages` so a refresh / link-share / new-tab visit
+   *  doesn't show blank cells. The image BYTES live in R2 regardless;
+   *  this field is the editor's bookmark to find them again. Mirrors
+   *  the same-named field on `ProductionRow` in `@/remotion/utils.ts`. */
+  image_url?: string;
   /** Per-row transition override. Falls back to doc-level default. */
   thumbnail_transition?: ThumbnailTransitionConfig;
   /** Per-row scene-to-scene cross-fade override. `undefined` inherits the
@@ -3149,6 +3157,62 @@ function ProductionDocPage() {
   const [rowImages, setRowImages] = useState<RowImageState[]>([]);
   const [imageProgress, setImageProgress] = useState({ done: 0, total: 0 });
   const [imagesGenerating, setImagesGenerating] = useState(false);
+
+  // Mirror successful image URLs into `doc.row.image_url` so they survive
+  // refresh / link share / new-tab visit. Runs whenever rowImages
+  // changes. Reads the latest doc via setDoc's functional setter (no
+  // dep on doc itself, so no infinite loop). Skips the mutation when
+  // nothing changed (returns prev), so React doesn't re-render on
+  // no-op updates and autosave doesn't fire spuriously.
+  useEffect(() => {
+    setDoc((prev) => {
+      if (!prev) return prev;
+      let mutated = false;
+      const nextRows = prev.rows.map((row, i) => {
+        const rowImg = rowImages[i];
+        const newUrl =
+          rowImg?.status === 'done' && rowImg.imageUrl ? rowImg.imageUrl : null;
+        if (newUrl && row.image_url !== newUrl) {
+          mutated = true;
+          return { ...row, image_url: newUrl };
+        }
+        return row;
+      });
+      return mutated ? { ...prev, rows: nextRows } : prev;
+    });
+  }, [rowImages]);
+
+  // Hydrate rowImages from persisted `doc.row.image_url` on first doc
+  // load (keyed by historyEntryId — different docs hydrate
+  // independently). Only fills slots that are empty / idle so we don't
+  // clobber in-session state from localStorage restore or a fresh
+  // generation that landed before this effect ran. Ref-guarded so
+  // subsequent edits to the doc don't trigger re-hydration that would
+  // overwrite later mutations.
+  const hydratedDocIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!doc) return;
+    const docKey = historyEntryId ?? 'in-memory';
+    if (hydratedDocIdRef.current === docKey) return;
+    hydratedDocIdRef.current = docKey;
+    setRowImages((prev) => {
+      return doc.rows.map((row, i) => {
+        const existing = prev[i];
+        // Preserve in-session state — only hydrate empty / idle slots.
+        if (existing && existing.status !== 'idle' && existing.imageUrl) {
+          return existing;
+        }
+        if (typeof row.image_url === 'string' && row.image_url.trim()) {
+          return {
+            status: 'done' as const,
+            imageUrl: row.image_url.trim(),
+            source: 'generated' as const,
+          };
+        }
+        return existing ?? { status: 'idle' as const };
+      });
+    });
+  }, [doc, historyEntryId]);
   // — Edit panel: which row index has its ✎ panel open (null = closed).
   //   Held at page level so opening/closing doesn't unmount the row's cell
   //   (which would tear down in-flight previews bound to that cell).

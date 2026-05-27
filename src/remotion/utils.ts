@@ -447,6 +447,15 @@ export interface ProductionRow {
    *  image-generation route. Sparse: missing for rows whose image hasn't
    *  been generated, or which pre-date the feature. */
   image_saliency?: ImageSaliencyMap;
+  /** Server-persisted URL of the row's last-generated image. Mirrors
+   *  the transient `rowImages[i].imageUrl` client state — written by a
+   *  useEffect every time a generation completes, read on doc load to
+   *  re-hydrate `rowImages` so a refresh / link-share / new-tab visit
+   *  doesn't show blank cells. The image BYTES live in R2 regardless;
+   *  this field is the editor's bookmark to find them again. Sparse:
+   *  rows whose image was never generated (or generated before this
+   *  field was added) leave it undefined. */
+  image_url?: string;
   /** Per-row transition override; falls back to ProductionDoc.thumbnail.defaultTransition. */
   thumbnail_transition?: ThumbnailTransitionConfig;
   /** Camera padding for the thumbnail-zoom framing on this row, as a
