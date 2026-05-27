@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
 import { COLLAGE_TESTER_PUBLIC, EDITOR_V1_PUBLIC } from '@/lib/feature-flags';
+import { queueImageGen, reportUpstream429 } from '@/lib/image-gen-throttle';
 import { CollageTesterPanel } from '@/components/production-doc/CollageTesterPanel';
 import type { ScheduleItem } from '@/lib/schedule';
 import { getScheduleLinkId, fetchScheduleItem, loadFullContextForItem, buildContextNotesFromItem } from '@/lib/schedule-link';
@@ -56,6 +57,7 @@ import { OverlayCell } from '@/components/production-doc/OverlayCell';
 import { OverlayPositionEditor } from '@/components/production-doc/OverlayPositionEditor';
 import { OverlayEditDialog } from '@/components/production-doc/OverlayEditDialog';
 import { OverlayContextMenu } from '@/components/production-doc/OverlayContextMenu';
+import { ImageGenThrottleToast } from '@/components/editor/ImageGenThrottleToast';
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
 import { OstModeControl, type OstMode } from '@/components/production-doc/OstModeControl';
@@ -2660,14 +2662,17 @@ function ProductionDocPage() {
           console.info('[variant-gen retry]', { variantIndex, attempt, delayMs });
         }
         try {
-          res = await fetch('/api/generate/production-doc/image/edit', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(prepared.request),
-          });
+          res = await queueImageGen('edit', 'variant-edit', () =>
+            fetch('/api/generate/production-doc/image/edit', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(prepared.request),
+            }),
+          );
           // Retry on rate-limit + transient server errors.
           const isRetryable =
             res.status === 429 || (res.status >= 500 && res.status < 600);
+          if (res.status === 429) reportUpstream429('edit', 'variant-edit');
           if (isRetryable && attempt < MAX_VARIANT_RETRIES) continue;
           break;
         } catch (err) {
@@ -4086,25 +4091,28 @@ function ProductionDocPage() {
       });
       try {
         const sheetRef = resolveSheetReference(item.row, doc);
-        const res = await fetch('/api/generate/production-doc/image', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt,
-            model: item.model,
-            onScreenText: item.row.on_screen_text,
-            onScreenTextMode: item.row.on_screen_text_mode ?? doc.on_screen_text_mode_default,
-            sectionTitle: item.row.section_title,
-            sectionTitleLayout: item.row.section_title_layout ?? doc.section_title_layout_default,
-            referenceImageUrl: sheetRef.referenceImageUrl,
-            styleSheetDescription: sheetRef.styleSheetDescription,
-            // Local-Flux bulk path — the route's local branch fires
-            // before the v2 i2i block, so styleId is currently a
-            // no-op here. Passed for completeness when local i2i
-            // arrives (v3 of the May 21 plan).
-            styleId: stylePreset || undefined,
+        const res = await queueImageGen('generate', 'local-bulk-single', () =>
+          fetch('/api/generate/production-doc/image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompt,
+              model: item.model,
+              onScreenText: item.row.on_screen_text,
+              onScreenTextMode: item.row.on_screen_text_mode ?? doc.on_screen_text_mode_default,
+              sectionTitle: item.row.section_title,
+              sectionTitleLayout: item.row.section_title_layout ?? doc.section_title_layout_default,
+              referenceImageUrl: sheetRef.referenceImageUrl,
+              styleSheetDescription: sheetRef.styleSheetDescription,
+              // Local-Flux bulk path — the route's local branch fires
+              // before the v2 i2i block, so styleId is currently a
+              // no-op here. Passed for completeness when local i2i
+              // arrives (v3 of the May 21 plan).
+              styleId: stylePreset || undefined,
+            }),
           }),
-        });
+        );
+        if (res.status === 429) reportUpstream429('generate', 'local-bulk-single');
         const data = (await res.json()) as { imageUrl?: string; error?: string };
         if (res.ok && data.imageUrl) {
           setRowImages((prev) => {
@@ -4414,13 +4422,22 @@ function ProductionDocPage() {
     let completed = 0;
 
     if (collageOn) {
-      // Group eligible shots in chunks of 4. Sequential — no eligibility
-      // filter beyond "has a prompt" (which `emptyImagePlan` already
-      // enforces). If a chunk falls back, the 4 single-shot calls run
-      // inline before moving to the next chunk.
+      // Group eligible shots in chunks of 4 and run 2 chunks in parallel.
+      // Each chunk is 1 server token via /collage → 4 images, so a
+      // 2-wide pool delivers ~8 images per cycle while still respecting
+      // the throttle's 25/min generate cap (token bucket spaces the
+      // chunks automatically). Per-chunk fallback (4 single-shot calls
+      // when collage detection fails) stays sequential inside its own
+      // worker so the inspector pills land in row order.
+      // _plans/2026-05-27-image-gen-client-throttle.md — Phase 5.
       const chunkSize = 4;
+      const COLLAGE_POOL_WIDTH = 2;
+      const chunks: typeof emptyImagePlan[] = [];
       for (let start = 0; start + chunkSize <= emptyImagePlan.length; start += chunkSize) {
-        const chunk = emptyImagePlan.slice(start, start + chunkSize);
+        chunks.push(emptyImagePlan.slice(start, start + chunkSize));
+      }
+
+      async function processCollageChunk(chunk: typeof emptyImagePlan): Promise<void> {
         // Mark all 4 rows loading at once so the UI doesn't show 3 idle
         // tiles while the 4th is still running.
         setRowImages((prev) => {
@@ -4436,26 +4453,24 @@ function ProductionDocPage() {
         });
         let collageOk = false;
         try {
-          const res = await fetch('/api/generate/production-doc/collage', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              // `cells` carries the per-row metadata so the collage
-              // route's `augmentCellPrompt` produces the same per-cell
-              // OST baking + safe-top bias + sheet-description hint
-              // that the single-shot route would have applied. See
-              // _plans/2026-05-26-collage-default-on-with-per-cell-augmentation.md.
-              cells: chunk.map((c) => ({
-                prompt: c.prompt,
-                onScreenText: c.onScreenText,
-                onScreenTextMode: c.onScreenTextMode,
-                sectionTitle: c.sectionTitle,
-                sectionTitleLayout: c.sectionTitleLayout,
-                styleSheetDescription: c.styleSheetDescription,
-              })),
-              model: imageModel,
+          const res = await queueImageGen('generate', 'bulk-collage', () =>
+            fetch('/api/generate/production-doc/collage', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                cells: chunk.map((c) => ({
+                  prompt: c.prompt,
+                  onScreenText: c.onScreenText,
+                  onScreenTextMode: c.onScreenTextMode,
+                  sectionTitle: c.sectionTitle,
+                  sectionTitleLayout: c.sectionTitleLayout,
+                  styleSheetDescription: c.styleSheetDescription,
+                })),
+                model: imageModel,
+              }),
             }),
-          });
+          );
+          if (res.status === 429) reportUpstream429('generate', 'bulk-collage');
           const data = await safeJson(res) as {
             status?: 'success' | 'fallback_needed';
             imageUrls?: string[];
@@ -4476,11 +4491,6 @@ function ProductionDocPage() {
               }
               return next;
             });
-            // Apply per-quadrant saliency so the overlay-placement
-            // resolver lands real-image overlays on the emptiest cell
-            // instead of falling back to the LLM-planned zone. Mirrors
-            // the single-shot path which calls applySaliencyToRow
-            // after each generation lands.
             if (Array.isArray(data.saliencies)) {
               for (let i = 0; i < chunk.length; i++) {
                 const sal = data.saliencies[i];
@@ -4505,7 +4515,8 @@ function ProductionDocPage() {
           });
         }
         if (!collageOk) {
-          // Per-shot fallback for this chunk only.
+          // Per-shot fallback for this chunk only — sequential within
+          // the chunk so pill state lands in row order.
           for (const item of chunk) {
             await generateImageForRow(item.rowIndex, item.prompt, {
               onScreenText: item.onScreenText,
@@ -4522,6 +4533,23 @@ function ProductionDocPage() {
         completed += chunk.length;
         setRetryingImages({ done: completed, total: emptyImagePlan.length });
       }
+
+      // Shared cursor — each worker pulls the next available chunk
+      // index off the front of `chunks` until the queue drains.
+      // Workers running in parallel push into `setRowImages` which is
+      // React's batched setter, so the per-worker `setRowImages(prev =>
+      // ...)` calls compose correctly even when interleaved.
+      let nextChunkIdx = 0;
+      async function chunkWorker(): Promise<void> {
+        while (true) {
+          const idx = nextChunkIdx++;
+          if (idx >= chunks.length) return;
+          await processCollageChunk(chunks[idx]!);
+        }
+      }
+      await Promise.all(
+        Array.from({ length: Math.min(COLLAGE_POOL_WIDTH, chunks.length) }, () => chunkWorker()),
+      );
       // Tail of <4 shots → single-shot each.
       for (let i = chunkCount * chunkSize; i < emptyImagePlan.length; i++) {
         const item = emptyImagePlan[i]!;
@@ -5916,17 +5944,20 @@ function ProductionDocPage() {
     opts: { optionId?: string; maskUrl?: string; intent?: 'erase' } = {},
   ): Promise<{ ok: true; imageUrl: string; saliency: ImageSaliencyMap | null } | { ok: false; error: string }> {
     try {
-      const res = await fetch('/api/generate/production-doc/image/edit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          originalImageUrl,
-          prompt,
-          optionId: opts.optionId,
-          mask: opts.maskUrl ? { url: opts.maskUrl } : undefined,
-          intent: opts.intent,
+      const res = await queueImageGen('edit', 'editor-edit', () =>
+        fetch('/api/generate/production-doc/image/edit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            originalImageUrl,
+            prompt,
+            optionId: opts.optionId,
+            mask: opts.maskUrl ? { url: opts.maskUrl } : undefined,
+            intent: opts.intent,
+          }),
         }),
-      });
+      );
+      if (res.status === 429) reportUpstream429('edit', 'editor-edit');
       const data = await safeJson(res);
       if (!res.ok) {
         return { ok: false, error: (data.error as string) || `Failed (${res.status})` };
@@ -6032,31 +6063,34 @@ function ProductionDocPage() {
       hasOverlayTerms: Boolean(overlayTerms),
     });
     try {
-      const res = await fetch('/api/generate/production-doc/image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal,
-        body: JSON.stringify({
-          prompt,
-          model: imageModel,
-          onScreenText,
-          onScreenTextMode,
-          sectionTitle,
-          sectionTitleLayout,
-          referenceImageUrl,
-          styleSheetDescription,
-          // v2 (2026-05-21): when the active style is a saved private
-          // style with attached refs, this routes the call through
-          // the i2i dispatcher (NanoBanana Pro by default). When it's
-          // a built-in like 'doodle_explainer', the route's
-          // resolveStyle returns origin='built-in' and falls back to
-          // the legacy T2I path unchanged.
-          styleId: stylePreset || undefined,
-          // v2: drop these refs from the dispatched call. Set when the
-          // user clicks "Regenerate without rejected refs" after a 409.
-          excludeRefIds: meta.excludeRefIds,
+      const res = await queueImageGen('generate', 'single-regen', () =>
+        fetch('/api/generate/production-doc/image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal,
+          body: JSON.stringify({
+            prompt,
+            model: imageModel,
+            onScreenText,
+            onScreenTextMode,
+            sectionTitle,
+            sectionTitleLayout,
+            referenceImageUrl,
+            styleSheetDescription,
+            // v2 (2026-05-21): when the active style is a saved private
+            // style with attached refs, this routes the call through
+            // the i2i dispatcher (NanoBanana Pro by default). When it's
+            // a built-in like 'doodle_explainer', the route's
+            // resolveStyle returns origin='built-in' and falls back to
+            // the legacy T2I path unchanged.
+            styleId: stylePreset || undefined,
+            // v2: drop these refs from the dispatched call. Set when the
+            // user clicks "Regenerate without rejected refs" after a 409.
+            excludeRefIds: meta.excludeRefIds,
+          }),
         }),
-      });
+      );
+      if (res.status === 429) reportUpstream429('generate', 'single-regen');
       const data = await safeJson(res) as {
         imageUrl?: string;
         saliency?: ImageSaliencyMap | null;
@@ -6116,6 +6150,14 @@ function ProductionDocPage() {
           },
         );
         return false;
+      }
+      if (res.status === 429) {
+        // Rare with the client-side throttle in place (25/min cap under the
+        // server's 30/min), but a race across tabs or a tightened server
+        // cap can still produce one. Show a calm pacing message instead
+        // of the generic "Failed" pill. The throttle's reportUpstream429
+        // call above already stalled the bucket so the next click waits.
+        throw new Error('Pacing — too many image generations in the last minute. Try again in a moment.');
       }
       if (!res.ok) throw new Error((data.error as string) || 'Failed');
       setRowImages(prev => {
@@ -7781,6 +7823,7 @@ function ProductionDocPage() {
 
   return (
     <ScheduleLinkProvider item={scheduleItem}>
+      <ImageGenThrottleToast />
       <ScheduleSaverRegistration
         handle={{
           artifactLabel: 'production doc',

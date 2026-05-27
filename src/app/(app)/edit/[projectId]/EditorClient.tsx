@@ -51,11 +51,13 @@ import {
 import { reindexForCommand } from '@/lib/editor/reindex-for-command';
 import { toast } from 'sonner';
 import { useEditorStore } from '@/lib/editor/use-editor-store';
+import { queueImageGen, reportUpstream429 } from '@/lib/image-gen-throttle';
 import { Timeline } from '@/components/editor/Timeline';
 import { ShotInspector } from '@/components/editor/ShotInspector';
 import { StatusBar } from '@/components/editor/StatusBar';
 import { EditorChrome } from '@/components/editor/EditorChrome';
 import { EditorHeader } from '@/components/editor/EditorHeader';
+import { ImageGenThrottleToast } from '@/components/editor/ImageGenThrottleToast';
 import { TransportBar, type PlaybackRate } from '@/components/editor/TransportBar';
 import { EditorLeftRail } from '@/components/editor/EditorLeftRail';
 import { EditorInspector, type InspectorTabId } from '@/components/editor/EditorInspector';
@@ -868,12 +870,15 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         return;
       }
       try {
-        const res = await fetch('/api/generate/production-doc/collage', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ cells, model: docModelDefault }),
-          signal: controller.signal,
-        });
+        const res = await queueImageGen('generate', 'editor-bulk-collage', () =>
+          fetch('/api/generate/production-doc/collage', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cells, model: docModelDefault }),
+            signal: controller.signal,
+          }),
+        );
+        if (res.status === 429) reportUpstream429('generate', 'editor-bulk-collage');
         const data = (await res.json().catch(() => ({}))) as {
           status?: 'success' | 'fallback_needed';
           imageUrls?: string[];
@@ -957,18 +962,21 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       }
       const model = row.image_model || liveState.doc.image_model_default || undefined;
       try {
-        const res = await fetch('/api/generate/production-doc/image', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt,
-            model,
-            onScreenText: row.on_screen_text ?? '',
-            sectionTitle: row.section_title ?? '',
-            styleId: liveState.doc.style_preset || undefined,
+        const res = await queueImageGen('generate', 'editor-bulk-single', () =>
+          fetch('/api/generate/production-doc/image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompt,
+              model,
+              onScreenText: row.on_screen_text ?? '',
+              sectionTitle: row.section_title ?? '',
+              styleId: liveState.doc.style_preset || undefined,
+            }),
+            signal: controller.signal,
           }),
-          signal: controller.signal,
-        });
+        );
+        if (res.status === 429) reportUpstream429('generate', 'editor-bulk-single');
         const data = (await res.json().catch(() => ({}))) as {
           imageUrl?: string;
           error?: string;
@@ -1125,22 +1133,25 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       });
 
       try {
-        const res = await fetch('/api/generate/production-doc/image', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt,
-            model: resolvedModel,
-            onScreenText: row.on_screen_text ?? '',
-            sectionTitle: row.section_title ?? '',
-            styleId: liveState.doc.style_preset || undefined,
-            excludeRefIds:
-              opts.excludeRefIds && opts.excludeRefIds.length > 0
-                ? opts.excludeRefIds
-                : undefined,
+        const res = await queueImageGen('generate', 'editor-regen', () =>
+          fetch('/api/generate/production-doc/image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompt,
+              model: resolvedModel,
+              onScreenText: row.on_screen_text ?? '',
+              sectionTitle: row.section_title ?? '',
+              styleId: liveState.doc.style_preset || undefined,
+              excludeRefIds:
+                opts.excludeRefIds && opts.excludeRefIds.length > 0
+                  ? opts.excludeRefIds
+                  : undefined,
+            }),
+            signal: controller.signal,
           }),
-          signal: controller.signal,
-        });
+        );
+        if (res.status === 429) reportUpstream429('generate', 'editor-regen');
         const data = (await res.json().catch(() => ({}))) as {
           error?: string;
           code?: string;
@@ -2610,11 +2621,14 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       setVariantGenStates((prev) => ({ ...prev, [variantRowIndex]: { kind: 'generating' } }));
 
       try {
-        const res = await fetch('/api/generate/production-doc/image/edit', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(prepared.request),
-        });
+        const res = await queueImageGen('edit', 'editor-variant-edit', () =>
+          fetch('/api/generate/production-doc/image/edit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(prepared.request),
+          }),
+        );
+        if (res.status === 429) reportUpstream429('edit', 'editor-variant-edit');
         const data = (await res.json().catch(() => ({}))) as {
           imageUrl?: string;
           error?: string;
@@ -3218,11 +3232,14 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       const startedAt = Date.now();
       console.info('[editor ai-rmbg] dispatch', { shotIndex });
       try {
-        const res = await fetch('/api/generate/production-doc/image/rmbg', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ originalImageUrl: sourceUrl }),
-        });
+        const res = await queueImageGen('edit', 'editor-rmbg', () =>
+          fetch('/api/generate/production-doc/image/rmbg', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ originalImageUrl: sourceUrl }),
+          }),
+        );
+        if (res.status === 429) reportUpstream429('edit', 'editor-rmbg');
         const data = (await res.json().catch(() => ({}))) as {
           cutoutUrl?: string;
           error?: string;
@@ -4927,6 +4944,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
   return (
     <>
+      <ImageGenThrottleToast />
       <EditorChrome
         slots={{
           header: headerSlot,
@@ -5081,16 +5099,19 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                 setImageEditApplying(true);
                 console.info('[editor image-edit] apply', { rowIndex, optionId: appliedOption.id });
                 try {
-                  const res = await fetch('/api/generate/production-doc/image/edit', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      originalImageUrl: state.rowImages[rowIndex],
-                      prompt,
-                      optionId: appliedOption.id,
-                      mask: { url: maskUrl },
+                  const res = await queueImageGen('edit', 'editor-edit-apply', () =>
+                    fetch('/api/generate/production-doc/image/edit', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        originalImageUrl: state.rowImages[rowIndex],
+                        prompt,
+                        optionId: appliedOption.id,
+                        mask: { url: maskUrl },
+                      }),
                     }),
-                  });
+                  );
+                  if (res.status === 429) reportUpstream429('edit', 'editor-edit-apply');
                   const data = (await res.json().catch(() => ({}))) as {
                     imageUrl?: string;
                     saliency?: ImageSaliencyMap;
@@ -5119,15 +5140,18 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                 setImageEditApplying(true);
                 console.info('[editor image-edit] erase', { rowIndex });
                 try {
-                  const res = await fetch('/api/generate/production-doc/image/edit', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      originalImageUrl: state.rowImages[rowIndex],
-                      intent: 'erase',
-                      mask: { url: maskUrl },
+                  const res = await queueImageGen('edit', 'editor-erase', () =>
+                    fetch('/api/generate/production-doc/image/edit', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        originalImageUrl: state.rowImages[rowIndex],
+                        intent: 'erase',
+                        mask: { url: maskUrl },
+                      }),
                     }),
-                  });
+                  );
+                  if (res.status === 429) reportUpstream429('edit', 'editor-erase');
                   const data = (await res.json().catch(() => ({}))) as {
                     imageUrl?: string;
                     saliency?: ImageSaliencyMap;
