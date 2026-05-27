@@ -8,7 +8,7 @@ import {
 import type { ForcedAlignmentResponse } from '@/lib/elevenlabs';
 import {
   getVariantPreservationHint,
-  useShortVariantPrompt,
+  isShortVariantPromptEnabled,
 } from '@/lib/production-doc-flags';
 
 // ─── Timecode Parsing ──────────────────────────────────────────────────────────
@@ -622,14 +622,33 @@ export interface ProductionRow {
    *  `ai_image_prompt` so the model has full scene context. */
   variant_edit_prompt?: string;
 
-  /** The base row's `image_url` captured at the moment this variant
-   *  was last generated. Lets the editor detect "the base has been
-   *  regenerated since this variant was made" — when the base's
-   *  CURRENT image_url no longer matches this snapshot, the variant
-   *  is "stale" (still valid as bytes, but derived from an older
-   *  base) and the UI shows a "Base changed — regenerate?" banner.
-   *  Only set on variant rows (variant_index > 0). Phase 3.7c. */
+  /** The SOURCE image_url captured at the moment this variant was last
+   *  generated. Lets the editor detect "the source has been regenerated
+   *  since this variant was made" — when the current source's image_url
+   *  no longer matches this snapshot, the variant is stale and the UI
+   *  shows a "regenerate?" banner. Only set on variant rows
+   *  (variant_index > 0). Phase 3.7c.
+   *
+   *  Source semantics depend on `variant_derives_from_previous`:
+   *    - false (default): source = the group's base row image
+   *    - true:            source = the previous variant's image
+   *  The field name kept its original spelling for back-compat. */
   variant_base_image_at_generation?: string;
+
+  /** When true, this variant edits the previous variant's image
+   *  instead of the group's base. variant_index 1 still falls back
+   *  to the base (nothing earlier to chain from). Default false ⇒
+   *  parallel (every variant derives from the base independently).
+   *
+   *  Chained variants let users build additive frame-by-frame
+   *  animations — base shows the intact tent, variant 1 shows the
+   *  first slash, variant 2 adds more rips, etc. Each frame builds
+   *  on the last instead of being an independent alternative.
+   *
+   *  Compounding caveat: chained variant N inherits style drift from
+   *  N-1. The MAX_VARIANTS_PER_GROUP cap (4 rows / 3 variants) bounds
+   *  the maximum chain depth at 3 hops. */
+  variant_derives_from_previous?: boolean;
 }
 
 // ─── Phase 3 helpers ────────────────────────────────────────────────
@@ -782,7 +801,7 @@ export function composeVariantEditRequest(
   //
   // Plan: _plans/2026-05-27-doodle-explainer-2-foundation.md (Stage 2).
   let composedPrompt: string;
-  if (useShortVariantPrompt()) {
+  if (isShortVariantPromptEnabled()) {
     const hint = getVariantPreservationHint(doc.style_preset);
     // Strip a trailing period from the edit instruction so the joined
     // sentence reads as one continuous prompt without ".."

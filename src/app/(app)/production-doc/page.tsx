@@ -317,6 +317,11 @@ interface ProductionRow {
    *  this field is the editor's bookmark to find them again. Mirrors
    *  the same-named field on `ProductionRow` in `@/remotion/utils.ts`. */
   image_url?: string;
+  /** Per-variant chain toggle. When true, this variant edits the
+   *  previous variant's image instead of the group's base. Default
+   *  false ⇒ each variant derives independently from the base. See
+   *  the same-named field on `ProductionRow` in `@/remotion/utils.ts`. */
+  variant_derives_from_previous?: boolean;
   /** Per-row transition override. Falls back to doc-level default. */
   thumbnail_transition?: ThumbnailTransitionConfig;
   /** Per-row scene-to-scene cross-fade override. `undefined` inherits the
@@ -2523,18 +2528,50 @@ function ProductionDocPage() {
       return;
     }
     const baseRowIndex = activeDoc.rows.indexOf(base);
-    // Read the base image URL from the always-fresh ref instead of a
+    // Resolve the SOURCE image for this variant: either the group's
+    // base (the default — parallel variants) or the immediately
+    // previous variant (when variant_derives_from_previous is true —
+    // chained variants). Chained variants form additive frame-by-frame
+    // sequences where each variant builds on the last. Falls back to
+    // base when chaining is requested but no previous variant exists
+    // (variant_index === 1 or the previous variant is missing in
+    // doc.rows — defensive against mid-edit data shapes).
+    let sourceRowIndex = baseRowIndex;
+    let sourceLabel: 'base' | 'previous-variant' = 'base';
+    const currentVariantIdx = variantRow.variant_index ?? 0;
+    if (variantRow.variant_derives_from_previous && currentVariantIdx > 1) {
+      const previousVariant = activeDoc.rows.find(
+        (r) =>
+          r.group_id === groupId &&
+          (r.variant_index ?? 0) === currentVariantIdx - 1,
+      );
+      if (previousVariant) {
+        sourceRowIndex = activeDoc.rows.indexOf(previousVariant);
+        sourceLabel = 'previous-variant';
+      }
+    }
+    // Read the source image URL from the always-fresh ref instead of a
     // setState-callback snapshot. The earlier snapshot trick was
     // unreliable when React batched multiple variant Generate clicks
-    // fired in quick succession — variant 2 would see an empty base
+    // fired in quick succession — variant 2 would see an empty source
     // because variant 1's setState batch hadn't flushed yet, and the
     // setState callback (which only runs DURING a render) wouldn't
     // fire for a no-op state update. `rowImagesRef.current` is
     // mutated by an effect immediately after every rowImages render
     // so reads here are synchronous + current.
-    const baseImageUrl = rowImagesRef.current[baseRowIndex]?.imageUrl ?? '';
+    const sourceImageUrl = rowImagesRef.current[sourceRowIndex]?.imageUrl ?? '';
+    if (!sourceImageUrl) {
+      // Specific message for chained-from-previous so the user knows
+      // which row to generate first (the parent variant, not the base).
+      toast.error(
+        sourceLabel === 'previous-variant'
+          ? 'Generate the previous variant first — this one chains from it.'
+          : 'Generate the base image first — variants edit it.',
+      );
+      return;
+    }
 
-    const prepared = composeVariantEditRequest(activeDoc, variantRow, baseImageUrl);
+    const prepared = composeVariantEditRequest(activeDoc, variantRow, sourceImageUrl);
     if (prepared.kind === 'error') {
       toast.error(prepared.message);
       return;
@@ -2559,14 +2596,15 @@ function ProductionDocPage() {
           next[variantIndex] = { status: 'done', imageUrl: data.imageUrl!, source: 'generated' };
           return next;
         });
-        // Phase 3.7c — record the base image URL we generated
-        // against, so the editor can detect staleness later when
-        // the base is regenerated.
+        // Phase 3.7c — record the SOURCE image URL we generated
+        // against, so the editor can detect staleness later when the
+        // source is regenerated. Source = base (default) or previous
+        // variant (when chained). Field name kept for back-compat.
         setDoc(prev => {
           if (!prev) return prev;
           const nextRows = prev.rows.map((r, i) =>
             i === variantIndex
-              ? { ...r, variant_base_image_at_generation: baseImageUrl }
+              ? { ...r, variant_base_image_at_generation: sourceImageUrl }
               : r,
           );
           const nextDoc = { ...prev, rows: nextRows };
@@ -2623,7 +2661,13 @@ function ProductionDocPage() {
     }
     // Collect every variant in the group that needs work: variant_index
     // > 0, image not already generated, variant_edit_prompt non-empty.
-    const toGenerate: number[] = [];
+    // Sorted by variant_index so chained variants (where each derives
+    // from the previous) get their parent's image landed before they
+    // fire. For pure-parallel groups (default) the order doesn't
+    // matter — sequential is a slight latency cost but eliminates the
+    // need to detect chain segments and parallel-batch them, which
+    // would compound complexity for marginal gain.
+    const toGenerate: Array<{ docRowIndex: number; variantIndex: number }> = [];
     let skippedAlreadyGenerated = 0;
     let skippedNoPrompt = 0;
     doc.rows.forEach((r, i) => {
@@ -2637,7 +2681,7 @@ function ProductionDocPage() {
         skippedNoPrompt += 1;
         return;
       }
-      toGenerate.push(i);
+      toGenerate.push({ docRowIndex: i, variantIndex: r.variant_index ?? 0 });
     });
     if (toGenerate.length === 0) {
       if (skippedAlreadyGenerated > 0) {
@@ -2649,12 +2693,14 @@ function ProductionDocPage() {
       }
       return;
     }
-    toast.info(`Generating ${toGenerate.length} variant${toGenerate.length === 1 ? '' : 's'} in parallel…`);
-    await Promise.all(toGenerate.map((idx) => generateVariantImage(idx)));
-    // Per-variant toasts have already fired from inside
-    // generateVariantImage; an overall completion toast would just be
-    // noise unless we also tally failures, but rowImages already shows
-    // per-row error state. Leaving silent on completion.
+    toGenerate.sort((a, b) => a.variantIndex - b.variantIndex);
+    toast.info(`Generating ${toGenerate.length} variant${toGenerate.length === 1 ? '' : 's'} in order…`);
+    for (const item of toGenerate) {
+      // Sequential await — chained variants need the parent's image
+      // to land before they can fire. Per-variant toasts/errors come
+      // from inside generateVariantImage.
+      await generateVariantImage(item.docRowIndex);
+    }
   }, [doc, generateVariantImage]);
 
   /**

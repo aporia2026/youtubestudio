@@ -362,6 +362,43 @@ const VariantRowControls: React.FC<VariantRowControlsProps> = ({
         >
           ⟜ variant {variantIdx}/{groupSize - 1}
         </span>
+        {/* Chain toggle — switches between deriving from the group's
+            base (parallel, default) and deriving from the previous
+            variant (chained, for additive frame-by-frame sequences).
+            Hidden on variant_index 1 since there's no previous variant
+            to chain from. */}
+        {variantIdx > 1 && (
+          <button
+            type="button"
+            onClick={() =>
+              writers.updateRow(rowIndex, {
+                variant_derives_from_previous: !row.variant_derives_from_previous,
+              })
+            }
+            className="text-[10px] px-1.5 py-0.5 rounded"
+            style={{
+              background: row.variant_derives_from_previous
+                ? 'rgba(168,85,247,0.18)'
+                : 'rgba(255,255,255,0.04)',
+              color: row.variant_derives_from_previous
+                ? 'var(--accent-purple-bright)'
+                : 'var(--text-secondary)',
+              border: row.variant_derives_from_previous
+                ? '1px solid rgba(168,85,247,0.45)'
+                : '1px solid var(--border)',
+              cursor: 'pointer',
+            }}
+            title={
+              row.variant_derives_from_previous
+                ? `This variant edits variant ${variantIdx - 1}'s image (chained). Click to switch back to deriving from the group's base.`
+                : `This variant edits the group's base image (parallel). Click to chain it from variant ${variantIdx - 1} instead — additive frame-by-frame.`
+            }
+          >
+            {row.variant_derives_from_previous
+              ? `↪ from variant ${variantIdx - 1}`
+              : '↩ from base'}
+          </button>
+        )}
         <button
           type="button"
           onClick={() => writers.moveVariantRow(rowIndex, 'up')}
