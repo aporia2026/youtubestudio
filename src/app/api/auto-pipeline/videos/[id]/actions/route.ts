@@ -9,6 +9,7 @@ import {
   retryVideo,
   rerunVideoFromStage,
   setVideoStyleOverride,
+  setVideoCustomInstructions,
   PipelineActionError,
   type ScriptGateDecision,
 } from '@/lib/auto-pipeline/actions';
@@ -22,17 +23,26 @@ import { isPipelineStage } from '@/lib/auto-pipeline/types';
  * route surface small while preserving distinct action semantics.
  *
  * Supported actions:
- *   - script_gate:        body = { action: 'script_gate', decision: 'keep'|'regenerate'|'kill', style_override_id?: string | null }
- *   - kill:               body = { action: 'kill', reason?: string }
- *   - narration_done:     body = { action: 'narration_done' }   — manually flip waiting→complete
- *   - extend_narration:   body = { action: 'extend_narration', days: number }
- *   - abandon:            body = { action: 'abandon' }
- *   - retry:              body = { action: 'retry' }            — auto-picks target stage from TERMINAL_RETRY_TARGET
- *   - rerun_from_stage:   body = { action: 'rerun_from_stage', target_stage: PipelineStage } — explicit target
- *   - set_style_override: body = { action: 'set_style_override', style_id: string | null }
+ *   - script_gate:             body = { action: 'script_gate', decision: 'keep'|'regenerate'|'kill', style_override_id?: string | null, custom_instructions_override?: string | null }
+ *   - kill:                    body = { action: 'kill', reason?: string }
+ *   - narration_done:          body = { action: 'narration_done' }   — manually flip waiting→complete
+ *   - extend_narration:        body = { action: 'extend_narration', days: number }
+ *   - abandon:                 body = { action: 'abandon' }
+ *   - retry:                   body = { action: 'retry' }            — auto-picks target stage from TERMINAL_RETRY_TARGET
+ *   - rerun_from_stage:        body = { action: 'rerun_from_stage', target_stage: PipelineStage } — explicit target
+ *   - set_style_override:      body = { action: 'set_style_override', style_id: string | null }
+ *   - set_custom_instructions: body = { action: 'set_custom_instructions', custom_instructions: string | null }
  */
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Hard cap on custom-instructions length. Picked to be generous enough
+// to paste a paragraph or two of guidance but small enough that a
+// paste-bomb can't blow up the script-gen prompt (which already has
+// its own size limits downstream). If a user genuinely needs more,
+// the right move is editing the preset's script_rules_jsonb, not
+// stuffing it per-video.
+const MAX_CUSTOM_INSTRUCTIONS_LEN = 4000;
 
 export const POST = apiRoute.authed<{ id: string }>(async (session, req: NextRequest, ctx) => {
   const { id: videoId } = await ctx.params;
@@ -66,7 +76,33 @@ export const POST = apiRoute.authed<{ id: string }>(async (session, req: NextReq
         } else if (b.style_override_id !== undefined) {
           return NextResponse.json({ error: 'style_override_id must be a UUID, null, or omitted' }, { status: 400 });
         }
-        const result = await applyScriptGateDecision({ workspaceId: session.ws, videoId, decision, styleOverrideId });
+        // Same coerce-and-validate dance for the custom-instructions
+        // inline override. Length-capped at MAX_CUSTOM_INSTRUCTIONS_LEN
+        // — see the const's comment for why.
+        let customInstructionsOverride: string | null | undefined;
+        if (b.custom_instructions_override === null) {
+          customInstructionsOverride = null;
+        } else if (typeof b.custom_instructions_override === 'string') {
+          if (b.custom_instructions_override.length > MAX_CUSTOM_INSTRUCTIONS_LEN) {
+            return NextResponse.json(
+              { error: `custom_instructions_override must be ≤ ${MAX_CUSTOM_INSTRUCTIONS_LEN} chars` },
+              { status: 400 },
+            );
+          }
+          customInstructionsOverride = b.custom_instructions_override;
+        } else if (b.custom_instructions_override !== undefined) {
+          return NextResponse.json(
+            { error: 'custom_instructions_override must be a string, null, or omitted' },
+            { status: 400 },
+          );
+        }
+        const result = await applyScriptGateDecision({
+          workspaceId: session.ws,
+          videoId,
+          decision,
+          styleOverrideId,
+          customInstructionsOverride,
+        });
         return NextResponse.json(result);
       }
       case 'kill': {
@@ -112,6 +148,27 @@ export const POST = apiRoute.authed<{ id: string }>(async (session, req: NextReq
           return NextResponse.json({ error: 'style_id is required (UUID or null)' }, { status: 400 });
         }
         const result = await setVideoStyleOverride({ workspaceId: session.ws, videoId, styleId });
+        return NextResponse.json(result);
+      }
+      case 'set_custom_instructions': {
+        let customInstructions: string | null;
+        if (b.custom_instructions === null) {
+          customInstructions = null;
+        } else if (typeof b.custom_instructions === 'string') {
+          if (b.custom_instructions.length > MAX_CUSTOM_INSTRUCTIONS_LEN) {
+            return NextResponse.json(
+              { error: `custom_instructions must be ≤ ${MAX_CUSTOM_INSTRUCTIONS_LEN} chars` },
+              { status: 400 },
+            );
+          }
+          customInstructions = b.custom_instructions;
+        } else {
+          return NextResponse.json(
+            { error: 'custom_instructions is required (string or null)' },
+            { status: 400 },
+          );
+        }
+        const result = await setVideoCustomInstructions({ workspaceId: session.ws, videoId, customInstructions });
         return NextResponse.json(result);
       }
       default:

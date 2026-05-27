@@ -319,17 +319,20 @@ export default function VideoCard({
                   busyAction={busyAction}
                   styles={styles ?? []}
                   currentOverrideId={video.script_style_preset_override_id}
+                  currentCustomInstructions={video.script_additional_context_override}
                   onKeep={() => callAction({ action: 'script_gate', decision: 'keep' })}
-                  onRegenerate={(styleOverrideId) =>
+                  onRegenerate={(styleOverrideId, customInstructionsOverride) =>
                     callAction({
                       action: 'script_gate',
                       decision: 'regenerate',
-                      // Pass the picker's value only when it differs from
-                      // the persisted override — sending `undefined` (as
-                      // an absent property) leaves the override untouched.
-                      // Sending the same value again is a harmless no-op.
+                      // Pass each override only when set so the route's
+                      // tri-state semantics (undefined/null/value) work
+                      // through JSON serialisation.
                       ...(styleOverrideId !== undefined
                         ? { style_override_id: styleOverrideId }
+                        : {}),
+                      ...(customInstructionsOverride !== undefined
+                        ? { custom_instructions_override: customInstructionsOverride }
                         : {}),
                     })
                   }
@@ -347,6 +350,9 @@ export default function VideoCard({
                 busyAction={busyAction}
                 onSetStyleOverride={(styleId) =>
                   callAction({ action: 'set_style_override', style_id: styleId })
+                }
+                onSetCustomInstructions={(text) =>
+                  callAction({ action: 'set_custom_instructions', custom_instructions: text })
                 }
                 onRerunFromStage={(targetStage) =>
                   callAction({ action: 'rerun_from_stage', target_stage: targetStage })
@@ -645,13 +651,17 @@ function ScriptGate(props: {
   busyAction: string | null;
   styles: StyleOption[];
   currentOverrideId: string | null;
+  currentCustomInstructions: string | null;
   onKeep: () => void;
-  /** styleOverrideId semantics:
-   *   undefined → don't touch the persisted per-video override.
-   *   null      → clear any persisted override (inherit from preset chain).
-   *   <uuid>    → set the override BEFORE running the regen.
-   */
-  onRegenerate: (styleOverrideId?: string | null) => void;
+  /** Both override params have the same tri-state semantics:
+   *    undefined → don't touch the persisted per-video override.
+   *    null      → clear any persisted override (inherit from preset chain).
+   *    <value>   → set the override BEFORE running the regen.
+   *  The user clicks Regenerate; the gate sends both params atomically. */
+  onRegenerate: (
+    styleOverrideId?: string | null,
+    customInstructionsOverride?: string | null,
+  ) => void;
   onKill: () => void;
 }) {
   const {
@@ -662,6 +672,7 @@ function ScriptGate(props: {
     busyAction,
     styles,
     currentOverrideId,
+    currentCustomInstructions,
     onKeep,
     onRegenerate,
     onKill,
@@ -673,13 +684,20 @@ function ScriptGate(props: {
   // Any other value (incl. '') is sent verbatim — '' becomes null.
   const UNCHANGED = '__unchanged__';
   const [picker, setPicker] = useState<string>(UNCHANGED);
+  // Custom-instructions picker. Three modes:
+  //   UNCHANGED  — don't touch the persisted override (default).
+  //   ''         — explicit clear (send null).
+  //   <text>     — pin this text as the per-video override for the regen.
+  const [customMode, setCustomMode] = useState<'unchanged' | 'clear' | 'custom'>('unchanged');
+  const [customText, setCustomText] = useState<string>(currentCustomInstructions ?? '');
 
   function handleRegenerate() {
-    if (picker === UNCHANGED) {
-      onRegenerate();
-      return;
-    }
-    onRegenerate(picker === '' ? null : picker);
+    const style = picker === UNCHANGED ? undefined : picker === '' ? null : picker;
+    let custom: string | null | undefined;
+    if (customMode === 'unchanged') custom = undefined;
+    else if (customMode === 'clear') custom = null;
+    else custom = customText;
+    onRegenerate(style, custom);
   }
 
   // Empty `scripts.content` row — usually a stream error from a
@@ -716,6 +734,13 @@ function ScriptGate(props: {
           value={picker}
           unchangedSentinel={UNCHANGED}
           onChange={setPicker}
+        />
+        <InlineCustomInstructionsPicker
+          currentValue={currentCustomInstructions}
+          mode={customMode}
+          text={customText}
+          onModeChange={setCustomMode}
+          onTextChange={setCustomText}
         />
         <div className="flex gap-2 flex-wrap mt-3">
           <button
@@ -871,6 +896,66 @@ function InlineStylePicker({
 }
 
 /**
+ * Inline custom-instructions picker for the script gate. Three modes
+ * keyed to the regenerate action's tri-state semantics:
+ *
+ *   'unchanged' → send undefined → don't touch the persisted override.
+ *   'clear'     → send null      → wipe the persisted override.
+ *   'custom'    → send the textarea content (which may equal the
+ *                 existing value — that's fine, the API tolerates it).
+ *
+ * Collapsed by default — toggling 'custom' reveals the textarea so a
+ * one-line regen click doesn't get a giant input in its way.
+ */
+function InlineCustomInstructionsPicker({
+  currentValue,
+  mode,
+  text,
+  onModeChange,
+  onTextChange,
+}: {
+  currentValue: string | null;
+  mode: 'unchanged' | 'clear' | 'custom';
+  text: string;
+  onModeChange: (m: 'unchanged' | 'clear' | 'custom') => void;
+  onTextChange: (t: string) => void;
+}) {
+  const summary = currentValue
+    ? `(${currentValue.length} chars saved)`
+    : '(none saved)';
+  return (
+    <div className="mt-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span>Custom instructions for next regen:</span>
+        <select
+          value={mode}
+          onChange={(e) => onModeChange(e.target.value as 'unchanged' | 'clear' | 'custom')}
+          className="px-2 py-1 rounded"
+          style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+        >
+          <option value="unchanged">Keep current {summary}</option>
+          <option value="clear">Clear override — inherit from preset</option>
+          <option value="custom">Use one-off text…</option>
+        </select>
+      </div>
+      {mode === 'custom' && (
+        <textarea
+          value={text}
+          onChange={(e) => onTextChange(e.target.value)}
+          rows={3}
+          maxLength={4000}
+          placeholder={
+            "What should the next regen emphasise? e.g. 'tighten the intro, drop the metaphor, end on a question'"
+          }
+          className="mt-1.5 w-full px-2 py-1.5 rounded"
+          style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
  * Per-video edit controls — style override + re-run from stage.
  * Always rendered when the card is expanded so the user can iterate
  * on any video, in any state.
@@ -880,18 +965,31 @@ function EditPanel({
   styles,
   busyAction,
   onSetStyleOverride,
+  onSetCustomInstructions,
   onRerunFromStage,
 }: {
   video: VideoSummary;
   styles: StyleOption[];
   busyAction: string | null;
   onSetStyleOverride: (styleId: string | null) => void;
+  onSetCustomInstructions: (text: string | null) => void;
   onRerunFromStage: (targetStage: string) => void;
 }) {
   // Style override picker — initialised from the video's persisted
   // value. Saves on change (no Apply button — single-field forms
   // benefit from immediate persistence so the user can move on).
   const [stylePending, setStylePending] = useState(false);
+  // Custom instructions — controlled, saved via explicit Apply
+  // because every keystroke would either be a debounce hassle or a
+  // bad burn on the cron's update_at column. Initialised from the
+  // persisted value once; we deliberately don't auto-sync with the
+  // server poll afterwards — the user's typed buffer is sacred. They
+  // can hit Clear override or re-expand the card to pick up a remote
+  // change.
+  const savedCustom = video.script_additional_context_override ?? '';
+  const [customInstructions, setCustomInstructions] = useState<string>(savedCustom);
+  const [customPending, setCustomPending] = useState(false);
+  const customDirty = customInstructions !== savedCustom;
 
   function handleStyleChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const next = e.target.value;
@@ -903,6 +1001,20 @@ function EditPanel({
     // the user's pick (because React preserves the controlled value
     // until the prop updates).
     setTimeout(() => setStylePending(false), 1000);
+  }
+
+  function applyCustomInstructions() {
+    setCustomPending(true);
+    onSetCustomInstructions(customInstructions === '' ? null : customInstructions);
+    setTimeout(() => setCustomPending(false), 1000);
+  }
+
+  function clearCustomInstructions() {
+    if (!savedCustom && !customInstructions) return;
+    setCustomPending(true);
+    setCustomInstructions('');
+    onSetCustomInstructions(null);
+    setTimeout(() => setCustomPending(false), 1000);
   }
 
   function handleRerun(stage: string) {
@@ -981,6 +1093,56 @@ function EditPanel({
           )}
         </label>
       </div>
+
+      <label className="block mt-3">
+        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Custom script instructions for this video
+        </span>
+        <textarea
+          value={customInstructions}
+          onChange={(e) => setCustomInstructions(e.target.value)}
+          rows={4}
+          maxLength={4000}
+          disabled={!!busyAction || customPending}
+          placeholder={
+            "e.g. open with a 1-sentence cold hook · keep transitions tight · don't use the words 'unlock' or 'leverage'"
+          }
+          className="mt-1 w-full px-2 py-1.5 rounded text-sm"
+          style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+          title="Per-video override that replaces the run preset's 'Custom script instructions' for THIS video. Blank = inherit from the preset. Re-runs and regens read the current value at the time the handler fires."
+        />
+        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+          <button
+            type="button"
+            onClick={applyCustomInstructions}
+            disabled={!!busyAction || customPending || !customDirty}
+            className="text-xs px-2 py-1 rounded disabled:opacity-50"
+            style={{ background: 'var(--accent-purple)', color: 'white' }}
+          >
+            {customPending ? 'Saving…' : 'Apply'}
+          </button>
+          {(savedCustom || customInstructions) && (
+            <button
+              type="button"
+              onClick={clearCustomInstructions}
+              disabled={!!busyAction || customPending}
+              className="text-xs px-2 py-1 rounded hover:underline disabled:opacity-50"
+              style={{ color: 'var(--text-muted)' }}
+              title="Clear the per-video override. Falls back to the run preset's custom-instructions value."
+            >
+              Clear override
+            </button>
+          )}
+          {customDirty && (
+            <span className="text-[11px]" style={{ color: 'var(--accent-yellow)' }}>
+              Unsaved
+            </span>
+          )}
+          <span className="text-[11px] ml-auto" style={{ color: 'var(--text-muted)' }}>
+            {customInstructions.length} / 4000
+          </span>
+        </div>
+      </label>
     </div>
   );
 }

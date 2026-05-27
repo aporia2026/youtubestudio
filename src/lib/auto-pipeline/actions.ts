@@ -104,8 +104,14 @@ export async function applyScriptGateDecision(args: {
    *  reads the new override. Pass `null` to clear an existing
    *  override; omit (undefined) to leave it untouched. */
   styleOverrideId?: string | null;
+  /** Optional. Only honoured on `decision === 'regenerate'`. Sets the
+   *  per-video `script_additional_context_override` column BEFORE the
+   *  stage flip. `null` clears any existing override; `undefined`
+   *  leaves it untouched. Empty string is allowed and stored verbatim
+   *  (the prompt builder treats null/'' the same). Migration 0095. */
+  customInstructionsOverride?: string | null;
 }): Promise<{ newStage: PipelineStage }> {
-  const { workspaceId, videoId, decision, styleOverrideId } = args;
+  const { workspaceId, videoId, decision, styleOverrideId, customInstructionsOverride } = args;
 
   // Load + validate the current stage. Workspace-scoped.
   const { rows } = await sql.query<{ stage: string; retry_count: number }>(
@@ -149,6 +155,15 @@ export async function applyScriptGateDecision(args: {
          WHERE id = ${videoId}::uuid AND workspace_id = ${workspaceId}::uuid
       `;
     }
+    // Same pattern for the custom-instructions override — applied
+    // BEFORE the stage flip so the next handler tick reads it.
+    if (customInstructionsOverride !== undefined) {
+      await sql`
+        UPDATE pipeline_run_videos
+           SET script_additional_context_override = ${customInstructionsOverride}
+         WHERE id = ${videoId}::uuid AND workspace_id = ${workspaceId}::uuid
+      `;
+    }
     // Bump retry_count so the spend log + UI show the regen
     // history. The handler reads retry_count to vary prompt seeds
     // on a regen.
@@ -180,6 +195,7 @@ export async function applyScriptGateDecision(args: {
     from_stage: 'awaiting_script_gate',
     to_stage: newStage,
     style_override_changed: styleOverrideId !== undefined,
+    custom_instructions_changed: customInstructionsOverride !== undefined,
   });
 
   return { newStage };
@@ -768,6 +784,47 @@ export async function setVideoStyleOverride(args: {
     style_id: styleId,
   });
   return { styleId };
+}
+
+/**
+ * Persist a per-video custom-instructions override (the
+ * `script_additional_context_override` column, migration 0095).
+ * Effective-additionalContext chain in handleGenerateScript:
+ *
+ *   video.script_additional_context_override  ← this
+ *     ?? preset.script_rules_jsonb.additionalContext
+ *     ?? undefined
+ *
+ * Passing `null` clears the override (falls back to the preset's
+ * additionalContext). Empty string is stored verbatim and treated
+ * like null by the prompt builder; the route handler enforces a
+ * reasonable max length so a paste-bomb can't poison the script
+ * prompt.
+ */
+export async function setVideoCustomInstructions(args: {
+  workspaceId: string;
+  videoId: string;
+  customInstructions: string | null;
+}): Promise<{ customInstructions: string | null }> {
+  const { workspaceId, videoId, customInstructions } = args;
+  const { rowCount } = await sql.query(
+    `
+    UPDATE pipeline_run_videos
+       SET script_additional_context_override = $3,
+           updated_at = NOW()
+     WHERE id = $1::uuid AND workspace_id = $2::uuid
+    `,
+    [videoId, workspaceId, customInstructions],
+  );
+  if (!rowCount) {
+    throw new PipelineActionError('video_not_found', `Pipeline video ${videoId} not found.`);
+  }
+  logger.info('auto-pipeline: per-video custom instructions set', {
+    pipeline_video_id: videoId,
+    chars: customInstructions?.length ?? 0,
+    cleared: customInstructions === null,
+  });
+  return { customInstructions };
 }
 
 // ─── Re-run from a chosen stage ─────────────────────────────────────

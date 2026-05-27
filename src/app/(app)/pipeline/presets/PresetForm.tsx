@@ -91,7 +91,20 @@ export default function PresetForm({
   // productionDocStyleId. Both blank = no style preset injection.
   const [scriptStylePresetId, setScriptStylePresetId] = useState<string>('');
   const [ideaContextJson, setIdeaContextJson] = useState('{}');
-  const [scriptRulesJson, setScriptRulesJson] = useState('{}');
+  // Script-rules state — broken out into structured fields per the
+  // 2026-05-27 follow-up. The fields below cover the documented
+  // script_rules_jsonb shape (tone/style/audience/additionalContext/
+  // referenceContext/targetDurationMinutes). Unknown keys the user
+  // had on a pre-existing preset (e.g. `constraints`) are preserved
+  // in `scriptRulesOther` and merged back at save time so we don't
+  // silently drop data.
+  const [scriptTone, setScriptTone] = useState('');
+  const [scriptStyleNote, setScriptStyleNote] = useState('');
+  const [scriptAudience, setScriptAudience] = useState('');
+  const [scriptTargetMinutes, setScriptTargetMinutes] = useState<number | ''>('');
+  const [scriptAdditionalContext, setScriptAdditionalContext] = useState('');
+  const [scriptReferenceContext, setScriptReferenceContext] = useState('');
+  const [scriptRulesOther, setScriptRulesOther] = useState<Record<string, unknown>>({});
   const [fallbackChains, setFallbackChains] = useState<Record<string, string[]>>({});
 
   const [editors, setEditors] = useState<Collaborator[]>([]);
@@ -150,7 +163,26 @@ export default function PresetForm({
           setProductionDocStyleId(p.production_doc_style_id ?? '');
           setScriptStylePresetId(p.script_style_preset_id ?? '');
           setIdeaContextJson(JSON.stringify(p.idea_context ?? {}, null, 2));
-          setScriptRulesJson(JSON.stringify(p.script_rules ?? {}, null, 2));
+          // Decompose script_rules_jsonb into the structured fields,
+          // stashing any unknown keys in scriptRulesOther so they're
+          // preserved on save.
+          const rawRules = (p.script_rules ?? {}) as Record<string, unknown>;
+          setScriptTone(typeof rawRules.tone === 'string' ? rawRules.tone : '');
+          setScriptStyleNote(typeof rawRules.style === 'string' ? rawRules.style : '');
+          setScriptAudience(typeof rawRules.audience === 'string' ? rawRules.audience : '');
+          setScriptTargetMinutes(
+            typeof rawRules.targetDurationMinutes === 'number' && Number.isFinite(rawRules.targetDurationMinutes)
+              ? Math.max(1, Math.min(120, Math.floor(rawRules.targetDurationMinutes)))
+              : '',
+          );
+          setScriptAdditionalContext(typeof rawRules.additionalContext === 'string' ? rawRules.additionalContext : '');
+          setScriptReferenceContext(typeof rawRules.referenceContext === 'string' ? rawRules.referenceContext : '');
+          const KNOWN = new Set(['tone', 'style', 'audience', 'targetDurationMinutes', 'additionalContext', 'referenceContext']);
+          const other: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(rawRules)) {
+            if (!KNOWN.has(k)) other[k] = v;
+          }
+          setScriptRulesOther(other);
           setFallbackChains(p.fallback_chains ?? {});
         }
       } catch (e) {
@@ -169,7 +201,6 @@ export default function PresetForm({
     }
 
     let parsedIdeaContext: Record<string, unknown> | null = null;
-    let parsedScriptRules: Record<string, unknown> | null = null;
     try {
       const ideaTrimmed = ideaContextJson.trim();
       parsedIdeaContext = ideaTrimmed ? (JSON.parse(ideaTrimmed) as Record<string, unknown>) : null;
@@ -177,13 +208,29 @@ export default function PresetForm({
       setInternalError('Idea context must be valid JSON.');
       return;
     }
-    try {
-      const rulesTrimmed = scriptRulesJson.trim();
-      parsedScriptRules = rulesTrimmed ? (JSON.parse(rulesTrimmed) as Record<string, unknown>) : null;
-    } catch {
-      setInternalError('Script rules must be valid JSON.');
-      return;
+
+    // Recompose script_rules from the structured fields. Known fields
+    // win over any same-named keys in scriptRulesOther; empty strings
+    // drop the field entirely (we want JSON null-equivalent, not an
+    // empty string sitting in the prompt). Merge scriptRulesOther
+    // last so it can carry preserved unknown keys like `constraints`.
+    const parsedScriptRules: Record<string, unknown> = { ...scriptRulesOther };
+    if (scriptTone.trim()) parsedScriptRules.tone = scriptTone.trim();
+    else delete parsedScriptRules.tone;
+    if (scriptStyleNote.trim()) parsedScriptRules.style = scriptStyleNote.trim();
+    else delete parsedScriptRules.style;
+    if (scriptAudience.trim()) parsedScriptRules.audience = scriptAudience.trim();
+    else delete parsedScriptRules.audience;
+    if (scriptAdditionalContext.trim()) parsedScriptRules.additionalContext = scriptAdditionalContext;
+    else delete parsedScriptRules.additionalContext;
+    if (scriptReferenceContext.trim()) parsedScriptRules.referenceContext = scriptReferenceContext;
+    else delete parsedScriptRules.referenceContext;
+    if (typeof scriptTargetMinutes === 'number' && Number.isFinite(scriptTargetMinutes)) {
+      parsedScriptRules.targetDurationMinutes = scriptTargetMinutes;
+    } else {
+      delete parsedScriptRules.targetDurationMinutes;
     }
+    const finalScriptRules = Object.keys(parsedScriptRules).length > 0 ? parsedScriptRules : null;
 
     const cleanChains: Record<string, string[]> = {};
     for (const [k, v] of Object.entries(fallbackChains)) {
@@ -195,7 +242,7 @@ export default function PresetForm({
       niche: niche.trim() || null,
       ideas_count_default: ideasCountDefault,
       idea_context: parsedIdeaContext,
-      script_rules: parsedScriptRules,
+      script_rules: finalScriptRules,
       target_spoken_words: targetSpokenWords === '' ? null : Number(targetSpokenWords),
       qa_min_score: qaMinScore,
       qa_max_iterations: qaMaxIterations,
@@ -348,19 +395,114 @@ export default function PresetForm({
           </select>
         </Field>
 
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Field
+            label="Tone"
+            hint="One or two words describing the voice — e.g. 'urgent and direct', 'witty', 'authoritative'."
+          >
+            <input
+              type="text"
+              value={scriptTone}
+              onChange={(e) => setScriptTone(e.target.value)}
+              maxLength={200}
+              placeholder="e.g. urgent and direct"
+              className="input-field"
+            />
+          </Field>
+          <Field
+            label="Style note"
+            hint="Free-text style guidance distinct from the style preset above — sentence rhythm, formatting habits, etc."
+          >
+            <input
+              type="text"
+              value={scriptStyleNote}
+              onChange={(e) => setScriptStyleNote(e.target.value)}
+              maxLength={400}
+              placeholder="e.g. short sentences, no rhetorical questions"
+              className="input-field"
+            />
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Field
+            label="Target audience"
+            hint="Who is this video for? One line describing the viewer."
+          >
+            <input
+              type="text"
+              value={scriptAudience}
+              onChange={(e) => setScriptAudience(e.target.value)}
+              maxLength={400}
+              placeholder="e.g. small-business IT decision makers"
+              className="input-field"
+            />
+          </Field>
+          <Field
+            label="Target duration (minutes)"
+            hint="Optional. Overrides the preset's target-spoken-words derivation for length sizing."
+          >
+            <input
+              type="number"
+              min={1}
+              max={120}
+              value={scriptTargetMinutes}
+              onChange={(e) =>
+                setScriptTargetMinutes(
+                  e.target.value === '' ? '' : Math.max(1, Math.min(120, parseInt(e.target.value, 10) || 1)),
+                )
+              }
+              className="input-field"
+              style={{ maxWidth: 160 }}
+            />
+          </Field>
+        </div>
+
         <Field
-          label="Script rules (JSON)"
-          hint="Free-form: tone, style, audience, targetDurationMinutes, additionalContext. Power-user surface."
+          label="Custom script instructions"
+          hint="Free-form text that goes into the script prompt as the 'additional context' block. Paste examples, taglines, must-include points, things to avoid, etc. Per-video and per-regenerate overrides on the run detail page take precedence over this."
         >
           <textarea
-            value={scriptRulesJson}
-            onChange={(e) => setScriptRulesJson(e.target.value)}
+            value={scriptAdditionalContext}
+            onChange={(e) => setScriptAdditionalContext(e.target.value)}
             rows={5}
-            spellCheck={false}
+            placeholder={`e.g.\n- always open with a 1-sentence cold hook\n- mention our internal tool by name once near the middle\n- avoid the words 'unlock' and 'leverage'`}
             className="input-field"
-            style={{ fontFamily: 'var(--font-mono), monospace', fontSize: 12 }}
           />
         </Field>
+
+        <Field
+          label="Reference context / videos"
+          hint="Free text. Paste transcripts, URLs, or notes the script writer should treat as reference material."
+        >
+          <textarea
+            value={scriptReferenceContext}
+            onChange={(e) => setScriptReferenceContext(e.target.value)}
+            rows={3}
+            className="input-field"
+          />
+        </Field>
+
+        {Object.keys(scriptRulesOther).length > 0 && (
+          <Field
+            label="Other script_rules fields (preserved)"
+            hint="This preset carries extra script-rule keys (e.g. constraints) that the form doesn't surface yet. They'll be saved unchanged. Edit them via the API or contact a developer to surface them here."
+          >
+            <pre
+              className="input-field"
+              style={{
+                fontFamily: 'var(--font-mono), monospace',
+                fontSize: 11,
+                background: 'var(--bg-secondary)',
+                color: 'var(--text-muted)',
+                maxHeight: 160,
+                overflow: 'auto',
+              }}
+            >
+              {JSON.stringify(scriptRulesOther, null, 2)}
+            </pre>
+          </Field>
+        )}
 
         <SectionHeader title="AI script review (QA)" />
 

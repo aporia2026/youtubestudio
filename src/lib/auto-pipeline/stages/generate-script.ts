@@ -148,6 +148,19 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
     });
   }
 
+  // Effective additionalContext chain (migration 0095):
+  //   1. video.script_additional_context_override (per-video, when non-null)
+  //   2. preset.script_rules_jsonb.additionalContext
+  //   3. undefined — no additionalContext block injected
+  // Empty string from the per-video column is treated like "explicit
+  // clear" — the override wins, but the prompt builder still sees ''
+  // and skips the block. That's intentional: lets a user pin "use
+  // nothing here" against a preset that otherwise carries context.
+  const effectiveAdditionalContext =
+    video.script_additional_context_override !== null
+      ? video.script_additional_context_override
+      : rules.additionalContext;
+
   let result: Awaited<ReturnType<typeof generateTextWithFallback>>;
   try {
     result = await generateTextWithFallback(chain, (modelId) => {
@@ -158,7 +171,7 @@ export async function handleGenerateScript(ctx: StageHandlerContext): Promise<St
         targetAudience: rules.audience ?? idea.target_audience ?? undefined,
         tone: rules.tone,
         style: rules.style,
-        additionalContext: rules.additionalContext,
+        additionalContext: effectiveAdditionalContext,
         referenceContext: rules.referenceContext,
         constraints: rules.constraints as never,
         generatorV2Enabled,

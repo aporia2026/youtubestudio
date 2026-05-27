@@ -162,6 +162,11 @@ export interface PipelineRunVideoRow {
    *  preset.production_doc_style_id). Null = inherit from the preset
    *  chain. Migration 0094. */
   script_style_preset_override_id: string | null;
+  /** Per-video override for the script-rules `additionalContext` block.
+   *  When non-null, the script-stage handler substitutes this in place
+   *  of preset.script_rules_jsonb.additionalContext. Empty string is a
+   *  valid "explicitly clear" override. Migration 0095. */
+  script_additional_context_override: string | null;
   claimed_at: Date | null;
   claimed_by_tick: string | null;
   created_at: Date;

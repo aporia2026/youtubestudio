@@ -94,6 +94,7 @@ import migration0091 from './0091_add_projects_current_stage';
 import migration0092 from './0092_add_schedule_pipeline_run_video';
 import migration0093 from './0093_add_pipeline_preset_script_style';
 import migration0094 from './0094_add_pipeline_video_style_override';
+import migration0095 from './0095_add_pipeline_video_custom_instructions';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -195,6 +196,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0092,
   migration0093,
   migration0094,
+  migration0095,
 ]);
 
 /**

@@ -24,6 +24,8 @@ interface VideoRow {
   /** Per-video script-style override. Surfaces in the VideoCard's
    *  "Style for this video" dropdown. Migration 0094. */
   script_style_preset_override_id: string | null;
+  /** Per-video custom-instructions override (free text). Migration 0095. */
+  script_additional_context_override: string | null;
   updated_at: string;
   /** Non-null when the cron has this row checked out and is executing
    *  its stage handler right now. Read on the client as the strongest
@@ -102,6 +104,7 @@ export const GET = apiRoute.authed<{ id: string }>(async (session, _req, ctx) =>
            v.editor_assignment_id::text AS editor_assignment_id,
            v.narration_deadline_at::text AS narration_deadline_at,
            v.script_style_preset_override_id::text AS script_style_preset_override_id,
+           v.script_additional_context_override,
            v.updated_at::text AS updated_at,
            v.claimed_at::text AS claimed_at,
            v.claimed_by_tick
