@@ -230,9 +230,15 @@ export function formatI2ICostHint(modelValue: string): string | null {
 
 /** Default cloud model for ref-bearing v2 styles. Original Phase 0 spike
  *  winner was NanoBanana Pro; replaced on 2026-05-24 by NanoBanana 2
- *  (Gemini 3.1 Flash Image) which covers the same capability at lower
- *  cost. See `_plans/2026-05-24-system-upscale-and-collage.md`. */
-export const DEFAULT_CLOUD_I2I_MODEL = 'nano-banana-2-i2i';
+ *  (Gemini 3.1 Flash Image). Updated 2026-05-27 to Atlas GPT Image 2
+ *  i2i per user direction "default for everything to be gpt 2 atlas,
+ *  not just for edits". Unifies the provider with the variant edit
+ *  path; cuts per-image cost ~73%. Trade-off: Atlas i2i caps at 4
+ *  refs vs Kie's 14 — styles with more than 4 bundled refs lose ref
+ *  breadth (dispatcher auto-truncates). To roll back this default,
+ *  set it back to `'nano-banana-2-i2i'`; saved styles override via
+ *  their stored `preferred_cloud_model`. */
+export const DEFAULT_CLOUD_I2I_MODEL = 'gpt-image-2-atlas-i2i';
 
 /** All known i2i model values. Used by the styles validator to
  *  allow-list `preferred_cloud_model` storage. Single source of truth

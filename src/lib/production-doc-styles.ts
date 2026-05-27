@@ -202,10 +202,12 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
     // v3 (2026-05-22): pin the i2i model used for this built-in.
     // Built-ins carry this field so the dispatcher routes the right
     // way without falling back to the workspace default. Saved styles
-    // override via PATCH. Updated 2026-05-24: NanoBanana Pro retired
-    // in favour of NanoBanana 2 (Gemini 3.1 Flash, cheaper + faster
-    // + 14 refs vs 8). Same `image_input` field shape.
-    preferred_cloud_model: 'nano-banana-2-i2i',
+    // override via PATCH. Updated 2026-05-27: switched to Atlas i2i
+    // per user direction "default for everything to be gpt 2 atlas".
+    // Atlas i2i caps at 4 refs vs Kie's 14; for v1 doodle (5 refs)
+    // we lose 1 ref. Trade-off accepted in exchange for ~73% cost
+    // reduction and unified provider with the variant edit path.
+    preferred_cloud_model: 'gpt-image-2-atlas-i2i',
     mixing_rules: [
       'This is a hand-drawn doodle style. The default for almost every row is "Animation" with a pure stick-figure ai_image_prompt — keep that as your base.',
       '',
@@ -319,10 +321,17 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       { filename: '13-framed-real-photo-pure-centrifuges.jpg',            mime_type: 'image/jpeg' },
       { filename: '14-close-up-character-face.jpg',                       mime_type: 'image/jpeg' },
     ],
-    // Same i2i model as Doodle Explainer — nano-banana-2-i2i takes 14
-    // refs (vs Atlas I2I's 4-ref ceiling). Atlas is cheaper per image
-    // but the motif breadth here needs more than 4 anchors.
-    preferred_cloud_model: 'nano-banana-2-i2i',
+    // Updated 2026-05-27: switched to Atlas i2i per user direction
+    // "default for everything to be gpt 2 atlas, not just for edits".
+    // Atlas i2i caps at 4 refs vs Kie's 14 — the dispatcher
+    // auto-truncates the 14 bundled refs to 4 per call. The earlier
+    // plan rejected this trade-off (motif breadth), but the new
+    // trimmed suffix (commits c5b3538 + 84745ae) now carries the
+    // color + framed-photo + realistic-object vocabulary in text,
+    // partially compensating for the lost visual anchors. Unifies the
+    // provider with the variant edit path (Atlas GPT Image 2 Edit)
+    // and cuts base-image cost ~73%.
+    preferred_cloud_model: 'gpt-image-2-atlas-i2i',
     mixing_rules: [
       '== STYLE REFERENCE: PAINT EXPLAINER ==',
       '',
