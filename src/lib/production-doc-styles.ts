@@ -312,11 +312,16 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       { filename: '04-stick-figure-raised-arm-no-hand-angry.jpg',         mime_type: 'image/jpeg' },
       { filename: '05-color-composition-globe-with-computer-callouts.jpg',mime_type: 'image/jpeg' },
       { filename: '06-object-network-laptops-arrows.jpg',                 mime_type: 'image/jpeg' },
-      { filename: '07-icon-composition-tv-with-deleted-files-x.jpg',      mime_type: 'image/jpeg' },
-      { filename: '08-framed-real-photo-inside-cartoon-tv.jpg',           mime_type: 'image/jpeg' },
+      // Refs 07, 08, 11 were dropped in commit eb25c18 ("stop WANNACRY
+      // bleed") because they stayed too subject-coded after text
+      // removal (deleted-files X icon, padlocked TV, globe text overlay).
+      // Files removed from public/style-refs/Doodle-explainer-2/; the
+      // catalog originally kept the gap and that left the i2i loader
+      // 500-ing on every cell when the route tried to read non-existent
+      // files. Numbering gap preserved so existing motif comments and
+      // the fix script's `--only N` indexing stay aligned.
       { filename: '09-yellow-bubble-text-standalone-within-hours.jpg',    mime_type: 'image/jpeg' },
       { filename: '10-stick-figure-raised-arm-no-hand-calm.jpg',          mime_type: 'image/jpeg' },
-      { filename: '11-yellow-text-overlaid-on-globe-scene.jpg',           mime_type: 'image/jpeg' },
       { filename: '12-stick-figure-single-red-accent.jpg',                mime_type: 'image/jpeg' },
       { filename: '13-framed-real-photo-pure-centrifuges.jpg',            mime_type: 'image/jpeg' },
       { filename: '14-close-up-character-face.jpg',                       mime_type: 'image/jpeg' },
