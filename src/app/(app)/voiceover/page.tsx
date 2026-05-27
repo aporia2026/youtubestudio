@@ -164,6 +164,11 @@ function VoiceoverStudio() {
   // time-stretcher, and writes the result to a WAV blob.
   const [speedRate, setSpeedRate] = useState(1.0);
   const [renderingSpeed, setRenderingSpeed] = useState(false);
+  // Mirrors `renderingSpeed` for the "Save at Xx to library" button so the
+  // download button stays operable while a save is mid-flight (and vice
+  // versa). They share the same time-stretch pipeline but write to
+  // different sinks (disk vs R2 + media_assets).
+  const [savingSpeed, setSavingSpeed] = useState(false);
   // Mirrors the <audio> element's play/pause state so the slider's
   // dedicated Preview button can toggle correctly without the user
   // having to scroll up to the audio bar. Updated via play/pause/ended
@@ -303,6 +308,115 @@ function VoiceoverStudio() {
       toast.error(err instanceof Error ? err.message : 'Speed render failed');
     } finally {
       setRenderingSpeed(false);
+    }
+  }
+
+  /**
+   * Persist the current voiceover as a separate `media_assets` row at the
+   * selected speed (e.g. "Enceladus (Gemini 2.5) — 1.3×") so it shows up
+   * in every production-doc's voiceover picker as its own library entry.
+   *
+   * Pipeline mirrors `downloadAtSpeed`: decode the source, time-stretch
+   * pitch-preserved, encode to WAV. Then instead of triggering a browser
+   * download we PUT the WAV bytes to a presigned R2 URL and register the
+   * row via the existing `/api/projects/<id>/media` endpoint. Same shape
+   * the project's Media tab upload uses, so the saved row is
+   * indistinguishable from a hand-uploaded one — and forced-alignment
+   * works on it the same way.
+   *
+   * Requires `projectId` (the media_assets row is project-scoped). When
+   * absent we keep the button hidden in the UI so this branch is just
+   * defence in depth.
+   */
+  async function saveAtSpeedToLibrary() {
+    if (!audioUrl || !projectId) return;
+    setSavingSpeed(true);
+    try {
+      const { fetchAudioBuffer, timeStretchAudioBuffer, audioBufferToWavBlob } = await import(
+        '@/lib/voiceover/time-stretch'
+      );
+      const ctx = new AudioContext();
+      let blob: Blob;
+      try {
+        const fetchUrl = audioUrl.startsWith('/')
+          ? audioUrl
+          : `/api/voiceover/proxy?url=${encodeURIComponent(audioUrl)}`;
+        const buffer = await fetchAudioBuffer(fetchUrl, ctx);
+        const stretched =
+          Math.abs(speedRate - 1.0) < 0.001
+            ? buffer
+            : timeStretchAudioBuffer(buffer, speedRate, ctx);
+        blob = audioBufferToWavBlob(stretched);
+      } finally {
+        ctx.close().catch(() => {});
+      }
+
+      const speedLabel = speedRate.toFixed(2).replace(/\.?0+$/, '');
+      const voiceName =
+        provider === 'google' && selectedGoogleVoice
+          ? selectedGoogleVoice.displayName
+          : voices.find((v) => v.voice_id === selectedVoice)?.name || 'Voiceover';
+      const displayName =
+        Math.abs(speedRate - 1.0) < 0.001
+          ? `${voiceName} (saved from speed control)`
+          : `${voiceName} — ${speedLabel}×`;
+      const safeName = displayName.replace(/[^a-zA-Z0-9._\- ]/g, '_').slice(0, 80);
+      const file = new File([blob], `${safeName}.wav`, { type: 'audio/wav' });
+
+      // 1) Presign — server returns the R2 PUT URL + the keys we'll
+      //    later register against media_assets.
+      const presignRes = await fetch(`/api/projects/${projectId}/voiceover-upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileName: file.name, contentType: 'audio/wav' }),
+      });
+      if (!presignRes.ok) {
+        const data = await presignRes.json().catch(() => ({}));
+        throw new Error(data?.error ? String(data.error) : `Presign failed (${presignRes.status})`);
+      }
+      const { uploadUrl, downloadUrl, r2Key, r2Bucket } = await presignRes.json();
+
+      // 2) PUT bytes straight to R2 — never touches our API route.
+      const putRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'audio/wav' },
+        body: file,
+      });
+      if (!putRes.ok) throw new Error(`R2 upload failed (${putRes.status})`);
+
+      // 3) Register the media_assets row. workspace_id is copied from
+      //    the parent project by the /media POST handler.
+      const registerRes = await fetch(`/api/projects/${projectId}/media`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'voiceover',
+          source: 'upload',
+          name: displayName,
+          url: downloadUrl,
+          r2_bucket: r2Bucket,
+          r2_key: r2Key,
+          size_bytes: file.size,
+          metadata: {
+            saved_speed_variant: true,
+            base_speed_rate: speedRate,
+            base_voice_name: voiceName,
+            base_voice_id:
+              provider === 'google' && selectedGoogleVoice
+                ? selectedGoogleVoice.voice.voiceId
+                : selectedVoice,
+          },
+        }),
+      });
+      if (!registerRes.ok) {
+        const data = await registerRes.json().catch(() => ({}));
+        throw new Error(data?.error ? String(data.error) : `Register failed (${registerRes.status})`);
+      }
+      toast.success(`Saved ${displayName} to library`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setSavingSpeed(false);
     }
   }
   // Ref to the script textarea — used by the Gemini tag picker to
@@ -1354,7 +1468,7 @@ function VoiceoverStudio() {
                   <div className="flex gap-3">
                     <button
                       onClick={downloadAtSpeed}
-                      disabled={renderingSpeed}
+                      disabled={renderingSpeed || savingSpeed}
                       className="btn-secondary text-sm flex-1 justify-center"
                       style={{ justifyContent: 'center' }}
                       title={
@@ -1369,6 +1483,22 @@ function VoiceoverStudio() {
                           ? '⬇️ Download MP3'
                           : `⬇️ Download at ${speedRate.toFixed(2)}×`}
                     </button>
+                    {/* Save the time-stretched WAV into the workspace
+                        voiceover library at the chosen speed. Only useful
+                        at non-1.0× rates — at 1.0× the existing "Save to
+                        Project" button below covers the same intent
+                        without an unnecessary R2 re-upload. */}
+                    {projectId && Math.abs(speedRate - 1.0) >= 0.001 && (
+                      <button
+                        onClick={saveAtSpeedToLibrary}
+                        disabled={renderingSpeed || savingSpeed}
+                        className="btn-secondary text-sm flex-1 justify-center"
+                        style={{ justifyContent: 'center' }}
+                        title={`Save the ${speedRate.toFixed(2)}× version to your voiceover library so production-doc can use it for scene sync.`}
+                      >
+                        {savingSpeed ? '⟳ Saving…' : `💾 Save at ${speedRate.toFixed(2)}×`}
+                      </button>
+                    )}
                     {projectId && !savedToProject && (
                       <button onClick={saveToProject} className="btn-primary text-sm flex-1 justify-center" style={{ justifyContent: 'center' }}>
                         💾 Save to Project

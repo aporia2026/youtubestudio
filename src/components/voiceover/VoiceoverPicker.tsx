@@ -25,7 +25,7 @@
  * tokens). Both surfaces get the same look without duplication.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { getVoiceoverHistory } from '@/lib/history';
 import {
@@ -84,13 +84,23 @@ export function VoiceoverPicker({
   const playingIdRef = useRef<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
+  // Upload-from-computer state: the file input is hidden, the trigger
+  // sits at the top of the popover. `uploadingFile` is the in-flight
+  // filename so we can show "Uploading <name>…" instead of just a spinner.
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [uploadingFile, setUploadingFile] = useState<string | null>(null);
+  // "Save to library" in-flight tracking — keyed by the source item id
+  // ("el:<historyId>") so the right row shows the spinner instead of
+  // freezing the whole picker.
+  const [savingToLibraryId, setSavingToLibraryId] = useState<string | null>(null);
 
-  // Initial load — fetch both sources in parallel and merge. Failures on
-  // one source don't block the other; an offline media_assets call still
-  // shows the user's ElevenLabs history and vice versa.
-  useEffect(() => {
-    let cancelled = false;
-
+  /**
+   * Fetch ElevenLabs history + workspace library in parallel and merge into
+   * a single deduped, sorted list. Pulled out of the mount effect so the
+   * upload + save-to-library handlers can refresh the picker after they
+   * insert a new media_assets row without forcing a remount.
+   */
+  const loadVoiceovers = useCallback(async (): Promise<VoiceoverItem[]> => {
     const elevenlabsPromise = getVoiceoverHistory()
       .then((list) =>
         list.map(
@@ -141,26 +151,35 @@ export function VoiceoverPicker({
       )
       .catch(() => [] as VoiceoverItem[]);
 
-    Promise.all([elevenlabsPromise, libraryPromise])
-      .then(([a, b]) => {
+    const [a, b] = await Promise.all([elevenlabsPromise, libraryPromise]);
+    // Dedupe on audioUrl — if the same blob URL shows up under both sources
+    // (rare, but possible if a narrator approval was also logged to history)
+    // we keep the first occurrence, which preserves source ordering.
+    const seen = new Set<string>();
+    const merged: VoiceoverItem[] = [];
+    for (const item of [...a, ...b].sort((x, y) => y.timestamp - x.timestamp)) {
+      if (!item.audioUrl || seen.has(item.audioUrl)) continue;
+      seen.add(item.audioUrl);
+      merged.push(item);
+    }
+    console.info(`[${logNamespace}] loaded`, {
+      elCount: a.length,
+      libCount: b.length,
+      mergedCount: merged.length,
+    });
+    return merged;
+  }, [logNamespace]);
+
+  // Initial load — fetch both sources in parallel and merge. Failures on
+  // one source don't block the other; an offline media_assets call still
+  // shows the user's ElevenLabs history and vice versa.
+  useEffect(() => {
+    let cancelled = false;
+    loadVoiceovers()
+      .then((merged) => {
         if (cancelled) return;
-        // Dedupe on audioUrl — if the same blob URL shows up under both sources
-        // (rare, but possible if a narrator approval was also logged to history)
-        // we keep the first occurrence, which preserves source ordering.
-        const seen = new Set<string>();
-        const merged: VoiceoverItem[] = [];
-        for (const item of [...a, ...b].sort((x, y) => y.timestamp - x.timestamp)) {
-          if (!item.audioUrl || seen.has(item.audioUrl)) continue;
-          seen.add(item.audioUrl);
-          merged.push(item);
-        }
         setItems(merged);
         setLoaded(true);
-        console.info(`[${logNamespace}] loaded`, {
-          elCount: a.length,
-          libCount: b.length,
-          mergedCount: merged.length,
-        });
       })
       .catch(() => {
         if (cancelled) return;
@@ -170,7 +189,7 @@ export function VoiceoverPicker({
     return () => {
       cancelled = true;
     };
-  }, [logNamespace]);
+  }, [loadVoiceovers]);
 
   // Auto-match — re-runs when matching context changes. Skips silently
   // once the user has clicked something to avoid clobbering their choice.
@@ -280,6 +299,143 @@ export function VoiceoverPicker({
     setOpen(false);
   }
 
+  /**
+   * Upload a voiceover audio file from the user's computer straight to R2
+   * via the existing presigned-PUT path, then register it as a media_assets
+   * row scoped to the current project. On success, refresh the picker list
+   * and auto-select the new entry so the user is one click closer to
+   * scene-sync. Requires `projectId` — disabled in the UI when absent.
+   */
+  async function handleUploadFromComputer(file: File) {
+    if (!projectId) {
+      // The trigger button is disabled when projectId is missing, so this
+      // branch is defence-in-depth in case a future caller wires it
+      // differently.
+      toast.error('Open this doc from a project to upload voiceovers.');
+      return;
+    }
+    const contentType = file.type || 'audio/mpeg';
+    setUploadingFile(file.name);
+    try {
+      const presignRes = await fetch(`/api/projects/${projectId}/voiceover-upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileName: file.name, contentType }),
+      });
+      if (!presignRes.ok) {
+        const data = await presignRes.json().catch(() => ({}));
+        throw new Error(data?.error ? String(data.error) : `Presign failed (${presignRes.status})`);
+      }
+      const { uploadUrl, downloadUrl, r2Key, r2Bucket } = await presignRes.json();
+
+      const putRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': contentType },
+        body: file,
+      });
+      if (!putRes.ok) throw new Error(`R2 upload failed (${putRes.status})`);
+
+      const registerRes = await fetch(`/api/projects/${projectId}/media`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'voiceover',
+          source: 'upload',
+          name: file.name,
+          url: downloadUrl,
+          r2_bucket: r2Bucket,
+          r2_key: r2Key,
+          size_bytes: file.size,
+        }),
+      });
+      if (!registerRes.ok) {
+        const data = await registerRes.json().catch(() => ({}));
+        throw new Error(data?.error ? String(data.error) : `Register failed (${registerRes.status})`);
+      }
+      const { asset } = await registerRes.json();
+      console.info(`[${logNamespace}] uploaded from computer`, {
+        assetId: asset?.id,
+        sizeBytes: file.size,
+      });
+
+      // Refresh + auto-select the freshly-inserted asset so scene-sync can
+      // pick it up immediately. The library endpoint serves voiceovers via
+      // the `/api/voiceovers/<uuid>/audio` proxy, which is the URL pattern
+      // the alignment gate (production-doc/page.tsx) requires.
+      const merged = await loadVoiceovers();
+      setItems(merged);
+      const newAudioUrl = asset?.id ? `/api/voiceovers/${asset.id}/audio` : null;
+      if (newAudioUrl) {
+        userTouchedRef.current = true;
+        onChange(newAudioUrl, 'manual');
+      }
+      toast.success(`Uploaded ${file.name}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Upload failed';
+      console.error(`[${logNamespace}] upload from computer failed`, { error: msg });
+      toast.error(msg);
+    } finally {
+      setUploadingFile(null);
+      // Reset the input so picking the same file again re-fires onChange.
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }
+
+  /**
+   * Copy a history-only voiceover into the workspace library. Server
+   * downloads the audio (with SSRF guard against non-allowlisted hosts),
+   * uploads to R2, inserts a media_assets row, returns its id. Then we
+   * refresh + auto-select so the production-doc alignment gate flips from
+   * "Alignment unavailable" to "syncing". Requires `projectId` to scope
+   * the media_assets insert.
+   */
+  async function handleSaveToLibrary(item: VoiceoverItem) {
+    if (!projectId) {
+      toast.error('Open this doc from a project to save voiceovers to the library.');
+      return;
+    }
+    if (item.source !== 'elevenlabs' || !item.audioUrl) return;
+    // item.id is `el:<historyId>`; strip the prefix to get the raw id.
+    const historyId = item.id.startsWith('el:') ? item.id.slice(3) : item.id;
+    setSavingToLibraryId(item.id);
+    try {
+      const res = await fetch('/api/voiceovers/save-from-history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId,
+          historyId,
+          audioUrl: item.audioUrl,
+          voiceName: item.voiceName,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error ? String(data.error) : `Save failed (${res.status})`);
+      }
+      const { asset } = await res.json();
+      console.info(`[${logNamespace}] saved to library`, {
+        historyId,
+        assetId: asset?.id,
+      });
+
+      const merged = await loadVoiceovers();
+      setItems(merged);
+      const newAudioUrl = asset?.id ? `/api/voiceovers/${asset.id}/audio` : null;
+      if (newAudioUrl) {
+        userTouchedRef.current = true;
+        onChange(newAudioUrl, 'manual');
+      }
+      toast.success('Saved to library — scene sync will run automatically.');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Save failed';
+      console.error(`[${logNamespace}] save to library failed`, { error: msg });
+      toast.error(msg);
+    } finally {
+      setSavingToLibraryId(null);
+    }
+  }
+
   const selected = items.find((i) => i.audioUrl === value) || null;
   const matchedToCurrent = selected && autoMatchedId === selected.id;
 
@@ -296,6 +452,65 @@ export function VoiceoverPicker({
     if (items.length === 0) return 'No voiceovers in library yet';
     return 'Select a voiceover…';
   })();
+
+  // Top-of-popover "Upload from computer" row. Always rendered when the
+  // popover is open (even during loading / empty state) so the affordance
+  // is in the same spot every time. Disabled state when projectId is
+  // absent explains why; we don't hide the row in that case because
+  // hiding would force the user to guess where it went.
+  const uploadRow = (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '8px 10px',
+        borderBottom: '1px solid var(--border)',
+        background: 'rgba(255,255,255,0.02)',
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={!projectId || uploadingFile !== null}
+        title={
+          !projectId
+            ? 'Open this doc from a project to upload voiceovers'
+            : uploadingFile
+              ? `Uploading ${uploadingFile}…`
+              : 'Upload a voiceover audio file from your computer'
+        }
+        className="text-xs flex items-center gap-1.5 px-2 py-1 rounded"
+        style={{
+          background: 'rgba(168,85,247,0.14)',
+          color: !projectId || uploadingFile ? 'var(--text-muted)' : '#c084fc',
+          border: '1px solid rgba(168,85,247,0.30)',
+          cursor: !projectId || uploadingFile ? 'not-allowed' : 'pointer',
+          opacity: !projectId || uploadingFile ? 0.6 : 1,
+        }}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="17 8 12 3 7 8" />
+          <line x1="12" y1="3" x2="12" y2="15" />
+        </svg>
+        {uploadingFile ? `Uploading ${uploadingFile}…` : 'Upload from computer'}
+      </button>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="audio/mpeg,audio/mp4,audio/x-m4a,audio/aac,audio/wav,audio/x-wav,audio/ogg,audio/webm,audio/flac,audio/*"
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const f = e.currentTarget.files?.[0];
+          if (f) void handleUploadFromComputer(f);
+        }}
+      />
+      <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+        mp3 · wav · m4a · 50 MB max
+      </span>
+    </div>
+  );
 
   return (
     <div style={{ position: 'relative' }}>
@@ -383,9 +598,11 @@ export function VoiceoverPicker({
               border: '1px solid var(--border)',
               borderRadius: 8,
               boxShadow: '0 10px 30px rgba(0,0,0,0.45)',
-              padding: 4,
+              padding: 0,
             }}
           >
+            {uploadRow}
+            <div style={{ padding: 4 }}>
             {!loaded ? (
               /* Skeleton rows while ElevenLabs history + library
                  fetches are in flight. Three rows match the typical
@@ -558,11 +775,55 @@ export function VoiceoverPicker({
                           </div>
                         )}
                       </div>
+                      {/* "Save to library" — only on history-only entries
+                          (source='elevenlabs'), which don't yet have a
+                          media_assets row. Required for scene sync because
+                          the alignment gate only accepts the
+                          /api/voiceovers/<uuid>/audio URL pattern (i.e. a
+                          media_assets row served via the proxy). Disabled
+                          when projectId is absent (we need it to scope the
+                          insert) or while another save is in flight. */}
+                      {item.source === 'elevenlabs' && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleSaveToLibrary(item);
+                          }}
+                          disabled={!projectId || savingToLibraryId !== null}
+                          title={
+                            !projectId
+                              ? 'Open this doc from a project to enable scene sync'
+                              : savingToLibraryId === item.id
+                                ? 'Saving…'
+                                : 'Save to workspace library (enables scene sync)'
+                          }
+                          className="text-[10px] px-1.5 py-1 rounded whitespace-nowrap flex-shrink-0"
+                          style={{
+                            background: 'rgba(52,211,153,0.14)',
+                            color:
+                              !projectId || savingToLibraryId !== null
+                                ? 'var(--text-muted)'
+                                : '#34d399',
+                            border: '1px solid rgba(52,211,153,0.30)',
+                            cursor:
+                              !projectId || savingToLibraryId !== null
+                                ? 'not-allowed'
+                                : 'pointer',
+                            opacity:
+                              !projectId || savingToLibraryId !== null ? 0.6 : 1,
+                            marginTop: 2,
+                          }}
+                        >
+                          {savingToLibraryId === item.id ? 'Saving…' : '↓ Save'}
+                        </button>
+                      )}
                     </div>
                   );
                 })}
               </>
             )}
+            </div>
           </div>
         </>
       )}
