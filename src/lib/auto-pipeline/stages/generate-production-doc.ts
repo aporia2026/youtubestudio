@@ -251,6 +251,91 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
     }
   }
 
+  // Stage 4 — post-process consistency with the manual /api/generate/
+  // production-doc route. The auto-pipeline path was previously skipping
+  // attachStyleSuffixToRows, autoGroupVariants, and the variant-prompt
+  // refiner, so pipeline-generated docs ended up with raw LLM-emitted
+  // ai_image_prompts (no suffix), no variant-group collapses, and
+  // unrefined edit instructions — visually worse than manual-route docs
+  // for ref-bearing styles. Mirroring the manual chain here closes the
+  // gap. See `_plans/2026-05-27-doodle-explainer-2-foundation.md`.
+  if (parsedDoc && typeof parsedDoc === 'object' && !Array.isArray(parsedDoc) && style) {
+    const docObj = parsedDoc as Record<string, unknown>;
+    const rows = docObj.rows;
+    if (Array.isArray(rows)) {
+      // 1) Suffix attach — uses the EFFECTIVE suffix (post-trim-flag) so
+      //    the pipeline and the manual route produce byte-identical rows
+      //    for the same style/flag combo.
+      const effectiveSuffix = getEffectiveAiImageSuffix({
+        id: style.id,
+        ai_image_suffix: style.ai_image_suffix ?? '',
+      });
+      if (effectiveSuffix) {
+        const { attachStyleSuffixToRows } = await import('../../production-doc-postprocess');
+        const attach = attachStyleSuffixToRows(
+          rows as unknown as Parameters<typeof attachStyleSuffixToRows>[0],
+          effectiveSuffix,
+        );
+        logger.info('auto-pipeline: suffix-attach', {
+          pipeline_video_id: video.id,
+          style_id: style.id,
+          attached_count: attach.attachedCount,
+          skipped_already_present: attach.skippedAlreadyPresent,
+          suffix_chars: effectiveSuffix.length,
+        });
+      }
+
+      // 2) Auto-group consecutive similar rows into variant groups.
+      //    Gated on doodle_explainer_2 (only style with variant-group
+      //    mixing rules today). Mirrors the manual route's gate.
+      if (style.id === 'doodle_explainer_2') {
+        const { autoGroupVariants } = await import('../../auto-group-variants');
+        const grouped = autoGroupVariants(
+          rows as unknown as Parameters<typeof autoGroupVariants>[0],
+        );
+        if (grouped.groupCount > 0) {
+          logger.info('auto-pipeline: auto-group-variants', {
+            pipeline_video_id: video.id,
+            style_id: style.id,
+            group_count: grouped.groupCount,
+            merged_row_count: grouped.mergedRowCount,
+          });
+        }
+      }
+
+      // 3) Variant-prompt refiner — gated by USE_REFINED_VARIANT_PROMPT
+      //    env var, same as the manual route. Rewrites each variant's
+      //    vague auto-grouper output into a concrete edit instruction
+      //    the GPT Image 2 Edit model can actually act on.
+      const { useRefinedVariantPrompt } = await import('../../production-doc-flags');
+      if (useRefinedVariantPrompt()) {
+        const { refineVariantPromptsInDoc } = await import('../../variant-prompt-refiner');
+        const refinement = await refineVariantPromptsInDoc({
+          rows: rows as unknown as Parameters<typeof refineVariantPromptsInDoc>[0]['rows'],
+          // The auto-pipeline doesn't load style.label (only id + suffix
+          // + mixing_rules per the SELECT above), so pass null. The
+          // refiner falls through to a model-generic prompt that doesn't
+          // strictly need the label.
+          styleLabel: null,
+          modelId: result.modelUsed,
+          spend: {
+            workspaceId: video.workspace_id,
+            projectId: video.project_id,
+            featureArea: 'pipeline_variant_prompt_refinement',
+          },
+        });
+        if (refinement.refinedCount > 0 || refinement.failedCount > 0) {
+          logger.info('auto-pipeline: variant-prompt-refinement', {
+            pipeline_video_id: video.id,
+            refined: refinement.refinedCount,
+            skipped: refinement.skippedCount,
+            failed: refinement.failedCount,
+          });
+        }
+      }
+    }
+  }
+
   // Stage 3.0 — detect variant groups whose base row has an empty
   // `ai_image_prompt`. The auto-pipeline path runs the same LLM as the
   // manual /api/generate/production-doc route, so the same bug
