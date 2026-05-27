@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { productionDocToVideoConfig } from '@/remotion/utils';
 import { Stage } from './Stage';
 import { Inspector } from './Inspector';
@@ -11,6 +11,8 @@ import { useEditorUndoStack } from './hooks/useEditorUndoStack';
 import { useSaveIndicator } from './hooks/useSaveIndicator';
 import type { EditorViewProps } from './types';
 import { OverlayPositionEditor } from '@/components/production-doc/OverlayPositionEditor';
+import { NotesDock } from '@/components/notes/NotesDock';
+import type { PlayerController } from '@/lib/notes/player-controller';
 
 /**
  * Top-level editor surface for `/production-doc`. Composes the three
@@ -27,6 +29,7 @@ import { OverlayPositionEditor } from '@/components/production-doc/OverlayPositi
 export const EditorView: React.FC<EditorViewProps> = (props) => {
   const {
     doc,
+    docId,
     rowImages,
     rowVideoClips,
     rowOverlays,
@@ -40,6 +43,11 @@ export const EditorView: React.FC<EditorViewProps> = (props) => {
     writers,
     brollContext,
   } = props;
+  // PlayerController for the notes dock — the Stage hands one up via
+  // `onControllerReady`. We hold it in state (not a ref) so the dock
+  // re-renders when the player mounts. NotesDock no-ops on null
+  // controller, so the brief window before mount is fine.
+  const [playerController, setPlayerController] = useState<PlayerController | null>(null);
 
   const totalSections = doc.rows?.length ?? 0;
   const ui = useEditorUiState(totalSections);
@@ -159,7 +167,25 @@ export const EditorView: React.FC<EditorViewProps> = (props) => {
             config={config}
             activeSection={ui.activeSection}
             takeover={takeover}
+            onControllerReady={setPlayerController}
           />
+          {/* Notes-while-watching dock. Sits directly under the Stage so
+              the eye-distance from preview → "Take note" is small. The
+              activeSection state is the editor's source of truth for
+              "which scene is the user on", so we pass it down to
+              constrain the dock's pin to that scene. */}
+          {!ui.stageTool && (
+            <div className="mt-3">
+              <NotesDock
+                docId={docId}
+                controller={playerController}
+                shots={config.shots}
+                fps={config.fps}
+                activeRowIndex={ui.activeSection}
+                onSelectRow={(rowIndex) => ui.setActiveSection(rowIndex)}
+              />
+            </div>
+          )}
           {ui.stageTool && (
             <div className="mt-2 flex items-center justify-between text-xs">
               <span style={{ color: 'var(--text-muted)' }}>

@@ -93,6 +93,8 @@ import {
 } from '@/remotion/utils';
 import type { EditorWriters } from '@/components/production-doc/editor/types';
 import { EditorView } from '@/components/production-doc/editor/EditorView';
+import { NotesDock } from '@/components/notes/NotesDock';
+import type { PlayerController } from '@/lib/notes/player-controller';
 import { resolveOverlayPlacement } from '@/lib/overlay-placement';
 import { stripProductionMarkers } from '@/lib/script-markers';
 import { buildCanonicalScript, scriptDriftRatio } from '@/lib/voiceover-alignment';
@@ -772,6 +774,7 @@ function AlignmentPill({
  */
 const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
   doc,
+  docId,
   rowImages,
   rowVideoClips,
   rowOverlays,
@@ -787,6 +790,10 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
   downloadUrl,
 }: {
   doc: ProductionDoc;
+  /** `user_history.id` of the current production-doc. Scopes the notes
+   *  dock's REST calls. Null when the doc hasn't been server-persisted
+   *  yet — the dock hides itself in that case. */
+  docId: string | null;
   rowImages: RowImageState[];
   rowVideoClips: Record<number, { status: string; videoUrl?: string } | null>;
   rowOverlays: Record<number, RowOverlayState>;
@@ -822,14 +829,32 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
       alignment: voiceoverAlignment ?? undefined,
     });
   }, [doc, rowImages, rowVideoClips, rowOverlays, rowLockedAsStill, animateScenes, suppressLowerThirds, voiceoverUrl, voiceoverAlignment, brandKit]);
+  // PlayerController for the notes dock. Stage / VideoPlayer hand one
+  // up via `onControllerReady`; we hold it in state so the dock re-
+  // renders when the player mounts. NotesDock renders inert until the
+  // controller exists, so the brief pre-mount window is fine.
+  const [playerController, setPlayerController] = React.useState<PlayerController | null>(null);
   return (
-    <VideoPlayer
-      config={config}
-      onRender={onRender}
-      isRendering={isRendering}
-      renderProgress={renderProgress}
-      downloadUrl={downloadUrl}
-    />
+    <div className="flex flex-col gap-3">
+      <VideoPlayer
+        config={config}
+        onRender={onRender}
+        isRendering={isRendering}
+        renderProgress={renderProgress}
+        downloadUrl={downloadUrl}
+        onControllerReady={setPlayerController}
+      />
+      {/* Notes-while-watching dock — same component the Editor view
+          mounts under its Stage. Shared `useNotes(docId)` store means a
+          note added here shows up there too. Hidden when the doc
+          hasn't been server-persisted yet (no docId). */}
+      <NotesDock
+        docId={docId}
+        controller={playerController}
+        shots={config.shots}
+        fps={config.fps}
+      />
+    </div>
   );
 });
 
@@ -10585,6 +10610,7 @@ function ProductionDocPage() {
                 {/* The actual player */}
                 <VideoPlayerMemo
                   doc={doc}
+                  docId={historyEntryId}
                   rowImages={rowImages}
                   rowVideoClips={rowVideoClips}
                   rowOverlays={rowOverlays}
@@ -11242,6 +11268,7 @@ function ProductionDocPage() {
             </div>
             <EditorView
               doc={doc}
+              docId={historyEntryId}
               rowImages={rowImages as Parameters<typeof EditorView>[0]['rowImages']}
               rowVideoClips={rowVideoClips as Parameters<typeof EditorView>[0]['rowVideoClips']}
               rowOverlays={rowOverlays}

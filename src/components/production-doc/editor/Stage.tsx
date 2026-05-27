@@ -5,6 +5,7 @@ import { Player, type PlayerRef } from '@remotion/player';
 import { YouTubeVideo } from '@/remotion/compositions/YouTubeVideo';
 import { msToFrame, totalFrames } from '@/remotion/utils';
 import type { VideoConfig } from '@/remotion/types';
+import type { PlayerController } from '@/lib/notes/player-controller';
 
 /**
  * Compute the start frame for a given section index using the
@@ -27,6 +28,10 @@ interface StageProps {
    *  over the stage. Phase 1 always renders the player; takeover lands
    *  in Phase 2. */
   takeover?: React.ReactNode;
+  /** Fires once on mount with a stable `PlayerController` the host can
+   *  hand to the notes dock (pause + seek + getCurrentFrame). Fires
+   *  again with `null` on unmount so the host clears its reference. */
+  onControllerReady?: (controller: PlayerController | null) => void;
 }
 
 /**
@@ -38,10 +43,27 @@ interface StageProps {
  * The bottom render-button + stats row from `VideoPlayer` is omitted
  * here on purpose — the editor has its own chrome elsewhere.
  */
-export const Stage: React.FC<StageProps> = ({ config, activeSection, takeover }) => {
+export const Stage: React.FC<StageProps> = ({ config, activeSection, takeover, onControllerReady }) => {
   const playerRef = useRef<PlayerRef>(null);
   const frames = useMemo(() => totalFrames(config), [config]);
   const [hasInitialSeek, setHasInitialSeek] = useState(false);
+
+  // Same controller bridge VideoPlayer uses — the dock asks the host for
+  // a controller and the host passes it down regardless of which
+  // surface owns the player. Stable identity across renders because the
+  // closure dereferences playerRef.current lazily.
+  useEffect(() => {
+    if (!onControllerReady) return;
+    const controller: PlayerController = {
+      getCurrentFrame: () => playerRef.current?.getCurrentFrame() ?? 0,
+      pause: () => playerRef.current?.pause(),
+      play: () => playerRef.current?.play(),
+      seekToFrame: (f) => playerRef.current?.seekTo(f),
+      isPlaying: () => playerRef.current?.isPlaying() ?? false,
+    };
+    onControllerReady(controller);
+    return () => onControllerReady(null);
+  }, [onControllerReady]);
 
   // Keep the latest config in a ref so the seek effect can look up the
   // current section's start frame without listing `config` as a

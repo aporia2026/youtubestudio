@@ -5,6 +5,7 @@ import { Player, PlayerRef } from '@remotion/player';
 import { YouTubeVideo } from '@/remotion/compositions/YouTubeVideo';
 import { VideoConfig } from '@/remotion/types';
 import { totalFrames } from '@/remotion/utils';
+import type { PlayerController } from '@/lib/notes/player-controller';
 
 interface VideoPlayerProps {
   config: VideoConfig;
@@ -24,6 +25,10 @@ interface VideoPlayerProps {
   seekTargetFrame?: number | null;
   /** Called after seekTargetFrame is consumed so parent can reset it */
   onSeekConsumed?: () => void;
+  /** Fires once on mount with a stable `PlayerController` the host can
+   *  hand to the notes dock (pause + seek + getCurrentFrame). Fires
+   *  again with `null` on unmount so the host clears its reference. */
+  onControllerReady?: (controller: PlayerController | null) => void;
 }
 
 /**
@@ -40,6 +45,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   initialFrame = 8,
   seekTargetFrame,
   onSeekConsumed,
+  onControllerReady,
 }) => {
   const playerRef = useRef<PlayerRef>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -51,6 +57,24 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       onSeekConsumed?.();
     }
   }, [seekTargetFrame, onSeekConsumed]);
+
+  // Expose a stable PlayerController to the host. The closure reads
+  // playerRef.current lazily, so the controller object itself is
+  // identity-stable while still pointing at the live player methods.
+  // We hand `null` back to the host on unmount so its NotesDock can
+  // unmount cleanly without a stale reference.
+  useEffect(() => {
+    if (!onControllerReady) return;
+    const controller: PlayerController = {
+      getCurrentFrame: () => playerRef.current?.getCurrentFrame() ?? 0,
+      pause: () => playerRef.current?.pause(),
+      play: () => playerRef.current?.play(),
+      seekToFrame: (f) => playerRef.current?.seekTo(f),
+      isPlaying: () => playerRef.current?.isPlaying() ?? false,
+    };
+    onControllerReady(controller);
+    return () => onControllerReady(null);
+  }, [onControllerReady]);
 
   const frames = totalFrames(config);
   const clampedProgress = Math.max(0, Math.min(1, renderProgress));

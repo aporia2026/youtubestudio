@@ -114,6 +114,10 @@ export interface EditorBrollContext {
  */
 export interface EditorViewProps {
   doc: ProductionDoc;
+  /** `user_history.id` for the current production-doc. Required by the
+   *  notes feature to scope its REST calls. Pass null when the doc
+   *  hasn't been server-persisted yet — the notes dock will hide. */
+  docId: string | null;
   rowImages: RowImageStateView[];
   rowVideoClips: Record<number, RowVideoClipView | null>;
   rowOverlays: Record<number, RowOverlayState>;
