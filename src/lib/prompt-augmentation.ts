@@ -165,16 +165,34 @@ export function augmentCellPrompt(input: AugmentCellPromptInput): AugmentCellPro
   const safeOnScreenText = (input.onScreenText ?? '').trim().replace(/[\r\n]+/g, ' ').slice(0, 120);
   const escapedOst = safeOnScreenText.replace(/"/g, '\\"');
   const shouldBakeOst = normalizedOstMode === 'bake' && safeOnScreenText.length > 0;
-  // OST sits below the stripe only when the stripe overlays the image.
-  // Letterbox layout already crops the canvas so OST can land anywhere.
+  // OST positioning. Phase 1.5 (Bug C) tightening: the previous
+  // `'within the scene'` default was too vague — diffusion models
+  // treated year-shaped OST values like "1945", "1969" as title
+  // graphics and placed them flush against the top edge of the
+  // canvas, where the dispatcher's 1536×1024 → 1536×864 center-crop
+  // then sliced 80px (~7.8%) off the top and cut into the glyphs (QA
+  // run on Sodder doc b59e88ad, 2026-05-28). The new wording bans
+  // the top edge explicitly and steers the text into the
+  // lower-center safe zone whether or not a section stripe is
+  // present. Spec:
+  // _plans/2026-05-28-doodle-2-phase-1-5-completion.md (R-C).
   const ostPosition = needsSafeTopBias
-    ? 'in the lower portion of the frame'
-    : 'within the scene';
+    ? 'in the lower portion of the frame, well inside the visible safe area, never near the top edge'
+    : 'in the lower-center portion of the frame, well inside the visible safe area, never near the top edge';
   const ostLeadingDirective = shouldBakeOst
-    ? `Hand-lettered text "${escapedOst}" drawn large in bold marker style ${ostPosition}, in the illustration's own style.\n\n`
+    ? `Hand-lettered text "${escapedOst}" drawn large in bold marker style ${ostPosition}, in the illustration's own style. The text must sit with AT LEAST 15% empty margin from the top edge of the canvas.\n\n`
     : '';
   const ostTrailingDirective = shouldBakeOst
     ? `\n\nText shown: "${escapedOst}".`
+    : '';
+  // Phase 1.5 (Bug C): when an OST is being baked, append an explicit
+  // anti-top-edge clause to the safe-edge directive. The general 10%
+  // safe-edge language was being overridden by the model's
+  // title-placement prior for year-shaped values like "1945"; the
+  // 15% floor specifically for text/numerals reinforces the anti-top
+  // constraint on the exact element that was failing.
+  const ostSafeEdgeReinforcement = shouldBakeOst
+    ? `Any hand-lettered text, title, or numeral inside the picture sits AT LEAST 15% inside from the top edge — never touching it.\n\n`
     : '';
 
   // Cloud-Kie style-sheet chaining hint. Sanitised + capped at 240
@@ -191,7 +209,13 @@ export function augmentCellPrompt(input: AugmentCellPromptInput): AugmentCellPro
   // slack mirrors the historical inline block; trimming a partial word
   // at the truncation boundary may eat a few extra chars beyond the
   // strict budget.
-  const fixedOverhead = safeEdgeDirective.length + safeTopDirective.length + ostLeadingDirective.length + ostTrailingDirective.length + sheetDescDirective.length;
+  const fixedOverhead =
+    safeEdgeDirective.length
+    + ostSafeEdgeReinforcement.length
+    + safeTopDirective.length
+    + ostLeadingDirective.length
+    + ostTrailingDirective.length
+    + sheetDescDirective.length;
   const promptBudget = Math.max(200, input.promptCap - fixedOverhead - 4);
   const trimmedBody = input.prompt.trim();
   const originalBodyLen = trimmedBody.length;
@@ -210,7 +234,7 @@ export function augmentCellPrompt(input: AugmentCellPromptInput): AugmentCellPro
     });
   }
 
-  const finalPrompt = `${safeEdgeDirective}${safeTopDirective}${ostLeadingDirective}${safeBody}${ostTrailingDirective}${sheetDescDirective}`;
+  const finalPrompt = `${safeEdgeDirective}${ostSafeEdgeReinforcement}${safeTopDirective}${ostLeadingDirective}${safeBody}${ostTrailingDirective}${sheetDescDirective}`;
 
   return {
     prompt: finalPrompt,

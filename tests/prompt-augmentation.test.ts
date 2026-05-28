@@ -183,14 +183,49 @@ describe('augmentCellPrompt — safe-top bias', () => {
     expect(out.prompt).toContain('in the lower portion of the frame');
   });
 
-  it('bake without safe-top positions OST within the scene', () => {
+  it('bake without safe-top positions OST in the lower-center safe area (Phase 1.5 Bug C)', () => {
     const out = augmentCellPrompt({
       ...BASE,
       onScreenText: 'EUREKA',
       onScreenTextMode: 'bake',
     });
-    expect(out.prompt).toContain('within the scene');
-    expect(out.prompt).not.toContain('in the lower portion');
+    // Phase 1.5 (Bug C): the previous "within the scene" wording let
+    // year-shaped OST values land near the top edge where the
+    // dispatcher's 7.8% center-crop sliced into them. The new wording
+    // anchors the text to the lower-center safe area and explicitly
+    // bans the top edge.
+    expect(out.prompt).toContain('in the lower-center portion of the frame');
+    expect(out.prompt).toContain('never near the top edge');
+    expect(out.prompt).not.toContain('within the scene');
+  });
+
+  it('bake mode appends an explicit anti-top-edge reinforcement clause for text/numerals (Phase 1.5 Bug C)', () => {
+    const out = augmentCellPrompt({
+      ...BASE,
+      onScreenText: '1945',
+      onScreenTextMode: 'bake',
+    });
+    // The reinforcement is what stops the diffusion model from
+    // treating year-shaped values as title graphics and placing them
+    // flush against the top edge.
+    expect(out.prompt).toContain('AT LEAST 15% empty margin from the top edge');
+    expect(out.prompt).toContain(
+      'Any hand-lettered text, title, or numeral inside the picture sits AT LEAST 15% inside from the top edge — never touching it.',
+    );
+  });
+
+  it('overlay mode omits the OST-specific anti-top-edge reinforcement', () => {
+    const out = augmentCellPrompt({
+      ...BASE,
+      onScreenText: '1945',
+      onScreenTextMode: 'overlay',
+    });
+    // The reinforcement is gated on shouldBakeOst — when the OST is
+    // rendered as a Remotion overlay (not baked into the diffusion),
+    // the model has no text to mis-place, so the additional clause
+    // would just add prompt overhead for no benefit.
+    expect(out.prompt).not.toContain('AT LEAST 15% empty margin');
+    expect(out.prompt).not.toContain('Any hand-lettered text, title, or numeral');
   });
 });
 
@@ -278,10 +313,17 @@ describe('augmentCellPrompt — full prompt composition', () => {
       sectionTitleLayout: 'overlay',
       promptCap: SINGLE_SHOT_PROMPT_CAP,
     });
+    // Phase 1.5 (Bug C): the OST-bake path now appends an explicit
+    // anti-top-edge reinforcement clause AND tightens the OST position
+    // wording with the "well inside the visible safe area, never near
+    // the top edge" trailing constraint. Both are gated on
+    // shouldBakeOst — only this snapshot needs the updated expectation
+    // (the section-title snapshot below has no OST so it's unaffected).
     expect(out.prompt).toBe(
       SAFE_EDGE_PREFIX
+      + 'Any hand-lettered text, title, or numeral inside the picture sits AT LEAST 15% inside from the top edge — never touching it.\n\n'
       + 'Wide composition with an empty open sky or plain low-detail background across the upper portion of the frame. All characters, faces, objects, and key details sit in the lower portion.\n\n'
-      + 'Hand-lettered text "EUREKA" drawn large in bold marker style in the lower portion of the frame, in the illustration\'s own style.\n\n'
+      + 'Hand-lettered text "EUREKA" drawn large in bold marker style in the lower portion of the frame, well inside the visible safe area, never near the top edge, in the illustration\'s own style. The text must sit with AT LEAST 15% empty margin from the top edge of the canvas.\n\n'
       + 'A scientist'
       + '\n\nText shown: "EUREKA".',
     );
