@@ -5,6 +5,7 @@ import { logger } from '@/lib/logger';
 import { createKieTask, pollKieResultThenUpscale } from '@/lib/kie-poll';
 import { buildKieImageInput, getImageModelSpec } from '@/lib/image-models';
 import { sliceCollage } from '@/lib/collage-slicer';
+import { resolveStickerStyle } from '@/lib/thumbnail-formats/flex-icon-grid-sticker-styles';
 
 export const maxDuration = 300;
 
@@ -35,6 +36,10 @@ const DEFAULT_IMAGE_MODEL = 'gpt-image-2-t2i';
 
 interface ReqBody {
   model?: string;
+  /** Named sticker style preset (id). Defaults to `minimal-vector` when
+   *  omitted; unknown ids fall back to the same default — see
+   *  `resolveStickerStyle`. */
+  style?: string;
   stickers?: Array<{ cellIndex?: unknown; prompt?: unknown }>;
 }
 
@@ -100,11 +105,19 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     );
   }
 
-  // Compose the sticker-style collage prompt. Distinct from the
-  // production-doc collage prompt: emphasis on flat illustration,
-  // single iconic subject per cell, no backgrounds, no text — exactly
-  // the aesthetic the reference channels' icons hit.
-  const composedPrompt = composeStickerCollagePrompt(stickers.map((s) => s.prompt));
+  // Resolve the user-chosen style preset (or fall back to the default)
+  // and prepend its style language to every cell's prompt before
+  // composing the 2×2 collage prompt. Lets the panel pick a single
+  // global look without forcing per-cell prompt repetition.
+  const stylePreset = resolveStickerStyle(body.style);
+  const styledPrompts = stickers.map(
+    (s) => `${stylePreset.prefix}: ${s.prompt}`,
+  );
+  logger.info('[flex-icon-grid stickers] style resolved', {
+    requested: body.style ?? null,
+    resolved: stylePreset.id,
+  });
+  const composedPrompt = composeStickerCollagePrompt(styledPrompts);
   const t0 = Date.now();
   let upscaledUrl: string;
   try {
@@ -147,23 +160,22 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
 });
 
 /**
- * Compose the 4 sticker prompts into a 2×2 collage instruction. Same
- * 2×2 structure as the production-doc collage but with sticker-
- * specific style language — the difference matters because image
- * models will gladly render a "cinematic scene with a virus icon"
- * when the prompt says "scene" but a flat sticker when it says
- * "flat vector sticker".
+ * Compose the 4 styled sticker prompts into a 2×2 collage instruction.
+ * Template is deliberately style-neutral — the per-cell prompts come
+ * in pre-prefixed with the chosen style preset's language, so the
+ * outer wrapper carries only the grid-structure constraints and the
+ * sticker-isolation guarantee. Lets `neon` and `paper-cutout` co-exist
+ * with `minimal-vector` without the outer template fighting the
+ * inner prompt.
  */
 function composeStickerCollagePrompt(prompts: readonly string[]): string {
   const LABELS = ['Top-left', 'Top-right', 'Bottom-left', 'Bottom-right'] as const;
   const cellLines = prompts.map((p, i) => `${LABELS[i]}: ${p}`).join('\n');
   return (
-    'A 2x2 grid collage of 4 flat-vector sticker illustrations, separated by a thin neutral grey border (10px). '
-    + 'Each sticker is a single iconic subject centred in its cell with a clean white or off-white background, '
-    + 'bold outlines, saturated flat colours, no photoreal rendering, no text, no shadows beyond a subtle drop. '
-    + 'Sticker style — like an explainer-channel asset, not a movie poster.\n\n'
+    'A 2x2 grid collage of 4 stickers, separated by a thin neutral grey border (10px). '
+    + 'Each cell contains a single sticker as described:\n\n'
     + cellLines
-    + '\n\nIMPORTANT: each cell must contain ONLY its own sticker with no visual elements bleeding between cells. '
-    + 'No text inside the stickers. No background scenes.'
+    + '\n\nIMPORTANT: each cell must contain ONLY its own sticker with no visual elements bleeding '
+    + 'between cells. No text inside the stickers. Match the style language given in each cell description.'
   );
 }

@@ -31,6 +31,7 @@ import {
   computeCellRect,
   computeGridLayout,
   getConsumedCellIndexes,
+  getSpanConflicts,
   sanitizeUserText,
   type CellBackgroundSpec,
   type CellShape,
@@ -38,6 +39,7 @@ import {
   type FlexIconGridConfig,
   type LabelStyle,
   type RingStyle,
+  type SpanConflictReason,
 } from '@/lib/thumbnail-formats/flex-icon-grid';
 import {
   extractIconInner,
@@ -87,6 +89,7 @@ export function FlexIconGridLivePreview({
     const layout = computeGridLayout(config);
     const backgrounds = resolveCellBackgrounds(config);
     const consumed = getConsumedCellIndexes(config);
+    const conflicts = getSpanConflicts(config);
     const cellViews = config.cells
       .filter((cell) => !consumed.has(cell.index))
       .map((cell) => {
@@ -108,7 +111,11 @@ export function FlexIconGridLivePreview({
           backgroundSpec.type === 'gradient' ? backgroundSpec.from :
           backgroundSpec.type === 'pattern' ? backgroundSpec.bg :
           paletteColour;
-        return { cell, rect, geom, shape, ring, labelStyle, background: representativeColour, backgroundSpec };
+        return {
+          cell, rect, geom, shape, ring, labelStyle,
+          background: representativeColour, backgroundSpec,
+          conflict: conflicts.get(cell.index) ?? null,
+        };
       });
     return { cellViews };
   }, [config]);
@@ -171,7 +178,7 @@ export function FlexIconGridLivePreview({
         </defs>
 
         {/* Cells */}
-        {cellViews.map(({ cell, rect, geom, shape, ring, labelStyle, background, backgroundSpec }) => (
+        {cellViews.map(({ cell, rect, geom, shape, ring, labelStyle, background, backgroundSpec, conflict }) => (
           <CellGroup
             key={cell.index}
             cell={cell}
@@ -184,6 +191,7 @@ export function FlexIconGridLivePreview({
             backgroundSpec={backgroundSpec}
             cornerRadius={config.cornerRadius}
             highlighted={highlightedCellIndex === cell.index}
+            conflict={conflict}
             onClick={onCellClick}
           />
         ))}
@@ -286,6 +294,7 @@ interface CellGroupProps {
   backgroundSpec: CellBackgroundSpec;
   cornerRadius: number;
   highlighted: boolean;
+  conflict: SpanConflictReason | null;
   onClick?: (cellIndex: number) => void;
 }
 
@@ -300,6 +309,7 @@ function CellGroup({
   backgroundSpec,
   cornerRadius,
   highlighted,
+  conflict,
   onClick,
 }: CellGroupProps) {
   const handleClick = onClick ? () => onClick(cell.index) : undefined;
@@ -363,6 +373,46 @@ function CellGroup({
           strokeDasharray="10 6"
           pointerEvents="none"
         />
+      )}
+
+      {/* Span conflict warning — yellow dashed outline + corner badge.
+          Drawn LAST so it sits on top of the highlight border for the
+          unambiguous "this cell needs attention" affordance. */}
+      {conflict && (
+        <>
+          <rect
+            x={rect.x + 2}
+            y={rect.y + 2}
+            width={rect.w - 4}
+            height={rect.h - 4}
+            fill="none"
+            stroke="#FACC15"
+            strokeWidth={4}
+            strokeDasharray="6 4"
+            pointerEvents="none"
+          />
+          <circle
+            cx={rect.x + rect.w - 16}
+            cy={rect.y + 16}
+            r={10}
+            fill="#FACC15"
+            stroke="#0a0a0a"
+            strokeWidth={2}
+            pointerEvents="none"
+          />
+          <text
+            x={rect.x + rect.w - 16}
+            y={rect.y + 16}
+            fontSize={14}
+            fontWeight={900}
+            fill="#0a0a0a"
+            textAnchor="middle"
+            dominantBaseline="central"
+            pointerEvents="none"
+          >
+            !
+          </text>
+        </>
       )}
     </g>
   );

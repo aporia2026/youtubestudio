@@ -458,10 +458,21 @@ export function computeCellRect(
  * 5-col grid consumes indexes 2, 6, 7 — those cells stay in the
  * config but are skipped at render time. The composer + live
  * preview pass each cell through this filter.
+ *
+ * Cascading rule: if a cell is itself already consumed by an
+ * EARLIER cell's span, its own span is IGNORED. This stops a
+ * runaway-consumption chain where every cell after an early span
+ * cascades into "consumed" because each consumed cell still tries
+ * to claim its own span area. The cell with the conflicting span
+ * still appears in `getSpanConflicts` so the editor can warn the
+ * user — silently dropping the span would hide the fact that the
+ * user picked it.
  */
 export function getConsumedCellIndexes(config: FlexIconGridConfig): Set<number> {
   const consumed = new Set<number>();
-  for (const cell of config.cells) {
+  const ordered = [...config.cells].sort((a, b) => a.index - b.index);
+  for (const cell of ordered) {
+    if (consumed.has(cell.index)) continue;
     const span = cell.cellSpan;
     if (!span || (span.rows <= 1 && span.cols <= 1)) continue;
     const i = cell.index - 1;
@@ -478,6 +489,65 @@ export function getConsumedCellIndexes(config: FlexIconGridConfig): Set<number> 
     }
   }
   return consumed;
+}
+
+/**
+ * Per-cell span conflict diagnosis. A cell falls into the conflict
+ * set when:
+ *  - It has an explicit `cellSpan > 1×1`, AND
+ *  - Its span would overlap with at least one cell already claimed
+ *    by an earlier cell's span (the "loser" in the cascading rule
+ *    above), OR
+ *  - Its span exceeds the grid bounds from the cell's origin and
+ *    gets clamped down to fit (the user picked 3×3 in the corner of
+ *    a 2-row grid — partial span won't render as the user
+ *    expected).
+ *
+ * The editor walks the result to paint a warning outline on
+ * conflicting cells in the live preview and surface a note in the
+ * cell editor. Pure function — exported for the panel.
+ *
+ * Return value: `Map<cellIndex, reason>` so the UI can render a
+ * specific message per conflict type.
+ */
+export type SpanConflictReason = 'consumed-by-earlier' | 'overlaps-earlier' | 'clamped-to-grid';
+export function getSpanConflicts(
+  config: FlexIconGridConfig,
+): Map<number, SpanConflictReason> {
+  const conflicts = new Map<number, SpanConflictReason>();
+  const consumed = new Set<number>();
+  const ordered = [...config.cells].sort((a, b) => a.index - b.index);
+  for (const cell of ordered) {
+    const span = cell.cellSpan;
+    if (!span || (span.rows <= 1 && span.cols <= 1)) continue;
+    if (consumed.has(cell.index)) {
+      conflicts.set(cell.index, 'consumed-by-earlier');
+      continue;
+    }
+    const i = cell.index - 1;
+    const baseR = Math.floor(i / config.cols);
+    const baseC = i % config.cols;
+    const wouldClamp =
+      baseR + span.rows > config.rows || baseC + span.cols > config.cols;
+    if (wouldClamp) {
+      conflicts.set(cell.index, 'clamped-to-grid');
+    }
+    let overlapped = false;
+    const safeRowSpan = Math.max(1, Math.min(span.rows, config.rows - baseR));
+    const safeColSpan = Math.max(1, Math.min(span.cols, config.cols - baseC));
+    for (let dr = 0; dr < safeRowSpan; dr++) {
+      for (let dc = 0; dc < safeColSpan; dc++) {
+        if (dr === 0 && dc === 0) continue;
+        const consumedIndex = (baseR + dr) * config.cols + (baseC + dc) + 1;
+        if (consumed.has(consumedIndex)) overlapped = true;
+        consumed.add(consumedIndex);
+      }
+    }
+    if (overlapped && !conflicts.has(cell.index)) {
+      conflicts.set(cell.index, 'overlaps-earlier');
+    }
+  }
+  return conflicts;
 }
 
 /**

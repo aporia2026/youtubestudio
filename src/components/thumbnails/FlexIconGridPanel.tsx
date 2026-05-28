@@ -27,6 +27,7 @@ import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
 import type { ThumbnailRegion } from '@/remotion/types';
 import {
+  getSpanConflicts,
   makeDefaultConfig,
   type CellBackgroundSpec,
   type CellContent,
@@ -35,6 +36,7 @@ import {
   type FlexIconGridConfig,
   type LabelFont,
   type PaletteSpec,
+  type SpanConflictReason,
 } from '@/lib/thumbnail-formats/flex-icon-grid';
 import {
   CATEGORY_LABELS,
@@ -48,6 +50,10 @@ import {
 import {
   paletteColours,
 } from '@/lib/thumbnail-formats/flex-icon-grid-palettes';
+import {
+  DEFAULT_STICKER_STYLE,
+  STICKER_STYLE_PRESETS,
+} from '@/lib/thumbnail-formats/flex-icon-grid-sticker-styles';
 import { FlexIconGridLivePreview } from './FlexIconGridLivePreview';
 
 // ─── Types mirroring the API contract ───────────────────────────────────────
@@ -115,6 +121,8 @@ const ALLOWED_CELL_UPLOAD_TYPES = new Set([
   'image/gif',
 ]);
 
+const STICKER_STYLE_PREF_KEY = 'flex_icon_grid_sticker_style';
+
 // ─── Component ──────────────────────────────────────────────────────────────
 
 interface Props {
@@ -139,6 +147,22 @@ export function FlexIconGridPanel({
   const [stickerBusy, setStickerBusy] = useState(false);
   const [result, setResult] = useState<FlexIconGridGenerationResult | null>(null);
   const [uploadingCells, setUploadingCells] = useState<Set<number>>(new Set());
+
+  // Global sticker style preset — applied to every AI-sticker
+  // generation call in this panel session. Persisted to localStorage
+  // (rule 15: settings audit) so a repeat user lands back in their
+  // preferred style without re-picking each session.
+  const [stickerStyle, setStickerStyle] = useState<string>(() => {
+    if (typeof window === 'undefined') return DEFAULT_STICKER_STYLE;
+    try {
+      const v = localStorage.getItem(STICKER_STYLE_PREF_KEY);
+      if (v && STICKER_STYLE_PRESETS.some((p) => p.id === v)) return v;
+    } catch { /* fall through */ }
+    return DEFAULT_STICKER_STYLE;
+  });
+  useEffect(() => {
+    try { localStorage.setItem(STICKER_STYLE_PREF_KEY, stickerStyle); } catch { /* ignore */ }
+  }, [stickerStyle]);
 
   // Restore from history (rendered result).
   useEffect(() => {
@@ -168,6 +192,10 @@ export function FlexIconGridPanel({
   const totalCells = config.rows * config.cols;
   const selectedCell = selectedCellIndex
     ? config.cells.find((c) => c.index === selectedCellIndex) ?? null
+    : null;
+  const spanConflicts = useMemo(() => getSpanConflicts(config), [config]);
+  const selectedCellConflict = selectedCell
+    ? spanConflicts.get(selectedCell.index) ?? null
     : null;
 
   // ── Mutators ─────────────────────────────────────────────────────────────
@@ -315,7 +343,7 @@ export function FlexIconGridPanel({
         const res = await fetch('/api/thumbnails/format/flex-icon-grid/generate-stickers', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ stickers: batch }),
+          body: JSON.stringify({ stickers: batch, style: stickerStyle }),
         });
         if (!res.ok) {
           const data: { error?: string } = await res.json().catch(() => ({}));
@@ -603,6 +631,11 @@ export function FlexIconGridPanel({
             onChange={(span) => updateCell(selectedCell.index, { cellSpan: span })}
           />
 
+          {/* Conflict warning (per cell) */}
+          {selectedCellConflict && (
+            <SpanConflictWarning reason={selectedCellConflict} />
+          )}
+
           {/* Reset everything */}
           <button
             type="button"
@@ -720,6 +753,31 @@ export function FlexIconGridPanel({
           </div>
         )}
       </section>
+
+      {/* Sticker style picker — only shown when the panel actually
+          contains at least one ai-sticker cell. Keeps the panel
+          uncluttered for users who never touch the AI flow. */}
+      {config.cells.some((c) => c.content.type === 'ai-sticker') && (
+        <section style={sectionStyle}>
+          <h3 style={sectionHeaderStyle}>Sticker style</h3>
+          <div style={chipRowStyle}>
+            {STICKER_STYLE_PRESETS.map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                onClick={() => setStickerStyle(preset.id)}
+                title={preset.description}
+                style={chipStyle(stickerStyle === preset.id)}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+          <p style={{ fontSize: 11, color: '#71717a', marginTop: 8 }}>
+            Applied to every AI-sticker generation. Prepended as style language to each cell's prompt.
+          </p>
+        </section>
+      )}
 
       {/* Sticker batch + Render buttons */}
       <section style={{ ...sectionStyle, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -851,6 +909,49 @@ function SvgPreview({ slug }: { slug: string }) {
       strokeLinejoin="round"
       dangerouslySetInnerHTML={{ __html: inner }}
     />
+  );
+}
+
+// ─── Span conflict warning ──────────────────────────────────────────────────
+
+const SPAN_CONFLICT_MESSAGES: Record<SpanConflictReason, { title: string; body: string }> = {
+  'consumed-by-earlier': {
+    title: 'Cell is hidden — claimed by an earlier span',
+    body:
+      'This cell sits inside another cell\'s span and isn\'t drawn in the rendered thumbnail. '
+      + 'Its own span (if any) is ignored. Edit the earlier spanning cell to free this slot.',
+  },
+  'overlaps-earlier': {
+    title: 'Span overlaps another cell',
+    body:
+      'This cell\'s span reaches into slots already claimed by an earlier cell. The earlier '
+      + 'cell wins; the overlap is silently absorbed. Shrink either span to avoid the conflict.',
+  },
+  'clamped-to-grid': {
+    title: 'Span clamped to fit the grid',
+    body:
+      'This cell\'s span extends past the grid edge. The renderer clips it to fit, which means '
+      + 'the rendered tile is smaller than the configured span. Pick a smaller span or move '
+      + 'the cell inward.',
+  },
+};
+
+function SpanConflictWarning({ reason }: { reason: SpanConflictReason }) {
+  const { title, body } = SPAN_CONFLICT_MESSAGES[reason];
+  return (
+    <div
+      style={{
+        background: '#3a2e08',
+        border: '1px solid #facc15',
+        color: '#fefce8',
+        padding: '10px 12px',
+        borderRadius: 6,
+        fontSize: 12,
+      }}
+    >
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>⚠ {title}</div>
+      <div style={{ lineHeight: 1.5 }}>{body}</div>
+    </div>
   );
 }
 

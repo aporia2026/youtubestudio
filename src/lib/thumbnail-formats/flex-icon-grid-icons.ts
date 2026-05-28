@@ -133,6 +133,8 @@ import {
   Ghost,
 } from 'lucide-static';
 
+import { BRAND_ICONS } from './flex-icon-grid-brand-icons';
+
 // ─── Registry types ─────────────────────────────────────────────────────────
 
 export type IconCategory =
@@ -236,9 +238,11 @@ export const ICON_REGISTRY: readonly IconEntry[] = [
   { slug: 'globe', label: 'Globe', category: 'web', svg: Globe as unknown as string },
   { slug: 'cloud', label: 'Cloud', category: 'web', svg: Cloud as unknown as string },
   { slug: 'link', label: 'Link', category: 'web', svg: Link as unknown as string },
-  // GitHub / Twitter / YouTube / Instagram / LinkedIn entries removed —
-  // lucide-static dropped brand icons for trademark reasons. Re-add via
-  // inline SVG strings (not lucide-static imports) when bringing them back.
+  // Brand marks (GitHub / X / YouTube / Instagram / LinkedIn / Discord /
+  // TikTok / Slack) ship as inline simplified SVG marks from a sibling
+  // module — lucide-static dropped the brand-named exports for
+  // trademark reasons in v1. See `flex-icon-grid-brand-icons.ts`.
+  ...BRAND_ICONS,
 
   // Common UI
   { slug: 'home', label: 'Home', category: 'common', svg: Home as unknown as string },
