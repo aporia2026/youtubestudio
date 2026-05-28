@@ -104,6 +104,11 @@ import {
   getCachedCharacterBase,
   writeCharacterToCache,
 } from '@/lib/character-cache';
+import {
+  buildSceneContinuationEditPrompt,
+  getCachedSceneBase,
+  writeSceneToCache,
+} from '@/lib/scene-cache';
 import type { PlayerController } from '@/lib/notes/player-controller';
 import { resolveOverlayPlacement } from '@/lib/overlay-placement';
 import { stripProductionMarkers } from '@/lib/script-markers';
@@ -375,6 +380,13 @@ interface ProductionRow {
    *  cached base instead of fresh i2i, preserving identity across
    *  non-consecutive shots. */
   character_id?: string;
+  /** Phase 3 (scene cache) — recurring-LOCATION slug. Same dispatch
+   *  shape as character_id but anchors the BACKGROUND / SETTING.
+   *  When BOTH this and character_id are set AND both are cached,
+   *  the character path wins (one source-image preservation per
+   *  Atlas Edit call). Mirrors the canonical definition in
+   *  src/remotion/utils.ts. */
+  scene_id?: string;
 }
 
 interface ProductionDoc {
@@ -504,6 +516,17 @@ interface ProductionDoc {
    *  preserving identity across non-consecutive shots. Mirrors the
    *  canonical definition on the remotion-side `ProductionDoc`. */
   doodle_explainer_2_character_cache?: Record<string, {
+    base_url: string;
+    first_seen_row_index: number;
+  }>;
+  /** Phase 3 — doodle_explainer_2 scene cache. Per-doc map from a
+   *  recurring location's `scene_id` slug to the i2i-generated base
+   *  image URL captured on the FIRST row featuring that location.
+   *  Mirrors `doodle_explainer_2_character_cache`. Precedence: when
+   *  a row has both character_id and scene_id, the character cache
+   *  wins on dispatch. Mirrors the canonical definition on the
+   *  remotion-side ProductionDoc. */
+  doodle_explainer_2_scene_cache?: Record<string, {
     base_url: string;
     first_seen_row_index: number;
   }>;
@@ -4304,6 +4327,7 @@ function ProductionDocPage() {
     overlayStockTerms?: string;
     skipOverlay?: boolean;
     characterId?: string;
+    sceneId?: string;
   }>>(() => {
     if (!doc) return [];
     const docDisabled = doc.overlays_disabled === true;
@@ -4319,6 +4343,7 @@ function ProductionDocPage() {
       overlayStockTerms?: string;
       skipOverlay?: boolean;
       characterId?: string;
+      sceneId?: string;
     }> = [];
     for (let i = 0; i < doc.rows.length; i++) {
       if (rowImages[i]?.status !== 'error') continue;
@@ -4343,6 +4368,7 @@ function ProductionDocPage() {
         overlayStockTerms: row?.overlay_stock_terms,
         skipOverlay,
         characterId: row?.character_id,
+        sceneId: row?.scene_id,
       });
     }
     return out;
@@ -4373,6 +4399,7 @@ function ProductionDocPage() {
     overlayStockTerms?: string;
     skipOverlay?: boolean;
     characterId?: string;
+    sceneId?: string;
   }>>(() => {
     if (!doc) return [];
     const docDisabled = doc.overlays_disabled === true;
@@ -4388,6 +4415,7 @@ function ProductionDocPage() {
       overlayStockTerms?: string;
       skipOverlay?: boolean;
       characterId?: string;
+      sceneId?: string;
     }> = [];
     for (let i = 0; i < doc.rows.length; i++) {
       const s = rowImages[i];
@@ -4412,6 +4440,7 @@ function ProductionDocPage() {
         overlayStockTerms: row?.overlay_stock_terms,
         skipOverlay,
         characterId: row?.character_id,
+        sceneId: row?.scene_id,
       });
     }
     return out;
@@ -4469,6 +4498,7 @@ function ProductionDocPage() {
         overlayStockTerms: item.overlayStockTerms,
         skipOverlay: item.skipOverlay,
         characterId: item.characterId,
+        sceneId: item.sceneId,
       });
       cursor += 1;
       setRetryingImages({ done: cursor, total: totalRetries });
@@ -6156,6 +6186,14 @@ function ProductionDocPage() {
        *  character. See:
        *  _plans/2026-05-28-doodle-2-phase-1-6-completion.md (R-D). */
       characterId?: string;
+      /** Phase 3 (scene cache): the row's `scene_id` slug — same
+       *  dispatch shape as characterId but anchors a recurring
+       *  LOCATION. When BOTH characterId and sceneId are set AND
+       *  both have cache entries, the character path wins
+       *  (precedence rule — see comment at the resolution site
+       *  upstream). See:
+       *  _plans/2026-05-28-doodle-2-scene-cache.md. */
+      sceneId?: string;
     } = {},
     signal?: AbortSignal,
   ): Promise<boolean> {
@@ -6188,11 +6226,24 @@ function ProductionDocPage() {
     // the cache settles correctly and subsequent rows hit. Acceptable
     // for V1 (plan open question #2).
     const characterId = meta.characterId?.trim() || undefined;
+    const sceneId = meta.sceneId?.trim() || undefined;
     const isDoodleExplainer2 = stylePreset === 'doodle_explainer_2';
     const cachedBaseUrl = characterId
       ? getCachedCharacterBase(doc?.doodle_explainer_2_character_cache, characterId)
       : undefined;
     const useCharacterCache = isDoodleExplainer2 && Boolean(characterId) && Boolean(cachedBaseUrl);
+    // Phase 3 (scene cache) — only consult the scene cache when the
+    // character cache wouldn't fire on this row. Precedence rule: when
+    // both are set AND both are cached, character wins because Atlas
+    // Edit can preserve only one source-image's content per call and
+    // character identity is the higher-stakes anchor (face / hair /
+    // clothing drift is more visible than a slightly-different house).
+    // Spec: _plans/2026-05-28-doodle-2-scene-cache.md.
+    const cachedSceneBaseUrl =
+      isDoodleExplainer2 && !useCharacterCache && sceneId
+        ? getCachedSceneBase(doc?.doodle_explainer_2_scene_cache, sceneId)
+        : undefined;
+    const useSceneCache = isDoodleExplainer2 && Boolean(sceneId) && Boolean(cachedSceneBaseUrl) && !useCharacterCache;
     console.info('[prodoc image-gen] start', {
       rowIndex,
       hasOst: Boolean(onScreenText),
@@ -6202,7 +6253,9 @@ function ProductionDocPage() {
       chainedToSheet: Boolean(referenceImageUrl),
       hasOverlayTerms: Boolean(overlayTerms),
       characterId: characterId ?? null,
+      sceneId: sceneId ?? null,
       useCharacterCache,
+      useSceneCache,
     });
     if (useCharacterCache) {
       console.info('[manual-editor character-cache] hit-and-edit', {
@@ -6261,6 +6314,71 @@ function ProductionDocPage() {
         console.warn('[manual-editor character-cache] edit-failed-fallback-to-i2i (exception)', {
           rowIndex,
           characterId,
+          message: err instanceof Error ? err.message : String(err),
+        });
+        // Drop through to i2i.
+      }
+    }
+    if (useSceneCache && cachedSceneBaseUrl) {
+      // Phase 3 — scene-cache hit path. Mirrors the character-cache
+      // branch above but uses the scene-continuation prompt that
+      // preserves location architecture / palette instead of
+      // character face / hair. The cachedSceneBaseUrl resolution
+      // upstream already enforces the character > scene precedence
+      // rule so this branch only runs when character didn't fire.
+      console.info('[manual-editor scene-cache] hit-and-edit', {
+        rowIndex,
+        sceneId,
+        cachedSceneBaseUrl,
+      });
+      const editPrompt = buildSceneContinuationEditPrompt(prompt);
+      try {
+        const res = await queueImageGen('edit', 'scene-cache-hit', () =>
+          fetch('/api/generate/production-doc/image/edit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal,
+            body: JSON.stringify({
+              originalImageUrl: cachedSceneBaseUrl,
+              prompt: editPrompt,
+              optionId: 'gpt-image-2-atlas-edit',
+            }),
+          }),
+        );
+        if (res.status === 429) reportUpstream429('edit', 'scene-cache-hit');
+        const data = (await safeJson(res)) as {
+          imageUrl?: string;
+          saliency?: ImageSaliencyMap | null;
+          error?: string;
+        };
+        if (res.ok && typeof data.imageUrl === 'string') {
+          setRowImages((prev) => {
+            const next = [...prev];
+            next[rowIndex] = {
+              status: 'done',
+              imageUrl: data.imageUrl!,
+              source: 'generated',
+            };
+            return next;
+          });
+          void persistRowAsset(rowIndex, 'image', data.imageUrl);
+          if (data.saliency) applySaliencyToRow(rowIndex, data.saliency);
+          if (overlayTerms && !meta.skipOverlay) {
+            console.info('[prodoc image-gen] overlay queued', { rowIndex, overlayTerms });
+            void fetchOverlayForRow(rowIndex, overlayTerms);
+          }
+          return true;
+        }
+        console.warn('[manual-editor scene-cache] edit-failed-fallback-to-i2i', {
+          rowIndex,
+          sceneId,
+          status: res.status,
+          error: data.error,
+        });
+      } catch (err) {
+        console.warn('[manual-editor scene-cache] edit-failed-fallback-to-i2i (exception)', {
+          rowIndex,
+          sceneId,
           message: err instanceof Error ? err.message : String(err),
         });
         // Drop through to i2i.
@@ -6435,6 +6553,42 @@ function ProductionDocPage() {
         if (historyEntryId) {
           updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
         }
+      }
+      // Phase 3 — scene-cache miss-and-store. Same atomic-persist
+      // pattern as the character-cache write above so the cache
+      // survives a tab close. Independent of the character-cache
+      // write: a single row can stash BOTH a character base (if it's
+      // the first occurrence of character_id) AND a scene base (if
+      // it's the first occurrence of scene_id) in the same i2i
+      // result. The cache is first-occurrence-wins per
+      // `writeSceneToCache`, so racing writes are safe.
+      if (isDoodleExplainer2 && sceneId && !cachedSceneBaseUrl && typeof data.imageUrl === 'string' && doc) {
+        console.info('[manual-editor scene-cache] miss-and-store', {
+          rowIndex,
+          sceneId,
+        });
+        // Read the latest doc reference (may have been mutated by the
+        // character-cache write above) to avoid clobbering that update.
+        // setDoc + updateProductionDocEntry atomicity matters here.
+        setDoc((prev) => {
+          if (!prev) return prev;
+          const nextSceneCache = writeSceneToCache(
+            prev.doodle_explainer_2_scene_cache,
+            sceneId,
+            data.imageUrl as string,
+            rowIndex,
+          );
+          const resolvedStylePreset = prev.style_preset || stylePreset || undefined;
+          const nextDoc = {
+            ...prev,
+            style_preset: resolvedStylePreset,
+            doodle_explainer_2_scene_cache: nextSceneCache,
+          };
+          if (historyEntryId) {
+            updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+          }
+          return nextDoc;
+        });
       }
       const saliency = data.saliency;
       if (saliency) applySaliencyToRow(rowIndex, saliency);
@@ -6874,6 +7028,7 @@ function ProductionDocPage() {
                 overlayStockTerms: row.overlay_stock_terms,
                 skipOverlay,
                 characterId: row.character_id,
+                sceneId: row.scene_id,
               },
               signal,
             );
@@ -10214,6 +10369,7 @@ function ProductionDocPage() {
                                     ? row.skip_overlay
                                     : doc?.overlays_disabled === true,
                                   characterId: row.character_id,
+                                  sceneId: row.scene_id,
                                 });
                               }
                             }}
@@ -10775,6 +10931,7 @@ function ProductionDocPage() {
                                   ? row.skip_overlay
                                   : doc?.overlays_disabled === true,
                                 characterId: row.character_id,
+                                sceneId: row.scene_id,
                               });
                             }}
                             onUpload={(file) => { void uploadImageForRow(i, file); }}

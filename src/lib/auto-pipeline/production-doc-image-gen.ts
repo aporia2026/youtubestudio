@@ -87,6 +87,9 @@ export interface PipelineImageRow {
   character_id?: string;
   motion_beats?: Array<{ kind: string }>;
   mouth_removed_url?: string;
+  /** Phase 3 — recurring location/object slug. Server-only mirror of
+   *  ProductionRow.scene_id. */
+  scene_id?: string;
 }
 
 /** Doc-level fields the helper needs to dispatch correctly. */
@@ -112,6 +115,13 @@ export interface PipelineImageDoc {
   // for the same reason as above (no React imports in server code).
   // See _plans/2026-05-28-doodle-2-character-cache.md.
   doodle_explainer_2_character_cache?: Record<string, {
+    base_url: string;
+    first_seen_row_index: number;
+  }>;
+  /** Phase 3 — scene cache (server-only mirror of
+   *  ProductionDoc.doodle_explainer_2_scene_cache). See
+   *  _plans/2026-05-28-doodle-2-scene-cache.md. */
+  doodle_explainer_2_scene_cache?: Record<string, {
     base_url: string;
     first_seen_row_index: number;
   }>;
@@ -498,6 +508,8 @@ export async function generateMouthRemovedForCharacter(args: {
  *  imports stable. */
 import { buildCharacterContinuationEditPrompt as _buildCharacterContinuationEditPrompt } from '../character-cache';
 export const buildCharacterContinuationEditPrompt = _buildCharacterContinuationEditPrompt;
+import { buildSceneContinuationEditPrompt as _buildSceneContinuationEditPrompt } from '../scene-cache';
+export const buildSceneContinuationEditPrompt = _buildSceneContinuationEditPrompt;
 
 /** Generate a character-continuation image via Atlas Edit on a cached
  *  base. The cached base is what the FIRST row featuring the character
@@ -582,6 +594,84 @@ export async function generateCharacterContinuationImage(args: {
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn('[pipeline image-gen character-continuation] failed', {
       character_id: characterId,
+      detail: msg.slice(0, 200),
+    });
+    return { error: msg.slice(0, 200), durationMs: Date.now() - t0, costUsd: 0 };
+  }
+}
+
+/** Phase 3 — generate a scene-continuation image via Atlas Edit on a
+ *  cached scene base. Mirrors `generateCharacterContinuationImage` but
+ *  uses the scene-continuation prompt (preserves location architecture
+ *  / palette, NOT character face / hair). Same crop + upscale + R2-
+ *  mirror chain so the caller doesn't have to special-case the post-
+ *  Edit pipeline by anchor type.
+ *
+ *  Spec: _plans/2026-05-28-doodle-2-scene-cache.md. */
+export async function generateSceneContinuationImage(args: {
+  baseImageUrl: string;
+  sceneId: string;
+  newScenePrompt: string;
+}): Promise<PipelineImageResult> {
+  const t0 = Date.now();
+  const { baseImageUrl, sceneId, newScenePrompt } = args;
+  if (!baseImageUrl.trim()) {
+    return { error: 'empty_base_image_url', durationMs: Date.now() - t0, costUsd: 0 };
+  }
+  if (!sceneId.trim()) {
+    return { error: 'empty_scene_id', durationMs: Date.now() - t0, costUsd: 0 };
+  }
+  if (!newScenePrompt.trim()) {
+    return { error: 'empty_scene_prompt', durationMs: Date.now() - t0, costUsd: 0 };
+  }
+
+  const editPrompt = buildSceneContinuationEditPrompt(newScenePrompt);
+  try {
+    const edit = await generateAtlasEdit({
+      prompt: editPrompt,
+      images: [baseImageUrl],
+      size: '2560x1440',
+      quality: 'low',
+    });
+    const croppedUrl = await cropTo16x9AndUpload(edit.url, 'prodoc-images-atlas-crop');
+    const upscale = await upscaleViaRecraft(croppedUrl);
+    let finalUrl = upscale.url;
+    try {
+      const imgRes = await fetch(upscale.url);
+      if (imgRes.ok) {
+        const contentType = imgRes.headers.get('content-type') || 'image/png';
+        const buffer = Buffer.from(await imgRes.arrayBuffer());
+        const ext = contentType.includes('png') ? 'png' : 'jpg';
+        const randomSuffix = Math.random().toString(36).slice(2, 10);
+        const bucket = getImagesBucket();
+        const r2Key = `prodoc-images/${Date.now()}-pipe-scene-continuation-${randomSuffix}.${ext}`;
+        await uploadToBucket(bucket, r2Key, buffer, contentType);
+        finalUrl = await getDownloadUrlForBucket(
+          bucket,
+          r2Key,
+          process.env.R2_IMAGES_PUBLIC_URL,
+        );
+      }
+    } catch (uploadErr) {
+      logger.warn('[pipeline image-gen scene-continuation] R2 mirror failed, using upscale URL', {
+        detail: uploadErr instanceof Error ? uploadErr.message : String(uploadErr),
+      });
+    }
+    logger.info('[pipeline image-gen scene-continuation] succeeded', {
+      scene_id: sceneId,
+      predict_ms: edit.predictTimeMs,
+      cost_usd: 0.011,
+    });
+    return {
+      imageUrl: finalUrl,
+      durationMs: Date.now() - t0,
+      modelUsed: 'openai/gpt-image-2/edit',
+      costUsd: 0.011,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn('[pipeline image-gen scene-continuation] failed', {
+      scene_id: sceneId,
       detail: msg.slice(0, 200),
     });
     return { error: msg.slice(0, 200), durationMs: Date.now() - t0, costUsd: 0 };

@@ -2374,8 +2374,23 @@ When the chosen style's mixing_rules ABOVE define recurring named characters (e.
 
 Only emit \`character_id\` when the chosen style's mixing_rules explicitly describe recurring characters AND the script actually has at least one named character who appears on multiple rows. Default = omit.
 
+### OPTIONAL — scene-continuity field
+
+When the chosen style's mixing_rules ABOVE define recurring locations (e.g. doodle_explainer_2), add this ONE optional field to every row that features a recurring LOCATION or significant recurring OBJECT. Omit it on rows without a recurring scene.
+
+\`\`\`json
+{
+  "...": "all the core fields above",
+  "scene_id": "sodder-house"
+}
+\`\`\`
+
+  - \`scene_id\` — a short lowercase-with-dashes slug naming the location (e.g. \`"sodder-house"\`, \`"family-home-exterior"\`, \`"investigator-desk"\`). The SAME slug appears on EVERY row showing that location, even when the characters / atmospheric elements / action change. The server reuses the same base image (via Atlas Edit) across rows so the architecture / palette / window layout stay identical across non-consecutive shots. See the chosen style's SCENES section for slug rules, the precedence rule with \`character_id\`, and a worked example.
+
+Only emit \`scene_id\` when the chosen style's mixing_rules explicitly describe recurring locations AND the script actually has at least one location/object that appears on multiple rows. Default = omit.
+
 ABSOLUTE RULES:
-- Every row has all ${allowOverlay ? '11' : '8'} core fields (variant fields and \`character_id\` are OPTIONAL — they're additive, never replace core fields)
+- Every row has all ${allowOverlay ? '11' : '8'} core fields (variant fields, \`character_id\`, and \`scene_id\` are OPTIONAL — they're additive, never replace core fields)
 - script_text is verbatim from the script — never paraphrase
 - ai_image_prompt is 35–55 words (the scene body only) for every non-Talking Head / non-Screen Recording / non-Title-Card row
 - Do NOT append the style suffix to ai_image_prompt — it is attached automatically by the server after generation

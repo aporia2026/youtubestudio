@@ -711,6 +711,23 @@ export interface ProductionRow {
    *  same `character_id` via
    *  `ProductionDoc.paint_explainer_v1_character_cache`. */
   mouth_removed_url?: string;
+
+  /** Phase 3 (Scene cache) — stable slug identifying a recurring
+   *  LOCATION or significant recurring OBJECT in the script (e.g.
+   *  `"sodder-house"`, `"investigator-desk"`, `"family-home-exterior"`).
+   *  Parallel to `character_id` but anchors the BACKGROUND / SETTING
+   *  rather than the character. Rows sharing a `scene_id` reuse the
+   *  same base image via Atlas Edit (keyed on
+   *  `ProductionDoc.doodle_explainer_2_scene_cache`) so the location
+   *  renders consistently across non-consecutive shots — fixes the
+   *  "different house each shot" drift the Sodder QA flagged.
+   *
+   *  Precedence rule: when a row has BOTH `character_id` AND
+   *  `scene_id` AND both are cached, the dispatcher hits the
+   *  character path. Atlas Edit can only preserve ONE source image's
+   *  content per call; character identity is the higher-stakes anchor.
+   *  See _plans/2026-05-28-doodle-2-scene-cache.md. */
+  scene_id?: string;
 }
 
 /** A single procedural motion overlay attached to a paint_explainer_v1
@@ -1212,6 +1229,34 @@ export interface ProductionDoc {
      *  telemetry ("character X cached at row 4, reused at rows 9, 14, 18")
      *  and for invalidation logic if we ever add a "regenerate from row N"
      *  feature in the editor. */
+    first_seen_row_index: number;
+  }>;
+
+  /** Phase 3 (Scene cache) — per-video cache of recurring LOCATION /
+   *  SIGNIFICANT-OBJECT base images, keyed by `ProductionRow.scene_id`.
+   *  Parallel to `doodle_explainer_2_character_cache` but anchors the
+   *  BACKGROUND / SETTING rather than a character.
+   *
+   *  Mechanism mirrors the character cache: first row with a given
+   *  scene_id generates fresh via Atlas i2i + the style refs and writes
+   *  the result here. Subsequent rows with the same scene_id skip i2i
+   *  and call Atlas Edit with the cached `base_url` as the input image
+   *  + a scene-continuation prompt — preserving location identity
+   *  (architecture, exterior, color palette) across non-consecutive
+   *  shots. Fixes the "different house each shot" drift the Sodder QA
+   *  flagged after Phase 1 + 1.5 closed the character side.
+   *
+   *  Precedence rule: when a row has BOTH character_id AND scene_id AND
+   *  both have cache entries, the character path wins. Atlas Edit can
+   *  only preserve one source image's content per call; character
+   *  identity is the higher-stakes anchor.
+   *
+   *  Saves ~$0.029 per cache hit ($0.011 Edit vs $0.04 i2i). See plan
+   *  _plans/2026-05-28-doodle-2-scene-cache.md.
+   *
+   *  Undefined on legacy docs and on docs not using doodle_explainer_2. */
+  doodle_explainer_2_scene_cache?: Record<string, {
+    base_url: string;
     first_seen_row_index: number;
   }>;
 

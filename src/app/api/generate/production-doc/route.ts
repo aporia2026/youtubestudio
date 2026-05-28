@@ -494,6 +494,26 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       // characters (rare).
       hasAnyReusable: reusableCharIds.length > 0,
     });
+
+    // Phase 3 — same telemetry shape for scene_id emission.
+    const sceneIdCounts = new Map<string, number>();
+    for (const r of rows) {
+      const sid = (r as unknown as { scene_id?: unknown }).scene_id;
+      if (typeof sid === 'string' && sid.trim().length > 0) {
+        sceneIdCounts.set(sid, (sceneIdCounts.get(sid) ?? 0) + 1);
+      }
+    }
+    const rowsWithSceneId = Array.from(sceneIdCounts.values()).reduce((a, b) => a + b, 0);
+    const reusableSceneIds = Array.from(sceneIdCounts.entries()).filter(([, n]) => n >= 2);
+    logger.info('[production-doc scene-ids]', {
+      styleId: resolved.id,
+      totalRows,
+      rowsWithSceneId,
+      uniqueSceneIds: sceneIdCounts.size,
+      reusableSceneIds: reusableSceneIds.length,
+      sampleSlugs: Array.from(sceneIdCounts.entries()).slice(0, 6).map(([slug, count]) => ({ slug, count })),
+      hasAnyReusable: reusableSceneIds.length > 0,
+    });
   }
 
   // Option A (variant prompt refinement) — rewrites each variant's

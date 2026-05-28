@@ -46,6 +46,7 @@ import {
   generateBaseImage,
   generateCharacterContinuationImage,
   generateMouthRemovedForCharacter,
+  generateSceneContinuationImage,
   generateVariantImage,
   type PipelineImageDoc,
   type PipelineImageRow,
@@ -266,6 +267,12 @@ export async function handleGenerateProductionDocImages(
   let charCacheHits = 0;
   let charCacheMisses = 0;
   let charCacheEditFailures = 0;
+  // Phase 3 — scene-cache counters. Same shape as the character-cache
+  // counters; surfaced in the per-tick summary log so a single Vercel
+  // line shows how much location reuse happened this tick.
+  let sceneCacheHits = 0;
+  let sceneCacheMisses = 0;
+  let sceneCacheEditFailures = 0;
   for (const item of plan) {
     const row = doc.rows[item.index];
 
@@ -325,6 +332,51 @@ export async function handleGenerateProductionDocImages(
       }
     }
 
+    // Phase 3 — scene cache. Only runs when the character cache didn't
+    // already produce a result (precedence rule: character wins). Same
+    // shape as the character branch but anchors the location instead.
+    // Spec: _plans/2026-05-28-doodle-2-scene-cache.md.
+    const useSceneCache =
+      !result
+      && isDoodleExplainer2
+      && item.kind === 'base'
+      && typeof row.scene_id === 'string'
+      && row.scene_id.trim().length > 0;
+    const sceneCache = doc.doodle_explainer_2_scene_cache ?? {};
+    const cachedScene = useSceneCache ? sceneCache[row.scene_id as string] : undefined;
+    if (
+      useSceneCache
+      && cachedScene?.base_url
+      && typeof row.ai_image_prompt === 'string'
+      && row.ai_image_prompt.trim().length > 0
+    ) {
+      const editResult = await generateSceneContinuationImage({
+        baseImageUrl: cachedScene.base_url,
+        sceneId: row.scene_id as string,
+        newScenePrompt: row.ai_image_prompt,
+      });
+      if (editResult.imageUrl) {
+        sceneCacheHits += 1;
+        logger.info('[doodle-2 scene-cache] hit-and-edit', {
+          pipeline_video_id: video.id,
+          row_index: item.index,
+          scene_id: row.scene_id,
+          first_seen_row_index: cachedScene.first_seen_row_index,
+          cost_usd: editResult.costUsd,
+          duration_ms: editResult.durationMs,
+        });
+        result = editResult;
+      } else {
+        sceneCacheEditFailures += 1;
+        logger.warn('[doodle-2 scene-cache] hit but edit failed, falling back to i2i', {
+          pipeline_video_id: video.id,
+          row_index: item.index,
+          scene_id: row.scene_id,
+          error: editResult.error,
+        });
+      }
+    }
+
     // Normal generation path — runs when we didn't hit the cache (or
     // hit it but the Edit call failed and we're falling back).
     if (!result) {
@@ -369,6 +421,37 @@ export async function handleGenerateProductionDocImages(
           pipeline_video_id: video.id,
           row_index: item.index,
           character_id: row.character_id,
+        });
+      }
+
+      // ─── Phase 3 — doodle_explainer_2 scene cache write-back ──────
+      // Cache miss case for the scene anchor. Independent of the
+      // character cache write above: a single i2i result populates
+      // BOTH caches when the row has both anchors (character_id +
+      // scene_id) and neither is yet cached. Subsequent rows with
+      // either anchor hit their respective cache; the precedence
+      // rule (character wins) applies only at READ time.
+      //
+      // The miss-and-store fires even when the character cache also
+      // wrote on this row — the same i2i base is reused as the
+      // canonical anchor for BOTH the character and the scene.
+      if (
+        isDoodleExplainer2
+        && item.kind === 'base'
+        && typeof row.scene_id === 'string'
+        && row.scene_id.length > 0
+        && !cachedScene
+      ) {
+        sceneCache[row.scene_id] = {
+          base_url: result.imageUrl,
+          first_seen_row_index: item.index,
+        };
+        doc.doodle_explainer_2_scene_cache = sceneCache;
+        sceneCacheMisses += 1;
+        logger.info('[doodle-2 scene-cache] miss-and-store', {
+          pipeline_video_id: video.id,
+          row_index: item.index,
+          scene_id: row.scene_id,
         });
       }
 
@@ -627,6 +710,11 @@ export async function handleGenerateProductionDocImages(
     char_cache_hits: charCacheHits,
     char_cache_misses_stored: charCacheMisses,
     char_cache_edit_failures: charCacheEditFailures,
+    // Phase 3 — scene-cache telemetry. Same semantics as the
+    // character counters but for the location anchor.
+    scene_cache_hits: sceneCacheHits,
+    scene_cache_misses_stored: sceneCacheMisses,
+    scene_cache_edit_failures: sceneCacheEditFailures,
   });
 
   return {
