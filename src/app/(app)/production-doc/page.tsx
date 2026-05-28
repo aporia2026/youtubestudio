@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { COLLAGE_TESTER_PUBLIC, EDITOR_V1_PUBLIC } from '@/lib/feature-flags';
 import { queueImageGen, reportUpstream429 } from '@/lib/image-gen-throttle';
 import { mutate } from '@/lib/mutate';
+import { getPref, setPref } from '@/lib/user-prefs';
 import { CollageTesterPanel } from '@/components/production-doc/CollageTesterPanel';
 import type { ScheduleItem } from '@/lib/schedule';
 import { getScheduleLinkId, fetchScheduleItem, loadFullContextForItem, buildContextNotesFromItem } from '@/lib/schedule-link';
@@ -746,7 +747,11 @@ function VideoPreviewBrandBar({ onBrandChange }: { onBrandChange: (b: Partial<Br
       textColor: b === '#FFFFFF' ? '#222222' : '#EEEEEE',
     };
     onBrandChange(brand);
-    try { localStorage.setItem('video_brand_kit', JSON.stringify(brand)); } catch { /* ignore */ }
+    // Phase 3.1: persist via user-prefs so the brand kit follows
+    // the user across machines. Localstorage write happens inside
+    // setPref synchronously, so the read in the next BrandKitControls
+    // mount still sees the new value.
+    setPref('video_brand_kit', brand);
   }
 
   return (
@@ -2042,33 +2047,29 @@ function ProductionDocPage() {
   // Per-session override only. The canonical default is set in
   // Settings → Model Defaults and resolved server-side.
   const [modelId, setModelId] = useState(() => getFeatureDefaultModelId('production-doc'));
+  // Phase 3.1 (2026-05-29): read default through `getPref` so cross-
+  // machine sync works. The bootstrap in AppLayout populates
+  // localStorage from the server before this component mounts on any
+  // route the user navigates to second. First-ever load on a brand-
+  // new device returns the fallback (DEFAULT_IMAGE_MODEL), which is
+  // correct — the user just hasn't picked one yet.
   const [imageModel, setImageModel] = useState<string>(() => {
-    if (typeof window === 'undefined') return DEFAULT_IMAGE_MODEL;
-    try {
-      const saved = localStorage.getItem('prodoc_image_model');
-      if (saved && getImageModelSpec(saved)) return saved;
-    } catch { /* ignore */ }
+    const saved = getPref<string>('prodoc_image_model', DEFAULT_IMAGE_MODEL);
+    if (saved && getImageModelSpec(saved)) return saved;
     return DEFAULT_IMAGE_MODEL;
   });
   useEffect(() => {
-    try { localStorage.setItem('prodoc_image_model', imageModel); } catch { /* ignore */ }
+    setPref('prodoc_image_model', imageModel);
   }, [imageModel]);
   // User preference for the doc-level `overlays_disabled` flag on freshly-
-  // generated docs. localStorage-backed so a user who never wants overlay
-  // PNGs (because they bake brands into ai_image_prompt instead) doesn't
-  // have to flip the toggle on every generation. Existing docs carry their
-  // own `overlays_disabled` field independently — this only seeds new ones.
-  const [overlaysDisabledPref, setOverlaysDisabledPref] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    try {
-      return localStorage.getItem('prodoc_overlays_disabled_pref') === '1';
-    } catch { return false; }
-  });
+  // generated docs. Now persisted via setPref so the choice follows the
+  // user across machines. Existing docs carry their own
+  // `overlays_disabled` field independently — this only seeds new ones.
+  const [overlaysDisabledPref, setOverlaysDisabledPref] = useState<boolean>(() =>
+    getPref<boolean>('prodoc_overlays_disabled_pref', false),
+  );
   useEffect(() => {
-    try {
-      if (overlaysDisabledPref) localStorage.setItem('prodoc_overlays_disabled_pref', '1');
-      else localStorage.removeItem('prodoc_overlays_disabled_pref');
-    } catch { /* ignore */ }
+    setPref('prodoc_overlays_disabled_pref', overlaysDisabledPref || null);
   }, [overlaysDisabledPref]);
   const [speakingPace, setSpeakingPace] = useState(135);
   const [actualDuration, setActualDuration] = useState(''); // "mm:ss" of actual voiceover recording

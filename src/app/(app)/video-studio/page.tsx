@@ -8,6 +8,7 @@ import type { BrandKit, VideoConfig, VideoShot, SceneType } from '@/remotion/typ
 import { DEFAULT_BRAND_KIT } from '@/remotion/types';
 import { ALLOWED_FONT_FAMILIES, FONT_REGISTRY } from '@/remotion/fonts';
 import { getVoiceoverHistory } from '@/lib/history';
+import { getPref, setPref } from '@/lib/user-prefs';
 
 const VideoPlayer = dynamic(
   () => import('@/components/video/VideoPlayer').then(m => m.VideoPlayer),
@@ -195,10 +196,12 @@ export default function VideoStudioPage() {
         if (history.length > 0 && history[0]?.audioUrl) setVoiceoverUrl(history[0].audioUrl);
       })
       .catch(() => { /* ignore — no prefill is fine */ });
-    try {
-      const stored = JSON.parse(localStorage.getItem('video_brand_kit') || '{}') as Partial<BrandKit>;
-      if (stored.primaryColor) setBrandKit(b => ({ ...b, ...stored }));
-    } catch { /* ignore */ }
+    // Phase 3.1: brand kit lives in user-prefs for cross-machine sync.
+    // First read may return {} on a brand-new device — AppLayout's
+    // bootstrapUserPrefs() backfills localStorage in the background
+    // and a future render picks it up.
+    const stored = getPref<Partial<BrandKit>>('video_brand_kit', {});
+    if (stored.primaryColor) setBrandKit(b => ({ ...b, ...stored }));
     return () => { if (renderPollRef.current) clearInterval(renderPollRef.current); };
   }, []);
 
@@ -242,11 +245,11 @@ export default function VideoStudioPage() {
   // ── Memoised seek-consumed callback (stable ref prevents VideoPlayer effect from re-running)
   const handleSeekConsumed = useCallback(() => setSeekTargetFrame(null), []);
 
-  // ── Brand update
+  // ── Brand update — Phase 3.1: persist via user-prefs for cross-machine sync.
   const updateBrand = useCallback((patch: Partial<BrandKit>) => {
     setBrandKit(b => {
       const next = { ...b, ...patch };
-      try { localStorage.setItem('video_brand_kit', JSON.stringify(next)); } catch { /* ignore */ }
+      setPref('video_brand_kit', next);
       return next;
     });
   }, []);

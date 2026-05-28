@@ -11,6 +11,7 @@ import { FavoritesProvider } from './use-favorites';
 import { useRecentPagesTracker } from './use-recent-pages';
 import { VideoContextStrip } from '@/components/video-context/VideoContextStrip';
 import { VideoEmptyState } from '@/components/video-context/VideoEmptyState';
+import { bootstrapUserPrefs } from '@/lib/user-prefs';
 
 export function AppLayout({
   children,
@@ -25,6 +26,14 @@ export function AppLayout({
 }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   useRecentPagesTracker();
+
+  // Phase 3.1 — pull cross-machine UI prefs into localStorage so
+  // synchronous getPref() reads in downstream components see canonical
+  // server values. Idempotent + safe to call from any tab. See
+  // _plans/2026-05-29-persistence-rebuild.md.
+  useEffect(() => {
+    void bootstrapUserPrefs();
+  }, []);
 
   // Embed mode: hide the sidebar / top bar / command palette so the page
   // can be iframed by /team-hub (and any future surface) without the
