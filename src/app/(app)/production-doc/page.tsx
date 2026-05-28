@@ -109,7 +109,16 @@ import {
   getCachedSceneBase,
   writeSceneToCache,
 } from '@/lib/scene-cache';
-import { prependCharacterBible } from '@/lib/character-bible';
+import {
+  collectCharacterIds,
+  collectSceneIds,
+  findUntaggedDescriptions,
+  prependCharacterBible,
+  tallyCharacterIds,
+  tallySceneIds,
+} from '@/lib/character-bible';
+import { SlugChip } from '@/components/production-doc/SlugChip';
+import { CharacterDescriptionsPanel } from '@/components/production-doc/CharacterDescriptionsPanel';
 import type { PlayerController } from '@/lib/notes/player-controller';
 import { resolveOverlayPlacement } from '@/lib/overlay-placement';
 import { stripProductionMarkers } from '@/lib/script-markers';
@@ -4386,6 +4395,30 @@ function ProductionDocPage() {
     if (!model) return 0;
     return failedVideoPlan.length * model.priceUsd;
   }, [failedVideoPlan, userDefaultModelId]);
+
+  // Phase 4 (Editor UI) — character_id / scene_id tallies surfaced in
+  // the per-row chip popovers. Each entry shows the slug + the number
+  // of rows already using it so the user can pick from existing
+  // slugs at a glance. Computed once per doc change; the chips read
+  // the memoized arrays. Spec:
+  // _plans/2026-05-28-doodle-2-character-cache.md (Phase 4 — Editor UI).
+  const characterSlugTally = React.useMemo(() => {
+    if (!doc) return [] as Array<{ slug: string; count: number }>;
+    const tally = tallyCharacterIds(doc.rows);
+    return collectCharacterIds(doc.rows).map((slug) => ({ slug, count: tally[slug] ?? 0 }));
+  }, [doc]);
+  const sceneSlugTally = React.useMemo(() => {
+    if (!doc) return [] as Array<{ slug: string; count: number }>;
+    const tally = tallySceneIds(doc.rows);
+    return collectSceneIds(doc.rows).map((slug) => ({ slug, count: tally[slug] ?? 0 }));
+  }, [doc]);
+  // Slugs that are in use on rows but have no description yet — surfaced
+  // both in the per-row chip popovers (as a ⚠ badge on those entries)
+  // and in the doc-level CharacterDescriptionsPanel.
+  const untaggedDescriptionSlugs = React.useMemo(() => {
+    if (!doc) return [] as string[];
+    return findUntaggedDescriptions(doc.rows, doc.doodle_explainer_2_character_descriptions);
+  }, [doc]);
 
   // Rows that have an AI prompt but no still yet — surfaces the
   // "Generate empty" bulk action. Distinct from `failedImagePlan` (which
@@ -9381,6 +9414,37 @@ function ProductionDocPage() {
             </div>
           )}
 
+          {/* Phase 4 (Editor UI) — doc-level character descriptions panel.
+              Gated on doodle_explainer_2 since the bible mechanism that
+              consumes the descriptions is style-specific. Renders one row
+              per character_id slug used in the doc; lets the user edit
+              the description (or add one for missing slugs). Spec:
+              _plans/2026-05-28-doodle-2-character-cache.md (Phase 4). */}
+          {doc && stylePreset === 'doodle_explainer_2' && characterSlugTally.length > 0 && (
+            <div className="mb-4 px-4 py-3 rounded-lg" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+              <div className="text-sm font-medium mb-2" style={{ color: 'var(--text-primary)' }}>
+                Character descriptions
+              </div>
+              <CharacterDescriptionsPanel
+                usedSlugs={characterSlugTally.map((e) => e.slug)}
+                descriptions={doc.doodle_explainer_2_character_descriptions}
+                onChange={(next) => {
+                  setDoc((prev) => {
+                    if (!prev) return prev;
+                    const nextDoc = {
+                      ...prev,
+                      doodle_explainer_2_character_descriptions: next,
+                    };
+                    if (historyEntryId) {
+                      updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+                    }
+                    return nextDoc;
+                  });
+                }}
+              />
+            </div>
+          )}
+
           {/* Animate-scenes master toggle. When OFF, B-roll buttons are
               hidden on every row and the renderer falls back to stills with
               Ken Burns motion (today's pre-animation behaviour). Adjacent
@@ -10083,6 +10147,32 @@ function ProductionDocPage() {
                                     </button>
                                   </div>
                                 ) : null}
+                                {/* Phase 4 (Editor UI) — per-row character_id
+                                    + scene_id chips. Gated on doodle_explainer_2
+                                    since the cache mechanisms that consume
+                                    these slugs are style-specific. The chips
+                                    appear on every row regardless of variant
+                                    group state, since LLM mis-tagging can
+                                    happen on any row. Spec:
+                                    _plans/2026-05-28-doodle-2-character-cache.md
+                                    (Phase 4 — Editor UI). */}
+                                {stylePreset === 'doodle_explainer_2' && (
+                                  <div className="mt-1.5" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                    <SlugChip
+                                      kind="character"
+                                      value={row.character_id}
+                                      availableSlugs={characterSlugTally}
+                                      untaggedDescriptionSlugs={untaggedDescriptionSlugs}
+                                      onChange={(next) => updateRow(i, { character_id: next })}
+                                    />
+                                    <SlugChip
+                                      kind="scene"
+                                      value={row.scene_id}
+                                      availableSlugs={sceneSlugTally}
+                                      onChange={(next) => updateRow(i, { scene_id: next })}
+                                    />
+                                  </div>
+                                )}
                                 {/* Phase 3.3 — variant-group controls. See
                                     _plans/2026-05-25-near-static-variants.md.
                                     Three branches:

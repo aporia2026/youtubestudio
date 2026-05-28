@@ -65,3 +65,102 @@ export function prependCharacterBible(
   if (!prefix) return prompt;
   return `${prefix}${prompt}`;
 }
+
+// ─── Phase 4 (Editor UI) — collectors ───────────────────────────────────────
+//
+// The editor's per-row chips need to know which character_id / scene_id
+// slugs are already in use across the doc (the dropdown options), and
+// the descriptions panel needs to know which slugs are TAGGED but
+// MISSING from `character_descriptions` (so it can show a warning).
+//
+// Pure / no IO. Walks rows once; safe to wrap in useMemo on the doc.
+
+interface SlugTallyRow {
+  character_id?: string;
+  scene_id?: string;
+}
+
+/** Sorted-unique list of `character_id` slugs in use across the doc.
+ *  Empty / whitespace values are dropped. */
+export function collectCharacterIds(rows: ReadonlyArray<SlugTallyRow>): string[] {
+  const seen = new Set<string>();
+  for (const r of rows) {
+    const slug = r.character_id;
+    if (typeof slug === 'string' && slug.trim().length > 0) seen.add(slug);
+  }
+  return Array.from(seen).sort();
+}
+
+/** Sorted-unique list of `scene_id` slugs in use across the doc. */
+export function collectSceneIds(rows: ReadonlyArray<SlugTallyRow>): string[] {
+  const seen = new Set<string>();
+  for (const r of rows) {
+    const slug = r.scene_id;
+    if (typeof slug === 'string' && slug.trim().length > 0) seen.add(slug);
+  }
+  return Array.from(seen).sort();
+}
+
+/** Per-slug tally — how many rows carry a given `character_id`. Useful
+ *  for the dropdown's secondary label ("george · 4 rows") so the user
+ *  can see at a glance which slug they're about to attach to. */
+export function tallyCharacterIds(rows: ReadonlyArray<SlugTallyRow>): Record<string, number> {
+  const tally: Record<string, number> = {};
+  for (const r of rows) {
+    const slug = r.character_id;
+    if (typeof slug === 'string' && slug.trim().length > 0) {
+      tally[slug] = (tally[slug] ?? 0) + 1;
+    }
+  }
+  return tally;
+}
+
+/** Same for `scene_id`. */
+export function tallySceneIds(rows: ReadonlyArray<SlugTallyRow>): Record<string, number> {
+  const tally: Record<string, number> = {};
+  for (const r of rows) {
+    const slug = r.scene_id;
+    if (typeof slug === 'string' && slug.trim().length > 0) {
+      tally[slug] = (tally[slug] ?? 0) + 1;
+    }
+  }
+  return tally;
+}
+
+/** Slugs that appear on rows but have NO entry in
+ *  `character_descriptions`. Surfaces in the doc-level panel with a
+ *  warning so the user can add the missing description.
+ *
+ *  An entry with an empty / whitespace description counts as missing —
+ *  the bible builder filters those out anyway, so for the user's
+ *  intent there's no difference between "missing key" and "empty
+ *  value". */
+export function findUntaggedDescriptions(
+  rows: ReadonlyArray<SlugTallyRow>,
+  descriptions: CharacterDescriptions | undefined | null,
+): string[] {
+  const usedSlugs = collectCharacterIds(rows);
+  return usedSlugs.filter((slug) => {
+    const desc = descriptions?.[slug];
+    return typeof desc !== 'string' || desc.trim().length === 0;
+  });
+}
+
+/** Validate a slug at the editor input boundary. Returns null when the
+ *  slug is acceptable; returns a human-readable reason when it isn't.
+ *  Used by the per-row chips to gate the "save" action and surface a
+ *  tooltip on invalid input.
+ *
+ *  Rules mirror the LLM's slug convention: lowercase letters, digits,
+ *  and dashes; must start with a letter or digit; max 50 chars (the
+ *  cache-key contract on the server side has no hard cap but anything
+ *  longer is almost certainly typed in error). */
+export function validateSlug(slug: string): string | null {
+  const trimmed = slug.trim();
+  if (trimmed.length === 0) return 'Slug can\'t be empty.';
+  if (trimmed.length > 50) return 'Slug is too long (max 50 characters).';
+  if (!/^[a-z0-9]/.test(trimmed)) return 'Slug must start with a lowercase letter or digit.';
+  if (!/^[a-z0-9-]+$/.test(trimmed)) return 'Slug can only contain lowercase letters, digits, and dashes.';
+  if (/-$/.test(trimmed)) return 'Slug can\'t end with a dash.';
+  return null;
+}

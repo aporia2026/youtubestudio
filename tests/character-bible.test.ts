@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildCharacterBiblePrefix,
+  collectCharacterIds,
+  collectSceneIds,
+  findUntaggedDescriptions,
   prependCharacterBible,
+  tallyCharacterIds,
+  tallySceneIds,
+  validateSlug,
   type CharacterDescriptions,
 } from '@/lib/character-bible';
 
@@ -95,5 +101,151 @@ describe('prependCharacterBible', () => {
     const once = prependCharacterBible('Scene body.', descriptions);
     const twice = prependCharacterBible(once, descriptions);
     expect(twice.match(/Character reference for this scene:/g)?.length).toBe(2);
+  });
+});
+
+// ─── Phase 4 (Editor UI) — collectors ───────────────────────────────────────
+
+describe('collectCharacterIds', () => {
+  it('returns unique sorted slugs from rows', () => {
+    const rows = [
+      { character_id: 'george' },
+      { character_id: 'jennie' },
+      { character_id: 'george' },
+      { character_id: 'louis-as-adult' },
+    ];
+    expect(collectCharacterIds(rows)).toEqual(['george', 'jennie', 'louis-as-adult']);
+  });
+
+  it('skips empty / whitespace / undefined values', () => {
+    const rows = [
+      { character_id: 'george' },
+      { character_id: '' },
+      { character_id: '   ' },
+      {},
+      { character_id: undefined },
+    ];
+    expect(collectCharacterIds(rows)).toEqual(['george']);
+  });
+
+  it('returns an empty array for an empty input', () => {
+    expect(collectCharacterIds([])).toEqual([]);
+  });
+});
+
+describe('collectSceneIds', () => {
+  it('returns unique sorted scene slugs', () => {
+    const rows = [
+      { scene_id: 'sodder-house' },
+      { scene_id: 'investigator-desk' },
+      { scene_id: 'sodder-house' },
+    ];
+    expect(collectSceneIds(rows)).toEqual(['investigator-desk', 'sodder-house']);
+  });
+
+  it('ignores character_id and only collects scene_id', () => {
+    const rows = [
+      { character_id: 'george', scene_id: 'sodder-house' },
+      { character_id: 'jennie' },
+    ];
+    expect(collectSceneIds(rows)).toEqual(['sodder-house']);
+  });
+});
+
+describe('tallyCharacterIds', () => {
+  it('counts rows per slug', () => {
+    const rows = [
+      { character_id: 'george' },
+      { character_id: 'george' },
+      { character_id: 'jennie' },
+      { character_id: 'george' },
+    ];
+    expect(tallyCharacterIds(rows)).toEqual({ george: 3, jennie: 1 });
+  });
+});
+
+describe('tallySceneIds', () => {
+  it('counts rows per scene slug', () => {
+    const rows = [
+      { scene_id: 'sodder-house' },
+      { scene_id: 'sodder-house' },
+      { scene_id: 'investigator-desk' },
+    ];
+    expect(tallySceneIds(rows)).toEqual({ 'sodder-house': 2, 'investigator-desk': 1 });
+  });
+});
+
+describe('findUntaggedDescriptions', () => {
+  const rows = [
+    { character_id: 'george' },
+    { character_id: 'jennie' },
+    { character_id: 'louis-as-adult' },
+  ];
+
+  it('returns slugs in use but missing from the descriptions map', () => {
+    const descriptions: CharacterDescriptions = { george: 'Gray hair.' };
+    expect(findUntaggedDescriptions(rows, descriptions)).toEqual(['jennie', 'louis-as-adult']);
+  });
+
+  it('treats empty / whitespace descriptions as missing', () => {
+    const descriptions: CharacterDescriptions = {
+      george: 'Gray hair.',
+      jennie: '',
+      'louis-as-adult': '   ',
+    };
+    expect(findUntaggedDescriptions(rows, descriptions)).toEqual(['jennie', 'louis-as-adult']);
+  });
+
+  it('returns all used slugs when descriptions is undefined', () => {
+    expect(findUntaggedDescriptions(rows, undefined)).toEqual(['george', 'jennie', 'louis-as-adult']);
+  });
+
+  it('returns an empty array when every used slug has a description', () => {
+    const descriptions: CharacterDescriptions = {
+      george: 'Gray hair.',
+      jennie: 'Yellow dress.',
+      'louis-as-adult': 'Brown coat.',
+    };
+    expect(findUntaggedDescriptions(rows, descriptions)).toEqual([]);
+  });
+});
+
+describe('validateSlug', () => {
+  it('accepts well-formed slugs', () => {
+    expect(validateSlug('george')).toBeNull();
+    expect(validateSlug('louis-as-adult')).toBeNull();
+    expect(validateSlug('scientist-1')).toBeNull();
+    expect(validateSlug('a')).toBeNull();
+    expect(validateSlug('1-abc')).toBeNull();
+  });
+
+  it('rejects empty / whitespace', () => {
+    expect(validateSlug('')).toContain('empty');
+    expect(validateSlug('   ')).toContain('empty');
+  });
+
+  it('rejects too-long slugs', () => {
+    expect(validateSlug('a'.repeat(51))).toContain('too long');
+  });
+
+  it('rejects slugs starting with non-alphanumeric', () => {
+    expect(validateSlug('-george')).toContain('lowercase letter or digit');
+  });
+
+  it('rejects slugs starting with uppercase via the start-character check (singular message)', () => {
+    // 'George' (capital G) fails the start regex before we get to the
+    // body regex, so the message is the singular "start" one.
+    expect(validateSlug('George')).toContain('start with a lowercase letter or digit');
+  });
+
+  it('rejects slugs containing invalid characters mid-string (plural message)', () => {
+    expect(validateSlug('george_sodder')).toContain('lowercase letters, digits, and dashes');
+    expect(validateSlug('george sodder')).toContain('lowercase letters, digits, and dashes');
+    expect(validateSlug('george!')).toContain('lowercase letters, digits, and dashes');
+    expect(validateSlug('georgeSodder')).toContain('lowercase letters, digits, and dashes');
+  });
+
+  it('rejects slugs ending with a dash', () => {
+    expect(validateSlug('george-')).toContain("can't end with a dash");
   });
 });
