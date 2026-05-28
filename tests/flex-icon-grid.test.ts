@@ -789,6 +789,89 @@ describe('Phase 3.5 — per-cell sticker style', () => {
 
 // ─── Phase 4.5 ───────────────────────────────────────────────────────────────
 
+describe('Phase 4.6 — saved-palettes client cache', () => {
+  it('coalesces concurrent fetches into a single in-flight request', async () => {
+    const { fetchSavedPalettesCached, _resetSavedPalettesCacheForTests } =
+      await import('@/lib/flex-icon-grid-saved-palettes-client-cache');
+    _resetSavedPalettesCacheForTests();
+    let calls = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      calls++;
+      // Tiny delay so the second caller arrives while the first is in flight.
+      await new Promise((r) => setTimeout(r, 5));
+      return new Response(JSON.stringify({ palettes: [] }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const [a, b] = await Promise.all([
+        fetchSavedPalettesCached(),
+        fetchSavedPalettesCached(),
+      ]);
+      expect(a).toEqual([]);
+      expect(b).toEqual([]);
+      expect(calls).toBe(1); // shared in-flight promise
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+  it('serves cached results within the TTL window without refetching', async () => {
+    const { fetchSavedPalettesCached, _resetSavedPalettesCacheForTests } =
+      await import('@/lib/flex-icon-grid-saved-palettes-client-cache');
+    _resetSavedPalettesCacheForTests();
+    let calls = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response(JSON.stringify({ palettes: [{ id: '1', name: 'A', colors: ['#FF0000'], updated_at: '' }] }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const a = await fetchSavedPalettesCached();
+      const b = await fetchSavedPalettesCached();
+      expect(a).toHaveLength(1);
+      expect(b).toHaveLength(1);
+      expect(calls).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+  it('refetches after invalidate', async () => {
+    const {
+      fetchSavedPalettesCached,
+      invalidateSavedPalettesCache,
+      _resetSavedPalettesCacheForTests,
+    } = await import('@/lib/flex-icon-grid-saved-palettes-client-cache');
+    _resetSavedPalettesCacheForTests();
+    let calls = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response(JSON.stringify({ palettes: [] }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      await fetchSavedPalettesCached();
+      invalidateSavedPalettesCache();
+      await fetchSavedPalettesCached();
+      expect(calls).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+  it('returns null on HTTP error so callers can render an error state', async () => {
+    const { fetchSavedPalettesCached, _resetSavedPalettesCacheForTests } =
+      await import('@/lib/flex-icon-grid-saved-palettes-client-cache');
+    _resetSavedPalettesCacheForTests();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response('boom', { status: 500 })) as typeof fetch;
+    try {
+      const result = await fetchSavedPalettesCached();
+      expect(result).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 describe('Phase 4.5 — per-cell sticker style history round-trip', () => {
   it('per-cell style survives JSON round-trip (history save → restore)', () => {
     // Simulate the history save path: panel reports config →

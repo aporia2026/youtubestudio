@@ -11,7 +11,20 @@
  * Mobile bottom-sheet rules for the cell editor live here too
  * (Phase 4.5b) — clicking a cell on mobile floats the editor over
  * the live preview from the bottom instead of inflating the column.
+ *
+ * Phase 4.6:
+ *  - Bottom-sheet slide-in animation (200ms cubic-bezier) so the
+ *    transition feels intentional rather than hard-cutting in.
+ *  - Sticky header uses CSS custom properties + structural
+ *    `padding-top: 0` instead of a negative-top magic number.
+ *  - Reduced-motion users get the static behaviour via
+ *    `prefers-reduced-motion`.
  */
+
+:root {
+  --fg-sheet-padding-x: 14px;
+  --fg-sheet-padding-bottom: 24px;
+}
 
 @media (max-width: 768px) {
   [data-fg-panel] section {
@@ -32,10 +45,15 @@
     grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)) !important;
   }
 
-  /* Mobile bottom-sheet cell editor (Phase 4.5b). The cell editor
-     normally renders inline below the live preview; on small screens
-     we float it as a fixed-position sheet from the bottom edge so
-     the preview stays visible above. Tap "Close" to dismiss. */
+  /* Mobile bottom-sheet cell editor (Phase 4.5b + 4.6 polish). The
+     cell editor normally renders inline below the live preview; on
+     small screens we float it as a fixed-position sheet from the
+     bottom edge so the preview stays visible above. Tap "Close" to
+     dismiss.
+     Padding-top is 0 so the sticky header below sits flush at the
+     top of the scroll viewport with no negative-top compensation
+     needed (Phase 4.6 caveat fix). The inner sections still get
+     comfortable horizontal padding via --fg-sheet-padding-x. */
   [data-fg-panel] [data-fg-cell-editor] {
     position: fixed !important;
     bottom: 0 !important;
@@ -50,8 +68,12 @@
     border-bottom: none !important;
     border-radius: 12px 12px 0 0 !important;
     box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.6);
-    padding: 14px 14px 24px 14px !important;
+    padding: 0 var(--fg-sheet-padding-x) var(--fg-sheet-padding-bottom) var(--fg-sheet-padding-x) !important;
     margin: 0 !important;
+    /* Slide-in animation. Cubic-bezier eases out so the sheet
+       decelerates as it lands rather than slamming into place.
+       prefers-reduced-motion users get the static behaviour below. */
+    animation: fg-sheet-slide-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   /* When the bottom-sheet is open, push the page content up so the
@@ -64,15 +86,28 @@
 
   /* Sticky "Editing cell N / Close" header inside the bottom-sheet
      so the dismiss control stays reachable while the user scrolls
-     through long content (icon picker, advanced overrides, etc.). The
-     header is the first immediate child div of the cell editor. */
+     through long content (icon picker, advanced overrides, etc.).
+     The header is the first immediate child div of the cell editor.
+     With padding-top:0 on the editor we can use top:0 here — no
+     negative-top magic number that drifts when padding changes. */
   [data-fg-panel] [data-fg-cell-editor] > div:first-of-type {
     position: sticky !important;
-    top: -14px !important;
-    margin: -14px -14px 8px -14px !important;
-    padding: 14px 14px 10px 14px !important;
+    top: 0 !important;
+    margin: 0 calc(var(--fg-sheet-padding-x) * -1) 8px calc(var(--fg-sheet-padding-x) * -1) !important;
+    padding: 14px var(--fg-sheet-padding-x) 10px var(--fg-sheet-padding-x) !important;
     background: #101019 !important;
     border-bottom: 1px solid #2a2a2e !important;
     z-index: 1;
+  }
+}
+
+@keyframes fg-sheet-slide-in {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-fg-panel] [data-fg-cell-editor] {
+    animation: none !important;
   }
 }

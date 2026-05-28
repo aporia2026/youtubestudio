@@ -54,6 +54,10 @@ import {
   DEFAULT_STICKER_STYLE,
   STICKER_STYLE_PRESETS,
 } from '@/lib/thumbnail-formats/flex-icon-grid-sticker-styles';
+import {
+  fetchSavedPalettesCached,
+  invalidateSavedPalettesCache,
+} from '@/lib/flex-icon-grid-saved-palettes-client-cache';
 import { FlexIconGridLivePreview } from './FlexIconGridLivePreview';
 // Mobile-responsive overrides + bottom-sheet cell editor styles. Scoped
 // to `[data-fg-panel]` descendants so the rules can't leak elsewhere.
@@ -169,31 +173,24 @@ export function FlexIconGridPanel({
   // Workspace-saved palettes — fetched eagerly on mount so the quick-
   // load chip row next to the named-preset chips shows the user's
   // most recently saved palettes without waiting for the disclosure.
-  // SavedPalettesSection reads from this shared state too so both
-  // surfaces stay in sync.
+  // Read goes through a module-level 60s TTL cache
+  // (`flex-icon-grid-saved-palettes-client-cache`) so rapid panel
+  // mount/unmount cycles don't refetch — the eager fetch on every
+  // mount was a Phase 4.5 caveat. Save/delete handlers invalidate
+  // the cache so the user's own writes are visible immediately.
   const [savedPalettes, setSavedPalettes] = useState<SavedPaletteRecord[]>([]);
   const [savedPalettesLoaded, setSavedPalettesLoaded] = useState(false);
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        const res = await fetch('/api/thumbnails/format/flex-icon-grid/saved-palettes');
-        if (!res.ok) throw new Error(`Load failed (${res.status})`);
-        const data = (await res.json()) as { palettes: SavedPaletteRecord[] };
-        if (!cancelled) {
-          setSavedPalettes(data.palettes);
-          setSavedPalettesLoaded(true);
-        }
-      } catch (err) {
-        // Non-fatal — the disclosure can retry on open. Logged so a
-        // genuinely-broken endpoint doesn't fail silently.
-        if (!cancelled) {
-          console.warn('[flex-icon-grid panel] eager palette fetch failed', {
-            reason: err instanceof Error ? err.message : String(err),
-          });
-          setSavedPalettesLoaded(true);
-        }
+      const palettes = await fetchSavedPalettesCached();
+      if (cancelled) return;
+      if (palettes !== null) {
+        setSavedPalettes(palettes);
+      } else {
+        console.warn('[flex-icon-grid panel] eager palette fetch failed');
       }
+      setSavedPalettesLoaded(true);
     })();
     return () => { cancelled = true; };
   }, []);
@@ -1177,14 +1174,15 @@ function SavedPalettesSection({
   const [error, setError] = useState<string | null>(null);
 
   async function refresh() {
-    try {
-      const res = await fetch('/api/thumbnails/format/flex-icon-grid/saved-palettes');
-      if (!res.ok) throw new Error(`Load failed (${res.status})`);
-      const data = (await res.json()) as { palettes: SavedPaletteRecord[] };
-      onPalettesChange(data.palettes);
+    // Reads after a mutation should bypass the TTL cache so the
+    // user's own write is visible immediately. The save/delete
+    // handlers below call invalidate() before refresh().
+    const palettes = await fetchSavedPalettesCached();
+    if (palettes !== null) {
+      onPalettesChange(palettes);
       setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load saved palettes');
+    } else {
+      setError('Could not load saved palettes');
     }
   }
 
@@ -1216,6 +1214,8 @@ function SavedPalettesSection({
         throw new Error(data.error || `Save failed (${res.status})`);
       }
       setSaveName('');
+      // Drop the TTL cache so the next read picks up the new row.
+      invalidateSavedPalettesCache();
       await refresh();
       toast.success(`Saved palette "${name}"`);
     } catch (err) {
@@ -1236,6 +1236,7 @@ function SavedPalettesSection({
         { method: 'DELETE' },
       );
       if (!res.ok) throw new Error(`Delete failed (${res.status})`);
+      invalidateSavedPalettesCache();
       await refresh();
       toast.success('Palette deleted');
     } catch (err) {
@@ -1345,6 +1346,45 @@ function CustomPaletteEditor({
 }) {
   const update = (next: string[]) => onChange({ type: 'custom', colors: next });
 
+  // Drag-to-reorder state (Phase 4.6). HTML5 drag API rather than
+  // @dnd-kit because the list is short, in-cell, and doesn't need
+  // keyboard reorder support — a 30-line implementation beats a
+  // dependency pull-in. `dragIndex` is the slot being dragged;
+  // `overIndex` is the current drop target (for the highlight
+  // outline). Both clear on drop / dragend.
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [overIndex, setOverIndex] = useState<number | null>(null);
+
+  function handleDragStart(i: number, e: React.DragEvent<HTMLDivElement>) {
+    setDragIndex(i);
+    e.dataTransfer.effectAllowed = 'move';
+    // Setting data is required for Firefox to start the drag at all.
+    e.dataTransfer.setData('text/plain', String(i));
+  }
+  function handleDragOver(i: number, e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault(); // allow drop
+    e.dataTransfer.dropEffect = 'move';
+    if (overIndex !== i) setOverIndex(i);
+  }
+  function handleDrop(targetIndex: number, e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    const sourceIndexStr = e.dataTransfer.getData('text/plain');
+    const sourceIndex = Number(sourceIndexStr);
+    setDragIndex(null);
+    setOverIndex(null);
+    if (!Number.isInteger(sourceIndex) || sourceIndex === targetIndex) return;
+    const next = [...palette.colors];
+    const [moved] = next.splice(sourceIndex, 1);
+    // Account for the index shift when inserting after the source.
+    const insertAt = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex;
+    next.splice(insertAt, 0, moved);
+    update(next);
+  }
+  function handleDragEnd() {
+    setDragIndex(null);
+    setOverIndex(null);
+  }
+
   return (
     <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
       <p style={{ fontSize: 11, color: '#a1a1aa', margin: 0 }}>
@@ -1355,14 +1395,27 @@ function CustomPaletteEditor({
         {palette.colors.map((c, i) => (
           <div
             key={`${c}-${i}`}
+            draggable
+            onDragStart={(e) => handleDragStart(i, e)}
+            onDragOver={(e) => handleDragOver(i, e)}
+            onDrop={(e) => handleDrop(i, e)}
+            onDragEnd={handleDragEnd}
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: 6,
               background: '#0a0a0d',
-              border: '1px solid #2a2a2e',
+              // Highlight the drop target in the same cyan the cell
+              // editor uses, and dim the slot being dragged so the
+              // user gets unambiguous "this is moving / this is the
+              // destination" feedback.
+              border: overIndex === i
+                ? '1px dashed #38bdf8'
+                : '1px solid #2a2a2e',
               padding: 6,
               borderRadius: 6,
+              cursor: 'grab',
+              opacity: dragIndex === i ? 0.45 : 1,
             }}
           >
             <input
