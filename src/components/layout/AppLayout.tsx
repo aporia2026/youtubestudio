@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { Sidebar } from './Sidebar';
 import { GlobalCommandPalette } from './GlobalCommandPalette';
 import { AppTopBar, type AppTopBarUser } from './AppTopBar';
+import { SaveStatusPill } from './SaveStatusPill';
 import type { ChannelOption } from './ChannelSwitcher';
 import { FavoritesProvider } from './use-favorites';
 import { useRecentPagesTracker } from './use-recent-pages';
@@ -60,6 +61,10 @@ export function AppLayout({
         <main className="h-screen overflow-y-auto" style={{ background: 'var(--bg-primary)' }}>
           {children}
         </main>
+        {/* Save-status pill is global to every authenticated surface,
+            including the team-hub iframe — losing work there hurts
+            just as much as losing it on the standalone page. */}
+        <SaveStatusPill />
       </FavoritesProvider>
     );
   }
@@ -91,6 +96,7 @@ export function AppLayout({
         </div>
         <GlobalCommandPalette />
       </div>
+      <SaveStatusPill />
     </FavoritesProvider>
   );
 }
