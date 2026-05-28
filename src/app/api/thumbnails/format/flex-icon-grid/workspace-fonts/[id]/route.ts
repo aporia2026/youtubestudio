@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apiRoute } from '@/lib/route-helpers';
 import {
+  countWorkspaceFontsByR2Key,
   deleteWorkspaceFont,
   getWorkspaceFont,
 } from '@/lib/flex-icon-grid-workspace-fonts-db';
@@ -61,11 +62,24 @@ export const DELETE = apiRoute.authed(async (session, req: NextRequest, ctx) => 
   const removed = await deleteWorkspaceFont(id, session.ws);
   if (!removed) return NextResponse.json({ error: 'Not found' }, { status: 404 });
   let reclaimed = false;
+  // Phase 4.10 caveat fix: skip R2 delete when SIBLING workspaces
+  // also reference the same r2_key. The DB row is already gone by
+  // this point, so the count we want is "any rows still pointing
+  // here" — if it's > 0, another workspace's row would break.
+  let skippedDueToRefs = false;
   if (reclaim && r2Key) {
     try {
-      await deleteImagesObject(r2Key);
-      reclaimed = true;
-      console.info('[flex-icon-grid workspace-font] r2 reclaimed', { r2_key: r2Key });
+      const remaining = await countWorkspaceFontsByR2Key(r2Key);
+      if (remaining > 0) {
+        skippedDueToRefs = true;
+        console.info('[flex-icon-grid workspace-font] r2 reclaim skipped — sibling workspace still references key', {
+          r2_key: r2Key, remaining_refs: remaining,
+        });
+      } else {
+        await deleteImagesObject(r2Key);
+        reclaimed = true;
+        console.info('[flex-icon-grid workspace-font] r2 reclaimed', { r2_key: r2Key });
+      }
     } catch (err) {
       console.warn('[flex-icon-grid workspace-font] r2 reclaim failed', {
         r2_key: r2Key,
@@ -73,5 +87,5 @@ export const DELETE = apiRoute.authed(async (session, req: NextRequest, ctx) => 
       });
     }
   }
-  return NextResponse.json({ ok: true, reclaimed });
+  return NextResponse.json({ ok: true, reclaimed, skippedDueToRefs });
 });

@@ -97,6 +97,28 @@ export async function deleteWorkspaceFont(id: string, workspaceId: string): Prom
   return (result.rowCount ?? 0) > 0;
 }
 
+/**
+ * Phase 4.10 caveat fix — count how many workspace_fonts rows
+ * reference the given R2 key. Used by the DELETE handler's R2-
+ * reclaim path so we don't delete a font file that a SIBLING
+ * workspace still has registered (the registry doesn't dedupe
+ * uploads by content hash, so two workspaces independently
+ * uploading the same TTF do end up with the same r2_key under
+ * the workspace-aware key prefix only when the prefix collides
+ * — defensive but cheap to check).
+ *
+ * Returns the total row count INCLUDING the row about to be
+ * deleted; the caller subtracts 1 to decide whether there are
+ * OTHER references after their own row is gone.
+ */
+export async function countWorkspaceFontsByR2Key(r2Key: string): Promise<number> {
+  const { rows } = await sql.query<{ n: number }>(
+    `SELECT COUNT(*)::int AS n FROM flex_icon_grid_workspace_fonts WHERE r2_key = $1`,
+    [r2Key],
+  );
+  return rows[0]?.n ?? 0;
+}
+
 // Validation now lives in the pure `flex-icon-grid-workspace-fonts-
 // validate.ts` module so vitest can import it without dragging in
 // `@vercel/postgres`. Re-exported at the top of this file.

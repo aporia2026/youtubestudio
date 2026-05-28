@@ -51,6 +51,14 @@ export const SCOPED_TABLES = [
   'dubbed_voiceovers',
   'editor_assignments',
   'editor_telemetry',
+  // Flex Icon Grid format — workspace-saved palettes (Phase 4.5),
+  // saved starting templates (Phase 4.7c), and the workspace-shared
+  // custom-font registry (Phase 4.8b). All three carry a
+  // `workspace_id` column from their CREATE TABLE so the allowlist
+  // gates any future use through this module's helpers.
+  'flex_icon_grid_saved_palettes',
+  'flex_icon_grid_saved_templates',
+  'flex_icon_grid_workspace_fonts',
   'google_auth_tokens',
   'insight_digests',
   'media_assets',

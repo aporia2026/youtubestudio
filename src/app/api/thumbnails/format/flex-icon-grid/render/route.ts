@@ -115,6 +115,22 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
   // sustained low hit rate means workspaces have more unique fonts
   // than MAX_ENTRIES and we should bump the cap.
   const fontCacheStats = getFontCacheStats();
+  // Phase 4.10 caveat fix: structured aggregate cache-stats line with
+  // its own stable tag. Lambda instances are per-process so each
+  // emits its own slice; a downstream log aggregator can sum the
+  // hits/misses across the fleet by filtering on the tag. Hit ratio
+  // pre-computed at emit time so the aggregator doesn't have to.
+  const totalAccesses = fontCacheStats.hits + fontCacheStats.misses;
+  const hitRatio = totalAccesses > 0 ? fontCacheStats.hits / totalAccesses : null;
+  console.info('[flex-icon-grid font-cache] stats', {
+    entries: fontCacheStats.entries,
+    inflight: fontCacheStats.inflight,
+    max: fontCacheStats.max,
+    hits: fontCacheStats.hits,
+    misses: fontCacheStats.misses,
+    hit_ratio: hitRatio,
+    saturation: fontCacheStats.entries / fontCacheStats.max,
+  });
   console.info('[flex-icon-grid api] render ok', {
     bytes: pngBuffer.length,
     total_ms: Date.now() - start,

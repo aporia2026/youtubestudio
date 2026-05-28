@@ -1051,3 +1051,62 @@ describe('Phase 4.5 — per-cell sticker style history round-trip', () => {
     expect(content.url).toBe('https://example.com/sticker.png');
   });
 });
+
+// ─── Phase 4.10 — title bar subtitle ────────────────────────────────────────
+
+describe('Phase 4.10 — title bar subtitle', () => {
+  it('round-trips subtitle + subtitleColor through parseConfig', () => {
+    const original = makeDefaultConfig(2, 2);
+    original.titleBar = {
+      text: '5 LEVELS',
+      position: 'top',
+      height: 120,
+      background: '#0a0a0a',
+      color: '#ffffff',
+      font: 'anton',
+      subtitle: 'OF PHOTOSYNTHESIS',
+      subtitleColor: '#9ca3af',
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.titleBar?.subtitle).toBe('OF PHOTOSYNTHESIS');
+    expect(reparsed.titleBar?.subtitleColor).toBe('#9ca3af');
+  });
+  it('drops empty-string subtitle so it normalises to undefined', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      titleBar: {
+        text: 'X',
+        position: 'bottom',
+        height: 96,
+        background: '#000000',
+        color: '#ffffff',
+        font: 'anton',
+        subtitle: '',
+      },
+    });
+    expect(reparsed.titleBar?.subtitle).toBeUndefined();
+  });
+  it('rejects subtitle longer than 200 chars', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.titleBar = {
+      text: 'A', position: 'top', height: 96,
+      background: '#000000', color: '#ffffff', font: 'anton',
+      subtitle: 'x'.repeat(201),
+    };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/subtitle/);
+  });
+  it('rejects malformed hex on subtitleColor', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.titleBar = {
+      text: 'A', position: 'top', height: 96,
+      background: '#000000', color: '#ffffff', font: 'anton',
+      subtitleColor: 'not-a-color',
+    };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/subtitleColor/);
+  });
+});

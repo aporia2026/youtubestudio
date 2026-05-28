@@ -59,6 +59,10 @@ import {
   invalidateSavedPalettesCache,
 } from '@/lib/flex-icon-grid-saved-palettes-client-cache';
 import { customFontFamilyName } from '@/lib/thumbnail-formats/flex-icon-grid-font-family';
+import {
+  acquireCustomFont,
+  releaseCustomFont,
+} from '@/lib/thumbnail-formats/flex-icon-grid-font-registry';
 import { FlexIconGridLivePreview } from './FlexIconGridLivePreview';
 // Mobile-responsive overrides + bottom-sheet cell editor styles. Scoped
 // to `[data-fg-panel]` descendants so the rules can't leak elsewhere.
@@ -205,6 +209,12 @@ export function FlexIconGridPanel({
   // font. Auto-populated after every successful upload via the
   // `uploadCustomFont` handler below.
   const [workspaceFonts, setWorkspaceFonts] = useState<WorkspaceFontEntry[]>([]);
+  // Phase 4.10 caveat fix: ARIA live region announcement for font
+  // picker selections. Screen readers + voice control hear "Font set
+  // to <name>" the moment the user activates a chip. Empty string is
+  // the steady state — set on every chip click, polite mode so it
+  // doesn't interrupt the user mid-action.
+  const [fontAnnouncement, setFontAnnouncement] = useState('');
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -221,43 +231,30 @@ export function FlexIconGridPanel({
     })();
     return () => { cancelled = true; };
   }, []);
-  // Phase 4.9b: register every workspace font's FontFace with
-  // `document.fonts` so the chip row + per-cell picker can render the
-  // font name in its OWN face (preview-by-glance). Live preview's
-  // useCustomFontRegistration uses the SAME family-name derivation,
-  // so registering the same URL twice across the two surfaces is a
-  // no-op on the document side. Delta-update tracker so a workspace-
-  // font list change doesn't churn the document.fonts registry.
-  const panelRegisteredFonts = useRef(new Map<string, FontFace>());
+  // Phase 4.9b → Phase 4.10: subscribe every workspace font's URL to
+  // the shared module-level registry so the chip row + per-cell picker
+  // can render the font name in its OWN face. The registry refcounts
+  // subscribers, so when the live preview also references the same URL
+  // (via its own `useCustomFontRegistration`), they share one FontFace
+  // — no double-add / no race-on-unmount.
+  const panelSubscribedFonts = useRef(new Set<string>());
   useEffect(() => {
-    if (typeof document === 'undefined' || !('fonts' in document)) return;
     const wanted = new Set(workspaceFonts.map((f) => f.downloadUrl));
     for (const url of wanted) {
-      if (panelRegisteredFonts.current.has(url)) continue;
-      const family = customFontFamilyName(url);
-      const face = new FontFace(family, `url(${url})`);
-      panelRegisteredFonts.current.set(url, face);
-      void face.load().then((loaded) => {
-        document.fonts.add(loaded);
-      }).catch(() => {
-        // Silent — the registry GET endpoint mints fresh presigned
-        // URLs, but R2 lifecycle / expired URLs are still possible.
-        // Chip will fall back to the generic font stack.
-      });
+      if (panelSubscribedFonts.current.has(url)) continue;
+      acquireCustomFont(url);
+      panelSubscribedFonts.current.add(url);
     }
-    for (const [url, face] of panelRegisteredFonts.current) {
+    for (const url of panelSubscribedFonts.current) {
       if (wanted.has(url)) continue;
-      try { document.fonts.delete(face); } catch { /* ignore */ }
-      panelRegisteredFonts.current.delete(url);
+      releaseCustomFont(url);
+      panelSubscribedFonts.current.delete(url);
     }
   }, [workspaceFonts]);
   useEffect(() => {
-    const tracker = panelRegisteredFonts.current;
+    const tracker = panelSubscribedFonts.current;
     return () => {
-      if (typeof document === 'undefined' || !('fonts' in document)) return;
-      for (const face of tracker.values()) {
-        try { document.fonts.delete(face); } catch { /* ignore */ }
-      }
+      for (const url of tracker) releaseCustomFont(url);
       tracker.clear();
     };
   }, []);
@@ -281,14 +278,22 @@ export function FlexIconGridPanel({
         { method: 'DELETE' },
       );
       if (!res.ok) throw new Error(`Delete failed (${res.status})`);
-      const data = (await res.json().catch(() => ({}))) as { reclaimed?: boolean };
+      const data = (await res.json().catch(() => ({}))) as {
+        reclaimed?: boolean;
+        skippedDueToRefs?: boolean;
+      };
       setWorkspaceFonts((prev) => prev.filter((f) => f.id !== id));
+      // Phase 4.10 caveat fix: explicitly distinguish "kept the file
+      // because a sibling workspace still has it registered" from
+      // "tried to delete and the delete failed".
       toast.success(
         reclaim && data.reclaimed
           ? 'Font removed and file deleted'
-          : reclaim
-            ? 'Font removed; file delete failed (lifecycle will reclaim later)'
-            : 'Font removed from registry',
+          : reclaim && data.skippedDueToRefs
+            ? 'Font removed; file kept (another workspace still references it)'
+            : reclaim
+              ? 'Font removed; file delete failed (lifecycle will reclaim later)'
+              : 'Font removed from registry',
       );
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Delete failed');
@@ -720,6 +725,27 @@ export function FlexIconGridPanel({
       // them. Toggled by selecting a cell.
       data-fg-sheet-open={selectedCell ? 'true' : 'false'}
     >
+      {/* Phase 4.10 caveat fix: ARIA live region for font picker
+          selections. Visually hidden but exposed to assistive tech
+          so a screen reader announces the active font name when the
+          user activates a chip. */}
+      <div
+        aria-live="polite"
+        aria-atomic="true"
+        style={{
+          position: 'absolute',
+          width: 1,
+          height: 1,
+          padding: 0,
+          margin: -1,
+          overflow: 'hidden',
+          clip: 'rect(0, 0, 0, 0)',
+          whiteSpace: 'nowrap',
+          border: 0,
+        }}
+      >
+        {fontAnnouncement}
+      </div>
 
       {/* Grid size + palette + defaults */}
       <section style={sectionStyle}>
@@ -1166,37 +1192,42 @@ export function FlexIconGridPanel({
                 Or pick a registered custom font:
               </p>
               <div style={chipRowStyle}>
-                {workspaceFonts.map((wf) => (
-                  <button
-                    key={wf.id}
-                    type="button"
-                    onClick={() =>
-                      updateCell(selectedCell.index, {
-                        labelStyle: {
-                          ...(selectedCell.labelStyle ?? {}),
-                          font: 'custom',
-                          customFontUrl: wf.downloadUrl,
-                          customFontLabel: wf.name,
-                        },
-                      })
-                    }
-                    style={{
-                      ...chipStyle(
-                        selectedCell.labelStyle?.font === 'custom' &&
-                          selectedCell.labelStyle?.customFontUrl === wf.downloadUrl,
-                      ),
-                      // Phase 4.9b: render the chip label in the
-                      // registered font itself. Fallback stack covers
-                      // the brief moment between mount and FontFace
-                      // load completion.
-                      fontFamily: `'${customFontFamilyName(wf.downloadUrl)}', 'Arial Black', sans-serif`,
-                      fontWeight: 700,
-                    }}
-                    title={`${wf.name} · ${Math.round(wf.size_bytes / 1024)} KB`}
-                  >
-                    {wf.name}
-                  </button>
-                ))}
+                {workspaceFonts.map((wf) => {
+                  const isActive =
+                    selectedCell.labelStyle?.font === 'custom' &&
+                    selectedCell.labelStyle?.customFontUrl === wf.downloadUrl;
+                  return (
+                    <button
+                      key={wf.id}
+                      type="button"
+                      aria-pressed={isActive}
+                      aria-label={`Set cell ${selectedCell.index} font to ${wf.name}`}
+                      onClick={() => {
+                        updateCell(selectedCell.index, {
+                          labelStyle: {
+                            ...(selectedCell.labelStyle ?? {}),
+                            font: 'custom',
+                            customFontUrl: wf.downloadUrl,
+                            customFontLabel: wf.name,
+                          },
+                        });
+                        setFontAnnouncement(`Cell ${selectedCell.index} font set to ${wf.name}`);
+                      }}
+                      style={{
+                        ...chipStyle(isActive),
+                        // Phase 4.9b: render the chip label in the
+                        // registered font itself. Fallback stack covers
+                        // the brief moment between mount and FontFace
+                        // load completion.
+                        fontFamily: `'${customFontFamilyName(wf.downloadUrl)}', 'Arial Black', sans-serif`,
+                        fontWeight: 700,
+                      }}
+                      title={`${wf.name} · ${Math.round(wf.size_bytes / 1024)} KB`}
+                    >
+                      {wf.name}
+                    </button>
+                  );
+                })}
               </div>
             </>
           )}
@@ -1250,68 +1281,72 @@ export function FlexIconGridPanel({
                       first-time upload. */}
                   {workspaceFonts.length > 0 && (
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                      {workspaceFonts.map((wf) => (
-                        <span
-                          key={wf.id}
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 4,
-                            background:
-                              config.defaultLabel.customFontUrl === wf.downloadUrl
-                                ? '#1e3a5f'
-                                : '#1a1a1d',
-                            border: '1px solid #2a2a2e',
-                            borderRadius: 6,
-                            padding: '4px 4px 4px 10px',
-                          }}
-                        >
-                          <button
-                            type="button"
-                            onClick={() =>
-                              updateConfig({
-                                defaultLabel: {
-                                  ...config.defaultLabel,
-                                  font: 'custom',
-                                  customFontUrl: wf.downloadUrl,
-                                  customFontLabel: wf.name,
-                                },
-                              })
-                            }
+                      {workspaceFonts.map((wf) => {
+                        const isActive = config.defaultLabel.customFontUrl === wf.downloadUrl;
+                        return (
+                          <span
+                            key={wf.id}
                             style={{
-                              background: 'transparent',
-                              border: 'none',
-                              color: '#fafafa',
-                              cursor: 'pointer',
-                              fontSize: 13,
-                              padding: 0,
-                              // Phase 4.9b: chip label renders in its own
-                              // registered font face for at-a-glance
-                              // preview.
-                              fontFamily: `'${customFontFamilyName(wf.downloadUrl)}', 'Arial Black', sans-serif`,
-                              fontWeight: 700,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              background: isActive ? '#1e3a5f' : '#1a1a1d',
+                              border: '1px solid #2a2a2e',
+                              borderRadius: 6,
+                              padding: '4px 4px 4px 10px',
                             }}
-                            title={`${wf.name} · ${Math.round(wf.size_bytes / 1024)} KB`}
                           >
-                            {wf.name}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => removeRegisteredFont(wf.id, wf.name)}
-                            style={{
-                              background: 'transparent',
-                              border: 'none',
-                              color: '#71717a',
-                              cursor: 'pointer',
-                              fontSize: 14,
-                              padding: '0 4px',
-                            }}
-                            title="Remove from registry"
-                          >
-                            ×
-                          </button>
-                        </span>
-                      ))}
+                            <button
+                              type="button"
+                              aria-pressed={isActive}
+                              aria-label={`Set default label font to ${wf.name}`}
+                              onClick={() => {
+                                updateConfig({
+                                  defaultLabel: {
+                                    ...config.defaultLabel,
+                                    font: 'custom',
+                                    customFontUrl: wf.downloadUrl,
+                                    customFontLabel: wf.name,
+                                  },
+                                });
+                                setFontAnnouncement(`Default label font set to ${wf.name}`);
+                              }}
+                              style={{
+                                background: 'transparent',
+                                border: 'none',
+                                color: '#fafafa',
+                                cursor: 'pointer',
+                                fontSize: 13,
+                                padding: 0,
+                                // Phase 4.9b: chip label renders in its own
+                                // registered font face for at-a-glance
+                                // preview.
+                                fontFamily: `'${customFontFamilyName(wf.downloadUrl)}', 'Arial Black', sans-serif`,
+                                fontWeight: 700,
+                              }}
+                              title={`${wf.name} · ${Math.round(wf.size_bytes / 1024)} KB`}
+                            >
+                              {wf.name}
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Remove ${wf.name} from registry`}
+                              onClick={() => removeRegisteredFont(wf.id, wf.name)}
+                              style={{
+                                background: 'transparent',
+                                border: 'none',
+                                color: '#71717a',
+                                cursor: 'pointer',
+                                fontSize: 14,
+                                padding: '0 4px',
+                              }}
+                              title="Remove from registry"
+                            >
+                              ×
+                            </button>
+                          </span>
+                        );
+                      })}
                     </div>
                   )}
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1425,6 +1460,45 @@ export function FlexIconGridPanel({
                   />
                 )}
               </div>
+              {/* Phase 4.10: optional subtitle (second smaller line).
+                  Rendered below the main title at ~half the size,
+                  same font/colour by default. Off by default — only
+                  painted when the user types something. */}
+              {config.titleBar && (
+                <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center' }}>
+                  <input
+                    type="text"
+                    value={config.titleBar.subtitle ?? ''}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      updateConfig({
+                        titleBar: {
+                          ...config.titleBar!,
+                          subtitle: v.length > 0 ? v : undefined,
+                        },
+                      });
+                    }}
+                    maxLength={80}
+                    placeholder="Optional subtitle (smaller second line)"
+                    aria-label="Title bar subtitle"
+                    style={{ ...inputStyle, flex: 1 }}
+                  />
+                  {config.titleBar.subtitle && (
+                    <input
+                      type="color"
+                      value={config.titleBar.subtitleColor ?? config.titleBar.color}
+                      onChange={(e) =>
+                        updateConfig({
+                          titleBar: { ...config.titleBar!, subtitleColor: e.target.value },
+                        })
+                      }
+                      aria-label="Subtitle colour"
+                      title="Subtitle colour (defaults to main title colour)"
+                      style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    />
+                  )}
+                </div>
+              )}
               {/* Phase 4.9a: title bar font picker. Same options as the
                   default label font; registered custom fonts appear as
                   chips when the user picks 'Custom upload'. */}
@@ -1456,32 +1530,36 @@ export function FlexIconGridPanel({
                   </div>
                   {config.titleBar!.font === 'custom' && workspaceFonts.length > 0 && (
                     <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                      {workspaceFonts.map((wf) => (
-                        <button
-                          key={wf.id}
-                          type="button"
-                          onClick={() =>
-                            updateConfig({
-                              titleBar: {
-                                ...config.titleBar!,
-                                font: 'custom',
-                                customFontUrl: wf.downloadUrl,
-                                customFontLabel: wf.name,
-                              },
-                            })
-                          }
-                          style={{
-                            ...chipStyle(
-                              config.titleBar!.customFontUrl === wf.downloadUrl,
-                            ),
-                            fontFamily: `'${customFontFamilyName(wf.downloadUrl)}', 'Arial Black', sans-serif`,
-                            fontWeight: 700,
-                          }}
-                          title={`${wf.name} · ${Math.round(wf.size_bytes / 1024)} KB`}
-                        >
-                          {wf.name}
-                        </button>
-                      ))}
+                      {workspaceFonts.map((wf) => {
+                        const isActive = config.titleBar!.customFontUrl === wf.downloadUrl;
+                        return (
+                          <button
+                            key={wf.id}
+                            type="button"
+                            aria-pressed={isActive}
+                            aria-label={`Set title bar font to ${wf.name}`}
+                            onClick={() => {
+                              updateConfig({
+                                titleBar: {
+                                  ...config.titleBar!,
+                                  font: 'custom',
+                                  customFontUrl: wf.downloadUrl,
+                                  customFontLabel: wf.name,
+                                },
+                              });
+                              setFontAnnouncement(`Title bar font set to ${wf.name}`);
+                            }}
+                            style={{
+                              ...chipStyle(isActive),
+                              fontFamily: `'${customFontFamilyName(wf.downloadUrl)}', 'Arial Black', sans-serif`,
+                              fontWeight: 700,
+                            }}
+                            title={`${wf.name} · ${Math.round(wf.size_bytes / 1024)} KB`}
+                          >
+                            {wf.name}
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                   {config.titleBar.font === 'custom' && workspaceFonts.length === 0 && (

@@ -60,6 +60,15 @@ export const ROOT_TENANT_TABLES = [
   'dip_analyses',
   'dubbed_voiceovers',
   'editor_telemetry',
+  // Flex Icon Grid format — workspace-saved palettes (migration 0099),
+  // saved starting templates (migration 0103), and the workspace-
+  // shared custom-font registry (migration 0104). All three CREATE
+  // TABLEs declare workspace_id at insert time, so the backfill
+  // UPDATE is a no-op for them — they live under ROOT for the same
+  // reason the other post-rollout root tables above do.
+  'flex_icon_grid_saved_palettes',
+  'flex_icon_grid_saved_templates',
+  'flex_icon_grid_workspace_fonts',
   'insight_digests',
   'messages',
   'niche_discoveries',

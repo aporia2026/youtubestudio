@@ -254,6 +254,18 @@ export interface TitleBarSpec {
   /** Display label shown next to the registered-font chip — purely
    *  cosmetic. */
   customFontLabel?: string;
+  /** Phase 4.10: optional smaller second line under the main title.
+   *  Renders at 50% the height of the main title text in the same
+   *  font, colour, and casing. Off by default — only painted when
+   *  the user types something. Useful for the "[N] LEVELS / OF
+   *  [TOPIC]" two-line treatment the n-levels format reaches for
+   *  occasionally. */
+  subtitle?: string;
+  /** Phase 4.10: optional colour override for the subtitle. Falls
+   *  back to `color` when absent — most users want the same colour
+   *  for both lines but the option exists for the "muted secondary
+   *  line" pattern (e.g. dimmer grey under a stark white title). */
+  subtitleColor?: string;
 }
 
 // ─── Per-cell ───────────────────────────────────────────────────────────────
@@ -790,6 +802,15 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
     if (!HEX_COLOR_RE.test(config.titleBar.color)) {
       return { ok: false, reason: 'titleBar.color is not a valid hex color' };
     }
+    // Phase 4.10: subtitle bounds + colour shape.
+    if (config.titleBar.subtitle !== undefined) {
+      if (typeof config.titleBar.subtitle !== 'string' || config.titleBar.subtitle.length > 200) {
+        return { ok: false, reason: 'titleBar.subtitle must be a string of at most 200 characters' };
+      }
+    }
+    if (config.titleBar.subtitleColor !== undefined && !HEX_COLOR_RE.test(config.titleBar.subtitleColor)) {
+      return { ok: false, reason: 'titleBar.subtitleColor is not a valid hex color' };
+    }
   }
   return { ok: true };
 }
@@ -1040,6 +1061,16 @@ function parseTitleBar(v: unknown): TitleBarSpec {
     font === 'custom' && typeof o.customFontUrl === 'string' ? o.customFontUrl : undefined;
   const customFontLabel =
     font === 'custom' && typeof o.customFontLabel === 'string' ? o.customFontLabel : undefined;
+  // Phase 4.10: subtitle round-trips as plain string; subtitleColor
+  // only round-trips when it's a hex string (parseConfig's validator
+  // catches malformed hex on the render path, but the JSON parse step
+  // tolerates anything string-shaped for restored history entries).
+  const subtitle = typeof o.subtitle === 'string' && o.subtitle.length > 0
+    ? o.subtitle
+    : undefined;
+  const subtitleColor = typeof o.subtitleColor === 'string' && o.subtitleColor.length > 0
+    ? o.subtitleColor
+    : undefined;
   return {
     text: stringOr(o.text, ''),
     position: o.position === 'top' ? 'top' : 'bottom',
@@ -1049,6 +1080,8 @@ function parseTitleBar(v: unknown): TitleBarSpec {
     font,
     customFontUrl,
     customFontLabel,
+    subtitle,
+    subtitleColor,
   };
 }
 

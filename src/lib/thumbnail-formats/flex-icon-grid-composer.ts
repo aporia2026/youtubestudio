@@ -319,8 +319,8 @@ export async function composeFlexIconGrid(input: ComposeInput): Promise<ComposeR
     // 3) Title bar text — single overlay layered on top of the title
     //    bar background that the base SVG already painted.
     if (config.titleBar) {
-      const titleOverlay = await buildTitleBarOverlay(config, fontResolver);
-      if (titleOverlay) overlays.push(titleOverlay);
+      const titleOverlays = await buildTitleBarOverlay(config, fontResolver);
+      if (titleOverlays) overlays.push(...titleOverlays);
     }
 
     // 4) Single composite pass — one decode of the base, one encode of
@@ -1000,7 +1000,7 @@ async function buildLabelOverlay(
 async function buildTitleBarOverlay(
   config: FlexIconGridConfig,
   fontResolver: CustomFontResolver,
-): Promise<sharp.OverlayOptions | null> {
+): Promise<sharp.OverlayOptions[] | null> {
   const { titleBar, width, height } = config;
   if (!titleBar) return null;
   const text = sanitizeUserText(titleBar.text, 80);
@@ -1022,12 +1022,21 @@ async function buildTitleBarOverlay(
     titleBar.font === 'custom' ? 'anton' : titleBar.font;
   const font = await resolveLabelFont(minimalStyle, fontResolver, fallbackFont);
   const safeW = Math.max(16, Math.round(width * 0.94));
-  const sizePx = Math.max(16, Math.round(titleBar.height * 0.55));
-  let buf = await sharp({
+  // Phase 4.10: when a subtitle is present, the main line shrinks to
+  // ~45% of bar height (was 55%) to leave a ~22% strip for the
+  // subtitle below it, plus breathing room. Without a subtitle, the
+  // main line keeps its original ~55% so existing thumbnails render
+  // pixel-identical.
+  const subtitleText = titleBar.subtitle
+    ? sanitizeUserText(titleBar.subtitle, 80)
+    : '';
+  const hasSubtitle = subtitleText.length > 0;
+  const mainSizePx = Math.max(16, Math.round(titleBar.height * (hasSubtitle ? 0.45 : 0.55)));
+  let mainBuf = await sharp({
     text: {
       text: escapePangoText(text),
       fontfile: font.path,
-      font: `${font.family} ${sizePx}`,
+      font: `${font.family} ${mainSizePx}`,
       rgba: true,
       width: safeW,
       align: 'centre',
@@ -1036,16 +1045,64 @@ async function buildTitleBarOverlay(
   })
     .png()
     .toBuffer();
-  buf = await tintPngTo(buf, titleBar.color);
-  const meta = await sharp(buf).metadata();
-  const bw = meta.width ?? safeW;
-  const bh = meta.height ?? sizePx;
-  const left = Math.round((width - bw) / 2);
-  const top =
-    titleBar.position === 'top'
-      ? Math.round((titleBar.height - bh) / 2)
-      : Math.round(height - titleBar.height + (titleBar.height - bh) / 2);
-  return { input: buf, top, left };
+  mainBuf = await tintPngTo(mainBuf, titleBar.color);
+  const mainMeta = await sharp(mainBuf).metadata();
+  const mainBw = mainMeta.width ?? safeW;
+  const mainBh = mainMeta.height ?? mainSizePx;
+
+  // Vertical layout
+  //  - bar top in canvas-y: barTop
+  //  - main centered vertically when there's no subtitle
+  //  - main shifted up + subtitle below it when there is one
+  const barTop = titleBar.position === 'top' ? 0 : height - titleBar.height;
+  const overlays: sharp.OverlayOptions[] = [];
+
+  if (!hasSubtitle) {
+    const top = Math.round(barTop + (titleBar.height - mainBh) / 2);
+    const left = Math.round((width - mainBw) / 2);
+    overlays.push({ input: mainBuf, top, left });
+    return overlays;
+  }
+
+  // With subtitle: pre-render subtitle so we know its height, then
+  // stack both centered around the bar's vertical middle.
+  const subSizePx = Math.max(12, Math.round(titleBar.height * 0.22));
+  let subBuf = await sharp({
+    text: {
+      text: escapePangoText(subtitleText),
+      fontfile: font.path,
+      font: `${font.family} ${subSizePx}`,
+      rgba: true,
+      width: safeW,
+      align: 'centre',
+      wrap: 'none',
+    },
+  })
+    .png()
+    .toBuffer();
+  const subColor = titleBar.subtitleColor ?? titleBar.color;
+  subBuf = await tintPngTo(subBuf, subColor);
+  const subMeta = await sharp(subBuf).metadata();
+  const subBw = subMeta.width ?? safeW;
+  const subBh = subMeta.height ?? subSizePx;
+
+  // Gap between the two lines; small fraction of bar height keeps
+  // the two lines visually paired without colliding.
+  const lineGap = Math.round(titleBar.height * 0.05);
+  const stackH = mainBh + lineGap + subBh;
+  const stackTop = Math.round(barTop + (titleBar.height - stackH) / 2);
+
+  overlays.push({
+    input: mainBuf,
+    top: stackTop,
+    left: Math.round((width - mainBw) / 2),
+  });
+  overlays.push({
+    input: subBuf,
+    top: stackTop + mainBh + lineGap,
+    left: Math.round((width - subBw) / 2),
+  });
+  return overlays;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

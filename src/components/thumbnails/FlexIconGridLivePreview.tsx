@@ -48,6 +48,10 @@ import {
 } from '@/lib/thumbnail-formats/flex-icon-grid-icons';
 import { customFontFamilyName } from '@/lib/thumbnail-formats/flex-icon-grid-font-family';
 import {
+  acquireCustomFont,
+  releaseCustomFont,
+} from '@/lib/thumbnail-formats/flex-icon-grid-font-registry';
+import {
   pickLabelColourFor,
   resolveCellBackgrounds,
 } from '@/lib/thumbnail-formats/flex-icon-grid-palettes';
@@ -98,19 +102,19 @@ function resolveFontCssFor(style: { font: LabelStyle['font']; customFontUrl?: st
 }
 
 /**
- * Mount + cleanup FontFace registrations for every unique custom-
- * font URL referenced by the config. Phase 4.7 caveat fix: tracks
- * registered URLs in a ref so the effect only registers NEWLY-added
- * URLs and only deletes URLs that have left the config — no churn
- * on edits that don't touch the font set.
+ * Subscribe to the module-level font registry for every unique custom-
+ * font URL referenced by the config. Phase 4.10 caveat fix: the
+ * registry refcounts subscribers, so a side-by-side panel layout (two
+ * components referencing the same URL) can't race — the FontFace is
+ * shared and only removed when the last subscriber releases it.
  */
 function useCustomFontRegistration(config: FlexIconGridConfig): void {
-  // url → FontFace, persisted across renders so we can delta-update.
-  const registered = useRef(new Map<string, FontFace>());
+  // URLs this component currently holds a refcount on. Tracked locally
+  // so we can release exactly what we acquired on unmount or when the
+  // URL set shrinks.
+  const subscribed = useRef(new Set<string>());
 
   useEffect(() => {
-    if (typeof document === 'undefined' || !('fonts' in document)) return;
-
     // Collect unique URLs from every label-style position. Phase 4.9a
     // adds the title bar's custom URL to the registration set so the
     // preview's title text loads the right face.
@@ -128,40 +132,28 @@ function useCustomFontRegistration(config: FlexIconGridConfig): void {
       }
     }
 
-    // Register newly-added URLs only.
+    // Acquire newly-added URLs only.
     for (const url of wanted) {
-      if (registered.current.has(url)) continue;
-      const family = customFontFamilyName(url);
-      const face = new FontFace(family, `url(${url})`);
-      registered.current.set(url, face);
-      void face.load().then((loaded) => {
-        document.fonts.add(loaded);
-      }).catch((err) => {
-        console.warn('[flex-icon-grid preview] custom font load failed', {
-          family, url_prefix: url.slice(0, 60),
-          reason: err instanceof Error ? err.message : String(err),
-        });
-      });
+      if (subscribed.current.has(url)) continue;
+      acquireCustomFont(url);
+      subscribed.current.add(url);
     }
 
-    // Delete URLs that have left the config.
-    for (const [url, face] of registered.current) {
+    // Release URLs that have left the config.
+    for (const url of subscribed.current) {
       if (wanted.has(url)) continue;
-      try { document.fonts.delete(face); } catch { /* ignore */ }
-      registered.current.delete(url);
+      releaseCustomFont(url);
+      subscribed.current.delete(url);
     }
   }, [config]);
 
-  // Final cleanup on unmount — delete every registered face the
-  // panel session ever loaded so a hot-reload doesn't leak fonts
-  // into the document.fonts registry.
+  // Final cleanup on unmount — release every URL this component
+  // acquired so the registry refcounts settle to zero when the last
+  // subscriber leaves.
   useEffect(() => {
-    const tracker = registered.current;
+    const tracker = subscribed.current;
     return () => {
-      if (typeof document === 'undefined' || !('fonts' in document)) return;
-      for (const face of tracker.values()) {
-        try { document.fonts.delete(face); } catch { /* ignore */ }
-      }
+      for (const url of tracker) releaseCustomFont(url);
       tracker.clear();
     };
   }, []);
@@ -241,28 +233,77 @@ export function FlexIconGridLivePreview({
           />
         )}
 
-        {/* Title bar text */}
-        {config.titleBar && (
-          <text
-            x={config.width / 2}
-            y={
-              config.titleBar.position === 'top'
-                ? config.titleBar.height / 2
-                : config.height - config.titleBar.height / 2
-            }
-            fontFamily={resolveFontCssFor({
-              font: config.titleBar.font,
-              customFontUrl: config.titleBar.customFontUrl,
-            })}
-            fontSize={Math.round(config.titleBar.height * 0.55)}
-            fontWeight={900}
-            fill={config.titleBar.color}
-            textAnchor="middle"
-            dominantBaseline="middle"
-          >
-            {sanitizeUserText(config.titleBar.text, 80)}
-          </text>
-        )}
+        {/* Title bar text + optional Phase 4.10 subtitle. The composer
+            also stacks the two lines centered around the bar's
+            vertical midpoint; the preview matches its layout math so
+            the live preview lines up with the rendered PNG. */}
+        {config.titleBar && (() => {
+          const tb = config.titleBar;
+          const barCenterY =
+            tb.position === 'top'
+              ? tb.height / 2
+              : config.height - tb.height / 2;
+          const subtitleText = tb.subtitle
+            ? sanitizeUserText(tb.subtitle, 80)
+            : '';
+          const hasSubtitle = subtitleText.length > 0;
+          const mainSize = Math.round(tb.height * (hasSubtitle ? 0.45 : 0.55));
+          const fontFamily = resolveFontCssFor({
+            font: tb.font,
+            customFontUrl: tb.customFontUrl,
+          });
+          if (!hasSubtitle) {
+            return (
+              <text
+                x={config.width / 2}
+                y={barCenterY}
+                fontFamily={fontFamily}
+                fontSize={mainSize}
+                fontWeight={900}
+                fill={tb.color}
+                textAnchor="middle"
+                dominantBaseline="middle"
+              >
+                {sanitizeUserText(tb.text, 80)}
+              </text>
+            );
+          }
+          const subSize = Math.max(12, Math.round(tb.height * 0.22));
+          const lineGap = Math.round(tb.height * 0.05);
+          // Stack height ≈ mainSize + lineGap + subSize (using
+          // size-as-line-height proxy — close enough for centering;
+          // the actual rendered PNG uses real text metrics).
+          const stackH = mainSize + lineGap + subSize;
+          const stackTop = barCenterY - stackH / 2;
+          return (
+            <>
+              <text
+                x={config.width / 2}
+                y={stackTop + mainSize / 2}
+                fontFamily={fontFamily}
+                fontSize={mainSize}
+                fontWeight={900}
+                fill={tb.color}
+                textAnchor="middle"
+                dominantBaseline="middle"
+              >
+                {sanitizeUserText(tb.text, 80)}
+              </text>
+              <text
+                x={config.width / 2}
+                y={stackTop + mainSize + lineGap + subSize / 2}
+                fontFamily={fontFamily}
+                fontSize={subSize}
+                fontWeight={700}
+                fill={tb.subtitleColor ?? tb.color}
+                textAnchor="middle"
+                dominantBaseline="middle"
+              >
+                {subtitleText}
+              </text>
+            </>
+          );
+        })()}
 
         {/* Per-cell background defs (gradients + patterns + image). One <defs>
             block per cell to keep ids unique. */}
