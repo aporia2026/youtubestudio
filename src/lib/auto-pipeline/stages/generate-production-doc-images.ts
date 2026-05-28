@@ -414,8 +414,13 @@ export async function handleGenerateProductionDocImages(
  *
  *  Defensive: returns false on missing/empty motion_beats so non-
  *  paint_explainer_v1 rows always short-circuit even if some other
- *  code path accidentally calls this helper. */
-function needsMouthRemoved(row: PipelineImageRow): boolean {
+ *  code path accidentally calls this helper.
+ *
+ *  Exported for unit testing — the predicate is small but load-bearing
+ *  (it gates the per-row $0.011 Atlas Edit call) so a regression on
+ *  it could either silently skip mouth-swap rendering OR run up the
+ *  per-video bill. Pure: no IO, safe to call from anywhere. */
+export function needsMouthRemoved(row: PipelineImageRow): boolean {
   const beats = row.motion_beats;
   if (!Array.isArray(beats) || beats.length === 0) return false;
   return beats.some((b) => b?.kind === 'mouth_swap');

@@ -74,6 +74,7 @@ export const SCOPED_TABLES = [
   'pipeline_run_videos',
   'pipeline_runs',
   'prediction_outcomes',
+  'production_doc_notes',
   'production_doc_styles',
   'projects',
   'published_videos',

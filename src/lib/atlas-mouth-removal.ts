@@ -53,8 +53,13 @@ import { generateAtlasEdit, type AtlasGenerateResult } from './atlas-cloud-image
  * Do NOT inline-edit this prompt without re-running the viability
  * test — small wording changes can cause the model to redraw the
  * face, which breaks every downstream `<MouthSwap>` calibration.
+ *
+ * Exported so unit tests can assert the prompt's load-bearing
+ * directives are present (preserve-eyes, preserve-eyebrows, no
+ * scar/marker, etc.) — silent edits to this string have a high blast
+ * radius across the whole paint_explainer_v1 architecture.
  */
-const MOUTH_REMOVAL_PROMPT =
+export const MOUTH_REMOVAL_PROMPT =
   'Remove the small open mouth (red interior, black outline) from the doodle character\'s face. ' +
   'The area where the mouth was must become plain face — no mouth shape, no scar, no marker, no shadow, no smudge. ' +
   'Keep absolutely everything else IDENTICAL to the input image: the round head outline, both oval-shaped eyes with their pupils, both angled eyebrows above the eyes, the small visible neck and shoulder lines below the head, the position of the head in the frame, the pure white background. ' +
