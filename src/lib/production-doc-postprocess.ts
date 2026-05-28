@@ -488,3 +488,197 @@ export function detectEmptyVariantGroupBases<R extends ProductionDocRowLike>(
     emptyBaseGroupIds,
   };
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Phase 1.6 (Bug 3) — Variant-index collision dedup.
+//
+// QA on Sodder doc b30b8d1e found rows 5 and 6 BOTH claiming
+// `group_id = "sodder-fire-1"` AND `variant_index = 1` AND the same
+// `variant_edit_prompt`. Two variants can't both be index 1 in the same
+// group — the editor renders both as "variant 1/2" and the dispatcher
+// can't reason about which is canonical. Source is LLM emission (the
+// auto-grouper skips rows that already have a `group_id`, so it didn't
+// cause this and can't fix it from inside its own pass).
+//
+// Resolution policy (R-3 in the Phase 1.6 plan):
+//   - Identical (group_id, variant_index) with identical
+//     `ai_image_prompt` AND identical `variant_edit_prompt`
+//     → DROP the duplicate (keep the earlier occurrence in
+//     document order). The LLM produced a copy-paste; one row is
+//     enough.
+//   - Same (group_id, variant_index) with DIFFERENT content
+//     → RENUMBER the later row to the next free index in the group.
+//     The LLM intended two variants and just collided on the index.
+//   - Missing base (group has variant rows but no `variant_index === 0`)
+//     → RECOVER by promoting the row immediately preceding the first
+//     variant into the base slot IF it's a plain fresh row (no
+//     existing `group_id`, has an `ai_image_prompt`). Else emit a
+//     warning so the user can repair manually. Mirrors the
+//     auto-grouper's existing rescue-pass philosophy.
+//
+// Stateless / pure — no IO. Mutates rows in place AND returns the
+// (possibly trimmed) array. Counters mirror autoGroupVariants for log
+// parity.
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface VariantIndexDedupResult<R extends ProductionDocRowLike> {
+  /** The post-pass rows. Same array reference is NOT guaranteed — when
+   *  duplicates are dropped a fresh array is returned. */
+  rows: R[];
+  /** Total number of `(group_id, variant_index)` collisions encountered
+   *  AND resolved. Equals `duplicatesDropped + renumbered`. */
+  collisionsResolved: number;
+  /** Number of rows removed via the identical-content drop rule. */
+  duplicatesDropped: number;
+  /** Number of rows whose `variant_index` was reassigned via the
+   *  different-content renumber rule. */
+  renumbered: number;
+  /** Number of base rows recovered by promoting a preceding fresh row
+   *  into a group that was missing its `variant_index === 0`. */
+  basesRecovered: number;
+  /** Human-readable warnings for the UI — e.g. "group X has variants
+   *  but no base and no fresh predecessor to promote." */
+  warnings: string[];
+}
+
+function bagOf<R extends ProductionDocRowLike>(row: R): Record<string, unknown> {
+  return row as Record<string, unknown>;
+}
+
+function groupIdOf<R extends ProductionDocRowLike>(row: R): string | undefined {
+  const gid = bagOf(row).group_id;
+  return typeof gid === 'string' && gid.length > 0 ? gid : undefined;
+}
+
+function variantIndexOf<R extends ProductionDocRowLike>(row: R): number | undefined {
+  const vi = bagOf(row).variant_index;
+  return typeof vi === 'number' ? vi : undefined;
+}
+
+/** Two rows are duplicate-content (drop-eligible) when they sit in the
+ *  same group with the same variant_index AND their generation inputs
+ *  (`ai_image_prompt` and `variant_edit_prompt`) are byte-for-byte
+ *  identical. That's the shape Sodder row 5/6 produced. */
+function isDuplicateContent<R extends ProductionDocRowLike>(a: R, b: R): boolean {
+  const ba = bagOf(a);
+  const bb = bagOf(b);
+  const aiA = typeof ba.ai_image_prompt === 'string' ? ba.ai_image_prompt : '';
+  const aiB = typeof bb.ai_image_prompt === 'string' ? bb.ai_image_prompt : '';
+  const veA = typeof ba.variant_edit_prompt === 'string' ? ba.variant_edit_prompt : '';
+  const veB = typeof bb.variant_edit_prompt === 'string' ? bb.variant_edit_prompt : '';
+  return aiA === aiB && veA === veB;
+}
+
+export function dedupVariantIndexCollisions<R extends ProductionDocRowLike>(
+  rows: R[],
+): VariantIndexDedupResult<R> {
+  const warnings: string[] = [];
+  let collisionsResolved = 0;
+  let duplicatesDropped = 0;
+  let renumbered = 0;
+  let basesRecovered = 0;
+  const dropIndices = new Set<number>();
+
+  // Step 1 — collect rows by group_id with their document-order index.
+  // Indices are taken from the INPUT array; downstream we filter on
+  // dropIndices to produce the result.
+  interface IndexedRow {
+    row: R;
+    index: number;
+  }
+  const groupsById = new Map<string, IndexedRow[]>();
+  for (let i = 0; i < rows.length; i++) {
+    const gid = groupIdOf(rows[i]);
+    if (!gid) continue;
+    const arr = groupsById.get(gid) ?? [];
+    arr.push({ row: rows[i], index: i });
+    groupsById.set(gid, arr);
+  }
+
+  // Step 2 — for each group, resolve variant_index collisions.
+  for (const [gid, members] of groupsById) {
+    // Map from variant_index -> the FIRST IndexedRow that claimed it.
+    // Subsequent rows with the same index are either dropped (identical
+    // content) or renumbered (different content).
+    const firstByVariantIndex = new Map<number, IndexedRow>();
+    // Track used indices so renumbering can pick the next free one.
+    const usedIndices = new Set<number>();
+    for (const m of members) {
+      const vi = variantIndexOf(m.row);
+      if (vi === undefined) continue;
+      if (!firstByVariantIndex.has(vi)) {
+        firstByVariantIndex.set(vi, m);
+        usedIndices.add(vi);
+      }
+    }
+
+    for (const m of members) {
+      const vi = variantIndexOf(m.row);
+      if (vi === undefined) continue;
+      const first = firstByVariantIndex.get(vi);
+      if (!first || first.index === m.index) continue;
+      collisionsResolved += 1;
+      if (isDuplicateContent(first.row, m.row)) {
+        dropIndices.add(m.index);
+        duplicatesDropped += 1;
+        continue;
+      }
+      // Different content — pick the next free index in the group.
+      let next = 1;
+      while (usedIndices.has(next)) next += 1;
+      bagOf(m.row).variant_index = next;
+      usedIndices.add(next);
+      renumbered += 1;
+    }
+
+    // Step 3 — missing-base recovery. After collision resolution, check
+    // whether the group still lacks a `variant_index === 0`. Don't try
+    // to recover if every variant row in the group is queued for drop
+    // (the group will disappear entirely after step 4 — pointless to
+    // graft a base in).
+    const survivingMembers = members.filter((m) => !dropIndices.has(m.index));
+    if (survivingMembers.length === 0) continue;
+    const hasBase = survivingMembers.some((m) => variantIndexOf(m.row) === 0);
+    if (hasBase) continue;
+
+    // Locate the first surviving variant in document order, then look
+    // at its IMMEDIATE preceding row.
+    const firstVariantIdx = Math.min(...survivingMembers.map((m) => m.index));
+    if (firstVariantIdx === 0) {
+      // No room to look back. Surface a warning.
+      warnings.push(
+        `Group "${gid}" has variants but no base, and the first variant is the doc's first row — manual repair needed.`,
+      );
+      continue;
+    }
+    const candidate = rows[firstVariantIdx - 1];
+    const candidateBag = bagOf(candidate);
+    const candidateHasGroup = typeof candidateBag.group_id === 'string' && candidateBag.group_id.length > 0;
+    const candidatePrompt = typeof candidateBag.ai_image_prompt === 'string' ? candidateBag.ai_image_prompt : '';
+    if (candidateHasGroup) {
+      warnings.push(
+        `Group "${gid}" has variants but no base; the preceding row already belongs to another group — manual repair needed.`,
+      );
+      continue;
+    }
+    if (candidatePrompt.trim().length === 0) {
+      warnings.push(
+        `Group "${gid}" has variants but no base; the preceding row has no ai_image_prompt to use as the base — manual repair needed.`,
+      );
+      continue;
+    }
+    candidateBag.group_id = gid;
+    candidateBag.variant_index = 0;
+    basesRecovered += 1;
+  }
+
+  // Step 4 — emit the surviving rows.
+  if (dropIndices.size === 0) {
+    return { rows, collisionsResolved, duplicatesDropped, renumbered, basesRecovered, warnings };
+  }
+  const out: R[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    if (!dropIndices.has(i)) out.push(rows[i]);
+  }
+  return { rows: out, collisionsResolved, duplicatesDropped, renumbered, basesRecovered, warnings };
+}

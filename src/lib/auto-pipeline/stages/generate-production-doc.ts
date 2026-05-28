@@ -305,6 +305,32 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
             identical_prompt_merges: grouped.identicalPromptMerges,
           });
         }
+        // Phase 1.6 (Bug 3) — variant-index collision dedup. Mirrors
+        // the manual route. Drops duplicates, renumbers different-
+        // content collisions, recovers missing bases. Spec:
+        // _plans/2026-05-28-doodle-2-phase-1-6-completion.md (R-3).
+        const { dedupVariantIndexCollisions } = await import('../../production-doc-postprocess');
+        const dedup = dedupVariantIndexCollisions(
+          rows as unknown as Parameters<typeof dedupVariantIndexCollisions>[0],
+        );
+        if (dedup.collisionsResolved > 0 || dedup.basesRecovered > 0 || dedup.warnings.length > 0) {
+          logger.info('auto-pipeline: variant-index-dedup', {
+            pipeline_video_id: video.id,
+            style_id: style.id,
+            collisions_resolved: dedup.collisionsResolved,
+            duplicates_dropped: dedup.duplicatesDropped,
+            renumbered: dedup.renumbered,
+            bases_recovered: dedup.basesRecovered,
+            warning_count: dedup.warnings.length,
+            warning_sample: dedup.warnings.slice(0, 3),
+          });
+        }
+        if (dedup.duplicatesDropped > 0) {
+          // Drops invalidate the local rows reference. Reassign so the
+          // downstream refiner + image-gen stages see the cleaned list.
+          rows.length = 0;
+          rows.push(...(dedup.rows as unknown as typeof rows));
+        }
       }
 
       // 3) Variant-prompt refiner — gated by USE_REFINED_VARIANT_PROMPT

@@ -20,6 +20,7 @@ import {
 } from '@/lib/production-doc-flags';
 import { refineVariantPromptsInDoc } from '@/lib/variant-prompt-refiner';
 import { autoGroupVariants } from '@/lib/auto-group-variants';
+import { dedupVariantIndexCollisions } from '@/lib/production-doc-postprocess';
 import { extractScriptTitles, TITLE_SENTINEL_LEAK_RE } from '@/lib/script-titles';
 import { preprocessSsmlForProductionDoc } from '@/lib/ssml-production-doc';
 
@@ -350,7 +351,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     // Local alias preserves the narrowing inside nested callbacks below
     // (TypeScript drops the `result.rows` narrowing once we enter a
     // .filter / .map arrow function).
-    const rows = result.rows;
+    let rows = result.rows;
     const grouped = autoGroupVariants(rows);
     if (grouped.groupCount > 0) {
       logger.info('[production-doc auto-group-variants]', {
@@ -367,6 +368,35 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         // mode). Spec: _plans/2026-05-28-doodle-2-phase-1-5-completion.md.
         identicalPromptMerges: grouped.identicalPromptMerges,
       });
+    }
+    // Phase 1.6 (Bug 3) — variant-index collision dedup.
+    //
+    // Resolves the malformed group structure observed on Sodder doc
+    // b30b8d1e (rows 5+6 both claimed sodder-fire-1 / variant_index=1
+    // with identical content). Drops byte-for-byte duplicates, renumbers
+    // different-content collisions, and recovers missing bases when a
+    // fresh preceding row can be promoted. Runs AFTER autoGroupVariants
+    // so both LLM-emitted and auto-grouper-derived groups are checked
+    // by the same pass. Spec:
+    // _plans/2026-05-28-doodle-2-phase-1-6-completion.md (R-3).
+    const dedup = dedupVariantIndexCollisions(rows);
+    if (dedup.collisionsResolved > 0 || dedup.basesRecovered > 0 || dedup.warnings.length > 0) {
+      logger.info('[production-doc variant-index-dedup]', {
+        styleId: resolved.id,
+        collisionsResolved: dedup.collisionsResolved,
+        duplicatesDropped: dedup.duplicatesDropped,
+        renumbered: dedup.renumbered,
+        basesRecovered: dedup.basesRecovered,
+        warningCount: dedup.warnings.length,
+        warningSample: dedup.warnings.slice(0, 3),
+      });
+    }
+    // The dedup pass may have removed rows. Reassign both `result.rows`
+    // and the local `rows` alias so every downstream consumer sees the
+    // cleaned-up array.
+    if (dedup.duplicatesDropped > 0) {
+      result.rows = dedup.rows as typeof result.rows;
+      rows = result.rows;
     }
     // Always log the final variant-group ratio after both LLM-emitted
     // groups and the auto-grouper pass have run. Target is ~40% of rows

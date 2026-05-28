@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   attachStyleSuffixToRows,
+  dedupVariantIndexCollisions,
   estimateRowSeconds,
   PRODUCTION_DOC_MAX_SECONDS_PER_ROW,
   shiftTimecodeBySeconds,
@@ -417,5 +418,186 @@ describe('attachStyleSuffixToRows', () => {
     expect(out.rows[1].ai_image_prompt).toBe('');
     expect(out.rows[2].ai_image_prompt).toBe('Body C with trailing space. ' + DOODLE_SUFFIX);
     expect(out.rows[3].ai_image_prompt).toBe('Body D. ' + DOODLE_SUFFIX);
+  });
+});
+
+// ─── Phase 1.6 (Bug 3) — variant-index collision dedup ───────────────────────
+//
+// QA on Sodder doc b30b8d1e found rows 5+6 both claiming
+// `group_id = "sodder-fire-1"` AND `variant_index = 1` AND the same
+// `variant_edit_prompt`. Spec:
+// _plans/2026-05-28-doodle-2-phase-1-6-completion.md (R-3).
+
+interface DedupRow {
+  timecode: string;
+  script_text: string;
+  visual_type?: string;
+  ai_image_prompt?: string;
+  variant_edit_prompt?: string;
+  group_id?: string;
+  variant_index?: number;
+  [key: string]: unknown;
+}
+
+function variantRow(opts: {
+  tc: string;
+  script?: string;
+  vtype?: string;
+  prompt?: string;
+  editPrompt?: string;
+  groupId?: string;
+  variantIndex?: number;
+}): DedupRow {
+  return {
+    timecode: opts.tc,
+    script_text: opts.script ?? `script-${opts.tc}`,
+    visual_type: opts.vtype ?? 'Animation',
+    ai_image_prompt: opts.prompt ?? '',
+    variant_edit_prompt: opts.editPrompt ?? '',
+    group_id: opts.groupId,
+    variant_index: opts.variantIndex,
+  };
+}
+
+describe('dedupVariantIndexCollisions', () => {
+  it('drops the duplicate when two rows share group_id + variant_index + identical content', () => {
+    const rows: DedupRow[] = [
+      variantRow({ tc: '0:00', groupId: 'g1', variantIndex: 0, prompt: 'base scene' }),
+      variantRow({ tc: '0:05', groupId: 'g1', variantIndex: 1, editPrompt: 'add a hat' }),
+      variantRow({ tc: '0:10', groupId: 'g1', variantIndex: 1, editPrompt: 'add a hat' }),
+    ];
+    const out = dedupVariantIndexCollisions(rows);
+    expect(out.collisionsResolved).toBe(1);
+    expect(out.duplicatesDropped).toBe(1);
+    expect(out.renumbered).toBe(0);
+    expect(out.basesRecovered).toBe(0);
+    expect(out.rows).toHaveLength(2);
+    // The first occurrence (0:05) survives; the duplicate at 0:10 drops.
+    expect(out.rows[1].timecode).toBe('0:05');
+  });
+
+  it('renumbers the later row when collision rows have DIFFERENT content', () => {
+    const rows: DedupRow[] = [
+      variantRow({ tc: '0:00', groupId: 'g1', variantIndex: 0, prompt: 'base scene' }),
+      variantRow({ tc: '0:05', groupId: 'g1', variantIndex: 1, editPrompt: 'add a hat' }),
+      variantRow({ tc: '0:10', groupId: 'g1', variantIndex: 1, editPrompt: 'open the mouth' }),
+    ];
+    const out = dedupVariantIndexCollisions(rows);
+    expect(out.collisionsResolved).toBe(1);
+    expect(out.duplicatesDropped).toBe(0);
+    expect(out.renumbered).toBe(1);
+    expect(out.rows).toHaveLength(3);
+    // First occurrence keeps index 1; the colliding row gets renumbered to 2.
+    expect(out.rows[1].variant_index).toBe(1);
+    expect(out.rows[2].variant_index).toBe(2);
+  });
+
+  it('renumbers around already-used indices instead of repeating them', () => {
+    const rows: DedupRow[] = [
+      variantRow({ tc: '0:00', groupId: 'g1', variantIndex: 0, prompt: 'base' }),
+      variantRow({ tc: '0:05', groupId: 'g1', variantIndex: 1, editPrompt: 'A' }),
+      variantRow({ tc: '0:10', groupId: 'g1', variantIndex: 2, editPrompt: 'B' }),
+      // Collides with variant_index=1 from row 1; needs index 3, not 1 or 2.
+      variantRow({ tc: '0:15', groupId: 'g1', variantIndex: 1, editPrompt: 'C' }),
+    ];
+    const out = dedupVariantIndexCollisions(rows);
+    expect(out.collisionsResolved).toBe(1);
+    expect(out.renumbered).toBe(1);
+    expect(out.rows[3].variant_index).toBe(3);
+  });
+
+  it('leaves a well-formed group untouched (idempotent on clean input)', () => {
+    const rows: DedupRow[] = [
+      variantRow({ tc: '0:00', groupId: 'g1', variantIndex: 0, prompt: 'base' }),
+      variantRow({ tc: '0:05', groupId: 'g1', variantIndex: 1, editPrompt: 'A' }),
+      variantRow({ tc: '0:10', groupId: 'g1', variantIndex: 2, editPrompt: 'B' }),
+    ];
+    const out = dedupVariantIndexCollisions(rows);
+    expect(out.collisionsResolved).toBe(0);
+    expect(out.duplicatesDropped).toBe(0);
+    expect(out.renumbered).toBe(0);
+    expect(out.basesRecovered).toBe(0);
+    expect(out.warnings).toHaveLength(0);
+    expect(out.rows).toBe(rows); // Same reference — no drops.
+  });
+
+  it('recovers a missing base by promoting a fresh preceding row', () => {
+    const rows: DedupRow[] = [
+      // Plain fresh row immediately before the orphan variants.
+      variantRow({ tc: '0:00', prompt: 'a wide shot of the house' }),
+      variantRow({ tc: '0:05', groupId: 'g1', variantIndex: 1, editPrompt: 'add a hat' }),
+      variantRow({ tc: '0:10', groupId: 'g1', variantIndex: 2, editPrompt: 'open the mouth' }),
+    ];
+    const out = dedupVariantIndexCollisions(rows);
+    expect(out.basesRecovered).toBe(1);
+    expect(out.rows).toHaveLength(3);
+    // Row 0 is now the base of g1.
+    expect(out.rows[0].group_id).toBe('g1');
+    expect(out.rows[0].variant_index).toBe(0);
+    expect(out.warnings).toHaveLength(0);
+  });
+
+  it('warns instead of recovering when the preceding row already belongs to another group', () => {
+    const rows: DedupRow[] = [
+      variantRow({ tc: '0:00', groupId: 'g0', variantIndex: 0, prompt: 'group 0 base' }),
+      variantRow({ tc: '0:05', groupId: 'g1', variantIndex: 1, editPrompt: 'add a hat' }),
+    ];
+    const out = dedupVariantIndexCollisions(rows);
+    expect(out.basesRecovered).toBe(0);
+    expect(out.warnings).toHaveLength(1);
+    expect(out.warnings[0]).toContain('"g1"');
+    expect(out.warnings[0]).toContain('preceding row already belongs to another group');
+  });
+
+  it('warns when an orphan group sits at the start of the doc with no row to promote', () => {
+    const rows: DedupRow[] = [
+      variantRow({ tc: '0:00', groupId: 'g1', variantIndex: 1, editPrompt: 'add a hat' }),
+    ];
+    const out = dedupVariantIndexCollisions(rows);
+    expect(out.basesRecovered).toBe(0);
+    expect(out.warnings).toHaveLength(1);
+    expect(out.warnings[0]).toContain('"g1"');
+    expect(out.warnings[0]).toContain("doc's first row");
+  });
+
+  it('ignores standalone rows (no group_id)', () => {
+    const rows: DedupRow[] = [
+      variantRow({ tc: '0:00', prompt: 'scene 1' }),
+      variantRow({ tc: '0:05', prompt: 'scene 2' }),
+      variantRow({ tc: '0:10', prompt: 'scene 3' }),
+    ];
+    const out = dedupVariantIndexCollisions(rows);
+    expect(out.collisionsResolved).toBe(0);
+    expect(out.rows).toBe(rows);
+  });
+
+  it('reproduces the exact Sodder doc b30b8d1e collision pattern', () => {
+    // Row 2 (base) + rows 5 and 6 (variant_index=1 colliding, same edit prompt).
+    // The diag output shape from scripts/diag-sodder-styleid.ts.
+    const rows: DedupRow[] = [
+      variantRow({
+        tc: '0:06',
+        groupId: 'sodder-fire-1',
+        variantIndex: 0,
+        prompt: 'Same house composition, now with orange flames bursting from the roof and windows, smoke rising hard.',
+      }),
+      variantRow({
+        tc: '0:15',
+        groupId: 'sodder-fire-1',
+        variantIndex: 1,
+        editPrompt: 'remove the escaping family from the foreground and make the upstairs window feel empty and tragic, keep…',
+      }),
+      variantRow({
+        tc: '0:19',
+        groupId: 'sodder-fire-1',
+        variantIndex: 1,
+        editPrompt: 'remove the escaping family from the foreground and make the upstairs window feel empty and tragic, keep…',
+      }),
+    ];
+    const out = dedupVariantIndexCollisions(rows);
+    expect(out.duplicatesDropped).toBe(1);
+    expect(out.collisionsResolved).toBe(1);
+    expect(out.rows).toHaveLength(2);
+    expect(out.rows.map((r) => r.timecode)).toEqual(['0:06', '0:15']);
   });
 });
