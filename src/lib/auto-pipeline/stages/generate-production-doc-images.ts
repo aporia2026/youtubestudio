@@ -446,6 +446,7 @@ export async function handleGenerateProductionDocImages(
     const groupResult = await generateCollageGroup({
       cells,
       characterDescriptions: doc.doodle_explainer_2_character_descriptions,
+      workspaceId: video.workspace_id,
     });
     tickCostUsd += groupResult.totalCostUsd;
     if (!groupResult.fallbackNeeded) {
@@ -522,6 +523,7 @@ export async function handleGenerateProductionDocImages(
         characterId: row.character_id as string,
         newScenePrompt: row.ai_image_prompt,
         characterDescriptions: doc.doodle_explainer_2_character_descriptions,
+        workspaceId: video.workspace_id,
       });
       if (editResult.imageUrl) {
         charCacheHits += 1;
@@ -572,6 +574,7 @@ export async function handleGenerateProductionDocImages(
         sceneId: row.scene_id as string,
         newScenePrompt: row.ai_image_prompt,
         characterDescriptions: doc.doodle_explainer_2_character_descriptions,
+        workspaceId: video.workspace_id,
       });
       if (editResult.imageUrl) {
         sceneCacheHits += 1;
@@ -605,7 +608,7 @@ export async function handleGenerateProductionDocImages(
               doc,
               workspaceId: video.workspace_id,
             })
-          : await generateVariantImage({ row, doc });
+          : await generateVariantImage({ row, doc, workspaceId: video.workspace_id });
     }
     tickCostUsd += result.costUsd;
     if (result.imageUrl) {

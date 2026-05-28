@@ -67,7 +67,12 @@ export interface RecordIntentArgs {
   /** Per-call client-generated UUID. Optional in Phase 1.0; set once
    *  the client-side `mutate()` chokepoint (Phase 1.2) is wired up. */
   clientIntentId?: string | null;
-  userId: string;
+  /** Authenticated user id from the session. Nullable so routes that
+   *  pre-date `apiRoute.authed` (e.g. /api/thumbnails/image, which is
+   *  proxy-gated only and doesn't read the session itself) can still
+   *  record a row instead of hard-failing. The DB column matches:
+   *  `user_id UUID REFERENCES collaborators(id) ON DELETE SET NULL`. */
+  userId: string | null;
   workspaceId?: string | null;
   /** The route this call originated from, for forensics. Use the path
    *  string, e.g. `/api/generate/production-doc/image`. */

@@ -9,6 +9,7 @@ import {
   getImagesBucket,
   uploadToBucket,
 } from '@/lib/r2';
+import { recordIntent, markDelivered, markFailed } from '@/lib/provider-generations';
 
 export const maxDuration = 60;
 
@@ -41,7 +42,7 @@ interface RmbgRequestBody {
   originalImageUrl?: string;
 }
 
-export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
+export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   const { limited } = checkRateLimit(`prodoc-img-rmbg:${getClientIP(req)}`, 20, 60_000);
   if (limited) return NextResponse.json({ error: 'Rate limited' }, { status: 429 });
 
@@ -80,6 +81,19 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
     })(),
   });
 
+  // Audit-row BEFORE the paid Replicate call (Phase 1.0 of
+  // _plans/2026-05-29-persistence-rebuild.md). Throws to short-circuit
+  // if Postgres can't accept the row — better a transient 500 than an
+  // untraceable Bria charge on a route whose client today is the editor
+  // PATCH_ROW handler with no retry.
+  const intent = await recordIntent({
+    userId: session.uid,
+    workspaceId: session.ws,
+    route: '/api/generate/production-doc/image/rmbg',
+    provider: 'replicate',
+    providerModel: 'bria/rmbg-2.0',
+  });
+
   try {
     const startedAt = Date.now();
     const cutoutBuffer = await removeBackground({
@@ -99,6 +113,13 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
       r2Key,
       process.env.R2_IMAGES_PUBLIC_URL,
     );
+    void markDelivered({
+      id: intent.id,
+      providerRequestId: null,
+      responseUrl: cutoutUrl,
+      costUsd: null,
+      durationMs,
+    });
     console.info('[image-rmbg mirror]', {
       r2Key,
       ok: true,
@@ -107,6 +128,10 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
     });
     return NextResponse.json({ cutoutUrl });
   } catch (err) {
+    void markFailed({
+      id: intent.id,
+      failureReason: err instanceof Error ? err.message : String(err),
+    });
     logger.error('Production-doc image RMBG failed', {
       detail: err instanceof Error ? err.message : String(err),
     });

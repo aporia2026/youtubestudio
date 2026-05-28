@@ -18,6 +18,7 @@ import { detectMalformedCollage } from '@/lib/collage-detect';
 import { composeCollagePrompt } from '@/lib/collage-prompt';
 import { augmentCellPrompt, COLLAGE_CELL_PROMPT_CAP } from '@/lib/prompt-augmentation';
 import { apiRoute } from '@/lib/route-helpers';
+import { recordIntent, markDelivered, markFailed } from '@/lib/provider-generations';
 
 export const maxDuration = 300;
 
@@ -72,6 +73,13 @@ interface CollageCellInput {
   styleSheetDescription?: string;
 }
 export const POST = apiRoute.authed(async (session, req: NextRequest) => {
+  // Each retry attempt is a separate paid call, so this gets re-set
+  // inside the loop. Cleared after the per-attempt terminal status
+  // lands (markDelivered or markFailed). The outer catch uses it to
+  // mark a row failed when an unexpected error blows past the loop.
+  // See Phase 1.0 of _plans/2026-05-29-persistence-rebuild.md.
+  let pendingIntentId: string | null = null;
+
   try {
     const ipLimit = checkRateLimit(`prodoc-img:${getClientIP(req)}`, 30, 60_000);
     if (ipLimit.limited) return NextResponse.json({ error: 'Rate limited (IP)' }, { status: 429 });
@@ -220,6 +228,18 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       attemptCount = attempt;
       const composedPrompt = composeCollagePrompt(augmentedPrompts, attempt === 2);
       const t0 = Date.now();
+      // One audit row PER attempt — each is a separate paid provider
+      // call, so reconciliation needs to see both rows if both fired
+      // and a refund/recovery is owed for both.
+      const attemptIntent = await recordIntent({
+        userId: session.uid,
+        workspaceId: session.ws,
+        route: '/api/generate/production-doc/collage',
+        provider: spec.provider === 'atlas' ? 'atlas' : 'kie',
+        providerModel: `${spec.value}#attempt-${attempt}`,
+      });
+      pendingIntentId = attemptIntent.id;
+      let attemptProviderRequestId: string | null = null;
       try {
         logger.info('[collage generate] start', {
           attempt,
@@ -249,6 +269,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
             size: '1536x1024',
             quality: spec.atlasQuality ?? 'low',
           });
+          attemptProviderRequestId = atlasResult.predictionId ?? null;
           logger.info('[collage atlas-generate] vendor done', {
             attempt,
             prediction_id: atlasResult.predictionId,
@@ -265,6 +286,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
             spec.kieModel!,
             buildKieImageInput(spec.value, composedPrompt),
           );
+          attemptProviderRequestId = taskId;
           url = await pollKieResultThenUpscale(taskId, apiKey!);
         }
         const fetchRes = await fetch(url);
@@ -282,13 +304,34 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         });
 
         if (detection.allValid) {
+          // Provider call succeeded AND produced a usable image — mark
+          // delivered so reconciliation knows this row is not orphan.
+          void markDelivered({
+            id: attemptIntent.id,
+            providerRequestId: attemptProviderRequestId,
+            responseUrl: url,
+            costUsd: null,
+            durationMs: Date.now() - t0,
+          });
+          pendingIntentId = null;
           upscaledUrl = url;
           upscaledBuf = buf;
           malformedIndices = [];
           break; // success — out of retry loop
         }
 
+        // Malformed-quadrant case: provider was charged but the output
+        // is unusable. Mark this attempt's row failed with the indices
+        // — reconciliation surfaces these to the user so a refund can
+        // be requested.
         malformedIndices = detection.malformedIndices;
+        void markFailed({
+          id: attemptIntent.id,
+          failureReason: `malformed_quadrants:${malformedIndices.join(',')}`,
+          providerRequestId: attemptProviderRequestId,
+          durationMs: Date.now() - t0,
+        });
+        pendingIntentId = null;
         if (attempt === 2) {
           // Already retried, still malformed. Tell the client to fall back.
           logger.warn('[collage generate] malformed after retry', {
@@ -307,6 +350,16 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         // Loop to next attempt with the stronger prompt.
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
+        // Mark this attempt's audit row failed. Provider may or may not
+        // have charged depending on where in the call the throw happened;
+        // the reason text gives reconciliation enough to decide.
+        void markFailed({
+          id: attemptIntent.id,
+          failureReason: lastError,
+          providerRequestId: attemptProviderRequestId,
+          durationMs: Date.now() - t0,
+        });
+        pendingIntentId = null;
         logger.warn('[collage generate] attempt threw', {
           attempt,
           generate_ms: Date.now() - t0,
@@ -382,6 +435,12 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       },
     });
   } catch (err: unknown) {
+    if (pendingIntentId) {
+      void markFailed({
+        id: pendingIntentId,
+        failureReason: err instanceof Error ? err.message : String(err),
+      });
+    }
     logger.error('Collage image generation error', {
       detail: err instanceof Error ? err.message : String(err),
     });

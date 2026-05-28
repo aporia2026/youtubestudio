@@ -32,6 +32,7 @@ import {
   type EditOption,
   type EditOptionId,
 } from '@/lib/image-edit-pricing';
+import { recordIntent, markDelivered, markFailed } from '@/lib/provider-generations';
 
 export const maxDuration = 300;
 
@@ -124,7 +125,13 @@ function resolveOption(body: EditRequestBody): { option: EditOption; reason: str
   return { option: getEditOption('nano-banana-edit')!, reason: 'default' };
 }
 
-export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
+export const POST = apiRoute.authed(async (session, req: NextRequest) => {
+  // Tracks the provider_generations row id for the in-flight paid call.
+  // Cleared after markDelivered (success) or markFailed (failure) lands
+  // a terminal status. Same pattern as the main image route. See
+  // _plans/2026-05-29-persistence-rebuild.md.
+  let pendingIntentId: string | null = null;
+
   const { limited } = checkRateLimit(`prodoc-img-edit:${getClientIP(req)}`, 20, 60_000);
   if (limited) return NextResponse.json({ error: 'Rate limited' }, { status: 429 });
 
@@ -214,14 +221,32 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
     promptLen: prompt.length,
   });
 
+  // Audit-row BEFORE the paid provider call (Phase 1.0 of
+  // _plans/2026-05-29-persistence-rebuild.md). Throws to short-circuit
+  // if Postgres can't accept the row. provider is the backend kind
+  // (kie-standard | kie-gpt4o | flux-kontext | atlas), providerModel
+  // is the picker option id so we can group spend by option.
+  const editIntent = await recordIntent({
+    userId: session.uid,
+    workspaceId: session.ws,
+    route: '/api/generate/production-doc/image/edit',
+    provider: option.backend.kind === 'atlas' ? 'atlas' : 'kie',
+    providerModel: option.id,
+  });
+  pendingIntentId = editIntent.id;
+
   try {
     const taskStart = Date.now();
     let resultUrl: string;
+    // Captured per-branch; fed into markDelivered so the provider's
+    // billing dashboard can be cross-referenced from a single row.
+    let providerRequestId: string | null = null;
 
     switch (option.backend.kind) {
       case 'kie-standard': {
         const input = buildKieStandardInput(option, prompt, originalImageUrl, maskUrl);
         const taskId = await createKieTask(apiKey!, option.backend.kieModel, input);
+        providerRequestId = taskId;
         console.info('[image-edit task]', { taskId, optionId: option.id, kind: 'kie-standard' });
         // System-wide auto-upscale runs after poll (skips if output is
         // already >2000px on the long edge — common for edits of
@@ -240,6 +265,7 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
           size: '3:2',
           quality: option.backend.quality,
         });
+        providerRequestId = taskId;
         console.info('[image-edit task]', { taskId, optionId: option.id, kind: 'kie-gpt4o' });
         // System-wide auto-upscale: see src/lib/upscale.ts.
         resultUrl = await pollGpt4oImageResultThenUpscale(taskId, apiKey!);
@@ -253,6 +279,7 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
           aspectRatio: '16:9',
           outputFormat: 'png',
         });
+        providerRequestId = taskId;
         console.info('[image-edit task]', { taskId, optionId: option.id, kind: 'flux-kontext' });
         // System-wide auto-upscale: see src/lib/upscale.ts.
         resultUrl = await pollFluxKontextResultThenUpscale(taskId, apiKey!);
@@ -291,6 +318,7 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
           size: option.backend.atlasSize,
           quality: option.backend.atlasQuality,
         });
+        providerRequestId = atlasResult.predictionId ?? null;
         console.info('[image-edit task]', {
           predictionId: atlasResult.predictionId,
           optionId: option.id,
@@ -337,10 +365,25 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
       });
     }
 
+    void markDelivered({
+      id: editIntent.id,
+      providerRequestId,
+      responseUrl: imageUrl,
+      costUsd: option.pricePerImage,
+      durationMs: Date.now() - taskStart,
+    });
+    pendingIntentId = null;
+
     const saliency = imageBuffer ? await computeImageSaliency(imageBuffer) : null;
     console.info('[image-edit saliency]', { ok: Boolean(saliency) });
     return NextResponse.json({ imageUrl, saliency, optionId: option.id });
   } catch (err) {
+    if (pendingIntentId) {
+      void markFailed({
+        id: pendingIntentId,
+        failureReason: err instanceof Error ? err.message : String(err),
+      });
+    }
     logger.error('Production-doc image edit failed', {
       detail: err instanceof Error ? err.message : String(err),
       optionId: option.id,

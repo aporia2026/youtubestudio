@@ -7,6 +7,8 @@ import { generateImageOpenAI } from '@/lib/openai-images';
 import { uploadToBucket, getImagesBucket, getImagesDownloadUrl } from '@/lib/r2';
 import { generateImageWithUpscale } from '@/lib/image-gen-dispatch';
 import { getImageModelSpec } from '@/lib/image-models';
+import { getSession } from '@/lib/session';
+import { recordIntent, markDelivered, markFailed } from '@/lib/provider-generations';
 
 export const maxDuration = 300;
 
@@ -77,9 +79,22 @@ function requireKieKey(): string {
 }
 
 export async function POST(req: NextRequest) {
+  // Tracks the provider_generations row id for the in-flight paid call.
+  // The route has three paid lanes (atlas / openai / kie) and they all
+  // share the same outer try/catch. Cleared after markDelivered.
+  let pendingIntentId: string | null = null;
+
   try {
     const { limited } = checkRateLimit(`thumb-img:${getClientIP(req)}`, 5, 60_000);
     if (limited) return NextResponse.json({ error: 'Rate limited' }, { status: 429 });
+
+    // Session is proxy-gated by src/proxy.ts but this route doesn't use
+    // apiRoute.authed — we read it explicitly for the provider_generations
+    // attribution. Null-safe: the audit row records userId=NULL rather
+    // than failing the route, since the proxy already guarantees auth.
+    const session = await getSession();
+    const userId = session?.uid ?? null;
+    const workspaceId = session?.ws ?? null;
 
     const { model, prompt, referenceImageUrl } = await req.json();
 
@@ -134,11 +149,38 @@ export async function POST(req: NextRequest) {
           { status: 500 },
         );
       }
+      const atlasIntent = await recordIntent({
+        userId,
+        workspaceId,
+        route: '/api/thumbnails/image',
+        provider: 'atlas',
+        providerModel: model,
+        slot: 'thumbnail',
+      });
+      pendingIntentId = atlasIntent.id;
       const result = await generateImageWithUpscale(spec, prompt, { r2KeyPrefix: 'thumbnails/freeform-atlas' });
+      void markDelivered({
+        id: atlasIntent.id,
+        providerRequestId: null,
+        responseUrl: result.url,
+        costUsd: null,
+        durationMs: result.durationMs,
+      });
+      pendingIntentId = null;
       return NextResponse.json({ imageUrl: result.url, taskId: null });
     }
 
     if (config.provider === 'openai') {
+      const openaiIntent = await recordIntent({
+        userId,
+        workspaceId,
+        route: '/api/thumbnails/image',
+        provider: 'openai',
+        providerModel: model,
+        slot: 'thumbnail',
+      });
+      pendingIntentId = openaiIntent.id;
+      const openaiStart = Date.now();
       // Sync OpenAI direct path. For i2i, fetch the reference bytes; for
       // t2i, no reference needed. Upload the returned PNG to R2 so we
       // return a permanent URL (matching the Kie response shape).
@@ -172,6 +214,14 @@ export async function POST(req: NextRequest) {
       const r2Key = `thumbnails/freeform-openai/${randomUUID()}.png`;
       await uploadToBucket(getImagesBucket(), r2Key, bytes, 'image/png');
       const imageUrl = await getImagesDownloadUrl(r2Key);
+      void markDelivered({
+        id: openaiIntent.id,
+        providerRequestId: null,
+        responseUrl: imageUrl,
+        costUsd: null,
+        durationMs: Date.now() - openaiStart,
+      });
+      pendingIntentId = null;
       return NextResponse.json({ imageUrl, taskId: null });
     }
 
@@ -239,12 +289,36 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const kieIntent = await recordIntent({
+      userId,
+      workspaceId,
+      route: '/api/thumbnails/image',
+      provider: 'kie',
+      providerModel: config.model,
+      slot: 'thumbnail',
+    });
+    pendingIntentId = kieIntent.id;
+    const kieStart = Date.now();
     const taskId = await createKieTask(apiKey, config.model, input);
     // System-wide auto-upscale runs after poll. See src/lib/upscale.ts.
     const imageUrl = await pollKieResultThenUpscale(taskId, apiKey);
+    void markDelivered({
+      id: kieIntent.id,
+      providerRequestId: taskId,
+      responseUrl: imageUrl,
+      costUsd: null,
+      durationMs: Date.now() - kieStart,
+    });
+    pendingIntentId = null;
 
     return NextResponse.json({ imageUrl, taskId });
   } catch (err) {
+    if (pendingIntentId) {
+      void markFailed({
+        id: pendingIntentId,
+        failureReason: err instanceof Error ? err.message : String(err),
+      });
+    }
     return domainErrorResponse(err, {
       op: 'thumbnails: image generate',
       knownPatterns: [

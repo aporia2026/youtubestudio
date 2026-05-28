@@ -44,6 +44,7 @@ import { augmentCellPrompt, COLLAGE_CELL_PROMPT_CAP, SINGLE_SHOT_PROMPT_CAP } fr
 import { SAFE_FRAMING_EDIT_SUFFIX } from '../prompt-framing';
 import { computeImageCanvas } from '../render-canvas';
 import { logger } from '../logger';
+import { recordIntent, markDelivered, markFailed } from '../provider-generations';
 
 /** Per-row generation outcome. `imageUrl` set on success; on failure
  *  `error` carries the classified reason so the stage handler can
@@ -220,6 +221,19 @@ export async function generateBaseImage(args: {
 
   const i2iModel = style.preferred_cloud_model ?? DEFAULT_CLOUD_I2I_MODEL;
   const i2iSpec = getI2IModelSpec(i2iModel);
+  // Skip the audit row for local ComfyUI — no money is moving. Cloud
+  // i2i (Kie / Atlas) always records. See Phase 1.0 of
+  // _plans/2026-05-29-persistence-rebuild.md.
+  const isPaidI2i = i2iSpec?.provider !== 'comfyui-local';
+  const intent = isPaidI2i
+    ? await recordIntent({
+        userId: ownerId ?? null,
+        workspaceId,
+        route: 'auto-pipeline:generateBaseImage',
+        provider: i2iSpec?.provider ?? 'unknown',
+        providerModel: i2iModel,
+      })
+    : null;
   try {
     const result = await generateImageWithRefs(i2iModel, augmented.prompt, refs, {
       r2KeyPrefix: i2iSpec?.provider === 'comfyui-local'
@@ -232,6 +246,15 @@ export async function generateBaseImage(args: {
     // Use a per-spec value when available; fall back to a conservative
     // $0.04 to avoid undercounting.
     const costUsd = i2iSpec?.costUsdPerImage ?? 0.04;
+    if (intent) {
+      void markDelivered({
+        id: intent.id,
+        providerRequestId: result.kieTaskId ?? result.comfyPromptId ?? null,
+        responseUrl: result.imageUrl,
+        costUsd,
+        durationMs: result.durationMs,
+      });
+    }
     logger.info('[pipeline image-gen base] succeeded', {
       model: i2iModel,
       refs_sent: result.refsSent,
@@ -245,6 +268,12 @@ export async function generateBaseImage(args: {
       costUsd,
     };
   } catch (err) {
+    if (intent) {
+      void markFailed({
+        id: intent.id,
+        failureReason: err instanceof Error ? err.message : String(err),
+      });
+    }
     if (err instanceof ReferenceRejectedError) {
       return {
         error: `reference_rejected:${err.reason}`,
@@ -276,9 +305,15 @@ export async function generateBaseImage(args: {
 export async function generateVariantImage(args: {
   row: PipelineImageRow;
   doc: PipelineImageDoc;
+  /** Workspace id for the provider_generations audit row. Defaults to
+   *  null when the caller (legacy test) doesn't pass it; the row still
+   *  records but with no workspace attribution. New callers should
+   *  always provide. */
+  workspaceId?: string | null;
+  ownerId?: string | null;
 }): Promise<PipelineImageResult> {
   const t0 = Date.now();
-  const { row, doc } = args;
+  const { row, doc, workspaceId = null, ownerId = null } = args;
   const variantIdx = row.variant_index ?? 0;
   if (variantIdx <= 0) {
     return { error: 'not_a_variant', durationMs: Date.now() - t0, costUsd: 0 };
@@ -358,6 +393,13 @@ export async function generateVariantImage(args: {
   // character heads + bottom text in the destroy band.
   composedPrompt += SAFE_FRAMING_EDIT_SUFFIX;
 
+  const intent = await recordIntent({
+    userId: ownerId,
+    workspaceId,
+    route: 'auto-pipeline:generateVariantImage',
+    provider: 'atlas',
+    providerModel: 'openai/gpt-image-2/edit',
+  });
   try {
     const atlasResult = await generateAtlasEdit({
       prompt: composedPrompt,
@@ -397,6 +439,13 @@ export async function generateVariantImage(args: {
         detail: uploadErr instanceof Error ? uploadErr.message : String(uploadErr),
       });
     }
+    void markDelivered({
+      id: intent.id,
+      providerRequestId: atlasResult.predictionId ?? null,
+      responseUrl: imageUrl,
+      costUsd: 0.011,
+      durationMs: atlasResult.predictTimeMs,
+    });
     logger.info('[pipeline image-gen variant] succeeded', {
       group_id: groupId,
       variant_index: variantIdx,
@@ -411,6 +460,10 @@ export async function generateVariantImage(args: {
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    void markFailed({
+      id: intent.id,
+      failureReason: msg,
+    });
     // error-level: variant failures leave the group's V1/V2/V3 column empty
     // and the renderer falls through to the base, masking the loss visually.
     logger.error('[atlas-edit-failed pipeline variant]', { detail: msg.slice(0, 200) });
@@ -574,9 +627,21 @@ export async function generateCharacterContinuationImage(args: {
    *  composed Atlas Edit prompt so secondary characters in this row
    *  have consistent reference language. */
   characterDescriptions?: Record<string, string>;
+  /** Audit-row attribution for provider_generations. Optional for
+   *  back-compat with legacy callers / tests; new code should always
+   *  pass workspaceId so reconciliation can group by workspace. */
+  workspaceId?: string | null;
+  ownerId?: string | null;
 }): Promise<PipelineImageResult> {
   const t0 = Date.now();
-  const { baseImageUrl, characterId, newScenePrompt, characterDescriptions } = args;
+  const {
+    baseImageUrl,
+    characterId,
+    newScenePrompt,
+    characterDescriptions,
+    workspaceId = null,
+    ownerId = null,
+  } = args;
   if (!baseImageUrl.trim()) {
     return { error: 'empty_base_image_url', durationMs: Date.now() - t0, costUsd: 0 };
   }
@@ -591,6 +656,13 @@ export async function generateCharacterContinuationImage(args: {
     buildCharacterContinuationEditPrompt(newScenePrompt),
     characterDescriptions,
   );
+  const intent = await recordIntent({
+    userId: ownerId,
+    workspaceId,
+    route: 'auto-pipeline:generateCharacterContinuationImage',
+    provider: 'atlas',
+    providerModel: 'openai/gpt-image-2/edit',
+  });
   try {
     const edit = await generateAtlasEdit({
       prompt: editPrompt,
@@ -632,6 +704,13 @@ export async function generateCharacterContinuationImage(args: {
         detail: uploadErr instanceof Error ? uploadErr.message : String(uploadErr),
       });
     }
+    void markDelivered({
+      id: intent.id,
+      providerRequestId: edit.predictionId ?? null,
+      responseUrl: finalUrl,
+      costUsd: 0.011,
+      durationMs: edit.predictTimeMs,
+    });
     logger.info('[pipeline image-gen character-continuation] succeeded', {
       character_id: characterId,
       predict_ms: edit.predictTimeMs,
@@ -645,6 +724,7 @@ export async function generateCharacterContinuationImage(args: {
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    void markFailed({ id: intent.id, failureReason: msg });
     // error-level (not warn): a continuation failure silently bypasses the
     // character cache and the row regenerates from scratch, defeating identity
     // preservation. The 2026-05-28 incident (Atlas Edit 2560x1440 → 404) hid
@@ -674,9 +754,21 @@ export async function generateSceneContinuationImage(args: {
    *  characters appearing in this scene-anchored row render with
    *  consistent reference language. */
   characterDescriptions?: Record<string, string>;
+  /** Audit-row attribution for provider_generations. Optional for
+   *  back-compat with legacy callers / tests; new code should always
+   *  pass workspaceId. */
+  workspaceId?: string | null;
+  ownerId?: string | null;
 }): Promise<PipelineImageResult> {
   const t0 = Date.now();
-  const { baseImageUrl, sceneId, newScenePrompt, characterDescriptions } = args;
+  const {
+    baseImageUrl,
+    sceneId,
+    newScenePrompt,
+    characterDescriptions,
+    workspaceId = null,
+    ownerId = null,
+  } = args;
   if (!baseImageUrl.trim()) {
     return { error: 'empty_base_image_url', durationMs: Date.now() - t0, costUsd: 0 };
   }
@@ -691,6 +783,13 @@ export async function generateSceneContinuationImage(args: {
     buildSceneContinuationEditPrompt(newScenePrompt),
     characterDescriptions,
   );
+  const intent = await recordIntent({
+    userId: ownerId,
+    workspaceId,
+    route: 'auto-pipeline:generateSceneContinuationImage',
+    provider: 'atlas',
+    providerModel: 'openai/gpt-image-2/edit',
+  });
   try {
     const edit = await generateAtlasEdit({
       prompt: editPrompt,
@@ -725,6 +824,13 @@ export async function generateSceneContinuationImage(args: {
         detail: uploadErr instanceof Error ? uploadErr.message : String(uploadErr),
       });
     }
+    void markDelivered({
+      id: intent.id,
+      providerRequestId: edit.predictionId ?? null,
+      responseUrl: finalUrl,
+      costUsd: 0.011,
+      durationMs: edit.predictTimeMs,
+    });
     logger.info('[pipeline image-gen scene-continuation] succeeded', {
       scene_id: sceneId,
       predict_ms: edit.predictTimeMs,
@@ -738,6 +844,7 @@ export async function generateSceneContinuationImage(args: {
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    void markFailed({ id: intent.id, failureReason: msg });
     // error-level: see generateCharacterContinuationImage's catch for the
     // rationale. Scene cache misses caused by silent Edit failures look
     // identical to fresh-row generations downstream, hiding the bug.
@@ -832,9 +939,14 @@ export async function generateCollageGroup(args: {
    *  doc-level character bible the per-row generation would also have
    *  carried. Equivalent to `doc.doodle_explainer_2_character_descriptions`. */
   characterDescriptions?: Record<string, string>;
+  /** Audit-row attribution for provider_generations. Optional for
+   *  back-compat with legacy callers / tests; production callers should
+   *  always pass workspaceId so reconciliation can group by workspace. */
+  workspaceId?: string | null;
+  ownerId?: string | null;
 }): Promise<PipelineCollageGroupResult> {
   const t0 = Date.now();
-  const { cells, characterDescriptions } = args;
+  const { cells, characterDescriptions, workspaceId = null, ownerId = null } = args;
 
   // ─── Augment each cell (mirrors /collage/route.ts:192-204) ────────────
   // augmentCellPrompt runs once; the directives are stable across the
@@ -873,6 +985,15 @@ export async function generateCollageGroup(args: {
   for (let attempt = 1; attempt <= 2; attempt++) {
     const composedPrompt = composeCollagePrompt(augmentedPrompts, attempt === 2);
     const attemptStart = Date.now();
+    // One audit row per attempt — each is a separate paid Atlas T2I call.
+    const attemptIntent = await recordIntent({
+      userId: ownerId,
+      workspaceId,
+      route: 'auto-pipeline:generateCollageGroup',
+      provider: 'atlas',
+      providerModel: `openai/gpt-image-2/t2i#attempt-${attempt}`,
+    });
+    let attemptProviderRequestId: string | null = null;
     try {
       logger.info('[pipeline image-gen collage] start', {
         attempt,
@@ -884,6 +1005,7 @@ export async function generateCollageGroup(args: {
         size: '1536x1024',
         quality: 'low',
       });
+      attemptProviderRequestId = atlasResult.predictionId ?? null;
       const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, 'prodoc-images-atlas-crop');
       const upscale = await upscaleViaRecraft(croppedUrl);
       const fetchRes = await fetch(upscale.url);
@@ -901,17 +1023,38 @@ export async function generateCollageGroup(args: {
       });
 
       if (detection.allValid) {
+        void markDelivered({
+          id: attemptIntent.id,
+          providerRequestId: attemptProviderRequestId,
+          responseUrl: upscale.url,
+          costUsd: 0.0135, // Atlas low (~$0.011) + Recraft (~$0.0025)
+          durationMs: Date.now() - attemptStart,
+        });
         upscaledUrl = upscale.url;
         upscaledBytes = buf;
         malformedIndicesLast = [];
         break;
       }
+      // Malformed but charged. Mark failed so reconciliation surfaces
+      // the wasted spend.
+      void markFailed({
+        id: attemptIntent.id,
+        failureReason: `malformed_quadrants:${detection.malformedIndices.join(',')}`,
+        providerRequestId: attemptProviderRequestId,
+        durationMs: Date.now() - attemptStart,
+      });
       malformedIndicesLast = detection.malformedIndices;
       if (attempt === 2) {
         lastError = 'malformed_after_retry';
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      void markFailed({
+        id: attemptIntent.id,
+        failureReason: msg,
+        providerRequestId: attemptProviderRequestId,
+        durationMs: Date.now() - attemptStart,
+      });
       logger.error('[atlas-edit-failed pipeline collage]', {
         attempt,
         detail: msg.slice(0, 200),
