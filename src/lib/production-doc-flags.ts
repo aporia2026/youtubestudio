@@ -51,8 +51,18 @@ export function isShortVariantPromptEnabled(): boolean {
  *  Add a per-style entry here when a style needs language different
  *  from the default. Most styles can ride the default. */
 const VARIANT_PRESERVATION_HINTS: Record<string, string> = {
+  // Phase 2-deferred / Bug 2 fix-up — count-precision hint extension.
+  // Sodder QA flagged Atlas Edit thinning the crowd ("base shows 7
+  // figures, variant shows 5") under subtraction-style variant prompts
+  // ("remove the extra two children"). The prior hint listed
+  // composition / positions / proportions / line style but NOT figure
+  // count, which Atlas read as license to drift the count freely. The
+  // extension explicitly names figures / people / characters as a
+  // protected axis AND carves out the EXPLICIT-ask exception so
+  // genuine "add one person / remove one person" instructions still
+  // work. Spec: _plans/2026-05-28-doodle-2-variant-count-precision.md.
   doodle_explainer_2:
-    'Apply only the change above. Composition, positions, proportions, and line style must stay exactly identical to the input image — nothing else changes.',
+    'Apply only the change above. Composition, positions, proportions, line style, AND the number of figures, people, and characters in the scene must stay exactly identical to the input image — except when the change above EXPLICITLY asks to add or remove a specific person. Do not silently thin crowds or add bystanders.',
 };
 
 const DEFAULT_VARIANT_PRESERVATION_HINT =
