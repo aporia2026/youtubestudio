@@ -10,7 +10,7 @@
     "src/app/api/thumbnails/format/topic-card-grid/{cards,image}/route.ts": { "maxDuration": 300 },
     "src/app/api/thumbnails/format/n-levels/{levels,image}/route.ts": { "maxDuration": 300 },
     "src/app/api/cron/{run-workflows,poll-publishing,capture-prediction-outcomes,snapshot-analytics,tag-video-formats,detect-breakouts}/route.ts": { "maxDuration": 300 },
-    "src/app/api/cron/{weekly-insight-digest,rescore-niche-watchlist,niche-taxonomy-sweep,niche-finder-favorites-enrich,niche-finder-favorites-validate-videos,run-pipeline}/route.ts": { "maxDuration": 300 },
+    "src/app/api/cron/{weekly-insight-digest,rescore-niche-watchlist,niche-taxonomy-sweep,niche-finder-favorites-enrich,niche-finder-favorites-validate-videos,run-pipeline,reconcile-orphan-generations}/route.ts": { "maxDuration": 300 },
     "src/app/api/seo/optimize/route.ts":                             { "maxDuration": 300 },
     "src/app/api/channel-naming/generate/route.ts":                  { "maxDuration": 300 },
     "src/app/api/elevenlabs/generate/route.ts":                      { "maxDuration": 300 },
@@ -103,6 +103,10 @@
     {
       "path": "/api/cron/run-pipeline",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/reconcile-orphan-generations",
+      "schedule": "23 * * * *"
     }
   ]
 }
