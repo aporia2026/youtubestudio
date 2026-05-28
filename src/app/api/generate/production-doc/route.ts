@@ -347,15 +347,72 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   // because it's the only style that has variant_groups in its
   // mixing_rules. See `_plans/2026-05-25-near-static-variants.md`.
   if (Array.isArray(result.rows) && resolved?.id === 'doodle_explainer_2') {
-    const grouped = autoGroupVariants(result.rows);
+    // Local alias preserves the narrowing inside nested callbacks below
+    // (TypeScript drops the `result.rows` narrowing once we enter a
+    // .filter / .map arrow function).
+    const rows = result.rows;
+    const grouped = autoGroupVariants(rows);
     if (grouped.groupCount > 0) {
       logger.info('[production-doc auto-group-variants]', {
         styleId: resolved.id,
-        rowCount: result.rows.length,
+        rowCount: rows.length,
         groupCount: grouped.groupCount,
         mergedRowCount: grouped.mergedRowCount,
       });
     }
+    // Always log the final variant-group ratio after both LLM-emitted
+    // groups and the auto-grouper pass have run. Target is ~40% of rows
+    // in variant groups per the doodle_explainer_2 mixing_rules. This
+    // log is the primary verification surface for the 40% target — open
+    // the console after generating a doc and check the ratio. Counts
+    // any row carrying a `group_id` (whether emitted by the LLM or
+    // patched by autoGroupVariants).
+    const totalRows = rows.length;
+    const groupRows = rows.filter((r) => {
+      const gid = (r as unknown as { group_id?: unknown }).group_id;
+      return typeof gid === 'string' && gid.length > 0;
+    }).length;
+    const ratio = totalRows > 0 ? groupRows / totalRows : 0;
+    logger.info('[production-doc variants]', {
+      styleId: resolved.id,
+      totalRows,
+      groupRows,
+      freshRows: totalRows - groupRows,
+      ratio: Number(ratio.toFixed(3)),
+      targetRatio: 0.4,
+      withinTarget: ratio >= 0.25 && ratio <= 0.55,
+    });
+
+    // Log overlay_stock_terms coverage so we can verify the REALISM
+    // pillar is firing: the mixing_rules now demand a real-photo
+    // composition on every named person / place / brand / event with
+    // a cadence floor of ~1 per 8-12 rows (4-6 for factual scripts).
+    // This log shows what the LLM actually emitted; pair with the
+    // /api/overlay/fetch logs to see what got resolved at render time.
+    const overlayRows = rows.filter((r) => {
+      const terms = (r as unknown as { overlay_stock_terms?: unknown }).overlay_stock_terms;
+      return typeof terms === 'string' && terms.trim().length > 0;
+    });
+    const overlayRatio = totalRows > 0 ? overlayRows.length / totalRows : 0;
+    // Sample the first 8 terms so the log is grep-friendly without
+    // dumping the entire script — full terms are visible per-row in
+    // the saved doc.
+    const sampleTerms = overlayRows.slice(0, 8).map((r) => {
+      const idx = rows.indexOf(r);
+      const term = (r as unknown as { overlay_stock_terms?: string }).overlay_stock_terms ?? '';
+      return { rowIndex: idx, term };
+    });
+    logger.info('[production-doc overlay-stock terms]', {
+      styleId: resolved.id,
+      totalRows,
+      overlayRows: overlayRows.length,
+      overlayRatio: Number(overlayRatio.toFixed(3)),
+      // Cadence floor: 1 real-photo beat per 8-12 rows = ratio of
+      // ~0.083 - 0.125 at minimum. Factual scripts can sit at ~0.17 -
+      // 0.25. Below the floor means the LLM is skipping named entities.
+      meetsFloor: overlayRatio >= 0.08,
+      sampleTerms,
+    });
   }
 
   // Option A (variant prompt refinement) — rewrites each variant's

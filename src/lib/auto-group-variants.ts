@@ -155,6 +155,43 @@ function overlapSimilarity(a: string, b: string): number {
   return intersection / Math.min(tokensA.size, tokensB.size);
 }
 
+/** Detect prose-level variant cues — phrases the LLM uses when it
+ *  understands a row is a variant but writes the full prompt anyway
+ *  (instead of emitting the structural group_id + variant_index +
+ *  variant_edit_prompt). The Mary Celeste QA showed this pattern
+ *  reliably: row N says "Same empty brigantine deck as before, with
+ *  both sailors now frozen..." but lacks group_id, so the row is
+ *  emitted as a fresh full-cost generation.
+ *
+ *  Returns true when the prompt's opening sentence reads like a
+ *  continuation of a previous scene. The opening (first ~80 chars) is
+ *  where this cue lives in practice — the rest of the prompt then
+ *  describes the additive delta.
+ *
+ *  Conservative on purpose: only matches strong prose signals
+ *  ("Same X as before", "The same X with", "Continuing from the
+ *  previous"). Weaker hedges ("still", "now") on their own match too
+ *  often for unrelated reasons (e.g. "the still water", "now the wind
+ *  picked up"). */
+const PROSE_VARIANT_PATTERNS: readonly RegExp[] = [
+  /^\s*the\s+same\s+/i,
+  /^\s*same\s+\w+.{0,80}\bas\s+before\b/i,
+  /^\s*same\s+\w+.{0,80}\bbut\s+(now|with|the)\b/i,
+  /^\s*same\s+scene\b/i,
+  /^\s*same\s+composition\b/i,
+  /^\s*same\s+(shot|frame|view|angle)\b/i,
+  /^\s*continuing\s+from\s+the\s+previous\b/i,
+  /^\s*from\s+the\s+same\s+(angle|camera|view|frame)\b/i,
+  // "Same empty brigantine deck as before" — the QA-observed pattern.
+  // Covers "Same X, now with Y" too via the second pattern above.
+  /^\s*same\s+\w+(\s+\w+){0,4}.{0,40}\b(now|then)\s+/i,
+];
+
+function looksLikeProseVariant(prompt: string): boolean {
+  const head = prompt.slice(0, 200);
+  return PROSE_VARIANT_PATTERNS.some((re) => re.test(head));
+}
+
 /** Extract a clean delta phrase the Atlas-Edit dispatcher can use as
  *  `variant_edit_prompt`. Tries two strategies in order:
  *
@@ -357,7 +394,19 @@ export function autoGroupVariants<R extends ProductionDocRowLike>(
       const candidate = rows[j] as R & Record<string, unknown>;
       const candidatePrompt = String(candidate.ai_image_prompt ?? '');
       const sim = overlapSimilarity(basePrompt, candidatePrompt);
-      if (sim < threshold) break;
+      // Effective threshold drops to 0.25 when the candidate's prompt
+      // opens with a strong prose-variant cue ("Same X as before",
+      // "The same scene, but now…"). Those cues mean the LLM
+      // understood the row was a variant but wrote a full prompt
+      // instead of the structural variant_edit_prompt form. The
+      // overlap can be as low as ~0.3 in those cases because the
+      // variant text describes the DELTA in fresh vocabulary
+      // ("frozen", "wide eyes", "open mouths") while sharing only a
+      // few base nouns. Below 0.25 we still bail — that's where the
+      // false-positive risk lives. See the Mary Celeste QA run
+      // 2026-05-28T06:41:00 for the row 4/5 case this catches.
+      const candThreshold = looksLikeProseVariant(candidatePrompt) ? 0.25 : threshold;
+      if (sim < candThreshold) break;
       const delta = extractDelta(basePrompt, candidatePrompt, minDeltaWords);
       if (!delta) break;
       variants.push({ row: rows[j], delta });
@@ -396,6 +445,62 @@ export function autoGroupVariants<R extends ProductionDocRowLike>(
     // Advance past the group. j is the index of the first non-grouped
     // row after the variants.
     i = j;
+  }
+
+  // Rescue pass — fix orphan variants. The LLM occasionally emits a
+  // row with `variant_index >= 1` and a `group_id` but FORGETS to mark
+  // the preceding row as the base (variant_index: 0, same group_id).
+  // The main walk above skips already-tagged rows, so this malformed
+  // pattern would otherwise survive intact and the renderer would have
+  // a variant with no base. Rescue it by grafting the previous fresh
+  // (untagged) row into the group as variant_index: 0. Observed in QA
+  // run 2026-05-28T06:51:23 (Mary Celeste): row 5 had
+  // `mary-empty-deck-1#1` but row 4 was a plain fresh row that was
+  // clearly the intended base.
+  for (let k = 1; k < rows.length; k++) {
+    const curBag = rows[k] as Record<string, unknown>;
+    const curGroupId = curBag.group_id;
+    const curVariantIndex = curBag.variant_index;
+    if (typeof curGroupId !== 'string' || curGroupId.length === 0) continue;
+    if (typeof curVariantIndex !== 'number' || curVariantIndex < 1) continue;
+    // Already has a properly-matched base earlier? Skip.
+    let hasBase = false;
+    for (let p = k - 1; p >= 0; p--) {
+      const prev = rows[p] as Record<string, unknown>;
+      if (prev.group_id === curGroupId && prev.variant_index === 0) {
+        hasBase = true;
+        break;
+      }
+      // Stop scanning back at the first row that BELONGS to a different
+      // group — bases don't skip across other groups.
+      if (typeof prev.group_id === 'string' && prev.group_id !== curGroupId) break;
+    }
+    if (hasBase) continue;
+    // Promote the previous row into the group as the base, if it's
+    // a plain fresh row (no existing group_id) and has an ai_image_prompt
+    // we can use.
+    const baseBag = rows[k - 1] as Record<string, unknown>;
+    const baseCandidatePrompt = typeof baseBag.ai_image_prompt === 'string' ? baseBag.ai_image_prompt : '';
+    if (
+      typeof baseBag.group_id === 'string' && baseBag.group_id.length > 0
+    ) continue; // not a free fresh row — don't steal it
+    if (baseCandidatePrompt.trim().length < minPromptChars) continue;
+    baseBag.group_id = curGroupId;
+    baseBag.variant_index = 0;
+    // If the orphan variant had a populated ai_image_prompt (instead of
+    // the proper variant_edit_prompt), convert it into an edit prompt
+    // and clear the full prompt — same shape the main walk produces.
+    const orphanFullPrompt = typeof curBag.ai_image_prompt === 'string' ? curBag.ai_image_prompt : '';
+    const existingEditPrompt = typeof curBag.variant_edit_prompt === 'string' ? curBag.variant_edit_prompt : '';
+    if (orphanFullPrompt.length > 0 && existingEditPrompt.length === 0) {
+      const delta = extractDelta(baseCandidatePrompt, orphanFullPrompt, minDeltaWords);
+      if (delta) {
+        curBag.variant_edit_prompt = delta;
+        curBag.ai_image_prompt = '';
+      }
+    }
+    groupCount += 1;
+    mergedRowCount += 1; // the orphan was already tagged; the base is the new addition
   }
 
   return { rows, groupCount, mergedRowCount };

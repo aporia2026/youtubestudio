@@ -144,33 +144,23 @@ export const TRIMMED_AI_IMAGE_SUFFIX: Record<string, string> = {
  *  variant-group block to a single sentence pointing at the auto-
  *  grouper. */
 export const TRIMMED_MIXING_RULES: Record<string, string> = {
-  doodle_explainer_2: [
-    'Style defaults (per row):',
-    '- visual_type defaults to "Animation".',
-    '- ai_image_prompt: single centered subject on pure white background, thick black hand-drawn outlines, generous white space, muted palette (pale blue / pale yellow / light gray accents; saturated red ONLY for danger). Keep scenes simple enough to plausibly re-edit with a brow / mouth / hand change.',
-    '',
-    'ON-SCREEN TEXT (`on_screen_text`):',
-    'Populate for time markers ("In May 2017"), statistics ("150 countries"), foreign or technical terms ("EternalBlue"), short punchlines (3-5 words). The renderer composites these as yellow bubble callouts — never bake text into the AI image. CRITICAL: leave `on_screen_text_mode` undefined or "overlay", NEVER "bake".',
-    '',
-    'Do NOT put time markers, stats, or named terms into `ai_image_prompt`. The player composites all on-screen text on top of clean illustrations.',
-    '',
-    'OVERLAY STOCK (`overlay_stock_terms`):',
-    'When the script names a recognisable real subject, populate this so the editor composites a real asset on top of the cartoon:',
-    '- Named brand → "<brand> logo official PNG"',
-    '- Named software / UI → "<thing> screenshot"',
-    '- Named real person → "<name> photograph"',
-    '- Named place / event → "<thing> photograph"',
-    '',
-    'Real photos appear as inset rectangles with a thick coloured border (orange / red / blue / black to match scene mood). When populating overlay_stock_terms:',
-    '- Keep visual_type as "Animation" (or "Statistics" / "Cutaway"). Do NOT switch to "Screen Recording" or "B-Roll".',
-    '- `ai_image_prompt` describes a complete cartoon scene that includes an empty bordered rectangle as the placeholder — do NOT describe the real subject (the AI would draw a stylised fake; the real one is overlaid later).',
-    '- Add a `notes` line: "Composite: drop the real <X> into the bordered rectangle".',
-    '',
-    'Aim for roughly 1 in 4 to 1 in 6 rows being a framed-photo composite.',
-    '',
-    'VARIANT GROUPS:',
-    'Write rows naturally — do NOT set `group_id`, `variant_index`, or `variant_edit_prompt` manually. The server post-process detects consecutive rows with similar compositions and groups them automatically into variant groups (1 base + 2–3 micro-edited variants) for the additive frame-by-frame animation pattern.',
-  ].join('\n'),
+  // Doodle Explainer 2 intentionally NOT in this map (2026-05-28).
+  // Earlier versions had a 1.5kB trim that produced ~0.10 variant
+  // compliance vs the full rules' ~0.30. An augmented 6.5kB trim
+  // regressed to the same ~0.10 (worked example anchored the LLM to
+  // one group instead of generalising). The ~32kB size delta costs
+  // ~$0.001 per LLM call — negligible compared to the +20pp variant
+  // compliance gain. With no entry here, `getEffectiveMixingRules`
+  // falls through to the original full mixing_rules in
+  // production-doc-styles.ts which carry the full Phase 2 work
+  // (REALISM pillars, per-ref roles, "forest is placeholder", 40%
+  // variant target, worked examples). See plan
+  // _plans/2026-05-28-doodle-2-authenticity-round.md.
+  //
+  // The TRIMMED_AI_IMAGE_SUFFIX entry above is INTENTIONALLY kept —
+  // that one addresses image-model attention budget at the i2i side,
+  // which is a separate concern from LLM context budget. Future
+  // styles can opt into the trim by adding their id here.
 };
 
 /** Resolve the effective `ai_image_suffix` for a style, honouring the
