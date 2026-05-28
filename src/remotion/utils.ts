@@ -1090,6 +1090,37 @@ export interface ProductionDoc {
     anchors?: Partial<Record<'auto-mouth' | 'auto-center' | 'auto-eyes', { xPct: number; yPct: number }>>;
   }>;
 
+  /** doodle_explainer_2 (2026-05-28): per-video cache of recurring-character
+   *  base images, keyed by `ProductionRow.character_id`. Functionally
+   *  parallel to `paint_explainer_v1_character_cache` but consumed by a
+   *  different pipeline path (Atlas Edit character continuation, not
+   *  motion-overlay mouth-swap).
+   *
+   *  Mechanism: first row with a given character_id generates fresh via
+   *  Atlas i2i + the 4 style refs and writes the result here. Subsequent
+   *  rows with the same character_id skip i2i and instead call Atlas Edit
+   *  with the cached `base_url` as the input image — preserving character
+   *  identity (face/hair/clothing) across non-consecutive scenes. Validated
+   *  by the smoke test at _plans/2026-05-28-atlas-edit-smoke/.
+   *
+   *  Saves ~$0.029 per cache hit ($0.011 Edit vs $0.04 i2i) AND fixes the
+   *  user-reported character-drift problem (same family rendering as
+   *  different families across shots). See plan
+   *  _plans/2026-05-28-doodle-2-character-cache.md.
+   *
+   *  Undefined on legacy docs and on docs not using doodle_explainer_2. */
+  doodle_explainer_2_character_cache?: Record<string, {
+    /** R2 / vendor CDN URL of the cached base image generated on first
+     *  occurrence. Read on every subsequent occurrence of the same
+     *  character_id; passed as the input image to Atlas Edit. */
+    base_url: string;
+    /** 0-based row index where the character first appeared. Useful for
+     *  telemetry ("character X cached at row 4, reused at rows 9, 14, 18")
+     *  and for invalidation logic if we ever add a "regenerate from row N"
+     *  feature in the editor. */
+    first_seen_row_index: number;
+  }>;
+
   /** paint_explainer_v1 (2026-05-28): per-doc settings overriding the
    *  defaults. Every field optional — `resolvePaintExplainerV1Settings`
    *  fills in the canonical default for any field the user hasn't set.

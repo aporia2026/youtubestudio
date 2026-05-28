@@ -44,6 +44,7 @@ import { logger } from '../../logger';
 import type { StageHandlerContext, StageOutcome } from '../types';
 import {
   generateBaseImage,
+  generateCharacterContinuationImage,
   generateMouthRemovedForCharacter,
   generateVariantImage,
   type PipelineImageDoc,
@@ -190,6 +191,7 @@ export async function handleGenerateProductionDocImages(
   //    mouth-removed companion call; we add a $0.01 buffer per base
   //    rather than parse motion_beats here — conservative for the cap.
   const isPaintExplainerV1 = doc.style_preset === 'paint_explainer_v1';
+  const isDoodleExplainer2 = doc.style_preset === 'doodle_explainer_2';
   const COST_PER_BASE = isPaintExplainerV1 ? 0.05 : 0.04;
   const COST_PER_VARIANT = 0.011;
   const remainingCostUsd =
@@ -258,22 +260,117 @@ export async function handleGenerateProductionDocImages(
   let visionPassSucceeded = 0;
   let visionPassSkipped = 0;
   let visionPassFailed = 0;
+  // doodle_explainer_2 character cache counters — surfaced in the
+  // per-tick summary log so a single Vercel log line shows how much
+  // character-continuation reuse happened this tick.
+  let charCacheHits = 0;
+  let charCacheMisses = 0;
+  let charCacheEditFailures = 0;
   for (const item of plan) {
     const row = doc.rows[item.index];
-    const result =
-      item.kind === 'base'
-        ? await generateBaseImage({
-            row,
-            doc,
-            workspaceId: video.workspace_id,
-          })
-        : await generateVariantImage({ row, doc });
+
+    // doodle_explainer_2 character continuation — runs BEFORE the
+    // normal base/variant generation path. When this row has a
+    // `character_id` that's already in the per-doc cache, skip the
+    // expensive i2i call and instead call Atlas Edit on the cached
+    // base with this row's ai_image_prompt as the edit instruction.
+    // Atlas Edit preserves the character's face/hair/clothing while
+    // changing pose/setting — see generateCharacterContinuationImage.
+    // Cache miss with character_id set: the row goes through normal
+    // generation, and the result is written into the cache AFTER
+    // success so subsequent rows can reuse it.
+    // Plan: _plans/2026-05-28-doodle-2-character-cache.md.
+    let result;
+    const useCharCache =
+      isDoodleExplainer2
+      && item.kind === 'base'
+      && typeof row.character_id === 'string'
+      && row.character_id.trim().length > 0;
+    const charCache = doc.doodle_explainer_2_character_cache ?? {};
+    const cachedChar = useCharCache ? charCache[row.character_id as string] : undefined;
+    if (
+      useCharCache
+      && cachedChar?.base_url
+      && typeof row.ai_image_prompt === 'string'
+      && row.ai_image_prompt.trim().length > 0
+    ) {
+      const editResult = await generateCharacterContinuationImage({
+        baseImageUrl: cachedChar.base_url,
+        characterId: row.character_id as string,
+        newScenePrompt: row.ai_image_prompt,
+      });
+      if (editResult.imageUrl) {
+        charCacheHits += 1;
+        logger.info('[doodle-2 character-cache] hit-and-edit', {
+          pipeline_video_id: video.id,
+          row_index: item.index,
+          character_id: row.character_id,
+          first_seen_row_index: cachedChar.first_seen_row_index,
+          cost_usd: editResult.costUsd,
+          duration_ms: editResult.durationMs,
+        });
+        result = editResult;
+      } else {
+        // Edit failed (network, model error, etc.). Fall back to fresh
+        // i2i below — better to ship a drifted character image than
+        // fail the row entirely. The cache stays populated so the
+        // next row with this character_id will try Edit again.
+        charCacheEditFailures += 1;
+        logger.warn('[doodle-2 character-cache] hit but edit failed, falling back to i2i', {
+          pipeline_video_id: video.id,
+          row_index: item.index,
+          character_id: row.character_id,
+          error: editResult.error,
+        });
+      }
+    }
+
+    // Normal generation path — runs when we didn't hit the cache (or
+    // hit it but the Edit call failed and we're falling back).
+    if (!result) {
+      result =
+        item.kind === 'base'
+          ? await generateBaseImage({
+              row,
+              doc,
+              workspaceId: video.workspace_id,
+            })
+          : await generateVariantImage({ row, doc });
+    }
     tickCostUsd += result.costUsd;
     if (result.imageUrl) {
       // Mutate the in-memory doc so subsequent variants in this same
       // tick see the new image_url when checking their source.
       doc.rows[item.index].image_url = result.imageUrl;
       succeeded += 1;
+
+      // ─── doodle_explainer_2 character cache write-back ──────────
+      // Cache miss case: this row had a character_id but no cached
+      // base existed. Now that the fresh i2i generation succeeded,
+      // store the result so the NEXT row with the same character_id
+      // can skip generation and use Atlas Edit on this base instead.
+      // Skip if `cachedChar` was set (we either hit + reused above,
+      // or hit + edit-failed and fell back — either way the cache
+      // entry already exists and we don't want to overwrite the
+      // canonical character image with a fallback drift).
+      if (
+        useCharCache
+        && !cachedChar
+        && typeof row.character_id === 'string'
+        && row.character_id.length > 0
+      ) {
+        charCache[row.character_id] = {
+          base_url: result.imageUrl,
+          first_seen_row_index: item.index,
+        };
+        doc.doodle_explainer_2_character_cache = charCache;
+        charCacheMisses += 1;
+        logger.info('[doodle-2 character-cache] miss-and-store', {
+          pipeline_video_id: video.id,
+          row_index: item.index,
+          character_id: row.character_id,
+        });
+      }
 
       // ─── paint_explainer_v1 mouth-removed chain ──────────────────
       // Runs only on base rows in a paint_explainer_v1 doc whose row
@@ -520,6 +617,16 @@ export async function handleGenerateProductionDocImages(
     vision_pass_succeeded: visionPassSucceeded,
     vision_pass_skipped: visionPassSkipped,
     vision_pass_failed: visionPassFailed,
+    // doodle_explainer_2 character-cache telemetry. All zero on
+    // non-doodle_explainer_2 docs. A high hit count means the LLM is
+    // emitting consistent character_id slugs and the user is getting
+    // visual continuity AND cost savings; a high miss count is normal
+    // on the first tick of any doc; persistent edit_failures (>0
+    // after multiple ticks) means Atlas Edit is unreliable for this
+    // style and the fallback path is doing the heavy lifting.
+    char_cache_hits: charCacheHits,
+    char_cache_misses_stored: charCacheMisses,
+    char_cache_edit_failures: charCacheEditFailures,
   });
 
   return {

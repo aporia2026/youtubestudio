@@ -413,6 +413,40 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       meetsFloor: overlayRatio >= 0.08,
       sampleTerms,
     });
+
+    // Log character_id emission so we can verify the LLM is actually
+    // tagging recurring characters per the new CHARACTERS section in
+    // the mixing_rules. The Atlas Edit cache hits happen later (image-
+    // gen time, visible in the stage handler's tick summary); this
+    // log captures what the LLM emitted before that.
+    const charIdCounts = new Map<string, number>();
+    for (const r of rows) {
+      const cid = (r as unknown as { character_id?: unknown }).character_id;
+      if (typeof cid === 'string' && cid.trim().length > 0) {
+        charIdCounts.set(cid, (charIdCounts.get(cid) ?? 0) + 1);
+      }
+    }
+    const rowsWithCharId = Array.from(charIdCounts.values()).reduce((a, b) => a + b, 0);
+    // A character_id only earns its keep when at least 2 rows share it
+    // (otherwise the cache never gets used). Count unique slugs that
+    // appear on 2+ rows for the "actually-useful" metric.
+    const reusableCharIds = Array.from(charIdCounts.entries()).filter(([, n]) => n >= 2);
+    logger.info('[production-doc character-ids]', {
+      styleId: resolved.id,
+      totalRows,
+      rowsWithCharId,
+      uniqueCharIds: charIdCounts.size,
+      reusableCharIds: reusableCharIds.length,
+      // Sample the first 6 character_ids and their row counts so the
+      // log is human-readable without dumping the entire doc.
+      sampleSlugs: Array.from(charIdCounts.entries()).slice(0, 6).map(([slug, count]) => ({ slug, count })),
+      // Heuristic: a script with named recurring characters (most
+      // real-life story scripts) should emit at least one reusable
+      // character_id. Zero means the LLM either ignored the
+      // mixing_rules or the script genuinely has no recurring
+      // characters (rare).
+      hasAnyReusable: reusableCharIds.length > 0,
+    });
   }
 
   // Option A (variant prompt refinement) — rewrites each variant's

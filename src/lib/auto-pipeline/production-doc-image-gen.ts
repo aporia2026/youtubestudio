@@ -97,6 +97,16 @@ export interface PipelineImageDoc {
     mouth_removed_url?: string;
     anchors?: Partial<Record<'auto-mouth' | 'auto-center' | 'auto-eyes', { xPct: number; yPct: number }>>;
   }>;
+  // ─── doodle_explainer_2 (2026-05-28) ───────────────────────────────
+  // Per-doc cache of recurring-character base images for the Atlas
+  // Edit character-continuation path. Same shape as
+  // ProductionDoc.doodle_explainer_2_character_cache — re-stated here
+  // for the same reason as above (no React imports in server code).
+  // See _plans/2026-05-28-doodle-2-character-cache.md.
+  doodle_explainer_2_character_cache?: Record<string, {
+    base_url: string;
+    first_seen_row_index: number;
+  }>;
 }
 
 /**
@@ -412,6 +422,132 @@ export async function generateMouthRemovedForCharacter(args: {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn('[pipeline image-gen mouth-removed] failed', {
+      character_id: characterId,
+      detail: msg.slice(0, 200),
+    });
+    return { error: msg.slice(0, 200), durationMs: Date.now() - t0, costUsd: 0 };
+  }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// doodle_explainer_2 character continuation (2026-05-28)
+//
+// When a row in a doodle_explainer_2 doc carries a `character_id` that the
+// per-doc character cache already knows about, the image-gen pipeline
+// skips the normal i2i path (which would draw a fresh character from
+// scratch, drifting in face/hair/clothing) and instead calls Atlas Edit
+// on the cached base with the row's new scene as the edit prompt. Atlas
+// Edit preserves the character's identity while changing pose / setting
+// / expression — validated end-to-end by the smoke test at
+// `_plans/2026-05-28-atlas-edit-smoke/`.
+//
+// Stateless, like `generateMouthRemovedForCharacter`. The stage handler
+// owns cache lookup / write-back / telemetry. Plan reference:
+// `_plans/2026-05-28-doodle-2-character-cache.md`.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Wrap a row's `ai_image_prompt` into an Atlas Edit instruction that
+ *  preserves the character's identity from the cached base image. Pure
+ *  function — no IO, testable in isolation.
+ *
+ *  Format aligns with the smoke-test prompt that successfully preserved
+ *  George's face/hair/clothing across two scene changes. If a future
+ *  iteration of Atlas Edit needs different language (e.g. it starts
+ *  drifting on long prompts), tune here. */
+export function buildCharacterContinuationEditPrompt(originalScenePrompt: string): string {
+  const trimmed = originalScenePrompt.trim();
+  return (
+    `Modify this image to show the SAME character in this new scene: ${trimmed}. ` +
+    `CRITICAL: keep the character's face, hair, body proportions, clothing, ` +
+    `and overall identity EXACTLY identical to the input image. Only change ` +
+    `the pose, setting, expression, and other scene elements per the new ` +
+    `scene description above. Maintain the hand-drawn doodle style with ` +
+    `thick uneven black ink outlines and flat color fills.`
+  );
+}
+
+/** Generate a character-continuation image via Atlas Edit on a cached
+ *  base. The cached base is what the FIRST row featuring the character
+ *  produced via i2i; this call lets every SUBSEQUENT row reuse that
+ *  character's identity while changing the scene around them.
+ *
+ *  Mirrors the post-Edit chain used by `generateMouthRemovedForCharacter`:
+ *  crop to 16:9 → upscale via Recraft → mirror to R2 so the resulting
+ *  URL is a long-lived R2 GET (not a vendor CDN URL that could expire).
+ *
+ *  Stateless: the caller (stage handler) is responsible for:
+ *    1. Looking up the cache before calling.
+ *    2. Writing the returned URL into the row's `image_url` field on success.
+ *    3. Emitting `[doodle-2 character-cache] hit-and-edit` cost telemetry.
+ *
+ *  Never throws — returns `{ error }` so the stage handler can fall back
+ *  to a fresh i2i generation if Edit drifts too far or fails. */
+export async function generateCharacterContinuationImage(args: {
+  baseImageUrl: string;
+  characterId: string;
+  newScenePrompt: string;
+}): Promise<PipelineImageResult> {
+  const t0 = Date.now();
+  const { baseImageUrl, characterId, newScenePrompt } = args;
+  if (!baseImageUrl.trim()) {
+    return { error: 'empty_base_image_url', durationMs: Date.now() - t0, costUsd: 0 };
+  }
+  if (!characterId.trim()) {
+    return { error: 'empty_character_id', durationMs: Date.now() - t0, costUsd: 0 };
+  }
+  if (!newScenePrompt.trim()) {
+    return { error: 'empty_scene_prompt', durationMs: Date.now() - t0, costUsd: 0 };
+  }
+
+  const editPrompt = buildCharacterContinuationEditPrompt(newScenePrompt);
+  try {
+    const edit = await generateAtlasEdit({
+      prompt: editPrompt,
+      images: [baseImageUrl],
+      size: '2560x1440',
+      quality: 'low',
+    });
+    // Same crop+upscale+R2-mirror chain as the variant edit path. Atlas
+    // returns 2560x1440 here so the 16:9 crop is a no-op, but routing
+    // through the helper keeps the post-gen pipeline uniform.
+    const croppedUrl = await cropTo16x9AndUpload(edit.url, 'prodoc-images-atlas-crop');
+    const upscale = await upscaleViaRecraft(croppedUrl);
+    let finalUrl = upscale.url;
+    try {
+      const imgRes = await fetch(upscale.url);
+      if (imgRes.ok) {
+        const contentType = imgRes.headers.get('content-type') || 'image/png';
+        const buffer = Buffer.from(await imgRes.arrayBuffer());
+        const ext = contentType.includes('png') ? 'png' : 'jpg';
+        const randomSuffix = Math.random().toString(36).slice(2, 10);
+        const bucket = getImagesBucket();
+        const r2Key = `prodoc-images/${Date.now()}-pipe-char-continuation-${randomSuffix}.${ext}`;
+        await uploadToBucket(bucket, r2Key, buffer, contentType);
+        finalUrl = await getDownloadUrlForBucket(
+          bucket,
+          r2Key,
+          process.env.R2_IMAGES_PUBLIC_URL,
+        );
+      }
+    } catch (uploadErr) {
+      logger.warn('[pipeline image-gen character-continuation] R2 mirror failed, using upscale URL', {
+        detail: uploadErr instanceof Error ? uploadErr.message : String(uploadErr),
+      });
+    }
+    logger.info('[pipeline image-gen character-continuation] succeeded', {
+      character_id: characterId,
+      predict_ms: edit.predictTimeMs,
+      cost_usd: 0.011,
+    });
+    return {
+      imageUrl: finalUrl,
+      durationMs: Date.now() - t0,
+      modelUsed: 'openai/gpt-image-2/edit',
+      costUsd: 0.011,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn('[pipeline image-gen character-continuation] failed', {
       character_id: characterId,
       detail: msg.slice(0, 200),
     });
