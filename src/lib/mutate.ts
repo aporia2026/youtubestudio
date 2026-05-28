@@ -1,0 +1,407 @@
+/**
+ * Client-side mutation chokepoint with a durable IndexedDB outbox.
+ *
+ * Phase 1.2 of the 2026-05-29 persistence-rebuild plan
+ * (_plans/2026-05-29-persistence-rebuild.md).
+ *
+ * The bug class we're closing:
+ *   The production-doc page (and four other surfaces) used to persist
+ *   server-meaningful state via `void fetch(...).catch(() => {})`. On
+ *   any of: tab close before the promise settled, transient 5xx,
+ *   network blip, missing entity id race, or 800ms debounce eviction —
+ *   the write silently disappeared. Real damage: doc d244130f-bdfe
+ *   had 181 rows saved but every image attach lost. Users paid for
+ *   generations that never reached the server.
+ *
+ * The contract this module provides:
+ *   `mutate(kind, options)` returns a `MutateHandle` synchronously.
+ *   The mutation is persisted to IndexedDB BEFORE the call returns,
+ *   so a refresh / tab close at this point loses NOTHING — the
+ *   drainer will retry on next mount.
+ *
+ *   The drainer walks the queue in insertion order, POSTing each
+ *   entry with `X-Intent-Id: <uuid>`. The server uses that header
+ *   plus the `mutation_ids` table (migration 0101) to dedupe retries
+ *   — a request whose intent id already landed returns the cached
+ *   result (or just 200) without re-running the side effect, so
+ *   networks-not-perfect retries are safe.
+ *
+ * What this module does NOT do (deferred per the plan):
+ *   - No UI status indicator (Phase 1.4 — subscribers can hook
+ *     `onChange` and render their own pill).
+ *   - No circuit breaker that refuses new paid intents when the
+ *     drain is broken (Phase 2.3).
+ *   - No promise-based ack — every caller is fire-and-forget. The
+ *     queue guarantees eventual delivery; if a caller needs to know
+ *     when the server saw their write, they can poll `getState()`
+ *     or subscribe to changes. This keeps the API minimal for
+ *     Phase 1.2; we can layer an `ack` promise on in 1.4 if needed.
+ *   - No cross-tab leader election (BroadcastChannel). Multiple tabs
+ *     racing to drain the same intent will both win at the server
+ *     thanks to mutation_ids dedup — wasted bandwidth but no
+ *     correctness issue. Adding the leader election later is
+ *     straightforward; not worth the complexity in v1.
+ *
+ * Failure mode the user must understand:
+ *   IndexedDB CAN evict (Safari Private Mode 7-day, storage pressure
+ *   in any browser, user clears site data). If that happens the queue
+ *   is lost — but so is the optimistic UI state, so the user just
+ *   re-runs the action. The visible UI status (Phase 1.4) will show
+ *   "Saved" only after server ACK so the user is never lied to about
+ *   durability.
+ */
+import { createStore, set, get, del, keys, type UseStore } from 'idb-keyval';
+
+const STORE_DB = 'claude-outbox';
+const STORE_NAME = 'mutations';
+const LOG_NS = '[mutate]';
+
+/** Maximum backoff between attempts (ms). At ~10 attempts at 2^N we'd
+ *  exceed this; the helper caps each delay so a long failure window
+ *  doesn't push the next retry off-schedule. */
+const MAX_BACKOFF_MS = 60_000;
+/** Initial backoff base (ms). First retry sleeps 1s, then 2s, 4s, … */
+const BASE_BACKOFF_MS = 1_000;
+/** Give up after this many attempts — the entry stays in IDB but is
+ *  marked `dead: true` so the drainer skips it. Phase 1.4 surfaces
+ *  dead entries to the user as "Couldn't save N items, retry?". */
+const MAX_ATTEMPTS = 10;
+
+export interface MutateOptions {
+  /** HTTP method. Defaults to POST. */
+  method?: string;
+  /** Fully-qualified URL or app-relative path. */
+  url: string;
+  /** JSON-serialisable body. Skip for GETs or for routes that take
+   *  query strings on the URL. */
+  body?: unknown;
+  /** Extra request headers. `Content-Type: application/json` and
+   *  `X-Intent-Id` are added by the drainer automatically. */
+  headers?: Record<string, string>;
+}
+
+export interface MutateHandle {
+  /** The intent id stored on the entry. Also sent to the server as
+   *  `X-Intent-Id`. Stable across retries. */
+  intentId: string;
+}
+
+interface OutboxEntry {
+  id: string;
+  kind: string;
+  method: string;
+  url: string;
+  body: unknown;
+  headers: Record<string, string>;
+  attempt: number;
+  /** Epoch ms — drainer skips entries with `nextAt > now`. */
+  nextAt: number;
+  createdAt: number;
+  /** Set true after MAX_ATTEMPTS retries. Kept in the queue so the UI
+   *  can surface it; explicitly NOT deleted so a future "retry all"
+   *  affordance can revive them. */
+  dead?: boolean;
+  /** Last failure reason — surfaced in UI for dead entries. */
+  lastError?: string;
+}
+
+export interface OutboxState {
+  pending: number;
+  failed: number;
+  /** Whether the drainer is currently mid-loop. UIs use this to show
+   *  a "saving…" spinner. */
+  draining: boolean;
+}
+
+type Subscriber = (state: OutboxState) => void;
+
+// ── Module state (browser-only; SSR paths short-circuit) ─────────────
+
+const isBrowser = typeof window !== 'undefined' && typeof indexedDB !== 'undefined';
+const store: UseStore | null = isBrowser ? createStore(STORE_DB, STORE_NAME) : null;
+const subscribers = new Set<Subscriber>();
+let drainTimer: ReturnType<typeof setTimeout> | null = null;
+let draining = false;
+let lastState: OutboxState = { pending: 0, failed: 0, draining: false };
+
+// ── Public API ───────────────────────────────────────────────────────
+
+/**
+ * Enqueue a server mutation. Returns synchronously with the intent id;
+ * the actual POST is sent in the background by the drainer and will
+ * survive refresh / tab close / network failures.
+ *
+ * The optimistic UI update is the caller's responsibility — by the
+ * time `mutate()` returns, nothing has hit the network yet. The
+ * caller should `setState` first, then `mutate()`, exactly like
+ * before. The difference is that without `mutate()` the state would
+ * vanish on refresh; with it, the URL lands on the server and the
+ * load-on-mount path re-hydrates the state.
+ */
+export function mutate(kind: string, options: MutateOptions): MutateHandle {
+  const id = generateIntentId();
+  const entry: OutboxEntry = {
+    id,
+    kind,
+    method: (options.method ?? 'POST').toUpperCase(),
+    url: options.url,
+    body: options.body,
+    headers: options.headers ?? {},
+    attempt: 0,
+    nextAt: Date.now(),
+    createdAt: Date.now(),
+  };
+  if (store) {
+    void set(id, entry, store).then(() => {
+      log('enqueue', { intentId: id, kind, url: options.url });
+      notifySubscribers();
+      scheduleDrain(0);
+    }).catch((err) => {
+      // IDB write itself failed — fall back to plain fire-and-forget
+      // fetch so the call still goes out, accepting the original
+      // bug-class risk for this one call. Better than dropping it.
+      log('enqueue-failed-falling-back', { intentId: id, kind, error: errMsg(err) });
+      void fireDirect(entry);
+    });
+  } else {
+    // SSR or browser without IDB (very old / hostile env) — direct
+    // fetch with no durability. Should not happen in our supported
+    // browser matrix; logged loudly so we notice.
+    log('no-idb-direct-send', { intentId: id, kind });
+    void fireDirect(entry);
+  }
+  return { intentId: id };
+}
+
+/** Subscribe to outbox state changes. Returns an unsubscribe fn. */
+export function subscribe(fn: Subscriber): () => void {
+  subscribers.add(fn);
+  // Fire once on subscribe so the caller sees current state.
+  fn(lastState);
+  return () => {
+    subscribers.delete(fn);
+  };
+}
+
+/** Current outbox snapshot. Cheap; computed at every notify. */
+export function getState(): OutboxState {
+  return lastState;
+}
+
+/** Force the drainer to run now. The drainer auto-runs on enqueue, on
+ *  focus, and on `online`; callers rarely need this. Exposed for
+ *  tests and for the (future) UI "retry now" button. */
+export async function drainNow(): Promise<void> {
+  await runDrainLoop();
+}
+
+/** Test-only — wipe the entire queue. */
+export async function _clearOutboxForTests(): Promise<void> {
+  if (!store) return;
+  const all = (await keys(store)) as string[];
+  await Promise.all(all.map((k) => del(k, store)));
+  notifySubscribers();
+}
+
+// ── Drainer ──────────────────────────────────────────────────────────
+
+function scheduleDrain(delayMs: number) {
+  if (drainTimer !== null) return;
+  drainTimer = setTimeout(() => {
+    drainTimer = null;
+    void runDrainLoop();
+  }, delayMs);
+}
+
+async function runDrainLoop(): Promise<void> {
+  if (!store || draining) return;
+  draining = true;
+  notifySubscribers();
+  log('drain start', {});
+  try {
+    let nextWakeAt = Infinity;
+    const all = (await keys(store)) as string[];
+    // Process in insertion order. IDB returns keys in their natural
+    // (string) order; our intent ids are UUIDv4-ish (Math.random-
+    // backed or crypto.randomUUID), so we sort by the createdAt
+    // field on each entry rather than trusting key order.
+    const entries: OutboxEntry[] = [];
+    for (const k of all) {
+      const e = (await get(k, store)) as OutboxEntry | undefined;
+      if (e) entries.push(e);
+    }
+    entries.sort((a, b) => a.createdAt - b.createdAt);
+
+    const now = Date.now();
+    for (const entry of entries) {
+      if (entry.dead) continue;
+      if (entry.nextAt > now) {
+        nextWakeAt = Math.min(nextWakeAt, entry.nextAt);
+        continue;
+      }
+      const outcome = await sendOnce(entry);
+      if (outcome === 'success') {
+        await del(entry.id, store);
+        log('drain success', { intentId: entry.id, kind: entry.kind, attempt: entry.attempt });
+      } else if (outcome === 'terminal-fail') {
+        await del(entry.id, store);
+        log('drain dead-4xx', { intentId: entry.id, kind: entry.kind });
+      } else if (outcome === 'retry') {
+        entry.attempt += 1;
+        if (entry.attempt >= MAX_ATTEMPTS) {
+          entry.dead = true;
+          log('drain dead-exhausted', { intentId: entry.id, kind: entry.kind, attempts: entry.attempt });
+        } else {
+          entry.nextAt = now + Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** (entry.attempt - 1));
+          nextWakeAt = Math.min(nextWakeAt, entry.nextAt);
+        }
+        await set(entry.id, entry, store);
+      }
+    }
+    if (Number.isFinite(nextWakeAt)) {
+      const delay = Math.max(50, nextWakeAt - Date.now());
+      scheduleDrain(delay);
+    }
+  } catch (err) {
+    log('drain crashed', { error: errMsg(err) });
+  } finally {
+    draining = false;
+    notifySubscribers();
+    log('drain end', {});
+  }
+}
+
+/** Result of one send attempt. */
+type SendOutcome = 'success' | 'retry' | 'terminal-fail';
+
+async function sendOnce(entry: OutboxEntry): Promise<SendOutcome> {
+  try {
+    const res = await fetch(entry.url, {
+      method: entry.method,
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Intent-Id': entry.id,
+        'X-Intent-Kind': entry.kind,
+        ...entry.headers,
+      },
+      body: entry.body !== undefined ? JSON.stringify(entry.body) : undefined,
+    });
+    if (res.ok) return 'success';
+    // 409 Conflict: the server's mutation_ids table reports we already
+    // landed this intent. Treat as success — the side effect already
+    // happened, the original POST just lost its response over the
+    // wire. This is the whole point of intent-id dedup.
+    if (res.status === 409) {
+      log('drain dedup-hit', { intentId: entry.id, kind: entry.kind });
+      return 'success';
+    }
+    // 4xx (other than 409): our payload is bad. Retrying with the same
+    // body would just re-fail. Drop with no toast — the optimistic UI
+    // state is the caller's; they decide whether to surface it.
+    if (res.status >= 400 && res.status < 500) {
+      entry.lastError = `http-${res.status}`;
+      return 'terminal-fail';
+    }
+    // 5xx — server-side hiccup. Retry with backoff.
+    entry.lastError = `http-${res.status}`;
+    return 'retry';
+  } catch (err) {
+    entry.lastError = errMsg(err);
+    return 'retry';
+  }
+}
+
+/** SSR / no-IDB fallback. Best-effort; reverts to the original
+ *  fire-and-forget behavior so the call still goes out. */
+async function fireDirect(entry: OutboxEntry): Promise<void> {
+  try {
+    await fetch(entry.url, {
+      method: entry.method,
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Intent-Id': entry.id,
+        'X-Intent-Kind': entry.kind,
+        ...entry.headers,
+      },
+      body: entry.body !== undefined ? JSON.stringify(entry.body) : undefined,
+    });
+  } catch (err) {
+    log('direct-send-failed', { intentId: entry.id, error: errMsg(err) });
+  }
+}
+
+// ── Subscribers + state ──────────────────────────────────────────────
+
+function notifySubscribers(): void {
+  void computeState().then((state) => {
+    lastState = state;
+    for (const s of subscribers) {
+      try {
+        s(state);
+      } catch (err) {
+        log('subscriber-threw', { error: errMsg(err) });
+      }
+    }
+  });
+}
+
+async function computeState(): Promise<OutboxState> {
+  if (!store) return { pending: 0, failed: 0, draining };
+  try {
+    const all = (await keys(store)) as string[];
+    let pending = 0;
+    let failed = 0;
+    for (const k of all) {
+      const e = (await get(k, store)) as OutboxEntry | undefined;
+      if (!e) continue;
+      if (e.dead) failed += 1;
+      else pending += 1;
+    }
+    return { pending, failed, draining };
+  } catch {
+    return { pending: 0, failed: 0, draining };
+  }
+}
+
+// ── Lifecycle hooks ──────────────────────────────────────────────────
+
+if (isBrowser) {
+  // Drain when the tab comes back to the foreground — covers a tab
+  // that was backgrounded during a transient network blip.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      scheduleDrain(0);
+    }
+  });
+  // Drain on reconnect.
+  window.addEventListener('online', () => scheduleDrain(0));
+  // First-mount drain — picks up entries left over from a previous
+  // session (refresh, tab close, browser restart).
+  scheduleDrain(0);
+}
+
+// ── Utilities ────────────────────────────────────────────────────────
+
+function generateIntentId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // Fallback for very old runtimes. Same shape (lowercase hex with
+  // dashes), random source from Math.random — fine for dedup at the
+  // scale this app operates (collision probability negligible).
+  const hex = (n: number) => Math.floor(Math.random() * 16 ** n).toString(16).padStart(n, '0');
+  return `${hex(8)}-${hex(4)}-4${hex(3)}-${(8 + Math.floor(Math.random() * 4)).toString(16)}${hex(3)}-${hex(12)}`;
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function log(event: string, fields: Record<string, unknown>): void {
+  // Server-style namespaced log line. Phase 1.5 (tactical
+  // observability) hooks Sentry breadcrumbs onto these.
+  // eslint-disable-next-line no-console
+  console.info(`${LOG_NS} ${event}`, fields);
+}

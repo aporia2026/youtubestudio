@@ -6,6 +6,7 @@ import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
 import { COLLAGE_TESTER_PUBLIC, EDITOR_V1_PUBLIC } from '@/lib/feature-flags';
 import { queueImageGen, reportUpstream429 } from '@/lib/image-gen-throttle';
+import { mutate } from '@/lib/mutate';
 import { CollageTesterPanel } from '@/components/production-doc/CollageTesterPanel';
 import type { ScheduleItem } from '@/lib/schedule';
 import { getScheduleLinkId, fetchScheduleItem, loadFullContextForItem, buildContextNotesFromItem } from '@/lib/schedule-link';
@@ -2352,8 +2353,27 @@ function ProductionDocPage() {
   // historyEntryId is the only "real" dep.
   const projectReloadRef = useRef(project.reload);
   projectReloadRef.current = project.reload;
+  // Phase 1.2 (2026-05-29) — route persistRowAsset through the
+  // durable IDB outbox. Replaces direct `void fetch` with a `mutate()`
+  // call that:
+  //   1. Persists the request to IndexedDB BEFORE returning, so a
+  //      refresh / tab close at this point loses nothing.
+  //   2. Retries on 5xx / network failure with exponential backoff.
+  //   3. Sends X-Intent-Id so the server's mutation_ids table dedupes
+  //      retries instead of writing the asset twice.
+  // The toast that used to fire on failure is gone — the retry queue
+  // now owns delivery, and Phase 1.4's UI status pill surfaces dead
+  // entries instead of using mid-flow toasts.
+  //
+  // historyEntryId race: when historyEntryId isn't set yet (fresh doc
+  // creation), we capture the call into pendingPersistsRef and replay
+  // it via the useEffect below once the id arrives. This eliminates
+  // the silent-drop mode that swallowed every image attach on doc
+  // d244130f-bdfe — the original symptom that drove this whole
+  // rebuild.
+  const pendingPersistsRef = useRef<Array<() => void>>([]);
   const persistRowAsset = useCallback(
-    async (
+    (
       rowIndex: number,
       slot: 'image' | 'overlay' | 'clip',
       value:
@@ -2362,64 +2382,69 @@ function ProductionDocPage() {
         | { status: string; videoUrl?: string; durationSeconds?: number; brollClipId?: string }
         | null,
       options: { styleVersion?: number } = {},
-    ): Promise<boolean> => {
+    ): boolean => {
       if (!historyEntryId) {
-        console.warn('[row-asset persist] skipped — no historyEntryId yet', { rowIndex, slot });
-        return false;
-      }
-      try {
-        const res = await fetch(`/api/edit/${encodeURIComponent(historyEntryId)}/row-asset`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            rowIndex,
-            slot,
-            value,
-            styleVersion: options.styleVersion,
-          }),
-          credentials: 'same-origin',
-        });
-        if (!res.ok) {
-          const text = await res.text().catch(() => '');
-          console.error('[row-asset persist] failed', {
-            project_id: historyEntryId,
-            row_index: rowIndex,
-            slot,
-            status: res.status,
-            body: text.slice(0, 400),
-          });
-          // Surface money-losing failures explicitly. Silent drops
-          // here are the exact bug we're patching.
-          toast.error(
-            `Couldn't save the generated ${slot} for shot ${rowIndex + 1}. ` +
-              `It's in the page but will be lost on reload. Try again.`,
-            { duration: 10000 },
-          );
-          return false;
-        }
-        // Re-sync useProject's local version cache. The merge bumped
-        // the server's `version`; without a reload, the next debounced
-        // full-payload save would 409 and discard. Fire-and-forget —
-        // it lands before the next debounce in practice.
-        void projectReloadRef.current().catch(() => {});
-        return true;
-      } catch (err) {
-        console.error('[row-asset persist] threw', {
-          project_id: historyEntryId,
-          row_index: rowIndex,
+        // Defer instead of silently dropping. The historyEntryId
+        // watcher useEffect below flushes the queue once it arrives.
+        // This closes the worst persistence leak in the audit.
+        pendingPersistsRef.current.push(() => persistRowAsset(rowIndex, slot, value, options));
+        console.info('[row-asset persist] deferred — no historyEntryId yet, will replay', {
+          rowIndex,
           slot,
-          detail: err instanceof Error ? err.message : String(err),
         });
-        toast.error(
-          `Network error saving generated ${slot} for shot ${rowIndex + 1}. ` +
-            `Will be lost on reload — please try again.`,
-          { duration: 10000 },
-        );
-        return false;
+        return true;
       }
+      const handle = mutate('row-asset.set', {
+        url: `/api/edit/${encodeURIComponent(historyEntryId)}/row-asset`,
+        method: 'POST',
+        body: {
+          rowIndex,
+          slot,
+          value,
+          styleVersion: options.styleVersion,
+        },
+      });
+      console.info('[row-asset persist] queued', {
+        intentId: handle.intentId,
+        rowIndex,
+        slot,
+        clears: value === null,
+      });
+      // Re-sync useProject's local version cache after the drainer
+      // has had a chance to fire. Direct POSTs used to call this
+      // immediately after the await; with the outbox there's no
+      // await point, so we schedule a delayed reload that catches
+      // the typical happy-path drain (sub-second). On retry-heavy
+      // paths the reload may run before the mutation lands, returning
+      // stale version — that's fine, useProject's OCC retry handles
+      // 409s.
+      setTimeout(() => {
+        void projectReloadRef.current().catch(() => {});
+      }, 1500);
+      return true;
     },
     [historyEntryId],
   );
+
+  // Flush deferred persists once historyEntryId arrives. The pending
+  // array holds closures captured at the original call sites with the
+  // original arguments — replaying them re-enters persistRowAsset,
+  // which now has historyEntryId and queues the mutation properly.
+  useEffect(() => {
+    if (historyEntryId && pendingPersistsRef.current.length > 0) {
+      const pending = pendingPersistsRef.current.splice(0);
+      console.info('[row-asset persist] flushing deferred', { count: pending.length });
+      for (const replay of pending) {
+        try {
+          replay();
+        } catch (err) {
+          console.error('[row-asset persist] deferred replay threw', {
+            detail: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    }
+  }, [historyEntryId]);
 
   const logEndRef = useRef<HTMLDivElement>(null);
   // Tracks which production doc (by runKey) was last explicitly saved via

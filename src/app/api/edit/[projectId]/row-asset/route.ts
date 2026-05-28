@@ -74,6 +74,7 @@ import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
 import { writeProjectAsset, bumpProjectVersion } from '@/lib/project/assets';
 import { classifyDbError, FAILURE_CLASS_USER_MESSAGES } from '@/lib/db-error';
+import { tryClaimIntent } from '@/lib/mutation-ids';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_URL_BYTES = 8192;
@@ -156,6 +157,28 @@ export const POST = apiRoute.authed(
     const { projectId } = await ctx.params;
     if (!UUID_RE.test(projectId)) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
+
+    // Phase 1.2 idempotency: when the client-side mutate() chokepoint
+    // sends X-Intent-Id, dedupe retries server-side via the
+    // mutation_ids table. Legacy callers without the header proceed
+    // unchanged. The kind label must match what the client's mutate()
+    // call passed as `kind`. See _plans/2026-05-29-persistence-rebuild.md.
+    const dedup = await tryClaimIntent(req, session.uid, 'row-asset.set');
+    if (dedup === 'duplicate') {
+      // The side effect already happened in an earlier request whose
+      // response was lost over the wire. Re-read the project's current
+      // version so the client's optimistic-sync contract stays sane.
+      const { rows } = await sql<{ version: number }>`
+        SELECT version FROM user_history WHERE id = ${projectId}::uuid LIMIT 1
+      `;
+      return NextResponse.json({ ok: true, deduped: true, version: rows[0]?.version ?? 0 });
+    }
+    if (dedup === 'kind-mismatch') {
+      return NextResponse.json(
+        { error: 'X-Intent-Id reused with a different kind' },
+        { status: 409 },
+      );
     }
 
     let body: Body;

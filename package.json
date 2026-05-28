@@ -67,6 +67,7 @@
     "clsx": "^2.1.1",
     "fabric": "^7.3.1",
     "framer-motion": "^12.38.0",
+    "idb-keyval": "^6.2.4",
     "jose": "^6.2.2",
     "jspdf": "^4.2.1",
     "lucide-react": "^1.7.0",
