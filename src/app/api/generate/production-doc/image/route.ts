@@ -27,6 +27,7 @@ import { resolveStyle } from '@/lib/production-doc-styles';
 import { loadStyleReferences, markReferenceRejected } from '@/lib/production-doc-styles-refs';
 import { generateImageWithRefs, ReferenceRejectedError } from '@/lib/image-gen-i2i';
 import { augmentCellPrompt, SINGLE_SHOT_PROMPT_CAP } from '@/lib/prompt-augmentation';
+import { recordIntent, markDelivered, markFailed } from '@/lib/provider-generations';
 import {
   getEffectiveAiImageSuffix,
   PROMPT_VERSION,
@@ -38,6 +39,14 @@ import {
 export const maxDuration = 300;
 
 export const POST = apiRoute.authed(async (session, req: NextRequest) => {
+  // Tracks the provider_generations row id for the in-flight paid call,
+  // if any. Set to the row's id when we record a pending intent (see
+  // src/lib/provider-generations.ts); cleared once the call reaches a
+  // terminal state (markDelivered / markFailed). Used by the outer
+  // catch so that an unexpected throw between provider success and
+  // response write still records a terminal status on the audit row.
+  let pendingIntentId: string | null = null;
+
   try {
     // Two-layer rate limit. The IP limit blocks one machine going
     // wild. The per-user limit blocks one account from running up
@@ -240,6 +249,25 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
           // unreachable) which the catch below maps back to 503 with
           // the same code shape the inline implementation used to
           // return — preserving the editor's error-handling contract.
+          //
+          // Record a 'pending' intent row in provider_generations BEFORE
+          // the provider call. Skip on the comfyui-local branch — it
+          // runs on the user's own GPU, no money is moving. See Phase
+          // 1.0 of _plans/2026-05-29-persistence-rebuild.md.
+          const isPaidI2i = i2iSpec?.provider !== 'comfyui-local';
+          let i2iIntentId: string | null = null;
+          if (isPaidI2i) {
+            const intent = await recordIntent({
+              userId: session.uid,
+              workspaceId: session.ws,
+              route: '/api/generate/production-doc/image',
+              provider: i2iSpec?.provider ?? 'unknown',
+              providerModel: i2iModel,
+            });
+            i2iIntentId = intent.id;
+            pendingIntentId = intent.id;
+          }
+          const i2iStart = Date.now();
           try {
             const result = await generateImageWithRefs(i2iModel, augmentedPrompt, refs, {
               r2KeyPrefix: i2iSpec?.provider === 'comfyui-local'
@@ -251,6 +279,16 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
               width: canvas.width,
               height: canvas.height,
             });
+            if (i2iIntentId) {
+              void markDelivered({
+                id: i2iIntentId,
+                providerRequestId: result.kieTaskId ?? result.comfyPromptId ?? null,
+                responseUrl: result.imageUrl,
+                costUsd: typeof i2iSpec?.costUsdPerImage === 'number' ? i2iSpec.costUsdPerImage : null,
+                durationMs: result.durationMs ?? (Date.now() - i2iStart),
+              });
+              pendingIntentId = null;
+            }
             // Saliency mirrors the T2I path: fetch the result bytes
             // and pass to computeImageSaliency. Failure is non-
             // blocking; the overlay placement resolver falls back to
@@ -276,6 +314,18 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
               durationMs: result.durationMs,
             });
           } catch (err) {
+            // Terminal-status the audit row before any early return.
+            // Defensive `if` — i2iIntentId is only set on the paid
+            // (cloud) path; the LOCAL_STUDIO / ComfyUI branches below
+            // can't reach a non-null id, so the helper short-circuits.
+            if (i2iIntentId) {
+              void markFailed({
+                id: i2iIntentId,
+                failureReason: err instanceof Error ? err.message : String(err),
+                durationMs: Date.now() - i2iStart,
+              });
+              pendingIntentId = null;
+            }
             if (err instanceof ReferenceRejectedError) {
               // Mark the offending refs server-side so future
               // generations under this style skip them by default.
@@ -325,7 +375,9 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
             }
             // Non-rejection / non-local-infra failures fall through to
             // the outer catch so they're logged + returned consistently
-            // with the rest of this route.
+            // with the rest of this route. Audit row has already been
+            // terminal-stated above so the outer catch's markFailed
+            // sees pendingIntentId === null and is a no-op.
             throw err;
           }
         }
@@ -470,7 +522,27 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     // anything other than 'atlas'. See
     // _plans/2026-05-25-atlas-cloud-gpt-image-2.md (Phase 1.B).
     if (spec.provider === 'atlas') {
+      // Record audit-row BEFORE Atlas call (Phase 1.0 of the
+      // 2026-05-29 persistence-rebuild plan). The dispatcher doesn't
+      // surface Atlas's request id yet; tracked as Phase 1.0b. Outer
+      // catch handles markFailed when generateImageWithUpscale throws.
+      const atlasIntent = await recordIntent({
+        userId: session.uid,
+        workspaceId: session.ws,
+        route: '/api/generate/production-doc/image',
+        provider: 'atlas',
+        providerModel: spec.value,
+      });
+      pendingIntentId = atlasIntent.id;
       const result = await generateImageWithUpscale(spec, augmentedPrompt);
+      void markDelivered({
+        id: atlasIntent.id,
+        providerRequestId: null,
+        responseUrl: result.url,
+        costUsd: null,
+        durationMs: result.durationMs,
+      });
+      pendingIntentId = null;
       const saliencyStart = Date.now();
       const saliency = result.bytes ? await computeImageSaliency(result.bytes) : null;
       logger.info('[prodoc image-gen atlas] done', {
@@ -495,6 +567,20 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       );
     }
 
+    // Record audit-row BEFORE Kie call (Phase 1.0 of the 2026-05-29
+    // persistence-rebuild plan). The taskId returned by createKieTask
+    // is captured on UPDATE so support can cross-reference Kie's
+    // dashboard. Outer catch handles markFailed for the createKieTask
+    // / pollKieResultThenUpscale throw paths.
+    const kieIntent = await recordIntent({
+      userId: session.uid,
+      workspaceId: session.ws,
+      route: '/api/generate/production-doc/image',
+      provider: 'kie',
+      providerModel: spec.kieModel,
+    });
+    pendingIntentId = kieIntent.id;
+    const kieStart = Date.now();
     const taskId = await createKieTask(apiKey, spec.kieModel, buildKieImageInput(spec.value, augmentedPrompt));
     // System-wide auto-upscale: every cloud generation lands at ~4K via
     // Recraft Crisp Upscale before the R2 mirror below picks it up.
@@ -541,6 +627,15 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       console.warn('[image-gen] R2 upload failed, falling back to Kie.ai URL:', uploadErr);
     }
 
+    void markDelivered({
+      id: kieIntent.id,
+      providerRequestId: taskId,
+      responseUrl: imageUrl,
+      costUsd: null,
+      durationMs: Date.now() - kieStart,
+    });
+    pendingIntentId = null;
+
     const saliencyStart = Date.now();
     const saliency = imageBuffer ? await computeImageSaliency(imageBuffer) : null;
     console.info('[saliency compute] done', {
@@ -553,6 +648,15 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
 
     return NextResponse.json({ imageUrl, saliency });
   } catch (err: unknown) {
+    // Terminal-status any in-flight audit row. The inner i2i catch
+    // clears `pendingIntentId` itself, so non-i2i throws (Atlas, Kie,
+    // or unexpected errors before any provider call) land here.
+    if (pendingIntentId) {
+      void markFailed({
+        id: pendingIntentId,
+        failureReason: err instanceof Error ? err.message : String(err),
+      });
+    }
     logger.error('Production doc image generation error', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Image generation failed' },

@@ -99,6 +99,7 @@ import migration0096 from './0096_add_pipeline_video_visual_style_override';
 import migration0097 from './0097_create_feature_preset_tables';
 import migration0098 from './0098_create_production_doc_notes';
 import migration0099 from './0099_create_flex_icon_grid_saved_palettes';
+import migration0100 from './0100_create_provider_generations';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -205,6 +206,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0097,
   migration0098,
   migration0099,
+  migration0100,
 ]);
 
 /**

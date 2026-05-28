@@ -77,6 +77,7 @@ export const SCOPED_TABLES = [
   'production_doc_notes',
   'production_doc_styles',
   'projects',
+  'provider_generations',
   'published_videos',
   'qa_sessions',
   'reference_library',

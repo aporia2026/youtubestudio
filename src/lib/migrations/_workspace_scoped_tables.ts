@@ -74,6 +74,12 @@ export const ROOT_TENANT_TABLES = [
   'pipeline_run_videos',
   'pipeline_runs',
   'prediction_outcomes',
+  // Server-side ledger of paid AI-provider generations (migration 0100).
+  // Carries its own workspace_id (nullable, ON DELETE SET NULL) so a
+  // deleted workspace doesn't take the spend audit log with it. Sits
+  // under ROOT — not under user_history — because a generation may
+  // happen without a project id (thumbnail experiments, ad-hoc calls).
+  'provider_generations',
   'published_videos',
   'retention_predictions',
   'saved_catalog_views',
