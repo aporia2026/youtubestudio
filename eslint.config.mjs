@@ -45,6 +45,52 @@ const eslintConfig = defineConfig([
       "@typescript-eslint/no-unused-expressions": "warn",
     },
   },
+  // ─── Persistence chokepoint enforcement (Phase 2.1) ─────────────────
+  // Ban raw `fetch()` in client-side code that sends server mutations.
+  // Every server mutation MUST route through `mutate()` in src/lib/mutate.ts
+  // so the request lands in the durable IDB outbox and gets retry +
+  // server-side dedup via mutation_ids. Bypassing this re-introduces
+  // the bug class that lost doc d244130f-bdfe's 181 image attaches —
+  // see _plans/2026-05-29-persistence-rebuild.md.
+  //
+  // Scope: client-side files only. `src/app/api/**` is exempted because
+  // server routes legitimately call providers (Replicate, Atlas, OpenAI)
+  // and aren't subject to the browser tab-close failure mode.
+  //
+  // Severity: WARN (not error) initially. The codebase has ~40 existing
+  // call sites that need gradual migration; gating CI on errors today
+  // would block every PR. Each migration drops a warning; once the
+  // baseline is zero we promote to ERROR.
+  //
+  // Exemptions besides server routes:
+  //   - src/lib/mutate.ts             — the chokepoint itself
+  //   - src/proxy.ts                  — edge proxy auth, runs server-side
+  //   - tests/**                      — fetch mocks
+  //   - src/remotion/**               — Remotion renderer (different runtime)
+  //   - GET requests are still warned (visibility); legitimate GETs can
+  //     be exempted per-line with `// eslint-disable-next-line no-restricted-syntax`
+  //     and a comment naming the reason.
+  {
+    // Scoped to .tsx files (React components, where browser-side fetch
+    // is sent from a tab that may close mid-flight). Plain .ts files
+    // under src/lib are mostly server-only helpers that call third-
+    // party APIs legitimately — out of scope for this rule.
+    files: [
+      "src/app/(app)/**/*.tsx",
+      "src/components/**/*.tsx",
+      "src/hooks/**/*.tsx",
+    ],
+    rules: {
+      "no-restricted-syntax": [
+        "warn",
+        {
+          selector: "CallExpression[callee.type='Identifier'][callee.name='fetch']",
+          message:
+            "Use mutate() from @/lib/mutate for server mutations (POST/PUT/PATCH/DELETE) so the request survives refresh/tab-close. Read-only GETs that should bypass the queue can disable this rule per-line with `// eslint-disable-next-line no-restricted-syntax` and a comment naming the reason. See _plans/2026-05-29-persistence-rebuild.md.",
+        },
+      ],
+    },
+  },
   globalIgnores([
     ".next/**",
     "out/**",
