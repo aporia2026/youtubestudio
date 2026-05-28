@@ -299,7 +299,15 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       // image model defaults to (because the built-in refs #05 and #06
       // contain labeled diagrams) and the one thing that makes the
       // output look like a textbook instead of a storybook.
-      'FORBIDDEN: textbook-style labeled diagrams — do NOT draw arrows pointing to written labels that name parts of the scene ("Huge Slab of Snow", "Dangerous Slope", "Unsuspecting Campers"). That kind of annotation is a chart, not a story panel. Captions, scene labels, and time stamps are rendered SEPARATELY on top by the player as yellow bubble overlays — the picture itself should not contain those annotations. Speech bubbles for character dialogue ARE allowed (e.g. a character saying "Fascinating" in a cartoon balloon). NOT photorealistic, NOT 3D rendered, NOT anime, NOT manga.',
+      'FORBIDDEN: textbook-style labeled diagrams — do NOT draw arrows pointing to written labels that name parts of the scene ("Huge Slab of Snow", "Dangerous Slope", "Unsuspecting Campers"). That kind of annotation is a chart, not a story panel. Captions, scene labels, and time stamps are rendered SEPARATELY on top by the player as yellow bubble overlays — the picture itself should not contain those annotations. Speech bubbles for character dialogue ARE allowed (e.g. a character saying "Fascinating" in a cartoon balloon). NOT photorealistic, NOT 3D rendered, NOT anime, NOT manga. ' +
+      // 2026-05-29: BAKED TYPOGRAPHY block. Previously taught visually by
+      // ref #09 ("Highlight" word). That ref was moved out after the
+      // literal word leaked into nearly every output regardless of what
+      // on_screen_text was set to. Now the typography teaching lives in
+      // the suffix text so the model still gets the style cue without
+      // a leaking subject. Wording is deliberately style-descriptive,
+      // never naming a specific example word that could be copied.
+      'BAKED TYPOGRAPHY: when the row\'s prompt asks for hand-lettered text in the scene (a baked OST string), draw the EXACT characters supplied by the prompt — never substitute, paraphrase, or add filler text the prompt did not request. Render the requested characters in YELLOW COMIC-BOLD: thick saturated-yellow fill, surrounded by a black wobbly hand-drawn outline of consistent thickness, no shadow, no gradient, no other decoration. Glyphs sit on a slight irregular baseline (not perfectly straight) and have the same imperfect freehand quality as the rest of the illustration\'s lines. If the prompt does NOT request baked text, the scene contains NO baked words at all — speech bubbles for character dialogue are allowed; freestanding label words invented by the model are NOT.',
     built_in_refs: [
       // ORDER MATTERS. Atlas i2i caps at 4 refs/call and the dispatcher
       // takes the FIRST 4 entries from this array. Positions 1-4 are the
@@ -348,7 +356,24 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       // feedback_refs_teach_style_only.md.
       { filename: '14-close-up-character-face.jpg',                       mime_type: 'image/jpeg' },
       { filename: '04-stick-figure-neutral-pointing-no-hand.jpg',         mime_type: 'image/jpeg' },
-      { filename: '09-yellow-bubble-text-standalone-highlight.jpg',       mime_type: 'image/jpeg' },
+      // Ref #09 (yellow "Highlight" typography) was MOVED to
+      // _review-not-doodle-2/ on 2026-05-29 after user reported the
+      // literal word "Highlight" bleeding into nearly every generated
+      // frame, regardless of what on_screen_text was set to. The
+      // negative-instruction language in the per-ref roles ("does NOT
+      // mean the word 'Highlight' should appear anywhere") could not
+      // overpower the visual evidence — i2i models obey what they SEE
+      // in the ref, not what the prompt asks them to ignore. Memory
+      // rule: feedback_refs_teach_style_only.md.
+      //
+      // The yellow-comic-bold typography teaching previously carried
+      // by this ref now lives in the ai_image_suffix text (look for
+      // "BAKED TYPOGRAPHY" below) so the model still gets the style
+      // cue without the leaking subject. A subject-neutral
+      // replacement ref (e.g. yellow comic-bold abstract shapes or a
+      // yellow speech-balloon outline without readable letters) is the
+      // proper long-term fix — slot intentionally left empty in the
+      // catalog until a clean ref is curated.
     ],
     // Updated 2026-05-27: switched to Atlas i2i per user direction
     // "default for everything to be gpt 2 atlas, not just for edits".
@@ -524,7 +549,11 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       'EXPLICIT PER-REF ROLES — read this carefully, the refs have been a source of bleed in past versions of this style:',
       '  • Ref #14 (close-up character face) teaches the FACE ANATOMY (slightly imperfect circle head, small dot eyes, raised eyebrows, small expressive mouth) and the close-up framing. It does NOT mean every scene shows a head-and-shoulders close-up. The actual character + expression + framing for each scene is decided by the script.',
       '  • Ref #04 (stick figure neutral pointing, no hand) teaches the BODY ANATOMY + the no-hand rule (arms end in line tips, never anatomical hands). It does NOT mean every scene shows a single character pointing. The pose, the action, the number of characters all come from the script.',
-      '  • Ref #09 (yellow "Highlight" typography) teaches the YELLOW COMIC-BOLD LABEL STYLE — thick yellow fill, black wobbly outline, no other decoration. It does NOT mean the word "Highlight" should appear anywhere. The label text on each row, when there is one, comes from the script\'s on_screen_text field.',
+      // Ref #09 description removed 2026-05-29 — the ref itself was
+      // moved to _review-not-doodle-2/ because the literal word
+      // "Highlight" was bleeding into every output. Typography teaching
+      // moved into the prompt suffix (BAKED TYPOGRAPHY section). Slot
+      // reserved for a subject-neutral replacement ref.
       '  • Ref #13 (sunlit forest in a framed black rounded rectangle) teaches the FRAMED-REAL-PHOTO COMPOSITION — a wobbly thin black rounded-rectangle frame containing a real photo, placed in part of the frame with cartoon elements around it. It does NOT mean forests should appear in scenes. The photo subject is whatever the script\'s scene is actually about — a person, a building, a football stadium, a lab interior, a city street, a vintage object, a piece of equipment, a historical event, ANYTHING the narration calls for. The forest in the ref is a placeholder. Treat it as a stand-in for "the relevant real photograph for THIS beat."',
       '',
       'Stay BALANCED — not locked to single-subject minimalism (which made earlier outputs feel empty), not crammed full of figures and props (which made the "1959" output feel like a garage sale). Pick the element count that serves the narration beat, no more.',
@@ -954,6 +983,23 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       'No labelled diagrams. Single focal idea per frame. Real photos, when',
       'present, framed inside a thin black rounded-corner rectangle (~8px',
       'radius), never floating to the edge.',
+      // 2026-05-29: BAKED TYPOGRAPHY block, mirroring the
+      // doodle_explainer_2 suffix. Compensates for the loss of ref #09
+      // (yellow "Highlight" typography) which was moved out after the
+      // literal word bled into every output. See the matching note in
+      // the doodle_explainer_2 ai_image_suffix.
+      'BAKED TYPOGRAPHY: when the row\'s prompt asks for hand-lettered text',
+      'in the scene (a baked OST string or motion_beats label_pop with',
+      'render_baked), draw the EXACT characters supplied by the prompt — never',
+      'substitute, paraphrase, or add filler text the prompt did not request.',
+      'Render the requested characters in YELLOW COMIC-BOLD: thick saturated-',
+      'yellow fill, surrounded by a black wobbly hand-drawn outline of consistent',
+      'thickness, no shadow, no gradient, no other decoration. Glyphs sit on a',
+      'slight irregular baseline (not perfectly straight) and have the same',
+      'imperfect freehand quality as the rest of the illustration\'s lines. If',
+      'the prompt does NOT request baked text, the scene contains NO baked',
+      'words at all — speech bubbles for character dialogue are allowed;',
+      'freestanding label words invented by the model are NOT.',
     ].join(' '),
     built_in_refs: [
       // Curated subset from doodle_explainer_2's bundle. Atlas i2i caps at 4
@@ -977,7 +1023,10 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       // full reasoning.
       { filename: '14-close-up-character-face.jpg', mime_type: 'image/jpeg' },
       { filename: '04-stick-figure-neutral-pointing-no-hand.jpg', mime_type: 'image/jpeg' },
-      { filename: '09-yellow-bubble-text-standalone-highlight.jpg', mime_type: 'image/jpeg' },
+      // Ref #09 dropped 2026-05-29 in lockstep with doodle_explainer_2.
+      // See the matching comment block in the doodle_explainer_2
+      // built_in_refs above for the full rationale (bleed of literal
+      // "Highlight" word; typography teaching moved into the suffix).
     ],
     // Refs above live under public/style-refs/Doodle-explainer-2/ (shared
     // with doodle_explainer_2). When a dedicated Paint-Explainer-v1 ref
@@ -992,7 +1041,10 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       'EXPLICIT PER-REF ROLES — read this carefully, refs have been a source of subject-bleed in past versions of the parent style:',
       '  • Ref #14 (close-up character face) teaches the FACE ANATOMY (slightly imperfect circle head, small dot eyes, raised eyebrows, small expressive mouth) and the close-up framing. It does NOT mean every scene is a head-and-shoulders close-up. The actual character + expression + framing comes from the script.',
       '  • Ref #04 (stick figure neutral pointing, no hand) teaches the BODY ANATOMY + the no-hand rule (arms end in line tips, never anatomical hands). It does NOT mean every scene shows a single character pointing. The pose, the action, the number of characters all come from the script.',
-      '  • Ref #09 (yellow "Highlight" typography) teaches the YELLOW COMIC-BOLD LABEL STYLE — thick yellow fill, black wobbly outline. It does NOT mean the word "Highlight" should appear anywhere. The label text on each row, when there is one, comes from the script\'s on_screen_text field or motion_beats `label_pop.payload.text`.',
+      // Ref #09 description removed 2026-05-29 in lockstep with
+      // doodle_explainer_2. See the matching note there. Typography
+      // teaching moved into the suffix; on_screen_text and
+      // motion_beats.label_pop continue to drive label text.
       '  • Ref #13 (sunlit forest in a framed black rounded rectangle) teaches the FRAMED-REAL-PHOTO COMPOSITION — a wobbly thin black rounded-rectangle frame containing a real photo. It does NOT mean forests should appear in scenes. The photo subject is whatever the script\'s scene is actually about — a person, a building, a football stadium, a lab interior, a city street, a vintage object, ANYTHING the narration calls for. The forest in the ref is a placeholder. Treat it as a stand-in for "the relevant real photograph for THIS beat."',
       '',
       'PACING — Target median shot length 2.5–3.0 seconds (NOT the 3–5s used by Doodle Explainer 2). For a 5-minute video that means ~100–120 rows, roughly double the row count of an equivalent Doodle Explainer 2 doc. Short, snappy beats. Hold no shot longer than ~5 seconds.',
