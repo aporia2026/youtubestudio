@@ -2717,6 +2717,19 @@ function ProductionDocPage() {
       toast.error(prepared.message);
       return;
     }
+    // Phase 1.7 (chained variants) — log which mode the dispatcher
+    // ran in so the console shows the choice per click. Useful when
+    // a chained group's Atlas Edit drifts and we need to confirm the
+    // dispatcher actually used the previous variant's image instead
+    // of falling back to the base. Spec:
+    // _plans/2026-05-28-doodle-2-chained-variants.md (R6).
+    console.info('[prodoc variant-dispatch]', {
+      variantIndex,
+      groupId,
+      variantIdx: currentVariantIdx,
+      mode: sourceLabel === 'previous-variant' ? 'chained' : 'parallel',
+      sourceRowIndex,
+    });
 
     setRowImages(prev => {
       const next = [...prev];

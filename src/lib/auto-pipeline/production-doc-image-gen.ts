@@ -273,7 +273,19 @@ export async function generateVariantImage(args: {
   // is short enough on its own that Atlas Edit + the input image do
   // the heavy lifting).
   const trimmedInstruction = editInstruction.replace(/\.\s*$/, '');
-  const composedPrompt = `${trimmedInstruction}. Keep everything else in the image identical to the input.`;
+  let composedPrompt = `${trimmedInstruction}. Keep everything else in the image identical to the input.`;
+  // Phase 1.7 (chained variants) — when this variant edits from the
+  // previous variant (not the base), append the identity anchor so
+  // Atlas Edit doesn't compound style drift across V1 → V2 → V3. Same
+  // wording as the manual editor's composeVariantEditRequest for
+  // behaviour parity. Spec:
+  // _plans/2026-05-28-doodle-2-chained-variants.md (R4).
+  const isChainedFromPrevious =
+    row.variant_derives_from_previous === true && variantIdx > 1;
+  if (isChainedFromPrevious) {
+    const { CHAINED_VARIANT_IDENTITY_ANCHOR } = await import('../../remotion/utils');
+    composedPrompt += ` ${CHAINED_VARIANT_IDENTITY_ANCHOR}`;
+  }
 
   try {
     const atlasResult = await generateAtlasEdit({

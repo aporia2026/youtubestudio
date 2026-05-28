@@ -782,6 +782,45 @@ export function getBaseRow(doc: ProductionDoc, groupId: string): ProductionRow |
   return doc.rows.find((r) => r.group_id === groupId && (r.variant_index ?? 0) === 0);
 }
 
+/** The previous variant in a chained group — the row whose
+ *  `variant_index === currentVariantIndex - 1` shares `groupId` with
+ *  the caller. Returns undefined when no such row exists (the chain
+ *  is broken, or the caller is variant 1 which falls back to the
+ *  base). Used by both dispatchers (manual editor's
+ *  `generateVariantImage` and the auto-pipeline's pipeline-side
+ *  equivalent) to resolve the source image for a chained variant.
+ *  Phase 1.7. */
+export function getPreviousVariantRow(
+  doc: ProductionDoc,
+  groupId: string,
+  currentVariantIndex: number,
+): ProductionRow | undefined {
+  if (!groupId || currentVariantIndex <= 1) return undefined;
+  return doc.rows.find(
+    (r) => r.group_id === groupId && (r.variant_index ?? 0) === currentVariantIndex - 1,
+  );
+}
+
+/** Identity anchor appended to the composed Atlas Edit prompt when a
+ *  variant edits from the PREVIOUS variant's image (chained mode).
+ *  Parallel variants (V_n edits from base) don't need it — the base
+ *  is the identity anchor by definition. Chained Edits compound drift
+ *  ~5%/step; the anchor explicitly references the ORIGINAL base so
+ *  the model preserves face/hair/clothing while allowing the
+ *  pose/motion progression that's the point of chaining.
+ *
+ *  Wording verified against the smoke artefacts at
+ *  `_plans/2026-05-28-atlas-edit-smoke/` — same identity-preservation
+ *  language pattern that worked for the character_cache continuation
+ *  prompt. Spec: `_plans/2026-05-28-doodle-2-chained-variants.md` (R4).
+ *
+ *  Exported so the auto-pipeline (`generateVariantImage` in
+ *  `src/lib/auto-pipeline/production-doc-image-gen.ts`) can use the
+ *  same string for behaviour parity between the manual editor and the
+ *  auto-pipeline. */
+export const CHAINED_VARIANT_IDENTITY_ANCHOR =
+  'Keep the character\'s face, hair, clothing, and overall identity EXACTLY identical to the ORIGINAL base of this scene — only the pose, motion, or expression progresses from the previous frame.';
+
 /** True when `row` is part of a variant group (has both fields set).
  *  Treats malformed rows (group_id without variant_index, or vice
  *  versa) as standalone so the renderer doesn't crash on bad data. */
@@ -912,6 +951,20 @@ export function composeVariantEditRequest(
     composedPrompt = basePrompt
       ? `${basePrompt}\n\nEDIT (apply this change to the input image, keep everything else identical): ${editInstruction}`
       : `EDIT (apply this change to the input image): ${editInstruction}`;
+  }
+  // Phase 1.7 (chained variants) — when this variant edits from the
+  // PREVIOUS variant's image (not the base), append the identity
+  // anchor so Atlas Edit doesn't compound style drift across V1 → V2
+  // → V3. Each Edit step adds ~5% drift; without the anchor a V3
+  // chain can drift ~14% from the canonical base. The anchor
+  // explicitly tells the model to preserve the ORIGINAL base's
+  // character identity while letting the pose/motion progress.
+  // Spec: _plans/2026-05-28-doodle-2-chained-variants.md (R4).
+  const variantIdx = variantRow.variant_index ?? 0;
+  const isChainedFromPrevious =
+    variantRow.variant_derives_from_previous === true && variantIdx > 1;
+  if (isChainedFromPrevious) {
+    composedPrompt += ` ${CHAINED_VARIANT_IDENTITY_ANCHOR}`;
   }
 
   // Defensive truncation — the /api/.../edit route caps prompts to
