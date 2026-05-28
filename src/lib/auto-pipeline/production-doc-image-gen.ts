@@ -447,24 +447,16 @@ export async function generateMouthRemovedForCharacter(args: {
 // ───────────────────────────────────────────────────────────────────────────
 
 /** Wrap a row's `ai_image_prompt` into an Atlas Edit instruction that
- *  preserves the character's identity from the cached base image. Pure
- *  function — no IO, testable in isolation.
+ *  preserves the character's identity from the cached base image.
  *
- *  Format aligns with the smoke-test prompt that successfully preserved
- *  George's face/hair/clothing across two scene changes. If a future
- *  iteration of Atlas Edit needs different language (e.g. it starts
- *  drifting on long prompts), tune here. */
-export function buildCharacterContinuationEditPrompt(originalScenePrompt: string): string {
-  const trimmed = originalScenePrompt.trim();
-  return (
-    `Modify this image to show the SAME character in this new scene: ${trimmed}. ` +
-    `CRITICAL: keep the character's face, hair, body proportions, clothing, ` +
-    `and overall identity EXACTLY identical to the input image. Only change ` +
-    `the pose, setting, expression, and other scene elements per the new ` +
-    `scene description above. Maintain the hand-drawn doodle style with ` +
-    `thick uneven black ink outlines and flat color fills.`
-  );
-}
+ *  Canonical definition lives in `src/lib/character-cache.ts` so the
+ *  production-doc page can share the wording without crossing the
+ *  auto-pipeline boundary (the auto-pipeline module pulls server-only
+ *  dependencies via `generateAtlasEdit` etc.). Re-exported here so the
+ *  existing auto-pipeline callers + the stage-handler tests keep their
+ *  imports stable. */
+import { buildCharacterContinuationEditPrompt as _buildCharacterContinuationEditPrompt } from '../character-cache';
+export const buildCharacterContinuationEditPrompt = _buildCharacterContinuationEditPrompt;
 
 /** Generate a character-continuation image via Atlas Edit on a cached
  *  base. The cached base is what the FIRST row featuring the character

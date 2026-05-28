@@ -98,6 +98,11 @@ import {
 import type { EditorWriters } from '@/components/production-doc/editor/types';
 import { EditorView } from '@/components/production-doc/editor/EditorView';
 import { NotesDock } from '@/components/notes/NotesDock';
+import {
+  buildCharacterContinuationEditPrompt,
+  getCachedCharacterBase,
+  writeCharacterToCache,
+} from '@/lib/character-cache';
 import type { PlayerController } from '@/lib/notes/player-controller';
 import { resolveOverlayPlacement } from '@/lib/overlay-placement';
 import { stripProductionMarkers } from '@/lib/script-markers';
@@ -360,6 +365,15 @@ interface ProductionRow {
    *  the variant is stale; the editor renders a "Base changed —
    *  regenerate?" banner. Only set on variant rows. */
   variant_base_image_at_generation?: string;
+  /** Phase 1 / Phase 1.6 — recurring-character slug for the
+   *  doodle_explainer_2 character cache. Mirrors the canonical
+   *  definition in src/remotion/utils.ts. When the active style is
+   *  doodle_explainer_2 AND this is set AND the doc's
+   *  `doodle_explainer_2_character_cache` already has an entry for
+   *  this slug, the row's image is generated via Atlas Edit on the
+   *  cached base instead of fresh i2i, preserving identity across
+   *  non-consecutive shots. */
+  character_id?: string;
 }
 
 interface ProductionDoc {
@@ -481,6 +495,17 @@ interface ProductionDoc {
    *  stay in sync. See §14 of
    *  `_plans/2026-05-28-paint-explainer-v1-architecture.md`. */
   paint_explainer_v1_settings?: PaintExplainerV1Settings;
+  /** Phase 1 / Phase 1.6 — doodle_explainer_2 character cache.
+   *  Per-doc map from a recurring character's `character_id` slug
+   *  to the i2i-generated base image URL captured on the FIRST row
+   *  featuring that character. Subsequent rows with the same slug
+   *  dispatch through Atlas Edit on this base instead of fresh i2i,
+   *  preserving identity across non-consecutive shots. Mirrors the
+   *  canonical definition on the remotion-side `ProductionDoc`. */
+  doodle_explainer_2_character_cache?: Record<string, {
+    base_url: string;
+    first_seen_row_index: number;
+  }>;
 }
 
 interface RowImageState {
@@ -4212,6 +4237,7 @@ function ProductionDocPage() {
     styleSheetDescription?: string;
     overlayStockTerms?: string;
     skipOverlay?: boolean;
+    characterId?: string;
   }>>(() => {
     if (!doc) return [];
     const docDisabled = doc.overlays_disabled === true;
@@ -4226,6 +4252,7 @@ function ProductionDocPage() {
       styleSheetDescription?: string;
       overlayStockTerms?: string;
       skipOverlay?: boolean;
+      characterId?: string;
     }> = [];
     for (let i = 0; i < doc.rows.length; i++) {
       if (rowImages[i]?.status !== 'error') continue;
@@ -4249,6 +4276,7 @@ function ProductionDocPage() {
         styleSheetDescription: sheetRef.styleSheetDescription,
         overlayStockTerms: row?.overlay_stock_terms,
         skipOverlay,
+        characterId: row?.character_id,
       });
     }
     return out;
@@ -4278,6 +4306,7 @@ function ProductionDocPage() {
     styleSheetDescription?: string;
     overlayStockTerms?: string;
     skipOverlay?: boolean;
+    characterId?: string;
   }>>(() => {
     if (!doc) return [];
     const docDisabled = doc.overlays_disabled === true;
@@ -4292,6 +4321,7 @@ function ProductionDocPage() {
       styleSheetDescription?: string;
       overlayStockTerms?: string;
       skipOverlay?: boolean;
+      characterId?: string;
     }> = [];
     for (let i = 0; i < doc.rows.length; i++) {
       const s = rowImages[i];
@@ -4315,6 +4345,7 @@ function ProductionDocPage() {
         styleSheetDescription: sheetRef.styleSheetDescription,
         overlayStockTerms: row?.overlay_stock_terms,
         skipOverlay,
+        characterId: row?.character_id,
       });
     }
     return out;
@@ -4371,6 +4402,7 @@ function ProductionDocPage() {
         styleSheetDescription: item.styleSheetDescription,
         overlayStockTerms: item.overlayStockTerms,
         skipOverlay: item.skipOverlay,
+        characterId: item.characterId,
       });
       cursor += 1;
       setRetryingImages({ done: cursor, total: totalRetries });
@@ -6048,6 +6080,16 @@ function ProductionDocPage() {
        *  The route's i2i dispatcher loads style refs server-side and
        *  excludes these ids before submitting to Kie / ComfyUI. */
       excludeRefIds?: string[];
+      /** Phase 1.6 (Bug D): the row's `character_id` slug for the
+       *  doodle_explainer_2 character cache. When the active style is
+       *  doodle_explainer_2 AND this is set AND the doc already has a
+       *  cached base image for this slug, the row is dispatched through
+       *  Atlas Edit on the cached base ($0.011) instead of fresh i2i
+       *  ($0.04). On miss-with-characterId, the successful i2i result
+       *  is written into the cache as the canonical base for this
+       *  character. See:
+       *  _plans/2026-05-28-doodle-2-phase-1-6-completion.md (R-D). */
+      characterId?: string;
     } = {},
     signal?: AbortSignal,
   ): Promise<boolean> {
@@ -6063,6 +6105,28 @@ function ProductionDocPage() {
     const referenceImageUrl = meta.referenceImageUrl?.trim() || undefined;
     const styleSheetDescription = meta.styleSheetDescription?.trim() || undefined;
     const overlayTerms = meta.overlayStockTerms?.trim() || undefined;
+    // Phase 1.6 (Bug D) — character-cache pre-check.
+    //
+    // When the active style is doodle_explainer_2 AND the row has a
+    // character_id AND the doc has a cached base image for that slug,
+    // dispatch through the existing Atlas Edit route (the same route
+    // used by variant rows) with the cached base + a wrapped
+    // continuation prompt. Cost ~$0.011 vs ~$0.04 for fresh i2i AND
+    // character identity stays consistent across non-consecutive shots.
+    //
+    // Bulk-generate race: when several character-bearing rows kick off
+    // in the same tick, all of them may read the cache as empty for the
+    // first occurrence — they'll each run a fresh i2i and the second
+    // write loses to `writeCharacterToCache`'s first-occurrence-wins
+    // semantics. Result: one extra fresh i2i per concurrent burst, but
+    // the cache settles correctly and subsequent rows hit. Acceptable
+    // for V1 (plan open question #2).
+    const characterId = meta.characterId?.trim() || undefined;
+    const isDoodleExplainer2 = stylePreset === 'doodle_explainer_2';
+    const cachedBaseUrl = characterId
+      ? getCachedCharacterBase(doc?.doodle_explainer_2_character_cache, characterId)
+      : undefined;
+    const useCharacterCache = isDoodleExplainer2 && Boolean(characterId) && Boolean(cachedBaseUrl);
     console.info('[prodoc image-gen] start', {
       rowIndex,
       hasOst: Boolean(onScreenText),
@@ -6071,7 +6135,71 @@ function ProductionDocPage() {
       sectionTitleLayout: sectionTitleLayout ?? null,
       chainedToSheet: Boolean(referenceImageUrl),
       hasOverlayTerms: Boolean(overlayTerms),
+      characterId: characterId ?? null,
+      useCharacterCache,
     });
+    if (useCharacterCache) {
+      console.info('[manual-editor character-cache] hit-and-edit', {
+        rowIndex,
+        characterId,
+        cachedBaseUrl,
+      });
+      const editPrompt = buildCharacterContinuationEditPrompt(prompt);
+      try {
+        const res = await queueImageGen('edit', 'character-cache-hit', () =>
+          fetch('/api/generate/production-doc/image/edit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal,
+            body: JSON.stringify({
+              originalImageUrl: cachedBaseUrl,
+              prompt: editPrompt,
+              optionId: 'gpt-image-2-atlas-edit',
+            }),
+          }),
+        );
+        if (res.status === 429) reportUpstream429('edit', 'character-cache-hit');
+        const data = (await safeJson(res)) as {
+          imageUrl?: string;
+          saliency?: ImageSaliencyMap | null;
+          error?: string;
+        };
+        if (res.ok && typeof data.imageUrl === 'string') {
+          setRowImages((prev) => {
+            const next = [...prev];
+            next[rowIndex] = {
+              status: 'done',
+              imageUrl: data.imageUrl!,
+              source: 'generated',
+            };
+            return next;
+          });
+          void persistRowAsset(rowIndex, 'image', data.imageUrl);
+          if (data.saliency) applySaliencyToRow(rowIndex, data.saliency);
+          if (overlayTerms && !meta.skipOverlay) {
+            console.info('[prodoc image-gen] overlay queued', { rowIndex, overlayTerms });
+            void fetchOverlayForRow(rowIndex, overlayTerms);
+          }
+          return true;
+        }
+        // Edit failed — drop through to the i2i path so the row still
+        // ships. Matches the auto-pipeline's fallback behavior
+        // (stage-handler logs `hit but edit failed, falling back to i2i`).
+        console.warn('[manual-editor character-cache] edit-failed-fallback-to-i2i', {
+          rowIndex,
+          characterId,
+          status: res.status,
+          error: data.error,
+        });
+      } catch (err) {
+        console.warn('[manual-editor character-cache] edit-failed-fallback-to-i2i (exception)', {
+          rowIndex,
+          characterId,
+          message: err instanceof Error ? err.message : String(err),
+        });
+        // Drop through to i2i.
+      }
+    }
     try {
       const res = await queueImageGen('generate', 'single-regen', () =>
         fetch('/api/generate/production-doc/image', {
@@ -6191,6 +6319,32 @@ function ProductionDocPage() {
       void persistRowAsset(rowIndex, 'image', data.imageUrl as string, {
         styleVersion: typeof data.styleVersion === 'number' ? data.styleVersion : undefined,
       });
+      // Phase 1.6 (Bug D) — character-cache miss-and-store.
+      //
+      // First i2i for a character_id slug: stash the result as the
+      // canonical base for every subsequent row showing the same
+      // character. `writeCharacterToCache` is first-occurrence-wins so
+      // racing writes during a bulk-gen burst are safe (the second
+      // write is a no-op). Cache lands in `doc` via `setDoc` and rides
+      // the existing debounced full-payload save to the server.
+      if (isDoodleExplainer2 && characterId && !cachedBaseUrl && typeof data.imageUrl === 'string') {
+        console.info('[manual-editor character-cache] miss-and-store', {
+          rowIndex,
+          characterId,
+        });
+        setDoc((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            doodle_explainer_2_character_cache: writeCharacterToCache(
+              prev.doodle_explainer_2_character_cache,
+              characterId,
+              data.imageUrl as string,
+              rowIndex,
+            ),
+          };
+        });
+      }
       const saliency = data.saliency;
       if (saliency) applySaliencyToRow(rowIndex, saliency);
       // Fire-and-forget the overlay fetch in parallel with the next row's
@@ -6628,6 +6782,7 @@ function ProductionDocPage() {
                 styleSheetDescription: sheetRef.styleSheetDescription,
                 overlayStockTerms: row.overlay_stock_terms,
                 skipOverlay,
+                characterId: row.character_id,
               },
               signal,
             );
@@ -9912,6 +10067,7 @@ function ProductionDocPage() {
                                   skipOverlay: typeof row.skip_overlay === 'boolean'
                                     ? row.skip_overlay
                                     : doc?.overlays_disabled === true,
+                                  characterId: row.character_id,
                                 });
                               }
                             }}
@@ -10472,6 +10628,7 @@ function ProductionDocPage() {
                                 skipOverlay: typeof row.skip_overlay === 'boolean'
                                   ? row.skip_overlay
                                   : doc?.overlays_disabled === true,
+                                characterId: row.character_id,
                               });
                             }}
                             onUpload={(file) => { void uploadImageForRow(i, file); }}
