@@ -1,0 +1,5 @@
+# Generated TypeScript files — diffs collapsed by default in GitHub
+# PR reviews so regenerated content (e.g. the Flex Icon Grid official
+# brand icons populated by `npx tsx scripts/download-flex-icon-grid-
+# brand-icons.ts`) doesn't dominate the review surface.
+*.generated.ts linguist-generated=true

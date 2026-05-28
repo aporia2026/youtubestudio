@@ -134,6 +134,7 @@ import {
 } from 'lucide-static';
 
 import { BRAND_ICONS } from './flex-icon-grid-brand-icons';
+import { ICONIFY_ICONS } from './flex-icon-grid-iconify-icons.generated';
 
 // ─── Registry types ─────────────────────────────────────────────────────────
 
@@ -294,6 +295,12 @@ export const ICON_REGISTRY: readonly IconEntry[] = [
   { slug: 'crown', label: 'Crown', category: 'misc', svg: Crown as unknown as string },
   { slug: 'skull', label: 'Skull', category: 'misc', svg: Skull as unknown as string },
   { slug: 'ghost', label: 'Ghost', category: 'misc', svg: Ghost as unknown as string },
+
+  // Iconify-sourced icons (empty until the download script runs — see
+  // `scripts/download-flex-icon-grid-iconify-icons.ts`). Spread from
+  // a `.generated.ts` sibling so PR diffs collapse via
+  // `linguist-generated=true` in `.gitattributes`.
+  ...ICONIFY_ICONS,
 ];
 
 /** Display labels for each category. The picker uses these as group

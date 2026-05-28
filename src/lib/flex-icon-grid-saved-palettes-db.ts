@@ -15,6 +15,15 @@
  */
 
 import { sql } from '@vercel/postgres';
+import {
+  validateSavedPaletteInput,
+  type SavedPaletteInput,
+  type ValidationResult,
+} from './flex-icon-grid-saved-palettes-validate';
+
+// Re-export so existing route handlers keep their import path stable.
+export { validateSavedPaletteInput };
+export type { SavedPaletteInput, ValidationResult };
 
 export interface SavedPalette {
   id: string;
@@ -24,11 +33,6 @@ export interface SavedPalette {
   created_by: string | null;
   created_at: string;
   updated_at: string;
-}
-
-export interface SavedPaletteInput {
-  name: string;
-  colors: string[];
 }
 
 const ROW_SHAPE = `
@@ -91,36 +95,6 @@ export async function deleteSavedPalette(id: string, workspaceId: string): Promi
     [id, workspaceId],
   );
   return (result.rowCount ?? 0) > 0;
-}
-
-// ─── Validation ─────────────────────────────────────────────────────────────
-
-export type ValidationResult =
-  | { ok: true; value: SavedPaletteInput }
-  | { ok: false; reason: string };
-
-const HEX_COLOR_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
-
-export function validateSavedPaletteInput(raw: unknown): ValidationResult {
-  if (!raw || typeof raw !== 'object') {
-    return { ok: false, reason: 'request body must be an object' };
-  }
-  const o = raw as Record<string, unknown>;
-  const name = typeof o.name === 'string' ? o.name.trim() : '';
-  if (!name) return { ok: false, reason: 'name is required' };
-  if (name.length > 60) return { ok: false, reason: 'name must be at most 60 characters' };
-  if (!Array.isArray(o.colors)) return { ok: false, reason: 'colors must be an array' };
-  if (o.colors.length === 0) return { ok: false, reason: 'colors must have at least one entry' };
-  if (o.colors.length > 30) return { ok: false, reason: 'colors must have at most 30 entries' };
-  const colors: string[] = [];
-  for (let i = 0; i < o.colors.length; i++) {
-    const c = o.colors[i];
-    if (typeof c !== 'string' || !HEX_COLOR_RE.test(c)) {
-      return { ok: false, reason: `colors[${i}] is not a valid hex colour` };
-    }
-    colors.push(c);
-  }
-  return { ok: true, value: { name, colors } };
 }
 
 // ─── Internal helpers ───────────────────────────────────────────────────────

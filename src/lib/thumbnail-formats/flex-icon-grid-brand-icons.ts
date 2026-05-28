@@ -31,7 +31,7 @@
  */
 
 import type { IconEntry } from './flex-icon-grid-icons';
-import { OFFICIAL_BRAND_ICONS } from './flex-icon-grid-brand-icons-official';
+import { OFFICIAL_BRAND_ICONS } from './flex-icon-grid-brand-icons-official.generated';
 
 /** Wrap a body string in the lucide-static-compatible SVG shell so
  *  the composer's existing `extractIconInner` slices the body back out

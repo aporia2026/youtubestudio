@@ -30,13 +30,15 @@ import {
 } from '@/lib/thumbnail-formats/flex-icon-grid';
 import { emojiToCodepointSlug } from '@/lib/thumbnail-formats/flex-icon-grid-emoji';
 import { BRAND_ICONS } from '@/lib/thumbnail-formats/flex-icon-grid-brand-icons';
-import { OFFICIAL_BRAND_ICONS } from '@/lib/thumbnail-formats/flex-icon-grid-brand-icons-official';
+import { OFFICIAL_BRAND_ICONS } from '@/lib/thumbnail-formats/flex-icon-grid-brand-icons-official.generated';
+import { ICONIFY_ICONS } from '@/lib/thumbnail-formats/flex-icon-grid-iconify-icons.generated';
 import { extractIconInner, ICON_REGISTRY, getIconEntry, inlineIconSvg } from '@/lib/thumbnail-formats/flex-icon-grid-icons';
 import {
   DEFAULT_STICKER_STYLE,
   STICKER_STYLE_PRESETS,
   resolveStickerStyle,
 } from '@/lib/thumbnail-formats/flex-icon-grid-sticker-styles';
+import { validateSavedPaletteInput } from '@/lib/flex-icon-grid-saved-palettes-validate';
 import {
   hueFamilyOf,
   parseHex,
@@ -687,6 +689,74 @@ describe('Phase 3.5 — OFFICIAL_BRAND_ICONS stub', () => {
     // BRAND_ICONS = SIMPLIFIED + OFFICIAL. Empty OFFICIAL means
     // BRAND_ICONS length equals SIMPLIFIED_BRAND_ICONS length (8).
     expect(BRAND_ICONS).toHaveLength(8);
+  });
+});
+
+describe('Phase 4 — saved-palette validation (pure module)', () => {
+  it('accepts a well-formed input', () => {
+    const result = validateSavedPaletteInput({
+      name: 'My Palette',
+      colors: ['#FF0000', '#00FF00', '#0000FF'],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.name).toBe('My Palette');
+      expect(result.value.colors).toEqual(['#FF0000', '#00FF00', '#0000FF']);
+    }
+  });
+  it('rejects missing name', () => {
+    const result = validateSavedPaletteInput({ colors: ['#FF0000'] });
+    expect(result.ok).toBe(false);
+  });
+  it('rejects empty colours', () => {
+    const result = validateSavedPaletteInput({ name: 'X', colors: [] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/at least one entry/);
+  });
+  it('rejects too many colours', () => {
+    const result = validateSavedPaletteInput({
+      name: 'X',
+      colors: Array.from({ length: 31 }, () => '#FF0000'),
+    });
+    expect(result.ok).toBe(false);
+  });
+  it('rejects malformed hex strings with the offending index', () => {
+    const result = validateSavedPaletteInput({
+      name: 'X',
+      colors: ['#FF0000', 'not-a-color', '#0000FF'],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/colors\[1\]/);
+  });
+  it('trims whitespace from name and re-validates length', () => {
+    const result = validateSavedPaletteInput({
+      name: '   My Palette   ',
+      colors: ['#FF0000'],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.name).toBe('My Palette');
+  });
+  it('accepts #RGB shorthand hex', () => {
+    const result = validateSavedPaletteInput({
+      name: 'X',
+      colors: ['#f0a', '#abc'],
+    });
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe('Phase 4 — ICONIFY_ICONS stub', () => {
+  it('exports an empty readonly array by default', () => {
+    expect(ICONIFY_ICONS).toEqual([]);
+  });
+  it('does not pollute the registry with empty entries', () => {
+    // The .generated stub stays empty until the download script runs.
+    // BRAND_ICONS (length 8) + ICONIFY_ICONS (length 0) means the
+    // total ICON_REGISTRY count matches the simplified-only count.
+    const iconifyInRegistry = ICON_REGISTRY.filter((e) =>
+      ICONIFY_ICONS.some((i) => i.slug === e.slug),
+    );
+    expect(iconifyInRegistry).toEqual([]);
   });
 });
 

@@ -71,7 +71,7 @@ const OUTPUT_PATH = path.join(
   'src',
   'lib',
   'thumbnail-formats',
-  'flex-icon-grid-brand-icons-official.ts',
+  'flex-icon-grid-brand-icons-official.generated.ts',
 );
 
 interface FetchResult {

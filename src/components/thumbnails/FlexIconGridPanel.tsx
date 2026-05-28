@@ -299,10 +299,19 @@ export function FlexIconGridPanel({
 
   /**
    * Generate AI stickers for every cell with an `ai-sticker` content
-   * type that has a prompt but no URL yet. Batches them in groups of
-   * 4 (one image-gen call per group of 4) per the collage-mode cost
-   * pattern. Each batch updates the cells in place as soon as it
-   * returns; partial failures still keep successful batches.
+   * type that has a prompt but no URL yet.
+   *
+   * Style-coherence rule (Phase 4 fix): cells are GROUPED BY EFFECTIVE
+   * STYLE before batching. Every batch contains only cells that share
+   * the same style — and fillers in that batch inherit the same style
+   * via the request body's `style` field. The model never sees a
+   * batch with mixed-style cells competing in the same collage call,
+   * which used to produce visibly less coherent real-cell renders.
+   *
+   * Cost trade-off: in the worst case (e.g. 4 real cells, each with a
+   * different style override), this turns 1 mixed-style call into 4
+   * single-cell calls. Documented at the panel UI level — the chip
+   * row warns users that per-cell overrides multiply the batch count.
    */
   async function generateStickers() {
     const targets = config.cells.filter(
@@ -312,33 +321,51 @@ export function FlexIconGridPanel({
       toast.info('No sticker prompts pending generation.');
       return;
     }
-    // Pad batches with a generic neutral prompt when the final batch
-    // has fewer than 4 cells — the route requires exactly 4 entries
-    // per call (2×2 collage). Filler cellIndexes use a high reserved
-    // range (9000+) so the server's validation (cellIndex >= 1)
-    // accepts them, and the client-side update loop ignores them
-    // because no real cell has that index.
-    const batches: Array<Array<{ cellIndex: number; prompt: string; style?: string }>> = [];
+    // Resolve the effective style for each target (per-cell override
+    // wins; falls back to the global). Group by that string.
+    const groupedByStyle = new Map<string, typeof targets>();
+    for (const cell of targets) {
+      const cellStyle = cell.content.type === 'ai-sticker' ? cell.content.style : undefined;
+      const effective = cellStyle || stickerStyle;
+      const bucket = groupedByStyle.get(effective);
+      if (bucket) bucket.push(cell);
+      else groupedByStyle.set(effective, [cell]);
+    }
+
+    // Build per-style batches. Fillers inherit the batch's style via
+    // the request body, so the collage prompt stays internally
+    // consistent and the model renders real cells coherently.
+    interface StickerBatch {
+      items: Array<{ cellIndex: number; prompt: string; style?: string }>;
+      style: string;
+    }
+    const batches: StickerBatch[] = [];
     const FILLER_BASE = 9000;
-    for (let i = 0; i < targets.length; i += 4) {
-      const chunk: Array<{ cellIndex: number; prompt: string; style?: string }> = targets
-        .slice(i, i + 4)
-        .map((cell) => ({
+    for (const [groupStyle, groupCells] of groupedByStyle) {
+      for (let i = 0; i < groupCells.length; i += 4) {
+        const items: StickerBatch['items'] = groupCells.slice(i, i + 4).map((cell) => ({
           cellIndex: cell.index,
           prompt: cell.content.type === 'ai-sticker' ? cell.content.prompt : '',
-          style: cell.content.type === 'ai-sticker' ? cell.content.style : undefined,
+          // Per-cell style intentionally omitted — the batch's `style`
+          // field carries the same value for both real cells and
+          // fillers, so the route's resolver picks it for both.
         }));
-      while (chunk.length < 4) {
-        chunk.push({
-          cellIndex: FILLER_BASE + chunk.length,
-          prompt: 'a neutral grey blank background',
-        });
+        while (items.length < 4) {
+          items.push({
+            cellIndex: FILLER_BASE + items.length,
+            prompt: 'a neutral grey blank background',
+          });
+        }
+        batches.push({ items, style: groupStyle });
       }
-      batches.push(chunk);
     }
     setStickerBusy(true);
     console.info('[flex-icon-grid panel sticker] batch start', {
-      target_count: targets.length, batch_count: batches.length,
+      target_count: targets.length,
+      batch_count: batches.length,
+      style_groups: Array.from(groupedByStyle.entries()).map(([s, cells]) => ({
+        style: s, cell_count: cells.length,
+      })),
     });
     try {
       for (let b = 0; b < batches.length; b++) {
@@ -346,7 +373,7 @@ export function FlexIconGridPanel({
         const res = await fetch('/api/thumbnails/format/flex-icon-grid/generate-stickers', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ stickers: batch, style: stickerStyle }),
+          body: JSON.stringify({ stickers: batch.items, style: batch.style }),
         });
         if (!res.ok) {
           const data: { error?: string } = await res.json().catch(() => ({}));
@@ -413,7 +440,14 @@ export function FlexIconGridPanel({
   // ── UI ───────────────────────────────────────────────────────────────────
 
   return (
-    <div style={containerStyle}>
+    <div style={containerStyle} data-fg-panel="true">
+      {/* Mobile responsive overrides (Phase 4). Inlined as a <style>
+          block so the panel stays self-contained — no global CSS
+          dependency, no tailwind plugin. Targets only data-attributed
+          descendants of this panel so the rules can't leak to other
+          parts of the app. */}
+      <style>{MOBILE_RESPONSIVE_CSS}</style>
+
       {/* Grid size + palette + defaults */}
       <section style={sectionStyle}>
         <h3 style={sectionHeaderStyle}>Grid</h3>
@@ -520,7 +554,7 @@ export function FlexIconGridPanel({
 
       {/* Selected cell editor */}
       {selectedCell && (
-        <section style={cellEditorStyle}>
+        <section style={cellEditorStyle} data-fg-cell-editor="true">
           <div style={cellEditorHeaderStyle}>
             <h3 style={{ ...sectionHeaderStyle, margin: 0 }}>
               Editing cell {selectedCell.index} of {totalCells}
@@ -719,9 +753,36 @@ export function FlexIconGridPanel({
             onChange={(span) => updateCell(selectedCell.index, { cellSpan: span })}
           />
 
-          {/* Conflict warning (per cell) */}
+          {/* Conflict warning (per cell). Auto-resolve handler picks
+              the smallest fix per reason: 'consumed-by-earlier' →
+              clear the cell's own span; 'clamped-to-grid' → clamp to
+              the largest span that fits from the cell's origin. */}
           {selectedCellConflict && (
-            <SpanConflictWarning reason={selectedCellConflict} />
+            <SpanConflictWarning
+              reason={selectedCellConflict}
+              onAutoResolve={() => {
+                const idx = selectedCell.index - 1;
+                const baseR = Math.floor(idx / config.cols);
+                const baseC = idx % config.cols;
+                const span = selectedCell.cellSpan;
+                if (selectedCellConflict === 'consumed-by-earlier') {
+                  updateCell(selectedCell.index, { cellSpan: undefined });
+                  return;
+                }
+                // clamped-to-grid
+                if (!span) return;
+                const maxRows = Math.max(1, config.rows - baseR);
+                const maxCols = Math.max(1, config.cols - baseC);
+                const next = {
+                  rows: Math.min(span.rows, maxRows),
+                  cols: Math.min(span.cols, maxCols),
+                };
+                updateCell(selectedCell.index, {
+                  cellSpan:
+                    next.rows === 1 && next.cols === 1 ? undefined : next,
+                });
+              }}
+            />
           )}
 
           {/* Reset everything */}
@@ -950,7 +1011,7 @@ function IconPicker({
             <div style={{ fontSize: 11, textTransform: 'uppercase', color: '#a1a1aa', letterSpacing: 1, marginBottom: 6 }}>
               {group.label}
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(56px, 1fr))', gap: 6 }}>
+            <div data-fg-icon-grid="true" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(56px, 1fr))', gap: 6 }}>
               {group.items.map((entry) => (
                 <button
                   key={entry.slug}
@@ -1302,8 +1363,20 @@ const SPAN_CONFLICT_MESSAGES: Record<SpanConflictReason, { title: string; body: 
   },
 };
 
-function SpanConflictWarning({ reason }: { reason: SpanConflictReason }) {
+const SPAN_CONFLICT_RESOLVE_LABELS: Record<SpanConflictReason, string> = {
+  'consumed-by-earlier': 'Clear this cell\'s span',
+  'clamped-to-grid': 'Clamp span to fit',
+};
+
+function SpanConflictWarning({
+  reason,
+  onAutoResolve,
+}: {
+  reason: SpanConflictReason;
+  onAutoResolve?: () => void;
+}) {
   const { title, body } = SPAN_CONFLICT_MESSAGES[reason];
+  const actionLabel = SPAN_CONFLICT_RESOLVE_LABELS[reason];
   return (
     <div
       style={{
@@ -1317,6 +1390,25 @@ function SpanConflictWarning({ reason }: { reason: SpanConflictReason }) {
     >
       <div style={{ fontWeight: 700, marginBottom: 4 }}>⚠ {title}</div>
       <div style={{ lineHeight: 1.5 }}>{body}</div>
+      {onAutoResolve && (
+        <button
+          type="button"
+          onClick={onAutoResolve}
+          style={{
+            marginTop: 8,
+            background: '#facc15',
+            color: '#0a0a0a',
+            border: 'none',
+            padding: '6px 12px',
+            borderRadius: 4,
+            cursor: 'pointer',
+            fontSize: 12,
+            fontWeight: 700,
+          }}
+        >
+          Auto-resolve · {actionLabel}
+        </button>
+      )}
     </div>
   );
 }
@@ -1627,6 +1719,32 @@ function PaletteSwatchRow({ spec }: { spec: PaletteSpec }) {
 }
 
 // ─── Inline styles ──────────────────────────────────────────────────────────
+
+/**
+ * Mobile-responsive CSS injected once at the top of the panel via a
+ * `<style>` block. Rules target only data-attributed descendants of
+ * this panel so they can't leak to other parts of the app. Activates
+ * at the standard tablet breakpoint (768px) and below.
+ *
+ * What it does:
+ *  - Bumps chip padding so chip rows become thumb-friendly tap
+ *    targets (≥ 40px tall after padding).
+ *  - Reduces section padding so the panel doesn't waste vertical
+ *    space on small screens.
+ *  - Stacks any container marked `data-fg-mobile-stack` into a column
+ *    instead of a row.
+ *  - Sets the icon picker grid to denser cells (40px instead of 56px)
+ *    so users see more icons per scroll.
+ */
+const MOBILE_RESPONSIVE_CSS = `
+@media (max-width: 768px) {
+  [data-fg-panel] section { padding: 10px !important; }
+  [data-fg-panel] [data-fg-chip] { padding: 9px 12px !important; min-height: 40px; }
+  [data-fg-panel] [data-fg-mobile-stack] { flex-direction: column !important; align-items: stretch !important; }
+  [data-fg-panel] [data-fg-icon-grid] { grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)) !important; }
+  [data-fg-panel] [data-fg-cell-editor] { padding: 12px !important; }
+}
+`;
 
 const containerStyle: React.CSSProperties = {
   display: 'flex',
