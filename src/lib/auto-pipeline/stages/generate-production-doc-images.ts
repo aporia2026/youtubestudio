@@ -369,7 +369,14 @@ export async function handleGenerateProductionDocImages(
     ...scheduledCollageIndices,
   ]);
   for (const idx of variantIndicesToGen) {
-    if (plan.length >= rowsPerTick) break;
+    // Honor the collage chunk reservation: a scheduled chunk pre-paid
+    // 8 credits for itself (4 cells + 4 fallback worst-case). Variants
+    // count 1 credit each against `plan.length`. Without `creditsUsed`
+    // here the variant loop would happily admit 8 variants on top of
+    // a scheduled chunk, blowing the 300s Vercel ceiling on the worst-
+    // case fallback path (~1 collage + 1 retry + 4 single-shot
+    // fallbacks + 8 variants > 360s). Caught in 2026-05-28 code review.
+    if (plan.length + creditsUsed >= rowsPerTick) break;
     const variant = doc.rows[idx];
     const sourceIdx = resolveSourceRowIndex(variant, doc);
     if (sourceIdx === -1) continue;
