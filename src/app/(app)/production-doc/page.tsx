@@ -1727,6 +1727,51 @@ export function ImageCell({
   }
 
   if (state.status === 'search') {
+    // Phase 1.6 (Bug F): when the row was initialized to 'search'
+    // because it had no ai_image_prompt at the time AND the user has
+    // since added a prompt, the row CAN generate now — surface
+    // "Generate AI image" as the primary action with "Search Images"
+    // demoted to a secondary link. Without this branch, the only
+    // affordance on a search-state row is the search link, which
+    // hides the generate path the user clearly wants. Spec:
+    // _plans/2026-05-28-doodle-2-phase-1-6-completion.md (R-F).
+    if (canGenerate) {
+      return (
+        <div className="flex items-center gap-1 flex-wrap">
+          <button
+            type="button"
+            onClick={onRetry}
+            title="Generate this image with the current prompt"
+            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded whitespace-nowrap"
+            style={{
+              background: 'rgba(168,85,247,0.12)',
+              color: '#c084fc',
+              border: '1px solid rgba(168,85,247,0.35)',
+              cursor: 'pointer',
+            }}
+          >
+            ＋ Generate AI image
+          </button>
+          <a
+            href={state.searchUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Search Google Images for this row's stock terms (secondary — the AI prompt is what produces a doodle)"
+            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded whitespace-nowrap"
+            style={{
+              background: 'transparent',
+              color: 'var(--text-muted)',
+              border: '1px solid rgba(255,255,255,0.10)',
+            }}
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+            </svg>
+            Search
+          </a>
+        </div>
+      );
+    }
     return (
       <a
         href={state.searchUrl}
