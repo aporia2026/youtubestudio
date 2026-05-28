@@ -337,6 +337,16 @@ export interface VideoShot {
    *  instead of the constant-rate fallback. Absent on shots without
    *  alignment (constant-rate falls through automatically). */
   visemeWords?: Array<{ text: string; startMs: number; endMs: number }>;
+
+  /** Resolved mouth anchor (% of canvas) for this shot's character,
+   *  looked up by `productionDocToVideoConfig` from
+   *  `ProductionDoc.paint_explainer_v1_character_cache[character_id]
+   *  .anchors['auto-mouth']`. Passed to `<MouthSwap>` so the procedural
+   *  mouth PNG composites at the right pixel on character poses that
+   *  aren't the centered close-up MouthSwap's hardcoded default
+   *  calibrated against. Absent when the vision-pass hasn't run or
+   *  returned no useful result — MouthSwap falls back to the default. */
+  mouthAnchor?: { xPct: number; yPct: number };
 }
 
 // ─── paint_explainer_v1 settings ────────────────────────────────────

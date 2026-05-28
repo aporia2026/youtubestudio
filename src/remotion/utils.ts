@@ -1836,6 +1836,16 @@ export function productionDocToVideoConfig(
       motionBeats: row.motion_beats as VideoShot['motionBeats'],
       mouthRemovedUrl: row.mouth_removed_url,
       characterId: row.character_id,
+      // Look up the cached vision-pass mouth anchor by character_id.
+      // Missing cache, missing entry, missing anchors object, or
+      // missing 'auto-mouth' key all leave mouthAnchor undefined —
+      // the renderer falls back to MouthSwap's hardcoded centered
+      // close-up default. Threaded HERE (not at render time) so the
+      // composition's static config carries every value needed for
+      // a frame-precise Lambda render.
+      mouthAnchor: row.character_id
+        ? doc.paint_explainer_v1_character_cache?.[row.character_id]?.anchors?.['auto-mouth']
+        : undefined,
       // `edited_at` deliberately NOT threaded — see comment in VideoShot.
     };
   });

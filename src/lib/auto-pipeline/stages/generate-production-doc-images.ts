@@ -49,6 +49,7 @@ import {
   type PipelineImageDoc,
   type PipelineImageRow,
 } from '../production-doc-image-gen';
+import { extractCharacterAnchors } from '../../anchor-vision-pass';
 
 /** Max rows to attempt per tick. Sized so the worst-case Atlas i2i
  *  latency (~30 s) × 8 rows = ~240 s stays under the Vercel 300 s
@@ -69,6 +70,20 @@ const ROWS_PER_TICK_PAINT_EXPLAINER_V1 = 4;
  *  — they're picked up next tick because their `mouth_removed_url`
  *  is still empty. */
 const MAX_MOUTH_REMOVED_PER_TICK = 3;
+
+/** Hard cap on how many vision-pass Kie calls a single tick can run.
+ *  Each call is ~10–15s; capping at 3 keeps the worst-case tick budget
+ *  (4 × 30s base + 3 × 40s mouth-removed + 3 × 15s vision = 285s)
+ *  under Vercel's 300s timeout. Deferred entries come back next tick
+ *  via the same retry pattern as mouth-removed (cache entry without
+ *  `anchors` triggers another attempt). */
+const MAX_VISION_PASS_PER_TICK = 3;
+
+/** Conservative cost per vision-pass call (kie-gemini-3.1-pro). The
+ *  exact number depends on Kie's per-token rate at call time;
+ *  $0.005 over-estimates a typical call (~$0.001–0.003) which keeps
+ *  the cap pre-check safely conservative. */
+const COST_PER_VISION_PASS = 0.005;
 
 /** Per-job hard cost cap. Read from env so Vercel can override
  *  without a redeploy. Defaults to $10 — generous for typical 30-row
@@ -239,6 +254,10 @@ export async function handleGenerateProductionDocImages(
   let mouthRemovedSucceeded = 0;
   let mouthRemovedSkipped = 0;
   let mouthRemovedFailed = 0;
+  let visionPassThisTick = 0;
+  let visionPassSucceeded = 0;
+  let visionPassSkipped = 0;
+  let visionPassFailed = 0;
   for (const item of plan) {
     const row = doc.rows[item.index];
     const result =
@@ -330,6 +349,91 @@ export async function handleGenerateProductionDocImages(
             });
           }
         }
+
+        // ─── paint_explainer_v1 vision-pass anchor extraction ─────
+        // Fires when:
+        //   (a) The character's cache entry exists AND lacks anchors
+        //       (either fresh from the mouth-removed branch above, OR
+        //       a prior tick generated the bases but bailed on
+        //       vision-pass — retry path).
+        //   (b) We have a base URL to send (cache.base_url OR the
+        //       just-generated row.image_url).
+        //   (c) Per-tick cap MAX_VISION_PASS_PER_TICK hasn't been hit.
+        //
+        // Anchors are stored under the cache's `anchors` field keyed
+        // by anchor kind ('auto-mouth' / 'auto-eyes' / 'auto-center')
+        // so the renderer (PR 1 thread-through next) can look up
+        // exactly the kind a motion beat requests.
+        //
+        // Failure mode: vision-pass returns null → no anchors written
+        // → renderer falls back to MouthSwap's hardcoded centered-
+        // close-up default. Same gentle-degradation pattern the rest
+        // of the pipeline uses.
+        const currentCacheEntry = doc.paint_explainer_v1_character_cache?.[row.character_id ?? ''];
+        const needsVisionPass =
+          item.kind === 'base'
+          && isPaintExplainerV1
+          && needsMouthRemoved(row)
+          && row.character_id
+          && currentCacheEntry
+          && !currentCacheEntry.anchors;
+        if (needsVisionPass) {
+          if (visionPassThisTick >= MAX_VISION_PASS_PER_TICK) {
+            visionPassSkipped += 1;
+            logger.info('[paint-explainer-v1 anchor-vision-pass] deferred to next tick', {
+              pipeline_video_id: video.id,
+              row_index: item.index,
+              character_id: row.character_id,
+              cap: MAX_VISION_PASS_PER_TICK,
+            });
+          } else {
+            const visionBaseUrl = currentCacheEntry.base_url || result.imageUrl;
+            const anchorResult = await extractCharacterAnchors({ baseImageUrl: visionBaseUrl });
+            visionPassThisTick += 1;
+            tickCostUsd += COST_PER_VISION_PASS;
+            if (anchorResult) {
+              const anchors: NonNullable<typeof currentCacheEntry.anchors> = {};
+              if (anchorResult.mouthCenter)     anchors['auto-mouth'] = anchorResult.mouthCenter;
+              if (anchorResult.eyesCenter)      anchors['auto-eyes'] = anchorResult.eyesCenter;
+              if (anchorResult.characterCenter) anchors['auto-center'] = anchorResult.characterCenter;
+              const cacheRef = doc.paint_explainer_v1_character_cache ?? {};
+              cacheRef[row.character_id!] = {
+                ...currentCacheEntry,
+                anchors,
+              };
+              doc.paint_explainer_v1_character_cache = cacheRef;
+              visionPassSucceeded += 1;
+              logger.info('[paint-explainer-v1 anchor-vision-pass] cached', {
+                pipeline_video_id: video.id,
+                row_index: item.index,
+                character_id: row.character_id,
+                model: anchorResult.model,
+                has_mouth: Boolean(anchorResult.mouthCenter),
+                has_eyes: Boolean(anchorResult.eyesCenter),
+                has_center: Boolean(anchorResult.characterCenter),
+                cost_usd: COST_PER_VISION_PASS,
+              });
+            } else {
+              // No useful result. Mark as "tried, no useful coords"
+              // by writing an empty `anchors` object so the next-tick
+              // retry doesn't loop forever. Renderer falls back to
+              // MouthSwap's hardcoded centered-close-up default for
+              // any anchor kind absent from the (now-empty) map.
+              const cacheRef = doc.paint_explainer_v1_character_cache ?? {};
+              cacheRef[row.character_id!] = {
+                ...currentCacheEntry,
+                anchors: {},
+              };
+              doc.paint_explainer_v1_character_cache = cacheRef;
+              visionPassFailed += 1;
+              logger.warn('[paint-explainer-v1 anchor-vision-pass] no result — renderer will use defaults', {
+                pipeline_video_id: video.id,
+                row_index: item.index,
+                character_id: row.character_id,
+              });
+            }
+          }
+        }
       }
     } else {
       failed += 1;
@@ -366,7 +470,10 @@ export async function handleGenerateProductionDocImages(
   //    paint_explainer_v1 character rows whose base is generated but
   //    whose mouth-removed companion hasn't been generated yet
   //    ALSO count as remaining — they got deferred by the per-tick
-  //    cap and must come back next tick.
+  //    cap and must come back next tick. Same logic for vision-pass:
+  //    a character cache entry without `anchors` means the vision
+  //    pass either failed or got deferred, and the next tick should
+  //    retry.
   const stillRemaining =
     doc.rows.some((r) => {
       if (!r.image_url?.trim()) {
@@ -375,10 +482,20 @@ export async function handleGenerateProductionDocImages(
         if (variantIdx === 0) return prompt.length > 0;
         return Boolean(r.variant_edit_prompt?.trim());
       }
-      // Base / variant image already generated. For paint_explainer_v1,
-      // also check whether a mouth-removed companion is still pending.
-      if (isPaintExplainerV1 && needsMouthRemoved(r) && r.character_id && !r.mouth_removed_url?.trim()) {
-        return true;
+      if (isPaintExplainerV1 && needsMouthRemoved(r) && r.character_id) {
+        // Mouth-removed companion still pending → re-tick.
+        if (!r.mouth_removed_url?.trim()) return true;
+        // Vision-pass anchors still pending → re-tick. We accept a
+        // single empty `anchors: {}` (vision-pass returned no
+        // useful coords for this character — typically a back-of-
+        // head pose) by requiring the field to be undefined to
+        // mean "not yet attempted." Once a vision-pass either
+        // populates anchors OR returns null (which currently
+        // leaves anchors undefined), the next-tick retry fires
+        // exactly once per cache entry before stalling at "no
+        // useful anchors."
+        const cacheEntry = doc.paint_explainer_v1_character_cache?.[r.character_id];
+        if (cacheEntry && cacheEntry.anchors === undefined) return true;
       }
       return false;
     });
@@ -397,6 +514,12 @@ export async function handleGenerateProductionDocImages(
     mouth_removed_succeeded: mouthRemovedSucceeded,
     mouth_removed_skipped: mouthRemovedSkipped,
     mouth_removed_failed: mouthRemovedFailed,
+    // paint_explainer_v1 vision-pass sub-stage telemetry. All zero
+    // on non-paint_explainer_v1 docs.
+    vision_pass_attempted: visionPassThisTick,
+    vision_pass_succeeded: visionPassSucceeded,
+    vision_pass_skipped: visionPassSkipped,
+    vision_pass_failed: visionPassFailed,
   });
 
   return {

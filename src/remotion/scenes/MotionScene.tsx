@@ -187,6 +187,7 @@ export const MotionScene: React.FC<MotionSceneProps & { shotIndex?: number }> = 
             <MouthSwap
               baseUrl={baseForMouthSwap!}
               sequence={sequence}
+              anchor={shot.mouthAnchor}
               diagnose={shotIndex < 5 && idx === 0}
             />
           </Sequence>

@@ -98,16 +98,16 @@ The council correctly called out that the original cost math was hand-waved. Hon
 |---|---|---|---|
 | Atlas base image (no character persistence) | $0.04 | 60 | $2.40 |
 | Atlas mouth-removed variant per character shot | $0.011 | 40 | $0.44 |
-| Gemini Flash vision-pass | $0.0001 | 60 | $0.006 |
-| **Total without persistence** | | | **~$2.85** |
+| Vision-pass (kie-gemini-3.1-pro) | $0.005 | 60 | $0.30 |
+| **Total without persistence** | | | **~$3.15** |
 
-That blows the $1 ceiling 2.85×. The architecture is unviable without persistence.
+That blows the $1 ceiling 3.15×. The architecture is unviable without persistence.
 
 **Fix: character_id keyed cache.**
 - Every row carries an optional `character_id: string | null` (e.g., `"explainer-base"`, `"napoleon"`, `"hacker"`).
-- For rows with `character_id`, the base + mouth-removed pair is generated ONCE per unique `character_id` per video, then reused across every shot with the same id.
+- For rows with `character_id`, the base + mouth-removed pair AND the vision-pass anchors are generated ONCE per unique `character_id` per video, then reused across every shot with the same id.
 - The LLM mixing_rules instruct it to emit stable `character_id` strings for recurring entities (the narrator-mascot, named guests, etc.).
-- Rows without `character_id` (environment shots, real-photo full-bleeds, action montages) get fresh bases.
+- Rows without `character_id` (environment shots, real-photo full-bleeds, action montages) get fresh bases and skip the vision pass.
 
 Revised cost math with persistence:
 
@@ -115,11 +115,13 @@ Revised cost math with persistence:
 |---|---|---|---|
 | Unique character bases | $0.04 | 3 (mascot + 2 variants) | $0.12 |
 | Unique mouth-removed variants | $0.011 | 3 | $0.033 |
+| Vision-pass per unique character | $0.005 | 3 | $0.015 |
 | Non-character bases (environment / real-photo / montage) | $0.04 | 20 | $0.80 |
-| Gemini Flash vision-pass per unique base | $0.0001 | 23 | $0.002 |
-| **Total with persistence** | | | **~$0.96** |
+| **Total with persistence** | | | **~$0.97** |
 
-That hits the ceiling with $0.04 of headroom. Not generous, but real.
+That hits the ceiling with $0.03 of headroom. Not generous, but real.
+
+> **Cost-correction note (2026-05-28, during vision-pass implementation):** the original draft of this section estimated $0.0001 per vision-pass call assuming direct Gemini 2.5 Flash. The actual integration uses `kie-gemini-3.1-pro` via Kie.ai to match the existing pattern in `overlay-placement-ai.ts` (which had a prior council pass for spatial-localization quality). Pro variant is 10–50× pricier than Flash but still small enough — at $0.005/call amortised across 3 characters per video, vision-pass adds $0.015 to the per-video bill. If cost becomes a concern later, swap to a Flash variant once Kie exposes one, OR migrate `src/lib/anchor-vision-pass.ts` to call `@google/generative-ai` directly (the package is already a dependency).
 
 **If the headroom is too tight in practice:** the fallback is `quality: 'low'` Atlas generation on non-character bases (already supported, saves ~30%). The plan does NOT default to that; we default to `quality: 'medium'` and downgrade only if telemetry shows we're consistently over budget.
 
