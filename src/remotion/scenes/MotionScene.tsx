@@ -26,7 +26,10 @@ import {
 import { LowerThird, type LowerThirdVariant } from '../components/LowerThird';
 import { MouthSwap } from '../components/MouthSwap';
 import { SceneTransition } from '../components/SceneTransition';
-import { constantRateVisemeSequence } from '../../lib/viseme-from-alignment';
+import {
+  constantRateVisemeSequence,
+  visemeSequenceFromAlignment,
+} from '../../lib/viseme-from-alignment';
 import type { BrandKit, PaintExplainerV1Settings, VideoShot } from '../types';
 
 interface MotionSceneProps {
@@ -109,22 +112,66 @@ export const MotionScene: React.FC<MotionSceneProps & { shotIndex?: number }> = 
           1,
           Math.round((beat.durationMs / 1000) * fps),
         );
-        // PR 1 uses the constant-rate fallback for the viseme
-        // sequence. PR 2 wires the alignment-driven sequence in by
-        // accepting a precomputed `MouthState[]` on the shot. Each
-        // beat gets its OWN sequence sized to its window so the
-        // talking loop starts fresh on every beat boundary (closer
-        // to real Paint-Explainer pacing than one continuous loop).
+
+        // Two viseme paths, branched per the doc setting and the
+        // availability of an alignment word slice:
         //
-        // Rate comes from the doc-level setting (default 8 Hz, range
-        // 6–12) so a user can dial mouth-swap pacing without touching
-        // code. The resolver upstream has already clamped to bounds
-        // and applied the default, so we read the field directly.
-        const sequence = constantRateVisemeSequence({
-          durationFrames: beatDurationFrames,
-          fps,
-          rateHz: paintSettings?.mouth_swap_fps_fallback ?? 8,
-        });
+        //  1. Alignment-driven (preferred). When the
+        //     `use_alignment_driven_visemes` setting is on AND the
+        //     shot carries `shot.visemeWords` (computed by
+        //     `productionDocToVideoConfig` from the project's
+        //     forced-alignment JSON), the mouth state follows the
+        //     spoken words frame-by-frame: 'open' during a word,
+        //     'mid' between words, 'closed' on silences > 500 ms.
+        //     This is what makes the talking feel match the audio.
+        //
+        //  2. Constant-rate fallback. When alignment is unavailable
+        //     OR the user has explicitly disabled alignment-driven
+        //     visemes for debugging, the beat cycles mid ↔ open at
+        //     the configured rate (default 8 Hz, range 6–12).
+        //
+        // The beat's window is a SUBSET of the shot's window; we
+        // pass the shot's full word slice to the helper and let it
+        // re-clip to the beat boundary. Per-beat sequences keep the
+        // talking loop fresh on every beat instead of running one
+        // continuous loop across the whole shot — closer to the
+        // genre's pacing.
+        const beatAbsoluteStartMs = shot.startMs + beat.startMs;
+        const useAlignment =
+          (paintSettings?.use_alignment_driven_visemes ?? true)
+          && Array.isArray(shot.visemeWords)
+          && shot.visemeWords.length > 0;
+        const sequence = useAlignment
+          ? visemeSequenceFromAlignment({
+              rowStartMs: beatAbsoluteStartMs,
+              rowDurationMs: beat.durationMs,
+              words: shot.visemeWords!,
+              fps,
+            })
+          : constantRateVisemeSequence({
+              durationFrames: beatDurationFrames,
+              fps,
+              rateHz: paintSettings?.mouth_swap_fps_fallback ?? 8,
+            });
+
+        // Diagnostic log fires once per shot at the first beat so
+        // the cron tail / browser console can grep which viseme
+        // source actually drove each shot. Important for debugging
+        // "the mouth isn't following the audio" — telemetry says
+        // whether alignment was even attempted.
+        if (shotIndex < 5 && idx === 0) {
+          console.info('[paint-explainer-v1 viseme]', {
+            shotIndex,
+            source: useAlignment ? 'alignment' : 'constant-rate',
+            beat_absolute_start_ms: beatAbsoluteStartMs,
+            beat_duration_ms: beat.durationMs,
+            words_in_slice: shot.visemeWords?.length ?? 0,
+            rate_hz: paintSettings?.mouth_swap_fps_fallback ?? 8,
+            setting_alignment_driven:
+              paintSettings?.use_alignment_driven_visemes ?? true,
+          });
+        }
+
         return (
           <Sequence
             key={`mouth-swap-${idx}`}

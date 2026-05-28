@@ -327,6 +327,16 @@ export interface VideoShot {
    *  Renderer doesn't act on this field — carried through to telemetry
    *  so per-character render counts grep cleanly. */
   characterId?: string;
+
+  /** Forced-alignment word slice covering this shot's time window
+   *  (absolute ms from start of audio). Populated by
+   *  `productionDocToVideoConfig` for paint_explainer_v1 motion shots
+   *  when the project has alignment JSON available. Consumed by
+   *  `<MouthSwap>` via `visemeSequenceFromAlignment` to produce frame-
+   *  precise mouth-state transitions tied to actual phoneme onsets,
+   *  instead of the constant-rate fallback. Absent on shots without
+   *  alignment (constant-rate falls through automatically). */
+  visemeWords?: Array<{ text: string; startMs: number; endMs: number }>;
 }
 
 // ─── paint_explainer_v1 settings ────────────────────────────────────

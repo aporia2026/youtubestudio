@@ -1904,10 +1904,60 @@ export function productionDocToVideoConfig(
   //
   // See `_plans/2026-05-23-editor-pin-duration-architecture.md`.
   const pinnedShots = doc.rows.map((r) => r.pin_duration === true);
-  if (!pinnedShots.some((p) => p)) {
-    return realignVideoConfig(config, opts.alignment).config;
-  }
-  return realignVideoConfig(config, opts.alignment, { pinnedShots }).config;
+  const realigned = !pinnedShots.some((p) => p)
+    ? realignVideoConfig(config, opts.alignment).config
+    : realignVideoConfig(config, opts.alignment, { pinnedShots }).config;
+  // paint_explainer_v1 (2026-05-28): attach per-shot word slices so
+  // <MouthSwap> can build alignment-driven viseme sequences instead
+  // of the constant-rate fallback. Only touches shots with
+  // shotKind === 'motion'; no-op on every other style + shot kind.
+  return attachPaintExplainerV1VisemeWords(realigned, opts.alignment);
+}
+
+/** Walk every paint_explainer_v1 motion shot and attach the slice of
+ *  alignment words that fall within its time window. Pure function —
+ *  returns a new config (shots are recreated; the rest is shared by
+ *  reference). On non-paint_explainer_v1 docs (no motion shots), the
+ *  returned config is reference-equal to the input.
+ *
+ *  Word inclusion rule: any word whose [startMs, endMs] window overlaps
+ *  the shot window [shot.startMs, shot.startMs + shot.durationMs).
+ *  The viseme helper (`visemeSequenceFromAlignment`) does its own
+ *  clipping on words that extend past the row boundary, so a loose
+ *  inclusion check here is safe and reduces edge cases.
+ *
+ *  Exported for unit testing. The function is the load-bearing bridge
+ *  between forced-alignment data and the `<MouthSwap>` overlay; a
+ *  regression on its slicing logic silently breaks every word-synced
+ *  mouth-swap render. */
+export function attachPaintExplainerV1VisemeWords(
+  config: VideoConfig,
+  alignment: ForcedAlignmentResponse,
+): VideoConfig {
+  // Fast-path: nothing to do if no motion shots in the config.
+  const hasMotionShot = config.shots.some((s) => s.shotKind === 'motion');
+  if (!hasMotionShot) return config;
+  // Cheap conversion: walk the aligner's flat word array once,
+  // produce a normalized millisecond shape. Subsequent per-shot
+  // filtering is O(rows × words) which is fine at the doc scale
+  // (few hundred words × tens of rows).
+  const allWords = (alignment.words ?? [])
+    .filter((w) => typeof w.start === 'number' && typeof w.end === 'number' && w.end > w.start)
+    .map((w) => ({
+      text: w.text,
+      startMs: Math.round(w.start * 1000),
+      endMs: Math.round(w.end * 1000),
+    }));
+  if (allWords.length === 0) return config;
+
+  const shots = config.shots.map((shot) => {
+    if (shot.shotKind !== 'motion') return shot;
+    const shotEndMs = shot.startMs + shot.durationMs;
+    const slice = allWords.filter((w) => w.endMs > shot.startMs && w.startMs < shotEndMs);
+    if (slice.length === 0) return shot;
+    return { ...shot, visemeWords: slice };
+  });
+  return { ...config, shots };
 }
 
 // ─── Voiceover-aligned re-timing ──────────────────────────────────────────────
