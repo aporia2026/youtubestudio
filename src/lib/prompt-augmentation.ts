@@ -18,6 +18,7 @@
  * composition. See `_plans/2026-05-26-collage-default-on-with-per-cell-augmentation.md`.
  */
 import { logger } from './logger';
+import { buildCharacterBiblePrefix } from './character-bible';
 
 /** Total char cap for the single-shot route's augmented prompt. */
 export const SINGLE_SHOT_PROMPT_CAP = 2000;
@@ -53,6 +54,14 @@ export interface AugmentCellPromptInput {
    *  {@link SINGLE_SHOT_PROMPT_CAP}. Collage cell:
    *  {@link COLLAGE_CELL_PROMPT_CAP}. */
   promptCap: number;
+  /** Phase 2 (Character Bible) — per-doc map from character_id slug
+   *  to a 1-2 sentence visual description. When non-empty, a
+   *  "Character reference for this scene" block is prepended to the
+   *  prompt BEFORE the safe-edge / OST directives so the model sees
+   *  the bible at the very top of its prompt window. Same value the
+   *  caller would read from `doc.doodle_explainer_2_character_descriptions`.
+   *  Passing undefined / empty map is a no-op (back-compat). */
+  characterDescriptions?: Record<string, string>;
   /** Source tag for telemetry. Helps disambiguate which surface fired
    *  the truncation log line. Optional. */
   source?: string;
@@ -209,8 +218,17 @@ export function augmentCellPrompt(input: AugmentCellPromptInput): AugmentCellPro
   // slack mirrors the historical inline block; trimming a partial word
   // at the truncation boundary may eat a few extra chars beyond the
   // strict budget.
+  // Phase 2 (Character Bible) — prepend the doc-level character bible
+  // BEFORE every other directive so the model sees consistent
+  // reference language for recurring characters at the very top of
+  // its prompt window. Empty / missing descriptions → empty prefix
+  // (no-op for back-compat). See `src/lib/character-bible.ts` for the
+  // prefix shape. The prefix is counted in fixedOverhead so the body
+  // budget shrinks accordingly when descriptions are present.
+  const characterBiblePrefix = buildCharacterBiblePrefix(input.characterDescriptions);
   const fixedOverhead =
-    safeEdgeDirective.length
+    characterBiblePrefix.length
+    + safeEdgeDirective.length
     + ostSafeEdgeReinforcement.length
     + safeTopDirective.length
     + ostLeadingDirective.length
@@ -234,7 +252,7 @@ export function augmentCellPrompt(input: AugmentCellPromptInput): AugmentCellPro
     });
   }
 
-  const finalPrompt = `${safeEdgeDirective}${ostSafeEdgeReinforcement}${safeTopDirective}${ostLeadingDirective}${safeBody}${ostTrailingDirective}${sheetDescDirective}`;
+  const finalPrompt = `${characterBiblePrefix}${safeEdgeDirective}${ostSafeEdgeReinforcement}${safeTopDirective}${ostLeadingDirective}${safeBody}${ostTrailingDirective}${sheetDescDirective}`;
 
   return {
     prompt: finalPrompt,

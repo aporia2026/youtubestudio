@@ -350,3 +350,65 @@ describe('augmentCellPrompt — full prompt composition', () => {
     );
   });
 });
+
+// ─── Phase 2 (Character Bible) — augmenter integration ──────────────────────
+
+describe('augmentCellPrompt — character bible (Phase 2)', () => {
+  const BASE = {
+    promptCap: SINGLE_SHOT_PROMPT_CAP,
+  };
+
+  it('prepends the character bible at the VERY TOP of the final prompt', () => {
+    const out = augmentCellPrompt({
+      ...BASE,
+      prompt: 'A wide shot of the burning house.',
+      characterDescriptions: {
+        george: 'Gray hair, mustache, dark vest.',
+        jennie: 'Yellow dress, brown hair.',
+      },
+    });
+    // The bible MUST come before the safe-edge directive so the
+    // model sees the reference at the top of its prompt window.
+    const biblePos = out.prompt.indexOf('Character reference for this scene:');
+    const safeEdgePos = out.prompt.indexOf('Composition fits fully inside');
+    const bodyPos = out.prompt.indexOf('A wide shot of the burning house.');
+    expect(biblePos).toBeGreaterThanOrEqual(0);
+    expect(safeEdgePos).toBeGreaterThan(biblePos);
+    expect(bodyPos).toBeGreaterThan(safeEdgePos);
+    expect(out.prompt).toContain('- george: Gray hair, mustache, dark vest.');
+    expect(out.prompt).toContain('- jennie: Yellow dress, brown hair.');
+  });
+
+  it('omits the bible when characterDescriptions is undefined (back-compat)', () => {
+    const out = augmentCellPrompt({
+      ...BASE,
+      prompt: 'A scene body.',
+    });
+    expect(out.prompt).not.toContain('Character reference for this scene:');
+  });
+
+  it('omits the bible when characterDescriptions is empty', () => {
+    const out = augmentCellPrompt({
+      ...BASE,
+      prompt: 'A scene body.',
+      characterDescriptions: {},
+    });
+    expect(out.prompt).not.toContain('Character reference for this scene:');
+  });
+
+  it('counts the bible in fixedOverhead so the body budget shrinks accordingly', () => {
+    const withoutBible = augmentCellPrompt({
+      ...BASE,
+      prompt: 'Body.',
+    });
+    const withBible = augmentCellPrompt({
+      ...BASE,
+      prompt: 'Body.',
+      characterDescriptions: {
+        george: 'Gray hair, mustache, dark vest, brown trousers, suspenders.',
+      },
+    });
+    expect(withBible.fixedOverhead).toBeGreaterThan(withoutBible.fixedOverhead);
+    expect(withBible.promptBudget).toBeLessThan(withoutBible.promptBudget);
+  });
+});

@@ -495,6 +495,37 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       hasAnyReusable: reusableCharIds.length > 0,
     });
 
+    // Phase 2 (Character Bible) — telemetry for doc-level
+    // character_descriptions emission. Logs the count + sample
+    // entries so the post-gen QA can confirm the LLM honored the
+    // mixing_rules update without dumping the whole map.
+    const descriptions =
+      (result as unknown as { doodle_explainer_2_character_descriptions?: Record<string, string> })
+        .doodle_explainer_2_character_descriptions;
+    if (descriptions && typeof descriptions === 'object') {
+      const entries = Object.entries(descriptions).filter(
+        ([slug, desc]) =>
+          typeof slug === 'string' && slug.length > 0
+          && typeof desc === 'string' && desc.trim().length > 0,
+      );
+      logger.info('[production-doc character-descriptions]', {
+        styleId: resolved.id,
+        emittedCount: entries.length,
+        sample: entries.slice(0, 3).map(([slug, desc]) => ({
+          slug,
+          desc: desc.slice(0, 80) + (desc.length > 80 ? '…' : ''),
+        })),
+        totalChars: entries.reduce((sum, [, d]) => sum + d.length, 0),
+      });
+    } else {
+      logger.info('[production-doc character-descriptions]', {
+        styleId: resolved.id,
+        emittedCount: 0,
+        sample: [],
+        totalChars: 0,
+      });
+    }
+
     // Phase 3 — same telemetry shape for scene_id emission.
     const sceneIdCounts = new Map<string, number>();
     for (const r of rows) {

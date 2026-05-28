@@ -109,6 +109,7 @@ import {
   getCachedSceneBase,
   writeSceneToCache,
 } from '@/lib/scene-cache';
+import { prependCharacterBible } from '@/lib/character-bible';
 import type { PlayerController } from '@/lib/notes/player-controller';
 import { resolveOverlayPlacement } from '@/lib/overlay-placement';
 import { stripProductionMarkers } from '@/lib/script-markers';
@@ -530,6 +531,12 @@ interface ProductionDoc {
     base_url: string;
     first_seen_row_index: number;
   }>;
+  /** Phase 2 (Character Bible) — doc-level character_id → visual
+   *  description map. LLM-emitted at doc-gen time; the dispatcher
+   *  prepends the bible to every prompt so non-anchored characters
+   *  render consistently. Mirrors the canonical field on the
+   *  remotion-side ProductionDoc. */
+  doodle_explainer_2_character_descriptions?: Record<string, string>;
 }
 
 interface RowImageState {
@@ -6263,7 +6270,15 @@ function ProductionDocPage() {
         characterId,
         cachedBaseUrl,
       });
-      const editPrompt = buildCharacterContinuationEditPrompt(prompt);
+      // Phase 2 (Character Bible) — wrap the scene body in the
+      // character-continuation prompt, then prepend the bible so
+      // non-anchored characters (Jennie + kids when George is the
+      // anchor) render with consistent reference language even on
+      // the cache-hit Atlas Edit path.
+      const editPrompt = prependCharacterBible(
+        buildCharacterContinuationEditPrompt(prompt),
+        doc?.doodle_explainer_2_character_descriptions,
+      );
       try {
         const res = await queueImageGen('edit', 'character-cache-hit', () =>
           fetch('/api/generate/production-doc/image/edit', {
@@ -6331,7 +6346,15 @@ function ProductionDocPage() {
         sceneId,
         cachedSceneBaseUrl,
       });
-      const editPrompt = buildSceneContinuationEditPrompt(prompt);
+      // Phase 2 (Character Bible) — prepend the bible on the
+      // scene-cache hit path too, so the character reference language
+      // is available for any recurring characters that appear in the
+      // scene (the location is the anchor, characters draw from the
+      // bible).
+      const editPrompt = prependCharacterBible(
+        buildSceneContinuationEditPrompt(prompt),
+        doc?.doodle_explainer_2_character_descriptions,
+      );
       try {
         const res = await queueImageGen('edit', 'scene-cache-hit', () =>
           fetch('/api/generate/production-doc/image/edit', {
@@ -6409,6 +6432,12 @@ function ProductionDocPage() {
             // v2: drop these refs from the dispatched call. Set when the
             // user clicks "Regenerate without rejected refs" after a 409.
             excludeRefIds: meta.excludeRefIds,
+            // Phase 2 (Character Bible) — pass the doc-level
+            // character descriptions through so the augmenter can
+            // prepend the reference block to the prompt. Empty /
+            // missing → no-op on non-doodle_explainer_2 docs and on
+            // docs predating the LLM teaching update.
+            characterDescriptions: doc?.doodle_explainer_2_character_descriptions,
           }),
         }),
       );

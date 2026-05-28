@@ -79,6 +79,14 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
        *  the dispatched call even if their `rejected_by_provider` flag
        *  isn't set yet. */
       excludeRefIds?: string[];
+      /** Phase 2 (Character Bible) — the doc-level
+       *  `doodle_explainer_2_character_descriptions` map. The page
+       *  passes this through on every image-gen call for a
+       *  doodle_explainer_2 doc so the augmenter can prepend the
+       *  character reference block to the prompt. Empty / missing →
+       *  no-op (back-compat for other styles and legacy docs). See
+       *  _plans/2026-05-28-doodle-2-character-bible.md. */
+      characterDescriptions?: Record<string, string>;
     };
     try {
       body = await req.json();
@@ -86,7 +94,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
     }
 
-    const { prompt, model, onScreenText, onScreenTextMode, sectionTitle, sectionTitleLayout, referenceImageUrl, styleSheetDescription, styleId, excludeRefIds } = body;
+    const { prompt, model, onScreenText, onScreenTextMode, sectionTitle, sectionTitleLayout, referenceImageUrl, styleSheetDescription, styleId, excludeRefIds, characterDescriptions } = body;
     if (!prompt?.trim()) {
       return NextResponse.json({ error: 'prompt is required' }, { status: 400 });
     }
@@ -140,6 +148,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       sectionTitle,
       sectionTitleLayout: normalizedLayout,
       styleSheetDescription,
+      characterDescriptions,
       promptCap: SINGLE_SHOT_PROMPT_CAP,
       source: 'prodoc-single-shot',
     });

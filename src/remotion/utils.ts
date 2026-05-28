@@ -1260,6 +1260,24 @@ export interface ProductionDoc {
     first_seen_row_index: number;
   }>;
 
+  /** Phase 2 (Character Bible) — per-doc map from `character_id`
+   *  slug to a 1-2 sentence visual description of distinctive
+   *  features (clothing, hair, build, accessories). LLM-emitted at
+   *  doc-gen time so the dispatcher can prepend a "character bible"
+   *  block to every row's prompt, giving the model consistent
+   *  reference language even for characters the cache can't anchor
+   *  (Atlas Edit preserves only ONE source image's content per call).
+   *
+   *  Together with `doodle_explainer_2_character_cache`: the cache
+   *  pins the DOMINANT character's identity per row; the bible pins
+   *  every OTHER recurring character's appearance through prompt
+   *  augmentation. Net effect: a "George + Jennie escape" row keeps
+   *  George anchored (cache) AND Jennie consistent (bible reference
+   *  language) instead of fresh-drifting both.
+   *
+   *  Spec: _plans/2026-05-28-doodle-2-character-bible.md. */
+  doodle_explainer_2_character_descriptions?: Record<string, string>;
+
   /** paint_explainer_v1 (2026-05-28): per-doc settings overriding the
    *  defaults. Every field optional — `resolvePaintExplainerV1Settings`
    *  fills in the canonical default for any field the user hasn't set.

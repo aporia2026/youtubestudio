@@ -2389,6 +2389,26 @@ When the chosen style's mixing_rules ABOVE define recurring locations (e.g. dood
 
 Only emit \`scene_id\` when the chosen style's mixing_rules explicitly describe recurring locations AND the script actually has at least one location/object that appears on multiple rows. Default = omit.
 
+### OPTIONAL — doc-level character bible
+
+When the chosen style's mixing_rules ABOVE define a character bible (e.g. doodle_explainer_2), add ONE doc-LEVEL field that maps every unique \`character_id\` slug used on rows to a 1-2 sentence visual description. The server prepends a "character reference" block to every row's prompt so non-anchored characters render consistently.
+
+\`\`\`json
+{
+  "title": "...",
+  "niche": "...",
+  "rows": [ ... ],
+  "doodle_explainer_2_character_descriptions": {
+    "george": "Gray hair and mustache, dark vest over white shirt, brown trousers, ~50 years old.",
+    "jennie": "Yellow dress with brown apron, brown hair pulled back, ~40 years old."
+  }
+}
+\`\`\`
+
+  - \`doodle_explainer_2_character_descriptions\` — a doc-LEVEL OBJECT keyed by \`character_id\` slug. Each value is a 1-2 sentence visual description of distinctive PAINTABLE features (clothing color & shape, hair color & style, age & build, distinctive accessories). Hard cap ~200 chars per value. NOT personality / backstory / non-visible attributes. See the chosen style's CHARACTER BIBLE section for the worked rules.
+
+Only emit this field when the chosen style's mixing_rules describe a character bible AND the doc has at least one row carrying a \`character_id\`. Default = omit.
+
 ABSOLUTE RULES:
 - Every row has all ${allowOverlay ? '11' : '8'} core fields (variant fields, \`character_id\`, and \`scene_id\` are OPTIONAL — they're additive, never replace core fields)
 - script_text is verbatim from the script — never paraphrase

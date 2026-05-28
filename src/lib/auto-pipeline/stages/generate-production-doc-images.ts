@@ -305,6 +305,7 @@ export async function handleGenerateProductionDocImages(
         baseImageUrl: cachedChar.base_url,
         characterId: row.character_id as string,
         newScenePrompt: row.ai_image_prompt,
+        characterDescriptions: doc.doodle_explainer_2_character_descriptions,
       });
       if (editResult.imageUrl) {
         charCacheHits += 1;
@@ -354,6 +355,7 @@ export async function handleGenerateProductionDocImages(
         baseImageUrl: cachedScene.base_url,
         sceneId: row.scene_id as string,
         newScenePrompt: row.ai_image_prompt,
+        characterDescriptions: doc.doodle_explainer_2_character_descriptions,
       });
       if (editResult.imageUrl) {
         sceneCacheHits += 1;

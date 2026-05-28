@@ -125,6 +125,13 @@ export interface PipelineImageDoc {
     base_url: string;
     first_seen_row_index: number;
   }>;
+  /** Phase 2 (Character Bible) — server-only mirror of
+   *  ProductionDoc.doodle_explainer_2_character_descriptions. The
+   *  pipeline's `generateBaseImage` passes this through to
+   *  `augmentCellPrompt` so the prompt augmentation prepends the
+   *  character reference block. See
+   *  _plans/2026-05-28-doodle-2-character-bible.md. */
+  doodle_explainer_2_character_descriptions?: Record<string, string>;
   /** Phase 1.7 R5 — doc-level default for chain mode. Tier 3 in the
    *  three-tier resolution; only applies when neither the variant's
    *  own flag nor the base row's `group_variant_chain_default` is
@@ -182,6 +189,10 @@ export async function generateBaseImage(args: {
     onScreenTextMode: 'overlay', // pipeline never bakes
     sectionTitle: row.section_title,
     sectionTitleLayout: normalizedLayout,
+    // Phase 2 (Character Bible) — pass the doc-level descriptions
+    // through so non-anchored characters render consistently. No-op
+    // when the doc field is unset.
+    characterDescriptions: doc.doodle_explainer_2_character_descriptions,
     promptCap: SINGLE_SHOT_PROMPT_CAP,
     source: 'pipeline-image-gen',
   });
@@ -510,6 +521,7 @@ import { buildCharacterContinuationEditPrompt as _buildCharacterContinuationEdit
 export const buildCharacterContinuationEditPrompt = _buildCharacterContinuationEditPrompt;
 import { buildSceneContinuationEditPrompt as _buildSceneContinuationEditPrompt } from '../scene-cache';
 export const buildSceneContinuationEditPrompt = _buildSceneContinuationEditPrompt;
+import { prependCharacterBible } from '../character-bible';
 
 /** Generate a character-continuation image via Atlas Edit on a cached
  *  base. The cached base is what the FIRST row featuring the character
@@ -531,9 +543,13 @@ export async function generateCharacterContinuationImage(args: {
   baseImageUrl: string;
   characterId: string;
   newScenePrompt: string;
+  /** Phase 2 (Character Bible) — when provided, prepended to the
+   *  composed Atlas Edit prompt so secondary characters in this row
+   *  have consistent reference language. */
+  characterDescriptions?: Record<string, string>;
 }): Promise<PipelineImageResult> {
   const t0 = Date.now();
-  const { baseImageUrl, characterId, newScenePrompt } = args;
+  const { baseImageUrl, characterId, newScenePrompt, characterDescriptions } = args;
   if (!baseImageUrl.trim()) {
     return { error: 'empty_base_image_url', durationMs: Date.now() - t0, costUsd: 0 };
   }
@@ -544,7 +560,10 @@ export async function generateCharacterContinuationImage(args: {
     return { error: 'empty_scene_prompt', durationMs: Date.now() - t0, costUsd: 0 };
   }
 
-  const editPrompt = buildCharacterContinuationEditPrompt(newScenePrompt);
+  const editPrompt = prependCharacterBible(
+    buildCharacterContinuationEditPrompt(newScenePrompt),
+    characterDescriptions,
+  );
   try {
     const edit = await generateAtlasEdit({
       prompt: editPrompt,
@@ -612,9 +631,13 @@ export async function generateSceneContinuationImage(args: {
   baseImageUrl: string;
   sceneId: string;
   newScenePrompt: string;
+  /** Phase 2 (Character Bible) — prepended to the composed prompt so
+   *  characters appearing in this scene-anchored row render with
+   *  consistent reference language. */
+  characterDescriptions?: Record<string, string>;
 }): Promise<PipelineImageResult> {
   const t0 = Date.now();
-  const { baseImageUrl, sceneId, newScenePrompt } = args;
+  const { baseImageUrl, sceneId, newScenePrompt, characterDescriptions } = args;
   if (!baseImageUrl.trim()) {
     return { error: 'empty_base_image_url', durationMs: Date.now() - t0, costUsd: 0 };
   }
@@ -625,7 +648,10 @@ export async function generateSceneContinuationImage(args: {
     return { error: 'empty_scene_prompt', durationMs: Date.now() - t0, costUsd: 0 };
   }
 
-  const editPrompt = buildSceneContinuationEditPrompt(newScenePrompt);
+  const editPrompt = prependCharacterBible(
+    buildSceneContinuationEditPrompt(newScenePrompt),
+    characterDescriptions,
+  );
   try {
     const edit = await generateAtlasEdit({
       prompt: editPrompt,
