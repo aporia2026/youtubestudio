@@ -77,13 +77,16 @@ function synthesizeBuiltInRefs(styleId: string): StyleReferenceImage[] {
   // e.g. `Doodle-explainer` for id `doodle_explainer`. We hardcode the
   // mapping at the built-in registration site rather than munging the
   // id here so a future built-in with refs in a non-conventional
-  // subdirectory still works. For now there's one (Doodle Explainer),
-  // and its dir matches the convention id → Hyphen-Case-Path.
-  // 2026-05-22: just use the file-system convention used by the
-  // existing public/style-refs/Doodle-explainer/ directory.
+  // subdirectory still works.
+  //
+  // 2026-05-28 paint_explainer_v1: borrows doodle_explainer_2's refs
+  // until a dedicated Paint-Explainer-v1 bundle is curated. Mapping
+  // both ids to the same folder is exactly what this dirMap is for —
+  // change just this line when paint_explainer_v1 gets its own bundle.
   const dirMap: Record<string, string> = {
     doodle_explainer: 'Doodle-explainer',
     doodle_explainer_2: 'Doodle-explainer-2',
+    paint_explainer_v1: 'Doodle-explainer-2',
   };
   const dir = dirMap[builtIn.id] ?? builtIn.id;
   const base = getPublicBaseUrl();
@@ -176,9 +179,14 @@ export async function mirrorBuiltInRefToR2(input: {
   // `process.cwd()/public/style-refs/<Dir>/<filename>`. The dir name
   // mapping mirrors `synthesizeBuiltInRefs` above.
   const builtIn = getBuiltInStyle(input.styleId);
+  // Mirror of the dirMap in `synthesizeBuiltInRefs` — kept in sync so a
+  // style's public path AND its R2-mirror path resolve to the same
+  // underlying bytes on disk. Update both when a built-in's ref folder
+  // changes.
   const dirMap: Record<string, string> = {
     doodle_explainer: 'Doodle-explainer',
     doodle_explainer_2: 'Doodle-explainer-2',
+    paint_explainer_v1: 'Doodle-explainer-2',
   };
   const dir = dirMap[input.styleId] ?? builtIn?.id ?? input.styleId;
   const filePath = path.join(process.cwd(), 'public', 'style-refs', dir, input.filename);
