@@ -25,6 +25,7 @@ import {
 } from 'remotion';
 import { LowerThird, type LowerThirdVariant } from '../components/LowerThird';
 import { MouthSwap } from '../components/MouthSwap';
+import { RealPhotoPunchIn } from '../components/RealPhotoPunchIn';
 import { SceneTransition } from '../components/SceneTransition';
 import {
   constantRateVisemeSequence,
@@ -67,6 +68,10 @@ export const MotionScene: React.FC<MotionSceneProps & { shotIndex?: number }> = 
   const beats = shot.motionBeats ?? [];
   const mouthSwapBeats = useMemo(
     () => beats.filter((b) => b.kind === 'mouth_swap'),
+    [beats],
+  );
+  const realPhotoPunchBeats = useMemo(
+    () => beats.filter((b) => b.kind === 'real_photo_punch'),
     [beats],
   );
 
@@ -182,6 +187,47 @@ export const MotionScene: React.FC<MotionSceneProps & { shotIndex?: number }> = 
             <MouthSwap
               baseUrl={baseForMouthSwap!}
               sequence={sequence}
+              diagnose={shotIndex < 5 && idx === 0}
+            />
+          </Sequence>
+        );
+      })}
+
+      {/* Real-photo punch-in beats. URL resolution order:
+            1. beat.payload.assetUrl (LLM-supplied per beat)
+            2. shot.overlay?.url (the existing auto-fetched stock photo
+               populated by the `overlay_stock_terms` pipeline).
+          A beat with neither resolution is silently skipped — the
+          renderer never holds the frame waiting for an asset that
+          isn't coming. */}
+      {realPhotoPunchBeats.map((beat, idx) => {
+        const beatStartFrame = Math.max(0, Math.round((beat.startMs / 1000) * fps));
+        const beatDurationFrames = Math.max(
+          1,
+          Math.round((beat.durationMs / 1000) * fps),
+        );
+        const url = beat.payload?.assetUrl ?? shot.overlay?.url;
+        if (!url) {
+          if (shotIndex < 5 && idx === 0) {
+            console.info('[paint-explainer-v1 real-photo-punch] skipped — no URL', {
+              shotIndex,
+              beat_idx: idx,
+              has_payload_assetUrl: Boolean(beat.payload?.assetUrl),
+              has_shot_overlay_url: Boolean(shot.overlay?.url),
+            });
+          }
+          return null;
+        }
+        return (
+          <Sequence
+            key={`real-photo-punch-${idx}`}
+            from={beatStartFrame}
+            durationInFrames={beatDurationFrames}
+            layout="none"
+          >
+            <RealPhotoPunchIn
+              url={url}
+              anchor={beat.anchor}
               diagnose={shotIndex < 5 && idx === 0}
             />
           </Sequence>
