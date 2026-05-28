@@ -39,6 +39,7 @@ import {
   resolveStickerStyle,
 } from '@/lib/thumbnail-formats/flex-icon-grid-sticker-styles';
 import { validateSavedPaletteInput } from '@/lib/flex-icon-grid-saved-palettes-validate';
+import { validateSavedTemplateInput } from '@/lib/flex-icon-grid-saved-templates-validate';
 import {
   hueFamilyOf,
   parseHex,
@@ -689,6 +690,50 @@ describe('Phase 3.5 — OFFICIAL_BRAND_ICONS stub', () => {
     // BRAND_ICONS = SIMPLIFIED + OFFICIAL. Empty OFFICIAL means
     // BRAND_ICONS length equals SIMPLIFIED_BRAND_ICONS length (8).
     expect(BRAND_ICONS).toHaveLength(8);
+  });
+});
+
+describe('Phase 4.7c — saved-template validation (pure module)', () => {
+  it('accepts a well-formed input', () => {
+    const result = validateSavedTemplateInput({
+      name: 'My Template',
+      config: { rows: 3, cols: 5 },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.name).toBe('My Template');
+    }
+  });
+  it('rejects missing name', () => {
+    const result = validateSavedTemplateInput({ config: {} });
+    expect(result.ok).toBe(false);
+  });
+  it('rejects empty/whitespace name', () => {
+    const result = validateSavedTemplateInput({ name: '   ', config: {} });
+    expect(result.ok).toBe(false);
+  });
+  it('rejects oversized name', () => {
+    const result = validateSavedTemplateInput({
+      name: 'a'.repeat(61),
+      config: {},
+    });
+    expect(result.ok).toBe(false);
+  });
+  it('rejects missing config', () => {
+    const result = validateSavedTemplateInput({ name: 'X' });
+    expect(result.ok).toBe(false);
+  });
+  it('rejects non-object config', () => {
+    const result = validateSavedTemplateInput({ name: 'X', config: 'not an object' });
+    expect(result.ok).toBe(false);
+  });
+  it('trims whitespace from name', () => {
+    const result = validateSavedTemplateInput({
+      name: '  My Template  ',
+      config: {},
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.name).toBe('My Template');
   });
 });
 

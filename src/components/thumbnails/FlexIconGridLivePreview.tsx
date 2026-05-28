@@ -24,7 +24,7 @@
  * currently-selected cell for visual lock-in.
  */
 
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import {
   applyLabelCase,
   computeCellGeometry,
@@ -68,13 +68,87 @@ interface Props {
 /** Map our `LabelFont` enum to a browser CSS family stack. Falls
  *  back to a chunky generic sans-serif when the bundled TTF isn't
  *  loaded — keeps the preview readable even if the wire-in font
- *  registration hasn't happened yet. */
-const FONT_CSS_FALLBACK: Record<LabelStyle['font'], string> = {
+ *  registration hasn't happened yet. `'custom'` returns a stack that
+ *  references the per-URL-derived family registered via
+ *  `registerCustomFonts` below; the stable hash-based name lets the
+ *  preview pick up the font as soon as it's loaded. */
+const FONT_CSS_FALLBACK: Record<Exclude<LabelStyle['font'], 'custom'>, string> = {
   'anton': "'Anton', Impact, 'Arial Black', sans-serif",
   'bowlby-one': "'Bowlby One', 'Arial Black', sans-serif",
   'archivo-black': "'Archivo Black', 'Helvetica Neue', sans-serif",
   'patrick-hand': "'Patrick Hand', Caveat, cursive",
 };
+
+/** Derive a stable browser-side family name from a custom font URL.
+ *  Same URL → same family every time, so the preview always renders
+ *  with the registered FontFace once loaded. */
+function customFontFamilyName(url: string): string {
+  let hash = 0;
+  for (let i = 0; i < url.length; i++) {
+    hash = (hash * 31 + url.charCodeAt(i)) | 0;
+  }
+  return `fg-custom-${(hash >>> 0).toString(36)}`;
+}
+
+/** Resolve a `LabelStyle.font` to the CSS family stack the live
+ *  preview should set on the rendering `<text>` elements. Threads
+ *  the custom font URL when applicable so the FontFace registered by
+ *  the effect below is actually used. */
+function resolveFontCssFor(style: { font: LabelStyle['font']; customFontUrl?: string }): string {
+  if (style.font === 'custom' && style.customFontUrl) {
+    return `'${customFontFamilyName(style.customFontUrl)}', Impact, 'Arial Black', sans-serif`;
+  }
+  if (style.font === 'custom') return FONT_CSS_FALLBACK.anton;
+  return FONT_CSS_FALLBACK[style.font];
+}
+
+/**
+ * Mount/cleanup FontFace registrations for every unique custom-font
+ * URL referenced by the config (cell-level overrides + the default
+ * label style + the title bar). Idempotent — re-registering the
+ * same family is a no-op on most browsers. Cleanup deletes the
+ * registered families on unmount so a config swap doesn't leak fonts
+ * into the next panel session.
+ */
+function useCustomFontRegistration(config: FlexIconGridConfig): void {
+  useEffect(() => {
+    if (typeof document === 'undefined' || !('fonts' in document)) return;
+    // Collect unique URLs from every label-style position.
+    const urls = new Set<string>();
+    if (config.defaultLabel.font === 'custom' && config.defaultLabel.customFontUrl) {
+      urls.add(config.defaultLabel.customFontUrl);
+    }
+    if (config.titleBar?.font === 'custom') {
+      // Title bar doesn't (yet) carry a custom URL field; reserved
+      // for a future round.
+    }
+    for (const cell of config.cells) {
+      const cellStyle = cell.labelStyle;
+      if (cellStyle?.font === 'custom' && cellStyle.customFontUrl) {
+        urls.add(cellStyle.customFontUrl);
+      }
+    }
+    const registered: { family: string; face: FontFace }[] = [];
+    for (const url of urls) {
+      const family = customFontFamilyName(url);
+      const face = new FontFace(family, `url(${url})`);
+      registered.push({ family, face });
+      void face.load().then(() => {
+        document.fonts.add(face);
+      }).catch((err) => {
+        console.warn('[flex-icon-grid preview] custom font load failed', {
+          family, url_prefix: url.slice(0, 60),
+          reason: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
+    return () => {
+      for (const { face } of registered) {
+        try { document.fonts.delete(face); } catch { /* ignore */ }
+      }
+    };
+  }, [config]);
+}
 
 export function FlexIconGridLivePreview({
   config,
@@ -82,6 +156,12 @@ export function FlexIconGridLivePreview({
   onCellClick,
   className,
 }: Props) {
+  // Register any custom font URLs the config references (default
+  // label style, per-cell overrides). Each unique URL becomes a
+  // FontFace under a hash-derived family name; resolveFontCssFor()
+  // produces the same family name so the <text> elements pick the
+  // loaded face the moment it resolves.
+  useCustomFontRegistration(config);
   // Memoise heavy work: layout + palette resolution + per-cell geometry.
   // Triggered only when the config reference changes; the panel will
   // give us a fresh reference on every edit so the memo is correct
@@ -153,7 +233,7 @@ export function FlexIconGridLivePreview({
                 ? config.titleBar.height / 2
                 : config.height - config.titleBar.height / 2
             }
-            fontFamily={FONT_CSS_FALLBACK[config.titleBar.font]}
+            fontFamily={resolveFontCssFor({ font: config.titleBar.font })}
             fontSize={Math.round(config.titleBar.height * 0.55)}
             fontWeight={900}
             fill={config.titleBar.color}
@@ -677,7 +757,7 @@ function TextOnlyContent({
     <text
       x={geom.shapeX + geom.shapeW / 2}
       y={geom.shapeY + geom.shapeH / 2}
-      fontFamily={FONT_CSS_FALLBACK[labelStyle.font]}
+      fontFamily={resolveFontCssFor(labelStyle)}
       fontSize={sizePx}
       fontWeight={900}
       fill={colour}
@@ -709,7 +789,7 @@ function LabelText({
     <text
       x={geom.labelX + geom.labelW / 2}
       y={geom.labelY + geom.labelH / 2}
-      fontFamily={FONT_CSS_FALLBACK[labelStyle.font]}
+      fontFamily={resolveFontCssFor(labelStyle)}
       fontSize={sizePx}
       fontWeight={900}
       fill={colour}

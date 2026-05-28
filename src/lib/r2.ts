@@ -472,6 +472,14 @@ export function buildFlexIconGridCellUploadKey(fileName: string): string {
   return `thumbnails/flex-icon-grid-cell-upload/${Date.now()}-${sanitized}`;
 }
 
+/** Build an R2 key for a custom label font uploaded by the user in the
+ *  Flex Icon Grid format (Phase 4.7). Distinct prefix so font assets
+ *  can be lifecycle-managed independently of cell image uploads. */
+export function buildFlexIconGridFontUploadKey(fileName: string): string {
+  const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return `thumbnails/flex-icon-grid-font/${Date.now()}-${sanitized}`;
+}
+
 /** Build an R2 key for an uploaded production-doc attachment (PDF/DOCX/XLSX/
  *  CSV/TXT/JSON). Lives in the images bucket under a prod-docs/ prefix —
  *  treats that bucket as a generic static-asset store rather than spinning

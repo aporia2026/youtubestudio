@@ -103,7 +103,19 @@ const FONT_OPTIONS: { value: LabelFont; label: string; sample: string }[] = [
   { value: 'bowlby-one', label: 'Bowlby One', sample: 'ROUNDED' },
   { value: 'archivo-black', label: 'Archivo Black', sample: 'CLASSIC' },
   { value: 'patrick-hand', label: 'Patrick Hand', sample: 'Hand-drawn' },
+  { value: 'custom', label: 'Custom upload', sample: 'TTF/OTF' },
 ];
+
+const ALLOWED_FONT_TYPES = new Set([
+  'font/ttf',
+  'font/otf',
+  'font/woff',
+  'font/woff2',
+  'application/octet-stream',
+  'application/x-font-ttf',
+  'application/x-font-opentype',
+]);
+const MAX_FONT_UPLOAD_BYTES = 5 * 1024 * 1024;
 
 const PALETTE_OPTIONS: { value: PaletteSpec; label: string }[] = [
   { value: { type: 'preset', name: 'rainbow' }, label: 'Rainbow' },
@@ -292,6 +304,62 @@ export function FlexIconGridPanel({
   }
 
   // ── Uploads ──────────────────────────────────────────────────────────────
+
+  /**
+   * Custom-font upload (Phase 4.7b). Presign → R2 PUT → store the
+   * returned URL on `config.defaultLabel.customFontUrl`. The live
+   * preview and server composer both pick up the new URL on the
+   * next render. License posture: the file is the user's; the panel
+   * surfaces a one-line warning next to the upload control.
+   */
+  async function uploadCustomFont(file: File) {
+    if (!ALLOWED_FONT_TYPES.has(file.type) && !/\.(ttf|otf|woff|woff2)$/i.test(file.name)) {
+      toast.error('Font must be a .ttf, .otf, .woff, or .woff2 file.');
+      return;
+    }
+    if (file.size > MAX_FONT_UPLOAD_BYTES) {
+      toast.error('Font upload must be under 5MB.');
+      return;
+    }
+    console.info('[flex-icon-grid panel font] upload start', {
+      content_type: file.type, size_bytes: file.size,
+    });
+    try {
+      const presignRes = await fetch('/api/uploads/flex-icon-grid-font', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileName: file.name,
+          contentType: file.type || 'font/ttf',
+          fileSize: file.size,
+        }),
+      });
+      if (!presignRes.ok) {
+        const data: { error?: string } = await presignRes.json().catch(() => ({}));
+        throw new Error(data.error || `Presign failed (${presignRes.status})`);
+      }
+      const { uploadUrl, downloadUrl } = await presignRes.json();
+      const putRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type || 'font/ttf' },
+        body: file,
+      });
+      if (!putRes.ok) throw new Error(`R2 upload failed (${putRes.status})`);
+      updateConfig({
+        defaultLabel: {
+          ...config.defaultLabel,
+          font: 'custom',
+          customFontUrl: downloadUrl,
+          customFontLabel: file.name.replace(/\.(ttf|otf|woff|woff2)$/i, ''),
+        },
+      });
+      toast.success(`Font "${file.name}" attached`);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn('[flex-icon-grid panel font] upload error', { reason });
+      toast.error(reason || 'Font upload failed');
+    }
+  }
 
   async function uploadCellImage(cellIndex: number, file: File) {
     if (!ALLOWED_CELL_UPLOAD_TYPES.has(file.type)) {
@@ -613,6 +681,27 @@ export function FlexIconGridPanel({
         </div>
       </section>
 
+      {/* Workspace-saved starting templates (Phase 4.7c). A separate
+          surface from saved palettes — palettes are colour-only,
+          templates carry the full structural config (grid size, default
+          shape, ring, label style, title bar). Per-cell content is
+          intentionally not saved so loading a template doesn't blow
+          away the user's current cells. */}
+      <SavedTemplatesSection
+        config={config}
+        onLoad={(loaded) => {
+          // Apply saved structural settings on top of the current
+          // config, preserving per-cell content + cell count. The
+          // panel's `setGridSize` would normally re-seed cells, so we
+          // bypass it and carry over `cells` verbatim.
+          setConfig((prev) => ({
+            ...prev,
+            ...loaded,
+            cells: prev.cells, // keep current per-cell content
+          }));
+        }}
+      />
+
       {/* Live preview */}
       <section style={{ ...sectionStyle, padding: '12px 14px' }}>
         <h3 style={sectionHeaderStyle}>Live preview · click any cell to edit</h3>
@@ -915,6 +1004,47 @@ export function FlexIconGridPanel({
                   </button>
                 ))}
               </div>
+              {config.defaultLabel.font === 'custom' && (
+                <div style={{ marginTop: 10, display: 'grid', gap: 6 }}>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <input
+                      type="file"
+                      accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) void uploadCustomFont(f);
+                      }}
+                    />
+                    {config.defaultLabel.customFontUrl && (
+                      <>
+                        <span style={{ fontSize: 12, color: '#34d399' }}>
+                          {config.defaultLabel.customFontLabel ?? 'Custom font'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateConfig({
+                              defaultLabel: {
+                                ...config.defaultLabel,
+                                customFontUrl: undefined,
+                                customFontLabel: undefined,
+                              },
+                            })
+                          }
+                          style={ghostButtonStyle}
+                        >
+                          Remove
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  <p style={{ fontSize: 11, color: '#facc15', margin: 0 }}>
+                    ⚠ Many fonts ship under restrictive licences (desktop-only, paid-only). You are
+                    responsible for ensuring the font you upload may be embedded in a publicly
+                    hosted thumbnail.
+                  </p>
+                </div>
+              )}
             </div>
             <div>
               <label style={labelStyle}>Cell gap (px)</label>
@@ -1147,6 +1277,194 @@ function SvgPreview({ slug }: { slug: string }) {
       strokeLinejoin="round"
       dangerouslySetInnerHTML={{ __html: inner }}
     />
+  );
+}
+
+// ─── Workspace-saved starting templates (Phase 4.7c) ────────────────────────
+
+interface SavedTemplateRecord {
+  id: string;
+  name: string;
+  config: Partial<FlexIconGridConfig>;
+  updated_at: string;
+}
+
+/** Strip per-cell content from a config before saving as a template.
+ *  Per-cell labels / icons / uploads are video-specific; the
+ *  template should capture the user's preferred LAYOUT and STYLING
+ *  defaults only. Cells are excluded; everything else round-trips. */
+function trimConfigForTemplate(config: FlexIconGridConfig): Partial<FlexIconGridConfig> {
+  const { cells: _cells, ...rest } = config;
+  return rest;
+}
+
+function SavedTemplatesSection({
+  config,
+  onLoad,
+}: {
+  config: FlexIconGridConfig;
+  onLoad: (loaded: Partial<FlexIconGridConfig>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [templates, setTemplates] = useState<SavedTemplateRecord[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [saveName, setSaveName] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  async function refresh() {
+    try {
+      const res = await fetch('/api/thumbnails/format/flex-icon-grid/saved-templates');
+      if (!res.ok) throw new Error(`Load failed (${res.status})`);
+      const data = (await res.json()) as { templates: SavedTemplateRecord[] };
+      setTemplates(data.templates);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load saved templates');
+    }
+  }
+
+  useEffect(() => {
+    if (open && templates === null) void refresh();
+  }, [open, templates]);
+
+  async function save() {
+    const name = saveName.trim();
+    if (!name) {
+      setError('Name is required');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/thumbnails/format/flex-icon-grid/saved-templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, config: trimConfigForTemplate(config) }),
+      });
+      if (!res.ok) {
+        const data: { error?: string } = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Save failed (${res.status})`);
+      }
+      setSaveName('');
+      await refresh();
+      toast.success(`Saved template "${name}"`);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : 'Save failed';
+      setError(reason);
+      toast.error(reason);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(id: string, name: string) {
+    if (!confirm(`Delete saved template "${name}"?`)) return;
+    setBusy(true);
+    try {
+      const res = await fetch(
+        `/api/thumbnails/format/flex-icon-grid/saved-templates/${encodeURIComponent(id)}`,
+        { method: 'DELETE' },
+      );
+      if (!res.ok) throw new Error(`Delete failed (${res.status})`);
+      await refresh();
+      toast.success('Template deleted');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Delete failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section style={sectionStyle}>
+      <button
+        type="button"
+        onClick={() => setOpen((x) => !x)}
+        style={{ ...ghostButtonStyle, padding: '6px 0', textAlign: 'left', width: '100%' }}
+      >
+        {open ? '▼' : '▸'} Workspace-saved starting templates
+      </button>
+      {open && (
+        <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
+          <p style={{ fontSize: 11, color: '#a1a1aa', margin: 0 }}>
+            Save the current grid&apos;s layout, shape, palette, and label style as a reusable
+            starting template. Per-cell content stays out of the template so loading one
+            keeps your current cells intact.
+          </p>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              type="text"
+              value={saveName}
+              onChange={(e) => setSaveName(e.target.value)}
+              placeholder="Template name"
+              maxLength={60}
+              style={{ ...inputStyle, flex: 1, minWidth: 160 }}
+            />
+            <button
+              type="button"
+              onClick={save}
+              disabled={busy || !saveName.trim()}
+              style={chipStyle(false)}
+            >
+              {busy ? 'Saving…' : 'Save current as template'}
+            </button>
+          </div>
+          {error && (
+            <p style={{ fontSize: 11, color: '#f87171', margin: 0 }}>{error}</p>
+          )}
+          {templates === null && !error && (
+            <p style={{ fontSize: 11, color: '#a1a1aa', margin: 0 }}>Loading…</p>
+          )}
+          {templates !== null && templates.length === 0 && (
+            <p style={{ fontSize: 11, color: '#a1a1aa', margin: 0 }}>
+              No saved templates yet.
+            </p>
+          )}
+          {templates !== null && templates.length > 0 && (
+            <div style={{ display: 'grid', gap: 6 }}>
+              {templates.map((t) => (
+                <div
+                  key={t.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    background: '#0a0a0d',
+                    border: '1px solid #2a2a2e',
+                    padding: '6px 8px',
+                    borderRadius: 6,
+                  }}
+                >
+                  <span style={{ fontSize: 12, color: '#fafafa', flex: 1 }}>{t.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => onLoad(t.config)}
+                    style={{ ...chipStyle(false), padding: '4px 10px', fontSize: 12 }}
+                  >
+                    Load
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => remove(t.id, t.name)}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#71717a',
+                      cursor: 'pointer',
+                      fontSize: 16,
+                      padding: '0 4px',
+                    }}
+                    title="Delete"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -1385,11 +1703,21 @@ function CustomPaletteEditor({
     setOverIndex(null);
   }
 
+  /** Swap two slots in the colour list. Used by the keyboard-
+   *  accessible "Move up / Move down" buttons (Phase 4.7a). */
+  function moveBy(i: number, delta: number) {
+    const target = i + delta;
+    if (target < 0 || target >= palette.colors.length) return;
+    const next = [...palette.colors];
+    [next[i], next[target]] = [next[target], next[i]];
+    update(next);
+  }
+
   return (
     <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
       <p style={{ fontSize: 11, color: '#a1a1aa', margin: 0 }}>
-        Drag the slots to reorder, click a swatch to change its colour. The adjacency engine
-        cycles through these in order across the grid.
+        Drag the grip ⋮⋮ to reorder or use the ↑/↓ buttons. Click a swatch to change its colour.
+        The adjacency engine cycles through these in order across the grid.
       </p>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
         {palette.colors.map((c, i) => (
@@ -1400,10 +1728,11 @@ function CustomPaletteEditor({
             onDragOver={(e) => handleDragOver(i, e)}
             onDrop={(e) => handleDrop(i, e)}
             onDragEnd={handleDragEnd}
+            aria-label={`Palette colour ${i + 1} of ${palette.colors.length}: ${normaliseHex(c).toUpperCase()}`}
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: 6,
+              gap: 4,
               background: '#0a0a0d',
               // Highlight the drop target in the same cyan the cell
               // editor uses, and dim the slot being dragged so the
@@ -1412,12 +1741,29 @@ function CustomPaletteEditor({
               border: overIndex === i
                 ? '1px dashed #38bdf8'
                 : '1px solid #2a2a2e',
-              padding: 6,
+              padding: 4,
               borderRadius: 6,
-              cursor: 'grab',
               opacity: dragIndex === i ? 0.45 : 1,
             }}
           >
+            {/* Grip handle — visual + touch affordance for drag, plus
+                a long-press target on mobile. cursor: grab signals the
+                drag intent. The ⋮⋮ glyph is purely decorative; screen
+                readers skip it via aria-hidden. */}
+            <span
+              aria-hidden="true"
+              title="Drag to reorder"
+              style={{
+                color: '#52525b',
+                fontFamily: 'monospace',
+                fontSize: 14,
+                cursor: 'grab',
+                padding: '0 2px',
+                userSelect: 'none',
+              }}
+            >
+              ⋮⋮
+            </span>
             <input
               type="color"
               value={normaliseHex(c)}
@@ -1431,9 +1777,33 @@ function CustomPaletteEditor({
             <span style={{ fontSize: 11, color: '#a1a1aa', fontFamily: 'monospace' }}>
               {normaliseHex(c).toUpperCase()}
             </span>
+            {/* Keyboard-accessible reorder. Disabled at the edges so
+                arrow-key navigation through the slots doesn't trigger
+                no-op clicks. */}
+            <button
+              type="button"
+              onClick={() => moveBy(i, -1)}
+              disabled={i === 0}
+              aria-label="Move colour up"
+              title="Move up"
+              style={miniReorderButtonStyle(i === 0)}
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              onClick={() => moveBy(i, 1)}
+              disabled={i === palette.colors.length - 1}
+              aria-label="Move colour down"
+              title="Move down"
+              style={miniReorderButtonStyle(i === palette.colors.length - 1)}
+            >
+              ↓
+            </button>
             <button
               type="button"
               onClick={() => update(palette.colors.filter((_, j) => j !== i))}
+              aria-label="Remove colour"
               title="Remove this colour"
               style={{
                 background: 'transparent',
@@ -1806,6 +2176,25 @@ const swatchInputStyle: React.CSSProperties = {
   background: 'transparent',
   cursor: 'pointer',
 };
+
+/** Compact ↑/↓ reorder buttons for the custom palette editor. Sized
+ *  to sit inline with the colour swatch without taking visual
+ *  precedence over the colour itself. Disabled state dims rather than
+ *  hides — the static button position keeps the slot widths stable
+ *  while iterating through the list. */
+function miniReorderButtonStyle(disabled: boolean): React.CSSProperties {
+  return {
+    background: 'transparent',
+    border: '1px solid #2a2a2e',
+    color: disabled ? '#3f3f46' : '#a1a1aa',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    fontSize: 11,
+    padding: '2px 5px',
+    borderRadius: 3,
+    minWidth: 18,
+    minHeight: 18,
+  };
+}
 
 // ─── Upload field ───────────────────────────────────────────────────────────
 

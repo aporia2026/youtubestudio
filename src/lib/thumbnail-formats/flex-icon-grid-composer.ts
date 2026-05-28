@@ -36,7 +36,10 @@
  * a single failed render can be diagnosed from console output alone.
  */
 
+import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import sharp from 'sharp';
 import {
   applyLabelCase,
@@ -63,19 +66,20 @@ import { fetchTwemojiSvg } from './flex-icon-grid-emoji';
 // ─── Font resolution ────────────────────────────────────────────────────────
 
 /**
- * Pango font-family name + on-disk TTF path per `LabelFont`. The
- * family name passed to Pango must match the TTF's internal
+ * Pango font-family name + on-disk TTF path per bundled `LabelFont`.
+ * The family name passed to Pango must match the TTF's internal
  * Font Family record; we cache the mapping here so the rest of the
  * composer never has to remember.
  *
  * `patrick-hand` reuses the existing
  * `public/fonts/PatrickHand-Regular.ttf` that the topic-card-grid
  * composite already depends on. The other three TTFs ship under a
- * dedicated `public/fonts/flex-icon-grid/` directory so a single
- * `_plans` follow-up can audit / rotate them without touching the
- * topic-card-grid bundle.
+ * dedicated `public/fonts/flex-icon-grid/` directory.
+ *
+ * The `'custom'` variant is intentionally absent — it's resolved
+ * dynamically per render via `resolveCustomFont` (Phase 4.7).
  */
-const FONT_RESOLVER: Record<LabelFont, { family: string; path: string }> = {
+const FONT_RESOLVER: Record<Exclude<LabelFont, 'custom'>, { family: string; path: string }> = {
   'anton': {
     family: 'Anton',
     path: path.join(process.cwd(), 'public/fonts/flex-icon-grid/Anton-Regular.ttf'),
@@ -93,6 +97,97 @@ const FONT_RESOLVER: Record<LabelFont, { family: string; path: string }> = {
     path: path.join(process.cwd(), 'public/fonts/PatrickHand-Regular.ttf'),
   },
 };
+
+/**
+ * Per-render custom-font cache + temp-file tracker. The composer
+ * creates one of these at the top of `composeFlexIconGrid` and threads
+ * it through every label-overlay call. Behaviour:
+ *
+ *  - First time a unique custom font URL is requested: fetch the
+ *    bytes via the same SSRF-guarded fetcher used for cell uploads,
+ *    write them to an os-tmpdir file with a random name, return
+ *    `{ family, path }`.
+ *  - Subsequent requests for the same URL: serve the cached entry.
+ *  - At the end of the render (success OR failure), `cleanup()` deletes
+ *    every temp file written. Process never accumulates per-tenant
+ *    fonts on disk.
+ *
+ * Pango/fontconfig need the font installed by family name. We don't
+ * trust the uploaded font's internal family record — different fonts
+ * can collide on "Regular", "Sans", etc. The resolver assigns a
+ * unique randomised family name per URL so Pango never accidentally
+ * substitutes one custom font for another within the same render.
+ */
+interface CustomFontResolver {
+  resolve(url: string): Promise<{ family: string; path: string } | null>;
+  cleanup(): Promise<void>;
+}
+
+function makeCustomFontResolver(fetcher: UploadFetcher): CustomFontResolver {
+  const cache = new Map<string, { family: string; path: string }>();
+  const tempFiles: string[] = [];
+  return {
+    async resolve(url: string) {
+      if (cache.has(url)) return cache.get(url)!;
+      let bytes: Buffer;
+      try {
+        bytes = await fetcher(url);
+      } catch (err) {
+        console.warn('[flex-icon-grid composer] custom font fetch failed', {
+          url_prefix: url.slice(0, 60),
+          reason: err instanceof Error ? err.message : String(err),
+        });
+        return null;
+      }
+      const family = `fg-custom-${crypto.randomBytes(6).toString('hex')}`;
+      const ext = url.match(/\.(ttf|otf|woff|woff2)(?:\?|$)/i)?.[1] ?? 'ttf';
+      const tempPath = path.join(
+        os.tmpdir(),
+        `${family}.${ext.toLowerCase()}`,
+      );
+      await fs.writeFile(tempPath, bytes);
+      tempFiles.push(tempPath);
+      const entry = { family, path: tempPath };
+      cache.set(url, entry);
+      return entry;
+    },
+    async cleanup() {
+      for (const p of tempFiles) {
+        try { await fs.unlink(p); } catch { /* file may already be gone */ }
+      }
+    },
+  };
+}
+
+/**
+ * Resolve a `LabelStyle.font` to its `{ family, path }`. For bundled
+ * fonts the lookup is synchronous; for `'custom'` the resolver fetches
+ * + writes the temp file and may return `null` on fetch failure (in
+ * which case the caller falls back to the configured `defaultLabel`
+ * font so a single broken font URL doesn't kill the whole render).
+ */
+async function resolveLabelFont(
+  style: LabelStyle,
+  resolver: CustomFontResolver,
+  fallback: Exclude<LabelFont, 'custom'>,
+): Promise<{ family: string; path: string }> {
+  if (style.font === 'custom' && style.customFontUrl) {
+    const got = await resolver.resolve(style.customFontUrl);
+    if (got) return got;
+  }
+  if (style.font === 'custom') return FONT_RESOLVER[fallback];
+  return FONT_RESOLVER[style.font];
+}
+
+/** Pick a bundled-font fallback for cells that requested 'custom' but
+ *  whose URL failed to fetch. Honours the config's `defaultLabel.font`
+ *  when it itself isn't 'custom' — keeps the visual character of the
+ *  rest of the grid. Final fallback is Anton to match the panel
+ *  default. */
+function defaultFallbackFont(config: FlexIconGridConfig): Exclude<LabelFont, 'custom'> {
+  if (config.defaultLabel.font !== 'custom') return config.defaultLabel.font;
+  return 'anton';
+}
 
 // ─── Shared constants ───────────────────────────────────────────────────────
 
@@ -161,47 +256,58 @@ export async function composeFlexIconGrid(input: ComposeInput): Promise<Buffer> 
     bytes: baseBuffer.length, ms: Date.now() - baseStart,
   });
 
-  // 2) Per-cell text + image overlays. Built in parallel where
-  //    possible — each cell's overlays are independent of each
-  //    other. Upload fetches are the slow path (network); resolve
-  //    them in parallel via Promise.all. Cells consumed by another
-  //    cell's span are skipped entirely.
-  const overlayPlanStart = Date.now();
-  const consumedForOverlays = getConsumedCellIndexes(config);
-  const cellOverlays = await Promise.all(
-    config.cells
-      .filter((cell) => !consumedForOverlays.has(cell.index))
-      .map((cell) =>
-        buildCellOverlays(cell, config, layout, backgrounds[cell.index - 1], fetchUpload),
-      ),
-  );
-  console.info('[flex-icon-grid composer] cell overlays planned', {
-    ms: Date.now() - overlayPlanStart,
-    cell_count: cellOverlays.length,
-    total_overlays: cellOverlays.reduce((acc, list) => acc + list.length, 0),
-  });
+  // Custom-font resolver shared across every overlay call in this
+  // render. Fetches user-uploaded TTFs via the same SSRF-guarded
+  // fetcher, caches per URL, tracks temp files for cleanup. Cleanup
+  // runs unconditionally in the `finally` below so a failed render
+  // never leaks per-tenant fonts onto the function's tmpdir.
+  const fontResolver = makeCustomFontResolver(fetchUpload);
+  let finalBuffer: Buffer;
+  try {
+    // 2) Per-cell text + image overlays. Built in parallel where
+    //    possible — each cell's overlays are independent of each
+    //    other. Upload fetches are the slow path (network); resolve
+    //    them in parallel via Promise.all. Cells consumed by another
+    //    cell's span are skipped entirely.
+    const overlayPlanStart = Date.now();
+    const consumedForOverlays = getConsumedCellIndexes(config);
+    const cellOverlays = await Promise.all(
+      config.cells
+        .filter((cell) => !consumedForOverlays.has(cell.index))
+        .map((cell) =>
+          buildCellOverlays(cell, config, layout, backgrounds[cell.index - 1], fetchUpload, fontResolver),
+        ),
+    );
+    console.info('[flex-icon-grid composer] cell overlays planned', {
+      ms: Date.now() - overlayPlanStart,
+      cell_count: cellOverlays.length,
+      total_overlays: cellOverlays.reduce((acc, list) => acc + list.length, 0),
+    });
 
-  const overlays: sharp.OverlayOptions[] = cellOverlays.flat();
+    const overlays: sharp.OverlayOptions[] = cellOverlays.flat();
 
-  // 3) Title bar text — single overlay layered on top of the title
-  //    bar background that the base SVG already painted.
-  if (config.titleBar) {
-    const titleOverlay = await buildTitleBarOverlay(config);
-    if (titleOverlay) overlays.push(titleOverlay);
+    // 3) Title bar text — single overlay layered on top of the title
+    //    bar background that the base SVG already painted.
+    if (config.titleBar) {
+      const titleOverlay = await buildTitleBarOverlay(config, fontResolver);
+      if (titleOverlay) overlays.push(titleOverlay);
+    }
+
+    // 4) Single composite pass — one decode of the base, one encode of
+    //    the output, regardless of how many cells / overlays.
+    const compositeStart = Date.now();
+    finalBuffer = await sharp(baseBuffer, { limitInputPixels: SHARP_INPUT_PIXEL_CAP })
+      .composite(overlays)
+      .png()
+      .toBuffer();
+    console.info('[flex-icon-grid composer] done', {
+      bytes: finalBuffer.length,
+      composite_ms: Date.now() - compositeStart,
+      total_ms: Date.now() - start,
+    });
+  } finally {
+    await fontResolver.cleanup();
   }
-
-  // 4) Single composite pass — one decode of the base, one encode of
-  //    the output, regardless of how many cells / overlays.
-  const compositeStart = Date.now();
-  const finalBuffer = await sharp(baseBuffer, { limitInputPixels: SHARP_INPUT_PIXEL_CAP })
-    .composite(overlays)
-    .png()
-    .toBuffer();
-  console.info('[flex-icon-grid composer] done', {
-    bytes: finalBuffer.length,
-    composite_ms: Date.now() - compositeStart,
-    total_ms: Date.now() - start,
-  });
   return finalBuffer;
 }
 
@@ -533,6 +639,7 @@ async function buildCellOverlays(
   layout: GridLayout,
   background: string,
   fetchUpload: UploadFetcher,
+  fontResolver: CustomFontResolver,
 ): Promise<sharp.OverlayOptions[]> {
   const rect = computeCellRect(layout, cell.index, cell.cellSpan);
   const labelStyle = resolveLabelStyle(cell, config);
@@ -558,7 +665,7 @@ async function buildCellOverlays(
     const emojiOverlay = await buildEmojiOverlay(cell.content.char, geom);
     if (emojiOverlay) overlays.push(emojiOverlay);
   } else if (cell.content.type === 'text-only') {
-    const textOverlay = await buildTextOnlyOverlay(cell.label, geom, labelStyle, background);
+    const textOverlay = await buildTextOnlyOverlay(cell.label, geom, labelStyle, background, fontResolver, defaultFallbackFont(config));
     if (textOverlay) overlays.push(textOverlay);
   }
   // `icon-library` already painted into the base SVG — no overlay
@@ -567,7 +674,7 @@ async function buildCellOverlays(
   // Label overlay (skip when overlap with text-only mode, which
   // already prints the label as its content).
   if (labelStyle.position !== 'hidden' && cell.content.type !== 'text-only') {
-    const labelOverlay = await buildLabelOverlay(cell.label, geom, labelStyle, background, cell.content.type === 'upload', shape);
+    const labelOverlay = await buildLabelOverlay(cell.label, geom, labelStyle, background, cell.content.type === 'upload', shape, fontResolver, defaultFallbackFont(config));
     if (labelOverlay) overlays.push(labelOverlay);
   }
 
@@ -715,13 +822,15 @@ async function buildTextOnlyOverlay(
   geom: ReturnType<typeof computeCellGeometry>,
   labelStyle: LabelStyle,
   background: string,
+  fontResolver: CustomFontResolver,
+  defaultFont: Exclude<LabelFont, 'custom'>,
 ): Promise<sharp.OverlayOptions | null> {
   // For text-only content the label IS the cell content — render it
   // big and centred inside the shape area, ignoring labelStyle.position
   // (the configured position would put it outside the shape).
   const text = applyLabelCase(sanitizeUserText(label, 30), labelStyle.case);
   if (!text) return null;
-  const font = FONT_RESOLVER[labelStyle.font];
+  const font = await resolveLabelFont(labelStyle, fontResolver, defaultFont);
   const sizePx = Math.min(
     TEXT_ONLY_FONT_PX_CEILING,
     Math.max(20, Math.round(Math.min(geom.shapeW, geom.shapeH) * 0.40)),
@@ -762,11 +871,13 @@ async function buildLabelOverlay(
   background: string,
   _isUploadCell: boolean,
   _shape: CellShape,
+  fontResolver: CustomFontResolver,
+  defaultFont: Exclude<LabelFont, 'custom'>,
 ): Promise<sharp.OverlayOptions | null> {
   if (labelStyle.position === 'hidden') return null;
   const text = applyLabelCase(sanitizeUserText(label, 60), labelStyle.case);
   if (!text) return null;
-  const font = FONT_RESOLVER[labelStyle.font];
+  const font = await resolveLabelFont(labelStyle, fontResolver, defaultFont);
   // Label font size: 60% of the band height for single-line, 35%
   // for two-line — chunky enough to read at mobile thumbnail size
   // while leaving a small breathing margin around the text. Floor of
@@ -849,12 +960,27 @@ async function buildLabelOverlay(
 
 async function buildTitleBarOverlay(
   config: FlexIconGridConfig,
+  fontResolver: CustomFontResolver,
 ): Promise<sharp.OverlayOptions | null> {
   const { titleBar, width, height } = config;
   if (!titleBar) return null;
   const text = sanitizeUserText(titleBar.text, 80);
   if (!text) return null;
-  const font = FONT_RESOLVER[titleBar.font];
+  // Title bar carries its own font but no `LabelStyle` envelope; wrap
+  // the field in a minimal style so `resolveLabelFont` can dispatch
+  // uniformly. The fallback font sees the bundled set since the title
+  // bar doesn't (yet) support a custom font URL.
+  const minimalStyle: LabelStyle = {
+    position: 'below',
+    font: titleBar.font,
+    case: 'as-typed',
+    color: titleBar.color,
+    stroke: null,
+    maxLines: 1,
+  };
+  const fallbackFont: Exclude<LabelFont, 'custom'> =
+    titleBar.font === 'custom' ? 'anton' : titleBar.font;
+  const font = await resolveLabelFont(minimalStyle, fontResolver, fallbackFont);
   const safeW = Math.max(16, Math.round(width * 0.94));
   const sizePx = Math.max(16, Math.round(titleBar.height * 0.55));
   let buf = await sharp({

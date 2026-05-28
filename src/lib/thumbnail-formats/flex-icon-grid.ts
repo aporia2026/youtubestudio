@@ -114,14 +114,26 @@ export const SUPPORTED_CONTENT_TYPES: readonly CellContent['type'][] = [
  * other three (Anton, Bowlby One, Archivo Black) get bundled fresh
  * under `public/fonts/flex-icon-grid/`.
  */
-export type LabelFont = 'anton' | 'bowlby-one' | 'archivo-black' | 'patrick-hand';
+export type LabelFont =
+  | 'anton'
+  | 'bowlby-one'
+  | 'archivo-black'
+  | 'patrick-hand'
+  | 'custom';
 
-/** Phase 1 font enumeration. Composer + editor both gate on this list. */
+/**
+ * Phase 1 fonts are bundled TTFs the composer resolves from disk.
+ * Phase 4.7 adds the `'custom'` variant — the actual font URL lives
+ * in the cell's `LabelStyle.customFontUrl` field; the composer fetches
+ * the TTF at render time and Sharp's text input loads it via a temp
+ * file. Live preview registers it via the FontFace API.
+ */
 export const SUPPORTED_LABEL_FONTS: readonly LabelFont[] = [
   'anton',
   'bowlby-one',
   'archivo-black',
   'patrick-hand',
+  'custom',
 ] as const;
 
 /** How the label text is cased before rendering. `as-typed` preserves
@@ -152,6 +164,15 @@ export interface LabelStyle {
    *  category names like "SCAREWARE" wrap if they overflow at the chosen
    *  font size. */
   maxLines: 1 | 2;
+  /** Required when `font === 'custom'`. R2-hosted TTF/OTF/WOFF URL
+   *  uploaded by the user. The composer fetches the bytes at render
+   *  time and writes a temp file for Sharp's text input; the live
+   *  preview registers it via the FontFace API. Ignored for any
+   *  other font value. Phase 4.7 add. */
+  customFontUrl?: string;
+  /** Optional human-readable name for the custom font shown in the
+   *  picker chip. Free-text — sanitised before display. */
+  customFontLabel?: string;
 }
 
 /**
@@ -977,6 +998,17 @@ function parseLabelStyle(v: unknown, fallback: LabelStyle): LabelStyle {
       }
     : null;
   const maxLines: 1 | 2 = o.maxLines === 2 ? 2 : 1;
+  // Phase 4.7: custom font URL only kept when the font is actually
+  // 'custom'. A stale URL from a previous switch shouldn't bleed
+  // through to the next render under a different font.
+  const customFontUrl =
+    font === 'custom' && typeof o.customFontUrl === 'string'
+      ? o.customFontUrl
+      : undefined;
+  const customFontLabel =
+    font === 'custom' && typeof o.customFontLabel === 'string'
+      ? o.customFontLabel
+      : undefined;
   return {
     position: safePos,
     font,
@@ -984,6 +1016,8 @@ function parseLabelStyle(v: unknown, fallback: LabelStyle): LabelStyle {
     color: stringOr(o.color, fallback.color),
     stroke,
     maxLines,
+    customFontUrl,
+    customFontLabel,
   };
 }
 
