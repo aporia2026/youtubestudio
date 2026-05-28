@@ -463,6 +463,15 @@ export function buildTopicCardGridCellUploadKey(fileName: string): string {
   return `thumbnails/format-grid-cell-upload/${Date.now()}-${sanitized}`;
 }
 
+/** Build an R2 key for a per-cell user upload inside the Flex Icon Grid
+ *  format. Sibling prefix to the Topic Card Grid cell uploads — kept
+ *  separate so a future bucket lifecycle / audit rule can target one
+ *  format without touching the other. */
+export function buildFlexIconGridCellUploadKey(fileName: string): string {
+  const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return `thumbnails/flex-icon-grid-cell-upload/${Date.now()}-${sanitized}`;
+}
+
 /** Build an R2 key for an uploaded production-doc attachment (PDF/DOCX/XLSX/
  *  CSV/TXT/JSON). Lives in the images bucket under a prod-docs/ prefix —
  *  treats that bucket as a generic static-asset store rather than spinning

@@ -76,7 +76,7 @@ export interface ThumbnailsDraftState {
   description?: string;
   showScript?: boolean;
   imageModel?: string;
-  format?: 'free-form' | 'topic-card-grid' | 'n-levels';
+  format?: 'free-form' | 'topic-card-grid' | 'n-levels' | 'flex-icon-grid';
   imageGenEnabled?: boolean;
   showImageSection?: boolean;
   referenceImageUrl?: string;
@@ -85,6 +85,10 @@ export interface ThumbnailsDraftState {
   pickedLabels?: string[];
   nLevels?: unknown;
   topicCardGrid?: unknown;
+  /** Mid-flight Flex Icon Grid editor state (`FlexIconGridDraftState`).
+   *  Untyped here for the same reason the sibling buckets are — the
+   *  panel owns the strict shape and validates on hydrate. */
+  flexIconGrid?: unknown;
 }
 
 const DRAFTS_KEY = 'workflow_drafts';

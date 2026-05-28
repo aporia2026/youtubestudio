@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Thumbnail redesign — Every Computer Virus Type</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bg: #0a0a0b;
+      --panel: #161618;
+      --line: #2a2a2e;
+      --ink-1: #fafafa;
+      --ink-2: #a8a8b0;
+      --ink-3: #71717a;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 48px 56px 80px;
+      background: var(--bg);
+      color: var(--ink-1);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    h1 {
+      font-size: 26px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      margin: 0 0 10px;
+    }
+
+    h2 {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ink-2);
+      text-transform: uppercase;
+      letter-spacing: 1.4px;
+      margin: 48px 0 18px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    p.lede {
+      color: var(--ink-2);
+      margin: 0 0 8px;
+      max-width: 820px;
+      line-height: 1.55;
+      font-size: 15px;
+    }
+
+    .pair {
+      display: flex;
+      gap: 40px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+
+    .pair > figure {
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .caption {
+      font-size: 11px;
+      color: var(--ink-3);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      font-weight: 700;
+    }
+
+    .caption .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin-left: 6px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+    .caption .tag.bad { background: #3f1212; color: #fca5a5; }
+    .caption .tag.good { background: #0e3a1f; color: #86efac; }
+
+    /* ===== Thumbnail base — designs scale from font-size ===== */
+    .thumb {
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55);
+      flex-shrink: 0;
+    }
+    .thumb.big   { width: 640px; height: 360px; font-size: 10px; }
+    .thumb.small { width: 360px; height: 203px; font-size: 5.6px; }
+
+    /* ===================================================== */
+    /* === CURRENT STYLE — dark cinematic photoreal feel === */
+    /* ===================================================== */
+    .thumb-old {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: 1fr 1fr;
+      gap: 0.4em;
+      background: #000;
+    }
+    .thumb-old .cell {
+      position: relative;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      padding-bottom: 1.6em;
+      overflow: hidden;
+      border-radius: 0.15em;
+    }
+    .thumb-old .cell.a {
+      background:
+        radial-gradient(ellipse at 50% 35%, rgba(80, 18, 18, 0.55) 0%, transparent 60%),
+        linear-gradient(160deg, #1a0808 0%, #050202 100%);
+    }
+    .thumb-old .cell.b {
+      background:
+        radial-gradient(ellipse at 50% 35%, rgba(20, 35, 80, 0.55) 0%, transparent 60%),
+        linear-gradient(160deg, #060a18 0%, #020308 100%);
+    }
+    .thumb-old .cell.c {
+      background:
+        radial-gradient(ellipse at 50% 35%, rgba(60, 25, 70, 0.5) 0%, transparent 60%),
+        linear-gradient(160deg, #100618 0%, #04020a 100%);
+    }
+    .thumb-old .cell.d {
+      background:
+        radial-gradient(ellipse at 50% 35%, rgba(20, 60, 30, 0.45) 0%, transparent 60%),
+        linear-gradient(160deg, #061408 0%, #030803 100%);
+    }
+    .thumb-old .glyph {
+      position: absolute;
+      top: 36%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 8.4em;
+      opacity: 0.42;
+      filter: grayscale(0.65) brightness(0.85);
+      pointer-events: none;
+    }
+    .thumb-old .label {
+      font-family: "Times New Roman", Georgia, serif;
+      font-size: 1.7em;
+      color: #c8c8c8;
+      font-weight: 400;
+      letter-spacing: 0.4px;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+      text-align: center;
+    }
+
+    /* ===================================================== */
+    /* === REDESIGNED — bright flat icon grid           === */
+    /* ===================================================== */
+    .thumb-new {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      grid-template-rows: repeat(3, 1fr);
+      gap: 0;
+      background: #0a0a0a;
+    }
+    .thumb-new .cell {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.45em;
+      padding: 0.5em 0.35em 0.55em;
+      border: 0.18em solid #0a0a0a;
+    }
+    .thumb-new .icon-ring {
+      width: 5.4em;
+      height: 5.4em;
+      background: #fbfbf8;
+      border-radius: 50%;
+      border: 0.28em solid #0a0a0a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0.12em 0 rgba(0, 0, 0, 0.25);
+    }
+    .thumb-new .glyph {
+      font-size: 3.2em;
+      line-height: 1;
+    }
+    .thumb-new .label {
+      font-family: "Arial Black", "Helvetica Neue", Impact, sans-serif;
+      font-weight: 900;
+      font-size: 1.55em;
+      color: #0a0a0a;
+      text-align: center;
+      letter-spacing: -0.02em;
+      line-height: 1;
+      text-transform: uppercase;
+      text-shadow: 0 0.05em 0 rgba(255, 255, 255, 0.35);
+    }
+
+    /* Cell colours — picked so no two adjacent cells share a family */
+    .c-yellow  { background: #FFD60A; }
+    .c-blue    { background: #2563EB; }
+    .c-lime    { background: #84CC16; }
+    .c-magenta { background: #C026D3; }
+    .c-orange  { background: #F97316; }
+    .c-cyan    { background: #06B6D4; }
+    .c-red     { background: #E63946; }
+    .c-purple  { background: #7C3AED; }
+    .c-mint    { background: #34D399; }
+    .c-teal    { background: #0F766E; }
+    .c-pink    { background: #EC4899; }
+    .c-sky     { background: #38BDF8; }
+    .c-lemon   { background: #FACC15; }
+    .c-crimson { background: #B91C1C; }
+    .c-coral   { background: #FB7185; }
+
+    /* Blue / purple / teal cells get white labels for legibility */
+    .c-blue    .label,
+    .c-purple  .label,
+    .c-teal    .label,
+    .c-crimson .label,
+    .c-magenta .label {
+      color: #fbfbf8;
+      text-shadow: 0 0.05em 0 rgba(0, 0, 0, 0.35);
+    }
+
+    .notes {
+      margin-top: 56px;
+      padding: 28px 32px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      max-width: 920px;
+    }
+    .notes h3 {
+      font-size: 12px;
+      margin: 0 0 16px;
+      color: var(--ink-1);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      font-weight: 700;
+    }
+    .notes ul { margin: 0; padding-left: 22px; color: var(--ink-2); line-height: 1.75; font-size: 14px; }
+    .notes li + li { margin-top: 6px; }
+    .notes li strong { color: var(--ink-1); font-weight: 600; }
+
+    .legend {
+      display: flex;
+      gap: 24px;
+      align-items: center;
+      margin-top: 12px;
+      color: var(--ink-3);
+      font-size: 12px;
+    }
+    .legend .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  </style>
+</head>
+<body>
+  <h1>Thumbnail redesign — “Every Computer Virus Type Explained in 8 Minutes”</h1>
+  <p class="lede">
+    Same topic, same video, two visual treatments. The left column recreates the aesthetic of the current thumbnail (dark, cinematic, 4-cell grid, thin serif labels). The right column applies the pattern that works on the channels actually winning this niche: bright flat icons, chunky bold labels, dense grid.
+  </p>
+
+  <h2>Channel-page size · 640 × 360</h2>
+  <div class="pair">
+    <figure>
+      <div class="caption">Current aesthetic <span class="tag bad">recreated</span></div>
+      <div class="thumb thumb-old big">
+        <div class="cell a"><div class="glyph">🖥️</div><div class="label">Boot Sector</div></div>
+        <div class="cell b"><div class="glyph">📁</div><div class="label">File Infector</div></div>
+        <div class="cell c"><div class="glyph">📄</div><div class="label">Macro Virus</div></div>
+        <div class="cell d"><div class="glyph">🌐</div><div class="label">Worm</div></div>
+      </div>
+    </figure>
+
+    <figure>
+      <div class="caption">Redesigned <span class="tag good">proposed</span></div>
+      <div class="thumb thumb-new big">
+        <div class="cell c-yellow"><div class="icon-ring"><div class="glyph">🐛</div></div><div class="label">Malware</div></div>
+        <div class="cell c-blue"><div class="icon-ring"><div class="glyph">🦠</div></div><div class="label">Virus</div></div>
+        <div class="cell c-lime"><div class="icon-ring"><div class="glyph">🪱</div></div><div class="label">Worm</div></div>
+        <div class="cell c-magenta"><div class="icon-ring"><div class="glyph">🐴</div></div><div class="label">Trojan</div></div>
+        <div class="cell c-orange"><div class="icon-ring"><div class="glyph">🔒</div></div><div class="label">Ransom</div></div>
+
+        <div class="cell c-cyan"><div class="icon-ring"><div class="glyph">👁️</div></div><div class="label">Spyware</div></div>
+        <div class="cell c-red"><div class="icon-ring"><div class="glyph">📢</div></div><div class="label">Adware</div></div>
+        <div class="cell c-purple"><div class="icon-ring"><div class="glyph">🧬</div></div><div class="label">Rootkit</div></div>
+        <div class="cell c-mint"><div class="icon-ring"><div class="glyph">⌨️</div></div><div class="label">Keylog</div></div>
+        <div class="cell c-teal"><div class="icon-ring"><div class="glyph">🤖</div></div><div class="label">Botnet</div></div>
+
+        <div class="cell c-pink"><div class="icon-ring"><div class="glyph">🚪</div></div><div class="label">Backdoor</div></div>
+        <div class="cell c-sky"><div class="icon-ring"><div class="glyph">🎣</div></div><div class="label">Phishing</div></div>
+        <div class="cell c-lemon"><div class="icon-ring"><div class="glyph">⛏️</div></div><div class="label">Crypto‑Jack</div></div>
+        <div class="cell c-crimson"><div class="icon-ring"><div class="glyph">💀</div></div><div class="label">Scareware</div></div>
+        <div class="cell c-coral"><div class="icon-ring"><div class="glyph">🐀</div></div><div class="label">RAT</div></div>
+      </div>
+    </figure>
+  </div>
+
+  <h2>Mobile feed size · 360 × 203 (the size that actually matters)</h2>
+  <div class="pair">
+    <figure>
+      <div class="caption">Current aesthetic <span class="tag bad">recreated</span></div>
+      <div class="thumb thumb-old small">
+        <div class="cell a"><div class="glyph">🖥️</div><div class="label">Boot Sector</div></div>
+        <div class="cell b"><div class="glyph">📁</div><div class="label">File Infector</div></div>
+        <div class="cell c"><div class="glyph">📄</div><div class="label">Macro Virus</div></div>
+        <div class="cell d"><div class="glyph">🌐</div><div class="label">Worm</div></div>
+      </div>
+    </figure>
+
+    <figure>
+      <div class="caption">Redesigned <span class="tag good">proposed</span></div>
+      <div class="thumb thumb-new small">
+        <div class="cell c-yellow"><div class="icon-ring"><div class="glyph">🐛</div></div><div class="label">Malware</div></div>
+        <div class="cell c-blue"><div class="icon-ring"><div class="glyph">🦠</div></div><div class="label">Virus</div></div>
+        <div class="cell c-lime"><div class="icon-ring"><div class="glyph">🪱</div></div><div class="label">Worm</div></div>
+        <div class="cell c-magenta"><div class="icon-ring"><div class="glyph">🐴</div></div><div class="label">Trojan</div></div>
+        <div class="cell c-orange"><div class="icon-ring"><div class="glyph">🔒</div></div><div class="label">Ransom</div></div>
+
+        <div class="cell c-cyan"><div class="icon-ring"><div class="glyph">👁️</div></div><div class="label">Spyware</div></div>
+        <div class="cell c-red"><div class="icon-ring"><div class="glyph">📢</div></div><div class="label">Adware</div></div>
+        <div class="cell c-purple"><div class="icon-ring"><div class="glyph">🧬</div></div><div class="label">Rootkit</div></div>
+        <div class="cell c-mint"><div class="icon-ring"><div class="glyph">⌨️</div></div><div class="label">Keylog</div></div>
+        <div class="cell c-teal"><div class="icon-ring"><div class="glyph">🤖</div></div><div class="label">Botnet</div></div>
+
+        <div class="cell c-pink"><div class="icon-ring"><div class="glyph">🚪</div></div><div class="label">Backdoor</div></div>
+        <div class="cell c-sky"><div class="icon-ring"><div class="glyph">🎣</div></div><div class="label">Phishing</div></div>
+        <div class="cell c-lemon"><div class="icon-ring"><div class="glyph">⛏️</div></div><div class="label">Crypto</div></div>
+        <div class="cell c-crimson"><div class="icon-ring"><div class="glyph">💀</div></div><div class="label">Scare</div></div>
+        <div class="cell c-coral"><div class="icon-ring"><div class="glyph">🐀</div></div><div class="label">RAT</div></div>
+      </div>
+    </figure>
+  </div>
+
+  <div class="notes">
+    <h3>What changed and why</h3>
+    <ul>
+      <li><strong>Photoreal → flat illustration.</strong> The dark cinematic look reads as one murky panel on mobile. Flat icons on solid bright cells stay legible at 360px wide and don't carry the AI-generated visual signature.</li>
+      <li><strong>4 cells → 15 cells.</strong> Density is value. Every cell is a separate “lesson” the viewer feels they get for one click. The grid itself proves the “Every X” promise before anyone reads the title.</li>
+      <li><strong>Serif thin labels → Arial Black uppercase.</strong> Labels jumped from ~14px equivalent to ~25px equivalent at full size, and from invisible to readable at mobile size.</li>
+      <li><strong>Uniform dark cells → maximally-different bright cells.</strong> No two adjacent cells share a colour family. The grid reads as 15 distinct items instead of one blob.</li>
+      <li><strong>Icon ring with black border.</strong> Every icon sits inside an off-white circle with a thick black stroke. That's what gives the reference channels their consistent “character collection” feel and what makes each icon pop off its background.</li>
+      <li><strong>Short labels.</strong> “Crypto-Jack”, “Keylog”, “Ransom” instead of full names. The label is a visual anchor, not a dictionary entry — short words read at small sizes.</li>
+    </ul>
+    <div class="legend">
+      <span><span class="dot" style="background:#FFD60A"></span>Cell colours rotated row-to-row so adjacent cells maximise contrast.</span>
+    </div>
+  </div>
+
+  <div class="notes" style="margin-top: 20px;">
+    <h3>Caveats — what this mockup does not show</h3>
+    <ul>
+      <li>The redesign uses emoji as placeholder icons. The shipped version needs custom flat illustrations (a Trojan horse silhouette, a literal worm on the screen, a hooded RAT, etc.) so each cell has a unique drawn identity instead of a system emoji.</li>
+      <li>The recreated “current style” is my approximation, not a render of the actual thumbnail. The point is the aesthetic delta, not pixel fidelity.</li>
+      <li>The redesigned version is one example pattern. The same fixes — bright flat cells, chunky labels, dense grid, no dark fade — apply to “7 Levels of Dark Web”, “Ransomware Attacks”, and the rest. Each one needs its own grid logic.</li>
+    </ul>
+  </div>
+</body>
+</html>

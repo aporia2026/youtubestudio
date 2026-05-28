@@ -147,9 +147,9 @@ export interface ThumbnailHistoryEntry {
   /** Set when this entry came from a thumbnail format (Topic Card Grid, etc.)
    *  rather than the free-form 5-concept generator. Old entries leave this
    *  field undefined and render via the free-form code path. */
-  format?: 'topic-card-grid' | 'n-levels';
+  format?: 'topic-card-grid' | 'n-levels' | 'flex-icon-grid';
   /** Format-specific payload, discriminated by `format`. */
-  formatPayload?: TopicCardGridHistoryPayload | NLevelsHistoryPayload;
+  formatPayload?: TopicCardGridHistoryPayload | NLevelsHistoryPayload | FlexIconGridHistoryPayload;
 }
 
 /** Stored alongside a `format: 'topic-card-grid'` thumbnail history entry.
@@ -224,6 +224,21 @@ export interface NLevelsHistoryPayload {
   /** The image model used in Step 2 (defaults to gpt-image-2-i2i). */
   formatImageModel: string;
   /** Output dimensions used for region math. */
+  outputWidth: number;
+  outputHeight: number;
+}
+
+/** Stored alongside a `format: 'flex-icon-grid'` thumbnail history entry.
+ *  Carries the full `FlexIconGridConfig` so a restored entry can be
+ *  re-rendered deterministically without any user input. The config
+ *  object is intentionally `unknown` here so this module doesn't take
+ *  a hard dependency on the format module — the panel validates the
+ *  shape on hydrate via `parseConfig`. */
+export interface FlexIconGridHistoryPayload {
+  imageUrl: string;
+  /** Full FlexIconGridConfig — validated by parseConfig on restore. */
+  config: unknown;
+  regions: Array<{ id: string; label: string; x: number; y: number; w: number; h: number }>;
   outputWidth: number;
   outputHeight: number;
 }

@@ -17,6 +17,7 @@ import { saveDraft, deleteDraft, setActiveDraftId, getActiveDraft, type Workflow
 import { downloadHref } from '@/lib/download-file';
 import { TopicCardGridPanel, type FormatGenerationResult, type TopicCardGridDraftState } from '@/components/thumbnails/TopicCardGridPanel';
 import { NLevelsPanel, type NLevelsGenerationResult, type NLevelsDraftState } from '@/components/thumbnails/NLevelsPanel';
+import { FlexIconGridPanel, type FlexIconGridGenerationResult, type FlexIconGridDraftState } from '@/components/thumbnails/FlexIconGridPanel';
 
 interface TextOverlaySettings {
   enabled: boolean;
@@ -281,8 +282,13 @@ function ThumbnailsPage() {
   // 'topic-card-grid' = the new format that produces a single composite
   // thumbnail via Step 1 (LLM card list) + Step 2 (GPT Image 2). See
   // _plans/2026-05-19-thumbnail-format-topic-card-grid.md.
-  const [format, setFormat] = useState<'free-form' | 'topic-card-grid' | 'n-levels'>('free-form');
+  const [format, setFormat] = useState<'free-form' | 'topic-card-grid' | 'n-levels' | 'flex-icon-grid'>('free-form');
   const [formatResult, setFormatResult] = useState<FormatGenerationResult | null>(null);
+  // Flex Icon Grid is deterministic — separate state slot so its result
+  // and draft snapshot don't collide with the AI-generation formats.
+  const [flexIconGridResult, setFlexIconGridResult] = useState<FlexIconGridGenerationResult | null>(null);
+  const [flexIconGridDraftSnapshot, setFlexIconGridDraftSnapshot] = useState<FlexIconGridDraftState | null>(null);
+  const [hydratedFlexIconGridState, setHydratedFlexIconGridState] = useState<FlexIconGridDraftState | null>(null);
   const [nLevelsResult, setNLevelsResult] = useState<NLevelsGenerationResult | null>(null);
   // Titles the user "picked" from the script textarea (select text → click
   // "Add as title"). When the picked count matches the grid/level count,
@@ -295,6 +301,7 @@ function ThumbnailsPage() {
   // re-render or schedule-saver tick doesn't duplicate-save the same image.
   const [savedFormatImageUrl, setSavedFormatImageUrl] = useState<string | null>(null);
   const [savedNLevelsImageUrl, setSavedNLevelsImageUrl] = useState<string | null>(null);
+  const [savedFlexIconGridImageUrl, setSavedFlexIconGridImageUrl] = useState<string | null>(null);
 
   // Image generation
   const [imageGenEnabled, setImageGenEnabled] = useState(false);
@@ -470,6 +477,8 @@ function ThumbnailsPage() {
       !!result ||
       (!!nLevelsDraftSnapshot && (nLevelsDraftSnapshot.levels?.length ?? 0) > 0) ||
       (!!topicCardGridDraftSnapshot && (topicCardGridDraftSnapshot.cards?.length ?? 0) > 0) ||
+      (!!flexIconGridDraftSnapshot && !!flexIconGridDraftSnapshot.config) ||
+      !!flexIconGridResult ||
       textOverlay.enabled ||
       pickedLabels.length > 0;
     if (!hasContent) return;
@@ -491,6 +500,7 @@ function ThumbnailsPage() {
           pickedLabels: pickedLabels.length > 0 ? pickedLabels : undefined,
           nLevels: nLevelsDraftSnapshot || undefined,
           topicCardGrid: topicCardGridDraftSnapshot || undefined,
+          flexIconGrid: flexIconGridDraftSnapshot || undefined,
         };
         const draft = saveDraft({
           id: draftId || undefined,
@@ -512,6 +522,7 @@ function ThumbnailsPage() {
           format,
           n_levels_count: nLevelsDraftSnapshot?.levels?.length ?? 0,
           topic_card_grid_count: topicCardGridDraftSnapshot?.cards?.length ?? 0,
+          flex_icon_grid_cells: flexIconGridDraftSnapshot?.config?.cells?.length ?? 0,
         });
       } catch (err) {
         setSaveStatus('idle');
@@ -526,7 +537,8 @@ function ThumbnailsPage() {
     title, niche, script, description, modelId, imageModel, format,
     imageGenEnabled, showImageSection, showScript, referenceImageUrl,
     refPreviewUrl, textOverlay, pickedLabels, nLevelsDraftSnapshot,
-    topicCardGridDraftSnapshot, nLevelsResult, formatResult, result, draftId,
+    topicCardGridDraftSnapshot, flexIconGridDraftSnapshot, flexIconGridResult,
+    nLevelsResult, formatResult, result, draftId,
   ]);
 
   /**
@@ -578,10 +590,14 @@ function ThumbnailsPage() {
     setHistoryEntryId(null);
     setSavedFormatImageUrl(null);
     setSavedNLevelsImageUrl(null);
+    setSavedFlexIconGridImageUrl(null);
     setNLevelsDraftSnapshot(null);
     setTopicCardGridDraftSnapshot(null);
+    setFlexIconGridDraftSnapshot(null);
+    setFlexIconGridResult(null);
     setHydratedNLevelsState(null);
     setHydratedTopicCardGridState(null);
+    setHydratedFlexIconGridState(null);
     setTextOverlay(DEFAULT_TEXT_OVERLAY);
     setSaveStatus('idle');
     setLastSavedAt(null);
@@ -937,6 +953,45 @@ function ThumbnailsPage() {
       });
   }, [nLevelsResult, savedNLevelsImageUrl, title, niche, modelId, script, description, scheduleItem, scheduleItemId]);
 
+  // Same persistence pattern for Flex Icon Grid results. Deterministic
+  // render so there's no AI cost, but the user still expects history
+  // (rule 16 — UX expectations are consistent across formats).
+  useEffect(() => {
+    if (!flexIconGridResult) return;
+    if (savedFlexIconGridImageUrl === flexIconGridResult.imageUrl) return;
+    const safeTitle = title.trim() || 'Flex Icon Grid';
+    const safeNiche = niche || 'Unspecified';
+    void saveThumbnailEntry({
+      title: safeTitle,
+      niche: safeNiche,
+      modelId,
+      conceptsCount: flexIconGridResult.config.cells.length,
+      bestConceptName: `Flex Icon Grid ${flexIconGridResult.config.rows}×${flexIconGridResult.config.cols}`,
+      bestScore: 0,
+      script: script.trim() || undefined,
+      description: description.trim() || undefined,
+      imageModel: 'deterministic',
+      videoTitle: scheduleItem?.title?.trim() || safeTitle,
+      scheduleItemId: scheduleItemId || undefined,
+      format: 'flex-icon-grid',
+      formatPayload: {
+        imageUrl: flexIconGridResult.imageUrl,
+        config: flexIconGridResult.config,
+        regions: flexIconGridResult.regions,
+        outputWidth: flexIconGridResult.outputWidth,
+        outputHeight: flexIconGridResult.outputHeight,
+      },
+    })
+      .then((saved) => {
+        setSavedFlexIconGridImageUrl(flexIconGridResult.imageUrl);
+        setHistoryEntryId(saved.id);
+        setHistoryItems((prev) => [saved, ...prev.filter((p) => p.id !== saved.id)]);
+      })
+      .catch(() => {
+        /* non-fatal */
+      });
+  }, [flexIconGridResult, savedFlexIconGridImageUrl, title, niche, modelId, script, description, scheduleItem, scheduleItemId]);
+
   function resumeDraft(draft: WorkflowDraft) {
     // Make the resumed draft the active one so the auto-save effect writes
     // back to it rather than orphaning the snapshot under a different id.
@@ -965,6 +1020,7 @@ function ThumbnailsPage() {
       // on its next render. Reset their refs implicitly via the new value.
       setHydratedNLevelsState((t.nLevels && typeof t.nLevels === 'object') ? (t.nLevels as NLevelsDraftState) : null);
       setHydratedTopicCardGridState((t.topicCardGrid && typeof t.topicCardGrid === 'object') ? (t.topicCardGrid as TopicCardGridDraftState) : null);
+      setHydratedFlexIconGridState((t.flexIconGrid && typeof t.flexIconGrid === 'object') ? (t.flexIconGrid as FlexIconGridDraftState) : null);
     }
     setSaveStatus('restored');
     setTimeout(() => setSaveStatus('saved'), 2000);
@@ -1116,7 +1172,7 @@ function ThumbnailsPage() {
                 className="input-field w-full"
                 value={format}
                 onChange={(e) => {
-                  const next = e.target.value as 'free-form' | 'topic-card-grid' | 'n-levels';
+                  const next = e.target.value as 'free-form' | 'topic-card-grid' | 'n-levels' | 'flex-icon-grid';
                   setFormat(next);
                   // Both formats require a reference image; auto-enable the
                   // image-generation section so the upload UI is visible
@@ -1130,6 +1186,7 @@ function ThumbnailsPage() {
                 <option value="free-form">Free-form (5 concepts)</option>
                 <option value="topic-card-grid">Topic Card Grid</option>
                 <option value="n-levels">N Levels Explained</option>
+                <option value="flex-icon-grid">Flex Icon Grid (deterministic)</option>
               </select>
               {format === 'topic-card-grid' && (
                 <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
@@ -1139,6 +1196,11 @@ function ThumbnailsPage() {
               {format === 'n-levels' && (
                 <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
                   Produces an &quot;N LEVELS OF [TOPIC]&quot; thumbnail with vertical slices and a grunge title bar. Requires a reference image.
+                </p>
+              )}
+              {format === 'flex-icon-grid' && (
+                <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                  Bright flat icon grid — built deterministically from icons, uploads, emoji, and text. No reference image needed, no AI image-gen cost, instant render.
                 </p>
               )}
             </div>
@@ -1527,6 +1589,15 @@ function ThumbnailsPage() {
               restoredDraftState={hydratedNLevelsState}
             />
           )}
+          {format === 'flex-icon-grid' && (
+            <FlexIconGridPanel
+              key={`fg-${sessionEpoch}`}
+              onResultChange={setFlexIconGridResult}
+              restoredResult={flexIconGridResult}
+              onDraftStateChange={setFlexIconGridDraftSnapshot}
+              restoredDraftState={hydratedFlexIconGridState}
+            />
+          )}
           {format === 'free-form' && (
           <AnimatePresence mode="wait">
             {generating && !result && (
@@ -1815,8 +1886,10 @@ function ThumbnailsPage() {
               outputHeight: fp.outputHeight,
             });
             setNLevelsResult(null);
+            setFlexIconGridResult(null);
             setSavedFormatImageUrl(fp.imageUrl);
             setSavedNLevelsImageUrl(null);
+            setSavedFlexIconGridImageUrl(null);
             setHistoryEntryId(entry.id);
             setResult(null);
             setGeneratedImages({});
@@ -1850,18 +1923,44 @@ function ThumbnailsPage() {
             setFormatResult(null);
             setSavedNLevelsImageUrl(fp.imageUrl);
             setSavedFormatImageUrl(null);
+            setSavedFlexIconGridImageUrl(null);
+            setFlexIconGridResult(null);
             setHistoryEntryId(entry.id);
             setResult(null);
             setGeneratedImages({});
             toast.success(`Restored N Levels — ${fp.count} levels of ${fp.titleTopic}.`);
             return;
           }
+          if (entry.format === 'flex-icon-grid' && entry.formatPayload && 'config' in entry.formatPayload) {
+            const fp = entry.formatPayload;
+            setFormat('flex-icon-grid');
+            setFlexIconGridResult({
+              imageUrl: fp.imageUrl,
+              regions: fp.regions,
+              config: fp.config as FlexIconGridGenerationResult['config'],
+              outputWidth: fp.outputWidth,
+              outputHeight: fp.outputHeight,
+            });
+            setFormatResult(null);
+            setNLevelsResult(null);
+            setSavedFlexIconGridImageUrl(fp.imageUrl);
+            setSavedFormatImageUrl(null);
+            setSavedNLevelsImageUrl(null);
+            setHistoryEntryId(entry.id);
+            setResult(null);
+            setGeneratedImages({});
+            const cfg = fp.config as { rows?: number; cols?: number };
+            toast.success(`Restored Flex Icon Grid — ${cfg.rows ?? '?'}×${cfg.cols ?? '?'}.`);
+            return;
+          }
           // Free-form path (existing behaviour).
           setFormat('free-form');
           setFormatResult(null);
           setNLevelsResult(null);
+          setFlexIconGridResult(null);
           setSavedFormatImageUrl(null);
           setSavedNLevelsImageUrl(null);
+          setSavedFlexIconGridImageUrl(null);
           setGeneratedImages(entry.generatedImages || {});
           if (entry.result) {
             setResult(entry.result as GenerateResult);

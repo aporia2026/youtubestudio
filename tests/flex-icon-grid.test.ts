@@ -1,0 +1,541 @@
+/**
+ * Flex Icon Grid — unit tests.
+ *
+ * Covers the pure-module surface (`flex-icon-grid.ts`) end-to-end and
+ * the palette engine's adjacency contract (`flex-icon-grid-palettes.ts`).
+ * The composer + Sharp pipeline are tested separately by exercising
+ * `buildBaseSvg` against a minimal config — a full PNG render test
+ * would require the bundled TTFs and is deferred to the integration
+ * suite once the font download script has run in CI.
+ */
+
+import { describe, expect, it } from 'vitest';
+import {
+  applyLabelCase,
+  computeCellGeometry,
+  computeCellRect,
+  computeGridLayout,
+  computeRegions,
+  DEFAULT_CANVAS,
+  escapeSvgText,
+  getConsumedCellIndexes,
+  makeDefaultConfig,
+  parseConfig,
+  sanitizeUserText,
+  SUPPORTED_CELL_SHAPES,
+  SUPPORTED_CONTENT_TYPES,
+  validateConfig,
+  type FlexIconGridConfig,
+} from '@/lib/thumbnail-formats/flex-icon-grid';
+import { emojiToCodepointSlug } from '@/lib/thumbnail-formats/flex-icon-grid-emoji';
+import {
+  hueFamilyOf,
+  parseHex,
+  pickLabelColourFor,
+  resolveCellBackgrounds,
+  PALETTE_RAINBOW,
+} from '@/lib/thumbnail-formats/flex-icon-grid-palettes';
+import { buildBaseSvg } from '@/lib/thumbnail-formats/flex-icon-grid-composer';
+
+// ─── Geometry ───────────────────────────────────────────────────────────────
+
+describe('makeDefaultConfig', () => {
+  it('produces rows*cols cells with 1-based reading-order indexes', () => {
+    const config = makeDefaultConfig(3, 5);
+    expect(config.cells).toHaveLength(15);
+    config.cells.forEach((cell, i) => {
+      expect(cell.index).toBe(i + 1);
+    });
+  });
+  it('defaults to circle cells + rainbow palette + Anton labels', () => {
+    const config = makeDefaultConfig(2, 2);
+    expect(config.defaultCellShape).toBe('circle');
+    expect(config.palette).toEqual({ type: 'preset', name: 'rainbow' });
+    expect(config.defaultLabel.font).toBe('anton');
+    expect(config.defaultLabel.case).toBe('upper');
+  });
+  it('uses provided icon library names + labels when supplied', () => {
+    const config = makeDefaultConfig(1, 3, {
+      iconLibraryNames: ['shield', 'lock', 'bug'],
+      labels: ['Shield', 'Lock', 'Bug'],
+    });
+    expect(config.cells[0].content).toEqual({ type: 'icon-library', name: 'shield' });
+    expect(config.cells[0].label).toBe('Shield');
+    expect(config.cells[2].content).toEqual({ type: 'icon-library', name: 'bug' });
+  });
+});
+
+describe('computeGridLayout', () => {
+  it('returns the full canvas minus padding when no title bar', () => {
+    const config = makeDefaultConfig(3, 5);
+    const layout = computeGridLayout(config);
+    expect(layout.x).toBe(0);
+    expect(layout.y).toBe(0);
+    expect(layout.w).toBe(DEFAULT_CANVAS.width);
+    expect(layout.h).toBe(DEFAULT_CANVAS.height);
+  });
+  it('shifts grid downward when title bar is on top', () => {
+    const config: FlexIconGridConfig = {
+      ...makeDefaultConfig(3, 5),
+      titleBar: {
+        text: 'X',
+        position: 'top',
+        height: 100,
+        background: '#000000',
+        color: '#ffffff',
+        font: 'anton',
+      },
+    };
+    const layout = computeGridLayout(config);
+    expect(layout.y).toBe(100);
+    expect(layout.h).toBe(DEFAULT_CANVAS.height - 100);
+  });
+  it('shrinks grid from bottom when title bar is at bottom', () => {
+    const config: FlexIconGridConfig = {
+      ...makeDefaultConfig(3, 5),
+      titleBar: {
+        text: 'X',
+        position: 'bottom',
+        height: 96,
+        background: '#000000',
+        color: '#ffffff',
+        font: 'anton',
+      },
+    };
+    const layout = computeGridLayout(config);
+    expect(layout.y).toBe(0);
+    expect(layout.h).toBe(DEFAULT_CANVAS.height - 96);
+  });
+});
+
+describe('computeCellRect', () => {
+  it('places the first cell at the layout origin', () => {
+    const config = makeDefaultConfig(2, 3);
+    const layout = computeGridLayout(config);
+    const r = computeCellRect(layout, 1);
+    expect(r.x).toBe(0);
+    expect(r.y).toBe(0);
+  });
+  it('places the last cell so its right edge meets the layout right edge', () => {
+    const config = makeDefaultConfig(2, 3); // 6 cells
+    const layout = computeGridLayout(config);
+    const r = computeCellRect(layout, 6);
+    expect(Math.round(r.x + r.w)).toBe(DEFAULT_CANVAS.width);
+    expect(Math.round(r.y + r.h)).toBe(DEFAULT_CANVAS.height);
+  });
+  it('respects cell gap', () => {
+    const config: FlexIconGridConfig = { ...makeDefaultConfig(2, 2), cellGap: 20 };
+    const layout = computeGridLayout(config);
+    const r1 = computeCellRect(layout, 1);
+    const r2 = computeCellRect(layout, 2);
+    expect(Math.round(r2.x - (r1.x + r1.w))).toBe(20);
+  });
+});
+
+describe('computeCellGeometry', () => {
+  it('label band sits below the shape when position is "below"', () => {
+    const geom = computeCellGeometry(0, 0, 256, 240, 'below');
+    expect(geom.labelY).toBeGreaterThan(geom.shapeY);
+    expect(Math.round(geom.labelY + geom.labelH)).toBe(240);
+  });
+  it('label band sits above the shape when position is "above"', () => {
+    const geom = computeCellGeometry(0, 0, 256, 240, 'above');
+    expect(geom.labelY).toBe(0);
+    expect(geom.shapeY).toBeGreaterThan(geom.labelY + geom.labelH - 1);
+  });
+  it('shape fills the cell vertically when label is hidden', () => {
+    const geom = computeCellGeometry(0, 0, 200, 200, 'hidden');
+    expect(geom.labelW).toBe(0);
+    expect(geom.labelH).toBe(0);
+    // Shape is a square equal to the smaller dimension (here both 200)
+    expect(geom.shapeW).toBe(geom.shapeH);
+  });
+});
+
+// ─── Escaping & sanitisation ────────────────────────────────────────────────
+
+describe('escapeSvgText', () => {
+  it('escapes all five SVG special characters', () => {
+    expect(escapeSvgText('a&b<c>d"e\'f')).toBe('a&amp;b&lt;c&gt;d&quot;e&apos;f');
+  });
+  it('leaves benign text unchanged', () => {
+    expect(escapeSvgText('Malware')).toBe('Malware');
+  });
+});
+
+describe('sanitizeUserText', () => {
+  it('strips control characters', () => {
+    const s = 'abc';
+    expect(sanitizeUserText(s)).toBe('abc');
+  });
+  it('collapses tab/newline runs to a single space', () => {
+    expect(sanitizeUserText('hello\t\n\rworld')).toBe('hello world');
+  });
+  it('clamps to maxLen', () => {
+    expect(sanitizeUserText('a'.repeat(300), 10)).toHaveLength(10);
+  });
+});
+
+describe('applyLabelCase', () => {
+  it('uppercases when mode is upper', () => {
+    expect(applyLabelCase('hello world', 'upper')).toBe('HELLO WORLD');
+  });
+  it('preserves user input when mode is as-typed', () => {
+    expect(applyLabelCase('iOS', 'as-typed')).toBe('iOS');
+  });
+  it('capitalises word initials but does NOT lowercase the rest under title', () => {
+    // Documents the intentional "title" behaviour — keeps proper nouns like RAT intact.
+    expect(applyLabelCase('rat aTtaCk', 'title')).toBe('Rat ATtaCk');
+  });
+});
+
+// ─── Validation ─────────────────────────────────────────────────────────────
+
+describe('validateConfig', () => {
+  it('accepts the default config', () => {
+    expect(validateConfig(makeDefaultConfig(3, 5))).toEqual({ ok: true });
+  });
+  it('rejects cell count mismatch with an actionable reason', () => {
+    const config = makeDefaultConfig(2, 2);
+    config.cells.pop();
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toMatch(/cells\.length/);
+    }
+  });
+  it('rejects out-of-order cell indexes', () => {
+    const config = makeDefaultConfig(2, 2);
+    config.cells[1].index = 5;
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.offending_cell_index).toBe(2);
+    }
+  });
+  it('rejects unsupported cell content type', () => {
+    const config = makeDefaultConfig(1, 1);
+    // Cast through unknown — we're deliberately producing a bad runtime shape.
+    (config.cells[0] as unknown as { content: unknown }).content = { type: 'video', url: 'x' };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toMatch(/content\.type/);
+    }
+  });
+  it('rejects malformed hex background colour on a cell', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.cells[0].backgroundColor = 'not-a-color';
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+  });
+});
+
+// ─── parseConfig ────────────────────────────────────────────────────────────
+
+describe('parseConfig', () => {
+  it('fills sensible defaults for missing optional fields', () => {
+    const minimal = {
+      rows: 2,
+      cols: 2,
+      cells: [
+        { index: 1, label: 'A', content: { type: 'text-only' } },
+        { index: 2, label: 'B', content: { type: 'text-only' } },
+        { index: 3, label: 'C', content: { type: 'text-only' } },
+        { index: 4, label: 'D', content: { type: 'text-only' } },
+      ],
+    };
+    const config = parseConfig(minimal);
+    expect(config.width).toBe(DEFAULT_CANVAS.width);
+    expect(config.defaultCellShape).toBe('circle');
+    expect(config.palette).toEqual({ type: 'preset', name: 'rainbow' });
+  });
+  it('falls back to rainbow for unknown palette names', () => {
+    const config = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'X', content: { type: 'text-only' } }],
+      palette: { type: 'preset', name: 'midnight' }, // unknown
+    });
+    expect(config.palette).toEqual({ type: 'preset', name: 'rainbow' });
+  });
+});
+
+// ─── Palette engine ─────────────────────────────────────────────────────────
+
+describe('parseHex', () => {
+  it('parses #RGB shorthand', () => {
+    expect(parseHex('#f0a')).toEqual({ r: 255, g: 0, b: 170 });
+  });
+  it('parses #RRGGBB', () => {
+    expect(parseHex('#1A2B3C')).toEqual({ r: 26, g: 43, b: 60 });
+  });
+  it('returns null for malformed input', () => {
+    expect(parseHex('not-a-color')).toBeNull();
+    expect(parseHex('#12345')).toBeNull();
+  });
+});
+
+describe('hueFamilyOf', () => {
+  it('buckets primary red into red', () => {
+    expect(hueFamilyOf('#E63946')).toBe('red');
+  });
+  it('buckets pure blue into blue', () => {
+    expect(hueFamilyOf('#2563EB')).toBe('blue');
+  });
+  it('buckets vivid green into lime or green', () => {
+    // Sub-bucket boundary is fuzzy by design; we accept either side.
+    expect(['lime', 'green']).toContain(hueFamilyOf('#84CC16'));
+  });
+  it('buckets near-black into mono', () => {
+    expect(hueFamilyOf('#080808')).toBe('mono');
+  });
+  it('buckets desaturated grey into grey', () => {
+    expect(hueFamilyOf('#888888')).toBe('grey');
+  });
+});
+
+describe('pickLabelColourFor', () => {
+  it('picks dark text on a bright background', () => {
+    expect(pickLabelColourFor('#FFD60A')).toBe('#0a0a0a');
+  });
+  it('picks light text on a dark background', () => {
+    expect(pickLabelColourFor('#1A1A1A')).toBe('#fbfbf8');
+  });
+});
+
+describe('resolveCellBackgrounds — adjacency rule', () => {
+  it('returns rows*cols colours', () => {
+    const config = makeDefaultConfig(3, 5);
+    const result = resolveCellBackgrounds(config);
+    expect(result).toHaveLength(15);
+  });
+  it('respects explicit per-cell backgroundColor overrides', () => {
+    const config = makeDefaultConfig(2, 2);
+    config.cells[0].backgroundColor = '#123456';
+    const result = resolveCellBackgrounds(config);
+    expect(result[0]).toBe('#123456');
+  });
+  it('avoids same-family adjacency horizontally and vertically when palette is large enough', () => {
+    const config = makeDefaultConfig(3, 5);
+    const result = resolveCellBackgrounds(config);
+    // Walk the grid in reading order. Each cell's family should differ
+    // from its left and top neighbour.
+    for (let r = 0; r < config.rows; r++) {
+      for (let c = 0; c < config.cols; c++) {
+        const i = r * config.cols + c;
+        const me = hueFamilyOf(result[i]);
+        if (c > 0) {
+          expect(hueFamilyOf(result[i - 1])).not.toBe(me);
+        }
+        if (r > 0) {
+          expect(hueFamilyOf(result[i - config.cols])).not.toBe(me);
+        }
+      }
+    }
+  });
+  it('falls through gracefully when the palette is too small to satisfy adjacency', () => {
+    // A 2-colour palette on a 3×3 grid cannot satisfy the adjacency
+    // rule strictly. The resolver should return a result anyway — the
+    // adjacency rule is a soft preference, not a hard constraint.
+    const config: FlexIconGridConfig = {
+      ...makeDefaultConfig(3, 3),
+      palette: { type: 'custom', colors: ['#FF0000', '#0000FF'] },
+    };
+    const result = resolveCellBackgrounds(config);
+    expect(result).toHaveLength(9);
+    for (const c of result) {
+      expect(['#FF0000', '#0000FF']).toContain(c);
+    }
+  });
+});
+
+// ─── Composer base SVG ──────────────────────────────────────────────────────
+
+describe('buildBaseSvg', () => {
+  it('emits a well-formed root SVG element with the configured dimensions', () => {
+    const config = makeDefaultConfig(2, 2);
+    const layout = computeGridLayout(config);
+    const backgrounds = resolveCellBackgrounds(config);
+    const svg = buildBaseSvg(config, layout, backgrounds);
+    expect(svg).toMatch(/^<svg /);
+    expect(svg).toMatch(/<\/svg>$/);
+    expect(svg).toContain(`width="${config.width}"`);
+    expect(svg).toContain(`height="${config.height}"`);
+  });
+  it('emits one cell-background rect per cell', () => {
+    const config = makeDefaultConfig(2, 3);
+    const layout = computeGridLayout(config);
+    const backgrounds = resolveCellBackgrounds(config);
+    const svg = buildBaseSvg(config, layout, backgrounds);
+    // 1 canvas bg + 6 cell bgs + 6 shape rects/circles = at least 13 elements,
+    // but minimum 6 cell bg rects after stripping canvas bg.
+    const cellBgs = svg.match(/<rect[^>]*fill="/g);
+    expect(cellBgs?.length).toBeGreaterThanOrEqual(7);
+  });
+  it('escapes background colour interpolation', () => {
+    const config: FlexIconGridConfig = {
+      ...makeDefaultConfig(1, 1),
+      background: { type: 'solid', color: '#0a0a0a' },
+    };
+    const layout = computeGridLayout(config);
+    const backgrounds = resolveCellBackgrounds(config);
+    // Sanity — passing through valid hex should NOT introduce entities
+    const svg = buildBaseSvg(config, layout, backgrounds);
+    expect(svg).not.toContain('&amp;amp;');
+  });
+});
+
+// ─── PALETTE constants smoke test ───────────────────────────────────────────
+
+describe('PALETTE_RAINBOW', () => {
+  it('contains exactly 15 entries to cover 5×3 grids without repeats', () => {
+    expect(PALETTE_RAINBOW).toHaveLength(15);
+  });
+  it('contains only valid hex codes', () => {
+    for (const c of PALETTE_RAINBOW) {
+      expect(parseHex(c)).not.toBeNull();
+    }
+  });
+});
+
+// ─── Phase 2 ─────────────────────────────────────────────────────────────────
+
+describe('Phase 2 — cell shapes', () => {
+  it('supports the full six-shape enumeration', () => {
+    expect(SUPPORTED_CELL_SHAPES).toEqual([
+      'circle',
+      'square',
+      'rounded-square',
+      'hexagon',
+      'pill',
+      'capsule',
+    ]);
+  });
+  it('accepts every supported shape in validateConfig', () => {
+    for (const shape of SUPPORTED_CELL_SHAPES) {
+      const config = makeDefaultConfig(1, 1);
+      config.cells[0].shape = shape;
+      const result = validateConfig(config);
+      expect(result).toEqual({ ok: true });
+    }
+  });
+});
+
+describe('Phase 2 — content types', () => {
+  it('supports five content variants including ai-sticker', () => {
+    expect(SUPPORTED_CONTENT_TYPES).toEqual([
+      'icon-library',
+      'emoji',
+      'upload',
+      'text-only',
+      'ai-sticker',
+    ]);
+  });
+  it('rejects ai-sticker cells without a prompt', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.cells[0].content = { type: 'ai-sticker', prompt: '' };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+  });
+  it('accepts ai-sticker cells with a prompt but no url', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.cells[0].content = { type: 'ai-sticker', prompt: 'a hooded rat' };
+    const result = validateConfig(config);
+    expect(result).toEqual({ ok: true });
+  });
+});
+
+describe('Phase 2 — per-cell backgrounds', () => {
+  it('parseConfig normalises gradient cell background', () => {
+    const config = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{
+        index: 1, label: 'A', content: { type: 'text-only' },
+        background: { type: 'gradient', from: '#000000', to: '#ffffff', angle: 45 },
+      }],
+    });
+    expect(config.cells[0].background).toEqual({
+      type: 'gradient', from: '#000000', to: '#ffffff', angle: 45,
+    });
+  });
+  it('parseConfig normalises pattern cell background', () => {
+    const config = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{
+        index: 1, label: 'A', content: { type: 'text-only' },
+        background: { type: 'pattern', pattern: 'dots', fg: '#000', bg: '#fff' },
+      }],
+    });
+    expect(config.cells[0].background).toEqual({
+      type: 'pattern', pattern: 'dots', fg: '#000', bg: '#fff',
+    });
+  });
+  it('parseConfig falls back to dots for unknown pattern names', () => {
+    const config = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{
+        index: 1, label: 'A', content: { type: 'text-only' },
+        background: { type: 'pattern', pattern: 'plaid', fg: '#000', bg: '#fff' },
+      }],
+    });
+    expect(config.cells[0].background).toMatchObject({ type: 'pattern', pattern: 'dots' });
+  });
+});
+
+describe('Phase 2 — cell-merge (cellSpan)', () => {
+  it('computeCellRect returns the span-extended rect', () => {
+    const config = makeDefaultConfig(3, 5);
+    const layout = computeGridLayout(config);
+    const single = computeCellRect(layout, 1);
+    const span = computeCellRect(layout, 1, { rows: 2, cols: 2 });
+    // Spanning 2×2 doubles width (plus 1 gap, which is 0 by default)
+    // and doubles height.
+    expect(span.w).toBeCloseTo(single.w * 2, 1);
+    expect(span.h).toBeCloseTo(single.h * 2, 1);
+    expect(span.x).toBe(single.x);
+    expect(span.y).toBe(single.y);
+  });
+  it('clamps a span that would overflow the grid', () => {
+    const config = makeDefaultConfig(2, 2);
+    const layout = computeGridLayout(config);
+    // Bottom-right cell (index 4) attempting a 2×2 span — should
+    // clamp to 1×1 because there's nothing to the right or below.
+    const r = computeCellRect(layout, 4, { rows: 2, cols: 2 });
+    const single = computeCellRect(layout, 4);
+    expect(r.w).toBeCloseTo(single.w, 1);
+    expect(r.h).toBeCloseTo(single.h, 1);
+  });
+  it('getConsumedCellIndexes returns the cells claimed by a span', () => {
+    const config = makeDefaultConfig(3, 5);
+    config.cells[0].cellSpan = { rows: 2, cols: 2 };
+    const consumed = getConsumedCellIndexes(config);
+    // Cell 1 at (0,0) spanning 2×2 in a 5-col grid claims:
+    // (0,1)=2, (1,0)=6, (1,1)=7
+    expect(consumed).toEqual(new Set([2, 6, 7]));
+  });
+  it('computeRegions skips consumed cells', () => {
+    const config = makeDefaultConfig(2, 2);
+    config.cells[0].cellSpan = { rows: 2, cols: 2 };
+    const regions = computeRegions(config, () => 'id');
+    // Only the spanning cell renders a region — the 3 consumed cells
+    // are skipped. The spanning region covers the whole grid.
+    expect(regions).toHaveLength(1);
+    expect(regions[0].label).toBe(config.cells[0].label);
+  });
+});
+
+describe('Phase 2 — twemoji codepoint slug', () => {
+  it('produces lowercase hex slug for a simple emoji', () => {
+    expect(emojiToCodepointSlug('⚡')).toBe('26a1');
+  });
+  it('joins codepoints with dashes for ZWJ-joined emoji', () => {
+    expect(emojiToCodepointSlug('👨‍👩‍👧')).toBe('1f468-200d-1f469-200d-1f467');
+  });
+  it('strips the variation selector U+FE0F', () => {
+    // ❤️ = U+2764 U+FE0F → slug should be just 2764
+    expect(emojiToCodepointSlug('❤️')).toBe('2764');
+  });
+  it('returns empty string for empty input', () => {
+    expect(emojiToCodepointSlug('')).toBe('');
+  });
+});

@@ -154,6 +154,10 @@ interface ReqBody {
    *  module which paints them over the AI-rendered cell. See
    *  `_plans/2026-05-19-topic-card-grid-circles-and-uploads.md`. */
   uploads?: Array<{ cardIndex: number; imageUrl: string }>;
+  /** Brightness register. Defaults to `'bright'` post-Phase-1.7. */
+  brightness?: 'bright' | 'mixed' | 'moody';
+  /** Detail register. Defaults to `'clean'` post-Phase-1.7. */
+  detail?: 'clean' | 'detailed';
 }
 
 /** Hard cap on uploaded image bytes per cell. Matches the presign route's
@@ -304,6 +308,9 @@ export async function POST(req: NextRequest) {
     const fallbackOutputHeight = Number.isInteger(body.outputHeight) ? Number(body.outputHeight) : DEFAULT_CANVAS.height;
     const labels = cards.map((c) => c.label);
 
+    const brightness =
+      body.brightness === 'mixed' || body.brightness === 'moody' ? body.brightness : 'bright';
+    const detail = body.detail === 'detailed' ? 'detailed' : 'clean';
     const prompt = topicCardGridImagePrompt({
       cards,
       palette,
@@ -312,6 +319,8 @@ export async function POST(req: NextRequest) {
       notesForImageModel: body.notesForImageModel,
       cardShape,
       uploadedCellIndexes: uploadedCellIndexes.length > 0 ? uploadedCellIndexes : undefined,
+      brightness,
+      detail,
     });
 
     logger.info('[thumb-format-grid image] start', {

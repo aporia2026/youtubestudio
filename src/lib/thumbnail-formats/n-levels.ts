@@ -376,6 +376,15 @@ The levels array MUST contain EXACTLY ${count} entries, in narrative order.`;
   return { system, user: userParts.join('\n\n') };
 }
 
+/** Mirror of `ThumbnailBrightness` in topic-card-grid — same three
+ *  registers, same defaults. Re-exported here so consumers can import
+ *  the type from whichever format module they're closer to. */
+export type ThumbnailBrightness = 'bright' | 'mixed' | 'moody';
+export type ThumbnailDetail = 'clean' | 'detailed';
+
+export const DEFAULT_BRIGHTNESS: ThumbnailBrightness = 'bright';
+export const DEFAULT_DETAIL: ThumbnailDetail = 'clean';
+
 export interface ImagePromptInput {
   levels: NLevel[];
   count: number;
@@ -391,6 +400,13 @@ export interface ImagePromptInput {
    *  of any label text in the levels array. */
   showLevelLabels?: boolean;
   notesForImageModel?: string;
+  /** Brightness register. Defaults to `'bright'` — explicitly kills
+   *  the "later slices fade darker" pattern that the older default
+   *  produced in 7 Levels renders. */
+  brightness?: ThumbnailBrightness;
+  /** Detail register. Defaults to `'clean'` — one bold iconic visual
+   *  per slice. */
+  detail?: ThumbnailDetail;
 }
 
 /**
@@ -401,7 +417,15 @@ export interface ImagePromptInput {
  * instructions in.
  */
 export function nLevelsImagePrompt(input: ImagePromptInput): string {
-  const { levels, count, titleTopic, titleTagline, notesForImageModel } = input;
+  const {
+    levels,
+    count,
+    titleTopic,
+    titleTagline,
+    notesForImageModel,
+    brightness = DEFAULT_BRIGHTNESS,
+    detail = DEFAULT_DETAIL,
+  } = input;
   const showBottomTitle = !!input.showBottomTitle;
   // Default true so callers that don't pass the flag get the historical
   // labels-on behaviour. Pass `false` to render only LEVEL N headings.
@@ -513,7 +537,43 @@ ${showBottomTitle
   : `- There is NO bottom title bar. Do NOT add a master title, grunge caption, or any text outside the LEVEL N headings + per-slice labels.`}
 - Match the LAYOUT (vertical slices${showBottomTitle ? ' + bottom title bar' : ''}) and the TYPOGRAPHY of the attached reference image precisely. Do NOT inherit the reference's specific palette or per-slice content — those are dictated by THIS level list${showBottomTitle ? ' and topic' : ''}.
 
+${nLevelsBrightnessDirective(brightness)}
+
+${nLevelsDetailDirective(detail)}
+
 ${safeNotes ? `STYLE NOTE: ${safeNotes}` : ''}`.trim();
+}
+
+/** Brightness directive specific to the n-levels format. The
+ *  important addition vs topic-card-grid: explicit ban on the
+ *  "later slices fade darker" pattern, which the analysis with the
+ *  user identified as the single biggest issue with the existing
+ *  7-levels renders. */
+function nLevelsBrightnessDirective(value: ThumbnailBrightness): string {
+  if (value === 'moody') {
+    return `BRIGHTNESS — MOODY: cinematic, atmospheric, darker palettes are OK. Lean into the subject's natural mood.`;
+  }
+  if (value === 'mixed') {
+    return `BRIGHTNESS — MIXED: each slice picks brightness to fit its subject. Earlier slices and later slices may differ in register; don't force progression.`;
+  }
+  return `BRIGHTNESS — BRIGHT (default):
+- Every slice must render with a vibrant, well-lit palette throughout the sequence.
+- HARD BAN on the "later slices fade darker" pattern. Slices 5, 6, 7 must be just as bright and saturated as slices 1, 2, 3. No graduated darkening across the row. No black-fade-to-the-right.
+- Every slice background reads as a saturated, lively colour. Cell-to-cell progression is by HUE, not by brightness — go red → orange → yellow → green → teal → blue → purple, all at full saturation, instead of bright-red → dark-red → black-red.
+- Even for inherently dark subjects (data exfiltration, criminal infrastructure), pick the most colourful framing the subject permits.
+- The bar is "every slice still reads as a colourful object at YouTube mobile thumbnail size, including the rightmost slice". If a slice would otherwise be predominantly black, brighten its background or accents until that bar is met.`;
+}
+
+function nLevelsDetailDirective(value: ThumbnailDetail): string {
+  if (value === 'detailed') {
+    return `DETAIL — DETAILED: multi-element compositions and photoreal scenes are OK when the slice subject calls for them.`;
+  }
+  return `DETAIL — CLEAN (default):
+- One bold iconic visual per slice. NO multi-element labelled diagrams, NO photoreal scenes packed with small props, NO multi-field UI mockups.
+- Subjects render as a CHUNKY central image — single-glance readable, the bar the reference channels' slices meet.
+- If a subject is detail-dense (a complex device, a screen with lots of UI), crop to the single most recognisable element instead of rendering the whole thing.
+- Text inside the illustration stays minimal — at most one short brand wordmark or iconic header.
+- Each slice must still read clearly at 168×94 px (YouTube mobile thumbnail size) — that's the only quality bar that matters.`;
 }
 
 // ─── JSON-shape helpers ─────────────────────────────────────────────────────

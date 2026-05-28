@@ -575,6 +575,25 @@ The cards array MUST contain EXACTLY ${total} entries. The global_palette is opt
   return { system, user: userParts.join('\n\n') };
 }
 
+/** How visually bright the rendered grid should feel. Threaded into
+ *  the Step 2 image prompt as an explicit directive. `bright` is the
+ *  Phase-1.7 default — the reference channels that win in this niche
+ *  (`The Paint Explainer`, `EverythingProfessor`, `The Evaluator`,
+ *  `Byte Sized Explainer`) all run uniformly bright. The dark-fade /
+ *  cinematic look that older defaults produced was hurting CTR.
+ *  `mixed` and `moody` are escape hatches for editorial / horror
+ *  niches that genuinely want the darker register. */
+export type ThumbnailBrightness = 'bright' | 'mixed' | 'moody';
+
+/** How visually detailed each card may be. `clean` favours single
+ *  iconic subjects with chunky shapes — what works at YouTube mobile
+ *  size. `detailed` allows photoreal scenes / multi-element
+ *  compositions for users who want the older look. */
+export type ThumbnailDetail = 'clean' | 'detailed';
+
+export const DEFAULT_BRIGHTNESS: ThumbnailBrightness = 'bright';
+export const DEFAULT_DETAIL: ThumbnailDetail = 'clean';
+
 export interface ImagePromptInput {
   cards: TopicCard[];
   palette: GlobalPalette;
@@ -590,6 +609,14 @@ export interface ImagePromptInput {
    *  background with no illustration. The composite step overpaints these
    *  cells regardless, so AI non-compliance is safe. */
   uploadedCellIndexes?: number[];
+  /** Brightness register. Defaults to `'bright'` (the Phase-1.7 default
+   *  shift). Pass `'mixed'` or `'moody'` to opt back into the older
+   *  variable-brightness behaviour. */
+  brightness?: ThumbnailBrightness;
+  /** Detail register. Defaults to `'clean'` (single iconic subjects).
+   *  Pass `'detailed'` to allow photoreal / multi-element compositions
+   *  per card. */
+  detail?: ThumbnailDetail;
 }
 
 /**
@@ -610,6 +637,8 @@ export function topicCardGridImagePrompt(input: ImagePromptInput): string {
     notesForImageModel,
     cardShape = 'square',
     uploadedCellIndexes,
+    brightness = DEFAULT_BRIGHTNESS,
+    detail = DEFAULT_DETAIL,
   } = input;
   const total = gridRows * gridCols;
   const safeNotes = notesForImageModel ? sanitizeForPrompt(notesForImageModel, 300) : '';
@@ -728,7 +757,43 @@ ABSOLUTE REQUIREMENTS — DO NOT VIOLATE:
     : ''
 }
 
+${brightnessDirective(brightness)}
+
+${detailDirective(detail)}
+
 ${safeNotes ? `STYLE NOTE: ${safeNotes}` : ''}`.trim();
+}
+
+/** Brightness directive appended to the image prompt. The wording is
+ *  deliberately blunt — image models drift toward "moody / cinematic"
+ *  on cybersecurity / horror / mystery topics unless told otherwise,
+ *  and the analysis with the user showed that drift was the single
+ *  biggest hit to CTR vs the reference channels. */
+function brightnessDirective(value: ThumbnailBrightness): string {
+  if (value === 'moody') {
+    return `BRIGHTNESS — MOODY: cinematic, atmospheric, darker palettes are OK. Lean into the subject's natural mood.`;
+  }
+  if (value === 'mixed') {
+    return `BRIGHTNESS — MIXED: vary brightness across cells to fit each subject. Don't force a uniform register; let dark subjects render dark and light subjects render light.`;
+  }
+  return `BRIGHTNESS — BRIGHT (default):
+- Every card must render with a vibrant, well-lit palette. NO cinematic dark fade, NO black-on-black compositions, NO heavy shadows or moody atmospheric lighting.
+- Cell backgrounds should read as saturated, lively colours — saturated reds, electric blues, lemon yellows, neon greens, hot pinks, bright purples — not muted desaturated tones. The reference channels' grids look like a sticker collection, not a horror movie poster.
+- Even for inherently dark subjects (malware screens, ransomware text, criminals), pick the most colourful framing the subject permits — a red WannaCry screen on a vivid background instead of a near-black close-up of code.
+- The bar is "bright enough that the thumbnail still reads as a colourful object at YouTube mobile thumbnail size". If a cell would otherwise be predominantly black, brighten its background or its surrounding accents until that bar is met.`;
+}
+
+/** Detail directive appended to the image prompt. */
+function detailDirective(value: ThumbnailDetail): string {
+  if (value === 'detailed') {
+    return `DETAIL — DETAILED: multi-element compositions and photoreal scenes are OK when the subject calls for them.`;
+  }
+  return `DETAIL — CLEAN (default):
+- One bold iconic visual per card. NO multi-element diagrams, NO collages, NO photoreal scenes packed with small props.
+- Subjects should read as a CHUNKY central image — the kind of single-glance thumbnail card the reference channels (The Paint Explainer, EverythingProfessor, The Evaluator, Byte Sized Explainer) ship.
+- Cap fine detail aggressively. If a subject is detail-dense (a complex device, a screen with lots of UI), crop to the single most recognisable element instead of rendering the whole thing.
+- Text inside the illustration stays minimal — at most one short brand wordmark or iconic header. No body copy, no captions, no stat lines.
+- The card should still read clearly at 168×94 px (YouTube mobile thumbnail size).`;
 }
 
 // ─── JSON-shape helpers ─────────────────────────────────────────────────────

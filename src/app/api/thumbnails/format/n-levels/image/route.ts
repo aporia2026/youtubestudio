@@ -58,6 +58,10 @@ interface ReqBody {
   referenceImageUrl?: string;
   outputWidth?: number;
   outputHeight?: number;
+  /** Brightness register. Defaults to `'bright'` post-Phase-1.7. */
+  brightness?: 'bright' | 'mixed' | 'moody';
+  /** Detail register. Defaults to `'clean'` post-Phase-1.7. */
+  detail?: 'clean' | 'detailed';
 }
 
 function requireKieKey(): string {
@@ -162,6 +166,9 @@ export async function POST(req: NextRequest) {
       slice_h: regions[0]?.h,
     });
 
+    const brightness =
+      body.brightness === 'mixed' || body.brightness === 'moody' ? body.brightness : 'bright';
+    const detail = body.detail === 'detailed' ? 'detailed' : 'clean';
     const prompt = nLevelsImagePrompt({
       levels,
       count: renderedCount,
@@ -170,6 +177,8 @@ export async function POST(req: NextRequest) {
       showBottomTitle,
       showLevelLabels,
       notesForImageModel: body.notesForImageModel,
+      brightness,
+      detail,
     });
 
     // Per-slice accent color lock distribution — surfaces in logs the

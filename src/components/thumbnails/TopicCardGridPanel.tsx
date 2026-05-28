@@ -113,6 +113,8 @@ const IMAGE_MODELS = [
 const REGION_OVERLAY_PREF_KEY = 'topic_card_grid_region_overlay';
 const IMAGE_MODEL_PREF_KEY = 'topic_card_grid_default_image_model';
 const CARD_SHAPE_PREF_KEY = 'topic_card_grid_default_card_shape';
+const BRIGHTNESS_PREF_KEY = 'topic_card_grid_default_brightness';
+const DETAIL_PREF_KEY = 'topic_card_grid_default_detail';
 
 /**
  * Style block for the icon_concept textarea on each review-card row.
@@ -245,6 +247,34 @@ export function TopicCardGridPanel({
   useEffect(() => {
     try { localStorage.setItem(CARD_SHAPE_PREF_KEY, cardShape); } catch { /* ignore */ }
   }, [cardShape]);
+
+  // Brightness / detail knobs. Defaults shift to bright + clean —
+  // the Phase 1.7 design rebalance. Persisted to localStorage so a
+  // repeat user who dialled back to moody / detailed lands back in
+  // their preferred mode on the next session. New users still get
+  // the bright + clean default on first load.
+  const [brightness, setBrightness] = useState<'bright' | 'mixed' | 'moody'>(() => {
+    if (typeof window === 'undefined') return 'bright';
+    try {
+      const v = localStorage.getItem(BRIGHTNESS_PREF_KEY);
+      if (v === 'mixed' || v === 'moody' || v === 'bright') return v;
+    } catch { /* fall through */ }
+    return 'bright';
+  });
+  const [detailLevel, setDetailLevel] = useState<'clean' | 'detailed'>(() => {
+    if (typeof window === 'undefined') return 'clean';
+    try {
+      const v = localStorage.getItem(DETAIL_PREF_KEY);
+      if (v === 'detailed' || v === 'clean') return v;
+    } catch { /* fall through */ }
+    return 'clean';
+  });
+  useEffect(() => {
+    try { localStorage.setItem(BRIGHTNESS_PREF_KEY, brightness); } catch { /* ignore */ }
+  }, [brightness]);
+  useEffect(() => {
+    try { localStorage.setItem(DETAIL_PREF_KEY, detailLevel); } catch { /* ignore */ }
+  }, [detailLevel]);
 
   // Per-cell uploads. Keyed by 1-based card index so the same number that
   // appears in the LLM's TopicCard.index is the lookup key. Values are
@@ -590,6 +620,8 @@ export function TopicCardGridPanel({
           referenceImageUrl: referenceImageUrl.trim(),
           cardShape,
           uploads: liveUploadsPayload.length > 0 ? liveUploadsPayload : undefined,
+          brightness,
+          detail: detailLevel,
         }),
       });
       if (!res.ok) {
@@ -869,6 +901,65 @@ export function TopicCardGridPanel({
                 This format is calibrated for GPT Image 2. Other models will produce a different style and likely mangle the per-card typography.
               </p>
             )}
+          </div>
+
+          {/* Brightness + detail */}
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+              Brightness
+            </label>
+            <div className="flex gap-1.5">
+              {(['bright', 'mixed', 'moody'] as const).map((v) => {
+                const active = brightness === v;
+                return (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setBrightness(v)}
+                    className="px-2.5 py-1 rounded text-xs"
+                    style={{
+                      background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                      color: active ? '#fff' : 'var(--text-secondary)',
+                      border: '1px solid var(--border)',
+                    }}
+                  >
+                    {v[0].toUpperCase() + v.slice(1)}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+              Bright (default) forces vibrant palettes across the whole grid. Use Moody for editorial / horror niches.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+              Detail
+            </label>
+            <div className="flex gap-1.5">
+              {(['clean', 'detailed'] as const).map((v) => {
+                const active = detailLevel === v;
+                return (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setDetailLevel(v)}
+                    className="px-2.5 py-1 rounded text-xs"
+                    style={{
+                      background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                      color: active ? '#fff' : 'var(--text-secondary)',
+                      border: '1px solid var(--border)',
+                    }}
+                  >
+                    {v[0].toUpperCase() + v.slice(1)}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+              Clean (default) favours one iconic subject per card. Detailed allows photoreal / multi-element compositions.
+            </p>
           </div>
 
           {/* Mode chips */}

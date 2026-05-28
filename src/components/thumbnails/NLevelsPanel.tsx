@@ -90,6 +90,8 @@ const IMAGE_MODELS = [
 
 const REGION_OVERLAY_PREF_KEY = 'n_levels_region_overlay';
 const IMAGE_MODEL_PREF_KEY = 'n_levels_default_image_model';
+const BRIGHTNESS_PREF_KEY = 'n_levels_default_brightness';
+const DETAIL_PREF_KEY = 'n_levels_default_detail';
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
@@ -166,6 +168,33 @@ export function NLevelsPanel({
   useEffect(() => {
     try { localStorage.setItem(IMAGE_MODEL_PREF_KEY, imageModelId); } catch { /* ignore */ }
   }, [imageModelId]);
+
+  // Brightness / detail knobs. Defaults shift to bright + clean —
+  // bright explicitly kills the "later slices fade darker" pattern.
+  // Persisted to localStorage so a repeat user lands back in their
+  // preferred register without re-picking each session.
+  const [brightness, setBrightness] = useState<'bright' | 'mixed' | 'moody'>(() => {
+    if (typeof window === 'undefined') return 'bright';
+    try {
+      const v = localStorage.getItem(BRIGHTNESS_PREF_KEY);
+      if (v === 'mixed' || v === 'moody' || v === 'bright') return v;
+    } catch { /* fall through */ }
+    return 'bright';
+  });
+  const [detailLevel, setDetailLevel] = useState<'clean' | 'detailed'>(() => {
+    if (typeof window === 'undefined') return 'clean';
+    try {
+      const v = localStorage.getItem(DETAIL_PREF_KEY);
+      if (v === 'detailed' || v === 'clean') return v;
+    } catch { /* fall through */ }
+    return 'clean';
+  });
+  useEffect(() => {
+    try { localStorage.setItem(BRIGHTNESS_PREF_KEY, brightness); } catch { /* ignore */ }
+  }, [brightness]);
+  useEffect(() => {
+    try { localStorage.setItem(DETAIL_PREF_KEY, detailLevel); } catch { /* ignore */ }
+  }, [detailLevel]);
 
   // Flow state
   const [busyStep, setBusyStep] = useState<'idle' | 'list' | 'image'>('idle');
@@ -388,6 +417,8 @@ export function NLevelsPanel({
           titleTagline: taglineToUse,
           notesForImageModel: notesToUse,
           referenceImageUrl: referenceImageUrl.trim(),
+          brightness,
+          detail: detailLevel,
         }),
       });
       if (!res.ok) {
@@ -627,6 +658,65 @@ export function NLevelsPanel({
                 This format is calibrated for GPT Image 2. Other models will produce a different style and likely mangle the grunge typography.
               </p>
             )}
+          </div>
+
+          {/* Brightness + detail */}
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+              Brightness
+            </label>
+            <div className="flex gap-1.5">
+              {(['bright', 'mixed', 'moody'] as const).map((v) => {
+                const active = brightness === v;
+                return (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setBrightness(v)}
+                    className="px-2.5 py-1 rounded text-xs"
+                    style={{
+                      background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                      color: active ? '#fff' : 'var(--text-secondary)',
+                      border: '1px solid var(--border)',
+                    }}
+                  >
+                    {v[0].toUpperCase() + v.slice(1)}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+              Bright (default) keeps every slice equally bright — kills the dark-fade pattern. Moody allows cinematic darker slices for editorial niches.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+              Detail
+            </label>
+            <div className="flex gap-1.5">
+              {(['clean', 'detailed'] as const).map((v) => {
+                const active = detailLevel === v;
+                return (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setDetailLevel(v)}
+                    className="px-2.5 py-1 rounded text-xs"
+                    style={{
+                      background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                      color: active ? '#fff' : 'var(--text-secondary)',
+                      border: '1px solid var(--border)',
+                    }}
+                  >
+                    {v[0].toUpperCase() + v.slice(1)}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+              Clean (default) favours one iconic subject per slice. Detailed allows photoreal scenes for users who want the older look.
+            </p>
           </div>
 
           {/* Mode chips */}
