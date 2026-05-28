@@ -11,6 +11,7 @@
  *
  * Spec: _plans/2026-05-28-doodle-2-scene-cache.md.
  */
+import { SAFE_FRAMING_EDIT_SUFFIX } from './prompt-framing';
 
 /** Per-scene cache entry. The base_url is the canonical i2i output for
  *  the FIRST row that featured this location/object; every subsequent
@@ -41,7 +42,8 @@ export function buildSceneContinuationEditPrompt(originalScenePrompt: string): s
     `Only change the characters present, their poses, the action, and atmospheric ` +
     `elements (smoke, fire, lighting, weather) per the new scene description above. ` +
     `Maintain the hand-drawn doodle style with thick uneven black ink outlines ` +
-    `and flat color fills.`
+    `and flat color fills.` +
+    SAFE_FRAMING_EDIT_SUFFIX
   );
 }
 

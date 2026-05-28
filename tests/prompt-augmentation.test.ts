@@ -97,8 +97,11 @@ describe('augmentCellPrompt — OST baking', () => {
 describe('augmentCellPrompt — safe-edge guard', () => {
   // The safe-edge directive is always-on (no input gates it off) so it
   // appears on every output. See the always-on history note in the
-  // module docstring.
-  const SAFE_EDGE_HEAD = 'Composition fits fully inside the visible frame with AT LEAST 10% empty margin from every edge.';
+  // module docstring. The 2026-05-28 framing fix consolidated the
+  // directive into a single canonical 15% statement and removed the
+  // separate ostSafeEdgeReinforcement to stop directive-stacking
+  // producing tiny floating-head outputs on close-ups.
+  const SAFE_EDGE_HEAD = 'Wide composition with empty whitespace padding across the top 15% and bottom 15% of the canvas.';
 
   it('always prepends the safe-edge directive — minimal input', () => {
     const out = augmentCellPrompt({ ...BASE });
@@ -126,9 +129,30 @@ describe('augmentCellPrompt — safe-edge guard', () => {
       sectionTitleLayout: 'overlay',
     });
     const edgeIdx = out.prompt.indexOf(SAFE_EDGE_HEAD);
-    const topIdx = out.prompt.indexOf('Wide composition with an empty open sky');
+    const topIdx = out.prompt.indexOf('Bias the upper portion of the central safe zone');
     expect(edgeIdx).toBe(0);
     expect(topIdx).toBeGreaterThan(edgeIdx);
+  });
+
+  it('mentions the "central 70%" + 15% bands exactly once (no directive-stacking)', () => {
+    const out = augmentCellPrompt({
+      ...BASE,
+      onScreenText: 'EUREKA',
+      onScreenTextMode: 'bake',
+      sectionTitle: 'Chapter 1',
+      sectionTitleLayout: 'overlay',
+    });
+    // The 2026-05-28 framing fix specifically removed
+    // ostSafeEdgeReinforcement because re-stating the same numbers in a
+    // separate directive caused tiny floating-head outputs. Keep this
+    // assertion to prevent re-introducing the bug.
+    const centralCount = (out.prompt.match(/central 70%/g) ?? []).length;
+    const bandsCount = (out.prompt.match(/15%/g) ?? []).length;
+    expect(centralCount).toBe(1);
+    // The phrase "15%" appears twice in the canonical safe-edge
+    // directive itself ("top 15%" + "bottom 15%" + "outer 15% bands")
+    // but should NOT be re-asserted in any other directive.
+    expect(bandsCount).toBeLessThanOrEqual(3);
   });
 });
 
@@ -140,7 +164,7 @@ describe('augmentCellPrompt — safe-top bias', () => {
       sectionTitleLayout: 'overlay',
     });
     expect(out.safeTop).toBe(true);
-    expect(out.prompt).toContain('Wide composition with an empty open sky');
+    expect(out.prompt).toContain('Bias the upper portion of the central safe zone');
   });
 
   it('suppressed when layout is letterbox', () => {
@@ -150,7 +174,7 @@ describe('augmentCellPrompt — safe-top bias', () => {
       sectionTitleLayout: 'letterbox',
     });
     expect(out.safeTop).toBe(false);
-    expect(out.prompt).not.toContain('Wide composition with an empty open sky');
+    expect(out.prompt).not.toContain('Bias the upper portion of the central safe zone');
   });
 
   it('suppressed when sectionTitle is empty', () => {
@@ -170,7 +194,7 @@ describe('augmentCellPrompt — safe-top bias', () => {
     expect(out.safeTop).toBe(false);
   });
 
-  it('safe-top + bake combo positions OST in the lower portion', () => {
+  it('safe-top + bake combo positions OST in the lower portion of the safe zone', () => {
     const out = augmentCellPrompt({
       ...BASE,
       sectionTitle: 'Chapter 1',
@@ -180,52 +204,54 @@ describe('augmentCellPrompt — safe-top bias', () => {
     });
     expect(out.safeTop).toBe(true);
     expect(out.ostBaked).toBe(true);
-    expect(out.prompt).toContain('in the lower portion of the frame');
+    expect(out.prompt).toContain('in the lower portion of the central safe zone');
   });
 
-  it('bake without safe-top positions OST in the lower-center safe area (Phase 1.5 Bug C)', () => {
+  it('bake without safe-top positions OST in the lower-center safe zone (Phase 1.5 Bug C)', () => {
     const out = augmentCellPrompt({
       ...BASE,
       onScreenText: 'EUREKA',
       onScreenTextMode: 'bake',
     });
-    // Phase 1.5 (Bug C): the previous "within the scene" wording let
-    // year-shaped OST values land near the top edge where the
-    // dispatcher's 7.8% center-crop sliced into them. The new wording
-    // anchors the text to the lower-center safe area and explicitly
-    // bans the top edge.
-    expect(out.prompt).toContain('in the lower-center portion of the frame');
+    // Phase 1.5 (Bug C) + 2026-05-28 framing fix: the OST position
+    // now references the canonical safe zone defined by safeEdgeDirective
+    // by name, rather than re-asserting its own coordinates. Year-shaped
+    // OST values like "1945" used to drift to the top edge where the
+    // 7.8% crop sliced into them; the explicit "never near the top edge"
+    // clause + lower-center anchor prevents that.
+    expect(out.prompt).toContain('in the lower-center of the central safe zone');
     expect(out.prompt).toContain('never near the top edge');
     expect(out.prompt).not.toContain('within the scene');
   });
 
-  it('bake mode appends an explicit anti-top-edge reinforcement clause for text/numerals (Phase 1.5 Bug C)', () => {
+  it('bake mode does NOT add a redundant percentage reinforcement (2026-05-28 framing fix)', () => {
     const out = augmentCellPrompt({
       ...BASE,
       onScreenText: '1945',
       onScreenTextMode: 'bake',
     });
-    // The reinforcement is what stops the diffusion model from
-    // treating year-shaped values as title graphics and placing them
-    // flush against the top edge.
-    expect(out.prompt).toContain('AT LEAST 15% empty margin from the top edge');
-    expect(out.prompt).toContain(
-      'Any hand-lettered text, title, or numeral inside the picture sits AT LEAST 15% inside from the top edge — never touching it.',
-    );
+    // Pre-2026-05-28, an extra `ostSafeEdgeReinforcement` directive
+    // appended a second "AT LEAST 15% from the top edge" clause when
+    // OST was baked. That stacked with safeEdgeDirective's own 15%
+    // assertion and produced tiny floating-head outputs on close-up
+    // portraits. The reinforcement was removed; safeEdgeDirective is
+    // now the single source of truth for the percentages.
+    expect(out.prompt).not.toContain('Any hand-lettered text, title, or numeral inside the picture sits');
+    // The lower-center position clause is what now carries the
+    // "never near the top edge" anti-drift constraint for OST.
+    expect(out.prompt).toContain('never near the top edge');
   });
 
-  it('overlay mode omits the OST-specific anti-top-edge reinforcement', () => {
+  it('overlay mode omits the OST-specific position clause entirely', () => {
     const out = augmentCellPrompt({
       ...BASE,
       onScreenText: '1945',
       onScreenTextMode: 'overlay',
     });
-    // The reinforcement is gated on shouldBakeOst — when the OST is
-    // rendered as a Remotion overlay (not baked into the diffusion),
-    // the model has no text to mis-place, so the additional clause
-    // would just add prompt overhead for no benefit.
-    expect(out.prompt).not.toContain('AT LEAST 15% empty margin');
-    expect(out.prompt).not.toContain('Any hand-lettered text, title, or numeral');
+    // Overlay OST is composited by Remotion at render time — the
+    // diffusion model has no text to mis-place, so the position clause
+    // would add prompt overhead for no benefit.
+    expect(out.prompt).not.toContain('Hand-lettered text');
   });
 });
 
@@ -302,7 +328,7 @@ describe('augmentCellPrompt — full prompt composition', () => {
   // future edit to any directive surfaces here. Safe-edge is always-on
   // and leads every output.
   const SAFE_EDGE_PREFIX =
-    'Composition fits fully inside the visible frame with AT LEAST 10% empty margin from every edge. No text, faces, callouts, props, titles, or background elements extend within 10% of the top, bottom, left, or right edge of the canvas. All important content is centered in the inner 80% of the frame.\n\n';
+    'Wide composition with empty whitespace padding across the top 15% and bottom 15% of the canvas. All characters, faces, text, props, and key details occupy the central 70% of the frame, with generous vertical breathing room. The image will be cropped at the top and bottom — anything placed in the outer 15% bands is lost. No element touches or extends past any edge of the canvas.\n\n';
 
   it('snapshots sectionTitle + overlay + bake OST', () => {
     const out = augmentCellPrompt({
@@ -313,17 +339,15 @@ describe('augmentCellPrompt — full prompt composition', () => {
       sectionTitleLayout: 'overlay',
       promptCap: SINGLE_SHOT_PROMPT_CAP,
     });
-    // Phase 1.5 (Bug C): the OST-bake path now appends an explicit
-    // anti-top-edge reinforcement clause AND tightens the OST position
-    // wording with the "well inside the visible safe area, never near
-    // the top edge" trailing constraint. Both are gated on
-    // shouldBakeOst — only this snapshot needs the updated expectation
-    // (the section-title snapshot below has no OST so it's unaffected).
+    // 2026-05-28 framing fix: the OST-bake path no longer prepends a
+    // separate `ostSafeEdgeReinforcement` directive — the canonical
+    // safeEdgeDirective above is the single source of the 15% / central
+    // 70% language. safeTopDirective (overlay-only) and ostLeadingDirective
+    // reference the safe zone by name without re-asserting percentages.
     expect(out.prompt).toBe(
       SAFE_EDGE_PREFIX
-      + 'Any hand-lettered text, title, or numeral inside the picture sits AT LEAST 15% inside from the top edge — never touching it.\n\n'
-      + 'Wide composition with an empty open sky or plain low-detail background across the upper portion of the frame. All characters, faces, objects, and key details sit in the lower portion.\n\n'
-      + 'Hand-lettered text "EUREKA" drawn large in bold marker style in the lower portion of the frame, well inside the visible safe area, never near the top edge, in the illustration\'s own style. The text must sit with AT LEAST 15% empty margin from the top edge of the canvas.\n\n'
+      + 'Bias the upper portion of the central safe zone toward an empty open sky or plain low-detail background. All characters, faces, objects, and key details sit in the lower portion of the safe zone.\n\n'
+      + 'Hand-lettered text "EUREKA" drawn large in bold marker style in the lower portion of the central safe zone, never near the top edge, in the illustration\'s own style.\n\n'
       + 'A scientist'
       + '\n\nText shown: "EUREKA".',
     );
@@ -370,7 +394,7 @@ describe('augmentCellPrompt — character bible (Phase 2)', () => {
     // The bible MUST come before the safe-edge directive so the
     // model sees the reference at the top of its prompt window.
     const biblePos = out.prompt.indexOf('Character reference for this scene:');
-    const safeEdgePos = out.prompt.indexOf('Composition fits fully inside');
+    const safeEdgePos = out.prompt.indexOf('Wide composition with empty whitespace padding');
     const bodyPos = out.prompt.indexOf('A wide shot of the burning house.');
     expect(biblePos).toBeGreaterThanOrEqual(0);
     expect(safeEdgePos).toBeGreaterThan(biblePos);

@@ -23,12 +23,19 @@ describe('buildSceneContinuationEditPrompt', () => {
 
   it('contrasts with the character-continuation prompt — anchors LOCATION, not character identity', () => {
     const out = buildSceneContinuationEditPrompt('A wide shot of the burning house');
-    // Scene prompt does NOT mention face/hair/clothing — those belong
-    // to the character path. Scene preserves architecture/palette.
-    expect(out).not.toContain('face');
-    expect(out).not.toContain('hair');
-    expect(out).not.toContain('clothing');
-    expect(out).toContain('architecture');
+    // Scene prompt's MAIN BODY does NOT mention face/hair/clothing —
+    // those belong to the character path. Scene preserves architecture
+    // / palette. The 2026-05-28 SAFE_FRAMING_EDIT_SUFFIX legitimately
+    // mentions "faces" as one of the elements that must sit inside the
+    // central 70% safe zone (framing concern, not identity), so we
+    // scope the negative assertions to the body BEFORE the suffix.
+    const suffixStart = out.indexOf(' When repositioning elements in this scene');
+    expect(suffixStart).toBeGreaterThan(0);
+    const body = out.slice(0, suffixStart);
+    expect(body).not.toContain('face');
+    expect(body).not.toContain('hair');
+    expect(body).not.toContain('clothing');
+    expect(body).toContain('architecture');
   });
 
   it('trims surrounding whitespace from the scene prompt', () => {

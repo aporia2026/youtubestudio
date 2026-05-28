@@ -28,6 +28,13 @@ export const SINGLE_SHOT_PROMPT_CAP = 2000;
  *  ~2650 chars — well within Kie request body limits. */
 export const COLLAGE_CELL_PROMPT_CAP = 600;
 
+// `SAFE_FRAMING_EDIT_SUFFIX` lives in `./prompt-framing` so the Edit-path
+// helpers reached from client components (`composeVariantEditRequest` in
+// `remotion/utils.ts`) can import it without dragging this module's
+// server-only `logger` dependency into the client bundle. Server callers
+// that want both `augmentCellPrompt` and the suffix import them from
+// their respective modules.
+
 export interface AugmentCellPromptInput {
   /** Raw scene description (already includes any upstream style suffix). */
   prompt: string;
@@ -135,35 +142,40 @@ export function augmentCellPrompt(input: AugmentCellPromptInput): AugmentCellPro
       ? input.onScreenTextMode
       : 'bake';
 
-  // Safe-edge margin guard — always-on. Two reasons the margin is 10%,
-  // not the more typical 5–6%:
-  //   1. The Atlas GPT-Image-2 i2i path (and the pipeline variant path)
-  //      generate at 1536×1024 (3:2) and the dispatcher center-crops to
-  //      1536×864 (16:9). That crop removes 80px = 7.8% off the TOP and
-  //      another 7.8% off the BOTTOM of the model's output. Any element
-  //      the model placed closer than ~8% to the top or bottom edge is
-  //      destroyed by the crop. A 10% directive gives the model ~2% of
-  //      headroom over the destroy band.
-  //   2. i2i models also bleed reference-frame content past the visible
-  //      canvas edge when refs themselves have edge-bleeding composition
-  //      (the doodle_explainer_2 source-video refs were the canonical
-  //      example — section titles flush to the top edge, callouts hung
-  //      off the bottom). Cleaning the refs is the upstream fix; this
-  //      directive is the downstream backstop.
-  // Repeated wording ("top, bottom, left, right") + repeated numeric
-  // ("10%") because diffusion models obey concrete numbers in the prompt
-  // more reliably than abstract "safe area" language.
+  // Safe-edge margin guard — always-on. Single canonical 15% statement,
+  // combining positive ("content sits in central 70%") and negative ("nothing
+  // in the outer 15% bands") phrasing. The margin is 15% not 10% because:
+  //   1. The Atlas GPT-Image-2 i2i + variant + collage paths generate at
+  //      1536×1024 (3:2) and the dispatcher center-crops to 1536×864 (16:9).
+  //      That crop destroys 80px = 7.8% off the TOP and another 7.8% off the
+  //      BOTTOM. A 15% directive gives the model ~7% of headroom over the
+  //      destroy band — enough that even drift past spec lands inside the
+  //      visible safe area.
+  //   2. Diffusion models follow positive composition language ("content
+  //      occupies central 70%") much more reliably than negative prohibitions
+  //      ("no content within X%"). Combining both is more robust than either
+  //      alone.
+  // This block is the ONLY place 15% / central 70% is asserted by augmentCellPrompt.
+  // ostSafeEdgeReinforcement was removed in this revision because re-stating
+  // the same numbers under a different directive name was producing
+  // "tiny floating heads in empty canvases" on close-up portraits — the
+  // model concatenates emphasis when the same constraint repeats with the
+  // same numbers. Below, safeTopDirective and ostLeadingDirective reference
+  // the safe zone by name but do NOT re-assert percentages.
   const safeEdgeDirective =
-    `Composition fits fully inside the visible frame with AT LEAST 10% empty margin from every edge. No text, faces, callouts, props, titles, or background elements extend within 10% of the top, bottom, left, or right edge of the canvas. All important content is centered in the inner 80% of the frame.\n\n`;
+    `Wide composition with empty whitespace padding across the top 15% and bottom 15% of the canvas. All characters, faces, text, props, and key details occupy the central 70% of the frame, with generous vertical breathing room. The image will be cropped at the top and bottom — anything placed in the outer 15% bands is lost. No element touches or extends past any edge of the canvas.\n\n`;
 
   // Safe-top scene bias — only useful when the stripe will overlay the
   // image (covering its top). When the stripe is letterboxed, the
   // generation already targets a shrunken canvas, so biasing the prompt
   // is redundant and only crowds the input.
+  // Wording does NOT re-assert "15%" — the safeEdgeDirective above is the
+  // canonical source. This directive only adds the overlay-specific
+  // "empty sky in the upper portion" composition hint.
   const hasSectionStripe = Boolean(input.sectionTitle?.trim());
   const needsSafeTopBias = hasSectionStripe && normalizedLayout === 'overlay';
   const safeTopDirective = needsSafeTopBias
-    ? `Wide composition with an empty open sky or plain low-detail background across the upper portion of the frame. All characters, faces, objects, and key details sit in the lower portion.\n\n`
+    ? `Bias the upper portion of the central safe zone toward an empty open sky or plain low-detail background. All characters, faces, objects, and key details sit in the lower portion of the safe zone.\n\n`
     : '';
 
   // OST baking. Sanitise stray newlines and cap at 120 chars so a
@@ -174,34 +186,21 @@ export function augmentCellPrompt(input: AugmentCellPromptInput): AugmentCellPro
   const safeOnScreenText = (input.onScreenText ?? '').trim().replace(/[\r\n]+/g, ' ').slice(0, 120);
   const escapedOst = safeOnScreenText.replace(/"/g, '\\"');
   const shouldBakeOst = normalizedOstMode === 'bake' && safeOnScreenText.length > 0;
-  // OST positioning. Phase 1.5 (Bug C) tightening: the previous
-  // `'within the scene'` default was too vague — diffusion models
-  // treated year-shaped OST values like "1945", "1969" as title
-  // graphics and placed them flush against the top edge of the
-  // canvas, where the dispatcher's 1536×1024 → 1536×864 center-crop
-  // then sliced 80px (~7.8%) off the top and cut into the glyphs (QA
-  // run on Sodder doc b59e88ad, 2026-05-28). The new wording bans
-  // the top edge explicitly and steers the text into the
-  // lower-center safe zone whether or not a section stripe is
-  // present. Spec:
-  // _plans/2026-05-28-doodle-2-phase-1-5-completion.md (R-C).
+  // OST positioning. Wording references the safe zone established by
+  // safeEdgeDirective by name; does NOT re-assert "15%" or "central 70%"
+  // because the per-directive stacking was producing tiny floating-head
+  // outputs on close-ups. Position is lower-center because year-shaped
+  // OST values like "1945" / "1969" trigger the model's title-placement
+  // prior, which without explicit lower-center bias drifts them toward
+  // the top edge where the crop destroys the glyphs.
   const ostPosition = needsSafeTopBias
-    ? 'in the lower portion of the frame, well inside the visible safe area, never near the top edge'
-    : 'in the lower-center portion of the frame, well inside the visible safe area, never near the top edge';
+    ? 'in the lower portion of the central safe zone, never near the top edge'
+    : 'in the lower-center of the central safe zone, never near the top edge';
   const ostLeadingDirective = shouldBakeOst
-    ? `Hand-lettered text "${escapedOst}" drawn large in bold marker style ${ostPosition}, in the illustration's own style. The text must sit with AT LEAST 15% empty margin from the top edge of the canvas.\n\n`
+    ? `Hand-lettered text "${escapedOst}" drawn large in bold marker style ${ostPosition}, in the illustration's own style.\n\n`
     : '';
   const ostTrailingDirective = shouldBakeOst
     ? `\n\nText shown: "${escapedOst}".`
-    : '';
-  // Phase 1.5 (Bug C): when an OST is being baked, append an explicit
-  // anti-top-edge clause to the safe-edge directive. The general 10%
-  // safe-edge language was being overridden by the model's
-  // title-placement prior for year-shaped values like "1945"; the
-  // 15% floor specifically for text/numerals reinforces the anti-top
-  // constraint on the exact element that was failing.
-  const ostSafeEdgeReinforcement = shouldBakeOst
-    ? `Any hand-lettered text, title, or numeral inside the picture sits AT LEAST 15% inside from the top edge — never touching it.\n\n`
     : '';
 
   // Cloud-Kie style-sheet chaining hint. Sanitised + capped at 240
@@ -229,7 +228,6 @@ export function augmentCellPrompt(input: AugmentCellPromptInput): AugmentCellPro
   const fixedOverhead =
     characterBiblePrefix.length
     + safeEdgeDirective.length
-    + ostSafeEdgeReinforcement.length
     + safeTopDirective.length
     + ostLeadingDirective.length
     + ostTrailingDirective.length
@@ -252,7 +250,7 @@ export function augmentCellPrompt(input: AugmentCellPromptInput): AugmentCellPro
     });
   }
 
-  const finalPrompt = `${characterBiblePrefix}${safeEdgeDirective}${ostSafeEdgeReinforcement}${safeTopDirective}${ostLeadingDirective}${safeBody}${ostTrailingDirective}${sheetDescDirective}`;
+  const finalPrompt = `${characterBiblePrefix}${safeEdgeDirective}${safeTopDirective}${ostLeadingDirective}${safeBody}${ostTrailingDirective}${sheetDescDirective}`;
 
   return {
     prompt: finalPrompt,

@@ -28,7 +28,10 @@ import { resolveStyle } from '../production-doc-styles';
 import { loadStyleReferences } from '../production-doc-styles-refs';
 import { generateImageWithRefs, ReferenceRejectedError } from '../image-gen-i2i';
 import { DEFAULT_CLOUD_I2I_MODEL, getI2IModelSpec } from '../image-models-i2i';
-import { generateAtlasEdit } from './../atlas-cloud-images';
+import { generateAtlasEdit, generateAtlasT2I } from './../atlas-cloud-images';
+import { composeCollagePrompt } from '../collage-prompt';
+import { detectMalformedCollage } from '../collage-detect';
+import { sliceCollage } from '../collage-slicer';
 import { generateMouthRemovedBase } from '../atlas-mouth-removal';
 import { cropTo16x9AndUpload } from '../image-gen-dispatch';
 import { upscaleViaRecraft } from '../upscale';
@@ -37,7 +40,8 @@ import {
   getImagesBucket,
   uploadToBucket,
 } from '../r2';
-import { augmentCellPrompt, SINGLE_SHOT_PROMPT_CAP } from '../prompt-augmentation';
+import { augmentCellPrompt, COLLAGE_CELL_PROMPT_CAP, SINGLE_SHOT_PROMPT_CAP } from '../prompt-augmentation';
+import { SAFE_FRAMING_EDIT_SUFFIX } from '../prompt-framing';
 import { computeImageCanvas } from '../render-canvas';
 import { logger } from '../logger';
 
@@ -137,6 +141,12 @@ export interface PipelineImageDoc {
    *  own flag nor the base row's `group_variant_chain_default` is
    *  set. Same shape as the canonical field on ProductionDoc. */
   variants_chained_by_default?: boolean;
+  /** 2026-05-28 collage-port — doc-level toggle. Default-on semantics:
+   *  `undefined | true` → collage path runs for eligible bases; `false`
+   *  → every base goes single-shot. Same shape as the canonical field on
+   *  ProductionDoc; the auto-pipeline's collage planner reads this once
+   *  per tick. See _plans/2026-05-28-auto-pipeline-collage-port.md. */
+  collage_mode?: boolean;
 }
 
 /**
@@ -243,7 +253,11 @@ export async function generateBaseImage(args: {
       };
     }
     const msg = err instanceof Error ? err.message : String(err);
-    logger.warn('[pipeline image-gen base] failed', { detail: msg.slice(0, 200) });
+    // error-level: a base i2i failure leaves the row stuck without an image,
+    // which the stage handler treats as "skip and retry next tick" — easy to
+    // miss in a busy pipeline. Surfacing in Vercel's error feed makes a
+    // persistent vendor outage visible the same day instead of two days later.
+    logger.error('[atlas-edit-failed pipeline base]', { detail: msg.slice(0, 200) });
     return { error: msg.slice(0, 200), durationMs: Date.now() - t0, costUsd: 0 };
   }
 }
@@ -336,6 +350,13 @@ export async function generateVariantImage(args: {
     const { CHAINED_VARIANT_IDENTITY_ANCHOR } = await import('../../remotion/utils');
     composedPrompt += ` ${CHAINED_VARIANT_IDENTITY_ANCHOR}`;
   }
+  // 2026-05-28 framing fix: variant Edit runs at 1536×1024 → crop to
+  // 1536×864 (16:9), so 7.8% of pixels off the top + 7.8% off the bottom
+  // are destroyed downstream. Without this suffix the model has zero
+  // framing instruction (the inline compose above doesn't flow through
+  // augmentCellPrompt's safeEdgeDirective) and reliably places
+  // character heads + bottom text in the destroy band.
+  composedPrompt += SAFE_FRAMING_EDIT_SUFFIX;
 
   try {
     const atlasResult = await generateAtlasEdit({
@@ -390,7 +411,9 @@ export async function generateVariantImage(args: {
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.warn('[pipeline image-gen variant] failed', { detail: msg.slice(0, 200) });
+    // error-level: variant failures leave the group's V1/V2/V3 column empty
+    // and the renderer falls through to the base, masking the loss visually.
+    logger.error('[atlas-edit-failed pipeline variant]', { detail: msg.slice(0, 200) });
     return { error: msg.slice(0, 200), durationMs: Date.now() - t0, costUsd: 0 };
   }
 }
@@ -483,7 +506,11 @@ export async function generateMouthRemovedForCharacter(args: {
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.warn('[pipeline image-gen mouth-removed] failed', {
+    // error-level: a missing mouth_removed_url silently disables the
+    // <MouthSwap> overlay's lip-sync motion beats — the renderer falls
+    // back to the static base and the video ships without the planned
+    // animation. Easy to miss without a loud signal.
+    logger.error('[atlas-edit-failed pipeline mouth-removed]', {
       character_id: characterId,
       detail: msg.slice(0, 200),
     });
@@ -568,12 +595,19 @@ export async function generateCharacterContinuationImage(args: {
     const edit = await generateAtlasEdit({
       prompt: editPrompt,
       images: [baseImageUrl],
-      size: '2560x1440',
+      // 1536x1024 (3:2), not 2560x1440. Atlas's Edit endpoint rejects
+      // 2560x1440 with HTTP 404 (verified 2026-05-27 in image-edit-pricing.ts;
+      // user-confirmed 2026-05-28). The 2560x1440 size is a T2I-only option
+      // exposed by the playground; the Edit endpoint validates against the
+      // documented enum (1024x1024 / 1024x1536 / 1536x1024). Sending 2560x1440
+      // here caused every character-continuation call to silently fail and
+      // fall through to a fresh i2i, defeating the character cache.
+      size: '1536x1024',
       quality: 'low',
     });
-    // Same crop+upscale+R2-mirror chain as the variant edit path. Atlas
-    // returns 2560x1440 here so the 16:9 crop is a no-op, but routing
-    // through the helper keeps the post-gen pipeline uniform.
+    // 1536x1024 (3:2) → 1536x864 (16:9) — same center-crop pipeline the
+    // variant path uses. Recraft upscale brings the cropped image back up
+    // to ~4K downstream.
     const croppedUrl = await cropTo16x9AndUpload(edit.url, 'prodoc-images-atlas-crop');
     const upscale = await upscaleViaRecraft(croppedUrl);
     let finalUrl = upscale.url;
@@ -611,7 +645,12 @@ export async function generateCharacterContinuationImage(args: {
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.warn('[pipeline image-gen character-continuation] failed', {
+    // error-level (not warn): a continuation failure silently bypasses the
+    // character cache and the row regenerates from scratch, defeating identity
+    // preservation. The 2026-05-28 incident (Atlas Edit 2560x1440 → 404) hid
+    // for two days under a warn-level log. error-level surfaces in the
+    // Vercel error feed so the next contradiction is caught the same day.
+    logger.error('[atlas-edit-failed pipeline character-continuation]', {
       character_id: characterId,
       detail: msg.slice(0, 200),
     });
@@ -656,7 +695,10 @@ export async function generateSceneContinuationImage(args: {
     const edit = await generateAtlasEdit({
       prompt: editPrompt,
       images: [baseImageUrl],
-      size: '2560x1440',
+      // Same fix as generateCharacterContinuationImage above: Atlas Edit's
+      // size enum is 1024x1024 / 1024x1536 / 1536x1024 only. 2560x1440 is
+      // T2I-only and returns HTTP 404 on the Edit endpoint.
+      size: '1536x1024',
       quality: 'low',
     });
     const croppedUrl = await cropTo16x9AndUpload(edit.url, 'prodoc-images-atlas-crop');
@@ -696,10 +738,321 @@ export async function generateSceneContinuationImage(args: {
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.warn('[pipeline image-gen scene-continuation] failed', {
+    // error-level: see generateCharacterContinuationImage's catch for the
+    // rationale. Scene cache misses caused by silent Edit failures look
+    // identical to fresh-row generations downstream, hiding the bug.
+    logger.error('[atlas-edit-failed pipeline scene-continuation]', {
       scene_id: sceneId,
       detail: msg.slice(0, 200),
     });
     return { error: msg.slice(0, 200), durationMs: Date.now() - t0, costUsd: 0 };
   }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Auto-pipeline collage path (2026-05-28)
+//
+// Mirror of the manual `/api/generate/production-doc/collage` route, ported
+// into the auto-pipeline so end-to-end videos pay the same ~75% cost
+// reduction the manual bulk-gen button has had since 2026-05-26.
+//
+// Eligibility filter lives in the stage handler (one layer up) — this
+// helper assumes its caller has already classified the 4 rows as
+// collage-eligible (base row, no character/scene cache hit, no style refs,
+// no per-row image_model override, no motion_beats / mouth_removed_url).
+// Plan: _plans/2026-05-28-auto-pipeline-collage-port.md.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Per-cell input to `generateCollageGroup`. Mirrors the route's
+ *  `CollageCellInput` shape exactly so the two paths share the same
+ *  augmentation surface. */
+export interface PipelineCollageCellInput {
+  prompt: string;
+  onScreenText?: string;
+  onScreenTextMode?: 'bake' | 'overlay' | 'none';
+  sectionTitle?: string;
+  sectionTitleLayout?: 'overlay' | 'letterbox';
+  styleSheetDescription?: string;
+}
+
+/** Per-cell outcome. One of these per cell in `results`. Shape matches
+ *  `PipelineImageResult` so the caller can write each cell back to its
+ *  row uniformly. */
+export type PipelineCollageCellResult = PipelineImageResult;
+
+export interface PipelineCollageGroupResult {
+  /** Four per-cell results in the input order (i.e. the four-row chunk
+   *  order). `imageUrl` set on success; `error` set on the few partial-
+   *  failure paths (e.g. slice-and-upload error after a valid generation).
+   *  In practice all 4 succeed-or-fail together — when the route reports
+   *  malformed-after-retry the helper returns `fallbackNeeded: true` and
+   *  the caller runs 4 single-shot calls instead. */
+  results: [PipelineCollageCellResult, PipelineCollageCellResult, PipelineCollageCellResult, PipelineCollageCellResult];
+  /** Aggregated cost across the 4 cells. Single Atlas T2I (~$0.011) +
+   *  single Recraft Crisp Upscale (~$0.0025) ≈ $0.014 total ÷ 4 cells
+   *  = $0.0035 per cell amortized. Reported as a single number on the
+   *  group (not split across cells) so the caller's cost rollup logs
+   *  cleanly attribute the saving. */
+  totalCostUsd: number;
+  /** True when the route's detect-malformed-after-retry tripped and the
+   *  caller MUST fall back to 4 single-shot calls. When true, the
+   *  `results` array contains 4 error entries with `reason` set to
+   *  `malformed_after_retry`. */
+  fallbackNeeded: boolean;
+  /** Set when `fallbackNeeded === true`. Free-form short reason for
+   *  the fallback (`malformed_after_retry` / `atlas_threw` / etc.) for
+   *  the stage handler's telemetry. */
+  reason?: string;
+  /** Total wall-clock time for the helper, including the malformed
+   *  retry if it fired. */
+  durationMs: number;
+}
+
+/**
+ * Generate a 4-up collage from 4 eligible base rows in one Atlas T2I call,
+ * then slice into 4 per-row images. Mirrors `/api/generate/production-doc/
+ * collage`'s happy-path branches inline — re-uses the same `composeCollagePrompt`
+ * / `detectMalformedCollage` / `sliceCollage` helpers so behaviour stays in
+ * sync with the manual path.
+ *
+ * The Atlas size is HARDCODED to `1536x1024`. Reasoning matches the route's
+ * comment at /collage/route.ts:240-247: a 2560×1440 collage sliced into 4
+ * quadrants yields only 1280×720 per shot (720p), below the per-shot resolution
+ * target. The 1536×1024 source → Recraft 4× upscale → ~6144×3456 → 4 quadrants
+ * of ~3072×1728 each (~3K per shot).
+ *
+ * Failure posture: never throws — returns `fallbackNeeded: true` so the
+ * caller can route the 4 rows through the single-shot path on any failure
+ * (malformed-after-retry, Atlas threw, slice errored). Stage-handler-level
+ * idempotency (`if row.image_url skip`) handles partial writes.
+ */
+export async function generateCollageGroup(args: {
+  cells: [PipelineCollageCellInput, PipelineCollageCellInput, PipelineCollageCellInput, PipelineCollageCellInput];
+  /** Pass-through to `augmentCellPrompt` so collage cells inherit any
+   *  doc-level character bible the per-row generation would also have
+   *  carried. Equivalent to `doc.doodle_explainer_2_character_descriptions`. */
+  characterDescriptions?: Record<string, string>;
+}): Promise<PipelineCollageGroupResult> {
+  const t0 = Date.now();
+  const { cells, characterDescriptions } = args;
+
+  // ─── Augment each cell (mirrors /collage/route.ts:192-204) ────────────
+  // augmentCellPrompt runs once; the directives are stable across the
+  // two generation attempts. Only the composed scaffolding changes on
+  // the reinforced retry.
+  const augmented = cells.map((cell, index) =>
+    augmentCellPrompt({
+      prompt: cell.prompt,
+      onScreenText: cell.onScreenText,
+      onScreenTextMode: cell.onScreenTextMode,
+      sectionTitle: cell.sectionTitle,
+      sectionTitleLayout: cell.sectionTitleLayout,
+      styleSheetDescription: cell.styleSheetDescription,
+      characterDescriptions,
+      promptCap: COLLAGE_CELL_PROMPT_CAP,
+      source: `pipeline-collage-cell-${index}`,
+    }),
+  );
+  const augmentedPrompts = augmented.map((a) => a.prompt);
+  logger.info('[pipeline image-gen collage] cells composed', {
+    cells: augmented.map((a, i) => ({
+      index: i,
+      ost_baked: a.ostBaked,
+      safe_top: a.safeTop,
+      sheet_desc: a.sheetDesc,
+      truncated: a.truncated,
+      augmented_len: a.prompt.length,
+    })),
+  });
+
+  // ─── Try → detect malformed → retry once → fallback ───────────────────
+  let upscaledUrl: string | null = null;
+  let upscaledBytes: Buffer | null = null;
+  let lastError: string | undefined;
+  let malformedIndicesLast: number[] = [];
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const composedPrompt = composeCollagePrompt(augmentedPrompts, attempt === 2);
+    const attemptStart = Date.now();
+    try {
+      logger.info('[pipeline image-gen collage] start', {
+        attempt,
+        prompt_chars: composedPrompt.length,
+      });
+      // 1536x1024 → cropTo16x9AndUpload → Recraft 4× upscale → ~6144×3456.
+      const atlasResult = await generateAtlasT2I({
+        prompt: composedPrompt,
+        size: '1536x1024',
+        quality: 'low',
+      });
+      const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, 'prodoc-images-atlas-crop');
+      const upscale = await upscaleViaRecraft(croppedUrl);
+      const fetchRes = await fetch(upscale.url);
+      if (!fetchRes.ok) {
+        throw new Error(`Failed to fetch upscaled collage: HTTP ${fetchRes.status}`);
+      }
+      const buf = Buffer.from(await fetchRes.arrayBuffer());
+
+      const detection = await detectMalformedCollage(buf);
+      logger.info('[pipeline image-gen collage] attempt result', {
+        attempt,
+        all_valid: detection.allValid,
+        malformed_indices: detection.malformedIndices,
+        attempt_ms: Date.now() - attemptStart,
+      });
+
+      if (detection.allValid) {
+        upscaledUrl = upscale.url;
+        upscaledBytes = buf;
+        malformedIndicesLast = [];
+        break;
+      }
+      malformedIndicesLast = detection.malformedIndices;
+      if (attempt === 2) {
+        lastError = 'malformed_after_retry';
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error('[atlas-edit-failed pipeline collage]', {
+        attempt,
+        detail: msg.slice(0, 200),
+      });
+      if (attempt === 2) {
+        lastError = `atlas_threw:${msg.slice(0, 100)}`;
+      }
+    }
+  }
+
+  if (upscaledUrl === null || upscaledBytes === null) {
+    const errorReason = lastError ?? 'unknown';
+    logger.warn('[pipeline image-gen collage] falling back to per-row singles', {
+      reason: errorReason,
+      malformed_indices: malformedIndicesLast,
+    });
+    const placeholder: PipelineCollageCellResult = {
+      error: errorReason,
+      durationMs: Date.now() - t0,
+      costUsd: 0,
+    };
+    return {
+      results: [placeholder, placeholder, placeholder, placeholder],
+      totalCostUsd: 0,
+      fallbackNeeded: true,
+      reason: errorReason,
+      durationMs: Date.now() - t0,
+    };
+  }
+
+  // ─── Slice into 4 quadrants ───────────────────────────────────────────
+  // sliceCollage fetches the upscaledUrl internally. We could pass the
+  // bytes through to avoid the second fetch, but the slicer's signature
+  // takes a URL and the savings aren't material (R2 GET on a hot key is
+  // ~50ms). Skipping a refactor of the route's helper for parity.
+  let sliceResult;
+  try {
+    sliceResult = await sliceCollage(upscaledUrl, { r2KeyPrefix: 'prodoc-images-collage' });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('[atlas-edit-failed pipeline collage-slice]', { detail: msg.slice(0, 200) });
+    const placeholder: PipelineCollageCellResult = {
+      error: `slice_failed:${msg.slice(0, 100)}`,
+      durationMs: Date.now() - t0,
+      costUsd: 0,
+    };
+    return {
+      results: [placeholder, placeholder, placeholder, placeholder],
+      totalCostUsd: 0,
+      fallbackNeeded: true,
+      reason: 'slice_failed',
+      durationMs: Date.now() - t0,
+    };
+  }
+
+  // ─── Success — wrap each quadrant URL in a per-cell result ────────────
+  // Group cost: 1 × Atlas T2I ($0.011) + 1 × Recraft upscale ($0.0025) ≈
+  // $0.014. Single-shot equivalent: 4 × ($0.011 + $0.0025) = $0.054.
+  // Saving: ~74%. Cost reported as the group total; caller divides by 4
+  // for per-row attribution if needed.
+  const totalCostUsd = 0.014;
+  const durationMs = Date.now() - t0;
+  logger.info('[pipeline image-gen collage] succeeded', {
+    quadrants: sliceResult.quadrantUrls.length,
+    quadrant_dims: `${sliceResult.quadrantWidth}x${sliceResult.quadrantHeight}`,
+    total_ms: durationMs,
+    cost_usd: totalCostUsd,
+  });
+  return {
+    results: [
+      { imageUrl: sliceResult.quadrantUrls[0], durationMs, modelUsed: 'collage-atlas-t2i', costUsd: totalCostUsd / 4 },
+      { imageUrl: sliceResult.quadrantUrls[1], durationMs, modelUsed: 'collage-atlas-t2i', costUsd: totalCostUsd / 4 },
+      { imageUrl: sliceResult.quadrantUrls[2], durationMs, modelUsed: 'collage-atlas-t2i', costUsd: totalCostUsd / 4 },
+      { imageUrl: sliceResult.quadrantUrls[3], durationMs, modelUsed: 'collage-atlas-t2i', costUsd: totalCostUsd / 4 },
+    ],
+    totalCostUsd,
+    fallbackNeeded: false,
+    durationMs,
+  };
+}
+
+/**
+ * Eligibility check: is this row safe to send through the auto-pipeline
+ * collage path? Exported so the stage handler (one layer up) can build
+ * its work units before any DB write.
+ *
+ * Excludes:
+ *  1. Variants (variant_index > 0) — Edit-path, not T2I.
+ *  2. Rows with a character_id that has a cache hit — Atlas Edit on the
+ *     cached base preserves identity better than a fresh collage cell.
+ *  3. Rows with a scene_id that has a cache hit — same reasoning, location.
+ *  4. Rows with a populated `mouth_removed_url` — paint_explainer_v1's
+ *     MouthSwap overlay requires a single coherent base frame; a sliced
+ *     collage quadrant would not align with the mouth-removed asset.
+ *  5. Rows with non-empty `motion_beats` — paint_explainer_v1 motion beats
+ *     are Atlas Edit sibling frames built FROM the base; the base must
+ *     exist as a single coherent frame the variants can edit. A collage
+ *     quadrant is too low-resolution / contextually polluted to serve.
+ *  6. Styled docs with loaded refs — the collage route is t2i-only and
+ *     drops refs; bypassing it preserves style consistency. (Style preset
+ *     name passed in; refs presence checked by caller via existing
+ *     `loadStyleReferences`.)
+ *  7. Rows with a non-empty `ai_image_prompt` (defensive — caller should
+ *     have filtered, but no harm checking again).
+ *
+ * Doesn't check `image_url` (caller has already filtered to empty rows)
+ * or `variant_derives_from_previous` (only meaningful for variants, which
+ * are excluded by rule 1). Doesn't load style refs (async, route through
+ * caller).
+ */
+export function isCollageEligibleRow(
+  row: PipelineImageRow,
+  doc: PipelineImageDoc,
+  styleHasRefs: boolean,
+): { eligible: boolean; reason?: 'variant' | 'character_cache' | 'scene_cache' | 'mouth_removed' | 'motion_beats' | 'style_refs' | 'no_prompt' } {
+  if ((row.variant_index ?? 0) !== 0) {
+    return { eligible: false, reason: 'variant' };
+  }
+  if (!row.ai_image_prompt?.trim()) {
+    return { eligible: false, reason: 'no_prompt' };
+  }
+  if (row.character_id) {
+    const cached = doc.doodle_explainer_2_character_cache?.[row.character_id];
+    if (cached?.base_url) {
+      return { eligible: false, reason: 'character_cache' };
+    }
+  }
+  if (row.scene_id) {
+    const cached = doc.doodle_explainer_2_scene_cache?.[row.scene_id];
+    if (cached?.base_url) {
+      return { eligible: false, reason: 'scene_cache' };
+    }
+  }
+  if (row.mouth_removed_url?.trim()) {
+    return { eligible: false, reason: 'mouth_removed' };
+  }
+  if (row.motion_beats && row.motion_beats.length > 0) {
+    return { eligible: false, reason: 'motion_beats' };
+  }
+  if (styleHasRefs) {
+    return { eligible: false, reason: 'style_refs' };
+  }
+  return { eligible: true };
 }

@@ -26,6 +26,7 @@
  *
  * Spec: _plans/2026-05-28-doodle-2-phase-1-6-completion.md (R-D).
  */
+import { SAFE_FRAMING_EDIT_SUFFIX } from './prompt-framing';
 
 /** Per-character cache entry. The base_url is the canonical i2i output
  *  for the FIRST row that featured this character; every subsequent row
@@ -47,7 +48,12 @@ export type CharacterCache = Record<string, CharacterCacheEntry>;
  *  face/hair/clothing across pose changes
  *  (_plans/2026-05-28-atlas-edit-smoke/). If a future iteration of
  *  Atlas Edit needs different language (e.g. it starts drifting on
- *  long prompts), tune here. */
+ *  long prompts), tune here.
+ *
+ *  The trailing `SAFE_FRAMING_EDIT_SUFFIX` keeps content inside the
+ *  central 70% safe zone so the 1536×1024 → 1536×864 center-crop
+ *  doesn't destroy the character's head or feet — see
+ *  `_plans/2026-05-28-image-framing-safe-zone-fix.md`. */
 export function buildCharacterContinuationEditPrompt(originalScenePrompt: string): string {
   const trimmed = originalScenePrompt.trim();
   return (
@@ -56,7 +62,8 @@ export function buildCharacterContinuationEditPrompt(originalScenePrompt: string
     `and overall identity EXACTLY identical to the input image. Only change ` +
     `the pose, setting, expression, and other scene elements per the new ` +
     `scene description above. Maintain the hand-drawn doodle style with ` +
-    `thick uneven black ink outlines and flat color fills.`
+    `thick uneven black ink outlines and flat color fills.` +
+    SAFE_FRAMING_EDIT_SUFFIX
   );
 }
 

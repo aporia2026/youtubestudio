@@ -45,13 +45,18 @@ import type { StageHandlerContext, StageOutcome } from '../types';
 import {
   generateBaseImage,
   generateCharacterContinuationImage,
+  generateCollageGroup,
   generateMouthRemovedForCharacter,
   generateSceneContinuationImage,
   generateVariantImage,
+  isCollageEligibleRow,
+  type PipelineCollageCellInput,
   type PipelineImageDoc,
   type PipelineImageRow,
 } from '../production-doc-image-gen';
 import { extractCharacterAnchors } from '../../anchor-vision-pass';
+import { resolveStyle } from '../../production-doc-styles';
+import { loadStyleReferences } from '../../production-doc-styles-refs';
 
 /** Max rows to attempt per tick. Sized so the worst-case Atlas i2i
  *  latency (~30 s) × 8 rows = ~240 s stays under the Vercel 300 s
@@ -215,6 +220,97 @@ export async function handleGenerateProductionDocImages(
     };
   }
 
+  // 4.5) Build collage chunks from consecutive eligible bases.
+  //
+  //   Plan: _plans/2026-05-28-auto-pipeline-collage-port.md.
+  //
+  //   Each chunk consumes 4 bases but the per-tick BUDGET reserves 8
+  //   credits because on the malformed-after-retry fallback path the
+  //   helper hands the 4 rows back as single-shot retries (4 more Atlas
+  //   calls in the same tick). Worst-case: 1 collage call (~60s) + 1
+  //   retry (~60s) + 4 single-shot fallbacks (~120s) = ~240s, under
+  //   the 300s Vercel ceiling but only if NO other work runs after.
+  //   So a tick that schedules even one collage chunk packs no
+  //   additional bases / variants. The single-shot loop budget below
+  //   subtracts 8 credits per chunk to enforce this.
+  //
+  //   Eligibility is per-row: see isCollageEligibleRow. The chunker
+  //   only groups CONSECUTIVE eligible bases — a single ineligible
+  //   row breaks the run, and the remaining eligible rows fall through
+  //   to single-shot. Trying to cherry-pick non-consecutive eligible
+  //   rows into a chunk would shuffle the doc's natural fill order,
+  //   confusing the user watching rows populate top-to-bottom.
+  const collageOn = doc.collage_mode !== false;
+  // Load style refs ONCE for the whole tick — every row in the same
+  // doc has the same style. If refs are present, every base row is
+  // ineligible for collage (route is t2i-only). For paint_explainer_v1
+  // we also skip collage entirely — the motion-beat / mouth-removed
+  // chain depends on a single coherent base frame per character, which
+  // a sliced collage quadrant can't reliably provide.
+  let styleHasRefs = false;
+  if (collageOn && !isPaintExplainerV1) {
+    const styleId = doc.style_preset?.trim();
+    if (styleId) {
+      const style = await resolveStyle(styleId, video.workspace_id, null);
+      if (style) {
+        const refs = await loadStyleReferences(style.id, {
+          excludeRejected: true,
+          excludeUnvalidated: true,
+          workspaceId: video.workspace_id,
+        });
+        styleHasRefs = refs.length > 0;
+      }
+    }
+  }
+  const collageChunks: number[][] = [];
+  const collageIneligibleBaseIndices = new Set<number>();
+  if (collageOn && !isPaintExplainerV1) {
+    // Greedy: walk baseIndicesToGen in DOC ORDER, accumulate eligible
+    // rows into a buffer, flush a chunk every time the buffer hits 4 OR
+    // an ineligible row breaks the run. The tail buffer (< 4) gets
+    // emptied back into the single-shot path.
+    let buffer: number[] = [];
+    const ineligibleReasons: Record<string, number> = {};
+    for (const idx of baseIndicesToGen) {
+      const verdict = isCollageEligibleRow(doc.rows[idx], doc, styleHasRefs);
+      if (verdict.eligible) {
+        buffer.push(idx);
+        if (buffer.length === 4) {
+          collageChunks.push(buffer);
+          buffer = [];
+        }
+      } else {
+        // Flush partial buffer back to single-shot — chunk-of-3 isn't
+        // supported by the route's collage template.
+        for (const b of buffer) collageIneligibleBaseIndices.add(b);
+        buffer = [];
+        collageIneligibleBaseIndices.add(idx);
+        if (verdict.reason) {
+          ineligibleReasons[verdict.reason] = (ineligibleReasons[verdict.reason] ?? 0) + 1;
+        }
+      }
+    }
+    // Anything left in the buffer at end-of-loop is tail-of-<4 — also
+    // single-shot.
+    for (const b of buffer) collageIneligibleBaseIndices.add(b);
+    logger.info('[pipeline image-gen collage] eligibility', {
+      pipeline_video_id: video.id,
+      collage_on: collageOn,
+      style_has_refs: styleHasRefs,
+      total_bases: baseIndicesToGen.length,
+      eligible_chunks: collageChunks.length,
+      eligible_rows: collageChunks.length * 4,
+      ineligible_reasons: ineligibleReasons,
+    });
+  } else {
+    logger.info('[pipeline image-gen collage] disabled', {
+      pipeline_video_id: video.id,
+      reason: !collageOn ? 'doc_toggle_off' : 'paint_explainer_v1',
+    });
+    // Everything goes to single-shot.
+    for (const idx of baseIndicesToGen) collageIneligibleBaseIndices.add(idx);
+  }
+
   // 5) Build this tick's plan — bases first up to ROWS_PER_TICK,
   //    then variants whose source is ready (or will be ready
   //    in-tick). Order is stable: base index ascending, then variant
@@ -222,9 +318,42 @@ export async function handleGenerateProductionDocImages(
   const rowsPerTick = isPaintExplainerV1
     ? ROWS_PER_TICK_PAINT_EXPLAINER_V1
     : ROWS_PER_TICK_DEFAULT;
+
+  // Reserve 8 row-credits per scheduled collage chunk (4 cells +
+  // 4 fallback worst-case). The first chunk alone fills the default
+  // 8-credit budget — any subsequent chunk or single-shot work waits
+  // for the next tick. This caps the per-tick wall-clock at the
+  // ~240s worst case and prevents Vercel timeouts mid-fallback.
+  const collageBudgetPerChunk = 8;
+  const scheduledCollageChunks: number[][] = [];
+  let creditsUsed = 0;
+  for (const chunk of collageChunks) {
+    if (creditsUsed + collageBudgetPerChunk > rowsPerTick) break;
+    scheduledCollageChunks.push(chunk);
+    creditsUsed += collageBudgetPerChunk;
+  }
+  // Any unscheduled chunks defer their indices to next tick — they
+  // stay in `baseIndicesToGen` via the `isPlannedThisTick` filter
+  // below (which only includes scheduled chunk indices AND
+  // collageIneligibleBaseIndices).
+  const scheduledCollageIndices = new Set<number>();
+  for (const chunk of scheduledCollageChunks) {
+    for (const idx of chunk) scheduledCollageIndices.add(idx);
+  }
+
   const plan: Array<{ index: number; kind: 'base' | 'variant' }> = [];
   for (const idx of baseIndicesToGen) {
-    if (plan.length >= rowsPerTick) break;
+    if (plan.length + creditsUsed >= rowsPerTick) break;
+    // Skip rows already going through collage this tick.
+    if (scheduledCollageIndices.has(idx)) continue;
+    // Skip rows that fell out of collage as a single-shot — they're
+    // queued here but only when they're known to be ineligible
+    // (chunks of 4 fully scheduled in scheduledCollageIndices are the
+    // ONLY indices that should bypass this loop).
+    if (!collageIneligibleBaseIndices.has(idx) && collageOn && !isPaintExplainerV1) {
+      // Row is in an UNSCHEDULED collage chunk — defer to next tick.
+      continue;
+    }
     plan.push({ index: idx, kind: 'base' });
   }
   // Track which row indices will have image_url by the time variants
@@ -232,7 +361,13 @@ export async function handleGenerateProductionDocImages(
   // queues a variant when its source is already in the doc; variants
   // whose source is in THIS tick's base plan get deferred to the
   // next tick (avoids reading-while-writing the same doc structure).
-  const inFlightBaseIndices = new Set(plan.map((p) => p.index));
+  // Includes scheduled collage indices because those rows are ALSO
+  // produced in this tick — a variant referencing a collage-bound base
+  // must wait for next tick to see the populated image_url.
+  const inFlightBaseIndices = new Set([
+    ...plan.map((p) => p.index),
+    ...scheduledCollageIndices,
+  ]);
   for (const idx of variantIndicesToGen) {
     if (plan.length >= rowsPerTick) break;
     const variant = doc.rows[idx];
@@ -253,6 +388,12 @@ export async function handleGenerateProductionDocImages(
   let succeeded = 0;
   let failed = 0;
   let tickCostUsd = 0;
+  // Collage counters — surfaced in the per-tick summary log so cost
+  // attribution between collage and single-shot is visible in one line.
+  let collageChunksSucceeded = 0;
+  let collageChunksFallback = 0;
+  let collageCellsSucceeded = 0;
+  let collageCellsFromFallback = 0;
   let mouthRemovedThisTick = 0;
   let mouthRemovedSucceeded = 0;
   let mouthRemovedSkipped = 0;
@@ -273,6 +414,74 @@ export async function handleGenerateProductionDocImages(
   let sceneCacheHits = 0;
   let sceneCacheMisses = 0;
   let sceneCacheEditFailures = 0;
+
+  // ─── Collage chunks first ──────────────────────────────────────────
+  // Run scheduled collage chunks before the per-row plan. Each chunk:
+  //   - Builds 4 cell inputs from the row metadata.
+  //   - Calls generateCollageGroup (Atlas T2I + Recraft + slice).
+  //   - On success: writes 4 image_urls and adds 4 to `succeeded`.
+  //   - On fallbackNeeded: pushes the 4 indices into `plan` as
+  //     single-shot bases so the loop below regenerates them
+  //     individually. This is the worst case the 8-credit-per-chunk
+  //     budget accommodates.
+  // Plan: _plans/2026-05-28-auto-pipeline-collage-port.md.
+  for (const chunk of scheduledCollageChunks) {
+    const cells = chunk.map((idx): PipelineCollageCellInput => {
+      const r = doc.rows[idx];
+      return {
+        prompt: r.ai_image_prompt ?? '',
+        onScreenText: r.on_screen_text,
+        onScreenTextMode: r.on_screen_text_mode ?? doc.on_screen_text_mode_default,
+        sectionTitle: r.section_title,
+        sectionTitleLayout: r.section_title_layout ?? doc.section_title_layout_default,
+      };
+    }) as [PipelineCollageCellInput, PipelineCollageCellInput, PipelineCollageCellInput, PipelineCollageCellInput];
+    const groupResult = await generateCollageGroup({
+      cells,
+      characterDescriptions: doc.doodle_explainer_2_character_descriptions,
+    });
+    tickCostUsd += groupResult.totalCostUsd;
+    if (!groupResult.fallbackNeeded) {
+      collageChunksSucceeded += 1;
+      for (let i = 0; i < chunk.length; i++) {
+        const rowIdx = chunk[i];
+        const cellResult = groupResult.results[i];
+        if (cellResult.imageUrl) {
+          doc.rows[rowIdx].image_url = cellResult.imageUrl;
+          collageCellsSucceeded += 1;
+          succeeded += 1;
+        } else {
+          // Defensive — generateCollageGroup should return either all-
+          // valid or fallbackNeeded. A per-cell error here means slice
+          // succeeded but a quadrant somehow didn't get a URL. Treat
+          // the row as a fallback case (push to plan for single-shot
+          // retry within the remaining tick budget — best-effort).
+          collageCellsFromFallback += 1;
+          plan.push({ index: rowIdx, kind: 'base' });
+        }
+      }
+      logger.info('[pipeline image-gen collage] chunk done', {
+        pipeline_video_id: video.id,
+        chunk_row_indices: chunk,
+        cost_usd: groupResult.totalCostUsd,
+        duration_ms: groupResult.durationMs,
+      });
+    } else {
+      collageChunksFallback += 1;
+      logger.warn('[pipeline image-gen collage] chunk fell back to single-shot', {
+        pipeline_video_id: video.id,
+        chunk_row_indices: chunk,
+        reason: groupResult.reason,
+      });
+      // Push all 4 rows into the single-shot plan for this tick. The
+      // budget reservation (8 credits per chunk) makes room for this.
+      for (const idx of chunk) {
+        plan.push({ index: idx, kind: 'base' });
+        collageCellsFromFallback += 1;
+      }
+    }
+  }
+
   for (const item of plan) {
     const row = doc.rows[item.index];
 
@@ -717,6 +926,24 @@ export async function handleGenerateProductionDocImages(
     scene_cache_hits: sceneCacheHits,
     scene_cache_misses_stored: sceneCacheMisses,
     scene_cache_edit_failures: sceneCacheEditFailures,
+    // 2026-05-28 collage-port telemetry. All zero when collage is OFF
+    // (paint_explainer_v1 docs or `doc.collage_mode === false`).
+    //
+    //   - collage_chunks_succeeded:  number of 4-up groups that
+    //     produced 4 valid quadrants in one Atlas call.
+    //   - collage_chunks_fallback:   number of 4-up groups that
+    //     reported malformed-after-retry OR threw, and fell back to
+    //     4 single-shot calls within this tick's budget.
+    //   - collage_cells_succeeded:   number of individual rows whose
+    //     image_url came from a collage quadrant (succeeded chunks ×
+    //     4 minus any per-cell errors).
+    //   - collage_cells_from_fallback: number of individual rows that
+    //     were originally collage-bound but got their image_url via
+    //     the single-shot loop (fallback path).
+    collage_chunks_succeeded: collageChunksSucceeded,
+    collage_chunks_fallback: collageChunksFallback,
+    collage_cells_succeeded: collageCellsSucceeded,
+    collage_cells_from_fallback: collageCellsFromFallback,
   });
 
   return {

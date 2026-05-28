@@ -191,6 +191,19 @@ describe('composeVariantEditRequest — chained variants (Phase 1.7)', () => {
     expect(CHAINED_VARIANT_IDENTITY_ANCHOR).toContain('face, hair, clothing');
     expect(CHAINED_VARIANT_IDENTITY_ANCHOR).toMatch(/pose|motion|expression/);
   });
+
+  it('every composed variant prompt ends with SAFE_FRAMING_EDIT_SUFFIX (2026-05-28 framing fix)', () => {
+    // The variant path runs Atlas Edit at 1536×1024 → crops to 1536×864,
+    // destroying 7.8% of pixels off top + bottom. Without this suffix
+    // the model places character heads and bottom text in the destroy
+    // band. Mirror of the auto-pipeline's generateVariantImage compose.
+    const prepared = composeVariantEditRequest(doc, v1Row, 'https://r2/base.png');
+    expect(prepared.kind).toBe('ready');
+    if (prepared.kind === 'ready') {
+      expect(prepared.request.prompt).toContain('central 70%');
+      expect(prepared.request.prompt).toContain('15% empty padding from the top and bottom');
+    }
+  });
 });
 
 // ─── Phase 1.7 R5 — `resolveVariantChainMode` three-tier priority ────────────

@@ -15,6 +15,7 @@ import {
   getVariantPreservationHint,
   isShortVariantPromptEnabled,
 } from '@/lib/production-doc-flags';
+import { SAFE_FRAMING_EDIT_SUFFIX } from '@/lib/prompt-framing';
 
 // ─── Timecode Parsing ──────────────────────────────────────────────────────────
 
@@ -1024,6 +1025,12 @@ export function composeVariantEditRequest(
   if (isChainedFromPrevious) {
     composedPrompt += ` ${CHAINED_VARIANT_IDENTITY_ANCHOR}`;
   }
+  // 2026-05-28 framing fix: variant Edit runs at 1536×1024 → crop to
+  // 1536×864, destroying 7.8% off top + bottom. Without this suffix the
+  // model places character heads + text in the destroy band. Mirror of
+  // the auto-pipeline's `generateVariantImage` compose; the two paths
+  // must stay in sync.
+  composedPrompt += SAFE_FRAMING_EDIT_SUFFIX;
 
   // Defensive truncation — the /api/.../edit route caps prompts to
   // its own limit; trimming here gives a clearer error than a
