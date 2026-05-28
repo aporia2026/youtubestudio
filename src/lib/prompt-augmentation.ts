@@ -186,21 +186,44 @@ export function augmentCellPrompt(input: AugmentCellPromptInput): AugmentCellPro
   const safeOnScreenText = (input.onScreenText ?? '').trim().replace(/[\r\n]+/g, ' ').slice(0, 120);
   const escapedOst = safeOnScreenText.replace(/"/g, '\\"');
   const shouldBakeOst = normalizedOstMode === 'bake' && safeOnScreenText.length > 0;
-  // OST positioning. Wording references the safe zone established by
-  // safeEdgeDirective by name; does NOT re-assert "15%" or "central 70%"
-  // because the per-directive stacking was producing tiny floating-head
-  // outputs on close-ups. Position is lower-center because year-shaped
-  // OST values like "1945" / "1969" trigger the model's title-placement
-  // prior, which without explicit lower-center bias drifts them toward
-  // the top edge where the crop destroys the glyphs.
+  // OST positioning + size constraint.
+  //
+  // 2026-05-28 second-pass framing fix. The first pass (consolidated
+  // safe-edge directive + removed ostSafeEdgeReinforcement) shipped at
+  // 19:53 UTC. The user reported within 30 min that baked OST text was
+  // still rendering with letter baselines flush at the bottom edge of
+  // the canvas — observed on a "30,000 APPOINTMENTS" doodle frame where
+  // the word "APPOINTMENTS" occupied ~30% of canvas height with its
+  // bottom at y=100%. Two root causes the first pass missed:
+  //   1. NO SIZE CAP. "drawn large in bold marker style" gave the
+  //      model license to fill the lower half. With a long OST string
+  //      ("30,000 APPOINTMENTS"), "large" maps to ~30% of canvas
+  //      height, which guarantees a 15% bottom margin is impossible.
+  //   2. The "lower-center" position bias + canonical safeEdgeDirective
+  //      ("bottom 15%") were in tension. The OST directive's specific
+  //      position language won over the global edge directive — the
+  //      model treats OST as the highest-priority element and ignores
+  //      the global framing for that element.
+  //
+  // Resolution:
+  //   - Explicit size cap ("no taller than 20% of canvas height").
+  //   - Explicit per-element anti-bottom-edge clause inside the OST
+  //     directive itself (not relying on the global safeEdgeDirective
+  //     to apply to OST).
+  //   - Position shifted from "lower-center" → "center, slightly
+  //     below middle". "Lower" plus "large" was the combo that pushed
+  //     glyphs to the cut line.
+  //   - The anti-top-edge clause stays (year-shaped OST like "1945"
+  //     still trips the model's title-placement prior). Now BOTH top
+  //     and bottom edges are explicitly named in the OST directive.
   const ostPosition = needsSafeTopBias
-    ? 'in the lower portion of the central safe zone, never near the top edge'
-    : 'in the lower-center of the central safe zone, never near the top edge';
+    ? 'in the lower portion of the central safe zone, slightly below the vertical middle, NEVER near the top edge and NEVER near the bottom edge'
+    : 'centered horizontally and positioned slightly below the vertical middle of the frame, NEVER near the top edge and NEVER near the bottom edge';
   const ostLeadingDirective = shouldBakeOst
-    ? `Hand-lettered text "${escapedOst}" drawn large in bold marker style ${ostPosition}, in the illustration's own style.\n\n`
+    ? `Hand-lettered text "${escapedOst}" drawn in bold marker style at a moderate readable size (the text occupies NO MORE than 20% of the total canvas height; letters are NOT oversized), positioned ${ostPosition}, in the illustration's own style. The full text — including the lowest baseline of every letter — sits with AT LEAST 15% empty whitespace below it before the bottom edge of the canvas. Letters must NEVER touch or cross the bottom edge.\n\n`
     : '';
   const ostTrailingDirective = shouldBakeOst
-    ? `\n\nText shown: "${escapedOst}".`
+    ? `\n\nText shown: "${escapedOst}" (moderate size, well clear of top and bottom edges).`
     : '';
 
   // Cloud-Kie style-sheet chaining hint. Sanitised + capped at 240

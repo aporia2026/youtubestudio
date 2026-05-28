@@ -25,7 +25,11 @@ describe('augmentCellPrompt — OST baking', () => {
     });
     expect(out.ostBaked).toBe(true);
     expect(out.prompt).toContain('Hand-lettered text "EUREKA"');
-    expect(out.prompt).toContain('Text shown: "EUREKA".');
+    // v2 framing fix added a parenthetical reminder after the trailing
+    // OST. The trailing directive now reads:
+    //   Text shown: "EUREKA" (moderate size, well clear of top and bottom edges).
+    expect(out.prompt).toContain('Text shown: "EUREKA"');
+    expect(out.prompt).toContain('well clear of top and bottom edges');
     // Trailing directive must sit AFTER the body (late tokens are weighted).
     const bodyIdx = out.prompt.indexOf(BASE.prompt);
     const trailingIdx = out.prompt.indexOf('Text shown:');
@@ -134,7 +138,7 @@ describe('augmentCellPrompt — safe-edge guard', () => {
     expect(topIdx).toBeGreaterThan(edgeIdx);
   });
 
-  it('mentions the "central 70%" + 15% bands exactly once (no directive-stacking)', () => {
+  it('mentions "central 70%" exactly once and "15%" within an expected bound (no directive-stacking)', () => {
     const out = augmentCellPrompt({
       ...BASE,
       onScreenText: 'EUREKA',
@@ -142,17 +146,24 @@ describe('augmentCellPrompt — safe-edge guard', () => {
       sectionTitle: 'Chapter 1',
       sectionTitleLayout: 'overlay',
     });
-    // The 2026-05-28 framing fix specifically removed
-    // ostSafeEdgeReinforcement because re-stating the same numbers in a
-    // separate directive caused tiny floating-head outputs. Keep this
-    // assertion to prevent re-introducing the bug.
+    // The 2026-05-28 framing fix removed `ostSafeEdgeReinforcement`
+    // because re-stating the same constraint in multiple directive
+    // names caused tiny floating-head outputs. Keep this assertion to
+    // prevent re-introducing the bug.
+    //
+    // v2 framing fix: the OST directive now explicitly mentions "15%"
+    // once more (anti-bottom-edge clause specific to text). That's
+    // OK because the OST directive is GATED by shouldBakeOst — when
+    // OST is overlay/none, no extra "15%" mention happens. The cap
+    // below is sized to accommodate the bake path (3 from safe-edge
+    // + 1 from OST anti-bottom-edge).
     const centralCount = (out.prompt.match(/central 70%/g) ?? []).length;
     const bandsCount = (out.prompt.match(/15%/g) ?? []).length;
     expect(centralCount).toBe(1);
-    // The phrase "15%" appears twice in the canonical safe-edge
-    // directive itself ("top 15%" + "bottom 15%" + "outer 15% bands")
-    // but should NOT be re-asserted in any other directive.
-    expect(bandsCount).toBeLessThanOrEqual(3);
+    // safeEdgeDirective: "top 15%" + "bottom 15%" + "outer 15% bands" = 3
+    // ostLeadingDirective (bake-only): "AT LEAST 15% empty whitespace below it" = 1
+    // Total when baked: 4. When not baked: 3.
+    expect(bandsCount).toBeLessThanOrEqual(4);
   });
 });
 
@@ -205,41 +216,58 @@ describe('augmentCellPrompt — safe-top bias', () => {
     expect(out.safeTop).toBe(true);
     expect(out.ostBaked).toBe(true);
     expect(out.prompt).toContain('in the lower portion of the central safe zone');
+    // v2 framing fix: even in the safe-top + bake combo, the OST must
+    // still respect the bottom edge (the section-stripe-overlay case
+    // doesn't change the bottom-edge constraint).
+    expect(out.prompt).toContain('NEVER near the bottom edge');
   });
 
-  it('bake without safe-top positions OST in the lower-center safe zone (Phase 1.5 Bug C)', () => {
+  it('bake without safe-top names BOTH top and bottom edges as no-go zones (2026-05-28 v2 framing fix)', () => {
     const out = augmentCellPrompt({
       ...BASE,
       onScreenText: 'EUREKA',
       onScreenTextMode: 'bake',
     });
-    // Phase 1.5 (Bug C) + 2026-05-28 framing fix: the OST position
-    // now references the canonical safe zone defined by safeEdgeDirective
-    // by name, rather than re-asserting its own coordinates. Year-shaped
-    // OST values like "1945" used to drift to the top edge where the
-    // 7.8% crop sliced into them; the explicit "never near the top edge"
-    // clause + lower-center anchor prevents that.
-    expect(out.prompt).toContain('in the lower-center of the central safe zone');
-    expect(out.prompt).toContain('never near the top edge');
+    // v2 framing fix: the OST directive itself now names BOTH top and
+    // bottom edges explicitly. v1 only mentioned the top edge (relying
+    // on safeEdgeDirective's global "bottom 15%" to cover the bottom),
+    // but the OST-specific position language won the priority fight
+    // with the global constraint and the model placed letter baselines
+    // flush at the bottom edge on long OST strings. Naming both edges
+    // inside the OST directive fixes the priority issue.
+    expect(out.prompt).toContain('NEVER near the top edge');
+    expect(out.prompt).toContain('NEVER near the bottom edge');
     expect(out.prompt).not.toContain('within the scene');
   });
 
-  it('bake mode does NOT add a redundant percentage reinforcement (2026-05-28 framing fix)', () => {
+  it('bake mode caps OST size at 20% of canvas height (2026-05-28 v2 framing fix)', () => {
     const out = augmentCellPrompt({
       ...BASE,
-      onScreenText: '1945',
+      onScreenText: '30,000 APPOINTMENTS',
       onScreenTextMode: 'bake',
     });
-    // Pre-2026-05-28, an extra `ostSafeEdgeReinforcement` directive
-    // appended a second "AT LEAST 15% from the top edge" clause when
-    // OST was baked. That stacked with safeEdgeDirective's own 15%
-    // assertion and produced tiny floating-head outputs on close-up
-    // portraits. The reinforcement was removed; safeEdgeDirective is
-    // now the single source of truth for the percentages.
-    expect(out.prompt).not.toContain('Any hand-lettered text, title, or numeral inside the picture sits');
-    // The lower-center position clause is what now carries the
-    // "never near the top edge" anti-drift constraint for OST.
-    expect(out.prompt).toContain('never near the top edge');
+    // v1 framing fix said "drawn large in bold marker style" with no
+    // size bound. On long OST strings the model produced text at ~30%
+    // of canvas height, which guaranteed the bottom edge would be hit
+    // regardless of position language. v2 fixes this by explicitly
+    // capping size before mentioning position.
+    expect(out.prompt).toContain('NO MORE than 20% of the total canvas height');
+    expect(out.prompt).toContain('letters are NOT oversized');
+  });
+
+  it('bake mode asserts at least 15% empty whitespace below the lowest baseline (2026-05-28 v2)', () => {
+    const out = augmentCellPrompt({
+      ...BASE,
+      onScreenText: 'APPOINTMENTS',
+      onScreenTextMode: 'bake',
+    });
+    // Letter descenders ('y', 'p', 'g', 'q', 'j') extend below the
+    // baseline; on all-caps text the baseline IS the lowest pixel.
+    // Either way the directive must name the "lowest baseline of every
+    // letter" so the model treats the descender as the relevant edge.
+    expect(out.prompt).toContain('lowest baseline of every letter');
+    expect(out.prompt).toContain('AT LEAST 15% empty whitespace below it before the bottom edge');
+    expect(out.prompt).toContain('Letters must NEVER touch or cross the bottom edge');
   });
 
   it('overlay mode omits the OST-specific position clause entirely', () => {
@@ -339,17 +367,18 @@ describe('augmentCellPrompt — full prompt composition', () => {
       sectionTitleLayout: 'overlay',
       promptCap: SINGLE_SHOT_PROMPT_CAP,
     });
-    // 2026-05-28 framing fix: the OST-bake path no longer prepends a
-    // separate `ostSafeEdgeReinforcement` directive — the canonical
-    // safeEdgeDirective above is the single source of the 15% / central
-    // 70% language. safeTopDirective (overlay-only) and ostLeadingDirective
-    // reference the safe zone by name without re-asserting percentages.
+    // 2026-05-28 v2 framing fix: ostLeadingDirective now caps size at
+    // 20% of canvas height and names BOTH top + bottom edges as
+    // no-go zones inside the directive itself (was relying on the
+    // canonical safeEdgeDirective's global "bottom 15%" to apply to
+    // OST, which the model ignored under priority competition with
+    // the OST-specific position language).
     expect(out.prompt).toBe(
       SAFE_EDGE_PREFIX
       + 'Bias the upper portion of the central safe zone toward an empty open sky or plain low-detail background. All characters, faces, objects, and key details sit in the lower portion of the safe zone.\n\n'
-      + 'Hand-lettered text "EUREKA" drawn large in bold marker style in the lower portion of the central safe zone, never near the top edge, in the illustration\'s own style.\n\n'
+      + 'Hand-lettered text "EUREKA" drawn in bold marker style at a moderate readable size (the text occupies NO MORE than 20% of the total canvas height; letters are NOT oversized), positioned in the lower portion of the central safe zone, slightly below the vertical middle, NEVER near the top edge and NEVER near the bottom edge, in the illustration\'s own style. The full text — including the lowest baseline of every letter — sits with AT LEAST 15% empty whitespace below it before the bottom edge of the canvas. Letters must NEVER touch or cross the bottom edge.\n\n'
       + 'A scientist'
-      + '\n\nText shown: "EUREKA".',
+      + '\n\nText shown: "EUREKA" (moderate size, well clear of top and bottom edges).',
     );
   });
 
