@@ -10472,25 +10472,37 @@ function ProductionDocPage() {
                         <td style={{ padding: '8px 10px', width: 100, borderRight: '1px solid var(--border)', verticalAlign: 'middle' }}>
                           <ImageCell
                             state={imgState}
-                            canGenerate={Boolean(row.ai_image_prompt?.trim())}
+                            // 2026-05-28 (Bug "Search Images stuck"): when the LLM
+                            // omitted ai_image_prompt for a row but visual_description
+                            // is present, fall back to visual_description so the
+                            // user can still click "Generate AI image" instead of
+                            // having to manually click "+ Add prompt" and retype
+                            // the same description (rule 10 — lazy user).
+                            canGenerate={Boolean(row.ai_image_prompt?.trim() || row.visual_description?.trim())}
                             onRetry={() => {
-                              if (row.ai_image_prompt?.trim()) {
-                                const sheetRef = doc ? resolveSheetReference(row, doc) : { referenceImageUrl: undefined, styleSheetDescription: undefined };
-                                generateImageForRow(i, row.ai_image_prompt, {
-                                  onScreenText: row.on_screen_text,
-                                  onScreenTextMode: row.on_screen_text_mode ?? doc?.on_screen_text_mode_default,
-                                  sectionTitle: row.section_title,
-                                  sectionTitleLayout: row.section_title_layout ?? doc?.section_title_layout_default,
-                                  referenceImageUrl: sheetRef.referenceImageUrl,
-                                  styleSheetDescription: sheetRef.styleSheetDescription,
-                                  overlayStockTerms: row.overlay_stock_terms,
-                                  skipOverlay: typeof row.skip_overlay === 'boolean'
-                                    ? row.skip_overlay
-                                    : doc?.overlays_disabled === true,
-                                  characterId: row.character_id,
-                                  sceneId: row.scene_id,
-                                });
+                              const promptSource = row.ai_image_prompt?.trim() || row.visual_description?.trim();
+                              if (!promptSource) return;
+                              // Persist the visual_description fallback into
+                              // ai_image_prompt so the user can see / edit it,
+                              // and so subsequent regenerations reuse it.
+                              if (!row.ai_image_prompt?.trim()) {
+                                updateRow(i, { ai_image_prompt: promptSource });
                               }
+                              const sheetRef = doc ? resolveSheetReference(row, doc) : { referenceImageUrl: undefined, styleSheetDescription: undefined };
+                              generateImageForRow(i, promptSource, {
+                                onScreenText: row.on_screen_text,
+                                onScreenTextMode: row.on_screen_text_mode ?? doc?.on_screen_text_mode_default,
+                                sectionTitle: row.section_title,
+                                sectionTitleLayout: row.section_title_layout ?? doc?.section_title_layout_default,
+                                referenceImageUrl: sheetRef.referenceImageUrl,
+                                styleSheetDescription: sheetRef.styleSheetDescription,
+                                overlayStockTerms: row.overlay_stock_terms,
+                                skipOverlay: typeof row.skip_overlay === 'boolean'
+                                  ? row.skip_overlay
+                                  : doc?.overlays_disabled === true,
+                                characterId: row.character_id,
+                                sceneId: row.scene_id,
+                              });
                             }}
                             onUpload={(file) => { void uploadImageForRow(i, file); }}
                             onUrlImport={(url) => { void importImageUrlForRow(i, url); }}
@@ -11034,11 +11046,19 @@ function ProductionDocPage() {
                           <p className="text-xs font-semibold mb-0.5" style={{ color: 'var(--text-muted)' }}>Image</p>
                           <ImageCell
                             state={imgState}
-                            canGenerate={Boolean(row.ai_image_prompt?.trim())}
+                            // Same fallback as the wide-view ImageCell above:
+                            // visual_description backstops a missing
+                            // ai_image_prompt so the user can generate without
+                            // re-typing what's already in the doc.
+                            canGenerate={Boolean(row.ai_image_prompt?.trim() || row.visual_description?.trim())}
                             onRetry={() => {
-                              if (!row.ai_image_prompt?.trim()) return;
+                              const promptSource = row.ai_image_prompt?.trim() || row.visual_description?.trim();
+                              if (!promptSource) return;
+                              if (!row.ai_image_prompt?.trim()) {
+                                updateRow(i, { ai_image_prompt: promptSource });
+                              }
                               const sheetRef = doc ? resolveSheetReference(row, doc) : { referenceImageUrl: undefined, styleSheetDescription: undefined };
-                              return generateImageForRow(i, row.ai_image_prompt, {
+                              return generateImageForRow(i, promptSource, {
                                 onScreenText: row.on_screen_text,
                                 onScreenTextMode: row.on_screen_text_mode ?? doc?.on_screen_text_mode_default,
                                 sectionTitle: row.section_title,
