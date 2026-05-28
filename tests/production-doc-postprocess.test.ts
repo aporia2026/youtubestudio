@@ -537,27 +537,92 @@ describe('dedupVariantIndexCollisions', () => {
     expect(out.warnings).toHaveLength(0);
   });
 
-  it('warns instead of recovering when the preceding row already belongs to another group', () => {
+  it('promotes orphan variants to standalone when preceding row already belongs to another group (Phase 1.6 post-QA)', () => {
     const rows: DedupRow[] = [
       variantRow({ tc: '0:00', groupId: 'g0', variantIndex: 0, prompt: 'group 0 base' }),
       variantRow({ tc: '0:05', groupId: 'g1', variantIndex: 1, editPrompt: 'add a hat' }),
     ];
+    // Provide a visual_description so the promoted row gets a real
+    // ai_image_prompt instead of staying blank.
+    (rows[1] as DedupRow).visual_description = 'A wide shot of a stage';
     const out = dedupVariantIndexCollisions(rows);
     expect(out.basesRecovered).toBe(0);
+    expect(out.orphanVariantsPromoted).toBe(1);
     expect(out.warnings).toHaveLength(1);
     expect(out.warnings[0]).toContain('"g1"');
     expect(out.warnings[0]).toContain('preceding row already belongs to another group');
+    expect(out.warnings[0]).toContain('promoted to standalone Animation');
+    // The promoted row no longer claims group_id / variant_index / vep.
+    expect(out.rows[1].group_id).toBeUndefined();
+    expect(out.rows[1].variant_index).toBeUndefined();
+    expect(out.rows[1].variant_edit_prompt).toBeUndefined();
+    // ai_image_prompt was empty on the variant; visual_description back-fills it.
+    expect(out.rows[1].ai_image_prompt).toBe('A wide shot of a stage');
   });
 
-  it('warns when an orphan group sits at the start of the doc with no row to promote', () => {
+  it('promotes an orphan variant at the start of the doc to standalone (Phase 1.6 post-QA)', () => {
     const rows: DedupRow[] = [
       variantRow({ tc: '0:00', groupId: 'g1', variantIndex: 1, editPrompt: 'add a hat' }),
     ];
+    (rows[0] as DedupRow).visual_description = 'A close-up of a candle';
     const out = dedupVariantIndexCollisions(rows);
     expect(out.basesRecovered).toBe(0);
+    expect(out.orphanVariantsPromoted).toBe(1);
     expect(out.warnings).toHaveLength(1);
     expect(out.warnings[0]).toContain('"g1"');
     expect(out.warnings[0]).toContain("doc's first row");
+    expect(out.warnings[0]).toContain('promoted to standalone');
+    expect(out.rows[0].group_id).toBeUndefined();
+    expect(out.rows[0].variant_index).toBeUndefined();
+    expect(out.rows[0].ai_image_prompt).toBe('A close-up of a candle');
+  });
+
+  it('promotes multiple orphan variants in the same group with a single warning summarizing the count', () => {
+    const rows: DedupRow[] = [
+      variantRow({ tc: '0:00', groupId: 'g0', variantIndex: 0, prompt: 'g0 base' }),
+      variantRow({ tc: '0:05', groupId: 'g1', variantIndex: 1, editPrompt: 'add a hat' }),
+      variantRow({ tc: '0:10', groupId: 'g1', variantIndex: 2, editPrompt: 'add a coat' }),
+    ];
+    (rows[1] as DedupRow).visual_description = 'Scene one';
+    (rows[2] as DedupRow).visual_description = 'Scene two';
+    const out = dedupVariantIndexCollisions(rows);
+    expect(out.orphanVariantsPromoted).toBe(2);
+    expect(out.warnings).toHaveLength(1);
+    expect(out.warnings[0]).toContain('2 variant rows promoted');
+    expect(out.rows[1].group_id).toBeUndefined();
+    expect(out.rows[2].group_id).toBeUndefined();
+    expect(out.rows[1].ai_image_prompt).toBe('Scene one');
+    expect(out.rows[2].ai_image_prompt).toBe('Scene two');
+  });
+
+  it('reproduces the Sodder doc c64b4fb4 orphan-group pattern (sodder-fire-1 spans rows 2/5)', () => {
+    // The LLM emitted sodder-fire-1 as variants at rows 2 (variant_index=1)
+    // and 5 (variant_index=2) with rows 3 + 4 belonging to a different
+    // group g_10k7ln in between. No base for sodder-fire-1 exists. Row 2's
+    // predecessor (row 1) already belongs to group g_84lo1h.
+    const rows: DedupRow[] = [
+      variantRow({ tc: '0:00', groupId: 'g_84lo1h', variantIndex: 0, prompt: 'house at night base' }),
+      variantRow({ tc: '0:04', groupId: 'g_84lo1h', variantIndex: 1, editPrompt: 'george in bed' }),
+      variantRow({ tc: '0:06', groupId: 'sodder-fire-1', variantIndex: 1, editPrompt: 'add flames' }),
+      variantRow({ tc: '0:09', groupId: 'g_10k7ln', variantIndex: 0, prompt: 'family escape base' }),
+      variantRow({ tc: '0:11', groupId: 'g_10k7ln', variantIndex: 1, editPrompt: 'family runs out' }),
+      variantRow({ tc: '0:15', groupId: 'sodder-fire-1', variantIndex: 2, editPrompt: 'empty doorway' }),
+    ];
+    (rows[2] as DedupRow).visual_description = 'Same house now engulfed in flames';
+    (rows[5] as DedupRow).visual_description = 'Same burning house, doorway is empty';
+    const out = dedupVariantIndexCollisions(rows);
+    expect(out.basesRecovered).toBe(0);
+    expect(out.orphanVariantsPromoted).toBe(2);
+    // Both sodder-fire-1 rows are now standalone with prompts.
+    expect(out.rows[2].group_id).toBeUndefined();
+    expect(out.rows[2].ai_image_prompt).toBe('Same house now engulfed in flames');
+    expect(out.rows[5].group_id).toBeUndefined();
+    expect(out.rows[5].ai_image_prompt).toBe('Same burning house, doorway is empty');
+    // The intact group g_84lo1h and g_10k7ln are untouched.
+    expect(out.rows[0].group_id).toBe('g_84lo1h');
+    expect(out.rows[1].group_id).toBe('g_84lo1h');
+    expect(out.rows[3].group_id).toBe('g_10k7ln');
+    expect(out.rows[4].group_id).toBe('g_10k7ln');
   });
 
   it('ignores standalone rows (no group_id)', () => {

@@ -536,6 +536,13 @@ export interface VariantIndexDedupResult<R extends ProductionDocRowLike> {
   /** Number of base rows recovered by promoting a preceding fresh row
    *  into a group that was missing its `variant_index === 0`. */
   basesRecovered: number;
+  /** Phase 1.6 (post-QA) — number of orphan-group variant rows
+   *  promoted to standalone Animation rows because no base could be
+   *  recovered. Each such row had its group_id / variant_index /
+   *  variant_edit_prompt cleared and (when its `ai_image_prompt` was
+   *  empty) a synthesized prompt derived from `visual_description` so
+   *  the image-gen pipeline can render it. */
+  orphanVariantsPromoted: number;
   /** Human-readable warnings for the UI — e.g. "group X has variants
    *  but no base and no fresh predecessor to promote." */
   warnings: string[];
@@ -569,6 +576,39 @@ function isDuplicateContent<R extends ProductionDocRowLike>(a: R, b: R): boolean
   return aiA === aiB && veA === veB;
 }
 
+/** Promote an orphan variant row to a standalone Animation row when
+ *  no base can be recovered for its group. Clears the variant fields
+ *  so the image-gen pipeline treats it as a fresh row, and back-fills
+ *  `ai_image_prompt` from `visual_description` when the variant row
+ *  itself doesn't carry a prompt (variants normally omit
+ *  ai_image_prompt — the dispatcher composes from the base's prompt
+ *  plus the variant_edit_prompt at Atlas Edit time). The synthesized
+ *  prompt loses the variant's "additive delta" specificity but at
+ *  least produces an image; the alternative is a permanently blank
+ *  row the user has to fix manually. */
+function promoteOrphanVariantToStandalone<R extends ProductionDocRowLike>(row: R): void {
+  const bag = bagOf(row);
+  // Preserve any populated ai_image_prompt as-is; back-fill from
+  // visual_description only when missing. The LLM occasionally
+  // emits a full ai_image_prompt on a variant row even though
+  // the variant rules say to leave it empty — we keep that
+  // text if present.
+  const aiPrompt = typeof bag.ai_image_prompt === 'string' ? bag.ai_image_prompt : '';
+  if (aiPrompt.trim().length === 0) {
+    const visualDesc = typeof bag.visual_description === 'string' ? bag.visual_description : '';
+    if (visualDesc.trim().length > 0) {
+      bag.ai_image_prompt = visualDesc;
+    }
+  }
+  // Strip the variant scaffolding so the editor / dispatcher treats
+  // this as a fresh standalone Animation row. Use `delete` rather
+  // than setting to undefined so the keys disappear from the JSONB
+  // blob entirely — keeps the saved doc shape clean.
+  delete bag.group_id;
+  delete bag.variant_index;
+  delete bag.variant_edit_prompt;
+}
+
 export function dedupVariantIndexCollisions<R extends ProductionDocRowLike>(
   rows: R[],
 ): VariantIndexDedupResult<R> {
@@ -577,6 +617,7 @@ export function dedupVariantIndexCollisions<R extends ProductionDocRowLike>(
   let duplicatesDropped = 0;
   let renumbered = 0;
   let basesRecovered = 0;
+  let orphanVariantsPromoted = 0;
   const dropIndices = new Set<number>();
 
   // Step 1 — collect rows by group_id with their document-order index.
@@ -644,41 +685,71 @@ export function dedupVariantIndexCollisions<R extends ProductionDocRowLike>(
     // Locate the first surviving variant in document order, then look
     // at its IMMEDIATE preceding row.
     const firstVariantIdx = Math.min(...survivingMembers.map((m) => m.index));
-    if (firstVariantIdx === 0) {
-      // No room to look back. Surface a warning.
-      warnings.push(
-        `Group "${gid}" has variants but no base, and the first variant is the doc's first row — manual repair needed.`,
-      );
+    const candidateBag = firstVariantIdx > 0 ? bagOf(rows[firstVariantIdx - 1]) : undefined;
+    const candidateHasGroup =
+      candidateBag !== undefined &&
+      typeof candidateBag.group_id === 'string' &&
+      (candidateBag.group_id as string).length > 0;
+    const candidatePrompt =
+      candidateBag !== undefined && typeof candidateBag.ai_image_prompt === 'string'
+        ? (candidateBag.ai_image_prompt as string)
+        : '';
+    const canRecover =
+      candidateBag !== undefined &&
+      !candidateHasGroup &&
+      candidatePrompt.trim().length > 0;
+    if (canRecover && candidateBag) {
+      candidateBag.group_id = gid;
+      candidateBag.variant_index = 0;
+      basesRecovered += 1;
       continue;
     }
-    const candidate = rows[firstVariantIdx - 1];
-    const candidateBag = bagOf(candidate);
-    const candidateHasGroup = typeof candidateBag.group_id === 'string' && candidateBag.group_id.length > 0;
-    const candidatePrompt = typeof candidateBag.ai_image_prompt === 'string' ? candidateBag.ai_image_prompt : '';
-    if (candidateHasGroup) {
-      warnings.push(
-        `Group "${gid}" has variants but no base; the preceding row already belongs to another group — manual repair needed.`,
-      );
-      continue;
+    // Phase 1.6 (post-QA fix-up) — no fresh predecessor available.
+    // Promote each surviving orphan variant to a standalone Animation
+    // row so the image-gen pipeline can render something instead of
+    // leaving the user with permanently blank rows. The LLM-intended
+    // variant relationship is lost (each row will i2i fresh, not Edit
+    // from a shared base) but a rendered image is strictly better
+    // than no image. Warning is downgraded to an info-level summary
+    // so the user can see what happened post-hoc but the doc isn't
+    // marked broken.
+    for (const m of survivingMembers) {
+      promoteOrphanVariantToStandalone(m.row);
+      orphanVariantsPromoted += 1;
     }
-    if (candidatePrompt.trim().length === 0) {
-      warnings.push(
-        `Group "${gid}" has variants but no base; the preceding row has no ai_image_prompt to use as the base — manual repair needed.`,
-      );
-      continue;
-    }
-    candidateBag.group_id = gid;
-    candidateBag.variant_index = 0;
-    basesRecovered += 1;
+    const reason = firstVariantIdx === 0
+      ? `the first variant is the doc's first row`
+      : candidateHasGroup
+      ? `the preceding row already belongs to another group`
+      : `the preceding row has no ai_image_prompt to use as the base`;
+    warnings.push(
+      `Group "${gid}" had variants but no base (${reason}); ${survivingMembers.length} variant row${survivingMembers.length === 1 ? '' : 's'} promoted to standalone Animation rows.`,
+    );
   }
 
   // Step 4 — emit the surviving rows.
   if (dropIndices.size === 0) {
-    return { rows, collisionsResolved, duplicatesDropped, renumbered, basesRecovered, warnings };
+    return {
+      rows,
+      collisionsResolved,
+      duplicatesDropped,
+      renumbered,
+      basesRecovered,
+      orphanVariantsPromoted,
+      warnings,
+    };
   }
   const out: R[] = [];
   for (let i = 0; i < rows.length; i++) {
     if (!dropIndices.has(i)) out.push(rows[i]);
   }
-  return { rows: out, collisionsResolved, duplicatesDropped, renumbered, basesRecovered, warnings };
+  return {
+    rows: out,
+    collisionsResolved,
+    duplicatesDropped,
+    renumbered,
+    basesRecovered,
+    orphanVariantsPromoted,
+    warnings,
+  };
 }

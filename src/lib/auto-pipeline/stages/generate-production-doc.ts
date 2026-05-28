@@ -313,7 +313,12 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
         const dedup = dedupVariantIndexCollisions(
           rows as unknown as Parameters<typeof dedupVariantIndexCollisions>[0],
         );
-        if (dedup.collisionsResolved > 0 || dedup.basesRecovered > 0 || dedup.warnings.length > 0) {
+        if (
+          dedup.collisionsResolved > 0
+          || dedup.basesRecovered > 0
+          || dedup.orphanVariantsPromoted > 0
+          || dedup.warnings.length > 0
+        ) {
           logger.info('auto-pipeline: variant-index-dedup', {
             pipeline_video_id: video.id,
             style_id: style.id,
@@ -321,6 +326,10 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
             duplicates_dropped: dedup.duplicatesDropped,
             renumbered: dedup.renumbered,
             bases_recovered: dedup.basesRecovered,
+            // Phase 1.6 (post-QA fix-up): orphan variant rows in groups
+            // whose base couldn't be recovered get promoted to
+            // standalone Animation rows.
+            orphan_variants_promoted: dedup.orphanVariantsPromoted,
             warning_count: dedup.warnings.length,
             warning_sample: dedup.warnings.slice(0, 3),
           });

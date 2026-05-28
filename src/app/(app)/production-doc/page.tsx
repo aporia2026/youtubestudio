@@ -6364,31 +6364,39 @@ function ProductionDocPage() {
       void persistRowAsset(rowIndex, 'image', data.imageUrl as string, {
         styleVersion: typeof data.styleVersion === 'number' ? data.styleVersion : undefined,
       });
-      // Phase 1.6 (Bug D) — character-cache miss-and-store.
+      // Phase 1.6 (Bug D, fix-up) — character-cache miss-and-store.
       //
       // First i2i for a character_id slug: stash the result as the
       // canonical base for every subsequent row showing the same
       // character. `writeCharacterToCache` is first-occurrence-wins so
       // racing writes during a bulk-gen burst are safe (the second
-      // write is a no-op). Cache lands in `doc` via `setDoc` and rides
-      // the existing debounced full-payload save to the server.
-      if (isDoodleExplainer2 && characterId && !cachedBaseUrl && typeof data.imageUrl === 'string') {
+      // write is a no-op).
+      //
+      // BOTH local state AND the server must be updated atomically.
+      // The first cut of Bug D only called setDoc and depended on the
+      // debounced parity-bridge effect to persist — that bridge has
+      // the known silent-drop modes documented above persistRowAsset,
+      // so QA on Sodder doc c64b4fb4 showed `character_cache: NULL`
+      // even though 7 rows had emitted `character_id`. Fix: pair the
+      // setDoc with the same `updateProductionDocEntry` call every
+      // other doc-mutation site in this file uses, so the cache
+      // survives a tab close before the next debounce tick.
+      if (isDoodleExplainer2 && characterId && !cachedBaseUrl && typeof data.imageUrl === 'string' && doc) {
         console.info('[manual-editor character-cache] miss-and-store', {
           rowIndex,
           characterId,
         });
-        setDoc((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            doodle_explainer_2_character_cache: writeCharacterToCache(
-              prev.doodle_explainer_2_character_cache,
-              characterId,
-              data.imageUrl as string,
-              rowIndex,
-            ),
-          };
-        });
+        const nextCache = writeCharacterToCache(
+          doc.doodle_explainer_2_character_cache,
+          characterId,
+          data.imageUrl as string,
+          rowIndex,
+        );
+        const nextDoc = { ...doc, doodle_explainer_2_character_cache: nextCache };
+        setDoc(nextDoc);
+        if (historyEntryId) {
+          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
+        }
       }
       const saliency = data.saliency;
       if (saliency) applySaliencyToRow(rowIndex, saliency);

@@ -380,13 +380,22 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     // by the same pass. Spec:
     // _plans/2026-05-28-doodle-2-phase-1-6-completion.md (R-3).
     const dedup = dedupVariantIndexCollisions(rows);
-    if (dedup.collisionsResolved > 0 || dedup.basesRecovered > 0 || dedup.warnings.length > 0) {
+    if (
+      dedup.collisionsResolved > 0
+      || dedup.basesRecovered > 0
+      || dedup.orphanVariantsPromoted > 0
+      || dedup.warnings.length > 0
+    ) {
       logger.info('[production-doc variant-index-dedup]', {
         styleId: resolved.id,
         collisionsResolved: dedup.collisionsResolved,
         duplicatesDropped: dedup.duplicatesDropped,
         renumbered: dedup.renumbered,
         basesRecovered: dedup.basesRecovered,
+        // Phase 1.6 (post-QA fix-up): orphan variant rows in groups
+        // whose base couldn't be recovered get promoted to standalone
+        // Animation rows instead of staying permanently un-renderable.
+        orphanVariantsPromoted: dedup.orphanVariantsPromoted,
         warningCount: dedup.warnings.length,
         warningSample: dedup.warnings.slice(0, 3),
       });
