@@ -71,7 +71,29 @@ export interface AutoGroupResult<R extends ProductionDocRowLike> {
    *  rows — those keep their existing identity, just stamped with
    *  `variant_index: 0` and a fresh `group_id`). */
   mergedRowCount: number;
+  /** Subset of `mergedRowCount` whose promotion used the synthesized
+   *  `DEFAULT_SUBTLE_MOTION_DELTA` (byte-for-byte identical base and
+   *  variant prompts — see Bug B in
+   *  `_plans/2026-05-28-doodle-2-phase-1-5-completion.md`). Lets the
+   *  telemetry distinguish "LLM wrote a real delta the grouper
+   *  recovered" from "LLM emitted duplicates we patched over." */
+  identicalPromptMerges: number;
 }
+
+/** Fixed-default subtle-motion delta synthesized for the identical-prompt
+ *  fast-path. The doodle_explainer_2 "near-static animation" style is
+ *  delivered by Atlas Edit producing sibling frames from a shared base
+ *  (see memory: feedback_near_static_animation_mechanism.md). When the
+ *  LLM emits the same `ai_image_prompt` on consecutive rows the intent
+ *  is "same scene, slight motion variation between frames" — exactly
+ *  the case Atlas Edit was designed for. This delta gives the model
+ *  just enough to produce a sibling without inviting identity drift.
+ *  Verified shape: imperative tone (Atlas Edit reads imperatives better
+ *  than declaratives), explicit identity preservation ("identical to
+ *  the base"), explicit variation budget ("small natural variation"),
+ *  bounded scope ("pose, expression, or limb position"). */
+export const DEFAULT_SUBTLE_MOTION_DELTA =
+  'keep composition, character identity, clothing, lighting, and scene layout exactly identical to the base; apply only a small natural variation — a subtle shift in pose, expression, or limb position consistent with the same moment.';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -193,7 +215,17 @@ function looksLikeProseVariant(prompt: string): boolean {
 }
 
 /** Extract a clean delta phrase the Atlas-Edit dispatcher can use as
- *  `variant_edit_prompt`. Tries two strategies in order:
+ *  `variant_edit_prompt`. Tries three strategies in order:
+ *
+ *    0) Identical-prompt fast-path — if base and variant are
+ *       byte-for-byte identical (after trim), the LLM is signalling
+ *       "same scene, near-static animation frame." Synthesize the
+ *       fixed-default subtle-motion delta so the existing variant
+ *       dispatcher still calls Atlas Edit (producing a sibling frame),
+ *       rather than skipping the group (the previous failure mode that
+ *       caused two independent fresh i2i calls and the QA-reported
+ *       drift). Returned as `{ delta, fromIdenticalPrompt: true }` so
+ *       the caller can bump the dedicated telemetry counter.
  *
  *    1) Suffix extraction — if the variant prompt starts with most of
  *       the base prompt, return the trailing remainder. This handles
@@ -204,25 +236,39 @@ function looksLikeProseVariant(prompt: string): boolean {
  *       where the LLM rephrased between beats but the new concepts
  *       are clearly tokenisable.
  *
- *  Returns null if neither approach produces a meaningful delta — the
- *  caller treats null as "don't promote this row to a variant after
- *  all" and leaves it as a standalone row.
+ *  Returns null if none of the strategies produces a meaningful delta —
+ *  the caller treats null as "don't promote this row to a variant
+ *  after all" and leaves it as a standalone row.
  */
+interface DeltaExtraction {
+  delta: string;
+  fromIdenticalPrompt: boolean;
+}
 function extractDelta(
   basePrompt: string,
   variantPrompt: string,
   minDeltaWords: number,
-): string | null {
+): DeltaExtraction | null {
   const baseTrim = basePrompt.trim();
   const variantTrim = variantPrompt.trim();
   if (!baseTrim || !variantTrim) return null;
+
+  // Strategy 0 — identical prompts. The LLM means "this is a sibling
+  // frame of the same scene"; synthesize the subtle-motion delta so
+  // Atlas Edit still runs.
+  if (baseTrim === variantTrim) {
+    return { delta: DEFAULT_SUBTLE_MOTION_DELTA, fromIdenticalPrompt: true };
+  }
 
   // Strategy 1 — common prefix suffix
   const prefixLen = commonPrefixLength(baseTrim, variantTrim);
   if (prefixLen >= baseTrim.length * 0.6 && variantTrim.length - prefixLen >= 10) {
     const suffix = variantTrim.slice(prefixLen).replace(/^[\s.,;:]+/, '').trim();
     if (suffix.length >= 10) {
-      return `keep the base composition identical, ${stripImperativePreamble(suffix)}`;
+      return {
+        delta: `keep the base composition identical, ${stripImperativePreamble(suffix)}`,
+        fromIdenticalPrompt: false,
+      };
     }
   }
 
@@ -242,7 +288,10 @@ function extractDelta(
     // plus "his hand raised to it" — two phrases, one delta).
     const phrase = extractNoveltyDensePhrases(variantTrim, novelWords);
     if (phrase) {
-      return `keep the base composition identical, ${stripImperativePreamble(phrase)}`;
+      return {
+        delta: `keep the base composition identical, ${stripImperativePreamble(phrase)}`,
+        fromIdenticalPrompt: false,
+      };
     }
   }
 
@@ -372,6 +421,7 @@ export function autoGroupVariants<R extends ProductionDocRowLike>(
 
   let groupCount = 0;
   let mergedRowCount = 0;
+  let identicalPromptMerges = 0;
 
   let i = 0;
   while (i < rows.length) {
@@ -387,7 +437,7 @@ export function autoGroupVariants<R extends ProductionDocRowLike>(
     // drift where each variant resembles its predecessor but the last
     // one no longer resembles the start). Cap at maxGroupSize - 1
     // variants.
-    const variants: Array<{ row: R; delta: string }> = [];
+    const variants: Array<{ row: R; delta: string; fromIdenticalPrompt: boolean }> = [];
     let j = i + 1;
     while (j < rows.length && variants.length < maxGroupSize - 1) {
       if (!isEligible(rows[j], minPromptChars)) break;
@@ -407,9 +457,13 @@ export function autoGroupVariants<R extends ProductionDocRowLike>(
       // 2026-05-28T06:41:00 for the row 4/5 case this catches.
       const candThreshold = looksLikeProseVariant(candidatePrompt) ? 0.25 : threshold;
       if (sim < candThreshold) break;
-      const delta = extractDelta(basePrompt, candidatePrompt, minDeltaWords);
-      if (!delta) break;
-      variants.push({ row: rows[j], delta });
+      const extraction = extractDelta(basePrompt, candidatePrompt, minDeltaWords);
+      if (!extraction) break;
+      variants.push({
+        row: rows[j],
+        delta: extraction.delta,
+        fromIdenticalPrompt: extraction.fromIdenticalPrompt,
+      });
       j += 1;
     }
 
@@ -433,6 +487,7 @@ export function autoGroupVariants<R extends ProductionDocRowLike>(
       v.group_id = groupId;
       v.variant_index = idx + 1;
       v.variant_edit_prompt = variant.delta;
+      if (variant.fromIdenticalPrompt) identicalPromptMerges += 1;
       // Clear ai_image_prompt — the dispatcher composes the final edit
       // prompt from base.ai_image_prompt + variant_edit_prompt. Leaving
       // a stale prompt here would confuse the editor's "is this row
@@ -493,15 +548,16 @@ export function autoGroupVariants<R extends ProductionDocRowLike>(
     const orphanFullPrompt = typeof curBag.ai_image_prompt === 'string' ? curBag.ai_image_prompt : '';
     const existingEditPrompt = typeof curBag.variant_edit_prompt === 'string' ? curBag.variant_edit_prompt : '';
     if (orphanFullPrompt.length > 0 && existingEditPrompt.length === 0) {
-      const delta = extractDelta(baseCandidatePrompt, orphanFullPrompt, minDeltaWords);
-      if (delta) {
-        curBag.variant_edit_prompt = delta;
+      const extraction = extractDelta(baseCandidatePrompt, orphanFullPrompt, minDeltaWords);
+      if (extraction) {
+        curBag.variant_edit_prompt = extraction.delta;
         curBag.ai_image_prompt = '';
+        if (extraction.fromIdenticalPrompt) identicalPromptMerges += 1;
       }
     }
     groupCount += 1;
     mergedRowCount += 1; // the orphan was already tagged; the base is the new addition
   }
 
-  return { rows, groupCount, mergedRowCount };
+  return { rows, groupCount, mergedRowCount, identicalPromptMerges };
 }

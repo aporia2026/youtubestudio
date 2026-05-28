@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { autoGroupVariants } from '@/lib/auto-group-variants';
+import { autoGroupVariants, DEFAULT_SUBTLE_MOTION_DELTA } from '@/lib/auto-group-variants';
 
 // Build a minimal row for testing. The function only reads
 // `ai_image_prompt`, `visual_type`, and the mutable `group_id` /
@@ -237,6 +237,98 @@ describe('autoGroupVariants — returns are stable and mutate-in-place', () => {
     const result = autoGroupVariants(rows);
     expect(result.groupCount).toBe(0);
     expect(result.mergedRowCount).toBe(0);
+    expect(result.identicalPromptMerges).toBe(0);
     expect(result.rows).toBe(rows);
+  });
+});
+
+// ─── Phase 1.5 (Bug B) — identical-prompt fast-path ──────────────────────────
+//
+// The doodle_explainer_2 "near-static animation" pattern: the LLM emits the
+// same `ai_image_prompt` on consecutive rows to signal "same scene, slight
+// motion variation between frames." Pre-fix the auto-grouper bailed because
+// `extractDelta` returned null (no suffix delta, no novel words). Now it
+// synthesizes `DEFAULT_SUBTLE_MOTION_DELTA` so the existing variant
+// dispatcher still runs Atlas Edit and produces a sibling frame. Spec:
+// _plans/2026-05-28-doodle-2-phase-1-5-completion.md.
+
+const SODDER_HOUSE_PROMPT =
+  'A modest two-story family house at night with a warm window glow, George Sodder in a simple bed inside, looking calm and unaware. Dark blue sky, quiet yard, plain white space around the scene, wide angle, simple cartoon composition.';
+
+describe('autoGroupVariants — identical-prompt fast-path (Phase 1.5 Bug B)', () => {
+  it('groups two consecutive byte-identical prompts as a sibling pair with the default motion delta', () => {
+    const rows = [row(SODDER_HOUSE_PROMPT), row(SODDER_HOUSE_PROMPT)];
+    const result = autoGroupVariants(rows);
+
+    expect(result.groupCount).toBe(1);
+    expect(result.mergedRowCount).toBe(1);
+    expect(result.identicalPromptMerges).toBe(1);
+
+    expect(rows[0].ai_image_prompt).toBe(SODDER_HOUSE_PROMPT);
+    expect((rows[0] as Record<string, unknown>).variant_index).toBe(0);
+
+    expect(rows[1].ai_image_prompt).toBe('');
+    expect((rows[1] as Record<string, unknown>).variant_index).toBe(1);
+    expect((rows[1] as Record<string, unknown>).variant_edit_prompt).toBe(
+      DEFAULT_SUBTLE_MOTION_DELTA,
+    );
+
+    const gid = (rows[0] as Record<string, unknown>).group_id;
+    expect(typeof gid).toBe('string');
+    expect((rows[1] as Record<string, unknown>).group_id).toBe(gid);
+  });
+
+  it('groups three consecutive byte-identical prompts with the default delta on both variants', () => {
+    const rows = [
+      row(SODDER_HOUSE_PROMPT),
+      row(SODDER_HOUSE_PROMPT),
+      row(SODDER_HOUSE_PROMPT),
+    ];
+    const result = autoGroupVariants(rows);
+
+    expect(result.groupCount).toBe(1);
+    expect(result.mergedRowCount).toBe(2);
+    expect(result.identicalPromptMerges).toBe(2);
+
+    expect((rows[1] as Record<string, unknown>).variant_edit_prompt).toBe(
+      DEFAULT_SUBTLE_MOTION_DELTA,
+    );
+    expect((rows[2] as Record<string, unknown>).variant_edit_prompt).toBe(
+      DEFAULT_SUBTLE_MOTION_DELTA,
+    );
+    expect((rows[1] as Record<string, unknown>).variant_index).toBe(1);
+    expect((rows[2] as Record<string, unknown>).variant_index).toBe(2);
+  });
+
+  it('leaves an unrelated third row standalone after a duplicate pair', () => {
+    const UNRELATED =
+      'A cluttered investigation office with stacks of paper notes and tip letters covering a desk, anonymous handwriting, single hanging lamp, medium-wide composition.';
+    const rows = [
+      row(SODDER_HOUSE_PROMPT),
+      row(SODDER_HOUSE_PROMPT),
+      row(UNRELATED),
+    ];
+    const result = autoGroupVariants(rows);
+
+    expect(result.groupCount).toBe(1);
+    expect(result.mergedRowCount).toBe(1);
+    expect(result.identicalPromptMerges).toBe(1);
+
+    // Row 2 stays standalone — no group_id, no variant_index.
+    expect((rows[2] as Record<string, unknown>).group_id).toBeUndefined();
+    expect((rows[2] as Record<string, unknown>).variant_index).toBeUndefined();
+    expect(rows[2].ai_image_prompt).toBe(UNRELATED);
+  });
+
+  it('non-identical "real delta" pairs do NOT bump identicalPromptMerges', () => {
+    const rows = [row(STONE_AGE_BASE), row(STONE_AGE_VARIANT_1)];
+    const result = autoGroupVariants(rows);
+    expect(result.groupCount).toBe(1);
+    expect(result.mergedRowCount).toBe(1);
+    // The Stone Age pair has a real suffix delta — the counter stays at 0.
+    expect(result.identicalPromptMerges).toBe(0);
+    expect((rows[1] as Record<string, unknown>).variant_edit_prompt).not.toBe(
+      DEFAULT_SUBTLE_MOTION_DELTA,
+    );
   });
 });

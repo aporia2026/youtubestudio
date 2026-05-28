@@ -358,6 +358,14 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         rowCount: rows.length,
         groupCount: grouped.groupCount,
         mergedRowCount: grouped.mergedRowCount,
+        // Phase 1.5 (Bug B): subset of mergedRowCount whose promotion
+        // used the synthesized DEFAULT_SUBTLE_MOTION_DELTA. A non-zero
+        // value means the LLM emitted byte-for-byte duplicate prompts
+        // on consecutive rows and the auto-grouper recovered them as
+        // Atlas-Edit siblings rather than letting them fall through to
+        // two independent fresh i2i calls (the Phase 1 QA failure
+        // mode). Spec: _plans/2026-05-28-doodle-2-phase-1-5-completion.md.
+        identicalPromptMerges: grouped.identicalPromptMerges,
       });
     }
     // Always log the final variant-group ratio after both LLM-emitted

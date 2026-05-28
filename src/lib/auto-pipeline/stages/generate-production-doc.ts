@@ -299,6 +299,10 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
             style_id: style.id,
             group_count: grouped.groupCount,
             merged_row_count: grouped.mergedRowCount,
+            // Phase 1.5 (Bug B): identical-prompt promotions. See the
+            // matching field in the manual /api/generate/production-doc
+            // route log for diagnosis guidance.
+            identical_prompt_merges: grouped.identicalPromptMerges,
           });
         }
       }
