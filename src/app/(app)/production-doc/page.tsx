@@ -6392,7 +6392,24 @@ function ProductionDocPage() {
           data.imageUrl as string,
           rowIndex,
         );
-        const nextDoc = { ...doc, doodle_explainer_2_character_cache: nextCache };
+        // Phase 1.6 hot-fix 2 (post-c64b4fb4 regression): explicitly
+        // carry style_preset onto the saved doc. The page's style-sync
+        // useEffect (lines ~2140-2150) lifts the page's stylePreset
+        // state onto the doc, but if our save fires inside the same
+        // synchronous tick as the fresh-generation setDoc — before
+        // React commits and the sync effect has run — the doc closed
+        // over here still has style_preset undefined. Persisting that
+        // null overwrites whatever the sync effect would have written.
+        // Confirmed on Sodder doc c64b4fb4 where style_preset landed
+        // as NULL but `payload.doc.style_preset` on the prior post-1.6
+        // doc b7f7e637 was correct. Falling back to the page-state
+        // stylePreset when the doc field is unset is the surgical fix.
+        const resolvedStylePreset = doc.style_preset || stylePreset || undefined;
+        const nextDoc = {
+          ...doc,
+          style_preset: resolvedStylePreset,
+          doodle_explainer_2_character_cache: nextCache,
+        };
         setDoc(nextDoc);
         if (historyEntryId) {
           updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});

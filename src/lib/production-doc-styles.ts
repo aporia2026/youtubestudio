@@ -544,6 +544,8 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       '',
       'RULES for emitting `character_id`:',
       '- Use a 1-3 word lowercase-with-dashes slug tied to content: "george", "jennie", "louis-as-adult", "napoleon", "the-mailman", "scientist-1".',
+      '- **Pronouns and implicit references count.** If the script says "George went to bed" on one row and "he had reasons" on a later row, BOTH rows feature George. Both get `character_id = "george"`. Resolve every "he / she / his / her / they (singular)" against the most recently named character in the script and tag accordingly. The cache cannot reuse George\'s identity across rows the LLM forgot to tag.',
+      '- **The visual is what matters, not the script grammar.** If the row\'s `visual_description` shows George\'s face / body / pose, the row features George — even if the narration line itself is reflective ("He had reasons.") or location-anchored ("His house went up in flames."). Apply `character_id` based on what the VIEWER sees, not what the SENTENCE names.',
       '- Set it on EVERY row featuring that character — including variant rows (variants still need character_id even though their `ai_image_prompt` is empty; the cache key still applies).',
       '- Different characters get DIFFERENT slugs.',
       '- Same person at different life-stages with VISIBLY DIFFERENT appearance gets DIFFERENT slugs: "louis-child" vs "louis-as-adult". (Same person at the same life-stage but different mood/pose = same slug.)',
