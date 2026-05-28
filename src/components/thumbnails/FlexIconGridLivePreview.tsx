@@ -43,6 +43,7 @@ import {
 } from '@/lib/thumbnail-formats/flex-icon-grid';
 import {
   extractIconInner,
+  getIconEntry,
   getIconSvg,
 } from '@/lib/thumbnail-formats/flex-icon-grid-icons';
 import {
@@ -533,28 +534,35 @@ function IconLibraryContent({
   geom: ReturnType<typeof computeCellGeometry>;
   ring: RingStyle;
 }) {
-  const inner = useMemo(() => extractIconInner(getIconSvg(slug) ?? ''), [slug]);
+  const entry = useMemo(() => getIconEntry(slug), [slug]);
+  const inner = useMemo(() => extractIconInner(entry?.svg ?? getIconSvg(slug) ?? ''), [entry, slug]);
   if (!inner) return null;
   const iconSize = Math.round(geom.shapeW * 0.62);
   const cx = geom.shapeX + geom.shapeW / 2;
   const cy = geom.shapeY + geom.shapeH / 2;
-  const strokeColor = ring?.color ?? '#0a0a0a';
+  const colour = ring?.color ?? '#0a0a0a';
   const strokeWidth = Math.max(2, Math.round(iconSize * 0.06));
   const scale = iconSize / 24;
   const tx = cx - iconSize / 2;
   const ty = cy - iconSize / 2;
-  // Use dangerouslySetInnerHTML to inline the Lucide SVG body. It's a
-  // controlled string from our static registry (lucide-static), so
-  // there's no XSS risk — but we still escape numeric attrs to keep
-  // hand-edited tests from drifting.
+  const isFill = entry?.iconStyle === 'fill';
+  // dangerouslySetInnerHTML for the Lucide / Simple-Icons body. The
+  // string comes from our static registry — no XSS risk. The wrapping
+  // `<g>` switches between fill and stroke modes based on the entry's
+  // configured iconStyle so mixed Lucide + Simple-Icons sets render
+  // correctly in the same grid.
   return (
     <g
       transform={`translate(${tx} ${ty}) scale(${scale})`}
-      stroke={strokeColor}
-      strokeWidth={strokeWidth / scale}
-      fill="none"
-      strokeLinecap="round"
-      strokeLinejoin="round"
+      {...(isFill
+        ? { fill: colour, stroke: 'none' }
+        : {
+            fill: 'none',
+            stroke: colour,
+            strokeWidth: strokeWidth / scale,
+            strokeLinecap: 'round',
+            strokeLinejoin: 'round',
+          })}
       dangerouslySetInnerHTML={{ __html: inner }}
     />
   );

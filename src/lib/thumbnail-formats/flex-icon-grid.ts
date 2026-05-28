@@ -86,7 +86,7 @@ export type CellContent =
   | { type: 'emoji'; char: string }
   | { type: 'upload'; url: string }
   | { type: 'text-only' }
-  | { type: 'ai-sticker'; prompt: string; url?: string };
+  | { type: 'ai-sticker'; prompt: string; url?: string; style?: string };
 
 /** Phase 2 enumeration. `ai-sticker` arrives in Phase 2D — carries a
  *  user-supplied prompt and (once generated) the URL of the cropped
@@ -494,23 +494,25 @@ export function getConsumedCellIndexes(config: FlexIconGridConfig): Set<number> 
 /**
  * Per-cell span conflict diagnosis. A cell falls into the conflict
  * set when:
- *  - It has an explicit `cellSpan > 1×1`, AND
- *  - Its span would overlap with at least one cell already claimed
- *    by an earlier cell's span (the "loser" in the cascading rule
- *    above), OR
- *  - Its span exceeds the grid bounds from the cell's origin and
- *    gets clamped down to fit (the user picked 3×3 in the corner of
- *    a 2-row grid — partial span won't render as the user
- *    expected).
+ *  - It has an explicit `cellSpan > 1×1`, AND its origin slot is
+ *    already consumed by an earlier cell's span (`consumed-by-earlier`).
+ *    The cascading consume rule then drops this cell's span entirely.
+ *  - Its span extends past the grid edge from the cell's origin and
+ *    gets clamped to fit (`clamped-to-grid`). The rendered tile will
+ *    be smaller than the configured span.
+ *
+ * Why no `overlaps-earlier` case: with rectangular spans walked in
+ * reading order and the cascading-consume rule, the only way a
+ * later span could reach into earlier-consumed slots is if its
+ * origin is itself in the consumed set — which is exactly the
+ * `consumed-by-earlier` case. The classification stays compact and
+ * actionable.
  *
  * The editor walks the result to paint a warning outline on
  * conflicting cells in the live preview and surface a note in the
  * cell editor. Pure function — exported for the panel.
- *
- * Return value: `Map<cellIndex, reason>` so the UI can render a
- * specific message per conflict type.
  */
-export type SpanConflictReason = 'consumed-by-earlier' | 'overlaps-earlier' | 'clamped-to-grid';
+export type SpanConflictReason = 'consumed-by-earlier' | 'clamped-to-grid';
 export function getSpanConflicts(
   config: FlexIconGridConfig,
 ): Map<number, SpanConflictReason> {
@@ -527,24 +529,17 @@ export function getSpanConflicts(
     const i = cell.index - 1;
     const baseR = Math.floor(i / config.cols);
     const baseC = i % config.cols;
-    const wouldClamp =
-      baseR + span.rows > config.rows || baseC + span.cols > config.cols;
-    if (wouldClamp) {
+    if (baseR + span.rows > config.rows || baseC + span.cols > config.cols) {
       conflicts.set(cell.index, 'clamped-to-grid');
     }
-    let overlapped = false;
     const safeRowSpan = Math.max(1, Math.min(span.rows, config.rows - baseR));
     const safeColSpan = Math.max(1, Math.min(span.cols, config.cols - baseC));
     for (let dr = 0; dr < safeRowSpan; dr++) {
       for (let dc = 0; dc < safeColSpan; dc++) {
         if (dr === 0 && dc === 0) continue;
         const consumedIndex = (baseR + dr) * config.cols + (baseC + dc) + 1;
-        if (consumed.has(consumedIndex)) overlapped = true;
         consumed.add(consumedIndex);
       }
-    }
-    if (overlapped && !conflicts.has(cell.index)) {
-      conflicts.set(cell.index, 'overlaps-earlier');
     }
   }
   return conflicts;
@@ -1074,7 +1069,13 @@ function parseCellContent(raw: unknown): CellContent {
   if (type === 'ai-sticker') {
     const prompt = String(o.prompt ?? '');
     const url = o.url ? String(o.url) : undefined;
-    return { type: 'ai-sticker', prompt, ...(url ? { url } : {}) };
+    const style = o.style ? String(o.style) : undefined;
+    return {
+      type: 'ai-sticker',
+      prompt,
+      ...(url ? { url } : {}),
+      ...(style ? { style } : {}),
+    };
   }
   return { type: 'text-only' };
 }

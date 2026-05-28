@@ -31,6 +31,7 @@
  */
 
 import type { IconEntry } from './flex-icon-grid-icons';
+import { OFFICIAL_BRAND_ICONS } from './flex-icon-grid-brand-icons-official';
 
 /** Wrap a body string in the lucide-static-compatible SVG shell so
  *  the composer's existing `extractIconInner` slices the body back out
@@ -135,7 +136,7 @@ const SLACK_MARK = wrapLucide(
 
 // ─── Registry ───────────────────────────────────────────────────────────────
 
-export const BRAND_ICONS: readonly IconEntry[] = [
+const SIMPLIFIED_BRAND_ICONS: readonly IconEntry[] = [
   { slug: 'github', label: 'GitHub', category: 'web', svg: GITHUB_MARK },
   // Slug intentionally `twitter` — the existing Lucide 'x' slug is the
   // close-cross icon, and we keep this slug stable across any future
@@ -147,4 +148,21 @@ export const BRAND_ICONS: readonly IconEntry[] = [
   { slug: 'discord', label: 'Discord', category: 'web', svg: DISCORD_MARK },
   { slug: 'tiktok', label: 'TikTok', category: 'web', svg: TIKTOK_MARK },
   { slug: 'slack', label: 'Slack', category: 'web', svg: SLACK_MARK },
+];
+
+/**
+ * Public registry. Combines:
+ *  - The simplified geometric marks above (always present).
+ *  - The official brand icons from `flex-icon-grid-brand-icons-
+ *    official.ts` (empty until the user runs
+ *    `scripts/download-flex-icon-grid-brand-icons.ts`). The script
+ *    sources these from Simple Icons (CC0 SVG data) and writes them
+ *    to a slug prefix of `<brand>-official` — so `github` stays the
+ *    simplified mark and `github-official` is the brand-accurate logo
+ *    once the script populates the registry. Users pick whichever
+ *    they want from the icon picker; no global toggle needed.
+ */
+export const BRAND_ICONS: readonly IconEntry[] = [
+  ...SIMPLIFIED_BRAND_ICONS,
+  ...OFFICIAL_BRAND_ICONS,
 ];

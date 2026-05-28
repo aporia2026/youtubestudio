@@ -318,13 +318,16 @@ export function FlexIconGridPanel({
     // range (9000+) so the server's validation (cellIndex >= 1)
     // accepts them, and the client-side update loop ignores them
     // because no real cell has that index.
-    const batches: Array<Array<{ cellIndex: number; prompt: string }>> = [];
+    const batches: Array<Array<{ cellIndex: number; prompt: string; style?: string }>> = [];
     const FILLER_BASE = 9000;
     for (let i = 0; i < targets.length; i += 4) {
-      const chunk = targets.slice(i, i + 4).map((cell) => ({
-        cellIndex: cell.index,
-        prompt: cell.content.type === 'ai-sticker' ? cell.content.prompt : '',
-      }));
+      const chunk: Array<{ cellIndex: number; prompt: string; style?: string }> = targets
+        .slice(i, i + 4)
+        .map((cell) => ({
+          cellIndex: cell.index,
+          prompt: cell.content.type === 'ai-sticker' ? cell.content.prompt : '',
+          style: cell.content.type === 'ai-sticker' ? cell.content.style : undefined,
+        }));
       while (chunk.length < 4) {
         chunk.push({
           cellIndex: FILLER_BASE + chunk.length,
@@ -448,7 +451,44 @@ export function FlexIconGridPanel({
               </button>
             );
           })}
+          <button
+            type="button"
+            onClick={() => {
+              if (config.palette.type === 'custom') return;
+              // Seed the custom palette from the currently-active named
+              // preset so the user sees their starting colours rather
+              // than an empty list.
+              const seed = config.palette.type === 'preset'
+                ? [...paletteColours(config.palette).slice(0, 8)]
+                : ['#FFD60A', '#2563EB', '#E63946', '#34D399', '#C026D3'];
+              updateConfig({ palette: { type: 'custom', colors: seed } });
+            }}
+            style={chipStyle(config.palette.type === 'custom')}
+          >
+            <PaletteSwatchRow
+              spec={
+                config.palette.type === 'custom'
+                  ? config.palette
+                  : { type: 'custom', colors: ['#888', '#aaa', '#ccc'] }
+              }
+            />
+            <span style={{ marginLeft: 8 }}>Custom</span>
+          </button>
         </div>
+        {config.palette.type === 'custom' && (
+          <CustomPaletteEditor
+            palette={config.palette}
+            onChange={(next) => updateConfig({ palette: next })}
+          />
+        )}
+
+        {/* Workspace-saved palettes (Phase 4). Hidden under a
+            disclosure so the most common case (preset palettes) stays
+            uncluttered. */}
+        <SavedPalettesSection
+          currentPalette={config.palette}
+          onLoad={(colors) => updateConfig({ palette: { type: 'custom', colors } })}
+        />
       </section>
 
       <section style={sectionStyle}>
@@ -574,6 +614,7 @@ export function FlexIconGridPanel({
                       type: 'ai-sticker',
                       prompt: e.target.value,
                       url: selectedCell.content.type === 'ai-sticker' ? selectedCell.content.url : undefined,
+                      style: selectedCell.content.type === 'ai-sticker' ? selectedCell.content.style : undefined,
                     },
                   })
                 }
@@ -581,13 +622,60 @@ export function FlexIconGridPanel({
                 placeholder="e.g. flat sticker of a hooded rat on a bright yellow background"
                 style={{ ...inputStyle, resize: 'vertical' }}
               />
+
+              {/* Per-cell style override (Phase 3.5). When unset, the
+                  request uses the global default. */}
+              <label style={{ ...labelStyle, marginTop: 10 }}>Style override (this cell)</label>
+              <div style={chipRowStyle}>
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateCell(selectedCell.index, {
+                      content: {
+                        type: 'ai-sticker',
+                        prompt: selectedCell.content.type === 'ai-sticker' ? selectedCell.content.prompt : '',
+                        url: selectedCell.content.type === 'ai-sticker' ? selectedCell.content.url : undefined,
+                        style: undefined,
+                      },
+                    })
+                  }
+                  style={chipStyle(
+                    selectedCell.content.type === 'ai-sticker' && !selectedCell.content.style,
+                  )}
+                >
+                  Use global ({stickerStyle})
+                </button>
+                {STICKER_STYLE_PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() =>
+                      updateCell(selectedCell.index, {
+                        content: {
+                          type: 'ai-sticker',
+                          prompt: selectedCell.content.type === 'ai-sticker' ? selectedCell.content.prompt : '',
+                          url: selectedCell.content.type === 'ai-sticker' ? selectedCell.content.url : undefined,
+                          style: preset.id,
+                        },
+                      })
+                    }
+                    title={preset.description}
+                    style={chipStyle(
+                      selectedCell.content.type === 'ai-sticker' && selectedCell.content.style === preset.id,
+                    )}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+
               {selectedCell.content.url && (
-                <p style={{ fontSize: 11, color: '#34d399', marginTop: 6 }}>
+                <p style={{ fontSize: 11, color: '#34d399', marginTop: 10 }}>
                   Sticker generated. <a href={selectedCell.content.url} target="_blank" rel="noreferrer" style={{ color: '#38bdf8' }}>View</a>
                 </p>
               )}
               {!selectedCell.content.url && (
-                <p style={{ fontSize: 11, color: '#a1a1aa', marginTop: 6 }}>
+                <p style={{ fontSize: 11, color: '#a1a1aa', marginTop: 10 }}>
                   No sticker generated yet. Use “Generate stickers” below to batch-generate.
                 </p>
               )}
@@ -912,6 +1000,290 @@ function SvgPreview({ slug }: { slug: string }) {
   );
 }
 
+// ─── Workspace-saved palettes (Phase 4) ─────────────────────────────────────
+
+interface SavedPaletteRecord {
+  id: string;
+  name: string;
+  colors: string[];
+  updated_at: string;
+}
+
+function SavedPalettesSection({
+  currentPalette,
+  onLoad,
+}: {
+  currentPalette: PaletteSpec;
+  onLoad: (colors: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [palettes, setPalettes] = useState<SavedPaletteRecord[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [saveName, setSaveName] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  async function refresh() {
+    try {
+      const res = await fetch('/api/thumbnails/format/flex-icon-grid/saved-palettes');
+      if (!res.ok) throw new Error(`Load failed (${res.status})`);
+      const data = (await res.json()) as { palettes: SavedPaletteRecord[] };
+      setPalettes(data.palettes);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load saved palettes');
+    }
+  }
+
+  useEffect(() => {
+    if (open && palettes === null) {
+      void refresh();
+    }
+  }, [open, palettes]);
+
+  // Concrete colour list we'd save right now — the named presets
+  // resolve through `paletteColours` so the user can save any of them
+  // as a starting point, not only their own custom edits.
+  const currentColors = paletteColours(currentPalette);
+
+  async function save() {
+    const name = saveName.trim();
+    if (!name) {
+      setError('Name is required');
+      return;
+    }
+    if (currentColors.length === 0) {
+      setError('Current palette is empty');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/thumbnails/format/flex-icon-grid/saved-palettes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, colors: [...currentColors] }),
+      });
+      if (!res.ok) {
+        const data: { error?: string } = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Save failed (${res.status})`);
+      }
+      setSaveName('');
+      await refresh();
+      toast.success(`Saved palette "${name}"`);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : 'Save failed';
+      setError(reason);
+      toast.error(reason);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(id: string, name: string) {
+    if (!confirm(`Delete saved palette "${name}"?`)) return;
+    setBusy(true);
+    try {
+      const res = await fetch(
+        `/api/thumbnails/format/flex-icon-grid/saved-palettes/${encodeURIComponent(id)}`,
+        { method: 'DELETE' },
+      );
+      if (!res.ok) throw new Error(`Delete failed (${res.status})`);
+      await refresh();
+      toast.success('Palette deleted');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Delete failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid #2a2a2e' }}>
+      <button
+        type="button"
+        onClick={() => setOpen((x) => !x)}
+        style={{ ...ghostButtonStyle, padding: '6px 0', textAlign: 'left' }}
+      >
+        {open ? '▼' : '▸'} Workspace-saved palettes
+      </button>
+      {open && (
+        <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              type="text"
+              value={saveName}
+              onChange={(e) => setSaveName(e.target.value)}
+              placeholder="Palette name"
+              maxLength={60}
+              style={{ ...inputStyle, flex: 1, minWidth: 160 }}
+            />
+            <button
+              type="button"
+              onClick={save}
+              disabled={busy || !saveName.trim()}
+              style={chipStyle(false)}
+            >
+              {busy ? 'Saving…' : 'Save current palette'}
+            </button>
+          </div>
+          {error && (
+            <p style={{ fontSize: 11, color: '#f87171', margin: 0 }}>{error}</p>
+          )}
+          {palettes === null && !error && (
+            <p style={{ fontSize: 11, color: '#a1a1aa', margin: 0 }}>Loading…</p>
+          )}
+          {palettes !== null && palettes.length === 0 && (
+            <p style={{ fontSize: 11, color: '#a1a1aa', margin: 0 }}>
+              No saved palettes yet. Name one above and click "Save current palette".
+            </p>
+          )}
+          {palettes !== null && palettes.length > 0 && (
+            <div style={{ display: 'grid', gap: 6 }}>
+              {palettes.map((p) => (
+                <div
+                  key={p.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    background: '#0a0a0d',
+                    border: '1px solid #2a2a2e',
+                    padding: '6px 8px',
+                    borderRadius: 6,
+                  }}
+                >
+                  <PaletteSwatchRow spec={{ type: 'custom', colors: p.colors }} />
+                  <span style={{ fontSize: 12, color: '#fafafa', flex: 1 }}>{p.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => onLoad(p.colors)}
+                    style={{ ...chipStyle(false), padding: '4px 10px', fontSize: 12 }}
+                  >
+                    Load
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => remove(p.id, p.name)}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#71717a',
+                      cursor: 'pointer',
+                      fontSize: 16,
+                      padding: '0 4px',
+                    }}
+                    title="Delete"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Custom palette editor (Phase 3.5) ──────────────────────────────────────
+
+function CustomPaletteEditor({
+  palette,
+  onChange,
+}: {
+  palette: Extract<PaletteSpec, { type: 'custom' }>;
+  onChange: (next: PaletteSpec) => void;
+}) {
+  const update = (next: string[]) => onChange({ type: 'custom', colors: next });
+
+  return (
+    <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
+      <p style={{ fontSize: 11, color: '#a1a1aa', margin: 0 }}>
+        Drag the slots to reorder, click a swatch to change its colour. The adjacency engine
+        cycles through these in order across the grid.
+      </p>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {palette.colors.map((c, i) => (
+          <div
+            key={`${c}-${i}`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              background: '#0a0a0d',
+              border: '1px solid #2a2a2e',
+              padding: 6,
+              borderRadius: 6,
+            }}
+          >
+            <input
+              type="color"
+              value={normaliseHex(c)}
+              onChange={(e) => {
+                const next = [...palette.colors];
+                next[i] = e.target.value;
+                update(next);
+              }}
+              style={swatchInputStyle}
+            />
+            <span style={{ fontSize: 11, color: '#a1a1aa', fontFamily: 'monospace' }}>
+              {normaliseHex(c).toUpperCase()}
+            </span>
+            <button
+              type="button"
+              onClick={() => update(palette.colors.filter((_, j) => j !== i))}
+              title="Remove this colour"
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#71717a',
+                cursor: 'pointer',
+                fontSize: 14,
+                padding: '0 4px',
+              }}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={() => update([...palette.colors, '#FACC15'])}
+          style={{
+            background: '#1a1a1d',
+            border: '1px dashed #38bdf8',
+            color: '#38bdf8',
+            padding: '6px 14px',
+            borderRadius: 6,
+            cursor: 'pointer',
+            fontSize: 13,
+          }}
+        >
+          + Add colour
+        </button>
+      </div>
+      {palette.colors.length < 2 && (
+        <p style={{ fontSize: 11, color: '#facc15', margin: 0 }}>
+          The adjacency rule needs at least 2 colours to alternate. The renderer falls back to the
+          rainbow preset until you add more.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Normalise an arbitrary user-typed colour string to `#RRGGBB` for
+ *  the native colour input (which rejects shorthand `#RGB`). */
+function normaliseHex(s: string): string {
+  const trimmed = s.trim().replace(/^#/, '');
+  if (trimmed.length === 3) {
+    return '#' + trimmed.split('').map((c) => c + c).join('');
+  }
+  if (trimmed.length === 6) return '#' + trimmed;
+  return '#888888';
+}
+
 // ─── Span conflict warning ──────────────────────────────────────────────────
 
 const SPAN_CONFLICT_MESSAGES: Record<SpanConflictReason, { title: string; body: string }> = {
@@ -920,12 +1292,6 @@ const SPAN_CONFLICT_MESSAGES: Record<SpanConflictReason, { title: string; body: 
     body:
       'This cell sits inside another cell\'s span and isn\'t drawn in the rendered thumbnail. '
       + 'Its own span (if any) is ignored. Edit the earlier spanning cell to free this slot.',
-  },
-  'overlaps-earlier': {
-    title: 'Span overlaps another cell',
-    body:
-      'This cell\'s span reaches into slots already claimed by an earlier cell. The earlier '
-      + 'cell wins; the overlap is silently absorbed. Shrink either span to avoid the conflict.',
   },
   'clamped-to-grid': {
     title: 'Span clamped to fit the grid',

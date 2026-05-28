@@ -36,11 +36,19 @@ const DEFAULT_IMAGE_MODEL = 'gpt-image-2-t2i';
 
 interface ReqBody {
   model?: string;
-  /** Named sticker style preset (id). Defaults to `minimal-vector` when
-   *  omitted; unknown ids fall back to the same default — see
-   *  `resolveStickerStyle`. */
+  /** Default sticker style preset (id) applied to every cell that
+   *  doesn't carry its own `style` override. Defaults to
+   *  `minimal-vector` when omitted; unknown ids fall back to the same
+   *  default — see `resolveStickerStyle`. */
   style?: string;
-  stickers?: Array<{ cellIndex?: unknown; prompt?: unknown }>;
+  stickers?: Array<{
+    cellIndex?: unknown;
+    prompt?: unknown;
+    /** Per-cell style override — wins over the request's default
+     *  when present. Lets one batch mix e.g. three `minimal-vector`
+     *  cells with one `neon` cell without firing two API calls. */
+    style?: unknown;
+  }>;
 }
 
 export const POST = apiRoute.authed(async (session, req: NextRequest) => {
@@ -72,18 +80,19 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       { status: 400 },
     );
   }
-  const stickers: { cellIndex: number; prompt: string }[] = [];
+  const stickers: { cellIndex: number; prompt: string; style?: string }[] = [];
   for (let i = 0; i < raw.length; i++) {
     const entry = raw[i];
     const cellIndex = Number(entry.cellIndex);
     const prompt = typeof entry.prompt === 'string' ? entry.prompt.trim() : '';
+    const cellStyle = typeof entry.style === 'string' && entry.style ? entry.style : undefined;
     if (!Number.isInteger(cellIndex) || cellIndex < 1) {
       return NextResponse.json({ error: `sticker ${i + 1} missing cellIndex` }, { status: 400 });
     }
     if (!prompt) {
       return NextResponse.json({ error: `sticker ${i + 1} missing prompt` }, { status: 400 });
     }
-    stickers.push({ cellIndex, prompt });
+    stickers.push({ cellIndex, prompt, style: cellStyle });
   }
 
   const modelId = String(body.model || DEFAULT_IMAGE_MODEL).trim();
@@ -105,17 +114,18 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     );
   }
 
-  // Resolve the user-chosen style preset (or fall back to the default)
-  // and prepend its style language to every cell's prompt before
-  // composing the 2×2 collage prompt. Lets the panel pick a single
-  // global look without forcing per-cell prompt repetition.
-  const stylePreset = resolveStickerStyle(body.style);
+  // Per-cell style resolution. Each sticker's own `style` wins over
+  // the request's default; the default wins over the system default.
+  // Lets one batch mix styles (three minimal-vector + one neon) in a
+  // single image-gen call without per-cell prompt boilerplate.
+  const defaultStyle = resolveStickerStyle(body.style);
+  const perCellStyles = stickers.map((s) => resolveStickerStyle(s.style ?? body.style));
   const styledPrompts = stickers.map(
-    (s) => `${stylePreset.prefix}: ${s.prompt}`,
+    (s, i) => `${perCellStyles[i].prefix}: ${s.prompt}`,
   );
-  logger.info('[flex-icon-grid stickers] style resolved', {
-    requested: body.style ?? null,
-    resolved: stylePreset.id,
+  logger.info('[flex-icon-grid stickers] styles resolved', {
+    default: defaultStyle.id,
+    per_cell: perCellStyles.map((p, i) => ({ cell_index: stickers[i].cellIndex, style: p.id })),
   });
   const composedPrompt = composeStickerCollagePrompt(styledPrompts);
   const t0 = Date.now();

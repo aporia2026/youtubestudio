@@ -159,6 +159,19 @@ export interface IconEntry {
    *  extracts the inner content via `extractIconInner` before embedding
    *  it in the master SVG. */
   svg: string;
+  /**
+   * Rendering style for the icon body:
+   *  - `'stroke'` (default) — outline-based glyphs (Lucide). Composer
+   *    wraps the body in a `<g fill="none" stroke="…">` so a single
+   *    colour drives every visible line.
+   *  - `'fill'` — solid-fill glyphs (Simple Icons brand logos). Composer
+   *    wraps in `<g fill="…">` with no stroke so the path's interior
+   *    paints in the chosen colour.
+   *
+   * Omitting the field is equivalent to `'stroke'` — keeps backwards
+   * compat with every Phase-1/2 icon entry.
+   */
+  iconStyle?: 'stroke' | 'fill';
 }
 
 // ─── Registry ───────────────────────────────────────────────────────────────
@@ -364,28 +377,33 @@ export function extractIconInner(svg: string): string {
  * for both the server pipeline and any future client-side preview.
  *
  * Embeds the icon at the given pixel size centred at (cx, cy). The
- * Lucide default stroke colour is `currentColor`; we override with
- * an explicit colour so the icon matches the configured ring/label
- * colour scheme regardless of the parent SVG's `color` attribute.
+ * wrap differs by icon style:
+ *  - `'stroke'`: parent group sets `fill="none" stroke="…"` so a
+ *    Lucide-style outline glyph paints in the chosen colour.
+ *  - `'fill'`: parent group sets `fill="…"` with no stroke so a
+ *    Simple-Icons-style solid-fill glyph paints in the chosen colour.
+ *
+ * The fall-through defaults to `'stroke'` (the Phase-1/2 behaviour)
+ * so existing icon entries without an `iconStyle` field still work
+ * exactly as before.
  */
 export function inlineIconSvg(
   slug: string,
   cx: number,
   cy: number,
   size: number,
-  strokeColor: string,
+  colour: string,
   strokeWidth: number,
 ): string {
-  const inner = extractIconInner(getIconSvg(slug) ?? '');
+  const entry = getIconEntry(slug);
+  if (!entry) return '';
+  const inner = extractIconInner(entry.svg);
   if (!inner) return '';
-  const half = size / 2;
-  // Wrap the icon's inner XML in a transformed group so the
-  // 24-unit viewBox scales to the requested pixel size and positions
-  // at (cx, cy). Stroke colour + width are forced via attributes on
-  // the group (Lucide's inner paths use `stroke="currentColor"` so
-  // overriding via attribute on a parent group cascades correctly).
   const scale = size / 24;
-  const tx = cx - half;
-  const ty = cy - half;
-  return `<g transform="translate(${tx} ${ty}) scale(${scale})" stroke="${strokeColor}" stroke-width="${strokeWidth / scale}" fill="none" stroke-linecap="round" stroke-linejoin="round">${inner}</g>`;
+  const tx = cx - size / 2;
+  const ty = cy - size / 2;
+  if (entry.iconStyle === 'fill') {
+    return `<g transform="translate(${tx} ${ty}) scale(${scale})" fill="${colour}" stroke="none">${inner}</g>`;
+  }
+  return `<g transform="translate(${tx} ${ty}) scale(${scale})" stroke="${colour}" stroke-width="${strokeWidth / scale}" fill="none" stroke-linecap="round" stroke-linejoin="round">${inner}</g>`;
 }
