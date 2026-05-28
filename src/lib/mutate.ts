@@ -67,6 +67,28 @@ const BASE_BACKOFF_MS = 1_000;
  *  dead entries to the user as "Couldn't save N items, retry?". */
 const MAX_ATTEMPTS = 10;
 
+// ── Circuit breaker (Phase 2.3) ──────────────────────────────────────
+//
+// When the drainer's recent send attempts fail at a high rate, open
+// the breaker so callers can see "the network / server is down" and
+// either refuse new paid actions or surface a warning to the user.
+// The breaker is informational by default — it does NOT block enqueue
+// in v1 (the outbox can still hold the entry safely; the breaker just
+// surfaces a real signal so the user isn't lied to). UI surfaces it
+// via getState().breaker.
+//
+// Rules:
+//   - Track the last BREAKER_WINDOW outcomes (a small ring buffer).
+//   - Open when failures hit BREAKER_THRESHOLD inside the window.
+//   - Stay open for BREAKER_COOLDOWN_MS, then transition to half-open.
+//   - Half-open: next drain attempt is the probe. On success → close
+//     (clear failure history). On failure → re-open with the same
+//     cooldown.
+const BREAKER_WINDOW = 5;
+const BREAKER_THRESHOLD = 4;             // 4/5 failures in window
+const BREAKER_COOLDOWN_MS = 30_000;
+type BreakerState = 'closed' | 'open' | 'half-open';
+
 export interface MutateOptions {
   /** HTTP method. Defaults to POST. */
   method?: string;
@@ -111,6 +133,16 @@ export interface OutboxState {
   /** Whether the drainer is currently mid-loop. UIs use this to show
    *  a "saving…" spinner. */
   draining: boolean;
+  /** Circuit-breaker state. Surfaces to the UI so callers can show a
+   *  "Saving paused — retry in N seconds" warning when the breaker is
+   *  open. In v1 the breaker does NOT block enqueue; it's a trust
+   *  signal so the user isn't lied to about durability when the
+   *  network / server is clearly down. */
+  breaker: BreakerState;
+  /** When the breaker is 'open', the epoch-ms timestamp at which it
+   *  transitions to half-open. UIs render the countdown. Null when
+   *  the breaker is closed or half-open. */
+  breakerReopenAt: number | null;
 }
 
 type Subscriber = (state: OutboxState) => void;
@@ -122,7 +154,20 @@ const store: UseStore | null = isBrowser ? createStore(STORE_DB, STORE_NAME) : n
 const subscribers = new Set<Subscriber>();
 let drainTimer: ReturnType<typeof setTimeout> | null = null;
 let draining = false;
-let lastState: OutboxState = { pending: 0, failed: 0, draining: false };
+let lastState: OutboxState = {
+  pending: 0,
+  failed: 0,
+  draining: false,
+  breaker: 'closed',
+  breakerReopenAt: null,
+};
+
+// Breaker state (module-local, browser tab scope). The window holds
+// the last N drain outcomes as booleans: true = success, false =
+// failure. We push at the front and trim from the back.
+let breakerState: BreakerState = 'closed';
+let breakerWindow: boolean[] = [];
+let breakerReopenAt: number | null = null;
 
 // ── Public API ───────────────────────────────────────────────────────
 
@@ -183,9 +228,18 @@ export function subscribe(fn: Subscriber): () => void {
   };
 }
 
-/** Current outbox snapshot. Cheap; computed at every notify. */
+/** Current outbox snapshot. `pending` / `failed` are cached from the
+ *  last notify (they require an async IDB read to compute); `draining`
+ *  and breaker fields are live module state so the caller always
+ *  sees up-to-date sync values without having to await. */
 export function getState(): OutboxState {
-  return lastState;
+  return {
+    pending: lastState.pending,
+    failed: lastState.failed,
+    draining,
+    breaker: breakerState,
+    breakerReopenAt,
+  };
 }
 
 /** Force the drainer to run now. The drainer auto-runs on enqueue, on
@@ -195,11 +249,23 @@ export async function drainNow(): Promise<void> {
   await runDrainLoop();
 }
 
-/** Test-only — wipe the entire queue. */
+/** Test-only — wipe the entire queue and reset the breaker. */
 export async function _clearOutboxForTests(): Promise<void> {
-  if (!store) return;
-  const all = (await keys(store)) as string[];
-  await Promise.all(all.map((k) => del(k, store)));
+  if (store) {
+    const all = (await keys(store)) as string[];
+    await Promise.all(all.map((k) => del(k, store)));
+  }
+  _resetBreakerForTests();
+}
+
+/** Test-only — reset the breaker to 'closed' without wiping the
+ *  queue. Useful when a test wants to exercise per-entry retry logic
+ *  beyond the breaker threshold (otherwise the breaker opens after
+ *  4 failures and skips the rest of the attempts). */
+export function _resetBreakerForTests(): void {
+  breakerState = 'closed';
+  breakerWindow = [];
+  breakerReopenAt = null;
   notifySubscribers();
 }
 
@@ -233,13 +299,30 @@ async function runDrainLoop(): Promise<void> {
     entries.sort((a, b) => a.createdAt - b.createdAt);
 
     const now = Date.now();
+    // Honor a cooled-down 'open' breaker: transition to half-open so
+    // the next attempt is treated as a probe. Done at the top of the
+    // loop so a long-running batch doesn't stay 'open' past its
+    // cooldown.
+    maybeReopenBreaker();
+
     for (const entry of entries) {
       if (entry.dead) continue;
       if (entry.nextAt > now) {
         nextWakeAt = Math.min(nextWakeAt, entry.nextAt);
         continue;
       }
+      // When the breaker is open, skip the actual send to avoid
+      // hammering an obviously-down endpoint. The entries stay in the
+      // queue; they retry when the breaker reopens. half-open lets
+      // ONE attempt through to probe.
+      if (breakerState === 'open') {
+        if (breakerReopenAt !== null) {
+          nextWakeAt = Math.min(nextWakeAt, breakerReopenAt);
+        }
+        break;
+      }
       const outcome = await sendOnce(entry);
+      recordBreakerOutcome(outcome !== 'retry');
       if (outcome === 'success') {
         await del(entry.id, store);
         log('drain success', { intentId: entry.id, kind: entry.kind, attempt: entry.attempt });
@@ -256,6 +339,17 @@ async function runDrainLoop(): Promise<void> {
           nextWakeAt = Math.min(nextWakeAt, entry.nextAt);
         }
         await set(entry.id, entry, store);
+      }
+      // half-open → close on the first success; or → open on failure.
+      // Done after recordBreakerOutcome above so the window reflects
+      // the probe result before we re-evaluate the state.
+      if (breakerState === 'half-open') {
+        if (outcome === 'success') {
+          closeBreaker();
+        } else {
+          openBreaker();
+        }
+        break;  // Only one probe per drain loop.
       }
     }
     if (Number.isFinite(nextWakeAt)) {
@@ -348,7 +442,15 @@ function notifySubscribers(): void {
 }
 
 async function computeState(): Promise<OutboxState> {
-  if (!store) return { pending: 0, failed: 0, draining };
+  if (!store) {
+    return {
+      pending: 0,
+      failed: 0,
+      draining,
+      breaker: breakerState,
+      breakerReopenAt,
+    };
+  }
   try {
     const all = (await keys(store)) as string[];
     let pending = 0;
@@ -359,10 +461,67 @@ async function computeState(): Promise<OutboxState> {
       if (e.dead) failed += 1;
       else pending += 1;
     }
-    return { pending, failed, draining };
+    return {
+      pending,
+      failed,
+      draining,
+      breaker: breakerState,
+      breakerReopenAt,
+    };
   } catch {
-    return { pending: 0, failed: 0, draining };
+    return {
+      pending: 0,
+      failed: 0,
+      draining,
+      breaker: breakerState,
+      breakerReopenAt,
+    };
   }
+}
+
+// ── Breaker mechanics ────────────────────────────────────────────────
+
+function recordBreakerOutcome(success: boolean): void {
+  breakerWindow.unshift(success);
+  if (breakerWindow.length > BREAKER_WINDOW) {
+    breakerWindow = breakerWindow.slice(0, BREAKER_WINDOW);
+  }
+  // Closed → open when failures exceed threshold within the window.
+  if (breakerState === 'closed') {
+    const failures = breakerWindow.filter((s) => !s).length;
+    if (breakerWindow.length >= BREAKER_THRESHOLD && failures >= BREAKER_THRESHOLD) {
+      openBreaker();
+    }
+  }
+}
+
+function openBreaker(): void {
+  if (breakerState === 'open') return;
+  breakerState = 'open';
+  breakerReopenAt = Date.now() + BREAKER_COOLDOWN_MS;
+  log('breaker open', { reopenAt: breakerReopenAt, windowFailures: breakerWindow.filter((s) => !s).length });
+  // Schedule a drain after cooldown so the half-open probe fires
+  // automatically without needing user interaction.
+  scheduleDrain(BREAKER_COOLDOWN_MS + 50);
+  notifySubscribers();
+}
+
+function maybeReopenBreaker(): void {
+  if (breakerState === 'open' && breakerReopenAt !== null && Date.now() >= breakerReopenAt) {
+    breakerState = 'half-open';
+    breakerReopenAt = null;
+    log('breaker half-open', {});
+    notifySubscribers();
+  }
+}
+
+function closeBreaker(): void {
+  if (breakerState === 'closed') return;
+  breakerState = 'closed';
+  breakerReopenAt = null;
+  breakerWindow = [];
+  log('breaker closed', {});
+  notifySubscribers();
 }
 
 // ── Lifecycle hooks ──────────────────────────────────────────────────

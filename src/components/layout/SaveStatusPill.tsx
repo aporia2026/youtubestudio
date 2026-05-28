@@ -40,6 +40,10 @@ import { subscribe, drainNow, getState, type OutboxState } from '@/lib/mutate';
 export function SaveStatusPill() {
   const [state, setState] = useState<OutboxState>(getState);
   const [showSaved, setShowSaved] = useState(false);
+  // Ticks per second when the breaker is open so the countdown text
+  // updates without waiting for a state change. Setting to a Date.now()
+  // value is enough to force a re-render.
+  const [, setBreakerTick] = useState(0);
   const prevPendingRef = useRef(state.pending);
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -50,6 +54,12 @@ export function SaveStatusPill() {
       if (savedTimerRef.current !== null) clearTimeout(savedTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (state.breaker !== 'open') return;
+    const id = setInterval(() => setBreakerTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [state.breaker]);
 
   // Edge-trigger the "Saved" pulse: when pending falls from >0 to 0
   // AND there are no failed entries, show "Saved" for 2 seconds then
@@ -65,7 +75,24 @@ export function SaveStatusPill() {
     }
   }, [state.pending, state.failed]);
 
-  // Decide what to render. Failed > Saving > Saved > Idle.
+  // Decide what to render. Breaker-open > Failed > Saving > Saved > Idle.
+  if (state.breaker === 'open') {
+    // The drainer is paused because too many recent send attempts
+    // failed. Show a paused state with a countdown so the user knows
+    // why and when it will retry. Queued entries stay in IDB safely;
+    // we just stopped hammering the network.
+    const secondsLeft = state.breakerReopenAt
+      ? Math.max(0, Math.ceil((state.breakerReopenAt - Date.now()) / 1000))
+      : 0;
+    return (
+      <Pill
+        kind="failed"
+        label={`Saving paused — retry in ${secondsLeft}s`}
+        onClick={() => void drainNow()}
+        title="Repeated failures suggest the server or your connection is down. Your work is queued and will retry automatically. Click to try now."
+      />
+    );
+  }
   if (state.failed > 0) {
     return (
       <Pill

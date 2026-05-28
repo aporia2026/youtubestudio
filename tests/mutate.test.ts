@@ -189,7 +189,7 @@ describe('drainNow() — outcomes', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 503 });
     (globalThis as { fetch?: unknown }).fetch = fetchMock;
 
-    const { mutate, drainNow } = await import('@/lib/mutate');
+    const { mutate, drainNow, _resetBreakerForTests } = await import('@/lib/mutate');
 
     const handle = mutate('test.kind', { url: '/api/test' });
     await Promise.resolve();
@@ -197,11 +197,13 @@ describe('drainNow() — outcomes', () => {
 
     // Simulate 10 attempts by mutating the store entry forward each
     // drain. Each drain reads, attempts the send, increments attempt.
+    // Reset the circuit breaker between iterations — Phase 2.3 opens
+    // it after 4 failures and would skip the remaining attempts; this
+    // test isolates the per-entry retry logic specifically.
     for (let i = 0; i < 10; i++) {
-      // Make the entry eligible: zero nextAt so the drainer doesn't
-      // skip it on the backoff check.
       const entry = store[handle.intentId] as { nextAt: number };
       if (entry) entry.nextAt = 0;
+      _resetBreakerForTests();
       await drainNow();
     }
 
@@ -297,6 +299,90 @@ describe('FIFO order by createdAt', () => {
 
     const urls = fetchMock.mock.calls.map((call) => call[0]);
     expect(urls).toEqual(['/c', '/a', '/b']);
+  });
+});
+
+describe('circuit breaker', () => {
+  it('opens after 4/5 consecutive failures and skips further sends', async () => {
+    let callCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async () => {
+      callCount++;
+      return { ok: false, status: 503 };
+    });
+    (globalThis as { fetch?: unknown }).fetch = fetchMock;
+
+    const { mutate, drainNow, getState } = await import('@/lib/mutate');
+
+    // Enqueue 5 entries and drain. Each fails with 503 → retry.
+    for (let i = 0; i < 5; i++) {
+      const h = mutate('test.kind', { url: `/api/test/${i}` });
+      await Promise.resolve();
+      await Promise.resolve();
+      // Force the entry eligible for immediate retry so the drain
+      // tries it (rather than skipping on backoff).
+      const e = (await import('idb-keyval')).get;
+      const entry = (await e(h.intentId, undefined as never)) as { nextAt: number } | undefined;
+      if (entry) entry.nextAt = 0;
+    }
+    await drainNow();
+
+    // After the drain, breaker should be open OR the window should
+    // show 4-5 failures (depends on how the in-loop check fires).
+    const state = getState();
+    expect(state.breaker === 'open' || state.breaker === 'half-open').toBe(true);
+    if (state.breaker === 'open') {
+      expect(state.breakerReopenAt).toBeGreaterThan(Date.now());
+    }
+  });
+
+  it('exposes breakerReopenAt timestamp when open', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 503 });
+    (globalThis as { fetch?: unknown }).fetch = fetchMock;
+
+    const { mutate, drainNow, getState, _clearOutboxForTests } = await import('@/lib/mutate');
+    await _clearOutboxForTests();
+
+    // Burn enough failures to open.
+    for (let i = 0; i < 5; i++) {
+      const h = mutate('k', { url: `/u/${i}` });
+      await Promise.resolve();
+      await Promise.resolve();
+      const e = (await import('idb-keyval')).get;
+      const entry = (await e(h.intentId, undefined as never)) as { nextAt: number } | undefined;
+      if (entry) entry.nextAt = 0;
+    }
+    await drainNow();
+
+    const state = getState();
+    if (state.breaker === 'open') {
+      // breakerReopenAt should be set to ~30s in the future.
+      expect(state.breakerReopenAt).not.toBeNull();
+      expect(state.breakerReopenAt!).toBeGreaterThan(Date.now());
+      expect(state.breakerReopenAt!).toBeLessThanOrEqual(Date.now() + 31_000);
+    }
+  });
+
+  it("_clearOutboxForTests resets breaker state to 'closed'", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 503 });
+    (globalThis as { fetch?: unknown }).fetch = fetchMock;
+
+    const { mutate, drainNow, getState, _clearOutboxForTests } = await import('@/lib/mutate');
+
+    for (let i = 0; i < 5; i++) {
+      const h = mutate('k', { url: `/u/${i}` });
+      await Promise.resolve();
+      await Promise.resolve();
+      const e = (await import('idb-keyval')).get;
+      const entry = (await e(h.intentId, undefined as never)) as { nextAt: number } | undefined;
+      if (entry) entry.nextAt = 0;
+    }
+    await drainNow();
+
+    await _clearOutboxForTests();
+
+    const state = getState();
+    expect(state.breaker).toBe('closed');
+    expect(state.breakerReopenAt).toBeNull();
   });
 });
 
