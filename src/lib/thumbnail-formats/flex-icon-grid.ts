@@ -247,6 +247,13 @@ export interface TitleBarSpec {
   background: string;
   color: string;
   font: LabelFont;
+  /** Phase 4.9a: required when `font === 'custom'`. R2-hosted TTF
+   *  URL. Same shape as `LabelStyle.customFontUrl` — composer fetches
+   *  via the byte cache, browser registers via FontFace. */
+  customFontUrl?: string;
+  /** Display label shown next to the registered-font chip — purely
+   *  cosmetic. */
+  customFontLabel?: string;
 }
 
 // ─── Per-cell ───────────────────────────────────────────────────────────────
@@ -1023,15 +1030,25 @@ function parseLabelStyle(v: unknown, fallback: LabelStyle): LabelStyle {
 
 function parseTitleBar(v: unknown): TitleBarSpec {
   const o = (v ?? {}) as Record<string, unknown>;
+  const font: LabelFont = (SUPPORTED_LABEL_FONTS as readonly string[]).includes(String(o.font))
+    ? (o.font as LabelFont)
+    : 'anton';
+  // Same posture as the LabelStyle parser: only keep the custom URL
+  // when the font is actually 'custom' so a stale value can't bleed
+  // through after the user picks a different font.
+  const customFontUrl =
+    font === 'custom' && typeof o.customFontUrl === 'string' ? o.customFontUrl : undefined;
+  const customFontLabel =
+    font === 'custom' && typeof o.customFontLabel === 'string' ? o.customFontLabel : undefined;
   return {
     text: stringOr(o.text, ''),
     position: o.position === 'top' ? 'top' : 'bottom',
     height: numberOr(o.height, 96),
     background: stringOr(o.background, '#0a0a0a'),
     color: stringOr(o.color, '#fbfbf8'),
-    font: (SUPPORTED_LABEL_FONTS as readonly string[]).includes(String(o.font))
-      ? (o.font as LabelFont)
-      : 'anton',
+    font,
+    customFontUrl,
+    customFontLabel,
   };
 }
 

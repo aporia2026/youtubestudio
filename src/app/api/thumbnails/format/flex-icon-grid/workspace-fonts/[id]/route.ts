@@ -1,10 +1,10 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { apiRoute } from '@/lib/route-helpers';
 import {
   deleteWorkspaceFont,
   getWorkspaceFont,
 } from '@/lib/flex-icon-grid-workspace-fonts-db';
-import { getImagesDownloadUrl, isR2Configured } from '@/lib/r2';
+import { deleteImagesObject, getImagesDownloadUrl, isR2Configured } from '@/lib/r2';
 
 /**
  * Flex Icon Grid — workspace-registered font by id (Phase 4.8b).
@@ -41,9 +41,37 @@ export const GET = apiRoute.authed(async (session, _req, ctx) => {
   });
 });
 
-export const DELETE = apiRoute.authed(async (session, _req, ctx) => {
+export const DELETE = apiRoute.authed(async (session, req: NextRequest, ctx) => {
   const { id } = await (ctx as RouteContext).params;
+  // Phase 4.9 caveat fix: `?reclaim=true` also deletes the underlying
+  // R2 object so the bucket doesn't accumulate orphaned font files.
+  // Off by default — the panel surfaces a confirmation toggle so a
+  // mis-click can't permanently destroy a font another user might
+  // have referenced in a saved template. Failed R2 deletes are
+  // non-fatal (registry row is the source of truth; orphaned R2
+  // objects can be reaped by a bucket lifecycle rule), but they're
+  // logged so ops can spot persistent failures.
+  const reclaim = req.nextUrl.searchParams.get('reclaim') === 'true';
+  let r2Key: string | null = null;
+  if (reclaim) {
+    const font = await getWorkspaceFont(id, session.ws);
+    if (!font) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    r2Key = font.r2_key;
+  }
   const removed = await deleteWorkspaceFont(id, session.ws);
   if (!removed) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-  return NextResponse.json({ ok: true });
+  let reclaimed = false;
+  if (reclaim && r2Key) {
+    try {
+      await deleteImagesObject(r2Key);
+      reclaimed = true;
+      console.info('[flex-icon-grid workspace-font] r2 reclaimed', { r2_key: r2Key });
+    } catch (err) {
+      console.warn('[flex-icon-grid workspace-font] r2 reclaim failed', {
+        r2_key: r2Key,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return NextResponse.json({ ok: true, reclaimed });
 });

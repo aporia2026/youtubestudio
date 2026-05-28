@@ -46,6 +46,7 @@ import {
   getIconEntry,
   getIconSvg,
 } from '@/lib/thumbnail-formats/flex-icon-grid-icons';
+import { customFontFamilyName } from '@/lib/thumbnail-formats/flex-icon-grid-font-family';
 import {
   pickLabelColourFor,
   resolveCellBackgrounds,
@@ -79,16 +80,10 @@ const FONT_CSS_FALLBACK: Record<Exclude<LabelStyle['font'], 'custom'>, string> =
   'patrick-hand': "'Patrick Hand', Caveat, cursive",
 };
 
-/** Derive a stable browser-side family name from a custom font URL.
- *  Same URL → same family every time, so the preview always renders
- *  with the registered FontFace once loaded. */
-function customFontFamilyName(url: string): string {
-  let hash = 0;
-  for (let i = 0; i < url.length; i++) {
-    hash = (hash * 31 + url.charCodeAt(i)) | 0;
-  }
-  return `fg-custom-${(hash >>> 0).toString(36)}`;
-}
+// `customFontFamilyName` moved to `flex-icon-grid-font-family.ts` so
+// the panel and any other surface can derive the same family names
+// without duplicating the hash logic. See top of this file for the
+// import.
 
 /** Resolve a `LabelStyle.font` to the CSS family stack the live
  *  preview should set on the rendering `<text>` elements. Threads
@@ -116,10 +111,15 @@ function useCustomFontRegistration(config: FlexIconGridConfig): void {
   useEffect(() => {
     if (typeof document === 'undefined' || !('fonts' in document)) return;
 
-    // Collect unique URLs from every label-style position.
+    // Collect unique URLs from every label-style position. Phase 4.9a
+    // adds the title bar's custom URL to the registration set so the
+    // preview's title text loads the right face.
     const wanted = new Set<string>();
     if (config.defaultLabel.font === 'custom' && config.defaultLabel.customFontUrl) {
       wanted.add(config.defaultLabel.customFontUrl);
+    }
+    if (config.titleBar?.font === 'custom' && config.titleBar.customFontUrl) {
+      wanted.add(config.titleBar.customFontUrl);
     }
     for (const cell of config.cells) {
       const cellStyle = cell.labelStyle;
@@ -250,7 +250,10 @@ export function FlexIconGridLivePreview({
                 ? config.titleBar.height / 2
                 : config.height - config.titleBar.height / 2
             }
-            fontFamily={resolveFontCssFor({ font: config.titleBar.font })}
+            fontFamily={resolveFontCssFor({
+              font: config.titleBar.font,
+              customFontUrl: config.titleBar.customFontUrl,
+            })}
             fontSize={Math.round(config.titleBar.height * 0.55)}
             fontWeight={900}
             fill={config.titleBar.color}

@@ -22,7 +22,7 @@
  * `onResultChange` and land in history.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
 import type { ThumbnailRegion } from '@/remotion/types';
@@ -58,6 +58,7 @@ import {
   fetchSavedPalettesCached,
   invalidateSavedPalettesCache,
 } from '@/lib/flex-icon-grid-saved-palettes-client-cache';
+import { customFontFamilyName } from '@/lib/thumbnail-formats/flex-icon-grid-font-family';
 import { FlexIconGridLivePreview } from './FlexIconGridLivePreview';
 // Mobile-responsive overrides + bottom-sheet cell editor styles. Scoped
 // to `[data-fg-panel]` descendants so the rules can't leak elsewhere.
@@ -220,16 +221,75 @@ export function FlexIconGridPanel({
     })();
     return () => { cancelled = true; };
   }, []);
+  // Phase 4.9b: register every workspace font's FontFace with
+  // `document.fonts` so the chip row + per-cell picker can render the
+  // font name in its OWN face (preview-by-glance). Live preview's
+  // useCustomFontRegistration uses the SAME family-name derivation,
+  // so registering the same URL twice across the two surfaces is a
+  // no-op on the document side. Delta-update tracker so a workspace-
+  // font list change doesn't churn the document.fonts registry.
+  const panelRegisteredFonts = useRef(new Map<string, FontFace>());
+  useEffect(() => {
+    if (typeof document === 'undefined' || !('fonts' in document)) return;
+    const wanted = new Set(workspaceFonts.map((f) => f.downloadUrl));
+    for (const url of wanted) {
+      if (panelRegisteredFonts.current.has(url)) continue;
+      const family = customFontFamilyName(url);
+      const face = new FontFace(family, `url(${url})`);
+      panelRegisteredFonts.current.set(url, face);
+      void face.load().then((loaded) => {
+        document.fonts.add(loaded);
+      }).catch(() => {
+        // Silent — the registry GET endpoint mints fresh presigned
+        // URLs, but R2 lifecycle / expired URLs are still possible.
+        // Chip will fall back to the generic font stack.
+      });
+    }
+    for (const [url, face] of panelRegisteredFonts.current) {
+      if (wanted.has(url)) continue;
+      try { document.fonts.delete(face); } catch { /* ignore */ }
+      panelRegisteredFonts.current.delete(url);
+    }
+  }, [workspaceFonts]);
+  useEffect(() => {
+    const tracker = panelRegisteredFonts.current;
+    return () => {
+      if (typeof document === 'undefined' || !('fonts' in document)) return;
+      for (const face of tracker.values()) {
+        try { document.fonts.delete(face); } catch { /* ignore */ }
+      }
+      tracker.clear();
+    };
+  }, []);
+
   async function removeRegisteredFont(id: string, name: string) {
-    if (!confirm(`Remove registered font "${name}"?`)) return;
+    // Phase 4.9 caveat fix: surface the "also delete from storage"
+    // decision explicitly. Two-step prompt — first confirm removal,
+    // then ask separately whether to reclaim the R2 object so a
+    // single mis-click can't permanently destroy a font another
+    // user might have referenced in a saved template.
+    if (!confirm(`Remove registered font "${name}" from the picker?`)) return;
+    const reclaim = confirm(
+      `Also delete "${name}" from storage permanently?\n\n` +
+      `OK = delete the file from R2 (other users' saved templates that reference it will break).\n` +
+      `Cancel = keep the file in storage (bucket lifecycle may reclaim it later).`,
+    );
     try {
       const res = await fetch(
-        `/api/thumbnails/format/flex-icon-grid/workspace-fonts/${encodeURIComponent(id)}`,
+        `/api/thumbnails/format/flex-icon-grid/workspace-fonts/${encodeURIComponent(id)}` +
+          (reclaim ? '?reclaim=true' : ''),
         { method: 'DELETE' },
       );
       if (!res.ok) throw new Error(`Delete failed (${res.status})`);
+      const data = (await res.json().catch(() => ({}))) as { reclaimed?: boolean };
       setWorkspaceFonts((prev) => prev.filter((f) => f.id !== id));
-      toast.success('Font removed from registry');
+      toast.success(
+        reclaim && data.reclaimed
+          ? 'Font removed and file deleted'
+          : reclaim
+            ? 'Font removed; file delete failed (lifecycle will reclaim later)'
+            : 'Font removed from registry',
+      );
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Delete failed');
     }
@@ -427,9 +487,18 @@ export function FlexIconGridPanel({
             const registered = (await regRes.json()) as WorkspaceFontEntry;
             setWorkspaceFonts((prev) => [registered, ...prev.filter((f) => f.id !== registered.id)]);
           } else if (regRes.status === 409) {
-            // Duplicate name in workspace — keep the URL but skip
-            // registry update silently. Most likely the user already
-            // has this exact font registered.
+            // Duplicate name (Phase 4.9 caveat fix). The font's
+            // attached to this thumbnail just fine, but the registry
+            // chip won't update — surface that so the user knows to
+            // either rename the file next time or just keep using
+            // the existing chip.
+            toast.message(
+              `A font named "${fontLabel}" already exists in your workspace registry. ` +
+              `The font is attached to this thumbnail but the registry chip didn't update — ` +
+              `pick the existing chip in future thumbnails or rename your file to register a new one.`,
+              { duration: 8000 },
+            );
+            console.info('[flex-icon-grid panel font] registry name conflict', { name: fontLabel });
           } else {
             console.warn('[flex-icon-grid panel font] registry registration failed', {
               status: regRes.status,
@@ -1111,10 +1180,18 @@ export function FlexIconGridPanel({
                         },
                       })
                     }
-                    style={chipStyle(
-                      selectedCell.labelStyle?.font === 'custom' &&
-                        selectedCell.labelStyle?.customFontUrl === wf.downloadUrl,
-                    )}
+                    style={{
+                      ...chipStyle(
+                        selectedCell.labelStyle?.font === 'custom' &&
+                          selectedCell.labelStyle?.customFontUrl === wf.downloadUrl,
+                      ),
+                      // Phase 4.9b: render the chip label in the
+                      // registered font itself. Fallback stack covers
+                      // the brief moment between mount and FontFace
+                      // load completion.
+                      fontFamily: `'${customFontFamilyName(wf.downloadUrl)}', 'Arial Black', sans-serif`,
+                      fontWeight: 700,
+                    }}
                     title={`${wf.name} · ${Math.round(wf.size_bytes / 1024)} KB`}
                   >
                     {wf.name}
@@ -1206,8 +1283,13 @@ export function FlexIconGridPanel({
                               border: 'none',
                               color: '#fafafa',
                               cursor: 'pointer',
-                              fontSize: 12,
+                              fontSize: 13,
                               padding: 0,
+                              // Phase 4.9b: chip label renders in its own
+                              // registered font face for at-a-glance
+                              // preview.
+                              fontFamily: `'${customFontFamilyName(wf.downloadUrl)}', 'Arial Black', sans-serif`,
+                              fontWeight: 700,
                             }}
                             title={`${wf.name} · ${Math.round(wf.size_bytes / 1024)} KB`}
                           >
@@ -1343,6 +1425,73 @@ export function FlexIconGridPanel({
                   />
                 )}
               </div>
+              {/* Phase 4.9a: title bar font picker. Same options as the
+                  default label font; registered custom fonts appear as
+                  chips when the user picks 'Custom upload'. */}
+              {config.titleBar && (
+                <div style={{ marginTop: 10 }}>
+                  <label style={{ ...labelStyle, marginTop: 0 }}>Title bar font</label>
+                  <div style={chipRowStyle}>
+                    {FONT_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() =>
+                          updateConfig({
+                            titleBar: {
+                              ...config.titleBar!,
+                              font: opt.value,
+                              // Clear stale custom URL when switching
+                              // to a bundled font.
+                              customFontUrl: opt.value === 'custom' ? config.titleBar!.customFontUrl : undefined,
+                              customFontLabel: opt.value === 'custom' ? config.titleBar!.customFontLabel : undefined,
+                            },
+                          })
+                        }
+                        style={chipStyle(config.titleBar!.font === opt.value)}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  {config.titleBar!.font === 'custom' && workspaceFonts.length > 0 && (
+                    <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {workspaceFonts.map((wf) => (
+                        <button
+                          key={wf.id}
+                          type="button"
+                          onClick={() =>
+                            updateConfig({
+                              titleBar: {
+                                ...config.titleBar!,
+                                font: 'custom',
+                                customFontUrl: wf.downloadUrl,
+                                customFontLabel: wf.name,
+                              },
+                            })
+                          }
+                          style={{
+                            ...chipStyle(
+                              config.titleBar!.customFontUrl === wf.downloadUrl,
+                            ),
+                            fontFamily: `'${customFontFamilyName(wf.downloadUrl)}', 'Arial Black', sans-serif`,
+                            fontWeight: 700,
+                          }}
+                          title={`${wf.name} · ${Math.round(wf.size_bytes / 1024)} KB`}
+                        >
+                          {wf.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {config.titleBar.font === 'custom' && workspaceFonts.length === 0 && (
+                    <p style={{ fontSize: 11, color: '#a1a1aa', marginTop: 6 }}>
+                      Upload a font via the &quot;Default label font&quot; section above to populate
+                      this picker. Registered fonts appear here automatically.
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}

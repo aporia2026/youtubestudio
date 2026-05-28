@@ -1005,10 +1005,9 @@ async function buildTitleBarOverlay(
   if (!titleBar) return null;
   const text = sanitizeUserText(titleBar.text, 80);
   if (!text) return null;
-  // Title bar carries its own font but no `LabelStyle` envelope; wrap
-  // the field in a minimal style so `resolveLabelFont` can dispatch
-  // uniformly. The fallback font sees the bundled set since the title
-  // bar doesn't (yet) support a custom font URL.
+  // Title bar carries its own font + (Phase 4.9a) its own custom-
+  // font URL. Wrap in a minimal label-style envelope so
+  // `resolveLabelFont` can dispatch uniformly with the per-cell path.
   const minimalStyle: LabelStyle = {
     position: 'below',
     font: titleBar.font,
@@ -1016,6 +1015,8 @@ async function buildTitleBarOverlay(
     color: titleBar.color,
     stroke: null,
     maxLines: 1,
+    customFontUrl: titleBar.customFontUrl,
+    customFontLabel: titleBar.customFontLabel,
   };
   const fallbackFont: Exclude<LabelFont, 'custom'> =
     titleBar.font === 'custom' ? 'anton' : titleBar.font;

@@ -27,7 +27,11 @@
  *    map. Test-only — never called by production code.
  */
 
-const MAX_ENTRIES = 20;
+/** Capacity ceiling. Bumped from 20 → 50 in Phase 4.9 — observed
+ *  median font size in production is ~200 KB so 50 × 200 KB ≈ 10 MB
+ *  comfortable; the previous 20 was over-conservative for warm
+ *  instances serving multi-font workspaces. */
+const MAX_ENTRIES = 50;
 
 interface CacheEntry {
   bytes: Buffer;
@@ -36,6 +40,12 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<Buffer>>();
+
+/** Lifetime hit/miss counters. Cleared on `_resetFontByteCacheForTests`.
+ *  Exposed via `getFontCacheStats` so the render log can surface
+ *  per-render effectiveness (Phase 4.9 caveat fix). */
+let hits = 0;
+let misses = 0;
 
 /**
  * Read-through cache: return the bytes for `url`, fetching via the
@@ -46,13 +56,20 @@ export async function fetchFontBytesCached(
   url: string,
   fetcher: (url: string) => Promise<Buffer>,
 ): Promise<Buffer> {
-  const hit = cache.get(url);
-  if (hit) {
-    hit.atime = Date.now();
-    return hit.bytes;
+  const cached = cache.get(url);
+  if (cached) {
+    cached.atime = Date.now();
+    hits += 1;
+    return cached.bytes;
   }
   const existing = inflight.get(url);
-  if (existing) return existing;
+  if (existing) {
+    // Coalesced request — counts as a hit for the second caller
+    // (no network cost; the in-flight first call pays it once).
+    hits += 1;
+    return existing;
+  }
+  misses += 1;
   const promise = (async () => {
     try {
       const bytes = await fetcher(url);
@@ -80,14 +97,35 @@ export async function fetchFontBytesCached(
   return promise;
 }
 
-/** Test-only: drain the cache + in-flight map so a test suite can
- *  isolate state between cases. Production code never calls this. */
+/** Test-only: drain the cache + in-flight map + counters so a test
+ *  suite can isolate state between cases. Production code never
+ *  calls this. */
 export function _resetFontByteCacheForTests(): void {
   cache.clear();
   inflight.clear();
+  hits = 0;
+  misses = 0;
 }
 
-/** Diagnostic — exposed for logs / health checks. */
-export function getFontCacheStats(): { entries: number; inflight: number; max: number } {
-  return { entries: cache.size, inflight: inflight.size, max: MAX_ENTRIES };
+/**
+ * Diagnostic — exposed for logs / health checks. `hits` + `misses`
+ * are LIFETIME counters since process start; pair them with the
+ * `entries` size to spot pressure points (e.g. consistently-high
+ * miss rate suggests bumping `MAX_ENTRIES`, sustained `entries ===
+ * max` means workspaces have more unique fonts than the cap).
+ */
+export function getFontCacheStats(): {
+  entries: number;
+  inflight: number;
+  max: number;
+  hits: number;
+  misses: number;
+} {
+  return {
+    entries: cache.size,
+    inflight: inflight.size,
+    max: MAX_ENTRIES,
+    hits,
+    misses,
+  };
 }

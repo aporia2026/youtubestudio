@@ -18,6 +18,7 @@ import {
   composeFlexIconGrid,
   type UploadFetcher,
 } from '@/lib/thumbnail-formats/flex-icon-grid-composer';
+import { getFontCacheStats } from '@/lib/thumbnail-formats/flex-icon-grid-font-cache';
 
 /**
  * Render a Flex Icon Grid thumbnail.
@@ -109,10 +110,16 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
   // Region rectangles for the production-doc consumer.
   const regions = computeRegions(config, () => crypto.randomUUID());
 
+  // Lifetime font-cache stats (Phase 4.9 caveat fix). Surfacing here
+  // so ops can grep render logs to see hit/miss ratios trending — a
+  // sustained low hit rate means workspaces have more unique fonts
+  // than MAX_ENTRIES and we should bump the cap.
+  const fontCacheStats = getFontCacheStats();
   console.info('[flex-icon-grid api] render ok', {
     bytes: pngBuffer.length,
     total_ms: Date.now() - start,
     font_warnings_count: fontWarnings.length,
+    font_cache: fontCacheStats,
   });
 
   return NextResponse.json(
