@@ -786,3 +786,42 @@ describe('Phase 3.5 — per-cell sticker style', () => {
     expect(content.style).toBeUndefined();
   });
 });
+
+// ─── Phase 4.5 ───────────────────────────────────────────────────────────────
+
+describe('Phase 4.5 — per-cell sticker style history round-trip', () => {
+  it('per-cell style survives JSON round-trip (history save → restore)', () => {
+    // Simulate the history save path: panel reports config →
+    // FlexIconGridHistoryPayload.config = config → JSON.stringify on
+    // save → JSON.parse on restore → parseConfig hydrates the panel
+    // state. The per-cell style must survive that loop unchanged.
+    const original = makeDefaultConfig(1, 2);
+    original.cells[0].content = { type: 'ai-sticker', prompt: 'a flame', style: 'neon' };
+    original.cells[1].content = { type: 'ai-sticker', prompt: 'a leaf', style: 'watercolor' };
+
+    const serialised = JSON.stringify(original);
+    const reparsed = parseConfig(JSON.parse(serialised));
+
+    const c0 = reparsed.cells[0].content;
+    const c1 = reparsed.cells[1].content;
+    if (c0.type !== 'ai-sticker' || c1.type !== 'ai-sticker') {
+      throw new Error('expected ai-sticker on both cells');
+    }
+    expect(c0.style).toBe('neon');
+    expect(c1.style).toBe('watercolor');
+  });
+  it('per-cell style + url both survive when sticker is already generated', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.cells[0].content = {
+      type: 'ai-sticker',
+      prompt: 'a flame',
+      style: 'neon',
+      url: 'https://example.com/sticker.png',
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    const content = reparsed.cells[0].content;
+    if (content.type !== 'ai-sticker') throw new Error('expected ai-sticker');
+    expect(content.style).toBe('neon');
+    expect(content.url).toBe('https://example.com/sticker.png');
+  });
+});

@@ -57,35 +57,110 @@ interface IconSpec {
   iconStyle: 'stroke' | 'fill';
 }
 
+/** Allowed category literals. Mirrors `IconCategory` in
+ *  `flex-icon-grid-icons.ts` so runtime validation can catch typos
+ *  in a hand-edited entry before the script writes an invalid
+ *  registry. */
+const VALID_CATEGORIES = new Set<IconSpec['category']>([
+  'tech', 'security', 'communication', 'money', 'media',
+  'people', 'web', 'common', 'nature', 'misc',
+]);
+
 /**
  * Default curated list. Add/remove freely — each entry expands the
  * icon picker by one tile. Mix sets at will; the composer handles
  * `iconStyle` per icon.
+ *
+ * License roll-up:
+ *   - heroicons:           MIT
+ *   - tabler:              MIT
+ *   - ph (Phosphor):       MIT
+ *   - material-symbols:    Apache 2.0
+ *   - mdi:                 Apache 2.0
+ *   - lucide:              ISC (overlap with lucide-static; included
+ *                          here for missing-from-static brands)
+ *
+ * To keep the bundle compact, prefer ONE source per icon — don't
+ * duplicate `lightning` from both Phosphor AND Material Symbols
+ * unless you want users to see both as distinct picker entries.
  */
 const ICONS: IconSpec[] = [
-  // Heroicons (MIT)
+  // ─── Heroicons (MIT) ────────────────────────────────────────────
   { name: 'heroicons:academic-cap', label: 'Academic Cap', category: 'common', iconStyle: 'stroke' },
   { name: 'heroicons:beaker', label: 'Beaker', category: 'tech', iconStyle: 'stroke' },
   { name: 'heroicons:rocket-launch', label: 'Rocket Launch', category: 'misc', iconStyle: 'stroke' },
   { name: 'heroicons:cpu-chip', label: 'CPU Chip', category: 'tech', iconStyle: 'stroke' },
   { name: 'heroicons:building-office', label: 'Office', category: 'common', iconStyle: 'stroke' },
-  // Tabler (MIT)
+  { name: 'heroicons:globe-alt', label: 'Globe Alt', category: 'web', iconStyle: 'stroke' },
+  { name: 'heroicons:chart-bar', label: 'Chart Bar', category: 'money', iconStyle: 'stroke' },
+  { name: 'heroicons:bookmark', label: 'Bookmark', category: 'common', iconStyle: 'stroke' },
+  { name: 'heroicons:cake', label: 'Cake', category: 'misc', iconStyle: 'stroke' },
+  { name: 'heroicons:hand-raised', label: 'Hand Raised', category: 'people', iconStyle: 'stroke' },
+
+  // ─── Tabler (MIT) ───────────────────────────────────────────────
   { name: 'tabler:brain', label: 'Brain', category: 'people', iconStyle: 'stroke' },
   { name: 'tabler:droplet', label: 'Droplet', category: 'nature', iconStyle: 'stroke' },
   { name: 'tabler:atom', label: 'Atom', category: 'tech', iconStyle: 'stroke' },
   { name: 'tabler:robot', label: 'Robot', category: 'tech', iconStyle: 'stroke' },
   { name: 'tabler:planet', label: 'Planet', category: 'nature', iconStyle: 'stroke' },
-  // Phosphor (MIT) — solid fill variants
+  { name: 'tabler:cricket', label: 'Cricket', category: 'misc', iconStyle: 'stroke' },
+  { name: 'tabler:rocket', label: 'Rocket (Tabler)', category: 'misc', iconStyle: 'stroke' },
+  { name: 'tabler:trending-up', label: 'Trending Up (Tabler)', category: 'money', iconStyle: 'stroke' },
+  { name: 'tabler:shield-lock', label: 'Shield Lock', category: 'security', iconStyle: 'stroke' },
+  { name: 'tabler:device-mobile', label: 'Device Mobile', category: 'tech', iconStyle: 'stroke' },
+
+  // ─── Phosphor (MIT) — solid fill variants ───────────────────────
   { name: 'ph:lightning-fill', label: 'Lightning (solid)', category: 'nature', iconStyle: 'fill' },
   { name: 'ph:flame-fill', label: 'Flame (solid)', category: 'nature', iconStyle: 'fill' },
   { name: 'ph:eye-fill', label: 'Eye (solid)', category: 'security', iconStyle: 'fill' },
   { name: 'ph:bug-fill', label: 'Bug (solid)', category: 'security', iconStyle: 'fill' },
-  // Material Symbols (Apache 2.0)
+  { name: 'ph:heart-fill', label: 'Heart (solid)', category: 'people', iconStyle: 'fill' },
+  { name: 'ph:star-fill', label: 'Star (solid)', category: 'common', iconStyle: 'fill' },
+  { name: 'ph:trophy-fill', label: 'Trophy (solid)', category: 'misc', iconStyle: 'fill' },
+  { name: 'ph:crown-fill', label: 'Crown (solid)', category: 'misc', iconStyle: 'fill' },
+  { name: 'ph:diamond-fill', label: 'Diamond', category: 'misc', iconStyle: 'fill' },
+  { name: 'ph:cube-fill', label: 'Cube (solid)', category: 'tech', iconStyle: 'fill' },
+
+  // ─── Material Symbols (Apache 2.0) ──────────────────────────────
   { name: 'material-symbols:shield', label: 'Shield (Material)', category: 'security', iconStyle: 'fill' },
   { name: 'material-symbols:bolt', label: 'Bolt (Material)', category: 'nature', iconStyle: 'fill' },
   { name: 'material-symbols:lock', label: 'Lock (Material)', category: 'security', iconStyle: 'fill' },
   { name: 'material-symbols:rocket-launch', label: 'Rocket (Material)', category: 'misc', iconStyle: 'fill' },
+  { name: 'material-symbols:psychology', label: 'Psychology', category: 'people', iconStyle: 'fill' },
+  { name: 'material-symbols:headphones', label: 'Headphones (Material)', category: 'media', iconStyle: 'fill' },
+  { name: 'material-symbols:movie', label: 'Movie', category: 'media', iconStyle: 'fill' },
+  { name: 'material-symbols:savings', label: 'Savings', category: 'money', iconStyle: 'fill' },
 ];
+
+/** Pre-flight runtime check: every entry's `category` is one of the
+ *  recognised IconCategory literals. Catches typos in hand-edited
+ *  entries before we hit the network. Exits non-zero on failure so
+ *  CI/precommit can wrap the script. */
+function validateIconSpecs(specs: readonly IconSpec[]): void {
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < specs.length; i++) {
+    const s = specs[i];
+    if (!VALID_CATEGORIES.has(s.category)) {
+      errors.push(`  [${i}] ${s.name}: unknown category "${s.category}"`);
+    }
+    if (s.iconStyle !== 'stroke' && s.iconStyle !== 'fill') {
+      errors.push(`  [${i}] ${s.name}: iconStyle must be "stroke" or "fill" (got "${s.iconStyle}")`);
+    }
+    if (!s.name.includes(':')) {
+      errors.push(`  [${i}] ${s.name}: name must be "<prefix>:<icon>"`);
+    }
+    if (seen.has(s.name)) {
+      errors.push(`  [${i}] ${s.name}: duplicate entry`);
+    }
+    seen.add(s.name);
+  }
+  if (errors.length > 0) {
+    console.error('[download-iconify-icons] icon-spec validation failed:');
+    for (const e of errors) console.error(e);
+    process.exit(2);
+  }
+}
 
 const BASE_URL = 'https://api.iconify.design';
 const OUTPUT_PATH = path.join(
@@ -157,6 +232,7 @@ function buildSlug(name: string): string {
 }
 
 async function main(): Promise<void> {
+  validateIconSpecs(ICONS);
   console.info(`[download-iconify-icons] fetching ${ICONS.length} icons from Iconify`);
   const results = await Promise.all(ICONS.map(fetchIcon));
   const successes = results.filter((r) => r.inner !== null);

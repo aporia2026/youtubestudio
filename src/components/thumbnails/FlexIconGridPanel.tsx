@@ -55,6 +55,9 @@ import {
   STICKER_STYLE_PRESETS,
 } from '@/lib/thumbnail-formats/flex-icon-grid-sticker-styles';
 import { FlexIconGridLivePreview } from './FlexIconGridLivePreview';
+// Mobile-responsive overrides + bottom-sheet cell editor styles. Scoped
+// to `[data-fg-panel]` descendants so the rules can't leak elsewhere.
+import './FlexIconGridPanel.css';
 
 // ─── Types mirroring the API contract ───────────────────────────────────────
 
@@ -123,6 +126,21 @@ const ALLOWED_CELL_UPLOAD_TYPES = new Set([
 
 const STICKER_STYLE_PREF_KEY = 'flex_icon_grid_sticker_style';
 
+/** Shape of one workspace-saved palette as the API returns it. Lifted
+ *  to module scope so both the eager-fetch state in the panel and the
+ *  disclosure section share a single source of truth. */
+interface SavedPaletteRecord {
+  id: string;
+  name: string;
+  colors: string[];
+  updated_at: string;
+}
+
+/** Quick-load chip count cap. The user's first N most-recent saved
+ *  palettes surface as chips next to the named presets so they don't
+ *  have to expand the disclosure to grab a familiar one. */
+const SAVED_PALETTE_QUICK_LOAD_COUNT = 3;
+
 // ─── Component ──────────────────────────────────────────────────────────────
 
 interface Props {
@@ -147,6 +165,38 @@ export function FlexIconGridPanel({
   const [stickerBusy, setStickerBusy] = useState(false);
   const [result, setResult] = useState<FlexIconGridGenerationResult | null>(null);
   const [uploadingCells, setUploadingCells] = useState<Set<number>>(new Set());
+
+  // Workspace-saved palettes — fetched eagerly on mount so the quick-
+  // load chip row next to the named-preset chips shows the user's
+  // most recently saved palettes without waiting for the disclosure.
+  // SavedPalettesSection reads from this shared state too so both
+  // surfaces stay in sync.
+  const [savedPalettes, setSavedPalettes] = useState<SavedPaletteRecord[]>([]);
+  const [savedPalettesLoaded, setSavedPalettesLoaded] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/thumbnails/format/flex-icon-grid/saved-palettes');
+        if (!res.ok) throw new Error(`Load failed (${res.status})`);
+        const data = (await res.json()) as { palettes: SavedPaletteRecord[] };
+        if (!cancelled) {
+          setSavedPalettes(data.palettes);
+          setSavedPalettesLoaded(true);
+        }
+      } catch (err) {
+        // Non-fatal — the disclosure can retry on open. Logged so a
+        // genuinely-broken endpoint doesn't fail silently.
+        if (!cancelled) {
+          console.warn('[flex-icon-grid panel] eager palette fetch failed', {
+            reason: err instanceof Error ? err.message : String(err),
+          });
+          setSavedPalettesLoaded(true);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // Global sticker style preset — applied to every AI-sticker
   // generation call in this panel session. Persisted to localStorage
@@ -440,13 +490,14 @@ export function FlexIconGridPanel({
   // ── UI ───────────────────────────────────────────────────────────────────
 
   return (
-    <div style={containerStyle} data-fg-panel="true">
-      {/* Mobile responsive overrides (Phase 4). Inlined as a <style>
-          block so the panel stays self-contained — no global CSS
-          dependency, no tailwind plugin. Targets only data-attributed
-          descendants of this panel so the rules can't leak to other
-          parts of the app. */}
-      <style>{MOBILE_RESPONSIVE_CSS}</style>
+    <div
+      style={containerStyle}
+      data-fg-panel="true"
+      // `data-fg-sheet-open` lets the CSS pad the bottom render
+      // controls so the mobile bottom-sheet cell editor doesn't cover
+      // them. Toggled by selecting a cell.
+      data-fg-sheet-open={selectedCell ? 'true' : 'false'}
+    >
 
       {/* Grid size + palette + defaults */}
       <section style={sectionStyle}>
@@ -508,6 +559,26 @@ export function FlexIconGridPanel({
             />
             <span style={{ marginLeft: 8 }}>Custom</span>
           </button>
+
+          {/* Phase 4.5a: quick-load chips for the user's most recent
+              workspace-saved palettes. Shown inline so the user can
+              switch to a saved palette without expanding the
+              disclosure. Capped at SAVED_PALETTE_QUICK_LOAD_COUNT
+              so the row doesn't sprawl on workspaces with many saves. */}
+          {savedPalettes.slice(0, SAVED_PALETTE_QUICK_LOAD_COUNT).map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() =>
+                updateConfig({ palette: { type: 'custom', colors: p.colors } })
+              }
+              style={chipStyle(false)}
+              title={`Saved palette: ${p.name}`}
+            >
+              <PaletteSwatchRow spec={{ type: 'custom', colors: p.colors }} />
+              <span style={{ marginLeft: 8 }}>★ {p.name}</span>
+            </button>
+          ))}
         </div>
         {config.palette.type === 'custom' && (
           <CustomPaletteEditor
@@ -521,6 +592,9 @@ export function FlexIconGridPanel({
             uncluttered. */}
         <SavedPalettesSection
           currentPalette={config.palette}
+          palettes={savedPalettes}
+          palettesLoaded={savedPalettesLoaded}
+          onPalettesChange={setSavedPalettes}
           onLoad={(colors) => updateConfig({ palette: { type: 'custom', colors } })}
         />
       </section>
@@ -756,10 +830,28 @@ export function FlexIconGridPanel({
           {/* Conflict warning (per cell). Auto-resolve handler picks
               the smallest fix per reason: 'consumed-by-earlier' →
               clear the cell's own span; 'clamped-to-grid' → clamp to
-              the largest span that fits from the cell's origin. */}
+              the largest span that fits. Computed `clampedSpan` is
+              passed to the warning so the button label can show the
+              concrete dimensions ("Clamp to 2×1") rather than the
+              abstract "Clamp to fit" — and when the clamp resolves to
+              1×1, the button switches to "Clear span" because the two
+              are equivalent. */}
           {selectedCellConflict && (
             <SpanConflictWarning
               reason={selectedCellConflict}
+              clampedSpan={
+                selectedCellConflict === 'clamped-to-grid' && selectedCell.cellSpan
+                  ? (() => {
+                      const idx = selectedCell.index - 1;
+                      const baseR = Math.floor(idx / config.cols);
+                      const baseC = idx % config.cols;
+                      return {
+                        rows: Math.max(1, Math.min(selectedCell.cellSpan.rows, config.rows - baseR)),
+                        cols: Math.max(1, Math.min(selectedCell.cellSpan.cols, config.cols - baseC)),
+                      };
+                    })()
+                  : null
+              }
               onAutoResolve={() => {
                 const idx = selectedCell.index - 1;
                 const baseR = Math.floor(idx / config.cols);
@@ -1063,22 +1155,23 @@ function SvgPreview({ slug }: { slug: string }) {
 
 // ─── Workspace-saved palettes (Phase 4) ─────────────────────────────────────
 
-interface SavedPaletteRecord {
-  id: string;
-  name: string;
-  colors: string[];
-  updated_at: string;
-}
-
 function SavedPalettesSection({
   currentPalette,
+  palettes,
+  palettesLoaded,
+  onPalettesChange,
   onLoad,
 }: {
   currentPalette: PaletteSpec;
+  /** Shared state from the panel. The panel fetches eagerly on mount;
+   *  this section just renders the list and mutates it through
+   *  `onPalettesChange` after save/delete. */
+  palettes: SavedPaletteRecord[];
+  palettesLoaded: boolean;
+  onPalettesChange: (next: SavedPaletteRecord[]) => void;
   onLoad: (colors: string[]) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [palettes, setPalettes] = useState<SavedPaletteRecord[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -1088,18 +1181,12 @@ function SavedPalettesSection({
       const res = await fetch('/api/thumbnails/format/flex-icon-grid/saved-palettes');
       if (!res.ok) throw new Error(`Load failed (${res.status})`);
       const data = (await res.json()) as { palettes: SavedPaletteRecord[] };
-      setPalettes(data.palettes);
+      onPalettesChange(data.palettes);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load saved palettes');
     }
   }
-
-  useEffect(() => {
-    if (open && palettes === null) {
-      void refresh();
-    }
-  }, [open, palettes]);
 
   // Concrete colour list we'd save right now — the named presets
   // resolve through `paletteColours` so the user can save any of them
@@ -1190,15 +1277,15 @@ function SavedPalettesSection({
           {error && (
             <p style={{ fontSize: 11, color: '#f87171', margin: 0 }}>{error}</p>
           )}
-          {palettes === null && !error && (
+          {!palettesLoaded && !error && (
             <p style={{ fontSize: 11, color: '#a1a1aa', margin: 0 }}>Loading…</p>
           )}
-          {palettes !== null && palettes.length === 0 && (
+          {palettesLoaded && palettes.length === 0 && (
             <p style={{ fontSize: 11, color: '#a1a1aa', margin: 0 }}>
-              No saved palettes yet. Name one above and click "Save current palette".
+              No saved palettes yet. Name one above and click &quot;Save current palette&quot;.
             </p>
           )}
-          {palettes !== null && palettes.length > 0 && (
+          {palettesLoaded && palettes.length > 0 && (
             <div style={{ display: 'grid', gap: 6 }}>
               {palettes.map((p) => (
                 <div
@@ -1363,20 +1450,33 @@ const SPAN_CONFLICT_MESSAGES: Record<SpanConflictReason, { title: string; body: 
   },
 };
 
-const SPAN_CONFLICT_RESOLVE_LABELS: Record<SpanConflictReason, string> = {
-  'consumed-by-earlier': 'Clear this cell\'s span',
-  'clamped-to-grid': 'Clamp span to fit',
-};
-
 function SpanConflictWarning({
   reason,
+  clampedSpan,
   onAutoResolve,
 }: {
   reason: SpanConflictReason;
+  /** For `clamped-to-grid`: the actual span the auto-resolve would
+   *  apply. Lets the button label show concrete dimensions ("Clamp to
+   *  2×1") or switch to "Clear span" when the clamp would collapse
+   *  to 1×1. Ignored for the other reasons. */
+  clampedSpan?: { rows: number; cols: number } | null;
   onAutoResolve?: () => void;
 }) {
   const { title, body } = SPAN_CONFLICT_MESSAGES[reason];
-  const actionLabel = SPAN_CONFLICT_RESOLVE_LABELS[reason];
+  let actionLabel: string;
+  if (reason === 'consumed-by-earlier') {
+    actionLabel = 'Clear this cell\'s span';
+  } else {
+    // clamped-to-grid
+    if (clampedSpan && clampedSpan.rows === 1 && clampedSpan.cols === 1) {
+      actionLabel = 'Clear span';
+    } else if (clampedSpan) {
+      actionLabel = `Clamp to ${clampedSpan.rows}×${clampedSpan.cols}`;
+    } else {
+      actionLabel = 'Clamp span to fit';
+    }
+  }
   return (
     <div
       style={{
@@ -1719,32 +1819,6 @@ function PaletteSwatchRow({ spec }: { spec: PaletteSpec }) {
 }
 
 // ─── Inline styles ──────────────────────────────────────────────────────────
-
-/**
- * Mobile-responsive CSS injected once at the top of the panel via a
- * `<style>` block. Rules target only data-attributed descendants of
- * this panel so they can't leak to other parts of the app. Activates
- * at the standard tablet breakpoint (768px) and below.
- *
- * What it does:
- *  - Bumps chip padding so chip rows become thumb-friendly tap
- *    targets (≥ 40px tall after padding).
- *  - Reduces section padding so the panel doesn't waste vertical
- *    space on small screens.
- *  - Stacks any container marked `data-fg-mobile-stack` into a column
- *    instead of a row.
- *  - Sets the icon picker grid to denser cells (40px instead of 56px)
- *    so users see more icons per scroll.
- */
-const MOBILE_RESPONSIVE_CSS = `
-@media (max-width: 768px) {
-  [data-fg-panel] section { padding: 10px !important; }
-  [data-fg-panel] [data-fg-chip] { padding: 9px 12px !important; min-height: 40px; }
-  [data-fg-panel] [data-fg-mobile-stack] { flex-direction: column !important; align-items: stretch !important; }
-  [data-fg-panel] [data-fg-icon-grid] { grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)) !important; }
-  [data-fg-panel] [data-fg-cell-editor] { padding: 12px !important; }
-}
-`;
 
 const containerStyle: React.CSSProperties = {
   display: 'flex',
