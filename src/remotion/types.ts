@@ -329,11 +329,52 @@ export interface VideoShot {
   characterId?: string;
 }
 
+// ─── paint_explainer_v1 settings ────────────────────────────────────
+//
+// Lives in this file (the renderer's type module) so VideoConfig can
+// reference it without a circular import. The constants
+// (PAINT_EXPLAINER_V1_DEFAULTS, _BOUNDS) and the resolver function
+// stay in `./utils` where the runtime behaviour lives.
+
+export interface PaintExplainerV1Settings {
+  /** Target median shot length in seconds. Drives the LLM's pacing
+   *  during doc generation — shorter values produce more, shorter
+   *  rows. 2.5–3.0s matches the Paint Explainer reference videos. */
+  median_shot_seconds?: number;
+  /** Mouth-swap loop rate (Hz) when alignment JSON isn't available
+   *  for a row. Bounded 6–12; viability test verdict was 8. Renderer-
+   *  consumed via `constantRateVisemeSequence({ rateHz })`. */
+  mouth_swap_fps_fallback?: number;
+  /** When true (default), `<MouthSwap>` reads frame-by-frame state
+   *  from alignment JSON visemes. When false, uses constant-rate
+   *  fallback at `mouth_swap_fps_fallback`. */
+  use_alignment_driven_visemes?: boolean;
+  /** Target percentage of factual rows that should carry a real-photo
+   *  overlay. The LLM's mixing_rules trigger on every named entity
+   *  but this knob lets a channel dial overall density up or down. */
+  real_photo_cadence_pct?: number;
+  /** When true (default), the image-gen pipeline reuses the same
+   *  base + mouth-removed pair across rows sharing a `character_id`. */
+  character_persistence_enabled?: boolean;
+  /** Yellow label color (Font B in the style guide). */
+  label_color_hex?: string;
+  /** Default duration (ms) of a `<ScribbleDraw>` reveal beat. */
+  draw_on_default_duration_ms?: number;
+  /** Transition between shots. `'snap'` matches the genre default. */
+  hard_cut_transition?: 'snap' | 'micro-fade';
+}
+
 // ─── Video Config ──────────────────────────────────────────────────────────────
 
 export interface VideoConfig {
   /** Frames per second — 30 for YouTube, 60 for gaming content */
   fps: number;
+  /** paint_explainer_v1 effective settings — the resolver-resolved
+   *  shape with every default applied. Populated by
+   *  `productionDocToVideoConfig` from `doc.paint_explainer_v1_settings`
+   *  so the renderer doesn't have to re-resolve defaults at frame time.
+   *  Undefined on non-paint_explainer_v1 docs. */
+  paintExplainerV1Settings?: Required<PaintExplainerV1Settings>;
   /** Composition width in pixels */
   width: number;
   /** Composition height in pixels */

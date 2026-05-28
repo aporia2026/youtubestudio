@@ -27,7 +27,7 @@ import { LowerThird, type LowerThirdVariant } from '../components/LowerThird';
 import { MouthSwap } from '../components/MouthSwap';
 import { SceneTransition } from '../components/SceneTransition';
 import { constantRateVisemeSequence } from '../../lib/viseme-from-alignment';
-import type { BrandKit, VideoShot } from '../types';
+import type { BrandKit, PaintExplainerV1Settings, VideoShot } from '../types';
 
 interface MotionSceneProps {
   shot: VideoShot;
@@ -36,6 +36,11 @@ interface MotionSceneProps {
   suppressLowerThird?: boolean;
   fadeEnabled?: boolean;
   lowerThirdVariant?: LowerThirdVariant;
+  /** Resolved paint_explainer_v1 settings forwarded by the SceneRouter.
+   *  When undefined (legacy / non-paint_explainer_v1 callers reaching
+   *  this scene by accident), MotionScene falls back to the same
+   *  hardcoded defaults the resolver applies. */
+  paintSettings?: Required<PaintExplainerV1Settings>;
 }
 
 export const MotionScene: React.FC<MotionSceneProps & { shotIndex?: number }> = ({
@@ -46,6 +51,7 @@ export const MotionScene: React.FC<MotionSceneProps & { shotIndex?: number }> = 
   suppressLowerThird = false,
   fadeEnabled = true,
   lowerThirdVariant = 'doodle-yellow',
+  paintSettings,
 }) => {
   const { fps } = useVideoConfig();
 
@@ -109,10 +115,15 @@ export const MotionScene: React.FC<MotionSceneProps & { shotIndex?: number }> = 
         // beat gets its OWN sequence sized to its window so the
         // talking loop starts fresh on every beat boundary (closer
         // to real Paint-Explainer pacing than one continuous loop).
+        //
+        // Rate comes from the doc-level setting (default 8 Hz, range
+        // 6–12) so a user can dial mouth-swap pacing without touching
+        // code. The resolver upstream has already clamped to bounds
+        // and applied the default, so we read the field directly.
         const sequence = constantRateVisemeSequence({
           durationFrames: beatDurationFrames,
           fps,
-          rateHz: 8,
+          rateHz: paintSettings?.mouth_swap_fps_fallback ?? 8,
         });
         return (
           <Sequence

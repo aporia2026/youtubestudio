@@ -1,4 +1,9 @@
-import { VideoShot, VideoConfig, inferSceneType, DEFAULT_BRAND_KIT, BrandKit, VideoThumbnail, ThumbnailTransitionConfig } from './types';
+import { VideoShot, VideoConfig, inferSceneType, DEFAULT_BRAND_KIT, BrandKit, VideoThumbnail, ThumbnailTransitionConfig, type PaintExplainerV1Settings } from './types';
+// Re-export so callers can keep importing from `@/remotion/utils` —
+// the canonical interface lives in `./types` (next to VideoConfig)
+// but the constants + resolver below live here, so co-locating the
+// type re-export keeps the call surface single-import for consumers.
+export type { PaintExplainerV1Settings };
 import { stripProductionMarkers } from '@/lib/script-markers';
 import {
   alignRowsToWords,
@@ -1084,6 +1089,102 @@ export interface ProductionDoc {
      *  appears across many rows. Undefined until the first lookup. */
     anchors?: Partial<Record<'auto-mouth' | 'auto-center' | 'auto-eyes', { xPct: number; yPct: number }>>;
   }>;
+
+  /** paint_explainer_v1 (2026-05-28): per-doc settings overriding the
+   *  defaults. Every field optional — `resolvePaintExplainerV1Settings`
+   *  fills in the canonical default for any field the user hasn't set.
+   *  See §14 of the architecture plan. */
+  paint_explainer_v1_settings?: PaintExplainerV1Settings;
+}
+
+/** Canonical defaults applied by `resolvePaintExplainerV1Settings`.
+ *  The interface lives in `./types` next to VideoConfig (to avoid a
+ *  circular import); these constants stay here next to the resolver
+ *  that consumes them. */
+export const PAINT_EXPLAINER_V1_DEFAULTS: Required<PaintExplainerV1Settings> = {
+  median_shot_seconds: 2.75,
+  mouth_swap_fps_fallback: 8,
+  use_alignment_driven_visemes: true,
+  real_photo_cadence_pct: 50,
+  character_persistence_enabled: true,
+  label_color_hex: '#EBC347',
+  draw_on_default_duration_ms: 1200,
+  hard_cut_transition: 'snap',
+};
+
+/** Bounds applied by `resolvePaintExplainerV1Settings` to keep a stale
+ *  / hand-edited doc value from breaking the renderer. Each entry is
+ *  `[min, max]` inclusive. Values outside the bound clamp to the
+ *  nearest edge; non-finite / wrong-type values fall back to the
+ *  default. */
+export const PAINT_EXPLAINER_V1_BOUNDS = {
+  median_shot_seconds: [2.0, 5.0] as const,
+  mouth_swap_fps_fallback: [6, 12] as const,
+  real_photo_cadence_pct: [20, 80] as const,
+  draw_on_default_duration_ms: [500, 3000] as const,
+};
+
+/** Resolve the effective paint_explainer_v1 settings for a doc:
+ *  layer the stored values over the canonical defaults, clamping
+ *  numeric fields into their allowed bounds. Returns a fully-populated
+ *  shape so consumers (renderer, pipeline, LLM prompt builder) don't
+ *  have to handle undefined on every field.
+ *
+ *  Pure: no IO. Safe to call from both server and renderer. */
+export function resolvePaintExplainerV1Settings(
+  doc: Pick<ProductionDoc, 'paint_explainer_v1_settings'> | null | undefined,
+): Required<PaintExplainerV1Settings> {
+  const stored = doc?.paint_explainer_v1_settings ?? {};
+  return {
+    median_shot_seconds: clampPaintSetting(
+      stored.median_shot_seconds,
+      PAINT_EXPLAINER_V1_BOUNDS.median_shot_seconds,
+      PAINT_EXPLAINER_V1_DEFAULTS.median_shot_seconds,
+    ),
+    mouth_swap_fps_fallback: clampPaintSetting(
+      stored.mouth_swap_fps_fallback,
+      PAINT_EXPLAINER_V1_BOUNDS.mouth_swap_fps_fallback,
+      PAINT_EXPLAINER_V1_DEFAULTS.mouth_swap_fps_fallback,
+    ),
+    use_alignment_driven_visemes:
+      typeof stored.use_alignment_driven_visemes === 'boolean'
+        ? stored.use_alignment_driven_visemes
+        : PAINT_EXPLAINER_V1_DEFAULTS.use_alignment_driven_visemes,
+    real_photo_cadence_pct: clampPaintSetting(
+      stored.real_photo_cadence_pct,
+      PAINT_EXPLAINER_V1_BOUNDS.real_photo_cadence_pct,
+      PAINT_EXPLAINER_V1_DEFAULTS.real_photo_cadence_pct,
+    ),
+    character_persistence_enabled:
+      typeof stored.character_persistence_enabled === 'boolean'
+        ? stored.character_persistence_enabled
+        : PAINT_EXPLAINER_V1_DEFAULTS.character_persistence_enabled,
+    label_color_hex: isValidHexColor(stored.label_color_hex)
+      ? stored.label_color_hex
+      : PAINT_EXPLAINER_V1_DEFAULTS.label_color_hex,
+    draw_on_default_duration_ms: clampPaintSetting(
+      stored.draw_on_default_duration_ms,
+      PAINT_EXPLAINER_V1_BOUNDS.draw_on_default_duration_ms,
+      PAINT_EXPLAINER_V1_DEFAULTS.draw_on_default_duration_ms,
+    ),
+    hard_cut_transition:
+      stored.hard_cut_transition === 'snap' || stored.hard_cut_transition === 'micro-fade'
+        ? stored.hard_cut_transition
+        : PAINT_EXPLAINER_V1_DEFAULTS.hard_cut_transition,
+  };
+}
+
+function clampPaintSetting(
+  value: number | undefined,
+  bounds: readonly [number, number],
+  fallback: number,
+): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(bounds[0], Math.min(bounds[1], value));
+}
+
+function isValidHexColor(value: string | undefined): value is string {
+  return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value);
 }
 
 export interface RowImageState {
@@ -1776,6 +1877,16 @@ export function productionDocToVideoConfig(
     // the doc's style preset so Remotion components can style-vary
     // their rendering. Undefined ⇒ all components use their defaults.
     styleId: doc.style_preset,
+    // paint_explainer_v1 (2026-05-28) — resolve the doc-level settings
+    // once HERE so the renderer doesn't have to re-apply defaults on
+    // every frame. Only populated when the doc actually carries
+    // paint_explainer_v1 settings (or is on that style); other docs
+    // get undefined and the renderer skips paint_explainer_v1 code
+    // paths via existing shotKind / styleId guards.
+    paintExplainerV1Settings:
+      doc.style_preset === 'paint_explainer_v1' || doc.paint_explainer_v1_settings
+        ? resolvePaintExplainerV1Settings(doc)
+        : undefined,
   };
 
   if (!opts.alignment) return config;

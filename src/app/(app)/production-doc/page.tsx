@@ -60,6 +60,8 @@ import { OverlayContextMenu } from '@/components/production-doc/OverlayContextMe
 import { ImageGenThrottleToast } from '@/components/editor/ImageGenThrottleToast';
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
+import { PaintExplainerV1SettingsPanel } from '@/components/production-doc/PaintExplainerV1SettingsPanel';
+import type { PaintExplainerV1Settings } from '@/remotion/utils';
 import { OstModeControl, type OstMode } from '@/components/production-doc/OstModeControl';
 import { StyleSheetPanel } from '@/components/production-doc/StyleSheetPanel';
 import { resolveSheetReference } from '@/lib/style-sheet';
@@ -471,6 +473,14 @@ interface ProductionDoc {
    *  remotion-side `ProductionDoc`; the two interfaces must stay
    *  in sync. */
   collage_mode?: boolean;
+  /** paint_explainer_v1 (2026-05-28) — per-doc settings for the new
+   *  motion-driven style. Every field optional; absent fields fall
+   *  back to PAINT_EXPLAINER_V1_DEFAULTS via
+   *  `resolvePaintExplainerV1Settings`. Mirrors the same field on
+   *  the remotion-side `ProductionDoc`; the two interfaces must
+   *  stay in sync. See §14 of
+   *  `_plans/2026-05-28-paint-explainer-v1-architecture.md`. */
+  paint_explainer_v1_settings?: PaintExplainerV1Settings;
 }
 
 interface RowImageState {
@@ -8117,6 +8127,24 @@ function ProductionDocPage() {
               );
             })()}
           </div>
+
+          {/* paint_explainer_v1 settings panel — mounts only when the
+              active style is paint_explainer_v1 AND a doc exists. The
+              first time a user picks this style, the panel appears
+              after Generate so they can tweak the 8 motion knobs and
+              see the renderer reflect the change in the preview.
+              Pre-doc, the renderer hasn't run yet, so there's nothing
+              to preview against; the inputs panel still cleanly
+              communicates "pick style → generate → tune settings."
+              See §14 of the architecture plan. */}
+          {doc && stylePreset === 'paint_explainer_v1' && (
+            <PaintExplainerV1SettingsPanel
+              value={doc.paint_explainer_v1_settings}
+              onChange={(next) => {
+                setDoc((prev) => (prev ? { ...prev, paint_explainer_v1_settings: next } : prev));
+              }}
+            />
+          )}
 
           {/* Creative brief */}
           <div>
