@@ -43,6 +43,7 @@ import {
   extractIconInner,
   getIconSvg,
   type IconCategory,
+  type IconEntry,
 } from '@/lib/thumbnail-formats/flex-icon-grid-icons';
 import {
   paletteColours,
@@ -773,7 +774,10 @@ function IconPicker({
 }) {
   const [query, setQuery] = useState('');
   const groups = useMemo(() => {
-    const byCat: Record<IconCategory, typeof ICON_REGISTRY> = {
+    // Mutable IconEntry[] (not `typeof ICON_REGISTRY`) — the registry
+    // itself is `readonly IconEntry[]`, but the per-category buckets we
+    // build here are populated via .push().
+    const byCat: Record<IconCategory, IconEntry[]> = {
       tech: [], security: [], communication: [], money: [], media: [],
       people: [], web: [], common: [], nature: [], misc: [],
     };

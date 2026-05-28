@@ -243,7 +243,10 @@ function CellBackgroundDef({ id, spec }: { id: string; spec: CellBackgroundSpec 
       </pattern>
     );
   }
-  // image
+  // Solid cells are handled by the parent (no def emitted), so the only
+  // remaining variant by this point is 'image'. Narrow explicitly so
+  // TypeScript knows `.url` is safe.
+  if (spec.type === 'solid') return null;
   return (
     <pattern id={id} patternUnits="objectBoundingBox" width="1" height="1">
       <image href={spec.url} x="0" y="0" width="1" height="1" preserveAspectRatio="xMidYMid slice" />
