@@ -40,6 +40,7 @@ import {
 } from '@/lib/thumbnail-formats/flex-icon-grid-sticker-styles';
 import { validateSavedPaletteInput } from '@/lib/flex-icon-grid-saved-palettes-validate';
 import { validateSavedTemplateInput } from '@/lib/flex-icon-grid-saved-templates-validate';
+import { validateWorkspaceFontInput } from '@/lib/flex-icon-grid-workspace-fonts-validate';
 import {
   hueFamilyOf,
   parseHex,
@@ -690,6 +691,103 @@ describe('Phase 3.5 — OFFICIAL_BRAND_ICONS stub', () => {
     // BRAND_ICONS = SIMPLIFIED + OFFICIAL. Empty OFFICIAL means
     // BRAND_ICONS length equals SIMPLIFIED_BRAND_ICONS length (8).
     expect(BRAND_ICONS).toHaveLength(8);
+  });
+});
+
+describe('Phase 4.8 — font byte cache', () => {
+  it('coalesces concurrent fetches into a single in-flight request', async () => {
+    const { fetchFontBytesCached, _resetFontByteCacheForTests } =
+      await import('@/lib/thumbnail-formats/flex-icon-grid-font-cache');
+    _resetFontByteCacheForTests();
+    let calls = 0;
+    const fetcher = async () => {
+      calls++;
+      await new Promise((r) => setTimeout(r, 5));
+      return Buffer.from('font-bytes');
+    };
+    const [a, b] = await Promise.all([
+      fetchFontBytesCached('https://example.com/font.ttf', fetcher),
+      fetchFontBytesCached('https://example.com/font.ttf', fetcher),
+    ]);
+    expect(a.toString()).toBe('font-bytes');
+    expect(b.toString()).toBe('font-bytes');
+    expect(calls).toBe(1);
+  });
+  it('serves cached results without refetching', async () => {
+    const { fetchFontBytesCached, _resetFontByteCacheForTests } =
+      await import('@/lib/thumbnail-formats/flex-icon-grid-font-cache');
+    _resetFontByteCacheForTests();
+    let calls = 0;
+    const fetcher = async () => {
+      calls++;
+      return Buffer.from('bytes');
+    };
+    await fetchFontBytesCached('https://example.com/a.ttf', fetcher);
+    await fetchFontBytesCached('https://example.com/a.ttf', fetcher);
+    await fetchFontBytesCached('https://example.com/a.ttf', fetcher);
+    expect(calls).toBe(1);
+  });
+  it('evicts the oldest entry by atime when capacity is reached', async () => {
+    const { fetchFontBytesCached, _resetFontByteCacheForTests, getFontCacheStats } =
+      await import('@/lib/thumbnail-formats/flex-icon-grid-font-cache');
+    _resetFontByteCacheForTests();
+    let calls = 0;
+    const fetcher = async () => {
+      calls++;
+      return Buffer.from('x');
+    };
+    // Fill past capacity (20). Capacity guard activates on insert.
+    for (let i = 0; i < 25; i++) {
+      await fetchFontBytesCached(`https://example.com/font-${i}.ttf`, fetcher);
+    }
+    const stats = getFontCacheStats();
+    expect(stats.entries).toBeLessThanOrEqual(stats.max);
+    expect(calls).toBe(25);
+  });
+});
+
+describe('Phase 4.8 — workspace-font validation (pure module)', () => {
+  const goodKey = 'thumbnails/flex-icon-grid-font/1234-MyFont.ttf';
+  it('accepts a well-formed input', () => {
+    const result = validateWorkspaceFontInput({
+      name: 'My Font',
+      r2_key: goodKey,
+      mime_type: 'font/ttf',
+      size_bytes: 102400,
+    });
+    expect(result.ok).toBe(true);
+  });
+  it('rejects missing name', () => {
+    expect(validateWorkspaceFontInput({
+      r2_key: goodKey, mime_type: 'font/ttf', size_bytes: 10,
+    }).ok).toBe(false);
+  });
+  it('rejects oversized name', () => {
+    expect(validateWorkspaceFontInput({
+      name: 'a'.repeat(61),
+      r2_key: goodKey, mime_type: 'font/ttf', size_bytes: 10,
+    }).ok).toBe(false);
+  });
+  it('rejects r2_key outside the font upload prefix', () => {
+    const result = validateWorkspaceFontInput({
+      name: 'X',
+      r2_key: 'thumbnails/flex-icon-grid-cell-upload/123-MyImage.jpg',
+      mime_type: 'font/ttf',
+      size_bytes: 10,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/r2_key must point at/);
+  });
+  it('rejects unsupported mime_type', () => {
+    expect(validateWorkspaceFontInput({
+      name: 'X', r2_key: goodKey, mime_type: 'image/png', size_bytes: 10,
+    }).ok).toBe(false);
+  });
+  it('rejects oversized files', () => {
+    expect(validateWorkspaceFontInput({
+      name: 'X', r2_key: goodKey, mime_type: 'font/ttf',
+      size_bytes: 6 * 1024 * 1024,
+    }).ok).toBe(false);
   });
 });
 

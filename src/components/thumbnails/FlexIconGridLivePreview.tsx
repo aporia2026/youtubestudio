@@ -24,7 +24,7 @@
  * currently-selected cell for visual lock-in.
  */
 
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import {
   applyLabelCase,
   computeCellGeometry,
@@ -103,38 +103,39 @@ function resolveFontCssFor(style: { font: LabelStyle['font']; customFontUrl?: st
 }
 
 /**
- * Mount/cleanup FontFace registrations for every unique custom-font
- * URL referenced by the config (cell-level overrides + the default
- * label style + the title bar). Idempotent — re-registering the
- * same family is a no-op on most browsers. Cleanup deletes the
- * registered families on unmount so a config swap doesn't leak fonts
- * into the next panel session.
+ * Mount + cleanup FontFace registrations for every unique custom-
+ * font URL referenced by the config. Phase 4.7 caveat fix: tracks
+ * registered URLs in a ref so the effect only registers NEWLY-added
+ * URLs and only deletes URLs that have left the config — no churn
+ * on edits that don't touch the font set.
  */
 function useCustomFontRegistration(config: FlexIconGridConfig): void {
+  // url → FontFace, persisted across renders so we can delta-update.
+  const registered = useRef(new Map<string, FontFace>());
+
   useEffect(() => {
     if (typeof document === 'undefined' || !('fonts' in document)) return;
+
     // Collect unique URLs from every label-style position.
-    const urls = new Set<string>();
+    const wanted = new Set<string>();
     if (config.defaultLabel.font === 'custom' && config.defaultLabel.customFontUrl) {
-      urls.add(config.defaultLabel.customFontUrl);
-    }
-    if (config.titleBar?.font === 'custom') {
-      // Title bar doesn't (yet) carry a custom URL field; reserved
-      // for a future round.
+      wanted.add(config.defaultLabel.customFontUrl);
     }
     for (const cell of config.cells) {
       const cellStyle = cell.labelStyle;
       if (cellStyle?.font === 'custom' && cellStyle.customFontUrl) {
-        urls.add(cellStyle.customFontUrl);
+        wanted.add(cellStyle.customFontUrl);
       }
     }
-    const registered: { family: string; face: FontFace }[] = [];
-    for (const url of urls) {
+
+    // Register newly-added URLs only.
+    for (const url of wanted) {
+      if (registered.current.has(url)) continue;
       const family = customFontFamilyName(url);
       const face = new FontFace(family, `url(${url})`);
-      registered.push({ family, face });
-      void face.load().then(() => {
-        document.fonts.add(face);
+      registered.current.set(url, face);
+      void face.load().then((loaded) => {
+        document.fonts.add(loaded);
       }).catch((err) => {
         console.warn('[flex-icon-grid preview] custom font load failed', {
           family, url_prefix: url.slice(0, 60),
@@ -142,12 +143,28 @@ function useCustomFontRegistration(config: FlexIconGridConfig): void {
         });
       });
     }
+
+    // Delete URLs that have left the config.
+    for (const [url, face] of registered.current) {
+      if (wanted.has(url)) continue;
+      try { document.fonts.delete(face); } catch { /* ignore */ }
+      registered.current.delete(url);
+    }
+  }, [config]);
+
+  // Final cleanup on unmount — delete every registered face the
+  // panel session ever loaded so a hot-reload doesn't leak fonts
+  // into the document.fonts registry.
+  useEffect(() => {
+    const tracker = registered.current;
     return () => {
-      for (const { face } of registered) {
+      if (typeof document === 'undefined' || !('fonts' in document)) return;
+      for (const face of tracker.values()) {
         try { document.fonts.delete(face); } catch { /* ignore */ }
       }
+      tracker.clear();
     };
-  }, [config]);
+  }, []);
 }
 
 export function FlexIconGridLivePreview({

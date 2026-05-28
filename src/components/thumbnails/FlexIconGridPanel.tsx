@@ -71,6 +71,10 @@ export interface FlexIconGridGenerationResult {
   config: FlexIconGridConfig;
   outputWidth: number;
   outputHeight: number;
+  /** Custom-font URLs whose fetch failed during this render. The
+   *  panel surfaces them as a "font no longer available" banner so
+   *  the user knows to re-upload (Phase 4.7 caveat fix). */
+  fontWarnings?: string[];
 }
 
 export interface FlexIconGridDraftState {
@@ -142,6 +146,18 @@ const ALLOWED_CELL_UPLOAD_TYPES = new Set([
 
 const STICKER_STYLE_PREF_KEY = 'flex_icon_grid_sticker_style';
 
+/** Shape of one workspace-registered font as the API returns it
+ *  (Phase 4.8b). Each list response mints fresh presigned downloadUrls
+ *  so panels never carry stale URLs across sessions. */
+interface WorkspaceFontEntry {
+  id: string;
+  name: string;
+  mime_type: string;
+  size_bytes: number;
+  downloadUrl: string;
+  updated_at: string;
+}
+
 /** Shape of one workspace-saved palette as the API returns it. Lifted
  *  to module scope so both the eager-fetch state in the panel and the
  *  disclosure section share a single source of truth. */
@@ -181,6 +197,43 @@ export function FlexIconGridPanel({
   const [stickerBusy, setStickerBusy] = useState(false);
   const [result, setResult] = useState<FlexIconGridGenerationResult | null>(null);
   const [uploadingCells, setUploadingCells] = useState<Set<number>>(new Set());
+
+  // Workspace-registered fonts (Phase 4.8b). Fetched eagerly so the
+  // chip row inside the custom-font picker shows up immediately
+  // without forcing the user to re-upload a previously-attached
+  // font. Auto-populated after every successful upload via the
+  // `uploadCustomFont` handler below.
+  const [workspaceFonts, setWorkspaceFonts] = useState<WorkspaceFontEntry[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/thumbnails/format/flex-icon-grid/workspace-fonts');
+        if (!res.ok) return;
+        const data = (await res.json()) as { fonts: WorkspaceFontEntry[] };
+        if (!cancelled) setWorkspaceFonts(data.fonts);
+      } catch (err) {
+        console.warn('[flex-icon-grid panel font] registry fetch failed', {
+          reason: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  async function removeRegisteredFont(id: string, name: string) {
+    if (!confirm(`Remove registered font "${name}"?`)) return;
+    try {
+      const res = await fetch(
+        `/api/thumbnails/format/flex-icon-grid/workspace-fonts/${encodeURIComponent(id)}`,
+        { method: 'DELETE' },
+      );
+      if (!res.ok) throw new Error(`Delete failed (${res.status})`);
+      setWorkspaceFonts((prev) => prev.filter((f) => f.id !== id));
+      toast.success('Font removed from registry');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Delete failed');
+    }
+  }
 
   // Workspace-saved palettes — fetched eagerly on mount so the quick-
   // load chip row next to the named-preset chips shows the user's
@@ -338,21 +391,56 @@ export function FlexIconGridPanel({
         const data: { error?: string } = await presignRes.json().catch(() => ({}));
         throw new Error(data.error || `Presign failed (${presignRes.status})`);
       }
-      const { uploadUrl, downloadUrl } = await presignRes.json();
+      const { uploadUrl, downloadUrl, r2Key } = await presignRes.json();
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': file.type || 'font/ttf' },
         body: file,
       });
       if (!putRes.ok) throw new Error(`R2 upload failed (${putRes.status})`);
+      const fontLabel = file.name.replace(/\.(ttf|otf|woff|woff2)$/i, '');
       updateConfig({
         defaultLabel: {
           ...config.defaultLabel,
           font: 'custom',
           customFontUrl: downloadUrl,
-          customFontLabel: file.name.replace(/\.(ttf|otf|woff|woff2)$/i, ''),
+          customFontLabel: fontLabel,
         },
       });
+      // Phase 4.8b: auto-register the font in the workspace registry
+      // so it appears as a chip for future thumbnails. Non-fatal —
+      // a failed registration still leaves the URL usable in THIS
+      // thumbnail; the chip just won't appear next session.
+      void (async () => {
+        try {
+          const regRes = await fetch('/api/thumbnails/format/flex-icon-grid/workspace-fonts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: fontLabel,
+              r2_key: r2Key,
+              mime_type: file.type || 'font/ttf',
+              size_bytes: file.size,
+            }),
+          });
+          if (regRes.ok) {
+            const registered = (await regRes.json()) as WorkspaceFontEntry;
+            setWorkspaceFonts((prev) => [registered, ...prev.filter((f) => f.id !== registered.id)]);
+          } else if (regRes.status === 409) {
+            // Duplicate name in workspace — keep the URL but skip
+            // registry update silently. Most likely the user already
+            // has this exact font registered.
+          } else {
+            console.warn('[flex-icon-grid panel font] registry registration failed', {
+              status: regRes.status,
+            });
+          }
+        } catch (err) {
+          console.warn('[flex-icon-grid panel font] registry registration error', {
+            reason: err instanceof Error ? err.message : String(err),
+          });
+        }
+      })();
       toast.success(`Font "${file.name}" attached`);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -963,6 +1051,79 @@ export function FlexIconGridPanel({
             />
           )}
 
+          {/* Phase 4.8a: per-cell font override. Lets a single cell
+              pick its own bundled font or registered custom font
+              independently of the grid's defaultLabel font. The
+              composer falls back to the default when no override is
+              set (cell.labelStyle is undefined or font omitted). */}
+          <label style={labelStyle}>Label font (this cell)</label>
+          <div style={chipRowStyle}>
+            <button
+              type="button"
+              onClick={() =>
+                updateCell(selectedCell.index, {
+                  labelStyle: selectedCell.labelStyle
+                    ? { ...selectedCell.labelStyle, font: undefined, customFontUrl: undefined, customFontLabel: undefined }
+                    : undefined,
+                })
+              }
+              style={chipStyle(!selectedCell.labelStyle?.font)}
+            >
+              Use default ({config.defaultLabel.font})
+            </button>
+            {FONT_OPTIONS.filter((o) => o.value !== 'custom').map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() =>
+                  updateCell(selectedCell.index, {
+                    labelStyle: {
+                      ...(selectedCell.labelStyle ?? {}),
+                      font: opt.value,
+                      customFontUrl: undefined,
+                      customFontLabel: undefined,
+                    },
+                  })
+                }
+                style={chipStyle(selectedCell.labelStyle?.font === opt.value)}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {workspaceFonts.length > 0 && (
+            <>
+              <p style={{ fontSize: 11, color: '#a1a1aa', margin: '6px 0 0 0' }}>
+                Or pick a registered custom font:
+              </p>
+              <div style={chipRowStyle}>
+                {workspaceFonts.map((wf) => (
+                  <button
+                    key={wf.id}
+                    type="button"
+                    onClick={() =>
+                      updateCell(selectedCell.index, {
+                        labelStyle: {
+                          ...(selectedCell.labelStyle ?? {}),
+                          font: 'custom',
+                          customFontUrl: wf.downloadUrl,
+                          customFontLabel: wf.name,
+                        },
+                      })
+                    }
+                    style={chipStyle(
+                      selectedCell.labelStyle?.font === 'custom' &&
+                        selectedCell.labelStyle?.customFontUrl === wf.downloadUrl,
+                    )}
+                    title={`${wf.name} · ${Math.round(wf.size_bytes / 1024)} KB`}
+                  >
+                    {wf.name}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
           {/* Reset everything */}
           <button
             type="button"
@@ -1005,7 +1166,72 @@ export function FlexIconGridPanel({
                 ))}
               </div>
               {config.defaultLabel.font === 'custom' && (
-                <div style={{ marginTop: 10, display: 'grid', gap: 6 }}>
+                <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
+                  {/* Phase 4.8b: registered font chip row. Click to
+                      apply, × to delete. Chips appear above the
+                      upload control because reuse is more common than
+                      first-time upload. */}
+                  {workspaceFonts.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {workspaceFonts.map((wf) => (
+                        <span
+                          key={wf.id}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            background:
+                              config.defaultLabel.customFontUrl === wf.downloadUrl
+                                ? '#1e3a5f'
+                                : '#1a1a1d',
+                            border: '1px solid #2a2a2e',
+                            borderRadius: 6,
+                            padding: '4px 4px 4px 10px',
+                          }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateConfig({
+                                defaultLabel: {
+                                  ...config.defaultLabel,
+                                  font: 'custom',
+                                  customFontUrl: wf.downloadUrl,
+                                  customFontLabel: wf.name,
+                                },
+                              })
+                            }
+                            style={{
+                              background: 'transparent',
+                              border: 'none',
+                              color: '#fafafa',
+                              cursor: 'pointer',
+                              fontSize: 12,
+                              padding: 0,
+                            }}
+                            title={`${wf.name} · ${Math.round(wf.size_bytes / 1024)} KB`}
+                          >
+                            {wf.name}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeRegisteredFont(wf.id, wf.name)}
+                            style={{
+                              background: 'transparent',
+                              border: 'none',
+                              color: '#71717a',
+                              cursor: 'pointer',
+                              fontSize: 14,
+                              padding: '0 4px',
+                            }}
+                            title="Remove from registry"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                     <input
                       type="file"
@@ -1178,6 +1404,31 @@ export function FlexIconGridPanel({
       {result && (
         <section style={sectionStyle}>
           <h3 style={sectionHeaderStyle}>Result</h3>
+          {/* Font warnings (Phase 4.7 caveat fix). Surfaces any custom-
+              font URLs whose fetch failed during this render so the
+              user knows a label silently fell back to Anton instead of
+              their picked font. */}
+          {result.fontWarnings && result.fontWarnings.length > 0 && (
+            <div
+              style={{
+                background: '#3a2e08',
+                border: '1px solid #facc15',
+                color: '#fefce8',
+                padding: '8px 10px',
+                borderRadius: 6,
+                fontSize: 11,
+                marginBottom: 10,
+              }}
+            >
+              <div style={{ fontWeight: 700 }}>
+                ⚠ {result.fontWarnings.length} custom font{result.fontWarnings.length === 1 ? '' : 's'} could not be loaded
+              </div>
+              <div style={{ marginTop: 4 }}>
+                Affected cells fell back to the default font. The font URL may have expired or the
+                upload may have been deleted. Re-upload to fix.
+              </div>
+            </div>
+          )}
           <img
             src={result.imageUrl}
             alt="Rendered thumbnail"

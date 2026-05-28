@@ -62,6 +62,7 @@ import {
 import { inlineIconSvg } from './flex-icon-grid-icons';
 import { pickLabelColourFor, resolveCellBackgrounds } from './flex-icon-grid-palettes';
 import { fetchTwemojiSvg } from './flex-icon-grid-emoji';
+import { fetchFontBytesCached } from './flex-icon-grid-font-cache';
 
 // ─── Font resolution ────────────────────────────────────────────────────────
 
@@ -120,23 +121,39 @@ const FONT_RESOLVER: Record<Exclude<LabelFont, 'custom'>, { family: string; path
  */
 interface CustomFontResolver {
   resolve(url: string): Promise<{ family: string; path: string } | null>;
+  /** URLs that failed to fetch this render. Surfaced through the
+   *  compose result so the API can return them to the panel as
+   *  "font no longer available" warnings (Phase 4.7 caveat fix). */
+  readonly warnings: string[];
   cleanup(): Promise<void>;
 }
 
 function makeCustomFontResolver(fetcher: UploadFetcher): CustomFontResolver {
+  // Per-render cache of `{ url → { family, tempPath } }`. The BYTE
+  // cache (cross-render, module-level) lives in
+  // `flex-icon-grid-font-cache.ts` — this Map only memoises the
+  // current render's temp-file writes so two cells referencing the
+  // same custom font share one temp file.
   const cache = new Map<string, { family: string; path: string }>();
   const tempFiles: string[] = [];
+  const warnings: string[] = [];
   return {
+    warnings,
     async resolve(url: string) {
       if (cache.has(url)) return cache.get(url)!;
       let bytes: Buffer;
       try {
-        bytes = await fetcher(url);
+        // Read through the module-level byte cache — same URL across
+        // renders within the same Lambda instance reuses the bytes
+        // and skips the network fetch.
+        bytes = await fetchFontBytesCached(url, fetcher);
       } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
         console.warn('[flex-icon-grid composer] custom font fetch failed', {
           url_prefix: url.slice(0, 60),
-          reason: err instanceof Error ? err.message : String(err),
+          reason,
         });
+        warnings.push(url);
         return null;
       }
       const family = `fg-custom-${crypto.randomBytes(6).toString('hex')}`;
@@ -228,7 +245,20 @@ export interface ComposeInput {
  * the same `[flex-icon-grid composer]` namespace so the production
  * trail stays consistent.
  */
-export async function composeFlexIconGrid(input: ComposeInput): Promise<Buffer> {
+/**
+ * Compose result.
+ *  - `buffer`: the rendered PNG ready to upload to R2.
+ *  - `fontWarnings`: unique URLs whose custom-font fetch failed this
+ *    render. Phase 4.7 caveat fix — the render route returns these
+ *    so the panel can show "font no longer available" badges per
+ *    affected cell instead of silently falling back to Anton.
+ */
+export interface ComposeResult {
+  buffer: Buffer;
+  fontWarnings: string[];
+}
+
+export async function composeFlexIconGrid(input: ComposeInput): Promise<ComposeResult> {
   const start = Date.now();
   const { config, fetchUpload } = input;
   const { width, height } = config;
@@ -308,7 +338,16 @@ export async function composeFlexIconGrid(input: ComposeInput): Promise<Buffer> 
   } finally {
     await fontResolver.cleanup();
   }
-  return finalBuffer;
+  // Dedupe warning URLs — a single broken URL referenced by multiple
+  // cells should surface once, not N times.
+  const fontWarnings = Array.from(new Set(fontResolver.warnings));
+  if (fontWarnings.length > 0) {
+    console.warn('[flex-icon-grid composer] font warnings', {
+      count: fontWarnings.length,
+      url_prefixes: fontWarnings.map((u) => u.slice(0, 60)),
+    });
+  }
+  return { buffer: finalBuffer, fontWarnings };
 }
 
 // ─── Base SVG ───────────────────────────────────────────────────────────────

@@ -80,11 +80,14 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
 
   // Compose
   let pngBuffer: Buffer;
+  let fontWarnings: string[] = [];
   try {
-    pngBuffer = await composeFlexIconGrid({
+    const result = await composeFlexIconGrid({
       config,
       fetchUpload: makeSSRFGuardedFetcher(),
     });
+    pngBuffer = result.buffer;
+    fontWarnings = result.fontWarnings;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[flex-icon-grid api] compose failed', { reason: msg });
@@ -107,7 +110,9 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
   const regions = computeRegions(config, () => crypto.randomUUID());
 
   console.info('[flex-icon-grid api] render ok', {
-    bytes: pngBuffer.length, total_ms: Date.now() - start,
+    bytes: pngBuffer.length,
+    total_ms: Date.now() - start,
+    font_warnings_count: fontWarnings.length,
   });
 
   return NextResponse.json(
@@ -117,6 +122,10 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
       config,
       outputWidth: config.width,
       outputHeight: config.height,
+      // Phase 4.7 caveat fix: surface URLs that failed to fetch this
+      // render so the panel can show "font no longer available" badges
+      // instead of silently falling back to Anton.
+      fontWarnings,
     },
     { status: 201 },
   );
